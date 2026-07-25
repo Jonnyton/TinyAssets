@@ -727,12 +727,9 @@ class TestLauncherApp:
 
         with (
             patch(
-                "tinyassets.desktop.launcher.DaemonController",
-                return_value=mock_controller,
-            ) if False else patch(
                 "tinyassets.__main__.DaemonController",
                 return_value=mock_controller,
-            ),
+            ) as mock_controller_cls,
             patch(
                 "tinyassets.desktop.host_tray.HostTrayService.shared",
                 return_value=mock_host_tray,
@@ -747,6 +744,9 @@ class TestLauncherApp:
             app._start_daemon()
 
             assert app._daemon is mock_controller
+            controller_kwargs = mock_controller_cls.call_args.kwargs
+            assert controller_kwargs["no_tray"] is True
+            assert "tunnel" not in controller_kwargs
             mock_host_tray.bind_dashboard.assert_called_once()
             mock_thread.start.assert_called_once()
 
@@ -1316,8 +1316,8 @@ class TestPyprojectEntryPoints:
         toml_path = PROJECT_ROOT / "pyproject.toml"
         data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
         gui = data.get("project", {}).get("gui-scripts", {})
-        assert "workflow" in gui
-        assert "launcher:main" in gui["workflow"]
+        assert gui.get("tinyassets") == "tinyassets.desktop.launcher:main"
+        assert "workflow" not in gui
 
     def test_has_cli_scripts(self):
         import tomllib

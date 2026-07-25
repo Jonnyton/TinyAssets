@@ -13,10 +13,12 @@ instead of producing a silently-broken `.mcpb` artifact.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +28,19 @@ STAGE_ROOT = DIST_ROOT / "tinyassets-universe-server-src"
 BUNDLE_PATH = DIST_ROOT / "tinyassets-universe-server.mcpb"
 
 TINYASSETS_SRC = REPO_ROOT / "tinyassets"
+
+# Provider credentials never reach a packaging probe. `_probe_catalog` boots
+# the staged runtime, so an inherited key is the shape that would let a
+# packaging gate spend maintainer quota instead of proving the package.
+PROVIDER_CREDENTIAL_ENV: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+    "XAI_API_KEY",
+    "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+)
 
 # Patterns excluded when copying the tinyassets/ tree into the stage.
 # Glob shapes match Path.match semantics.
@@ -105,6 +120,14 @@ def _stage_bundle() -> Path:
     return STAGE_ROOT
 
 
+def _probe_env() -> dict[str, str]:
+    """Base environment for every subprocess probe: no provider credentials."""
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    for name in PROVIDER_CREDENTIAL_ENV:
+        env.pop(name, None)
+    return env
+
+
 def _probe_import(stage: Path) -> None:
     """Fail loudly if the staged bundle can't import its entry point.
 
@@ -120,7 +143,7 @@ def _probe_import(stage: Path) -> None:
         "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
         "print('probe-ok')"
     )
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    env = _probe_env()
     result = subprocess.run(
         [sys.executable, "-c", probe_script],
         capture_output=True, text=True, check=False, env=env,
@@ -131,6 +154,88 @@ def _probe_import(stage: Path) -> None:
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     print(f"Import probe: {result.stdout.strip() or 'ok'}")
+
+
+def _probe_catalog(stage: Path) -> None:
+    """Fail when the staged manifest and middleware-visible tools differ."""
+    manifest_path = stage / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest_names = {tool["name"] for tool in manifest["tools"]}
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Staged MCPB manifest tool catalog is invalid: {exc}"
+        ) from exc
+
+    marker = "TINYASSETS_MCPB_CATALOG="
+    probe_script = "\n".join(
+        (
+            "import asyncio",
+            "import json",
+            "import sys",
+            f"sys.path.insert(0, {str(stage)!r})",
+            "import tinyassets.universe_server as universe_server",
+            (
+                "names = sorted(tool.name for tool in "
+                "asyncio.run(universe_server.mcp.list_tools("
+                "run_middleware=True)))"
+            ),
+            f"print({marker!r} + json.dumps(names))",
+        )
+    )
+    env = _probe_env()
+    env.pop("TINYASSETS_REPO_ROOT", None)
+    env.pop("UNIVERSE_SERVER_AUTH", None)
+
+    with tempfile.TemporaryDirectory(
+        prefix="tinyassets-mcpb-catalog-",
+    ) as data_dir:
+        env["TINYASSETS_DATA_DIR"] = data_dir
+        result = subprocess.run(
+            [sys.executable, "-c", probe_script],
+            cwd=str(stage),
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Staged bundle catalog probe failed.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+
+    payload = next(
+        (
+            line.removeprefix(marker)
+            for line in reversed(result.stdout.splitlines())
+            if line.startswith(marker)
+        ),
+        None,
+    )
+    if payload is None:
+        raise RuntimeError(
+            "Staged bundle catalog probe produced no catalog result.\n"
+            f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        )
+    try:
+        runtime_names = set(json.loads(payload))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Staged bundle catalog probe returned invalid JSON: {payload!r}"
+        ) from exc
+
+    missing_from_manifest = sorted(runtime_names - manifest_names)
+    extra_in_manifest = sorted(manifest_names - runtime_names)
+    if missing_from_manifest or extra_in_manifest:
+        raise RuntimeError(
+            "Staged MCPB catalog mismatch: "
+            f"missing_from_manifest={missing_from_manifest}; "
+            f"extra_in_manifest={extra_in_manifest}"
+        )
+
+    print(f"Catalog parity: {', '.join(sorted(runtime_names))}")
 
 
 def _run(command: list[str], *, cwd: Path) -> None:
@@ -170,12 +275,18 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+    if args.skip_probe and (args.validate or args.pack):
+        parser.error(
+            "--skip-probe cannot be combined with --validate or --pack; "
+            "a schema-only check is not catalog-parity validation"
+        )
 
     stage_root = _stage_bundle()
     print(f"Staged bundle source at {stage_root}")
 
     if not args.skip_probe:
         _probe_import(stage_root)
+        _probe_catalog(stage_root)
 
     if args.validate or args.pack:
         _run(

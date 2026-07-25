@@ -1,5 +1,11 @@
 # OpenAI App Submission Readiness - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** This checklist records the
+> 2026-05-02 readiness state. The sole remote endpoint is
+> `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an ordinary 404.
+> Use the active `reconcile-external-connector-manifests` OpenSpec change for
+> current readiness.
+
 Purpose: one checklist for deciding whether TinyAssets is ready to click
 `Submit for Review` in the OpenAI Apps dashboard.
 

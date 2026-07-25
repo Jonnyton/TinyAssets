@@ -33,5 +33,6 @@
       `docs/audits/2026-07-19-spec-baseline-codex-review.md`)
 - [x] 3.3 Sync delta specs into `openspec/specs/<capability>/spec.md`
       (create; forward-vision specs untouched)
-- [ ] 3.4 Draft PR opened with the convention (AGENTS.md), config, STATUS
-      claim, and baseline specs
+- [x] 3.4 Draft PR opened with the convention (AGENTS.md), config, STATUS
+      claim, and baseline specs (merged as PR #1476,
+      `e2a30f216dd841b76797ef53b7778df7d21ca5c6`)

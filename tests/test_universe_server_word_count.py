@@ -42,6 +42,16 @@ def _make_scene(
     return path
 
 
+def _declare_public(base: Path, uid: str, udir: Path) -> None:
+    """Declare a universe public so it is not withheld by the fail-closed
+    universe-visibility gate on list/inspect."""
+    from tinyassets.api.visibility import set_universe_visibility
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_universe_visibility(uid, "public")
+
+
 def test_empty_universe_returns_zero_with_source_none(
     universe_base: Path,
 ) -> None:
@@ -117,6 +127,7 @@ def test_inspect_surfaces_on_disk_word_count_not_stale_status(
         encoding="utf-8",
     )
     _make_scene(udir, 1, 1, 1, 40)
+    _declare_public(universe_base, "u", udir)
 
     out = json.loads(us._action_inspect_universe(universe_id="u"))
     assert out["daemon"]["word_count"] == 40
@@ -137,6 +148,7 @@ def test_inspect_reports_zero_for_universe_without_output(
         json.dumps({"current_phase": "draft", "word_count": 53543}),
         encoding="utf-8",
     )
+    _declare_public(universe_base, "u", udir)
 
     out = json.loads(us._action_inspect_universe(universe_id="u"))
     assert out["daemon"]["word_count"] == 0
@@ -167,6 +179,8 @@ def test_list_surfaces_on_disk_word_count(universe_base: Path) -> None:
     _make_scene(udir_a, 1, 1, 1, 5)
     udir_b = universe_base / "empty"
     udir_b.mkdir()
+    _declare_public(universe_base, "alive", udir_a)
+    _declare_public(universe_base, "empty", udir_b)
 
     out = json.loads(us._action_list_universes())
     by_id = {u["id"]: u for u in out["universes"]}

@@ -238,3 +238,54 @@ def test_bootstrap_apt_lock_wait_has_timeout():
     assert re.search(r'seq 1 1[0-9]{2}', text), (
         "apt-lock wait loop must be bounded (seq 1 N where N >= 100)"
     )
+
+
+# Bootstrap source-SHA ownership boundary
+
+
+def test_bootstrap_git_never_uses_safe_directory_exception():
+    """Root must not opt into a service-user-writable Git repository."""
+    text = _text()
+    assert "safe.directory" not in text
+
+
+def test_repeat_root_owned_checkout_converges_before_service_git():
+    """An interrupted root-owned clone is transferred before repeat Git."""
+    text = _text()
+    assert re.search(
+        r'service_repo_git\(\)\s*\{\s*'
+        r'sudo -u "\$\{TINYASSETS_USER\}" -- '
+        r'git -C "\$\{TINYASSETS_HOME\}" "\$@"\s*'
+        r'\}',
+        text,
+    )
+    assert 'service_repo_git fetch --depth 1 origin "${REPO_REF}"' in text
+    assert 'service_repo_git reset --hard "origin/${REPO_REF}"' in text
+    assert 'TINYASSETS_CHECKOUT_SHA="$(service_repo_git rev-parse HEAD)"' in text
+    repeat_pos = text.find('log "repo already present at ${TINYASSETS_HOME}')
+    ownership_pos = text.find(
+        'chown -R "${TINYASSETS_USER}:${TINYASSETS_USER}" "${TINYASSETS_HOME}"',
+        repeat_pos,
+    )
+    fetch_pos = text.find(
+        'service_repo_git fetch --depth 1 origin "${REPO_REF}"',
+        repeat_pos,
+    )
+    assert repeat_pos < ownership_pos < fetch_pos
+
+
+def test_bootstrap_validates_checkout_sha_before_installer():
+    """Fresh clone is resolved as root and the installer receives a valid SHA."""
+    text = _text()
+    resolve_pos = text.find(
+        'TINYASSETS_CHECKOUT_SHA="$(git -C "${TINYASSETS_HOME}" rev-parse HEAD)"'
+    )
+    validate_pos = text.find(
+        '[[ ! "${TINYASSETS_CHECKOUT_SHA}" =~ ^[0-9a-f]{40}$ ]]'
+    )
+    repeat_pos = text.find('log "repo already present at ${TINYASSETS_HOME}')
+    installer_pos = text.find(
+        'TINYASSETS_SOURCE_SHA="${TINYASSETS_CHECKOUT_SHA}"'
+    )
+    assert -1 not in (resolve_pos, repeat_pos, validate_pos, installer_pos)
+    assert resolve_pos < repeat_pos < validate_pos < installer_pos

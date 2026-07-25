@@ -4,10 +4,9 @@ Probes the wiki MCP surface anonymously against a dedicated canary draft
 (``drafts/notes/uptime-probe.md``). A working ``initialize`` handshake is
 necessary but not sufficient: this canary also verifies that:
 
-- ``write_page`` REJECTS an anonymous full-page write with the
-  ``status=rejected`` / ``auth_required=true`` envelope. Since the
-  server-side anonymous-write gate (#1441) an unauthenticated write
-  succeeding is a SECURITY REGRESSION, so silent-accept is red.
+- ``write_page`` returns the canonical pre-dispatch HTTP 401 with a non-empty
+  ``WWW-Authenticate`` OAuth challenge. Any dispatched JSON result (including
+  the retired rejection envelope) is red because it cannot launch OAuth.
 - ``read_page`` returns the persisted canary draft content verbatim
   (reads stay open to anonymous callers by design).
 
@@ -23,8 +22,8 @@ Exit codes
 ----------
 0  — all probe steps passed.
 2  — MCP handshake failed (initialize / session).
-6  — write gate probe failed (anonymous write ACCEPTED = gate regression,
-     isError, or network error).
+6  — write gate probe failed (missing/invalid OAuth challenge, any dispatched
+     JSON result, or another HTTP/network error).
 7  — wiki read failed or canary draft content mismatch.
 99 — unexpected error.
 
@@ -53,6 +52,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 
 _SCRIPTS = Path(__file__).resolve().parent
 _REPO_ROOT = _SCRIPTS.parent
@@ -158,6 +158,18 @@ def _emit_gha_kv(key: str, value: str) -> None:
         print(f"{key}={value}")
 
 
+def _is_oauth_challenge(exc: ToolCanaryError) -> bool:
+    """Return whether a write-call HTTP failure is the canonical OAuth gate."""
+    cause = exc.__cause__
+    if not isinstance(cause, HTTPError) or cause.code != 401:
+        return False
+    try:
+        challenge = cause.headers.get("WWW-Authenticate")
+    except Exception:
+        return False
+    return isinstance(challenge, str) and bool(challenge.strip())
+
+
 def run_canary(
     url: str,
     timeout: float,
@@ -191,52 +203,38 @@ def run_canary(
         print(f"[wiki-canary] handshake OK sid={sid!r}")
 
     # ---- Step 2: anonymous write-gate probe -------------------------------
-    # Anonymous write_page MUST come back with the rejection envelope
-    # (status=rejected, auth_required=true). An ACCEPTED anonymous write is
-    # a #1441 gate regression — the security failure this step exists to
-    # catch. Tool errors / unparseable shapes are red too (write surface
-    # itself is broken).
-    write_resp, _ = post(
-        url,
-        sid,
-        _wiki_write_payload(2, filename=canary_filename),
-        timeout,
-        step_code=6,
-    )
-    if write_resp is None or "result" not in write_resp:
-        raise ToolCanaryError(6, f"write_page returned no result: {write_resp!r}")
-    write_result = write_resp["result"]
-    if write_result.get("isError"):
-        text = _extract_tool_text(write_result)[:300]
-        raise ToolCanaryError(6, f"write_page isError=true: {text!r}")
-    write_obj = _extract_structured_tool_payload(write_result)
-    if write_obj is None:
-        write_text = _extract_tool_text(write_result)
-        if not write_text:
-            raise ToolCanaryError(6, f"write_page returned no text content: {write_result!r}")
-        try:
-            write_obj = json.loads(write_text)
-        except json.JSONDecodeError as exc:
-            raise ToolCanaryError(
-                6, f"write_page text not JSON: {exc}; preview={write_text[:200]!r}"
-            ) from exc
-    if write_obj.get("status") in ("ok", "written", "drafted", "updated", "filed"):
-        raise ToolCanaryError(
-            6,
-            "anonymous write_page was ACCEPTED — the anonymous-write gate "
-            "(#1441) has regressed. (If this is a dev-mode server with "
-            "UNIVERSE_SERVER_AUTH=false, anonymous writes are open by design "
-            "and this probe does not apply — it targets auth-gated "
-            f"deployments.) Response: {write_obj!r}",
+    # Canonical write auth is an HTTP 401 before MCP dispatch. Only the
+    # direct HTTPError cause with a usable challenge proves a client can begin
+    # OAuth; any returned tool JSON is a protocol regression.
+    try:
+        post(
+            url,
+            sid,
+            _wiki_write_payload(2, filename=canary_filename),
+            timeout,
+            step_code=6,
         )
-    if write_obj.get("status") != "rejected" or not write_obj.get("auth_required"):
+    except ToolCanaryError as exc:
+        if not _is_oauth_challenge(exc):
+            cause = exc.__cause__
+            if isinstance(cause, HTTPError) and cause.code == 401:
+                raise ToolCanaryError(
+                    6,
+                    "write_page HTTP 401 lacks a non-empty WWW-Authenticate "
+                    f"challenge: {exc.msg}",
+                ) from exc
+            raise
+    else:
         raise ToolCanaryError(
             6,
-            "write_page did not return the expected anonymous rejection "
-            f"envelope (status=rejected, auth_required=true): {write_obj!r}",
+            "write_page returned a dispatched JSON result; expected HTTP 401 "
+            "with a non-empty WWW-Authenticate challenge pre-dispatch",
         )
     if verbose:
-        print("[wiki-canary] anonymous write-gate OK: rejected with auth_required=true")
+        print(
+            "[wiki-canary] anonymous write-gate OK: HTTP 401 with "
+            "WWW-Authenticate present",
+        )
 
     # ---- Step 3: wiki read (persisted canary draft) ------------------------
     # Always read the SHARED draft — scoped bisect filenames were never

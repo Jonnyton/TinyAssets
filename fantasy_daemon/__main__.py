@@ -879,6 +879,18 @@ def _try_execute_claimed_branch_task(
     and must produce a durable TinyAssets run for that branch before the
     queue row is marked terminal.
     """
+    physical_universe_id = Path(universe_path).name
+    persisted_universe_id = str(
+        getattr(claimed_task, "universe_id", "") or ""
+    ).strip()
+    if (
+        not physical_universe_id
+        or persisted_universe_id != physical_universe_id
+    ):
+        return False, "branch_task_universe_mismatch", {
+            "physical_universe_id": physical_universe_id,
+            "persisted_universe_id": persisted_universe_id,
+        }
     try:
         from tinyassets.api.branches import _resolve_branch_id
         from tinyassets.branches import BranchDefinition
@@ -971,12 +983,11 @@ def _try_execute_claimed_branch_task(
             # Carry spawn depth across the queue boundary so an in-node enqueue
             # from this run is depth+1 and the depth cap can bound the chain.
             _invocation_depth=int(getattr(claimed_task, "depth", 0) or 0),
-            # Trusted enqueue context (Codex review 2026-05-30): the run's own
-            # universe + spawn lineage, server-set from the claimed task so an
-            # in-node enqueue targets THIS universe and the per-origin cap can
-            # bound the whole spawn chain. origin falls back to this task when
-            # it starts a new chain (resolved in the enqueue helper).
-            _enqueue_universe_id=str(getattr(claimed_task, "universe_id", "") or ""),
+            # Trusted enqueue context: universe authority comes from the
+            # physical queue directory after its persisted row value matched;
+            # lineage comes from the claimed task. A source node cannot
+            # redirect descendants by editing task metadata or inputs.
+            _enqueue_universe_id=physical_universe_id,
             _parent_branch_task_id=str(
                 getattr(claimed_task, "branch_task_id", "") or ""
             ),

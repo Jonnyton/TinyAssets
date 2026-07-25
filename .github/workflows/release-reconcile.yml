@@ -1,0 +1,472 @@
+name: Release reconcile
+
+# Why this exists
+# ---------------
+# Three times in one day the release chain broke silently, and each break was
+# only found by checking production by hand:
+#
+#   1. Merges performed by the Actions app via GITHUB_TOKEN do not trigger
+#      workflow runs, so the push to main built nothing. Five PRs shipped
+#      nowhere, including a storage fix for universes that lost their database.
+#   2. `strict` required checks left every other enrolled PR `behind` after each
+#      merge, so nothing could land while main kept moving.
+#   3. post-merge-release.yml tried to fix (1) by dispatching on
+#      `pull_request_target: closed`. It never fired once — `closed` is also
+#      suppressed when the token performed the merge. It has been deleted
+#      rather than left in place looking like a safety net.
+#
+# Every link in an event chain fails silently and independently. So the timer
+# remains the independent backstop that asks one question — IS PRODUCTION
+# RUNNING CURRENT MAIN? — and converges. A successful main-branch Docker smoke
+# completion also wakes the same idempotent loop sooner; it never replaces the
+# schedule. A broken event chain still heals on the next timer tick.
+#
+# What "production" means here
+# ----------------------------
+# The first version of this file asked whether a successful IMAGE BUILD existed
+# for the current commit. A cross-family review pointed out that this is not the
+# same question at all, and it can report "in sync" while production is stale:
+#
+#   - the build succeeded but the deploy or canary failed
+#   - the deploy succeeded and then AUTO-ROLLED BACK on canary red
+#   - a successful build on a FEATURE BRANCH happened to contain the commit —
+#     the build-runs query was never filtered to main, and there is in fact one
+#     such run in this repo's history, so this was live and not theoretical
+#
+# So the question is now asked of `Deploy prod` runs on main, which only reach
+# success after the post-deploy canary passes. That is the closest signal to
+# "production is actually serving this commit" available from the API.
+
+on:
+  schedule:
+    # Every 15 minutes. This best-effort check is lightweight; not checking cost
+    # us a storage data-loss fix sitting unshipped on main.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Docker build smoke
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: release-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Is prod running current main?
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        (
+          github.event.workflow_run.event == 'push' ||
+          github.event.workflow_run.event == 'workflow_dispatch'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Needed to ask "which commit last touched a release path" and to test
+          # ancestry against what was deployed.
+          fetch-depth: 0
+
+      - name: Compare main against the last successful deploy
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -uo pipefail
+
+          # Release-relevant paths are READ from build-image.yml, never copied.
+          # A duplicated filter drifts silently toward "never deploys", which is
+          # the failure this whole file exists to catch.
+          #
+          # No `pip install` here: this job holds `actions: write`, and pulling
+          # an unpinned package into a privileged job to parse a local YAML file
+          # is a supply-chain risk taken for no reason. The parse below is a
+          # small hand-rolled reader of the one block we care about.
+          PATHS="$(python3 - <<'PY'
+          import re
+
+          # Pull the `paths:` list out of build-image.yml's push trigger. The
+          # file is ours and its shape is stable; if this ever stops matching we
+          # fall through to "treat everything as release-relevant", which errs
+          # toward deploying rather than toward silence.
+          try:
+              text = open(".github/workflows/build-image.yml", encoding="utf-8").read()
+          except OSError:
+              raise SystemExit(0)
+
+          block = re.search(r"\n\s*paths:\s*\n((?:\s*-\s*.+\n)+)", text)
+          if not block:
+              raise SystemExit(0)
+          for line in block.group(1).splitlines():
+              item = line.strip().lstrip("-").strip().strip("'\"")
+              if item:
+                  print(item)
+          PY
+          )"
+
+          if [ -z "$PATHS" ]; then
+            echo "could not read build-image paths — treating HEAD as release-relevant"
+            if ! RELEVANT="$(git rev-parse HEAD)"; then
+              echo "::warning::could not read current release history; deferring"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=release-history query failed — no decision made" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            # Disable shell glob expansion before both the diagnostic and git
+            # call so the log shows the exact workflow path patterns.
+            set -f
+            echo "release paths:"
+            # Word splitting is intentional (release paths contain no spaces).
+            # shellcheck disable=SC2086
+            printf '  %s\n' $PATHS
+            # Newest commit on main touching anything the image is built from.
+            # Docs-only commits after it genuinely need no deploy.
+            # Word splitting is intentional (release paths contain no spaces).
+            # shellcheck disable=SC2086
+            if ! RELEVANT="$(git log -1 --format=%H -- $PATHS)"; then
+              set +f
+              echo "::warning::could not read release-path history; deferring"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=release-history query failed — no decision made" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            set +f
+          fi
+
+          if [ -z "$RELEVANT" ]; then
+            echo "::warning::no release-relevant history; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=no release-relevant history — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "main HEAD             : $(git rev-parse HEAD)"
+          echo "last release-relevant : ${RELEVANT}"
+
+          # Do not dispatch over release work that already contains the commit
+          # we need. A manual build-image dispatch shares the main concurrency
+          # group with push builds, so blindly dispatching here can restart a
+          # nearly-complete release. The ancestry check is load-bearing: stale
+          # active work must not suppress recovery for newer main.
+          if ! ACTIVE_RUNS_JSON="$(gh api \
+                "repos/${REPO}/actions/runs?branch=main&per_page=100")"; then
+            echo "::warning::active release-run query failed; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! ACTIVE_SHAS="$(
+            printf '%s' "$ACTIVE_RUNS_JSON" | python3 -c '
+          import json
+          import sys
+
+          release_paths = {
+              ".github/workflows/build-image.yml",
+              ".github/workflows/deploy-prod.yml",
+          }
+          for run in json.load(sys.stdin).get("workflow_runs", []):
+              if run.get("status") == "completed":
+                  continue
+              if run.get("path") not in release_paths:
+                  continue
+              if run.get("head_sha"):
+                  print(run["head_sha"])
+          '
+          )"; then
+            echo "::warning::active release-run response was unreadable; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for sha in $ACTIVE_SHAS; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "in-flight release run ${sha:0:8} already contains ${RELEVANT:0:8}"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=in-flight release run ${sha:0:8} contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          # One reconcile-initiated deploy retry is allowed after the normal
+          # workflow_run deploy fails. If that explicit workflow_dispatch
+          # retry also fails, stop rebuilding/redeploying the same SHA on every
+          # wake-up. deploy-prod already raises the durable failure alarm.
+          if ! RETRY_RUNS_JSON="$(gh api \
+                "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?branch=main&per_page=100")"; then
+            echo "::warning::deploy-retry query failed; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=deploy-retry query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! FAILED_RETRIES="$(
+            printf '%s' "$RETRY_RUNS_JSON" | python3 -c '
+          import json
+          import sys
+
+          runs = json.load(sys.stdin).get("workflow_runs", [])
+          successful_shas = {
+              run.get("head_sha")
+              for run in runs
+              if run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+          }
+          for run in runs:
+              if (
+                  run.get("status") == "completed"
+                  and run.get("event") == "workflow_dispatch"
+                  and run.get("conclusion") != "success"
+                  and run.get("head_sha")
+                  and run.get("head_sha") not in successful_shas
+              ):
+                  sha = run["head_sha"]
+                  run_id = run.get("id", "")
+                  print(f"{sha}|{run_id}")
+          '
+          )"; then
+            echo "::warning::deploy-retry response was unreadable; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=deploy-retry query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          while IFS='|' read -r sha run_id; do
+            [ -n "$sha" ] || continue
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "::warning::automatic deploy retry ${run_id} already failed for ${sha:0:8}; awaiting newer main"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=automatic deploy retry ${run_id} already failed for ${sha:0:8} — awaiting newer main" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$FAILED_RETRIES"
+
+          # Successful DEPLOY runs on main — not builds. A deploy only reaches
+          # success after its post-deploy canary passes, so this is the closest
+          # available proxy for "production is serving this". Filtered to main
+          # so a feature-branch run can never be mistaken for production.
+          if ! DEPLOYED="$(gh api --paginate \
+                "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
+                --jq '.workflow_runs[].head_sha')"; then
+            echo "::warning::successful deploy-run query failed; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=successful deploy-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ -z "$DEPLOYED" ]; then
+            echo "no successful deploy on record — dispatching"
+            echo "action=dispatch" >> "$GITHUB_OUTPUT"
+            echo "detail=no successful deploy to main on record" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Ancestry, not equality: a deploy of a later commit already contains
+          # this one, and docs commits landing in between must not make us look
+          # stale forever.
+          for sha in $DEPLOYED; do
+            # A sha from a deleted branch may no longer be reachable locally;
+            # cat-file guards merge-base against erroring on an unknown object.
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "in sync — deploy ${sha:0:8} contains ${RELEVANT:0:8}"
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "detail=deploy ${sha:0:8} contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
+          echo "DRIFT: nothing deployed contains ${RELEVANT:0:8}"
+          echo "action=dispatch" >> "$GITHUB_OUTPUT"
+          echo "detail=no successful deploy contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+
+      - name: Converge
+        if: steps.check.outputs.action == 'dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TARGET_SHA="$(git rev-parse HEAD)"
+          IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+          DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          gh workflow run build-image.yml --repo "$REPO" --ref main
+
+          BUILD_RUN_ID=""
+          for _ in {1..12}; do
+            if ! BUILD_RUNS_JSON="$(
+              gh run list \
+                --repo "$REPO" \
+                --workflow build-image.yml \
+                --branch main \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId,headSha,createdAt
+            )"; then
+              echo "::error::could not list reconcile-initiated image builds"
+              exit 1
+            fi
+            if ! BUILD_RUN_ID="$(
+              printf '%s' "$BUILD_RUNS_JSON" |
+                TARGET_SHA="$TARGET_SHA" DISPATCHED_AT="$DISPATCHED_AT" python3 -c '
+          import json
+          import os
+          import sys
+
+          target = os.environ["TARGET_SHA"]
+          dispatched_at = os.environ["DISPATCHED_AT"]
+          matches = [
+              run
+              for run in json.load(sys.stdin)
+              if run.get("headSha") == target
+              and run.get("createdAt", "") >= dispatched_at
+          ]
+          if matches:
+              print(max(matches, key=lambda run: run["createdAt"])["databaseId"])
+          '
+            )"; then
+              echo "::error::image-build run response was unreadable"
+              exit 1
+            fi
+            [ -n "$BUILD_RUN_ID" ] && break
+            sleep 5
+          done
+
+          if [ -z "$BUILD_RUN_ID" ]; then
+            if ! DISCOVERY_MAIN="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"; then
+              echo "::error::could not identify the image build or re-read main"
+              exit 1
+            fi
+            if [ "$DISCOVERY_MAIN" != "$TARGET_SHA" ]; then
+              echo "::notice::main advanced to ${DISCOVERY_MAIN:0:8} during image-build dispatch; deferring"
+              exit 0
+            fi
+            echo "::error::could not identify the reconcile-initiated image build"
+            exit 1
+          fi
+
+          if ! gh run watch "$BUILD_RUN_ID" --repo "$REPO" --exit-status; then
+            if ! BUILD_CONCLUSION="$(
+              gh run view "$BUILD_RUN_ID" \
+                --repo "$REPO" \
+                --json conclusion \
+                --jq '.conclusion'
+            )"; then
+              BUILD_CONCLUSION="unknown"
+            fi
+            if [ "$BUILD_CONCLUSION" = "cancelled" ]; then
+              echo "::notice::image build ${BUILD_RUN_ID} was superseded by newer main work; deferring"
+              exit 0
+            fi
+            echo "::error::image build ${BUILD_RUN_ID} concluded ${BUILD_CONCLUSION}"
+            exit 1
+          fi
+
+          if ! CURRENT_MAIN="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"; then
+            echo "::warning::could not re-read main after image build; not deploying"
+            exit 0
+          fi
+          if [ "$CURRENT_MAIN" != "$TARGET_SHA" ]; then
+            echo "::notice::main advanced to ${CURRENT_MAIN:0:8}; not deploying ${TARGET_SHA:0:8}"
+            exit 0
+          fi
+
+          # Token-created workflow runs normally suppress workflow_run chaining,
+          # but GitHub history contains an exception. Avoid a duplicate explicit
+          # deploy if a successful or active same-SHA deploy already exists.
+          if ! DEPLOY_RUNS_JSON="$(
+            gh api \
+              "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?branch=main&per_page=20"
+          )"; then
+            echo "::warning::could not check for an existing deploy; deferring"
+            exit 0
+          fi
+          if ! EXISTING_DEPLOY_ID="$(
+            printf '%s' "$DEPLOY_RUNS_JSON" |
+              TARGET_SHA="$TARGET_SHA" python3 -c '
+          import json
+          import os
+          import sys
+
+          target = os.environ["TARGET_SHA"]
+          for run in json.load(sys.stdin).get("workflow_runs", []):
+              if run.get("head_sha") != target:
+                  continue
+              run_id = run["id"]
+              if run.get("status") != "completed" or run.get("conclusion") == "success":
+                  print(f"covered:{run_id}")
+                  break
+              if run.get("event") == "workflow_dispatch":
+                  print(f"retry-failed:{run_id}")
+                  break
+          '
+          )"; then
+            echo "::warning::existing deploy response was unreadable; deferring"
+            exit 0
+          fi
+          if [ -n "$EXISTING_DEPLOY_ID" ]; then
+            if [[ "$EXISTING_DEPLOY_ID" == retry-failed:* ]]; then
+              echo "::warning::automatic deploy retry ${EXISTING_DEPLOY_ID#*:} already failed for ${TARGET_SHA:0:8}; not dispatching repeatedly"
+            else
+              echo "::notice::deploy run ${EXISTING_DEPLOY_ID#*:} already covers ${TARGET_SHA:0:8}; not dispatching a duplicate"
+            fi
+            exit 0
+          fi
+
+          gh workflow run deploy-prod.yml \
+            --repo "$REPO" \
+            --ref main \
+            -f image_tag="$IMAGE_TAG"
+          {
+            echo "### Release drift corrected"
+            echo ""
+            echo "${DETAIL}."
+            echo ""
+            echo "Built image \`${IMAGE_TAG}\` in run ${BUILD_RUN_ID} and explicitly dispatched \`Deploy prod\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: In sync
+        if: steps.check.outputs.action == 'none'
+        env:
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: echo "Production is current with main — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deferred
+        if: steps.check.outputs.action == 'defer'
+        env:
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: echo "No release decision — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
+
+# On the 15-minute interval
+# -------------------------
+# The successful Docker-smoke completion normally wakes reconciliation sooner.
+# The interval remains the independent best-effort backstop; GitHub does not
+# guarantee schedule latency.
+# Fifteen minutes was chosen because "merged but not shipped" must not survive
+# long enough to be mistaken for shipped — which is exactly what happened when
+# it survived for hours.

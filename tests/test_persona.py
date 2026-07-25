@@ -295,6 +295,10 @@ def test_server_instructions_carry_relay_markers() -> None:
     assert "connector" in text  # you are the connector, not the universe
     assert "invent" in text     # never invent its name or facts
     assert "memorize" in text   # persona/work views are never memorized
+    assert "Call get_status FIRST" not in text
+    assert "opening message" in text
+    assert "`converse`" in text
+    assert "read-only" in text
 
 
 def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
@@ -303,8 +307,8 @@ def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
 
     assert hasattr(us, "meet_universe")  # spec-blessed user-invoked entry prompt
     text = _MEET_UNIVERSE_PROMPT
-    assert "get_status" in text              # loads the persona/self-model first
-    assert "converse" in text                # relay to the universe intelligence
+    assert "get_status" not in text          # status is not the main experience
+    assert "converse" in text                # creates/loads + relays in one entry
     assert "consent" in text                 # invoking the prompt IS consent
     assert "persists" in text.lower()        # the universe persists what it learns
     assert "set_engine" in text              # 24/7 power-source bonding beat
@@ -354,9 +358,10 @@ def test_control_station_prompt_relays_not_embodies() -> None:
     assert "writes its own brain" in compact.lower()
     # Host floors survive.
     assert "never deny being an AI" in compact
-    # First-contact convergence: the birth is the headline, no magic words,
-    # and a blank newborn is meetable (meeting = initialization).
-    assert "first_contact" in compact
+    # First-contact convergence: the opening turn births/loads the universe,
+    # with no magic words and no status-first detour.
+    assert "opening message" in compact
+    assert "get_status` as the opening experience" in compact
     assert "no magic words" in compact
     assert "newborn" in compact
 

@@ -35,9 +35,17 @@ dependencies = [
 
     # Robust JSON parsing for LLM output
     "json-repair>=0.30",
+    # RFC 8785/JCS body binding for durable request idempotency.
+    "rfc8785>=0.1.4,<0.2",
 
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",
+
+    # Imported directly by constraints/, knowledge/ and planning/ modules. It has
+    # only ever resolved transitively (via langgraph/pydantic), so a minimal install
+    # — the CI vault smoke, and any tier-3 `git clone` + `pip install -e .` — fails
+    # with ModuleNotFoundError. Declare what we actually import.
+    "typing-extensions>=4.0",
 
     # MCP/server entry points and Tier-3 structural smoke imports
     "fastmcp>=3.0",
@@ -66,7 +74,11 @@ fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
 research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
-desktop = ["Pillow>=10.0", "pystray>=0.19"]
+desktop = [
+    "Pillow>=10.0",
+    "pystray>=0.19",
+    "keyring>=25.0,<26.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

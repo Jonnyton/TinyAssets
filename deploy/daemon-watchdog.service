@@ -14,7 +14,8 @@ WorkingDirectory=/opt/tinyassets
 # unit failed `required variable TINYASSETS_IMAGE is missing a value` and the
 # whole auto-recovery layer was dark (2026-06-25 loop-wedge incident).
 EnvironmentFile=/etc/tinyassets/env
-ExecStart=/opt/tinyassets/deploy/daemon-watchdog.sh
+ExecCondition=/usr/bin/test -n "${TINYASSETS_IMAGE}"
+ExecStart=/opt/tinyassets-host-uptime/current/deploy/daemon-watchdog.sh
 TimeoutStartSec=90s
 StandardOutput=journal
 StandardError=journal

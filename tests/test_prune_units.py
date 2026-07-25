@@ -4,7 +4,7 @@ Coverage:
   - Service file: Type=oneshot, docker image prune + builder prune present
   - Service file: until=168h filter (prune images >7 days old)
   - Timer file: weekly OnCalendar, Persistent=true
-  - Bootstrap wires both into provisioning
+  - Bootstrap delegates both units and activation to the shared installer
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parent.parent
 SERVICE = REPO / "deploy" / "tinyassets-prune.service"
 TIMER = REPO / "deploy" / "tinyassets-prune.timer"
 BOOTSTRAP = REPO / "deploy" / "hetzner-bootstrap.sh"
+INSTALLER = REPO / "deploy" / "install-host-uptime-services.sh"
 
 
 def _svc() -> str:
@@ -27,6 +28,10 @@ def _tmr() -> str:
 
 def _boot() -> str:
     return BOOTSTRAP.read_text(encoding="utf-8")
+
+
+def _installer() -> str:
+    return INSTALLER.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
@@ -88,21 +93,19 @@ def test_timer_wantedby_timers_target():
 
 
 # ---------------------------------------------------------------------------
-# bootstrap wires the units
+# bootstrap delegates the units
 # ---------------------------------------------------------------------------
 
 def test_bootstrap_installs_prune_service():
-    assert "tinyassets-prune.service" in _boot()
+    assert _boot().count("install-host-uptime-services.sh") == 1
+    assert "tinyassets-prune.service" in _installer()
 
 
 def test_bootstrap_installs_prune_timer():
-    assert "tinyassets-prune.timer" in _boot()
+    assert "tinyassets-prune.timer" in _installer()
 
 
 def test_bootstrap_enables_prune_timer():
-    assert "tinyassets-prune.timer" in _boot()
-    # systemctl enable --now must reference the timer
-    import re
-    assert re.search(r'systemctl enable.*tinyassets-prune\.timer', _boot()), (
-        "bootstrap must enable --now tinyassets-prune.timer"
-    )
+    installer = _installer()
+    assert "tinyassets-prune.timer" in installer
+    assert '"${SYSTEMCTL_BIN}" enable --now "${TIMERS[@]}"' in installer

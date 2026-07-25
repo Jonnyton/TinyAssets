@@ -5,9 +5,7 @@
 ## Purpose
 
 How a universe is created, identified, seeded with an OKF soul bundle, taught via governed `soul.edit` writes, and ended via the confirm-gated clean-slate reset.
-
 ## Requirements
-
 ### Requirement: Universe identity is an opaque, time-sortable serial
 
 A universe SHALL be identified by an opaque serial of the form `u-` followed by a
@@ -94,27 +92,39 @@ SPEC over time.
 - **AND** `soul.md` records `okf_tracking: latest-main` and links `soul.edit.md` as its edit authority
 
 ### Requirement: Authenticated creation grants founder ownership and binds a home
+When creation is authenticated, the implementation SHALL attempt universe-index
+registration before founder mutation, but registration failure SHALL be logged
+and ignored. It SHALL then grant the founder `admin` ACL and bind the universe
+as the founder's home only when no living home exists. An authenticated create
+SHALL NOT write the host-global `.active_universe` marker; an anonymous/dev
+create SHALL write it. If a later create step raises, rollback SHALL remove the
+new universe directory when `shutil.rmtree` succeeds. Rollback SHALL swallow a
+cleanup `OSError`, which can leave a partial directory, and SHALL NOT compensate
+an index row, ACL grant, or host-global marker already written before the
+failure. The ordinary flow has no fallible step after successful home binding.
 
-When the create request is authenticated, the founder SHALL be granted `admin`
-ACL on the new universe, the universe SHALL be registered in the universes index,
-and the universe SHALL be bound as the founder's home only when the founder has no
-living home already (no binding, or a binding whose directory lacks a `soul.md`).
-An authenticated founder create SHALL NOT write the host-global `.active_universe`
-marker; an anonymous/dev (single-tenant tray) create SHALL write it so the local
-daemon switches to the new universe.
+#### Scenario: registration failure is best-effort
+- **WHEN** index registration raises during an authenticated create
+- **THEN** the failure is logged and creation continues to the founder grant and conditional home-binding steps
 
 #### Scenario: founder create grants ownership without clobbering the active marker
-- **WHEN** an authenticated founder creates a universe
-- **THEN** an `admin` grant is recorded for the founder and the universe is registered in the index
+- **WHEN** an authenticated founder creates a universe and the founder mutations succeed
+- **THEN** an `admin` grant is recorded for the founder
 - **AND** the `.active_universe` marker is not written for that create
 
 #### Scenario: home binds only when no living home exists
-- **WHEN** an authenticated founder without a living home (no binding, or a binding to a directory missing `soul.md`) creates a universe
+- **WHEN** an authenticated founder without a living home creates a universe
 - **THEN** that universe is bound as the founder's home
 - **AND** a later create by a founder who already has a living home does not reassign the home
 
+#### Scenario: rollback attempts directory cleanup without compensating earlier state
+- **WHEN** a create step raises after an index row, ACL grant, or host-global marker has already been written
+- **THEN** rollback attempts to remove the newly created universe directory
+- **AND** does not compensate those earlier durable writes
+- **AND** a cleanup `OSError` is swallowed, so a partial directory can remain
+
 #### Scenario: anonymous create switches the local daemon
-- **WHEN** an unauthenticated (dev/tray) create runs
+- **WHEN** an unauthenticated dev/tray create runs
 - **THEN** the `.active_universe` marker is written with the new serial so the daemon switches to it
 
 ### Requirement: Governed soul edits are the sole learning-write path
@@ -196,3 +206,37 @@ universe cannot be removed on its own.
 #### Scenario: reset is idempotent
 - **WHEN** `reset(confirm=True)` runs a second time after a first successful reset
 - **THEN** it reports no universe directories, no rows to clear, and no marker, without error
+
+### Requirement: Universe switching is publicly write-gated before its scope-specific helper
+The public `universe(action = "switch_universe")` dispatcher SHALL classify switching as a write and SHALL run named action-scope authorization followed by target-universe write ACL authorization before invoking the switch helper. An anonymous public caller or an authenticated caller without the required scope and target `write` or `admin` access SHALL receive the applicable authorization error before the helper can change `.active_universe`. An authorized authenticated request reaching the helper SHALL require a non-empty id naming an existing universe, return `status = "selected"` and `scope = "request"`, and SHALL NOT write the host-global marker; the caller is instructed to pass the selected id on each subsequent call. The helper's anonymous branch, reachable only by a direct/internal helper invocation rather than the public dispatcher, SHALL write the selected id directly to `.active_universe` and return `status = "switching"` with the current approximate restart note. Authentication decisions SHALL use request identity rather than an environment actor fallback, and the marker write SHALL NOT claim atomic replacement or cross-process serialization.
+
+#### Scenario: Anonymous public switching is denied before the helper
+- **WHEN** an anonymous caller invokes the public `universe` dispatcher with `action = "switch_universe"` and an existing target id
+- **THEN** action-scope or write-ACL authorization rejects the call before the anonymous marker-writing helper branch
+- **AND** `.active_universe` is not changed
+
+#### Scenario: Authenticated public switching requires scope and target write access
+- **WHEN** an authenticated caller lacks either the required action scope or target-universe `write` or `admin` access
+- **THEN** the public dispatcher returns the applicable authorization error without invoking the switch helper
+
+#### Scenario: Authenticated selection is request-scoped
+- **WHEN** an authenticated request with the required action scope and target write access selects an existing universe
+- **THEN** the result reports `selected` with request scope
+- **AND** the host-global `.active_universe` marker is not created or changed
+
+#### Scenario: Direct helper rejects a missing id
+- **WHEN** the low-level switch helper is invoked directly without `universe_id`
+- **THEN** it returns `universe_id is required` and writes no marker
+
+#### Scenario: Direct helper rejects an unknown universe
+- **WHEN** the low-level switch helper is invoked directly with an id whose directory does not exist
+- **THEN** it returns a not-found error plus the non-hidden directory names currently available under the universe root
+- **AND** it writes no marker
+
+#### Scenario: Direct anonymous helper selection is host-global
+- **WHEN** an anonymous internal caller invokes the switch helper directly for an existing universe and the marker write succeeds
+- **THEN** `.active_universe` contains the selected id and the result reports `switching`
+
+#### Scenario: Direct anonymous marker failure is returned
+- **WHEN** an anonymous internal caller invokes the helper directly for an existing universe but writing `.active_universe` raises `OSError`
+- **THEN** the result reports the marker-write failure instead of reporting a successful switch

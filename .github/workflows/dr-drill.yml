@@ -7,7 +7,8 @@ name: DR drill
 # Docs: docs/ops/dr-drill-runbook.md
 #
 # Required secrets:
-#   DIGITALOCEAN_TOKEN   — DO API token (create/destroy Droplets)
+#   DIGITALOCEAN_TOKEN   — DO API token with image:read plus SSH-key and
+#                          Droplet create/read/delete permissions
 #   DO_SSH_KEY           — private key PEM (authorized on new Droplet via cloud-init)
 #   DO_DROPLET_HOST      — primary Droplet IP (for backup transfer)
 #   DO_SSH_USER          — SSH user on both Droplets
@@ -35,6 +36,11 @@ on:
         required: false
         default: 'false'
         type: string
+      cleanup_droplet_id:
+        description: 'Cleanup-only: delete this retained numeric Droplet ID and skip the drill'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -49,10 +55,132 @@ env:
   DO_DROPLET_HOST: ${{ secrets.DO_DROPLET_HOST }}
   CANARY_URL: https://tinyassets.io/mcp
   DRILL_REGION: nyc3
-  DRILL_IMAGE: debian-12-x64
 
 jobs:
+  cleanup_retained_droplet:
+    if: inputs.cleanup_droplet_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Validate cleanup request
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DO_TOKEN}" ]; then
+            echo "::error::Missing required secret: DIGITALOCEAN_TOKEN"
+            exit 1
+          fi
+          if [[ ! "${DROPLET_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::cleanup_droplet_id must be a positive decimal Droplet ID"
+            exit 1
+          fi
+
+      - name: Verify retained drill Droplet identity
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          set -euo pipefail
+          droplet_response=$(python3 scripts/do_api_request.py \
+            --method GET \
+            --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+          python3 - "${DROPLET_ID}" "${droplet_response}" <<'PY'
+          import json
+          import sys
+
+          expected_id = int(sys.argv[1])
+          droplet = json.loads(sys.argv[2])["droplet"]
+          tags = set(droplet.get("tags", []))
+          if (
+              droplet.get("id") != expected_id
+              or droplet.get("name") != "tinyassets-dr-drill"
+              or not {"dr-drill", "tinyassets"}.issubset(tags)
+          ):
+              raise SystemExit(
+                  "cleanup target is not the expected tagged TinyAssets drill Droplet"
+              )
+          print(f"Verified retained drill Droplet identity: {expected_id}")
+          PY
+
+      - name: Delete retained drill Droplet
+        id: cleanup
+        continue-on-error: true
+        env:
+          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+        run: |
+          diagnostic_file=$(mktemp)
+          set +e
+          python3 scripts/do_api_request.py \
+            --method DELETE \
+            --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" \
+            >/tmp/do-cleanup.out 2>"${diagnostic_file}"
+          delete_rc=$?
+          set -e
+          diagnostic=$(head -c 600 "${diagnostic_file}" | tr '\r\n' ' ')
+          {
+            echo "diagnostic<<EOF"
+            echo "${diagnostic}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          cat "${diagnostic_file}" >&2
+          rm -f "${diagnostic_file}" /tmp/do-cleanup.out
+          if [ "${delete_rc}" -ne 0 ]; then
+            echo "::error::Retained drill Droplet deletion failed"
+            exit "${delete_rc}"
+          fi
+          echo "Retained drill Droplet ${DROPLET_ID} destroyed."
+
+      - name: Escalate retained Droplet deletion failure
+        if: always() && steps.cleanup.outcome == 'failure'
+        uses: actions/github-script@v7
+        env:
+          DROPLET_ID: ${{ inputs.cleanup_droplet_id }}
+          DELETE_DIAGNOSTIC: ${{ steps.cleanup.outputs.diagnostic }}
+        with:
+          script: |
+            const label = 'dr-failed';
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: label,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: label, color: 'b60205',
+                description: 'DR drill failed or left a Droplet requiring cleanup.',
+              });
+            }
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `Retained DR Droplet deletion FAILED — ${new Date().toISOString()}`,
+              labels: [label],
+              body: [
+                `Cleanup-only deletion failed; this Droplet may still be billing.`,
+                ``,
+                `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
+                `- **Run:** ${runUrl}`,
+                `- **Bounded diagnostic:** \`${process.env.DELETE_DIAGNOSTIC || '(empty)'}\``,
+              ].join('\n'),
+            });
+
+      - name: Fail after retained Droplet deletion failure
+        if: always() && steps.cleanup.outcome == 'failure'
+        run: exit 1
+
   drill:
+    if: inputs.cleanup_droplet_id == ''
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -93,26 +221,158 @@ jobs:
           pub=$(ssh-keygen -y -f ~/.ssh/do_deploy)
           echo "pub=${pub}" >> "$GITHUB_OUTPUT"
 
-      - name: Find latest backup on primary
+      - name: Validate selected backup on primary
         id: backup
         env:
           BACKUP_SOURCE: ${{ inputs.backup_source }}
         run: |
+          set -euo pipefail
           if [ -n "${BACKUP_SOURCE}" ]; then
-            echo "path=${BACKUP_SOURCE}" >> "$GITHUB_OUTPUT"
-            echo "Using specified backup: ${BACKUP_SOURCE}"
+            candidate="${BACKUP_SOURCE}"
           else
-            latest=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            candidate=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "ls -t /var/backups/tinyassets/tinyassets-data-*.tar.gz 2>/dev/null | head -1" \
-                2>&1 || echo '')
-            if [ -z "$latest" ]; then
+                "find /var/backups/tinyassets -maxdepth 1 -type f \
+                 -name 'tinyassets-data-*.tar.gz' -printf '%T@ %p\n' \
+                 | sort -nr | head -1 | cut -d' ' -f2-")
+            if [ -z "${candidate}" ]; then
               echo "::error::No backup found on primary at /var/backups/tinyassets/"
               exit 1
             fi
-            echo "path=${latest}" >> "$GITHUB_OUTPUT"
-            echo "Latest backup: ${latest}"
           fi
+
+          backup_meta=$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "python3 - $(printf '%q' "${candidate}")" <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path, PurePosixPath
+          import re
+          import stat
+          import sys
+          import tarfile
+
+          backup_root = Path("/var/backups/tinyassets").resolve(strict=True)
+          selected = Path(sys.argv[1])
+          if not selected.is_absolute() or selected.is_symlink():
+              raise SystemExit("selected backup must be absolute and not a symlink")
+          selected_stat = os.lstat(selected)
+          selected = selected.resolve(strict=True)
+          if (
+              not selected.is_relative_to(backup_root)
+              or selected.parent != backup_root
+              or not stat.S_ISREG(selected_stat.st_mode)
+              or not os.access(selected, os.R_OK)
+              or re.fullmatch(
+                  r"tinyassets-data-\d{4}-\d{2}-\d{2}T"
+                  r"\d{2}-\d{2}-\d{2}Z\.tar\.gz",
+                  selected.name,
+              ) is None
+          ):
+              raise SystemExit(
+                  "selected backup must be a readable tinyassets-data-*.tar.gz "
+                  "regular file under /var/backups/tinyassets"
+              )
+
+          archive_hash = hashlib.sha256()
+          with selected.open("rb") as stream:
+              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                  archive_hash.update(chunk)
+
+          regular_members = []
+          with tarfile.open(selected, "r:gz") as archive:
+              for member in archive.getmembers():
+                  member_path = PurePosixPath(member.name)
+                  parts = member_path.parts
+                  if (
+                      member_path.is_absolute()
+                      or not parts
+                      or parts[0] != "_data"
+                      or ".." in parts
+                      or (len(parts) == 1 and not member.isdir())
+                      or not (member.isdir() or member.isfile())
+                  ):
+                      raise SystemExit(f"unsafe archive member: {member.name!r}")
+                  if member.isfile():
+                      regular_members.append(member)
+              if not regular_members:
+                  raise SystemExit("selected backup has no representative regular file")
+              sample = min(regular_members, key=lambda item: (item.size, item.name))
+              sample_stream = archive.extractfile(sample)
+              if sample_stream is None:
+                  raise SystemExit("cannot read representative archive member")
+              sample_hash = hashlib.sha256()
+              for chunk in iter(lambda: sample_stream.read(1024 * 1024), b""):
+                  sample_hash.update(chunk)
+
+          relative_sample = PurePosixPath(*PurePosixPath(sample.name).parts[1:])
+          print(json.dumps({
+              "path_b64": base64.b64encode(str(selected).encode()).decode(),
+              "tarball_b64": base64.b64encode(selected.name.encode()).decode(),
+              "archive_sha256": archive_hash.hexdigest(),
+              "sample_path_b64": base64.b64encode(
+                  str(relative_sample).encode()
+              ).decode(),
+              "sample_sha256": sample_hash.hexdigest(),
+          }, separators=(",", ":")))
+          PY
+          )
+          python3 - "${backup_meta}" >> "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          metadata = json.loads(sys.argv[1])
+          for key in (
+              "path_b64",
+              "tarball_b64",
+              "archive_sha256",
+              "sample_path_b64",
+              "sample_sha256",
+          ):
+              print(f"{key}={metadata[key]}")
+          PY
+          echo "Validated backup: $(python3 -c \
+            'import base64,json,sys; print(base64.b64decode(json.loads(sys.argv[1])["tarball_b64"]).decode())' \
+            "${backup_meta}")"
+
+      - name: Resolve immutable production daemon image
+        id: runtime-image
+        run: |
+          set -euo pipefail
+          # Read one nonsecret assignment, never the primary environment.
+          # The final assignment wins, matching systemd/Compose env semantics.
+          raw_runtime_image=$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo grep -E '^TINYASSETS_IMAGE=' /etc/tinyassets/env 2>/dev/null \
+                 | tail -1 | cut -d= -f2-"
+          )
+          runtime_image=$(
+            python3 - "${raw_runtime_image}" <<'PY'
+          import re
+          import sys
+
+          raw_runtime_image = sys.argv[1]
+          if (
+              len(raw_runtime_image) >= 2
+              and raw_runtime_image[0] == raw_runtime_image[-1]
+              and raw_runtime_image[0] in {"'", '"'}
+          ):
+              runtime_image = raw_runtime_image[1:-1]
+          else:
+              runtime_image = raw_runtime_image
+          if re.fullmatch(r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}", runtime_image) is None:
+              raise SystemExit(
+                  "TINYASSETS_IMAGE must be the canonical immutable GHCR digest"
+              )
+          print(runtime_image)
+          PY
+          )
+          echo "image=${runtime_image}" >> "$GITHUB_OUTPUT"
+          echo "Validated immutable production runtime image: ${runtime_image}"
 
       - name: Provision drill Droplet
         id: droplet
@@ -121,28 +381,51 @@ jobs:
           DRILL_SIZE: ${{ inputs.drill_droplet_size }}
           PUB_KEY: ${{ steps.pubkey.outputs.pub }}
         run: |
+          set -euo pipefail
+          # Resolve current provider inventory before any mutating API request.
+          # This GET also verifies the required image:read token scope.
+          image_slug=$(python3 scripts/select_do_image.py \
+            --region "${DRILL_REGION}")
+          echo "image_slug=${image_slug}" >> "$GITHUB_OUTPUT"
+          echo "Selected drill image: ${image_slug}"
+
           # Register the SSH key with DO API (idempotent by fingerprint).
           fingerprint=$(ssh-keygen -E md5 -lf ~/.ssh/do_deploy | awk '{print $2}' | sed 's/MD5://')
-          existing_key_id=$(curl -sf -X GET \
-              -H "Authorization: Bearer ${DO_TOKEN}" \
-              -H "Content-Type: application/json" \
-              "https://api.digitalocean.com/v2/account/keys" \
-              | python3 -c "
-          import json,sys
-          keys=json.load(sys.stdin).get('ssh_keys',[])
-          for k in keys:
-              if '${fingerprint}' in k.get('fingerprint',''):
-                  print(k['id'])
-                  break
-          " 2>/dev/null || echo '')
+          keys_response=$(python3 scripts/do_api_request.py \
+            --method GET \
+            --url "https://api.digitalocean.com/v2/account/keys")
+          existing_key_id=$(python3 - "${fingerprint}" "${keys_response}" <<'PY'
+          import json
+          import sys
+
+          fingerprint = sys.argv[1]
+          keys = json.loads(sys.argv[2]).get("ssh_keys", [])
+          print(next(
+              (str(key["id"]) for key in keys
+               if key.get("fingerprint") == fingerprint),
+              "",
+          ))
+          PY
+          )
 
           if [ -z "$existing_key_id" ]; then
-            key_resp=$(curl -sf -X POST \
-                -H "Authorization: Bearer ${DO_TOKEN}" \
-                -H "Content-Type: application/json" \
-                -d "{\"name\":\"tinyassets-drill-key\",\"public_key\":\"${PUB_KEY}\"}" \
-                "https://api.digitalocean.com/v2/account/keys")
-            key_id=$(echo "$key_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['ssh_key']['id'])")
+            key_payload=$(python3 - "${PUB_KEY}" <<'PY'
+          import json
+          import sys
+
+          print(json.dumps({
+              "name": "tinyassets-drill-key",
+              "public_key": sys.argv[1],
+          }))
+          PY
+          )
+            key_response=$(python3 scripts/do_api_request.py \
+              --method POST \
+              --url "https://api.digitalocean.com/v2/account/keys" \
+              --data "${key_payload}")
+            key_id=$(python3 -c \
+              'import json,sys; print(json.loads(sys.argv[1])["ssh_key"]["id"])' \
+              "${key_response}")
           else
             key_id="$existing_key_id"
           fi
@@ -156,20 +439,30 @@ jobs:
           chmod 600 /root/.ssh/authorized_keys"
 
           # Create the drill Droplet.
-          droplet_resp=$(curl -sf -X POST \
-              -H "Authorization: Bearer ${DO_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d "{
-                \"name\": \"tinyassets-dr-drill\",
-                \"region\": \"${DRILL_REGION}\",
-                \"size\": \"${DRILL_SIZE}\",
-                \"image\": \"${DRILL_IMAGE}\",
-                \"ssh_keys\": [${key_id}],
-                \"user_data\": $(echo "$user_data" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
-                \"tags\": [\"dr-drill\", \"tinyassets\"]
-              }" \
-              "https://api.digitalocean.com/v2/droplets")
-          droplet_id=$(echo "$droplet_resp" | python3 -c "import json,sys; print(json.load(sys.stdin)['droplet']['id'])")
+          droplet_payload=$(python3 - \
+            "${key_id}" "${DRILL_REGION}" "${DRILL_SIZE}" "${image_slug}" \
+            "${user_data}" <<'PY'
+          import json
+          import sys
+
+          print(json.dumps({
+              "name": "tinyassets-dr-drill",
+              "region": sys.argv[2],
+              "size": sys.argv[3],
+              "image": sys.argv[4],
+              "ssh_keys": [int(sys.argv[1])],
+              "user_data": sys.argv[5],
+              "tags": ["dr-drill", "tinyassets"],
+          }))
+          PY
+          )
+          droplet_response=$(python3 scripts/do_api_request.py \
+            --method POST \
+            --url "https://api.digitalocean.com/v2/droplets" \
+            --data "${droplet_payload}")
+          droplet_id=$(python3 -c \
+            'import json,sys; print(json.loads(sys.argv[1])["droplet"]["id"])' \
+            "${droplet_response}")
           echo "droplet_id=${droplet_id}" >> "$GITHUB_OUTPUT"
           echo "Drill Droplet ID: ${droplet_id}"
 
@@ -179,19 +472,25 @@ jobs:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
         run: |
+          set -euo pipefail
+          ip=""
           for i in $(seq 1 30); do
-            ip=$(curl -sf \
-                -H "Authorization: Bearer ${DO_TOKEN}" \
-                "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" \
-                | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)['droplet']
-          nets=d.get('networks',{}).get('v4',[])
-          for n in nets:
-              if n.get('type')=='public':
-                  print(n['ip_address'])
-                  break
-          " 2>/dev/null || echo '')
+            droplet_response=$(python3 scripts/do_api_request.py \
+              --method GET \
+              --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}")
+            ip=$(python3 - "${droplet_response}" <<'PY'
+          import json
+          import sys
+
+          droplet = json.loads(sys.argv[1])["droplet"]
+          networks = droplet.get("networks", {}).get("v4", [])
+          print(next(
+              (network["ip_address"] for network in networks
+               if network.get("type") == "public"),
+              "",
+          ))
+          PY
+          )
             if [ -n "$ip" ]; then
               echo "ip=${ip}" >> "$GITHUB_OUTPUT"
               echo "Drill Droplet IP: ${ip}"
@@ -253,39 +552,154 @@ jobs:
             exit "${bootstrap_code}"
           fi
 
-      - name: Transfer backup to drill Droplet
+      - name: Transfer verified backup to drill Droplet
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
-          BACKUP_PATH: ${{ steps.backup.outputs.path }}
+          BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
+          TARBALL_B64: ${{ steps.backup.outputs.tarball_b64 }}
+          SOURCE_SHA256: ${{ steps.backup.outputs.archive_sha256 }}
         run: |
-          tarball=$(basename "${BACKUP_PATH}")
+          set -euo pipefail
+          BACKUP_PATH=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ["BACKUP_PATH_B64"]).decode())')
+          TARBALL=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ["TARBALL_B64"]).decode())')
+          quoted_backup_path=$(printf '%q' "${BACKUP_PATH}")
+          quoted_destination=$(printf '%q' "/var/backups/tinyassets/${TARBALL}")
           # Stream backup from primary directly to drill via SSH pipe.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "cat '${BACKUP_PATH}'" \
+              "cat ${quoted_backup_path}" \
               | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                     "root@${DRILL_IP}" \
                     "mkdir -p /var/backups/tinyassets && \
-                     cat > /var/backups/tinyassets/${tarball}"
-          echo "Transferred: ${tarball}"
+                     cat > ${quoted_destination}"
+          destination_sha256=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "root@${DRILL_IP}" \
+            "sha256sum ${quoted_destination}" | awk '{print $1}')
+          if [ "${destination_sha256}" != "${SOURCE_SHA256}" ]; then
+            echo "::error::Backup checksum mismatch after transfer"
+            exit 1
+          fi
+          echo "Transferred and verified: ${TARBALL} (${destination_sha256})"
 
-      - name: Restore on drill Droplet
+      - name: Restore exact backup on drill Droplet
         id: restore
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          TARBALL_B64: ${{ steps.backup.outputs.tarball_b64 }}
         run: |
+          set -euo pipefail
+          TARBALL=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ["TARBALL_B64"]).decode())')
           # Copy the restore script and run it.
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/backup-restore.sh \
               "root@${DRILL_IP}:/opt/tinyassets/deploy/backup-restore.sh"
+          backup_file=$(printf '%q' "/var/backups/tinyassets/${TARBALL}")
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "BACKUP_DEST=/var/backups/tinyassets DRY_RUN=0 \
+              "BACKUP_FILE=${backup_file} DRY_RUN=0 \
                bash /opt/tinyassets/deploy/backup-restore.sh" 2>&1
+
+      - name: Verify representative restored state
+        env:
+          DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          SAMPLE_PATH_B64: ${{ steps.backup.outputs.sample_path_b64 }}
+          SAMPLE_SHA256: ${{ steps.backup.outputs.sample_sha256 }}
+        run: |
+          set -euo pipefail
+          mountpoint=$(ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "root@${DRILL_IP}" \
+            "docker volume inspect tinyassets-data --format '{{ .Mountpoint }}'")
+          quoted_mountpoint=$(printf '%q' "${mountpoint}")
+          quoted_sample_path=$(printf '%q' "${SAMPLE_PATH_B64}")
+          quoted_sample_sha=$(printf '%q' "${SAMPLE_SHA256}")
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "root@${DRILL_IP}" \
+            "python3 - ${quoted_mountpoint} ${quoted_sample_path} ${quoted_sample_sha}" <<'PY'
+          import base64
+          import hashlib
+          import sys
+          from pathlib import Path, PurePosixPath
+
+          root = Path(sys.argv[1]).resolve()
+          relative = PurePosixPath(base64.b64decode(sys.argv[2]).decode())
+          expected = sys.argv[3]
+          if relative.is_absolute() or ".." in relative.parts:
+              raise SystemExit("unsafe representative member path")
+          candidate = root.joinpath(*relative.parts)
+          if candidate.is_symlink() or not candidate.is_file():
+              raise SystemExit("representative restored member is missing or unsafe")
+          resolved = candidate.resolve()
+          if root not in resolved.parents:
+              raise SystemExit("representative restored member escaped volume")
+          digest = hashlib.sha256()
+          with resolved.open("rb") as handle:
+              for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          actual = digest.hexdigest()
+          if actual != expected:
+              raise SystemExit("representative restored member sha256 mismatch")
+          print(
+              "Representative restored state verified: "
+              f"path_b64={sys.argv[2]} sha256={actual}"
+          )
+          PY
+
+      - name: Persist validated runtime image in fresh env
+        env:
+          DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
+        run: |
+          set -euo pipefail
+          quoted_runtime_image=$(printf '%q' "${RUNTIME_IMAGE}")
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "root@${DRILL_IP}" \
+              "python3 - ${quoted_runtime_image}" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          image = sys.argv[1]
+          if re.fullmatch(
+              r"ghcr\.io/jonnyton/tinyassets-daemon@sha256:[0-9a-f]{64}",
+              image,
+          ) is None:
+              raise SystemExit("runtime image lost canonical digest validation")
+
+          env_path = Path("/etc/tinyassets/env")
+          if env_path.is_symlink() or not env_path.is_file():
+              raise SystemExit("fresh environment is missing or unsafe")
+          lines = env_path.read_text().splitlines(keepends=True)
+          matches = [
+              index
+              for index, line in enumerate(lines)
+              if line.startswith("TINYASSETS_IMAGE=")
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  "fresh environment must contain exactly one "
+                  "TINYASSETS_IMAGE assignment"
+              )
+          index = matches[0]
+          old_line = lines[index]
+          newline = (
+              "\r\n"
+              if old_line.endswith("\r\n")
+              else "\n"
+              if old_line.endswith("\n")
+              else ""
+          )
+          lines[index] = f"TINYASSETS_IMAGE={image}{newline}"
+          env_path.write_text("".join(lines))
+          print("Persisted validated runtime image in fresh environment.")
+          PY
 
       - name: Start compose on drill Droplet
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
         run: |
           # Drill-mode: only bring up the `daemon` service. Cloudflared
           # + vector require real secrets (CLOUDFLARE_TUNNEL_TOKEN +
@@ -293,9 +707,12 @@ jobs:
           # droplet, and their failure would mask a successful daemon
           # start. The probe step hits `http://${DRILL_IP}:8001/mcp`
           # directly — no tunnel needed to validate restore integrity.
+          quoted_runtime_image=$(printf '%q' "${RUNTIME_IMAGE}")
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "root@${DRILL_IP}" \
-              "docker compose -f /opt/tinyassets/deploy/compose.yml up -d daemon" 2>&1
+              "TINYASSETS_IMAGE=${quoted_runtime_image} \
+               docker compose --env-file /etc/tinyassets/env \
+               -f /opt/tinyassets/deploy/compose.yml up -d daemon" 2>&1
           sleep 30
 
       - name: Probe drill Droplet directly
@@ -323,9 +740,11 @@ jobs:
           forward_rc=$?
           if [ "${forward_rc}" -ne 0 ]; then
             echo "::error::failed to open SSH port-forward to drill droplet (rc=${forward_rc})"
-            echo "code=98" >> "$GITHUB_OUTPUT"
-            echo "color=red" >> "$GITHUB_OUTPUT"
-            echo "output=port-forward setup failed" >> "$GITHUB_OUTPUT"
+            {
+              echo "code=98"
+              echo "color=red"
+              echo "output=port-forward setup failed"
+            } >> "$GITHUB_OUTPUT"
             exit 98
           fi
           # Give the forward a moment to become ready.
@@ -358,40 +777,16 @@ jobs:
           echo "=== drill probe exit=$code (via ssh port-forward) ==="
           echo "$output"
 
-      - name: Append drill result to log
-        if: steps.drillprobe.outputs.color == 'green'
-        env:
-          DRILL_IP: ${{ steps.drillip.outputs.ip }}
-          BACKUP_PATH: ${{ steps.backup.outputs.path }}
-          DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
-        run: |
-          LOG_FILE="docs/ops/dr-drill-log.md"
-          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          {
-            echo ""
-            echo "## ${now} — PASS"
-            echo ""
-            echo "- **Backup source:** \`$(basename "${BACKUP_PATH}")\`"
-            echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
-            echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
-            echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
-            echo "- **Run:** ${run_url}"
-          } >> "${LOG_FILE}"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git config user.name "github-actions[bot]"
-          git add "${LOG_FILE}"
-          git commit -m "ops: dr-drill PASS ${now} [skip ci]" || true
-          git push || true
-
       - name: Open dr-failed issue on failure
-        if: steps.drillprobe.outputs.color == 'red'
+        if: always() && steps.drillprobe.outputs.color == 'red'
         uses: actions/github-script@v7
         env:
           DRILL_IP: ${{ steps.drillip.outputs.ip }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
           PROBE_OUTPUT: ${{ steps.drillprobe.outputs.output }}
-          BACKUP_PATH: ${{ steps.backup.outputs.path }}
+          BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
         with:
           script: |
             const label = 'dr-failed';
@@ -409,6 +804,9 @@ jobs:
               }
             }
             const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            const backupPath = Buffer.from(
+              process.env.BACKUP_PATH_B64 || '', 'base64',
+            ).toString('utf8');
             await github.rest.issues.create({
               owner: context.repo.owner, repo: context.repo.repo,
               title: `DR drill FAILED — ${new Date().toISOString()}`,
@@ -416,7 +814,9 @@ jobs:
               body: [
                 `Auto-opened by the DR drill tinyassets.`,
                 ``,
-                `- **Backup:** \`${process.env.BACKUP_PATH}\``,
+                `- **Backup:** \`${backupPath || '(unavailable)'}\``,
+                `- **Base Image:** \`${process.env.DRILL_IMAGE || '(unavailable)'}\``,
+                `- **Runtime Image:** \`${process.env.RUNTIME_IMAGE || '(unavailable)'}\``,
                 `- **Drill Droplet IP:** \`${process.env.DRILL_IP}\` (LEFT UP for inspection)`,
                 `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
                 `- **Run:** ${runUrl}`,
@@ -434,52 +834,151 @@ jobs:
               ].join('\n'),
             });
 
-      - name: Destroy drill Droplet on success
-        if: steps.drillprobe.outputs.color == 'green'
+      - name: Destroy drill Droplet when required
+        id: destroy
+        if: >
+          always() &&
+          steps.droplet.outputs.droplet_id != '' &&
+          (
+            steps.drillprobe.outputs.color == 'green' ||
+            (steps.drillprobe.outputs.color == 'red' && inputs.destroy_on_failure == 'true') ||
+            steps.drillprobe.outputs.color == ''
+          )
+        continue-on-error: true
         env:
           DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
         run: |
-          curl -sf -X DELETE \
-              -H "Authorization: Bearer ${DO_TOKEN}" \
-              "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}"
+          diagnostic_file=$(mktemp)
+          set +e
+          python3 scripts/do_api_request.py \
+            --method DELETE \
+            --url "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" \
+            >/tmp/do-delete.out 2>"${diagnostic_file}"
+          delete_rc=$?
+          set -e
+          diagnostic=$(head -c 600 "${diagnostic_file}" | tr '\r\n' ' ')
+          {
+            echo "diagnostic<<EOF"
+            echo "${diagnostic}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+          cat "${diagnostic_file}" >&2
+          rm -f "${diagnostic_file}" /tmp/do-delete.out
+          if [ "${delete_rc}" -ne 0 ]; then
+            echo "::error::Drill Droplet deletion failed; manual cleanup required"
+            exit "${delete_rc}"
+          fi
           echo "Drill Droplet ${DROPLET_ID} destroyed."
 
-      - name: Destroy drill Droplet on failure (if requested)
-        if: steps.drillprobe.outputs.color == 'red' && inputs.destroy_on_failure == 'true'
+      - name: Append drill result to log
+        if: >
+          steps.drillprobe.outputs.color == 'green' &&
+          steps.destroy.outcome == 'success'
         env:
-          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          DRILL_IP: ${{ steps.drillip.outputs.ip }}
+          BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
         run: |
-          curl -sf -X DELETE \
-              -H "Authorization: Bearer ${DO_TOKEN}" \
-              "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}"
-          echo "Drill Droplet ${DROPLET_ID} destroyed (destroy_on_failure=true)."
+          set -euo pipefail
+          LOG_FILE="docs/ops/dr-drill-log.md"
+          now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          archive_sha256="${{ steps.backup.outputs.archive_sha256 }}"
+          sample_path_b64="${{ steps.backup.outputs.sample_path_b64 }}"
+          sample_sha256="${{ steps.backup.outputs.sample_sha256 }}"
+          backup_path=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ["BACKUP_PATH_B64"]).decode())')
+          {
+            echo ""
+            echo "## ${now} — PASS"
+            echo ""
+            echo "- **Backup source:** \`$(basename "${backup_path}")\`"
+            echo "- **Archive SHA-256:** \`${archive_sha256}\`"
+            echo "- **Representative member path (base64 UTF-8):** \`${sample_path_b64}\`"
+            echo "- **Representative member SHA-256:** \`${sample_sha256}\`"
+            echo "- **Drill Droplet:** ID \`${DROPLET_ID}\`, IP \`${DRILL_IP}\`"
+            echo "- **Base Image:** \`${DRILL_IMAGE}\`"
+            echo "- **Runtime Image:** \`${RUNTIME_IMAGE}\`"
+            echo "- **Size:** \`${{ inputs.drill_droplet_size }}\`"
+            echo "- **Probe:** green (MCP status via SSH port-forward to localhost:8001)"
+            echo "- **Cleanup:** Droplet DELETE confirmed before PASS publication"
+            echo "- **Run:** ${run_url}"
+          } >> "${LOG_FILE}"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add "${LOG_FILE}"
+          git commit -m "ops: dr-drill PASS ${now} [skip ci]"
+          git push
 
-      - name: Cleanup — destroy drill Droplet on mid-job failure
-        # Fires when the job fails BEFORE the probe step sets drillprobe.outputs.color.
-        # The probe-success and probe-failure destroy steps above handle the normal paths;
-        # this catches: bootstrap fail, transfer fail, restore fail, compose fail.
-        if: always() && steps.droplet.outputs.droplet_id != '' && steps.drillprobe.outputs.color == ''
+      - name: Escalate failed Droplet deletion
+        if: always() && steps.destroy.outcome == 'failure'
+        uses: actions/github-script@v7
         env:
-          DO_TOKEN: ${{ secrets.DIGITALOCEAN_TOKEN }}
           DROPLET_ID: ${{ steps.droplet.outputs.droplet_id }}
-        run: |
-          echo "Mid-job failure cleanup: destroying drill Droplet ${DROPLET_ID}..."
-          curl -sf -X DELETE \
-              -H "Authorization: Bearer ${DO_TOKEN}" \
-              "https://api.digitalocean.com/v2/droplets/${DROPLET_ID}" || \
-              echo "WARN: DELETE returned non-zero; Droplet may already be gone or needs manual cleanup"
-          echo "Cleanup done."
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          DELETE_DIAGNOSTIC: ${{ steps.destroy.outputs.diagnostic }}
+        with:
+          script: |
+            const label = 'dr-failed';
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner, repo: context.repo.repo, name: label,
+              });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner, repo: context.repo.repo,
+                name: label, color: 'b60205',
+                description: 'DR drill failed or left a Droplet requiring cleanup.',
+              });
+            }
+            const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+            await github.rest.issues.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              title: `DR drill Droplet deletion FAILED — ${new Date().toISOString()}`,
+              labels: [label],
+              body: [
+                `Automatic cleanup failed; this Droplet may still be billing.`,
+                ``,
+                `- **Droplet ID:** \`${process.env.DROPLET_ID}\``,
+                `- **Base Image:** \`${process.env.DRILL_IMAGE || '(unavailable)'}\``,
+                `- **Runtime Image:** \`${process.env.RUNTIME_IMAGE || '(unavailable)'}\``,
+                `- **Run:** ${runUrl}`,
+                `- **Bounded diagnostic:** \`${process.env.DELETE_DIAGNOSTIC || '(empty)'}\``,
+                ``,
+                `Delete immediately: \`doctl compute droplet delete ${process.env.DROPLET_ID} --force\``,
+              ].join('\n'),
+            });
+
+      - name: Fail after Droplet deletion failure
+        if: always() && steps.destroy.outcome == 'failure'
+        run: exit 1
+
+      - name: Fail after red probe
+        if: always() && steps.drillprobe.outputs.color == 'red'
+        run: exit 1
 
       - name: Summary
         if: always()
+        env:
+          BACKUP_PATH_B64: ${{ steps.backup.outputs.path_b64 }}
+          DRILL_IMAGE: ${{ steps.droplet.outputs.image_slug }}
+          RUNTIME_IMAGE: ${{ steps.runtime-image.outputs.image }}
         run: |
+          backup_path=$(python3 -c \
+            'import base64,os; print(base64.b64decode(os.environ.get("BACKUP_PATH_B64", "")).decode())')
           {
             echo "### DR drill result"
             echo ""
             echo "- **Drill Droplet ID:** \`${{ steps.droplet.outputs.droplet_id }}\`"
             echo "- **Drill Droplet IP:** \`${{ steps.drillip.outputs.ip }}\`"
-            echo "- **Backup used:** \`${{ steps.backup.outputs.path }}\`"
+            echo "- **Backup used:** \`${backup_path:-unavailable}\`"
+            echo "- **Base Image:** \`${DRILL_IMAGE:-unavailable}\`"
+            echo "- **Runtime Image:** \`${RUNTIME_IMAGE:-unavailable}\`"
             echo "- **Probe result:** \`${{ steps.drillprobe.outputs.color }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

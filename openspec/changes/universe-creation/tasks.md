@@ -1,76 +1,288 @@
-> **Implementation status (2026-06-30, branch `claude/founder-identity-allslices`).**
-> Foundational + non-breaking creation slices landed on the branch: WorkOS RS
-> auth (slice 1, PR #1435), the single ACL/write-boundary path (slices 2–3), and
-> the non-breaking creation contract — generated `u-`+ULID id, optional
-> `universe_id`, the seeded 13-file OKF bundle, and dropping notes.json/
-> activity.log for new universes (slice 4). Checked boxes below reflect that.
-> **Held for host live-proof gates** (canary + chatbot `ui-test`, AGENTS.md Rule
-> 11/12): the breaking removals and existing-universe migration — 2.7–2.8, 2.10,
-> 3.1–3.2, 2.12, and the *existing-universe* half of 2.9. Contract-test boxes are
-> left unchecked unless a landed test covers them exactly.
+> **Residual change (reconciled 2026-07-22).** Checked items are verified
+> prerequisites already present in canonical specs/runtime. Unchecked items are
+> the only implementation work owned by this change. Provider/security runtime
+> work remains gated on requester/market authority dependencies and
+> opposite-provider security review.
 
-## 1. Contract Tests
+## 1. Verified Prerequisites
 
-- [x] 1.0 Get opposite-provider source review of the OKF latest-main soul baseline before implementation uses the external standard. (Codex found → Claude reviewed; `docs/audits/2026-06-30-okf-soul-baseline-review.md`.)
-- [ ] 1.0a Add WorkOS resource-server auth tests proving a valid AuthKit bearer token resolves token `sub` to `founder_id`, invalid tokens do not create a principal, and anonymous callers cannot create universes.
-- [~] 1.0b Add first-contact auth tests proving a founder home universe is resolved from authenticated founder identity, not from env, first directory, or root `.active_universe`. (Identity resolution + no-marker-write + no cross-founder serial leak covered by `test_first_contact::test_first_contact_births_and_binds_home`, `test_founder_create_does_not_write_active_universe_marker`, `test_readonly_founder_omitted_scope_does_not_leak_other_home`; explicit env/first-dir precedence assertions still to add.)
-- [ ] 1.0c Add MCP write-boundary tests proving authenticated founders can write only to their own bound/home universe brain and cannot edit another universe's soul, identity, canon, wiki, runtime goals, body, org chart, files, or state.
-- [ ] 1.0c.1 Add anonymous-permission tests proving anonymous callers can read public surfaces only and cannot perform any write, create, run, costly, admin, ledger, sync, or state-changing action.
-- [ ] 1.0c.2 Add universe-visibility tests proving ownership/admin grants do not change public/private readability, `public_read=false` blocks anonymous/non-granted reads, and public/private flips require explicit confirmation.
-- [ ] 1.0d Add Branch interaction tests proving users can submit patch requests, Branch edit proposals, alternative Branch proposals, and Goal proposals without gaining write access to another universe brain.
-- [ ] 1.0e Add Branch-run tests proving Branches are run only by universes, every run is attached to that universe's runtime Goal, multiple universes can use the same Branch as separate instances, and a universe can remix a Branch into its own variant.
-- [~] 1.1 Add MCP creation tests proving blank create generates exactly one opaque lowercase-ULID `universe_id` and does not accept a creation-time persona name. (ULID format/uniqueness covered by `test_ids`; create takes no name. A create-route "generates when absent" assertion is still to add.)
-- [x] 1.2 Add baseline tests proving creation writes `index.md`, `log.md`, `soul.md`, `soul.edit.md`, `identity.md`, `founder.md`, `orgchart.md`, `projects.md`, `goals.md`, `body.md`, `origin.md`, `soul_versions/index.md`, and `soul_versions/0001.md`, and does not create `self/`, `soul/`, `notes.json`, or `activity.log`. (`test_universe_bundle`, `test_universe_soul`.)
-- [ ] 1.3 Add tests proving `get_status` is idempotent for a newly created universe and does not first-create the soul bundle.
-- [ ] 1.4 Add tests proving existing descriptive-id universes are reset to
-  serial-id roots and write/run/status operations use the serial `universe_id`.
-- [ ] 1.4a Add universe-index tests proving creation inserts one row keyed by
-  immutable `universe_id` and name learning updates that row from `identity.md`.
-- [ ] 1.5 Replace HTTP create tests with assertions that `POST /v1/universes` does not create a universe.
-- [x] 1.6 Add OKF-shape tests proving `soul.md` has parseable YAML frontmatter, `type: Universe Soul`, OKF latest-main source metadata, and local markdown links that resolve to generated files. (`test_universe_bundle`.)
-- [x] 1.7 Add link-closure tests proving every baseline file is pointed to by `index.md`, `log.md`, `soul.md`, or `soul_versions/index.md`. (`test_universe_bundle::test_link_closure_every_file_pointed_to`.)
-- [x] 1.8 Add `soul.edit` tests proving `soul.edit.md` exists as `type: Soul Edit Policy`, the execution path reads/follows it, changes are treated as learned updates, accepted edits update only governed soul files (`soul.md`, `identity.md`, `founder.md`, `body.md`, `origin.md`), `orgchart.md`/`projects.md`/`goals.md` are not listed as governed files, accepted edits append `log.md`, and a new `soul_versions/` snapshot is written. (Policy FILE + governed-list: `test_universe_bundle::test_soul_edit_policy`; execution path `universe action=soul.edit` landed via `tinyassets/soul_edit.py` + `tests/test_soul_edit.py` — reads governed list from the policy file, requires source+context, ACL/scope/ledger-gated.)
-- [x] 1.9 Add projects/goals boundary tests proving `projects.md` is a one-line founder-project index with pointers as needed, and `goals.md` is runtime goals plus goal-attached Branch uses/runs. (`test_universe_bundle`.)
-- [x] 1.10 Add body contract tests proving `body.md` starts not-learned, describes body as learned embodiment/personification, and does not claim live platforms, applications, voice, hands, or senses before those are built or observed. (`test_universe_bundle`.)
-- [x] 1.11 Add orgchart contract tests proving `soul.md` links `orgchart.md` with the open questions, `orgchart.md` starts not-learned, states that the oath-confirmed founder is always the top anchor, and does not invent roles, teams, daemons, collaborators, delegations, or reporting lines. (`test_universe_bundle`.)
-- [ ] 1.12 Add first-connect tests proving an authenticated founder with no home universe gets a blank seed universe created and bound, the chatbot loads that seed soul/persona, and the first response speaks in first person as the universe rather than returning platform status as the main experience.
-- [ ] 1.13 Add first-connect tests proving an authenticated founder with an existing home universe loads that learned universe soul/persona and speaks as that universe.
-- [x] 1.14 Add scope tests proving omitted universe scope resolves through authenticated founder home-universe context and never through root `.active_universe`. (`test_first_contact::test_founder_create_does_not_write_active_universe_marker`, `test_readonly_founder_omitted_scope_does_not_leak_other_home`.)
-- [ ] 1.15 Add existing-universe reset tests proving universe roots are serial-id folders, data/canon files remain under the serial directory, and write/run/status operations use the serial `universe_id`.
-- [ ] 1.16 Add universe-clearing tests proving serial universe directories and founder home bindings can be cleared while branch definitions, goals, run metrics, and outcome records remain intact unless branch commons are explicitly reset.
-- [ ] 1.17 Add mobile-contract tests or fixtures proving an Android/iOS client path uses the same MCP auth/read/confirmed-write contract and cannot create a mobile-only universe id or brain shape.
+> Re-verified against the tree 2026-07-24: 1.1 (`ids.new_universe_id` +
+> `_action_create_universe` mkdir-rollback), 1.2 (`seed_okf_bundle`; no starter
+> `self/`/`soul/`/`notes.json`/`activity.log`), 1.3 (`ensure_founder_home`
+> checks create scope before reserving; `get_status` pure read), 1.4
+> (`ensure_founder_home` resolves via founder-home binding, `.active_universe`
+> only written for anonymous creates) all hold. Left checked.
 
-## 2. Creation Implementation
+- [x] 1.1 Verify creation generates an opaque lowercase `u-`+ULID serial when no id is supplied and rolls back partial roots.
+- [x] 1.2 Verify creation seeds the linked root OKF soul bundle and omits duplicate starter `self/`, `soul/`, `notes.json`, and `activity.log` artifacts for new universes.
+- [x] 1.3 Verify opening authenticated `converse` with create scope can reserve, materialize, and bind exactly one founder home while `get_status` remains a pure read; without create scope it writes no binding and returns a structured home-create/load error with `auth_scope_required: true`.
+- [x] 1.4 Verify the authenticated first-contact path resolves through founder home context rather than a host-global active-universe marker.
+- [x] 1.5 Reclassify the remaining work under `identity-auth-and-access-control` and `universe-lifecycle-and-soul`; remove the obsolete proposed `universe-creation` capability delta.
+- [x] 1.6 Validate the reconciled active change strictly and confirm its residual deltas remain unsynced while implementation tasks are open.
 
-- [ ] 2.0 Implement WorkOS AuthKit Resource Server validation: Protected Resource Metadata, AuthKit metadata/JWKS loading, issuer validation, audience validation, and token `sub` to `founder_id`.
-- [ ] 2.0a Implement resolve-always auth mode: public reads can be anonymous, while create/write/costly/admin actions require authenticated founder scopes through the existing action-scope registry.
-- [ ] 2.0b Enforce target-universe ownership for universe-brain writes through MCP.
-- [ ] 2.0c Enforce anonymous public-read-only behavior for every MCP write surface, including ledger, auto-ship, wiki, run, and universe-brain writes.
-- [ ] 2.0d Implement explicit public/private visibility state using `public_read`, separate from owner/admin grants.
-- [ ] 2.0e Add a confirmation-gated visibility action for public -> private and private -> public transitions.
-- [ ] 2.0f Route cross-universe branch/community interactions through request/proposal surfaces rather than direct universe-brain writes.
-- [ ] 2.0g Enforce Branch-run authority so the runnable actor is a universe and each run is recorded as a goal-bound Branch-use instance.
-- [x] 2.1 Add a small generated-id helper for new universe ids using `u-` plus lowercase ULID, keeping the serial generator isolated. (`tinyassets/ids.py`.)
-- [x] 2.2 Update MCP `universe action=create_universe` so `universe_id` is optional on create and generated when absent.
-- [x] 2.3 Ensure the MCP create route seeds one linked OKF soul bundle during creation. (`tinyassets/universe_bundle.py::seed_okf_bundle`.)
-- [x] 2.4 Ensure the MCP create route writes the full baseline files required by the spec.
-- [x] 2.5 Remove creation-time persona name handling; treat any display label as metadata only if still needed by a live reader. (Create takes no `name`; persona name is learned via `identity.md`.)
-- [ ] 2.6 Implement `soul.edit.md` as the real soul edit policy file and make the execution path read/follow it, with versioning and log updates.
-- [ ] 2.7 Implement founder home-universe resolution for MCP first contact: authenticated founder -> existing home universe or new blank seed universe -> loaded soul/persona -> first-person universe voice.
-- [ ] 2.8 Remove root `.active_universe` from MCP default routing. Explicit universe choices are request/client/session scope, not shared host state.
-- [~] 2.9 Remove duplicate `self/`/`soul/` directories, brain archive folders, and empty `notes.json` / `activity.log` starter files from active universe roots, and stop creating `self/`, `soul/`, `notes.json`, or `activity.log` for new universes. (NEW-universe half done: create no longer seeds notes.json/activity.log/self//soul/. The EXISTING-universe removal is the held live-data migration.)
-- [ ] 2.10 Bring universe roots to generated serial-id folders matching `universe_id`.
-- [ ] 2.11 Maintain the root universe index: add new serial ids at creation and update the learned-name column when `identity.md` learns or changes the universe's name.
-- [ ] 2.12 Prepare a basic Android test app after auth/read/confirmed-write surfaces are stable; it must use the same MCP contract and platform-standard credential storage/integrity hooks.
+## 1B. Newborn Voice (P0 #1582 — host decision 2026-07-25)
 
-## 3. Remove Duplicate Route
+> NUMBERING NOTE: no task 1.14 existed when this lane opened — section 1 ended
+> at 1.6 (verified 2026-07-25, `grep -rn "1\.14" openspec/changes/` returns only
+> unrelated changes). The host's 2026-07-25 decision named "task 1.14: the
+> can-it-speak test", so this lane created it here under that number rather than
+> silently renumbering it into a section titled "Verified Prerequisites".
+>
+> GATE 2.0 RELATIONSHIP: this task grants no authority, resolves no authority
+> bundle, and selects no provider. It changes only how an ALREADY-FAILED turn is
+> reported, strictly on the fail-closed side of 92dd60c5. It is not
+> execution-authority runtime, so it does not open tasks 2.1-4.7 and no 2.x/4.x
+> task is checked below.
 
-- [ ] 3.1 Remove or reject `POST /v1/universes` in `fantasy_daemon/api.py` so it cannot create universes.
-- [ ] 3.2 Remove slug-name creation behavior and tests that treat slugified names as universe ids.
-- [ ] 3.3 Preserve non-create HTTP read/list behavior only where current tests or live clients still require it.
+- [x] 1.14 Add the can-it-speak test proving a newborn universe answers its founder's first turn, and make a universe with no engine of its own return an actionable setup reply instead of raw provider exhaustion.
+  - DONE (2026-07-25). RED FIRST: every one of the 97 first-contact tests
+    asserted BIRTH; none asserted SPEECH. Against current behavior the founder's
+    opening turn returned
+    `{"error": "Your universe couldn't be reached right now: All providers
+    exhausted for role=writer. Daemon should retry with backoff."}` — no
+    `universe_id`, no path forward. Cause: 92dd60c5 correctly refuses
+    host-credential fallback and nothing provisions a newborn a credential.
+  - FIX: `engine_setup_required_payload` (`tinyassets/api/universe.py`) returns
+    `status: held` / `reason: setup_required` / `universe_id` / `missing:
+    [compute, model_access]` / `note` / `setup_paths`, consumed by the `converse`
+    seam in `tinyassets/universe_server.py`. It carries NO `reply` key — `reply`
+    is what the connector renders verbatim as the universe's own first-person
+    voice, so a platform-authored message travels as `note`, the same split the
+    existing `write_page` / `_BRAIN_WRITE_RELAY_ACTIONS` relays use.
+  - ATTACHMENT PATH VERIFIED, NOT INVENTED: `setup_paths` names only
+    `universe action=set_engine` with `engine_source=byo_api_key`, which
+    `_set_engine_byo_api_key` wires end-to-end (vault `llm_api_key` record +
+    `preferred_writer`). The market path is deliberately OMITTED:
+    `_set_engine_market_rented` records terms only and `config.py:57-62` states
+    the market-matching runtime is post-M1, so naming it would promise a
+    capability that cannot produce a reply today.
+  - DISTINGUISHABILITY (BUG-038/039 not masked): the payload requires BOTH
+    `exc.chain_state is not None` (only router.py's genuine
+    every-provider-failed raise carries FEAT-006 diagnostics; the allowlist /
+    pinned-writer / api-key-policy / no-router raises are bare) AND
+    `not universe_has_assigned_engine(udir)` (vault `llm_subscription` /
+    `llm_api_key` record, OR a non-default `engine_source`). Unreadable vault or
+    config returns True — absence is never inferred from a read failure.
+  - Tests (`tests/test_first_contact.py`, 12 added, 54 pass): held payload +
+    platform-authored (no `reply`) + credentialed-universe exhaustion still raw
+    + non-provider failure still raw + unreadable vault fails safe + single
+    provider call + 3 non-vault engine sources + policy hard-fail keeps its own
+    message + unreadable config fails safe + non-string `engine_source` does not
+    crash. SIX guards mutation-proven (each disabled → its tests go red).
+  - Opposite-provider review: Codex (read-only), TWO `adapt` rounds, all four
+    findings folded with a failing-first test each — (r1) `self_hosted_endpoint`
+    / `market_rented` / `host_daemon` write no vault record; (r1) the allowlist
+    policy hard-fail shares the exception class; (r2) `load_universe_config`
+    degrades a corrupt config to defaults so the claimed config fail-safe never
+    fired; (r2) `engine_source: 7` reached `.strip()` and raised AttributeError
+    inside the failure handler. Full record: `LANE_REPORT.md`.
+  - KNOWN RESIDUAL GAP (Codex r2 finding 1, accepted not fixed): under
+    `TINYASSETS_PIN_WRITER`, a credential-less newborn gets the BARE pinned-writer
+    exhaustion (`router.py`, no `chain_state`), so the discriminator rejects it
+    and the raw error still reaches the founder. Not a production path —
+    `TINYASSETS_PIN_WRITER` appears in no `deploy/` config, no workflow, and no
+    repo variable (`gh variable list` → only `AUTO_FIX_DISABLED`,
+    `WORKOS_REQUIRE_AUTH`), verified 2026-07-25. The clean fix is to attach
+    `chain_state` to that raise in `tinyassets/providers/router.py`, which this
+    lane holds read-only and STATUS's R2-1a lane owns.
 
-## 4. Verification
+## 2. Execution-Authority Contract Tests
 
-- [ ] 4.1 Run focused universe creation, universe soul, persona/soul-model, and affected HTTP API tests.
-- [ ] 4.2 Run an MCP-level create/status smoke test against a temporary data dir.
-- [ ] 4.3 Update docs or prompt examples that still instruct users to create universes through HTTP or creation-time names.
+- [ ] 2.0 Obtain opposite-provider APPROVE of provider-specific environment, cloud-chain, auth-home, local-subscription, hardware, and market-grant isolation, or incorporate every required ADAPT finding and have it re-reviewed to acceptance. Tasks 2.1-4.7 MUST NOT begin until this gate is satisfied; planning/spec work only.
+  - GATE UNSATISFIED (verified 2026-07-24). This is the P0 #1582 first-contact
+    execution-authority security gate. The review packets are open DRAFT PRs
+    #1617 (`codex/first-contact-authority-handshake`) and #1660
+    (`codex/first-contact-authority-review`), both explicitly "DO NOT MERGE OR
+    IMPLEMENT RUNTIME": they require Claude to independently re-check primary
+    sources and current TinyAssets ownership after its rate-limit reset before
+    the gate returns approve/adapt. Until that verdict lands, tasks 2.1-4.7 are
+    BLOCKED — planning/spec only. This lane built no execution-authority
+    runtime.
+- [ ] 2.1 Add a requester-owned success test proving a complete requester compute/model bundle permits the universe intelligence to generate a reply which the chatbot relays/renders verbatim.
+- [ ] 2.2 Add an accepted-market success test proving accepted compute and, when separately required, model-access grants permit execution and are recorded as market authority.
+- [ ] 2.3 Add missing and partial authority tests proving birth/binding may complete but no provider is invoked and the result is `held` / `setup_required` with `universe_id`, missing elements, and BYOC/market paths.
+  - NOT SATISFIED by task 1.14, though 1.14 built the envelope this task asserts
+    against (verified 2026-07-25). Three requirements remain open: (a) **no
+    provider is invoked** — 1.14 REACTS to exhaustion, so a provider IS attempted
+    and fails first; pre-empting the invocation needs the 4.3/4.4 authority
+    bundle. (b) **partial** authority (compute without model access, or the
+    reverse) has no representation yet — 1.14 only distinguishes all-or-nothing.
+    (c) the **market** path is absent from `setup_paths` because no market
+    runtime consumes it. Stays gated behind 2.0; left unchecked.
+- [ ] 2.4 Add hostile ambient-credential tests proving project-maintainer, project-founder, and platform-operator credentials, quota, auth homes, cloud chains, hardware, and accounts are never selected for a requester workload.
+- [ ] 2.5 Add routing/fallback tests proving retries can use only providers admitted by the immutable authority bundle and hold when that set is exhausted. This is acceptance coverage for STATUS R2-1a plus task 4.3 and depends on the R2-1a `allowed_providers` boundary.
+- [ ] 2.6 Add phase-boundary tests proving reply generation and learning extraction use the same authority bundle, may select different providers admitted for their respective phases, and never invoke an uncovered provider.
+- [ ] 2.7 Add receipt tests proving each invocation records phase, provider, and `requester_owned` or `accepted_market` authority without recording secrets. This is acceptance coverage for STATUS R2-1b plus task 4.7 and depends on the R2-1b race-safe result-object receipt.
+
+## 3. Authority Dependencies and Security Gate
+
+- [ ] 3.1 Confirm R2-1a has landed its `allowed_providers` engine/router boundary; consume that boundary rather than implementing a second provider-selection path.
+  - PARTIAL (verified 2026-07-24): the `allowed_providers` router boundary
+    EXISTS and hard-fails a provider not admitted by the resolved universe's
+    allowlist (`tinyassets/providers/router.py:209-345`) — this is the boundary
+    task 4.3 must consume, not duplicate. R2-1a is NOT fully landed: STATUS's
+    "R2-1a set_engine must constrain allowed_providers" row notes the founder's
+    own key still falls through the writer chain. Full consumption stays gated
+    behind task 2.0; recorded, not checked.
+- [ ] 3.2 Confirm R2-1b has landed its race-safe provider result/receipt for both writer calls; extend that object rather than using `_last_provider` or a parallel receipt.
+  - NOT LANDED (verified 2026-07-24): only the R2-1b SPEC landed (#1650,
+    `provider-attempt-receipts`); the runtime still exposes the process-global
+    `_last_provider` (`tinyassets/providers/call.py:54`) — the exact sink the
+    spec forbids. There is no result-local receipt object to extend yet, so
+    task 4.7 cannot begin. Blocked; recorded, not checked.
+
+## 4. Execution-Authority Implementation
+
+- [ ] 4.1 Implement the requester BYOC authority resolver for compute and separately required model access. Depends: 2.0.
+- [ ] 4.2 Implement accepted-market compute/model grant resolution and bind it to the requester's accepted offer. Depends: 2.0.
+- [ ] 4.3 Construct an immutable complete authority bundle and pass only its eligible provider set into the R2-1a selection/fallback boundary. Depends: 4.1, 4.2, and STATUS R2-1a; extend its `allowed_providers` boundary, do not duplicate or replace it.
+- [ ] 4.4 Isolate provider child processes from ambient maintainer credential sources with the allowlisted environment/home/profile boundary. Depends: 2.0 and the reviewed isolation design.
+- [ ] 4.5 Return the structured `held` / `setup_required` envelope without provider invocation when the bundle is absent, partial, or loses all eligible fallbacks. Depends: 4.3 and 4.4.
+  - PARTIAL SHAPE LANDED, TASK NOT DONE (verified 2026-07-25). Task 1.14 built
+    the envelope itself (`engine_setup_required_payload`), matching this
+    change's `identity-auth-and-access-control` delta: `status: held`,
+    `reason: setup_required`, `universe_id`, missing elements, requester-facing
+    setup path, and never a fabricated universe reply. What 4.5 still owes:
+    move it UPSTREAM of provider invocation (1.14 is post-hoc on the exhaustion
+    error), and cover the partial-bundle and lost-all-eligible-fallbacks cases.
+    Extend `engine_setup_required_payload`; do not build a second envelope.
+- [ ] 4.6 Thread the same bundle through universe reply generation and learning extraction; keep the chatbot as relay/renderer only. Depends: 4.3-4.5.
+- [ ] 4.7 Extend the R2-1b result object with redacted per-phase authority class and accepted-market grant linkage without recording secrets. Depends: 4.6 and STATUS R2-1b; extend the provider result object and never use `_last_provider`.
+
+## 5. Lifecycle Residuals
+
+- [x] 5.1 Add tests proving public `POST /v1/universes` cannot create a universe, then remove or reject the route.
+  - PREMISE STALE + REGRESSION-LOCKED (2026-07-24): no `POST /v1/universes`
+    HTTP route exists in the tree — nothing to remove. The only public
+    creation surfaces are the MCP `universe action=create_universe` and
+    `write_graph target=universe` tools; `create_streamable_http_app()`
+    (`universe_server.py:2231`) registers only MCP transport + discovery
+    routes. Added `test_http_app_exposes_no_universe_creation_route`
+    (`tests/test_universe_server_directory_app.py`) asserting the app mounts no
+    universe-creation route — fails loudly if one is ever added. The
+    public-birth boundary itself is enforced at the shared dispatch chokepoint
+    (task 5.2).
+- [x] 5.2 Add tests proving every public birth path generates its own serial and rejects caller-selected ids, then enforce the boundary without breaking internal migration tooling.
+  - DONE (2026-07-24): `_universe_impl` now rejects a caller-selected
+    `universe_id` on `create_universe` with `reason: caller_selected_id_rejected`
+    at the shared dispatch boundary, so both public birth entry points
+    (`universe action=create_universe`, `write_graph target=universe`) refuse a
+    chosen id and self-serialize an opaque `u-`+ULID. Internal callers pass a
+    keyword-only `allow_named_universe_id=True` (first-contact home
+    materialization threaded; migration/dev tooling that calls
+    `_action_create_universe` directly bypasses the boundary unchanged). Tests:
+    `tests/test_first_contact.py` (rejects chosen id via both entry points;
+    self-serializes without id; internal named-id accepted; first-contact
+    still serial).
+  - ADAPT fold (2026-07-24, Codex review): `ensure_founder_home` threaded the
+    trust flag for `winner` from `claim_founder_home` without proving its
+    provenance. Because `claim_founder_home` does INSERT ... ON CONFLICT DO
+    NOTHING, a stale founder-influenced *descriptive* `founder_home` binding
+    (pre-boundary caller-selected creation) was returned verbatim and could be
+    materialized through the flag — defeating self-serialization at its own
+    seam. FIX: a fail-closed provenance gate trusts `winner` ONLY when it is the
+    fresh `candidate` just reserved OR itself passes the canonical
+    `is_universe_serial` validator; otherwise it logs loudly and returns "" —
+    never rebinding/migrating a stale descriptive home to a serial (that is
+    host-run migration, task 5.4). Added tests: stale descriptive binding is
+    rejected + not materialized + binding left intact; legitimate pre-existing
+    serial reservation materializes; a public-schema reachability lock asserting
+    the trust flag is absent from both public tool wrappers.
+  - ADAPT fold round 2 (2026-07-24, Codex): `is_universe_serial(winner)` proves
+    FORMAT, not GENERATION provenance — a hostile/legacy value like
+    `u-00000000000000000000000000` satisfies the regex yet was never generated
+    by the platform, and `founder_home` has TWO writers (`claim_founder_home` +
+    the general `set_founder_home`), so sole-writer provenance cannot be
+    assumed. STRUCTURAL FIX (route 2): added a `founder_home.platform_generated`
+    marker (schema + ALTER migration; existing rows default 0 → fail closed
+    until host-run backfill). `claim_founder_home` stamps it for a freshly
+    reserved serial; `set_founder_home` gained a `platform_generated` param and
+    `_action_create_universe` passes True only when IT generated the id (public
+    births self-serialize → True; caller/dev-supplied → False). First-contact's
+    gate now requires the marker (`founder_home_is_platform_generated`) AND
+    serial shape (defense-in-depth), replacing the format-only check. Stamping
+    both writers truthfully (not claim-only) preserves the legitimate
+    interrupted-birth repair of a genuine platform serial while failing closed
+    on any caller-influenced or unproven binding. New/updated tests
+    (`tests/test_first_contact.py`): serial-SHAPED-but-unproven value fails
+    closed (the exact reviewer repro, can-fail); proven-marker serial
+    materializes; `claim_founder_home` stamps provenance vs unproven
+    `set_founder_home`; interrupted-birth repair updated to record true
+    provenance. Also adapted two `test_universe_server_isolation.py` create
+    tests to self-serialization (round-1 boundary regression they weren't in the
+    prior focused set).
+- [x] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
+  - DONE (2026-07-24): the `universes` index is keyed by the immutable
+    `universe_id` (PK / `ON CONFLICT(universe_id)`), and creation registers one
+    unnamed serial row (`ensure_universe_registered` is called without a
+    display name, so `display_name` defaults to the serial) — that half was
+    already landed. NEW: learned-name projection. Added
+    `daemon_server.set_universe_display_name` (updates ONLY the `display_name`
+    column for the row keyed by the immutable id; no-op when no row exists) and
+    wired `_action_soul_edit` to project the accepted `identity.md` self-name
+    onto that same row after a governed learning event (best-effort; never
+    fails the persisted learning). The immutable key and runtime operation id
+    are untouched. Tests: `tests/test_universe_soul.py`
+    (`test_creation_adds_unnamed_serial_index_row`,
+    `test_learned_name_projects_onto_immutable_index_row`).
+- [ ] 5.4 Inventory descriptive-id roots and live references, then implement an atomic, rollback-safe migration to generated serial roots.
+  - TOOLING LANDED / HOST-RUN OPERATIONAL (verified 2026-07-24). Existing
+    `scripts/rename_live_data_universes_to_serial_ids.ps1` detects descriptive
+    roots by universe markers, generates `u-`+ULID serials, `Move-Item`s the
+    directory, writes a `universe_id_aliases.json` manifest (legacy id ->
+    serial, backed up), and re-points `.active_universe` — with root-containment
+    guards. This is a PowerShell operation against the live-data snapshot
+    (`scripts/` + `Workflow-live-data-snapshot`), OUTSIDE this lane's code Files
+    boundary and a live-data / data-loss-risk class needing host staging +
+    independent review. Evidence it has largely run: `migrate_live_data_okf_
+    baseline.ps1` already excludes a serial-id universe
+    (`u-01kw34sp5bdgzn1s9f7r2tmc4p`). Left to host-action; not a code build here.
+- [ ] 5.5 Verify migrated bindings and read/write/run/status references resolve only the serial id after migration.
+  - HOST-VERIFY (2026-07-24). No runtime `universe_id_aliases.json` resolution
+    layer exists in `tinyassets/` (grep clean) — by design, the migrator
+    RENAMES the directory to the serial, so directory-name-keyed references
+    resolve the serial after the move; the alias file is compatibility-lookup
+    only. Confirming live bindings/read/write/run/status all resolve the serial
+    is post-migration operational verification on the live snapshot, not a code
+    task in this lane. Blocked on 5.4's host run.
+- [ ] 5.6 Remove duplicate `self/`, `soul/`, and brain-archive directories plus empty starter notes/logs from existing roots while preserving non-empty historical runtime data.
+  - TOOLING LANDED / HOST-RUN OPERATIONAL (2026-07-24). Existing
+    `scripts/migrate_live_data_okf_baseline.ps1` rebuilds the canonical OKF
+    baseline top-files per root. Same class as 5.4: a PowerShell operation on
+    the live snapshot, outside this lane's code Files boundary. Host-action.
+
+## 6. Verification and Release Gates
+
+- [ ] 6.1 Run focused auth, first-contact, provider-routing, learning-extraction, receipt, universe-lifecycle, migration, and HTTP tests.
+  - PARTIAL (2026-07-24): the lifecycle/first-contact/HTTP surfaces this lane
+    touched are green — `pytest tests/test_first_contact.py
+    tests/test_universe_soul.py tests/test_universe_server_directory_app.py
+    tests/test_universe_server_ledger.py tests/test_multi_tenant_isolation.py
+    tests/test_soul_edit.py` → 97 passed. Provider-routing / learning-extraction
+    / receipt coverage belongs to the blocked execution-authority tasks
+    (2.1-4.7) and is not built here. Verifier runs the full suite.
+  - EXTENDED 2026-07-25 (task 1.14): `pytest tests/test_first_contact.py
+    tests/test_converse_handle.py tests/test_api_universe.py
+    tests/test_credential_fail_closed.py tests/test_credential_vault.py
+    tests/test_s2_engine_assignment.py tests/test_s6_s8_engine_sources.py
+    tests/test_relay_ux_prompts.py tests/test_per_universe_engine_resolution.py
+    tests/test_triage_classify_provider_exhaustion.py
+    tests/test_provider_allowlist.py tests/test_provider_router_diagnostics.py
+    tests/test_providers_call.py` → 251 passed, 1 skipped. `ruff check` clean on
+    the three touched files. Baseline debt NOT introduced by this lane and NOT
+    fixed here: 6 tests fail identically on `origin/main`
+    (`test_universe_server_framing.py` ×3, `test_universe_server_metadata.py`
+    ×2, `test_input_keys_isolation.py` ×1) — verified by re-running them in a
+    detached `origin/main` worktree. They belong to their own lane.
+- [x] 6.2 Re-run strict OpenSpec validation after implementation and before syncing or archiving this change.
+  - DONE (2026-07-24): `openspec validate universe-creation --strict` →
+    "Change 'universe-creation' is valid".
+- [ ] 6.3 Verify the success and setup-required paths through a rendered chatbot conversation using the live connector.
+  - BLOCKED: the success/setup-required (`held`) paths are the
+    execution-authority behavior gated behind task 2.0. Live-connector
+    `ui-test` proof applies once that runtime lands.
+- [ ] 6.4 Freshness-stamp post-fix production evidence that real users complete first contact without consuming maintainer resources; leave a monitoring item if no clean use is visible yet.
+  - PENDING execution-authority landing (gated by 2.0). STATUS P0 #1582 watch
+    item already tracks "newborn contact has no BYOC/market authority path" —
+    no post-fix clean-use evidence is possible until the authority runtime
+    ships.

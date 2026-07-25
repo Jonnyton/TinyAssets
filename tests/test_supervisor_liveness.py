@@ -9,8 +9,10 @@ Spec source: PR #206 (docs/specs/daemon-liveness-watchdog.md).
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
+from tinyassets import cloud_worker as cw
 from tinyassets.api.status import (
     _HEARTBEAT_STALE_THRESHOLD_S,
     _STUCK_PENDING_THRESHOLD_S,
@@ -51,14 +53,20 @@ def test_parse_iso_to_epoch_returns_none_on_garbage():
 # ── _compute_supervisor_liveness — empty queue ─────────────────────────────
 
 
-def test_empty_queue_returns_zero_counts(tmp_path):
+def test_empty_queue_returns_zero_counts(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     out = _compute_supervisor_liveness(tmp_path)
     assert out["queue_state"]["depth"] == 0
     assert out["queue_state"]["pending"] == 0
     assert out["queue_state"]["running"] == 0
     assert out["running_tasks_lease"] == []
     assert out["stale_running_tasks"] == []
-    assert out["warnings"] == []
+    assert out["epoch_health"]["1"]["available"] is True
+    assert out["epoch_health"]["2"]["available"] is False
+    assert any(
+        "epoch2_operational_read_failed" in warning
+        for warning in out["warnings"]
+    )
     assert out["lease_data_available"] is True
 
 
@@ -87,6 +95,344 @@ def test_queue_counts_by_status(tmp_path):
     assert out["queue_state"]["succeeded"] == 3
     assert out["queue_state"]["failed"] == 1
     assert out["queue_state"]["depth"] == 7
+
+
+def test_queue_counts_merge_epoch2_operational_states(
+    tmp_path,
+    monkeypatch,
+):
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-v1",
+            branch_def_id="branch-1",
+            universe_id=tmp_path.name,
+            status="pending",
+        ),
+    )
+    epoch2 = {
+        "available": True,
+        "queue_epoch": 2,
+        "depth": 4,
+        "compatible_worker_count": 0,
+        "capacity_evidence_available": True,
+        "lifecycle_counts": {
+            "pending": 4,
+            "running": 0,
+            "cancel_requested": 0,
+            "cancelled": 0,
+            "succeeded": 0,
+            "failed": 0,
+        },
+        "lifecycle_oldest_age_s": {"pending": 600},
+        "operational_state_counts": {
+            "awaiting_compatible_capacity": 1,
+            "invalid_operator_admission": 1,
+            "quarantined": 1,
+            "policy_parked": 1,
+        },
+        "operational_oldest_age_s": {
+            "awaiting_compatible_capacity": 600,
+            "invalid_operator_admission": 500,
+            "quarantined": 400,
+            "policy_parked": 300,
+        },
+        "operational_reason_counts": {
+            "awaiting_compatible_capacity": {
+                "no_live_compatible_worker": 1,
+            },
+            "invalid_operator_admission": {
+                "invalid_operator_admission": 1,
+            },
+            "quarantined": {"unsupported_protocol": 1},
+            "policy_parked": {"disabled": 1},
+        },
+        "diagnostics": [
+            {
+                "branch_task_id": "bt2_" + "1" * 32,
+                "row_digest": "2" * 64,
+                "operational_state": "invalid_operator_admission",
+                "reason": "invalid_operator_admission",
+            },
+        ],
+        "diagnostics_truncated": False,
+        "valid_pending_count": 1,
+        "eligible_pending_count": 0,
+        "operational_counts_authoritative": True,
+        "unclassified_active_count": 0,
+        "active_scan_limit": 1000,
+    }
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: epoch2,
+        raising=False,
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    queue_state = out["queue_state"]
+    assert queue_state["depth"] == 5
+    assert queue_state["pending"] == 5
+    assert queue_state["epoch_counts"]["1"]["lifecycle"]["pending"] == 1
+    assert queue_state["epoch_counts"]["2"]["depth"] == 4
+    assert sum(
+        queue_state["epoch_counts"]["2"]["lifecycle"].values()
+    ) == 4
+    assert queue_state["awaiting_compatible_capacity"] == 1
+    assert queue_state["invalid_operator_admission"] == 1
+    assert queue_state["quarantined"] == 1
+    assert queue_state["policy_parked"] == 1
+    assert queue_state["awaiting_compatible_capacity_max_age_s"] == 600
+    assert out["epoch2_operational"] == epoch2
+    assert any("invalid_operator_admission" in item for item in out["warnings"])
+
+
+def test_corrupt_v1_does_not_hide_healthy_epoch2(tmp_path, monkeypatch):
+    (tmp_path / "branch_tasks.json").write_text(
+        "{corrupt-v1",
+        encoding="utf-8",
+    )
+    epoch2 = {
+        "available": True,
+        "queue_epoch": 2,
+        "depth": 1,
+        "lifecycle_counts": {
+            "pending": 1,
+            "running": 0,
+            "cancel_requested": 0,
+            "cancelled": 0,
+            "succeeded": 0,
+            "failed": 0,
+        },
+        "lifecycle_oldest_age_s": {"pending": 10},
+        "operational_state_counts": {
+            "awaiting_compatible_capacity": 1,
+            "invalid_operator_admission": 0,
+            "quarantined": 0,
+            "policy_parked": 0,
+        },
+        "operational_oldest_age_s": {
+            "awaiting_compatible_capacity": 10,
+        },
+        "operational_reason_counts": {},
+        "valid_pending_count": 1,
+        "eligible_pending_count": 0,
+        "operational_counts_authoritative": True,
+        "unclassified_active_count": 0,
+        "active_scan_limit": 1000,
+        "diagnostics": [],
+        "diagnostics_truncated": False,
+        "compatible_worker_count": 0,
+        "capacity_evidence_available": True,
+    }
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: epoch2,
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["epoch_health"]["1"]["available"] is False
+    assert out["epoch_health"]["2"]["available"] is True
+    assert out["counts_complete"] is False
+    assert out["queue_state"]["depth"] == 1
+    assert out["queue_state"]["pending"] == 1
+
+
+def test_failed_epoch2_does_not_zero_healthy_v1(tmp_path, monkeypatch):
+    append_task(
+        tmp_path,
+        BranchTask(
+            branch_task_id="bt-v1-survives",
+            branch_def_id="branch-1",
+            universe_id=tmp_path.name,
+            status="pending",
+        ),
+    )
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: {
+            "available": False,
+            "error": "injected_epoch2_failure",
+            "diagnostics": [],
+            "diagnostics_truncated": False,
+        },
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["epoch_health"]["1"]["available"] is True
+    assert out["epoch_health"]["2"] == {
+        "available": False,
+        "error": "injected_epoch2_failure",
+    }
+    assert out["counts_complete"] is False
+    assert out["queue_state"]["depth"] == 1
+    assert out["queue_state"]["pending"] == 1
+
+
+def test_missing_capacity_evidence_marks_operational_counts_incomplete(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: {
+            "available": True,
+            "queue_epoch": 2,
+            "depth": 1,
+            "lifecycle_counts": {
+                "pending": 1,
+                "running": 0,
+                "cancel_requested": 0,
+                "cancelled": 0,
+                "succeeded": 0,
+                "failed": 0,
+            },
+            "lifecycle_oldest_age_s": {"pending": 10},
+            "operational_state_counts": {
+                "awaiting_compatible_capacity": 1,
+                "invalid_operator_admission": 0,
+                "quarantined": 0,
+                "policy_parked": 0,
+            },
+            "operational_oldest_age_s": {
+                "awaiting_compatible_capacity": 10,
+            },
+            "operational_reason_counts": {},
+            "valid_pending_count": 1,
+            "eligible_pending_count": 0,
+            "operational_counts_authoritative": False,
+            "unclassified_active_count": 0,
+            "active_scan_limit": 1000,
+            "diagnostics": [],
+            "diagnostics_truncated": False,
+            "compatible_worker_count": 0,
+            "capacity_evidence_available": False,
+            "capacity_evidence_error": "runtime registry unavailable",
+        },
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["counts_complete"] is False
+    assert any(
+        "epoch2_capacity_evidence_unavailable" in warning
+        for warning in out["warnings"]
+    )
+    assert not any(
+        "epoch2_operational_scan_overflow" in warning
+        for warning in out["warnings"]
+    )
+
+
+def test_disabled_epoch2_consumer_is_visible_in_status(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: {
+            "available": True,
+            "queue_epoch": 2,
+            "depth": 1,
+            "lifecycle_counts": {
+                "pending": 1,
+                "running": 0,
+                "cancel_requested": 0,
+                "cancelled": 0,
+                "succeeded": 0,
+                "failed": 0,
+            },
+            "lifecycle_oldest_age_s": {"pending": 10},
+            "operational_state_counts": {
+                "awaiting_compatible_capacity": 1,
+                "invalid_operator_admission": 0,
+                "quarantined": 0,
+                "policy_parked": 0,
+            },
+            "operational_oldest_age_s": {
+                "awaiting_compatible_capacity": 10,
+            },
+            "operational_reason_counts": {},
+            "valid_pending_count": 1,
+            "eligible_pending_count": 0,
+            "operational_counts_authoritative": False,
+            "unclassified_active_count": 0,
+            "active_scan_limit": 1000,
+            "diagnostics": [],
+            "diagnostics_truncated": False,
+            "compatible_worker_count": 0,
+            "capacity_evidence_available": False,
+            "capacity_evidence_error": "epoch2_consumer_not_ready",
+            "consumer_ready": False,
+        },
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["counts_complete"] is False
+    assert any(
+        "epoch2_consumer_not_ready" in warning
+        for warning in out["warnings"]
+    )
+
+
+def test_unknown_epoch2_lifecycle_status_is_visible_and_incomplete(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: {
+            "available": True,
+            "queue_epoch": 2,
+            "depth": 1,
+            "lifecycle_counts": {
+                "pending": 0,
+                "running": 0,
+                "cancel_requested": 0,
+                "cancelled": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "unknown": 1,
+            },
+            "lifecycle_oldest_age_s": {"unknown": 10},
+            "unknown_lifecycle_status_counts": {"unknown": 1},
+            "operational_state_counts": {
+                "awaiting_compatible_capacity": 0,
+                "invalid_operator_admission": 1,
+                "quarantined": 0,
+                "policy_parked": 0,
+            },
+            "operational_oldest_age_s": {
+                "invalid_operator_admission": 10,
+            },
+            "operational_reason_counts": {
+                "invalid_operator_admission": {"incomplete": 1},
+            },
+            "valid_pending_count": 0,
+            "eligible_pending_count": 0,
+            "operational_counts_authoritative": False,
+            "integrity_scope_complete": True,
+            "unclassified_active_count": 0,
+            "active_scan_limit": 1000,
+            "diagnostics": [],
+            "diagnostics_truncated": False,
+            "compatible_worker_count": 0,
+            "capacity_evidence_available": True,
+        },
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["queue_state"]["depth"] == 1
+    assert out["queue_state"]["unknown"] == 1
+    assert out["counts_complete"] is False
+    assert any(
+        "epoch2_unknown_lifecycle_status" in warning
+        for warning in out["warnings"]
+    )
 
 
 # ── pending-age detection (BUG-009 incident pattern) ───────────────────────
@@ -459,3 +805,190 @@ def test_get_status_supervisor_liveness_reflects_stuck_pending(tmp_path, monkeyp
     assert sl["queue_state"]["pending"] == 1
     assert sl["queue_state"]["stuck_pending_max_age_s"] >= 300
     assert any("stuck_pending" in w for w in sl["warnings"])
+
+
+def test_supervisor_descriptor_has_exact_90_second_validity(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
+    image_ref = (
+        "ghcr.io/tinyassets/tinyassets@sha256:" + ("e" * 64)
+    )
+    (tmp_path / "release-state.json").write_text(
+        json.dumps(
+            {
+                "release_state_version": 2,
+                "outcome": "deployed",
+                "active_identity_status": "agreed",
+                "canary_bundle_status": "passed",
+                "configured_image_ref": image_ref,
+                "running_image_ref": image_ref,
+                "active_image_ref": image_ref,
+                "active_image_digest": image_ref,
+                "image_ref": image_ref,
+                "image_digest": image_ref,
+                "git_sha": "a" * 40,
+                "active_git_sha": "a" * 40,
+                "config_hash": "sha256:" + ("b" * 64),
+                "config_version": "tinyassets-env-v1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-a")
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
+    monkeypatch.setattr(cw, "_utcnow", lambda: now)
+    cw._snapshot_worker_protocol_identity_at_boot()
+    monkeypatch.setattr(
+        cw,
+        "_persist_worker_queue_descriptor",
+        lambda _descriptor: True,
+    )
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    observed = datetime.fromisoformat(beat["ts"].replace("Z", "+00:00"))
+    expires = datetime.fromisoformat(
+        beat["expires_at"].replace("Z", "+00:00")
+    )
+    assert expires - observed == timedelta(seconds=90)
+    assert beat["queue_protocol_version"] == 2
+    assert beat["capabilities"] == ["operator_request_v1"]
+
+
+def test_operational_capacity_requires_live_complete_descriptor(tmp_path):
+    from tinyassets.api.universe import _compatible_epoch2_worker_ids
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    now = datetime.fromisoformat("2026-07-24T08:00:00+00:00")
+    beat = {
+        "ts": "2026-07-24T08:00:00Z",
+        "phase": "polling",
+        "subprocess_alive": True,
+        "worker_id": "worker-a",
+        "runtime_instance_id": "runtime-a",
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "boot_id": "boot-a",
+        "build_sha": "a" * 40,
+        "config_hash": "sha256:" + "b" * 64,
+        "universe_id": "universe-a",
+        "expires_at": "2026-07-24T08:01:30Z",
+    }
+    heartbeat = universe / ".worker_supervisor.worker-a.json"
+    heartbeat.write_text(json.dumps(beat), encoding="utf-8")
+    descriptor_fields = (
+        "queue_protocol_version",
+        "capabilities",
+        "worker_id",
+        "runtime_instance_id",
+        "boot_id",
+        "build_sha",
+        "config_hash",
+        "universe_id",
+        "expires_at",
+    )
+    trusted = {
+        "runtime-a": {field: beat[field] for field in descriptor_fields},
+    }
+
+    assert _compatible_epoch2_worker_ids(universe, now=now) == []
+    assert _compatible_epoch2_worker_ids(
+        universe,
+        now=now,
+        trusted_descriptors=trusted,
+    ) == ["worker-a"]
+
+    beat["subprocess_alive"] = False
+    heartbeat.write_text(json.dumps(beat), encoding="utf-8")
+    assert _compatible_epoch2_worker_ids(
+        universe,
+        now=now,
+        trusted_descriptors=trusted,
+    ) == []
+    beat["subprocess_alive"] = True
+
+    beat["expires_at"] = "2026-07-24T08:00:00Z"
+    heartbeat.write_text(json.dumps(beat), encoding="utf-8")
+    trusted["runtime-a"] = {
+        field: beat[field] for field in descriptor_fields
+    }
+    assert _compatible_epoch2_worker_ids(
+        universe,
+        now=now,
+        trusted_descriptors=trusted,
+    ) == []
+
+    beat["expires_at"] = "2026-07-24T08:01:30Z"
+    beat.pop("config_hash")
+    heartbeat.write_text(json.dumps(beat), encoding="utf-8")
+    trusted["runtime-a"] = {
+        field: beat[field]
+        for field in descriptor_fields
+        if field in beat
+    }
+    assert _compatible_epoch2_worker_ids(
+        universe,
+        now=now,
+        trusted_descriptors=trusted,
+    ) == []
+
+
+def test_supervisor_does_not_advertise_v2_without_runtime_release_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.delenv("TINYASSETS_RUNTIME_INSTANCE_ID", raising=False)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(
+        cw,
+        "_persist_worker_queue_descriptor",
+        lambda _descriptor: True,
+    )
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+    )
+
+    beat = json.loads(
+        (universe / ".worker_supervisor.worker-a.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not {
+        "queue_protocol_version",
+        "capabilities",
+        "boot_id",
+        "build_sha",
+        "config_hash",
+        "universe_id",
+        "expires_at",
+    }.intersection(beat)

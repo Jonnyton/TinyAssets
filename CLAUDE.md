@@ -5,6 +5,35 @@
 
 Everything about how to work lives in `AGENTS.md`. This file is only for things unique to Claude Code.
 
+### Merging and deploying [Claude Code only — harness constraint]
+
+**Background-job sessions cannot merge to `main` or deploy.** The background-job harness injects a
+fixed instruction — "Never push to main/master, force-push, or merge" — into that session type. It is
+NOT in this repo, NOT in `.claude/settings.json`, NOT a documented Claude Code setting, and NOT
+something the host configured. Verified 2026-07-21: `permissions.allow` already contains `Bash(*)`,
+so permissions were never the blocker; the constraint is behavioural and cannot be lifted from inside
+a background job.
+
+Consequence: a background session can do everything up to the merge — commit, push branches, resolve
+conflicts, open and update PRs, verify integrations — and then stalls. The host experienced this as
+the agent repeatedly refusing a merge they had never intended to forbid.
+
+**How to actually get merges done:**
+
+- **Run merge/deploy work in an interactive (foreground) session.** That session type carries no such
+  instruction, and `Bash(*)` is already allowed, so `gh pr merge` runs without a prompt. This is the
+  simplest fix and the one to reach for.
+- **Or use GitHub-side auto-merge**, which works regardless of session type: branch protection with
+  required status checks plus `gh pr merge --auto`. The PR merges itself when CI goes green. As of
+  2026-07-21 `main` is NOT protected, so this needs setting up before it can be relied on.
+- Do NOT try to work around the constraint from inside a background job. Say plainly that the session
+  cannot merge, and hand over the exact command sequence.
+
+**If auto-merge is wired, add a diff-scope guard.** Green checks alone are not sufficient: PR #1491
+presented as a two-file auth fix but its diff-vs-main carried seven workflow files plus
+`deploy-prod.yml` and `Dockerfile`, because the branch sat on an unmerged 217-commit lineage. Checks
+passed on the parts CI looked at; only inspecting the diff scope caught it.
+
 ### Session Start
 
 Follow `LAUNCH_PROMPT.md`. It has the full startup sequence and team roster.

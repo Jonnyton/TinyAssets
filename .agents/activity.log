@@ -3368,3 +3368,71 @@ Next coordination:
 2026-07-13 [claude-code] Paid-market core landed from Downloads drop (2026-07-08/09 Fable design sprint + 07-11 additions): tinyassets/paid_market pure-logic pkg (12 modules), 177 tests green standalone (--noconftest), fast matcher w/ DP-differential spec test, migrations 006/007/008 into prototype chain, dead 002_rls -> attic (initdb-order fix), 15 sprint docs -> docs/ + exec-plans/active. Branch worktree-paid-market-core, draft PR opening. P0 write-gate + P1 /data/wiki filed as STATUS Concern (still open per drop). Wave 2 gated on OpenSpec step-1.5 + founder sign-offs (WORK-2026-07-11 section 5).
 2026-07-13 [claude-code] P0/P1 production recovery + founder sign-offs: /mcp 502 outage root-caused (data volume owned by uid 994 vs daemon uid 1001 -> sqlite readonly on .auth.db journal) and fixed via chown+restart, canary green w/ 5 handles; /data/wiki now writable; probe goal 1a917636ae83 soft-deleted via host-actor path. Founder approved: auth-required writes (gate building on claude/write-gate), 008 ledger adoption (freeze public.ledger), ~100-concurrent droplet target, serialization rule + differential-test discipline. OpenSpec step-1.5 specs migrated on PR #1440. Also restored production wiki content (1,229 pages + 250 drafts) from stranded workflow-data volume to tinyassets-data, verified serving via wiki API + public canary green; write-gate PR #1441 opened, Codex review ADAPT applied (fat-tool bypass + wiki dry_run hole closed, 46 tests).
 2026-07-14 [claude-code] Landing complete: PRs #1440 (paid-market core + OpenSpec specs) and #1441 (P0 anonymous-write gate) MERGED per host; deploy chain repaired twice en route — #1443 (gh CLI apt pin 2.95.0 dropped upstream, build-image red) and #1445 (release-state install -o tinyassets = host uid 994 re-chowned volume root EVERY deploy, re-arming the readonly-DB outage; numeric 1001 now). deploy-prod SUCCESS, live-verified: anonymous write_graph rejected w/ actionable envelope, deprecated fat tools refused, reads open, canary green, clean daemon restart w/ fresh-process WAL pragma OK, wiki serving 1,229 pages. STATUS landed-row cleanup in same commit. Remaining watch: rendered-chatbot ui-test + first authed write.
+2026-07-21 [claude-code] Null result, no PR — s2-gate lane `s3-device-key-signed-enrollment`: STOP, mis-routed substrate. Branch at 4e0a22e2 does not contain prerequisite 3e7d16f2 (`git merge-base --is-ancestor` exit 1), so `resolve_device_key` still trusts both row fields; 0 files changed, no tests run. B24 signed-enrollment needs the lane recreated atop 3e7d16f2 or its integration descendant. Report: output/s2-gate/s3-device-key-signed-enrollment.md.
+2026-07-21 [claude-code] Null result, no PR — s2-gate lane `distexec-ci-authority-probes`: STOP, false premise. `.github/workflows/authority-invariants.yml` is not on `chore/distexec-ci-authority-probes` nor on `feat/blob-locks-v2` it is based on; it exists only on unmerged `feat/authority-ci-gates` (4e50face), and `test_daemon_enrollment_forge_probes.py` named in the brief exists nowhere. 0 files changed. REAL FINDING worth keeping: on `feat/authority-ci-gates` the `authority-regression` job runs test_signed_records/test_lease_store/test_b2_end_to_end but OMITS tests/test_blob_refs.py and tests/test_lease_store_concurrency.py — a ~2-line pytest-arg fix that belongs on that branch, plus a coverage-guard test asserting the workflow names every forge/mutation-probe file. Report: output/s2-gate/distexec-ci-authority-probes.md.
+2026-07-21 [claude-code] Dead lane, no PR, no result — s2-gate lane `universe-visibility-model` produced only `[peer_agent] ERROR: claude exceeded 5400s timeout — process tree killed.` No findings to carry; the lane needs re-running, not reading. (Related but separate: PR #1505 records that universe-visibility task 2.3 "fail closed on undeclared" is contradicted by main, where permissions.py:78-80 resolves undeclared to public by design.)
+2026-07-21 [claude-code] Fleet-lane visibility sweep: 24 output/s2-gate reports from the last 6h triaged for "wrote a report, opened no PR". 4 carried into docs/audits as draft PRs #1508 (release-chain silent links), #1509 (vacuous-test sweep), #1510 (STATUS Work-table audit), #1511 (stale-PR triage — lane had committed it locally at d4286864 but had no gh login/egress). 13 already landed on their own PRs. 3 lanes left alone: anon-identity-fail-closed, test-identity-scoped-reset and rebase-1493-onto-domain-contracts are finished CODE builds sitting uncommitted in wf-anon-identity (12 dirty files), wf-test-identity (16) and wf-effect-route (10) with no branch on origin — carrying those needs a build/test gate, not a docs carry.
+
+2026-07-22 [claude-code] **Release chain: merged is not deployed — five PRs landed on main 07-21, none reached production.**
+
+- Root cause: merges performed by the Actions app via `GITHUB_TOKEN` do not trigger workflow runs, so the push to main built nothing. `strict` required checks compounded it — each merge left every other enrolled PR `behind`, so nothing could land while main kept moving.
+- `post-merge-release.yml` was written to fix this by dispatching on `pull_request_target: closed`, and never fired once — that event is suppressed by the same token rule. DELETED rather than kept: dead machinery that looks like a safety net gets counted as coverage.
+- Replaced by `release-reconcile.yml` (#1499, corrected in #1500): every 15m asks whether a successful `Deploy prod` run on main contains the last release-relevant commit (paths read from build-image.yml, ancestry not equality), and dispatches build-image on drift. `schedule` is GitHub-driven, so no token can suppress it. A broken chain stays broken; a loop heals.
+- Codex review found two real defects: the first loop asked about image BUILDS not DEPLOYS (a build can succeed while deploy/canary fails or auto-rolls-back, and the runs query was never filtered to main), and `pr-scope-guard.yml`'s "fail closed on truncation" comment was false — the files API caps at 3000 and reports nothing when it truncates. Both fixed in #1500.
+- Durable rule landed: AGENTS.md Hard Rule 14 — verify the deployed sha, never infer it from a merge. `get_status` -> `release_state.git_sha` is the live answer.
+- Live check at time of writing: prod `git_sha` 1605349e (#1498), deployed 2026-07-22T01:11Z, canary passed — genuinely in sync, since the three later commits (#1499/#1500/#1489) touch no release path.
+
+## 2026-07-22 claude-code — session end (rate limit). Codex continues.
+
+DEPLOYED TODAY: prod moved 0bc841aa -> 92dd60c5 -> 519fb2ea. Deploy 29898999431
+success, canary passed. Two user-visible changes are live:
+  - 92dd60c5 credential fail-closed (a universe with no credential no longer
+    inherits the host's subscription)
+  - 519fb2ea first-contact birth moved from get_status to converse
+
+READ FIRST IF YOU TOUCH FIRST CONTACT OR PROVIDERS:
+  - docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md
+    (host-approved 2026-07-22; supersedes the 2026-07-15 auto-birth directive)
+  - output/user_sim_session.md, entries dated 2026-07-22
+
+*** OPEN P0 — a newborn universe is MUTE. ***
+First contact births the home (works), then converse returns "All providers
+exhausted for role=writer". Cause is ours and is traced, not guessed:
+providers/base.py:181-189 (from 92dd60c5) correctly refuses host-credential
+fallback, but nothing provisions a newborn universe a credential, so every
+provider in the writer chain fails auth.
+  - DO NOT REVERT 92dd60c5. It closes a real identity leak. Fix the missing half.
+  - NOT BUG-038/039. Identical error string, different mechanism (those are
+    candidate_discovery on established universes). Do not merge the two items.
+  - Brief queued: output/s2-gate/_queue/_backlog/codex/r2-newborn-universe-is-mute.md
+  - The test gap that let it ship: 97 first-contact tests assert the universe is
+    BORN, none assert it can SPEAK. openspec universe-creation task 1.14 now
+    demands that test and requires it to go red against 519fb2ea first.
+
+OPEN PRs I left (all non-draft, all enrolled):
+  #1558 reconcile loop dispatched builds that could never deploy
+  #1581 openspec corrections (universe-creation 2.7 re-opened; personification
+        §2 stop-banner) + the mute-universe P0 in STATUS
+  #1560 R2-2 test identity   #1550 R2-4 wiki split   #1549 credential openspec
+MERGED: #1552 (first contact), #1546 (credential guard), #1559 (STATUS), #1568
+        (design note + spec reconciliation)
+
+CI GOTCHA worth knowing: a workflow run DISPATCHED by GITHUB_TOKEN cannot
+trigger another workflow. deploy-prod triggers on workflow_run of the build, so
+a token-dispatched build never deploys. Measured: 05:28Z push-triggered build
+deployed in 3 min; 04:33Z and 06:53Z token-dispatched builds deployed nothing.
+#1558 fixes it by dispatching build AND deploy explicitly. Until that merges,
+converging prod by hand needs BOTH `gh workflow run build-image.yml --ref main`
+and then `gh workflow run deploy-prod.yml --ref main` — the deploy resolves its
+image by the sha of the ref it runs on and fails closed if that image is absent.
+
+DO NOT BUILD AS WRITTEN: openspec/changes/universe-personification §2.1-2.3.
+They specify chatbot embodiment, reversed by the 2026-07-02 relay reshape.
+§2.4 (authorization-before-voice) is still valid. Banner is in the tasks file.
+
+FLEET: 8 codex / 4 claude live, 3 queued, 3 in backlog. Briefs are grounded in
+verified evidence, not guesses. Backlog drains fast — restock it.
+
+ui-test browser: C:\Users\Jonathan\.claude-ai-profile is CORRUPT (starts, never
+binds CDP). Working profile migrated to .claude-ai-profile2. claude_chat.py and
+the ui-test skill still point at the bad path; brief queued to fix + self-heal.
