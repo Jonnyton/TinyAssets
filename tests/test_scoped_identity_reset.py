@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import subprocess
@@ -266,3 +267,203 @@ def test_scoped_reset_is_not_registered_as_public_surface() -> None:
         assert "recover_scoped_resets" not in text
 
     assert "TINYASSETS_TEST_IDENTITIES" not in os.environ
+
+
+def _roster(*, include_subject: bool = True):
+    from tinyassets.scoped_reset import TestIdentityRoster
+
+    aliases = {"alice": _SUBJECT_A}
+    allowlisted = frozenset({_SUBJECT_A}) if include_subject else frozenset()
+    return TestIdentityRoster(
+        revision="roster-rev-1",
+        aliases=aliases,
+        allowlisted_subjects=allowlisted,
+    )
+
+
+def _state_snapshot(base: Path) -> tuple[bytes, tuple[tuple[object, ...], ...]]:
+    db_bytes = (base / ".tinyassets.db").read_bytes()
+    with _connect(base) as conn:
+        rows = tuple(
+            tuple(row)
+            for row in conn.execute(
+                "SELECT founder_sub, universe_id, created_at, platform_generated "
+                "FROM founder_home ORDER BY founder_sub"
+            )
+        )
+    return db_bytes, rows
+
+
+def test_plan_is_read_only_stable_and_never_emits_raw_subject(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    before = _state_snapshot(seeded)
+    first = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+    second = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert first == second
+    assert first["plan_id"].startswith("sha256:")
+    assert first["inventory_revision"]
+    assert first["roster_revision"] == "roster-rev-1"
+    assert first["identity_alias"] == "alice"
+    assert first["home_id"] == _HOME_A
+    assert first["noop"] is False
+    assert first["blockers"] == []
+    assert any(
+        action["table"] == "founder_home"
+        for action in first["database_actions"]
+    )
+    assert _SUBJECT_A not in json.dumps(first, sort_keys=True)
+    assert _state_snapshot(seeded) == before
+
+
+def test_unknown_alias_and_nonallowlisted_subject_fail_closed(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    with pytest.raises(PermissionError, match="unknown test identity alias"):
+        plan_test_identity_reset(seeded, alias="missing", roster=_roster())
+    with pytest.raises(PermissionError, match="not allowlisted"):
+        plan_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(include_subject=False),
+        )
+
+
+def test_allowlisted_subject_without_state_has_stable_noop_plan(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import TestIdentityRoster, plan_test_identity_reset
+
+    roster = TestIdentityRoster(
+        revision="roster-rev-1",
+        aliases={"empty": "workos|empty"},
+        allowlisted_subjects=frozenset({"workos|empty"}),
+    )
+    plan = plan_test_identity_reset(seeded, alias="empty", roster=roster)
+
+    assert plan["noop"] is True
+    assert plan["home_id"] is None
+    assert plan["database_actions"] == []
+    assert plan["filesystem_actions"] == []
+
+
+def test_plan_digest_changes_when_exact_binding_version_changes(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    before = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+    with _connect(seeded) as conn:
+        conn.execute(
+            "UPDATE founder_home SET created_at = created_at + 1 "
+            "WHERE founder_sub = ?",
+            (_SUBJECT_A,),
+        )
+    after = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert before["plan_id"] != after["plan_id"]
+    assert before["state_digest"] != after["state_digest"]
+
+
+def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
+    seeded: Path,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from tinyassets.scoped_reset import main
+
+    roster_path = tmp_path / "test-identities.json"
+    roster_path.write_text(
+        json.dumps({
+            "revision": "roster-rev-1",
+            "aliases": {"alice": _SUBJECT_A},
+            "allowlisted_subjects": [_SUBJECT_A],
+        }),
+        encoding="utf-8",
+    )
+
+    assert main([
+        "plan",
+        "--data-dir",
+        str(seeded),
+        "--roster",
+        str(roster_path),
+        "--identity",
+        "alice",
+    ]) == 0
+    output = capsys.readouterr().out
+    plan = json.loads(output)
+    assert plan["identity_alias"] == "alice"
+    assert plan["home_id"] == _HOME_A
+    assert _SUBJECT_A not in output
+
+
+def test_roster_rejects_credentials_and_unexpected_fields(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.scoped_reset import load_test_identity_roster
+
+    roster_path = tmp_path / "bad-roster.json"
+    roster_path.write_text(
+        json.dumps({
+            "revision": "roster-rev-1",
+            "aliases": {"alice": _SUBJECT_A},
+            "allowlisted_subjects": [_SUBJECT_A],
+            "cookies": "must-not-be-accepted",
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unexpected roster fields"):
+        load_test_identity_roster(roster_path)
+
+
+def test_completed_plan_replay_is_read_only_and_returns_receipt(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import read_completed_plan_receipt
+
+    receipt = {
+        "plan_id": "sha256:completed",
+        "status": "completed",
+        "home_id": _HOME_A,
+        "fence": 7,
+    }
+    with _connect(seeded) as conn:
+        conn.execute(
+            """
+            CREATE TABLE scoped_reset_operations (
+                plan_id TEXT PRIMARY KEY,
+                state TEXT NOT NULL,
+                commit_witness INTEGER NOT NULL,
+                receipt_json TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO scoped_reset_operations (
+                plan_id, state, commit_witness, receipt_json
+            ) VALUES (?, 'completed', 1, ?)
+            """,
+            ("sha256:completed", json.dumps(receipt)),
+        )
+    replacement = seeded / _HOME_A / "new-home-sentinel"
+    replacement.write_text("new state\n", encoding="utf-8")
+    before = _state_snapshot(seeded)
+
+    assert read_completed_plan_receipt(
+        seeded,
+        plan_id="sha256:completed",
+    ) == receipt
+    assert read_completed_plan_receipt(
+        seeded,
+        plan_id="sha256:unknown",
+    ) is None
+    assert replacement.read_text(encoding="utf-8") == "new state\n"
+    assert _state_snapshot(seeded) == before

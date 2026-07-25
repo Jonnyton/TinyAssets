@@ -25,14 +25,17 @@
     bindings/grants, active daemon/request/task references, credentials,
     symlinks/reparse points, schema growth, contention, and every recovery fault
     boundary. No scoped mutation is implemented in this task.
-- [ ] 1.2 Implement the read-only operator plan for one allowlisted external test principal and make
+- [x] 1.2 Implement the read-only operator plan for one allowlisted external test principal and make
   unknown/repetition semantics explicit: unknown alias or non-allowlisted subject fails closed; an
   allowlisted subject with no state is a no-op; replay of a completed plan returns its receipt and
   cannot touch a newly created home.
-  - **Premise: live but blocked (2026-07-24).** A truthful plan and replay
-    receipt require the task 1.1 inventory/revision and commit-witness contract.
-    A partial planner would look authoritative while omitting newly landed
-    stores, so it was not added.
+  - **Completed (2026-07-25).** The operator-only CLI loads an explicit
+    credential-free private roster file, resolves only an allowlisted alias,
+    emits no raw subject, and returns a stable plan binding roster/inventory
+    revisions, a domain-separated principal digest, exact row versions,
+    resolved paths, blockers, and preservation scope. Empty state is a stable
+    no-op; completed-plan receipt lookup is read-only and cannot touch
+    replacement state.
 - [ ] 1.3 Only after 1.1-1.2 pass, implement apply with exact founder-home rather than ACL-derived
   ownership, lease/fencing, path containment, explicit cross-store actions, and deterministic crash
   recovery; prove every other principal and all preserved commons, history, audit/market, daemon, and

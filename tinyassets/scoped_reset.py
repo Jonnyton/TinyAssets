@@ -7,6 +7,9 @@ maintenance operation with an explicit reviewed plan.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
+import json
 import os
 import sqlite3
 import stat
@@ -15,6 +18,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
+from typing import AbstractSet, Mapping
 
 from tinyassets.storage import DB_FILENAME
 
@@ -137,6 +141,41 @@ class ScopeInventory:
     schema_tables: frozenset[str]
     subject_grants: tuple[tuple[str, str], ...]
     blockers: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TestIdentityRoster:
+    """Restricted operator input; aliases are safe to emit, subjects are not."""
+
+    revision: str
+    aliases: Mapping[str, str]
+    allowlisted_subjects: AbstractSet[str]
+
+    def __post_init__(self) -> None:
+        revision = self.revision.strip()
+        if not revision:
+            raise ValueError("roster revision must be non-empty")
+        normalized: dict[str, str] = {}
+        for raw_alias, raw_subject in self.aliases.items():
+            alias = str(raw_alias).strip()
+            subject = str(raw_subject).strip()
+            if not alias or not subject:
+                raise ValueError("roster aliases and subjects must be non-empty")
+            if subject == "anonymous":
+                raise ValueError("anonymous cannot be a test identity")
+            if alias in normalized:
+                raise ValueError(f"duplicate test identity alias: {alias}")
+            normalized[alias] = subject
+        if len(set(normalized.values())) != len(normalized):
+            raise ValueError("test identity subjects must be unique")
+        allowed = frozenset(
+            str(value).strip()
+            for value in self.allowlisted_subjects
+            if str(value).strip()
+        )
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "aliases", MappingProxyType(normalized))
+        object.__setattr__(self, "allowlisted_subjects", allowed)
 
 
 @dataclass
@@ -457,6 +496,374 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     )
 
 
+def _principal_digest(principal: str) -> str:
+    payload = f"tinyassets-scoped-reset-principal-v1\0{principal}".encode()
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def _json_value(value: object) -> object:
+    if isinstance(value, bytes):
+        return {
+            "blob_sha256": hashlib.sha256(value).hexdigest(),
+            "bytes": len(value),
+        }
+    return value
+
+
+def _row_digest(row: sqlite3.Row) -> str:
+    payload = {
+        key: _json_value(row[key])
+        for key in row.keys()
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _primary_key_columns(
+    conn: sqlite3.Connection,
+    table: str,
+) -> tuple[str, ...]:
+    columns = [
+        (int(row[5]), str(row[1]))
+        for row in conn.execute(f'PRAGMA table_info("{table}")')
+        if int(row[5]) > 0
+    ]
+    return tuple(name for _, name in sorted(columns))
+
+
+def _row_action(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    row: sqlite3.Row,
+    alias: str,
+) -> dict[str, object]:
+    keys = _primary_key_columns(conn, table)
+    if not keys:
+        raise ScopedResetSchemaError(
+            f"resettable table {table!r} has no primary key"
+        )
+    safe_keys: dict[str, object] = {}
+    for key in keys:
+        if table == "founder_home" and key == "founder_sub":
+            safe_keys["identity_alias"] = alias
+        elif table == "universe_acl" and key == "actor_id":
+            safe_keys["identity_alias"] = alias
+        else:
+            safe_keys[key] = _json_value(row[key])
+    return {
+        "table": table,
+        "action": "delete_exact_row",
+        "keys": safe_keys,
+        "row_digest": _row_digest(row),
+    }
+
+
+def _select_rows(
+    conn: sqlite3.Connection,
+    *,
+    table: str,
+    where: str,
+    params: tuple[object, ...],
+) -> list[sqlite3.Row]:
+    return list(
+        conn.execute(
+            f'SELECT * FROM "{table}" WHERE {where} ORDER BY rowid',
+            params,
+        )
+    )
+
+
+def _database_actions(
+    conn: sqlite3.Connection,
+    *,
+    principal: str,
+    alias: str,
+    home_id: str | None,
+) -> list[dict[str, object]]:
+    actions: list[dict[str, object]] = []
+    if home_id is not None:
+        for row in _select_rows(
+            conn,
+            table="founder_home",
+            where="founder_sub = ? AND universe_id = ?",
+            params=(principal, home_id),
+        ):
+            actions.append(
+                _row_action(
+                    conn,
+                    table="founder_home",
+                    row=row,
+                    alias=alias,
+                )
+            )
+    for row in _select_rows(
+        conn,
+        table="universe_acl",
+        where="actor_id = ?",
+        params=(principal,),
+    ):
+        actions.append(
+            _row_action(conn, table="universe_acl", row=row, alias=alias)
+        )
+    if home_id is None:
+        return actions
+
+    home_tables = (
+        "universe_hard_priorities",
+        "universe_notes",
+        "universe_rules",
+        "universe_snapshots",
+        "universe_work_targets",
+        "user_requests",
+        "universes",
+    )
+    for table in home_tables:
+        for row in _select_rows(
+            conn,
+            table=table,
+            where="universe_id = ?",
+            params=(home_id,),
+        ):
+            actions.append(
+                _row_action(conn, table=table, row=row, alias=alias)
+            )
+
+    branch_rows = _select_rows(
+        conn,
+        table="branches",
+        where="universe_id = ?",
+        params=(home_id,),
+    )
+    branch_ids = [str(row["branch_id"]) for row in branch_rows]
+    for branch_id in branch_ids:
+        for row in _select_rows(
+            conn,
+            table="branch_heads",
+            where="branch_id = ?",
+            params=(branch_id,),
+        ):
+            actions.append(
+                _row_action(conn, table="branch_heads", row=row, alias=alias)
+            )
+    for row in branch_rows:
+        actions.append(_row_action(conn, table="branches", row=row, alias=alias))
+
+    vote_rows = _select_rows(
+        conn,
+        table="vote_windows",
+        where="universe_id = ?",
+        params=(home_id,),
+    )
+    for vote in vote_rows:
+        for row in _select_rows(
+            conn,
+            table="vote_ballots",
+            where="vote_id = ?",
+            params=(vote["vote_id"],),
+        ):
+            actions.append(
+                _row_action(conn, table="vote_ballots", row=row, alias=alias)
+            )
+    for row in vote_rows:
+        actions.append(
+            _row_action(conn, table="vote_windows", row=row, alias=alias)
+        )
+    return sorted(
+        actions,
+        key=lambda action: (
+            str(action["table"]),
+            json.dumps(action["keys"], sort_keys=True),
+        ),
+    )
+
+
+def plan_test_identity_reset(
+    data_dir: Path,
+    *,
+    alias: str,
+    roster: TestIdentityRoster,
+) -> dict[str, object]:
+    """Return a stable, content-free, read-only plan for one allowlisted alias."""
+
+    identity_alias = alias.strip()
+    principal = roster.aliases.get(identity_alias)
+    if principal is None:
+        raise PermissionError(f"unknown test identity alias: {identity_alias!r}")
+    if principal not in roster.allowlisted_subjects:
+        raise PermissionError(
+            f"subject for alias {identity_alias!r} is not allowlisted"
+        )
+
+    scope = inspect_reset_scope(data_dir, principal=principal)
+    root = Path(data_dir).resolve(strict=True)
+    db_file = root / DB_FILENAME
+    actions: list[dict[str, object]] = []
+    if db_file.is_file():
+        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        try:
+            conn.row_factory = sqlite3.Row
+            actions = _database_actions(
+                conn,
+                principal=principal,
+                alias=identity_alias,
+                home_id=scope.home_id,
+            )
+        finally:
+            conn.close()
+
+    filesystem_actions: list[dict[str, str]] = []
+    if scope.home_path is not None:
+        filesystem_actions.append({
+            "action": "stage_then_remove_home",
+            "path": str(scope.home_path.resolve(strict=False)),
+        })
+
+    state_payload = {
+        "database_actions": actions,
+        "filesystem_actions": filesystem_actions,
+    }
+    state_digest = "sha256:" + hashlib.sha256(
+        json.dumps(
+            state_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    plan_inputs = {
+        "inventory_revision": INVENTORY_REVISION,
+        "roster_revision": roster.revision,
+        "principal_fingerprint": _principal_digest(principal),
+        "home_id": scope.home_id,
+        "resolved_data_dir": str(root),
+        "state_digest": state_digest,
+        "blockers": list(scope.blockers),
+    }
+    plan_id = "sha256:" + hashlib.sha256(
+        json.dumps(
+            plan_inputs,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    return {
+        "plan_id": plan_id,
+        **plan_inputs,
+        "identity_alias": identity_alias,
+        "database_actions": actions,
+        "filesystem_actions": filesystem_actions,
+        "preserved": [
+            "all other founder homes and universe content",
+            "commons, wiki, root run history, audit, market, and billing state",
+            "global daemon identities and all credentials",
+        ],
+        "noop": not actions and not filesystem_actions,
+    }
+
+
+def load_test_identity_roster(path: Path) -> TestIdentityRoster:
+    """Load the credential-free operator roster from an explicit local file."""
+
+    roster_path = Path(path).resolve(strict=True)
+    if not roster_path.is_file():
+        raise ValueError("test identity roster must be a regular file")
+    if sys.platform != "win32":
+        permissions = stat.S_IMODE(roster_path.stat().st_mode)
+        if permissions & 0o077:
+            raise PermissionError(
+                "test identity roster must not be group/world accessible"
+            )
+    payload = json.loads(roster_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("test identity roster must be a JSON object")
+    allowed_fields = {"aliases", "allowlisted_subjects", "revision"}
+    unexpected = sorted(set(payload) - allowed_fields)
+    if unexpected:
+        raise ValueError(
+            "unexpected roster fields: " + ", ".join(unexpected)
+        )
+    aliases = payload.get("aliases")
+    allowlisted = payload.get("allowlisted_subjects")
+    if not isinstance(aliases, dict):
+        raise ValueError("roster aliases must be a JSON object")
+    if not isinstance(allowlisted, list):
+        raise ValueError("roster allowlisted_subjects must be a JSON array")
+    return TestIdentityRoster(
+        revision=str(payload.get("revision") or ""),
+        aliases={
+            str(alias): str(subject)
+            for alias, subject in aliases.items()
+        },
+        allowlisted_subjects=frozenset(str(value) for value in allowlisted),
+    )
+
+
+def read_completed_plan_receipt(
+    data_dir: Path,
+    *,
+    plan_id: str,
+) -> dict[str, object] | None:
+    """Return the immutable receipt for a witnessed completed plan, if any."""
+
+    root = Path(data_dir).resolve(strict=True)
+    db_file = root / DB_FILENAME
+    if not db_file.is_file():
+        return None
+    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    try:
+        if "scoped_reset_operations" not in _table_names(conn):
+            return None
+        row = conn.execute(
+            "SELECT receipt_json FROM scoped_reset_operations "
+            "WHERE plan_id = ? AND state = 'completed' AND commit_witness = 1",
+            (plan_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    receipt = json.loads(str(row[0]))
+    if not isinstance(receipt, dict):
+        raise ScopedResetSchemaError(
+            "completed scoped-reset receipt must be a JSON object"
+        )
+    return {str(key): value for key, value in receipt.items()}
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m tinyassets.scoped_reset",
+        description="Operator-only exact test-identity reset maintenance",
+    )
+    commands = parser.add_subparsers(dest="command", required=True)
+    plan = commands.add_parser("plan", help="print a read-only reset plan")
+    plan.add_argument("--data-dir", required=True, type=Path)
+    plan.add_argument("--roster", required=True, type=Path)
+    plan.add_argument("--identity", required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run the operator-only maintenance CLI."""
+
+    args = _build_parser().parse_args(argv)
+    if args.command == "plan":
+        roster = load_test_identity_roster(args.roster)
+        plan = plan_test_identity_reset(
+            args.data_dir,
+            alias=args.identity,
+            roster=roster,
+        )
+        print(json.dumps(plan, sort_keys=True, separators=(",", ":")))
+        return 0
+    raise AssertionError(f"unhandled scoped reset command: {args.command}")
+
+
 __all__ = [
     "FAULT_POINTS",
     "INVENTORY_REVISION",
@@ -466,6 +873,15 @@ __all__ = [
     "ScopedResetError",
     "ScopedResetLeaseBusy",
     "ScopedResetSchemaError",
+    "TestIdentityRoster",
     "acquire_maintenance_barrier",
     "inspect_reset_scope",
+    "load_test_identity_roster",
+    "main",
+    "plan_test_identity_reset",
+    "read_completed_plan_receipt",
 ]
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
