@@ -34,19 +34,21 @@ The live MCP server SHALL register and advertise exactly seven handles: `read_gr
 
 ### Requirement: Registered tools publish exact discoverability and behavior metadata
 
-The system SHALL attach the following title, tag set, and four MCP behavior
-hints to every registered tool after retirement. In the hint columns, `T`
-means true and `F` means false, ordered as read-only, destructive, idempotent,
-and open-world:
+This change SHALL remove only retired rows from the canonical metadata table;
+it SHALL NOT reset metadata for surviving handles. After retirement, the
+system SHALL attach the following canonical title, tag set, and four MCP
+behavior hints to every registered tool. In the hint columns, `T` means true
+and `F` means false, ordered as read-only, destructive, idempotent, and
+open-world:
 
 | Tool | Title | Tags | R | D | I | O |
 |---|---|---|---:|---:|---:|---:|
 | `read_graph` | `Read Graph` | `graph`, `read`, `tinyassets` | T | F | T | F |
-| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | F | F | F |
-| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | F | F | F |
+| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | T | F | T |
+| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | T | F | T |
 | `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | F |
-| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
-| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
+| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | T | F | T |
+| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | T |
 | `get_status` | `Daemon Status + Routing Evidence` | `confidential-tier`, `privacy`, `routing`, `status`, `tinyassets`, `verification` | T | F | T | F |
 
 These hints SHALL remain descriptive MCP metadata rather than authorization
