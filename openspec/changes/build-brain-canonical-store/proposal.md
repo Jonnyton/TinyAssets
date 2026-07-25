@@ -28,9 +28,13 @@ this relocation.
   compatibility shim for slice-1 `assemble(lens)`, the **write commit protocol**,
   and **substrate conformance validation** plus the `[composable]` upstream-watch
   steward.
-- Carry the `brain-canonical-store` delta (relocated verbatim from the archived
-  amendment, including all six Codex adaptations) as the live target contract,
-  and sync it into `openspec/specs/` only when the corresponding behavior ships.
+- Carry the `brain-canonical-store` delta (relocated from the archived amendment,
+  including all six Codex adaptations) as the live target contract, and sync it
+  into `openspec/specs/` only when the corresponding behavior ships. The
+  relocation was verbatim apart from one 2026-07-25 correction: the
+  source-of-truth and OKF-conformance requirements are now scoped to the commons
+  and the default organization instead of asserting OKF for every brain, which
+  removes a live contradiction against A4 and tasks.md 4.5.
 - Reuse rather than rebuild what already landed. `tinyassets/wiki/okf_export.py`
   ships the four projection mechanics as a one-way **export** — `_convert_wikilinks`,
   `_write_index` (root `index.md` frontmatter is `okf_version` and nothing else),
@@ -46,11 +50,16 @@ this relocation.
 
 ### New Capabilities
 
-- `brain-canonical-store`: the brain's canonical knowledge representation and
-  durability contract — the OKF bundle as source of truth, the SQLite/FTS/vector
-  store as a rebuildable operational index, write-through durability under an
-  explicit commit protocol, the OKF frontmatter + reserved-file conformance
-  mapping for Tiny's typed entries, and the auto-sync-to-OKF obligation.
+- `brain-canonical-store`: the canonical knowledge representation and durability
+  contract **for the commons and for the default brain organization** — the OKF
+  bundle as source of truth, the SQLite/FTS/vector store as a rebuildable
+  operational index, write-through durability under an explicit commit protocol,
+  the OKF frontmatter + reserved-file conformance mapping for Tiny's typed
+  entries, and the auto-sync-to-OKF obligation. These requirements bind the OKF
+  organization, **not every brain**: `PLAN.md` Design Decisions make OKF the
+  default rather than a mandate, and A4 below keeps the reader/writer seam
+  organization-neutral so a user-designed non-OKF organization is expressible on
+  the same substrate (open seam — tasks.md 4.5).
 
 ### Modified Capabilities
 

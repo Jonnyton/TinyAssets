@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
-### Requirement: The OKF bundle is the canonical source of truth
-The brain's canonical knowledge representation SHALL be an OKF (Open Knowledge Format) bundle — a directory of markdown files with YAML frontmatter, one file per entry, cross-links forming the graph, plus reserved `index.md` and `log.md`. The SQLite entry store, FTS index, and vector index SHALL be a derived, fully rebuildable operational index over the bundle and SHALL NOT be the source of truth.
+### Requirement: The OKF bundle is the canonical source of truth for the commons and the default organization
+For the commons, and for a universe brain using the default organization, the canonical knowledge representation SHALL be an OKF (Open Knowledge Format) bundle — a directory of markdown files with YAML frontmatter, one file per entry, cross-links forming the graph, plus reserved `index.md` and `log.md`. The SQLite entry store, FTS index, and vector index SHALL be a derived, fully rebuildable operational index over the bundle and SHALL NOT be the source of truth. A founder MAY design a custom brain organization (`PLAN.md` Design Decisions, host-approved 2026-07-25); this requirement SHALL NOT be read as mandating OKF for such a brain, and the substrate reader/writer contract SHALL remain organization-neutral until the custom-organization seam is decided (design.md A4; tasks.md 4.5).
 
 #### Scenario: index rebuilds from the bundle
 - **WHEN** the SQLite/FTS/vector index is deleted and rebuilt from the bundle
@@ -74,8 +74,8 @@ The nightly git snapshot of the bundle SHALL be the canonical durable store (not
 - **THEN** the operational index stops serving it FIRST (tombstone / block reads before stale content can keep being served), then the bundle body is deleted at the source, then the index is rebuilt and rollups purged
 - **AND** for a secrets-class redaction the tombstone OMITS any recoverable content hash
 
-### Requirement: The brain conforms to OKF and auto-syncs to the standard
-The bundle root SHALL declare `okf_version`. Conformance VALIDATION SHALL be substrate. A forkable, composable steward SHALL watch the upstream OKF spec and PROPOSE migrations for backward-compatible (minor) revisions; the steward SHALL NOT be platform code.
+### Requirement: The OKF organization conforms to OKF and auto-syncs to the standard
+A brain using the OKF organization SHALL declare `okf_version` at its bundle root. Conformance VALIDATION SHALL be substrate. A forkable, composable steward SHALL watch the upstream OKF spec and PROPOSE migrations for backward-compatible (minor) revisions; the steward SHALL NOT be platform code. A custom (non-OKF) brain organization is out of this requirement's scope until the organization seam is decided (tasks.md 4.5).
 
 #### Scenario: a backward-compatible OKF revision is proposed and validated
 - **WHEN** OKF publishes a backward-compatible (minor) revision
