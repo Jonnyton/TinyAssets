@@ -48,9 +48,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
-| Raise the Claude Code monthly-spend ceiling (rate limit reset is insufficient) so literal Opus 5 can review gated Codex lanes | claude.ai/settings/usage | PostgreSQL restack and other Opus-gated lanes | host-action |
+| Literal Opus 5 review blocked in CLI + Claude.ai by monthly spend/credits; wait for Claude's shown 16:00 plan reset or raise limit + add credits | claude.ai/settings/usage | PostgreSQL restack and other Opus-gated lanes | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude model rate limit reset, but CLI is blocked by the account monthly-spend ceiling as of 2026-07-25; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`.
+4. **Capacity/context** — Claude model reset ≠ spend reset: CLI and Opus 5 High web both blocked at 15:34 PDT 2026-07-25; web shows 16:00 plan reset.
