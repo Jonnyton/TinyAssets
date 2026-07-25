@@ -8,9 +8,9 @@
 
 ## 2. Fresh ownership and caller inventory
 
-- [ ] 2.1 Refresh `origin/main`, run provider-context and worktree scans, and rerun file-collision checks before claiming runtime files; resolve or depend on the owners observed in PRs #1560, #1550, #1549, #1493, #1478, #1467, #1466, #1465, and #1464.
-- [ ] 2.2 Confirm PR #1561 remains limited to the separate legacy stdio server; exclude `tinyassets/mcp_server.py` from this change and never restore `tinyassets/directory_server.py` if the retirement change already removed it.
-- [ ] 2.3 Inventory every repository import and direct Python caller of `universe`, `community_change_context`, `extensions`, `goals`, `gates`, and `wiki`; record a preserve-or-explicitly-migrate decision and focused coverage for each wrapper.
+- [x] 2.1 Refresh `origin/main`, run provider-context and worktree scans, and rerun file-collision checks before claiming runtime files; resolve or depend on the owners observed in PRs #1560, #1550, #1549, #1493, #1478, #1467, #1466, #1465, and #1464. — 2026-07-25: 5 of 9 CLOSED; 4 remain OPEN (#1493, #1467, #1466, #1465) and all edit `universe_server.py`, so they become dependency edges for the implementation lane. `claim_check.py --check-files` CLEAR. See `docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md` §2.
+- [x] 2.2 Confirm PR #1561 remains limited to the separate legacy stdio server; exclude `tinyassets/mcp_server.py` from this change and never restore `tinyassets/directory_server.py` if the retirement change already removed it. — 2026-07-25: #1561 confirmed 3 files, stdio-only; `mcp_server.py` tool surface is disjoint from the six; `directory_server.py` already deleted by `60f7f9f1` (#1718). **Finding 2.2-A:** open PR #1467 still carries a `modified +30/-3` delta on `directory_server.py` and would restore it if merged unrebased. See inventory §3.
+- [x] 2.3 Inventory every repository import and direct Python caller of `universe`, `community_change_context`, `extensions`, `goals`, `gates`, and `wiki`; record a preserve-or-explicitly-migrate decision and focused coverage for each wrapper. — 2026-07-25: 176 Python bindings across 67 files, **all under `tests/`**; zero production-runtime Python callers and zero canonical→legacy delegation, so PRESERVE the wrappers (confirms 4.1's default). 6 wire-caller sites need migration. **Finding 2.3-B:** `wiki action=list` has no canonical replacement and 2 live scripts depend on it — a retirement prerequisite. See inventory §4–§6.
 
 ## 3. Failing contract and execution proofs
 
