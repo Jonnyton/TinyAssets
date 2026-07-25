@@ -652,6 +652,45 @@ def test_queue_descriptor_metadata_patch_rejects_concurrent_retirement(
     assert cleared["metadata"]["queue_protocol_descriptor"] is None
 
 
+def test_queue_descriptor_clear_is_idempotent_without_metadata_write(
+    tmp_path,
+    monkeypatch,
+):
+    daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Descriptor Clear Runner",
+        created_by="host",
+        soul_text="Avoid repeated empty descriptor writes.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        tmp_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id="universe-a",
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="host",
+        worker_id="worker-a",
+    )
+
+    def unexpected_update(*_args, **_kwargs):
+        raise AssertionError("already-cleared descriptor wrote metadata")
+
+    monkeypatch.setattr(
+        daemon_registry.daemon_server,
+        "update_runtime_instance_metadata",
+        unexpected_update,
+    )
+
+    cleared = daemon_registry.set_worker_queue_descriptor(
+        tmp_path,
+        runtime_instance_id=runtime["runtime_instance_id"],
+        descriptor=None,
+        expected_worker_id="worker-a",
+    )
+
+    assert cleared["metadata"].get("queue_protocol_descriptor") is None
+
+
 def test_update_daemon_behavior_records_versioned_policy(tmp_path):
     daemon = daemon_registry.create_daemon(
         tmp_path,

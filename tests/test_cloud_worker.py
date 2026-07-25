@@ -509,9 +509,38 @@ def test_running_guard_treats_missing_epoch2_store_as_no_active_claim(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-a")
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
     universe = tmp_path / "universe-a"
     universe.mkdir()
+
+    assert cw._queue_has_running_branch_task(universe) is False
+
+
+def test_running_guard_treats_partial_epoch2_schema_as_unavailable(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        cw,
+        "_epoch2_claim_consumer_ready",
+        lambda: True,
+    )
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    with RequestAdmissionStore(tmp_path).connection() as conn:
+        conn.execute(
+            "CREATE TABLE branch_tasks_v2 (branch_task_id TEXT PRIMARY KEY)"
+        )
+        conn.commit()
 
     assert cw._queue_has_running_branch_task(universe) is False
 
@@ -520,9 +549,9 @@ def test_epoch2_wakeup_stays_inert_until_daemon_claim_consumer_exists(
     tmp_path,
     monkeypatch,
 ):
-    from fantasy_daemon import branch_registrations
+    from tinyassets import branch_tasks_v2
 
-    assert branch_registrations.EPOCH2_QUEUE_CONSUMER_READY is False
+    assert branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is False
     assert cw._epoch2_claim_consumer_ready() is False
     _write_worker_release_state(tmp_path)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -534,6 +563,18 @@ def test_epoch2_wakeup_stays_inert_until_daemon_claim_consumer_exists(
         tmp_path / "universe-a",
         runtime_instance_id="runtime-a",
     ) is None
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+
+    def unexpected_recovery(*_args, **_kwargs):
+        raise AssertionError("disabled epoch-2 path touched storage")
+
+    monkeypatch.setattr(
+        branch_tasks_v2.Epoch2BranchTaskAdapter,
+        "recover_expired",
+        unexpected_recovery,
+    )
+    assert cw._queue_has_running_branch_task(universe) is False
 
 
 def test_has_pickable_branch_task_detects_current_worker_epoch2_candidate(
@@ -601,6 +642,42 @@ def test_has_pickable_branch_task_leaves_other_daemon_epoch2_work_pending(
         directed_daemon_id=other_daemon["daemon_id"],
         directed_soul_hash=other_daemon["soul_hash"],
     )
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_rejects_empty_canonical_daemon_id(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+
+    universe, _daemon, runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    other_daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Other Directed Worker",
+        created_by="actor-a",
+        soul_text="Own work the anonymous runtime cannot take.",
+    )
+    _commit_epoch2_worker_task(
+        tmp_path,
+        directed_daemon_id=other_daemon["daemon_id"],
+        directed_soul_hash=other_daemon["soul_hash"],
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    with adapter._store.connection() as conn:
+        conn.execute(
+            """
+            UPDATE author_runtime_instances
+            SET author_id = ''
+            WHERE instance_id = ?
+            """,
+            (runtime["runtime_instance_id"],),
+        )
+        conn.commit()
 
     assert cw._has_pickable_branch_task(universe) is False
 
@@ -764,12 +841,13 @@ def test_supervisor_does_not_restart_epoch2_before_claim_consumer_is_ready(
         universe,
         producer_poll_interval=30.0,
         poll_interval=0.01,
-        max_iterations=1,
+        max_iterations=5,
         spawn_fn=spawn,
         sleep_fn=sleep_fn,
     )
 
-    assert spawned[0].terminate_called is False
+    assert len(spawned) == 5
+    assert all(proc.terminate_called is False for proc in spawned)
 
 
 def test_supervisor_does_not_restart_epoch2_work_without_compatible_capacity(

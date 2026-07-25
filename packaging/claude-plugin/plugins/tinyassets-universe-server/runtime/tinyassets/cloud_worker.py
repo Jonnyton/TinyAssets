@@ -271,7 +271,7 @@ def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
 
 def _epoch2_claim_consumer_ready() -> bool:
     """Return code-owned truth that the supervised daemon can drain epoch 2."""
-    from fantasy_daemon.branch_registrations import (
+    from tinyassets.branch_tasks_v2 import (
         EPOCH2_QUEUE_CONSUMER_READY,
     )
 
@@ -601,11 +601,16 @@ def _queue_has_running_branch_task(universe: Path) -> bool:
 
         if any(task.status == "running" for task in read_queue(universe)):
             return True
+        if not _epoch2_claim_consumer_ready():
+            return False
         from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
         from tinyassets.storage import data_dir
 
         adapter = Epoch2BranchTaskAdapter(data_dir())
-        adapter.recover_expired()
+        adapter.recover_expired(
+            universe_id=universe.name,
+            worker_id=_worker_id(),
+        )
         return adapter.has_active_claim(
             universe_id=universe.name,
             worker_id=_worker_id(),
@@ -695,6 +700,7 @@ def _current_worker_epoch2_capacity(
         or descriptor.runtime_instance_id != runtime_instance_id
         or descriptor.universe_id != universe.name
         or trusted != heartbeat_descriptor
+        or not runtime["daemon_id"]
         or not _descriptor_is_live(
             descriptor,
             transaction_at=_utcnow().isoformat(),

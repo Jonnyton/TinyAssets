@@ -62,6 +62,43 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     ).fetchone() is not None
 
 
+_ACTIVE_CLAIM_COLUMNS = frozenset({
+    "admission_id",
+    "branch_task_id",
+    "claimed_at",
+    "claimed_by",
+    "disabled",
+    "heartbeat_at",
+    "lease_expires_at",
+    "queued_at",
+    "request_id",
+    "status",
+    "terminal_at",
+    "universe_id",
+})
+
+
+def _active_claim_schema_ready(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "branch_tasks_v2"):
+        return False
+    if any(
+        not _table_exists(conn, table_name)
+        for table_name in (
+            "request_admissions",
+            "request_admission_events",
+            "user_requests",
+        )
+    ):
+        return False
+    columns = {
+        str(row["name"])
+        for row in conn.execute(
+            "PRAGMA table_info(branch_tasks_v2)"
+        ).fetchall()
+    }
+    return _ACTIVE_CLAIM_COLUMNS <= columns
+
+
 # Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
     "access_checked",
@@ -623,7 +660,7 @@ class RequestAdmissionStore:
         clean_universe_id = _required(universe_id, "universe_id")
         clean_worker_id = _required(worker_id, "worker_id")
         with self.connection() as conn:
-            if not _table_exists(conn, "branch_tasks_v2"):
+            if not _active_claim_schema_ready(conn):
                 return False
             row = conn.execute(
                 """
@@ -1130,23 +1167,54 @@ class RequestAdmissionStore:
 
     def recover_expired_v2_tasks(
         self,
+        *,
+        universe_id: str = "",
+        worker_id: str = "",
     ) -> list[dict[str, Any]]:
+        clean_universe_id = str(universe_id or "").strip()
+        clean_worker_id = str(worker_id or "").strip()
+        filters = [
+            "status IN ('running', 'cancel_requested')",
+            "disabled = 0",
+            "lease_expires_at IS NOT NULL",
+            "julianday(lease_expires_at) <= julianday(?)",
+        ]
+        params: list[Any] = [_clock_iso(self._clock)]
+        if clean_universe_id:
+            filters.append("universe_id = ?")
+            params.append(clean_universe_id)
+        if clean_worker_id:
+            filters.append("claimed_by = ?")
+            params.append(clean_worker_id)
+        where_sql = " AND ".join(filters)
         with self.connection() as conn:
-            if not _table_exists(conn, "branch_tasks_v2"):
+            if not _active_claim_schema_ready(conn):
+                return []
+            expired = conn.execute(
+                f"""
+                SELECT 1
+                FROM branch_tasks_v2
+                WHERE {where_sql}
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+            if expired is None:
                 return []
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if not _active_claim_schema_ready(conn):
+                    conn.rollback()
+                    return []
                 now = _clock_iso(self._clock)
+                transaction_params = [now, *params[1:]]
                 rows = conn.execute(
-                    """
+                    f"""
                     SELECT * FROM branch_tasks_v2
-                    WHERE status IN ('running', 'cancel_requested')
-                      AND disabled = 0
-                      AND lease_expires_at IS NOT NULL
-                      AND julianday(lease_expires_at) <= julianday(?)
+                    WHERE {where_sql}
                     ORDER BY queued_at, branch_task_id
                     """,
-                    (now,),
+                    transaction_params,
                 ).fetchall()
                 recovered: list[dict[str, Any]] = []
                 for row in rows:

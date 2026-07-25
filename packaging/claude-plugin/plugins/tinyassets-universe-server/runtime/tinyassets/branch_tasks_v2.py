@@ -60,6 +60,11 @@ DescriptorReader = Callable[
     WorkerClaimDescriptor | None,
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
+# Flip only in the same change that wires the supervised daemon's selector,
+# claim, and lifecycle paths to this adapter.  This constant is bundled with
+# every runtime mirror, so capability publication never depends on an
+# optional domain package.
+EPOCH2_QUEUE_CONSUMER_READY = False
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -254,10 +259,18 @@ class Epoch2BranchTaskAdapter:
             )
         )
 
-    def recover_expired(self) -> list[Epoch2BranchTask]:
+    def recover_expired(
+        self,
+        *,
+        universe_id: str = "",
+        worker_id: str = "",
+    ) -> list[Epoch2BranchTask]:
         return [
             _as_epoch2_task(row)
-            for row in self._store.recover_expired_v2_tasks()
+            for row in self._store.recover_expired_v2_tasks(
+                universe_id=universe_id,
+                worker_id=worker_id,
+            )
         ]
 
     def maintain_quarantine(

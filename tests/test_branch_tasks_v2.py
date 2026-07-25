@@ -495,7 +495,10 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
     assert cancelled.terminal_at == "2026-07-24T08:01:30+00:00"
 
     clock.set("2026-07-24T08:01:31+00:00")
-    recovered = adapter.recover_expired()
+    recovered = adapter.recover_expired(
+        universe_id="universe-a",
+        worker_id="worker-b",
+    )
     assert [task.branch_task_id for task in recovered] == [
         second["branch_task_id"]
     ]
@@ -506,6 +509,36 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
         tmp_path,
         second["request_id"],
     ) == "pending"
+
+
+def test_recovery_poll_without_expired_claim_stays_read_only(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+    monkeypatch,
+) -> None:
+    adapter, _committed, _clock = epoch2
+    statements: list[str] = []
+    real_connection = adapter._store.connection
+
+    @contextmanager
+    def traced_connection():
+        with real_connection() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+
+    monkeypatch.setattr(
+        adapter._store,
+        "connection",
+        traced_connection,
+    )
+
+    assert adapter.recover_expired(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+    assert not any(
+        "BEGIN IMMEDIATE" in statement.upper()
+        for statement in statements
+    )
 
 
 def test_pending_cancel_is_terminal_without_claim(
