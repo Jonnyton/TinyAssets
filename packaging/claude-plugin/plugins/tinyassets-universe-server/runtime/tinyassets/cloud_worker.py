@@ -73,6 +73,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -269,6 +270,15 @@ def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
     return _WORKER_PROTOCOL_IDENTITIES.get(worker_id)
 
 
+def _epoch2_claim_consumer_ready() -> bool:
+    """Return code-owned truth that the supervised daemon can drain epoch 2."""
+    from tinyassets.branch_tasks_v2 import (
+        EPOCH2_QUEUE_CONSUMER_READY,
+    )
+
+    return EPOCH2_QUEUE_CONSUMER_READY is True
+
+
 def _worker_queue_descriptor(
     universe: Path,
     *,
@@ -276,6 +286,8 @@ def _worker_queue_descriptor(
     _now: datetime | None = None,
 ) -> dict[str, Any] | None:
     """Return trusted v2 evidence, or no evidence when any source is missing."""
+    if not _epoch2_claim_consumer_ready():
+        return None
     worker_id = _worker_id()
     runtime_id = str(runtime_instance_id or "").strip()
     universe_id = universe.name.strip()
@@ -584,23 +596,133 @@ def _register_branch_task_producers_from_env() -> None:
 
 
 def _queue_has_running_branch_task(universe: Path) -> bool:
-    """Return True when interrupting the subprocess may abandon a claim."""
+    """Protect live v1/v2 claims that a subprocess restart may abandon."""
     try:
         from tinyassets.branch_tasks import read_queue
 
-        return any(task.status == "running" for task in read_queue(universe))
+        if any(task.status == "running" for task in read_queue(universe)):
+            return True
+        if not _epoch2_claim_consumer_ready():
+            return False
+        from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+        from tinyassets.storage import data_dir
+
+        adapter = Epoch2BranchTaskAdapter(data_dir())
+        return adapter.has_active_claim(
+            universe_id=universe.name,
+            worker_id=_worker_id(),
+        )
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: queue status check failed")
         return True
 
 
+def _current_worker_epoch2_capacity(
+    universe: Path,
+) -> tuple[Any, dict[str, str]] | None:
+    """Return the epoch-2 adapter and trusted current-worker runtime."""
+    if not _epoch2_claim_consumer_ready():
+        return None
+    worker_id = _worker_id()
+    runtime_instance_id = os.environ.get(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        "",
+    ).strip()
+    if not runtime_instance_id:
+        return None
+
+    beat_path = universe / supervisor_heartbeat_filename(worker_id)
+    try:
+        if not beat_path.is_file() or beat_path.stat().st_size > 65_536:
+            return None
+        beat = json.loads(beat_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(beat, dict) or beat.get("subprocess_alive") is not True:
+        return None
+
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+        _descriptor_is_live,
+    )
+    from tinyassets.daemon_registry import _runtime_from_author_runtime
+    from tinyassets.daemon_server import get_runtime_instance
+    from tinyassets.storage import data_dir
+
+    try:
+        capabilities = beat.get("capabilities")
+        if not isinstance(capabilities, list):
+            return None
+        descriptor = WorkerClaimDescriptor(
+            queue_protocol_version=int(beat.get("queue_protocol_version")),
+            capabilities=frozenset(str(item) for item in capabilities),
+            worker_id=str(beat.get("worker_id") or ""),
+            runtime_instance_id=str(beat.get("runtime_instance_id") or ""),
+            boot_id=str(beat.get("boot_id") or ""),
+            build_sha=str(beat.get("build_sha") or ""),
+            config_hash=str(beat.get("config_hash") or ""),
+            universe_id=str(beat.get("universe_id") or ""),
+            expires_at=str(beat.get("expires_at") or ""),
+        )
+        runtime = _runtime_from_author_runtime(
+            get_runtime_instance(
+                data_dir(),
+                instance_id=runtime_instance_id,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    metadata = runtime.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    trusted = metadata.get("queue_protocol_descriptor")
+    heartbeat_descriptor = {
+        "queue_protocol_version": descriptor.queue_protocol_version,
+        "capabilities": sorted(descriptor.capabilities),
+        "worker_id": descriptor.worker_id,
+        "runtime_instance_id": descriptor.runtime_instance_id,
+        "boot_id": descriptor.boot_id,
+        "build_sha": descriptor.build_sha,
+        "config_hash": descriptor.config_hash,
+        "universe_id": descriptor.universe_id,
+        "expires_at": descriptor.expires_at,
+    }
+    if (
+        runtime["status"] != "provisioned"
+        or runtime["universe_id"] != universe.name
+        or metadata.get("worker_id") != worker_id
+        or descriptor.worker_id != worker_id
+        or descriptor.runtime_instance_id != runtime_instance_id
+        or descriptor.universe_id != universe.name
+        or trusted != heartbeat_descriptor
+        or not runtime["daemon_id"]
+        or not _descriptor_is_live(
+            descriptor,
+            transaction_at=_utcnow().isoformat(),
+        )
+    ):
+        return None
+
+    return Epoch2BranchTaskAdapter(data_dir()), {
+        "worker_id": worker_id,
+        "runtime_instance_id": runtime_instance_id,
+        "daemon_id": runtime["daemon_id"],
+        "provider_name": runtime["provider_name"],
+        "model_name": runtime["model_name"],
+    }
+
+
 def _has_pickable_branch_task(universe: Path) -> bool:
-    """Return True when the dispatcher has an eligible pending task.
+    """Return True when this worker has an eligible pending task.
 
     The MCP server appends some BranchTasks directly (not via producers).
     The long-running fantasy_daemon subprocess only attempts a dispatcher
     claim at startup, so the supervisor must notice these pending rows and
-    restart the idle wrapper process to let it pick them up.
+    restart the idle wrapper process to let it pick them up. Epoch-2 work is
+    considered only when this exact worker/runtime pair has trusted live
+    protocol evidence; otherwise it remains pending without causing a restart.
     """
     try:
         from tinyassets.dispatcher import (
@@ -614,9 +736,26 @@ def _has_pickable_branch_task(universe: Path) -> bool:
         unified = os.environ.get("TINYASSETS_UNIFIED_EXECUTION", "1")
         if unified.strip().lower() in {"0", "off", "false", "no"}:
             return False
+        config = load_dispatcher_config(universe)
+        if select_next_task(
+            universe,
+            config=config,
+        ) is not None:
+            return True
+
+        capacity = _current_worker_epoch2_capacity(universe)
+        if capacity is None:
+            return False
+        epoch2_adapter, worker = capacity
+        epoch2_config = replace(
+            config,
+            active_daemon_id=worker["daemon_id"],
+        )
         return select_next_task(
             universe,
-            config=load_dispatcher_config(universe),
+            config=epoch2_config,
+            epoch2_adapter=epoch2_adapter,
+            queue_epochs=frozenset({2}),
         ) is not None
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: pending BranchTask check failed")

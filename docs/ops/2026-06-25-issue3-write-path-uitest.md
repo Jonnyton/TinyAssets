@@ -85,11 +85,13 @@ exact same failure and MUST get the same flip across **every surface that
 advertises the handle**, not just the universe server:
 
 - `tinyassets/universe_server.py` (canonical) + its plugin mirror
-- `tinyassets/directory_server.py` (the directory/discovery MCP surface) + its
-  plugin mirror — this is the surface the prior reviewer flagged as easy to miss
 - `chatgpt-app-submission.json`
-- `tests/test_universe_server_five_handles.py` **and**
-  `tests/test_directory_server.py`
+- `tests/test_universe_server_five_handles.py` and the canonical cross-client
+  parity tests
+
+The former `directory_server.py` and `tests/test_directory_server.py` were
+deleted when `/mcp-directory*` retired in PR #1718. Do not recreate that
+surface to complete this experiment.
 
 followed by the same post-deploy `--assert-handles` canary. Do not close Issue 3
 as fully fixed until `write_page`'s status is resolved one way or the other.

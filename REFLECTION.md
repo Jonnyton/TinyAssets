@@ -398,6 +398,20 @@ fresh-host rollback edges found later.
   would have prevented both the unsafe descriptor experiment and the late
   multi-blob ambiguity.
 
+## 2026-07-24 - canonical MCP route retirement
+
+- **What surprised me:** deleting the runtime and edge routes was the easy
+  part; dated submission runbooks and PLAN still looked current enough to send
+  an operator back to the retired product after every focused test was green.
+- **Pattern worth capturing:** a public-route retirement is one transaction
+  across application mounts, edge routing, generated packages, registrations,
+  canaries, current guidance, and architectural truth. Preserve dated evidence,
+  but fence it from execution and record a live red pre-image before deploy.
+- **What I would do differently:** inventory and classify every old-route
+  reference as current, historical, generated, or test-only before the first
+  code edit, then make the operational-guidance boundary part of the initial
+  review brief.
+
 ## 2026-07-24 - epoch-2 operational truth
 
 - **What surprised me:** a fresh worker heartbeat was insufficient evidence
@@ -416,3 +430,20 @@ fresh-host rollback edges found later.
   quarantine receipt schema at the start. Stable pre-quarantine digests,
   bounded diagnostics, and durable-descriptor matching would then arrive in
   the first red test rather than during integration hardening.
+
+## 2026-07-24 - epoch-2 wakeup staging
+
+- **What surprised me:** wakeup eligibility is inseparable from executable
+  claim readiness. A truthful descriptor cannot be published just because the
+  queue adapter exists; the supervised child must be able to select, claim,
+  materialize, and lifecycle-manage the same task or the supervisor creates a
+  restart loop.
+- **Pattern worth capturing:** stage dormant readers with code-owned readiness
+  truth, visible status, exact-worker durable identity, and an epoch-filtered
+  selector. A live-child restart guard stays read-only and protects only
+  current live leases; expired/dead-peer recovery belongs in the lifecycle
+  integration that owns failover.
+- **What I would do differently:** test repeated restarts, empty canonical
+  daemon identity, plugin-isolated imports, real-data-dir leakage, partial
+  schemas, and cross-epoch selector identity on the first pass. Those
+  adversarial cases would have exposed the unsafe sequencing immediately.

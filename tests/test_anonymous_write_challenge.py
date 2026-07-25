@@ -206,7 +206,7 @@ def test_get_stream_and_delete_pass_anonymously():
 
 def test_non_mcp_path_not_challenged():
     sent, app_called, _ = _drive(
-        _rpc("tools/call", "write_graph"), path="/mcp-directory",
+        _rpc("tools/call", "write_graph"), path="/not-mcp",
     )
     assert app_called
     assert _status(sent) == 200

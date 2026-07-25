@@ -93,7 +93,7 @@ def auth_middleware(token: str | None) -> Identity:
 def _auth_challenge_path(path: str) -> bool:
     """The MCP endpoint (``/mcp`` + sub-paths) requires auth in challenge mode.
     Discovery routes stay public so the client can still find the authorization
-    server, and sibling surfaces like ``/mcp-directory`` are not swept in.
+    server, and unrelated paths are not swept in.
     """
     if ".well-known" in path:
         return False

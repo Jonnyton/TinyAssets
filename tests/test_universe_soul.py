@@ -145,6 +145,43 @@ def test_create_universe_without_premise_still_has_thin_soul(us):
     assert not (udir / "PROGRAM.md").exists()
 
 
+def test_creation_adds_unnamed_serial_index_row(us):
+    # universe-creation task 5.3: a blank universe's index row is keyed by its
+    # immutable serial and carries no invented self-name (display == the id).
+    from tinyassets.daemon_server import get_universe
+
+    base = Path(us._base_path())
+    created = json.loads(us._action_create_universe())
+    uid = created["universe_id"]
+    row = get_universe(base, universe_id=uid)
+    assert row["universe_id"] == uid
+    assert row["display_name"] == uid
+
+
+def test_learned_name_projects_onto_immutable_index_row(us):
+    # universe-creation task 5.3: an accepted learned-name change in identity.md
+    # updates only the display-name projection for the same immutable row.
+    from tinyassets.daemon_server import get_universe
+
+    base = Path(us._base_path())
+    uid = json.loads(us._action_create_universe())["universe_id"]
+
+    out = json.loads(us._action_soul_edit(
+        universe_id=uid,
+        inputs_json=json.dumps({
+            "name": "Aurelia",
+            "source": "founder",
+            "context": "the universe settled on its own name",
+        }),
+    ))
+    assert out.get("error") is None, out
+    assert out["persona_name"] == "Aurelia"
+
+    row = get_universe(base, universe_id=uid)
+    assert row["universe_id"] == uid       # immutable key unchanged
+    assert row["display_name"] == "Aurelia"  # display projection updated
+
+
 def test_create_universe_ledger_uses_generated_id():
     # Regression: a server-generated universe_id must reach the ledger row.
     # The extractor reads kwargs (no universe_id for a generated create), so it

@@ -1138,3 +1138,39 @@ Notes:
 - Scope: coordination/docs only; no runtime behavior
 - Review gate: strict OpenSpec validation and exact coordination diff
 - Ship/abandon: land immediately after current-main checks; no deployment
+
+## 2026-07-24 - created retire-mcp-directory
+
+- Provider: codex-gpt56-mcp-retirement
+- Branch: codex/retire-mcp-directory
+- Lane state: merged; production proof moved to the canonical `/mcp` STATUS watch
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-mcp-directory
+- STATUS/Issue/PR: PR #1718 merged as `60f7f9f1`, based on merged PR #1688
+- Scope: remove `/mcp-directory*` runtime/catalog/discovery/edge routing, generated mirrors, maintained registrations/guidance, and prove ordinary 404
+- Review gate: red-first app/edge tests, provider-free canonical health, strict OpenSpec, independent architecture/security/diff review
+- Memory/implications: PR #1688; PR #1522 provenance; source-derived canonical hardening remains separately opposite-provider-gated
+- Ship/abandon: landed; retain the worktree only until the coordination closeout and production probes are recorded
+
+## 2026-07-24 - fix MCP retirement proof
+
+- Provider: codex-gpt56-mcp-proof-fix
+- Branch: codex/fix-mcp-retirement-proof
+- Lane state: PR open; independently approved; production contract green
+- Worktree: C:\Users\Jonathan\Projects\wf-fix-mcp-retirement-proof
+- STATUS/Issue/PR: PR #1722; Opus 5 final reject follow-up to merged PR #1718
+- Scope: Cloudflare-safe retirement probe, correct deploy ownership, exact-seven canary, as-built spec truth, stale operator guidance
+- Review gate: focused red/green tests, strict OpenSpec, workflow checks, independent diff review, then live rerun
+- Memory/implications: PR #1718 review artifact; canonical hardening tasks remain separately open
+- Ship/abandon: ship through PR #1722; both owning deploy lanes and direct live probes now prove their part
+
+## 2026-07-24 - fix deploy receipt summary quoting
+
+- Provider: codex-gpt56-deploy-summary
+- Branch: fix/deploy-summary-quoting
+- Lane state: PR open; awaiting Opus 5 review and required checks
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-summary-quoting
+- STATUS/Issue/PR: production Deploy prod run 30141691915; PR #1725
+- Scope: fix the post-deploy receipt Summary literal-escape SyntaxError
+- Review gate: focused RED/GREEN test, workflow suite, actionlint, independent Opus 5 review
+- Memory/implications: receipt validation/publication succeeded; Summary rendering alone failed
+- Ship/abandon: publish reviewed PR to main; do not deploy from this lane

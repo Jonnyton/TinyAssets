@@ -64,7 +64,7 @@ curl -sS -X POST http://localhost:8001/mcp \
 ```
 
 Expect an SSE-framed JSON-RPC response with `result.serverInfo.name` =
-`"tinyassets"` and `result.protocolVersion` echoed back. This is the
+`"TinyAssets"` and `result.protocolVersion` echoed back. This is the
 same shape `scripts/mcp_public_canary.py` exercises.
 
 Or use the repo's canary directly:

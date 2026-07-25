@@ -4,8 +4,8 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ## What Changes
 
-- **HARD DEPENDENCY:** This change MUST NOT be applied, synced, or archived until `reclassify-forward-vision-specs` has landed, physically removed the eight old canonical capability directories, passed strict validation, and archived.
-- Build an outbound boundary with resource-ledger grants, action caps, credential-blind adapters, durable inboxes, typed artifacts, and batch-safe external effects.
+- **HARD DEPENDENCY:** This change MUST NOT be applied, synced, or archived until `reclassify-forward-vision-specs` has landed, physically removed the eight old canonical capability directories, passed strict validation, and archived. Satisfied 2026-07-24: the reclassification is archived at `openspec/changes/archive/2026-07-22-reclassify-forward-vision-specs`, none of the eight capability directories remain under `openspec/specs/`, and `openspec validate --all --strict` passes.
+- Delegate the outbound boundary — resource-ledger grants, action caps, credential-blind adapters, durable inboxes, typed artifacts, and batch-safe external effects — to `outbound-boundary-layer`; the umbrella `boundary-layer` delta is physically released to that successor, which must preserve the credential-blindness, cap-independence, system-derived idempotency, and whole-batch-hold guarantees.
 - Build first-class dataset assets, provenance, licensing enforcement, quality gates, contribution accounting, and Dataset Forge workflows.
 - Build standing-goal demand, onboarding outcomes, and goal-bounty market composition before introducing direct universe services.
 - Build the verified design-to-fabrication hardware ladder on top of commons artifacts, gates, and paid-market primitives.
@@ -18,13 +18,20 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ### New Capabilities
 
-- `boundary-layer`: Outbound connections, adapters, inboxes, typed artifacts, caps, and end-to-end effect guarantees.
 - `data-commons`: Dataset assets, provenance, pricing, quality gates, contribution settlement, and Dataset Forge.
 - `demand-side`: Standing goals, binding onboarding outcomes, goal bounties, and the measured gate for later universe services.
 - `hardware-creation`: Verified design-to-silicon and physical-fabrication product workflows.
 - `paid-market-training`: Training instruments, verification, checkpoint payment, gate integration, capability minting, and input provenance.
 - `pooled-training-ownership`: Persisted funding, frozen lineage ownership, refunds, and revenue distribution.
 - `token-architecture`: Counsel-gated public token, valuation, liquidity, and mint/redemption behavior.
+
+### Released Capabilities
+
+Each released delta has exactly one active successor owner. The umbrella keeps only the cross-slice invariants those successors must preserve: design decisions **D0–D8** and the slice dependency ledger. D9 is host-gated context recorded for provenance and imposes no successor obligation in either direction.
+
+- `boundary-layer` → `outbound-boundary-layer` (released 2026-07-24, task 1.2).
+- `paid-market-economy` transaction delta → `paid-market-track-e-wave-2-transport` (task 1.1).
+- `paid-market-price-index-and-forwards` delta → `paid-market-live-price-discovery` (task 2.1).
 
 ### Modified Capabilities
 

@@ -18,8 +18,8 @@ Exit codes
     field present).
 4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
     exactly the canonical handle set (``read_graph`` / ``write_graph`` /
-    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse``, plus the
-    optional ``get_status`` read — see ``CANONICAL_HANDLES`` below and
+    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse`` /
+    ``get_status`` — see ``CANONICAL_HANDLES`` below and
     ``openspec/specs/live-mcp-connector-surface/spec.md``). This is the
     PR-178 drift guard required by Hard Rule #11 after any
     DNS/tunnel/Worker/connector change.
@@ -63,9 +63,9 @@ _INIT_PAYLOAD = {
     },
 }
 
-# PR-178 + 2026-07-02 relay reshape: the live user-facing surface is exactly
-# these six handles. The canary asserts the deployed tools/list advertises them
-# and nothing beyond them (the get_status read MAY remain). Legacy fat tools are
+# PR-178 + 2026-07-24 canonical convergence: the live user-facing surface is
+# exactly these seven handles. The canary asserts the deployed tools/list
+# advertises all seven and nothing beyond them. Legacy fat tools are
 # dual-registered but hidden from tools/list, so they must NOT appear here.
 # `converse` is the relay handle (chatbot -> universe intelligence); the handle
 # shape is provisional pending host ratification of the design-note open-Q.
@@ -76,9 +76,9 @@ CANONICAL_HANDLES = frozenset({
     "read_page",
     "write_page",
     "converse",
+    "get_status",
 })
-# get_status MAY remain as a read affordance; everything else is drift.
-_ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}
+_ALLOWED_ADVERTISED = CANONICAL_HANDLES
 
 
 def _die(code: int, msg: str) -> None:
@@ -187,7 +187,7 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
     return {t.get("name") for t in tools if isinstance(t, dict) and t.get("name")}
 
 
-def assert_five_handles(url: str, timeout: float) -> None:
+def assert_canonical_handles(url: str, timeout: float) -> None:
     """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
     names = advertised_tool_names(url, timeout)
     missing = CANONICAL_HANDLES - names
@@ -283,14 +283,16 @@ def assert_status_surface(url: str, timeout: float) -> str:
     return str(identity_status or "unknown")
 
 
-def assert_five_handles_with_retry(
+def assert_canonical_handles_with_retry(
     url: str,
     timeout: float,
     retries: int = 5,
     delay: float = 3.0,
     _sleep=time.sleep,
 ) -> str:
-    """``assert_five_handles`` with retries for transient blips.
+    """Assert canonical handles and status surface, retrying transient blips.
+
+    Return the compact identity-evidence state reported by ``get_status``.
 
     Wired into the post-deploy gate, where a single transient ``tools/list``
     failure would otherwise trip a rollback of an otherwise-healthy daemon
@@ -301,7 +303,7 @@ def assert_five_handles_with_retry(
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
         try:
-            assert_five_handles(url, timeout)
+            assert_canonical_handles(url, timeout)
             return assert_status_surface(url, timeout)
         except CanaryError as exc:
             if attempt >= attempts:
@@ -314,7 +316,11 @@ def assert_five_handles_with_retry(
             _sleep(delay)
 
 
-def probe_result(url: str, timeout: float) -> None:
+def probe_result(
+    url: str,
+    timeout: float,
+    expected_name: str | None = None,
+) -> None:
     """Run the probe. Return None on success; raise ``CanaryError`` on failure.
 
     Importable by layered canary wrappers that need to log outcomes without
@@ -367,12 +373,22 @@ def probe_result(url: str, timeout: float) -> None:
     server_info = result.get("serverInfo") or {}
     if not server_info.get("name"):
         raise CanaryError(1, f"missing serverInfo.name in result from {url}: {result!r}")
+    if expected_name is not None and server_info["name"] != expected_name:
+        raise CanaryError(
+            1,
+            f"serverInfo.name drift from {url}: expected {expected_name!r}, "
+            f"got {server_info['name']!r}",
+        )
 
 
-def probe(url: str, timeout: float) -> None:
+def probe(
+    url: str,
+    timeout: float,
+    expected_name: str | None = None,
+) -> None:
     """CLI-shaped adapter — calls ``probe_result`` and ``_die``s on failure."""
     try:
-        probe_result(url, timeout)
+        probe_result(url, timeout, expected_name=expected_name)
     except CanaryError as exc:
         _die(exc.code, exc.msg)
 
@@ -384,6 +400,8 @@ def main(argv: list[str]) -> int:
                     help=f"request timeout seconds (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--verbose", action="store_true",
                     help="print success line to stdout")
+    ap.add_argument("--assert-name",
+                    help="require an exact MCP serverInfo.name value")
     ap.add_argument("--assert-handles", action="store_true",
                     help="also assert tools/list advertises exactly the "
                          "canonical handle set incl. converse (PR-178 drift "
@@ -395,11 +413,11 @@ def main(argv: list[str]) -> int:
                     help="seconds between handle-assertion retries (default 3)")
     args = ap.parse_args(argv)
 
-    probe(args.url, args.timeout)
+    probe(args.url, args.timeout, expected_name=args.assert_name)
 
     if args.assert_handles:
         try:
-            identity_state = assert_five_handles_with_retry(
+            identity_state = assert_canonical_handles_with_retry(
                 args.url,
                 args.timeout,
                 retries=args.assert_handles_retries,
