@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -193,6 +194,8 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             config=load_dispatcher_config(universe_path),
         ):
             return True
+        if _live_epoch2_claim_exists(universe_path):
+            return True
         requests_path = universe_path / REQUESTS_FILENAME
         if requests_path.exists():
             requests = json.loads(requests_path.read_text(encoding="utf-8"))
@@ -207,6 +210,28 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             exc_info=True,
         )
     return False
+
+
+def _live_epoch2_claim_exists(universe_path: Path) -> bool:
+    """Read whether this exact worker owns runnable canonical v2 work."""
+    from tinyassets import branch_tasks_v2
+
+    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
+        return False
+    worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+    if not worker_id:
+        return False
+    from tinyassets.storage import data_dir
+
+    return bool(
+        branch_tasks_v2.Epoch2BranchTaskAdapter(
+            data_dir(),
+        ).list_live_claimed_requests(
+            universe_id=universe_path.name,
+            worker_id=worker_id,
+            limit=1,
+        )
+    )
 
 
 register_domain_callable(
