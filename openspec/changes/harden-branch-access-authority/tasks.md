@@ -3,7 +3,7 @@
 - [x] 1.1 Audit current-main branch reads, source reuse, lineage, mutation, deletion, related-wiki projection, live/version/canonical execution, goal/gate attachments, private-filtered projections, dry inspection, active visibility ownership, and existing tests against the connector-first product boundary.
 - [x] 1.2 Define target requirements for authenticated-subject authorship, not-found read equivalence, source reuse, lineage, mutation/deletion authority, action-scope defense in depth, and cross-surface wiki visibility.
 - [x] 1.3 Obtain Opus 5 review of the drafted proposal, design, both delta specs, tasks, and sibling-lane boundary; resolve every Critical and Important finding. — 2026-07-25: initial `ADAPT` findings applied; narrow Opus 5 re-review returned `APPROVE` with no Critical or Important findings.
-- [ ] 1.4 Run strict OpenSpec validation and land this target change active and unsynced.
+- [x] 1.4 Run strict OpenSpec validation and land this target change active and unsynced. — 2026-07-25: 47/47 strict validation passed; PR #1778 squash-merged as `26d267eb`.
 
 ## 2. Dependency and claim gates
 
