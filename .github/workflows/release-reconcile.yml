@@ -135,6 +135,8 @@ jobs:
             # call so the log shows the exact workflow path patterns.
             set -f
             echo "release paths:"
+            # Word splitting is intentional (release paths contain no spaces).
+            # shellcheck disable=SC2086
             printf '  %s\n' $PATHS
             # Newest commit on main touching anything the image is built from.
             # Docs-only commits after it genuinely need no deploy.
