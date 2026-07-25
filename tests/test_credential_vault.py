@@ -63,6 +63,112 @@ def test_vault_rejects_unknown_credential_type(tmp_path):
         )
 
 
+def test_single_record_write_updates_only_matching_credential(tmp_path):
+    github_credential = {
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "ghs-existing",
+    }
+    write_credential_vault(
+        tmp_path,
+        [
+            github_credential,
+            {
+                "credential_type": "llm_api_key",
+                "service": "anthropic",
+                "secret_b64": "b2xkLWtleQ==",
+            },
+        ],
+    )
+
+    summary = write_credential_vault(
+        tmp_path,
+        [{
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "secret_b64": "bmV3LWtleQ==",
+        }],
+    )
+
+    assert load_credential_vault(tmp_path) == [
+        github_credential,
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "secret_b64": "bmV3LWtleQ==",
+        },
+    ]
+    assert summary["credential_count"] == 2
+
+
+def test_single_record_write_preserves_other_social_account(tmp_path):
+    first_account = {
+        "credential_type": "social",
+        "service": "twitter",
+        "handle": "@one",
+        "token": "first-token",
+    }
+    second_account = {
+        "credential_type": "social",
+        "service": "twitter",
+        "handle": "@two",
+        "token": "second-token",
+    }
+    write_credential_vault(tmp_path, [first_account])
+
+    write_credential_vault(tmp_path, [second_account])
+
+    assert load_credential_vault(tmp_path) == [first_account, second_account]
+
+
+def test_single_record_write_updates_equivalent_llm_api_key_alias(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "claude",
+        "secret_b64": "b2xkLWtleQ==",
+    }])
+
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": "bmV3LWtleQ==",
+    }])
+
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": "bmV3LWtleQ==",
+    }]
+
+
+def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purposes": ["write"],
+        "token": "old-token",
+    }])
+
+    write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "new-token",
+    }])
+
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "new-token",
+    }]
+
+
 def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
     write_credential_vault(
         tmp_path,

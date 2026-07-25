@@ -107,6 +107,61 @@ def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
     return [_normalize_record(item) for item in raw_records]
 
 
+def _service(record: dict[str, Any]) -> str:
+    return str(record.get("service") or record.get("provider") or "").strip().lower()
+
+
+def _credential_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the logical key used for single-record vault upserts."""
+    credential_type = str(record["credential_type"])
+    service = _service(record)
+    if credential_type == "llm_api_key":
+        return (
+            credential_type,
+            _LLM_API_KEY_ENV_BY_SERVICE.get(service, service),
+        )
+    if credential_type == "social":
+        account = ""
+        for field in ("handle", "username", "account", "user_id"):
+            account = str(record.get(field) or "").strip()
+            if account:
+                break
+        return credential_type, service, account
+    if credential_type != "vcs":
+        return credential_type, service
+
+    purpose = record.get("purpose")
+    if isinstance(purpose, str) and purpose.strip():
+        purpose_key = (purpose.strip(),)
+    else:
+        purposes = record.get("purposes")
+        purpose_key = (
+            tuple(sorted({
+                str(item).strip()
+                for item in purposes
+                if str(item).strip()
+            }))
+            if isinstance(purposes, list)
+            else ("write",)
+        )
+    destination = str(record.get("destination") or "").strip()
+    return credential_type, service, destination, purpose_key
+
+
+def _merge_single_record(
+    existing: list[dict[str, Any]],
+    incoming: dict[str, Any],
+) -> list[dict[str, Any]]:
+    merged = list(existing)
+    incoming_key = _credential_key(incoming)
+    for index, record in enumerate(merged):
+        if _credential_key(record) == incoming_key:
+            merged[index] = incoming
+            return merged
+    merged.append(incoming)
+    return merged
+
+
 def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
     """Load and validate the per-universe vault.
 
@@ -129,12 +184,16 @@ def write_credential_vault(
 ) -> dict[str, Any]:
     """Validate and write a per-universe credential vault.
 
+    A single record is upserted by logical key. Bulk and empty payloads replace
+    the stored list exactly, preserving ordered duplicate and explicit-clear use.
     Returns a non-secret summary suitable for logs/status surfaces.
     """
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
     records = _records_from_payload(credentials)
     path = credential_vault_path(universe)
+    if len(records) == 1 and path.is_file():
+        records = _merge_single_record(load_credential_vault(universe), records[0])
     tmp = path.with_name(f"{path.name}.tmp")
     payload = {"schema_version": 1, "credentials": records}
     tmp.write_text(
@@ -158,10 +217,6 @@ def write_credential_vault(
         "credential_types": credential_types,
         "services": services,
     }
-
-
-def _service(record: dict[str, Any]) -> str:
-    return str(record.get("service") or record.get("provider") or "").strip().lower()
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
