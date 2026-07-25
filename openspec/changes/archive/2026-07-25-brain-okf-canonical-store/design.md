@@ -81,15 +81,24 @@ depends on it yet.
 
 ## Dependent-lane contract
 
-Two active lanes carry `brain-okf-canonical-store` as a dependency, and this
-change is host-blocked indefinitely (see `tasks.md` lane disposition). Neither
-lane should wait on it. What a dependent may and may not rely on today:
+**Updated 2026-07-25 — this change is archived; the contract moves to
+`openspec/changes/build-brain-canonical-store/`, which is now the live owner of
+the target.** Cite the successor, not this archived change. Two active lanes
+carried `brain-okf-canonical-store` as a dependency; neither should wait on it,
+and neither is unblocked by the archive. What a dependent may and may not rely on:
 
-- **May rely on:** this change is the sole in-flight owner of the brain's
-  canonical-store *target* — the OKF bundle as source of truth, the rebuildable
-  operational index, and the write-through commit protocol. Cross-referencing
-  those concepts here (rather than restating them) is correct and stays correct
-  after the host decision lands.
+- **Historical, superseded 2026-07-25:** while this change was in flight it was
+  the sole owner of the brain's canonical-store *target* — the OKF bundle as
+  source of truth, the rebuildable operational index, and the write-through
+  commit protocol. The host decision landed on 2026-07-25 and that ownership
+  moved with the delta; `openspec/changes/build-brain-canonical-store/` is now
+  the sole live owner. Cross-referencing those concepts rather than restating
+  them is still the right pattern, but a dependent MUST cite the successor.
+  Note the successor's delta is no longer byte-identical to the copy archived
+  here: a 2026-07-25 correction scoped the source-of-truth and OKF-conformance
+  requirements to the commons and the default brain organization, so the frozen
+  text below reads as an all-brains OKF mandate that the live target no longer
+  asserts.
 - **May rely on:** the *shipped* OKF surface is `tinyassets/wiki/okf_export.py`,
   spec'd as-built in `openspec/specs/knowledge-retrieval-and-memory/spec.md`
   (curated one-way export; deliberately narrow local `conformant` flag). A
@@ -101,8 +110,12 @@ lane should wait on it. What a dependent may and may not rely on today:
   does this correctly (its 2.3 records the mechanism as REVERSED and relocates
   the intent here rather than blocking on it).
 - **MUST NOT rely on:** `openspec/specs/brain-canonical-store/` existing. It does
-  not, and will not until the host store decision unblocks task 4.1. A dependent
-  that needs a stable spec path must cite `openspec/changes/brain-okf-canonical-store/`.
+  not. The 2026-07-25 host store decision did **not** create it — that decision
+  resolved the PLAN gate, while the spec path stays blocked on the as-built gate
+  (`openspec/specs/` describes built behavior, and the brain store is unbuilt).
+  It will exist when `build-brain-canonical-store` ships the behavior and syncs.
+  A dependent that needs a stable path today cites
+  `openspec/changes/build-brain-canonical-store/`.
 
 ## Open Questions
 
