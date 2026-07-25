@@ -29,6 +29,30 @@ def test_byo_api_key_still_works_and_records_source(tmp_path, monkeypatch):
     assert load_universe_config(udir).engine_source == "byo_api_key"
 
 
+def test_byo_api_key_preserves_existing_github_credential(tmp_path, monkeypatch):
+    from tinyassets.credential_vault import (
+        resolve_github_token,
+        write_credential_vault,
+    )
+
+    uni, udir = _setup(tmp_path, monkeypatch)
+    write_credential_vault(udir, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "ghs-existing",
+    }])
+
+    out = json.loads(uni._action_set_engine(
+        inputs_json=json.dumps({"service": "anthropic", "api_key": "sk-x"})))
+
+    assert out["status"] == "engine_set"
+    assert resolve_github_token(
+        udir, "Jonnyton/TinyAssets", purpose="write"
+    ) == "ghs-existing"
+
+
 def test_self_hosted_endpoint_persists(tmp_path, monkeypatch):
     uni, udir = _setup(tmp_path, monkeypatch)
     out = json.loads(uni._action_set_engine(inputs_json=json.dumps({
