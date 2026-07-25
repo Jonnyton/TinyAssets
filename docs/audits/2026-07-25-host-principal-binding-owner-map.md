@@ -2,8 +2,10 @@
 
 **Date:** 2026-07-25
 **Environment:** Windows worktree `wf-host-principal-binding`, base
-`origin/main` `3f933caf`; PR #1736 inspected at `31d4bf9d`; draft PR #1746
-owner-resolution head inspected at `4c1c6eb5`.
+`origin/main` initially `3f933caf`, then folded through `6cde7ef0`; PR #1736
+protocol inspected at `31d4bf9d` and rechecked at current head `dccbadba`
+(desktop diff empty); draft PR #1746 owner-resolution head inspected at
+`4c1c6eb5`.
 **Scope:** OpenSpec and ownership evidence only; no runtime, canonical-spec,
 production, or deployment mutation.
 
