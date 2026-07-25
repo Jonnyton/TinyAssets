@@ -1,11 +1,12 @@
-"""A universe with no credential of its own must not run on the host's.
+"""A universe provider child must receive only its own authority.
 
-Before this guard `subprocess_env_for_provider` stripped only API-key variables,
-so `CLAUDE_CODE_OAUTH_TOKEN` / `CLAUDE_CONFIG_DIR` / `CODEX_HOME` survived from
-the server environment into every universe's provider subprocess. Production
-mounts shared host auth homes (deploy/compose.yml), so a founder who signed up
-minutes ago could spend the host's subscription via `converse` or `run_graph`,
-and no receipt recorded that it happened.
+The legacy boundary copied the host environment and subtracted known auth
+variables. Direct tokens, default homes, cloud activation, helper failures, and
+future names could therefore retain maintainer authority. The repaired boundary
+starts universe children from an explicit runtime allowlist, physically
+contains discovery/auth paths, and applies only a validated selected-universe
+overlay. Production mounts host auth homes, so these are billing boundaries,
+not environment-cleanliness preferences.
 
 Each test below states the mutation that must make it fail. A test that cannot
 go red is not evidence.
@@ -13,10 +14,16 @@ go red is not evidence.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
+from tinyassets.credential_vault import (
+    claude_subscription_auth_available,
+    credential_vault_path,
+    write_credential_vault,
+)
 from tinyassets.exceptions import ProviderUnavailableError
 from tinyassets.providers.base import (
     API_KEY_PROVIDER_ENV_VARS,
@@ -55,6 +62,28 @@ AMBIENT_ROUTING_VARS = (
 )
 
 
+def _make_directory_link(link: Path, target: Path) -> None:
+    symlink_failure = ""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError as symlink_error:
+        symlink_failure = str(symlink_error)
+        if os.name != "nt":
+            pytest.skip(f"directory symlinks unavailable: {symlink_error}")
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if result.returncode:
+        pytest.skip(
+            "directory symlinks/junctions unavailable: "
+            f"{symlink_failure}; {result.stderr.strip()}"
+        )
+
+
 @pytest.fixture
 def host_auth(monkeypatch):
     """Simulate the prod container: host subscription auth present in the env."""
@@ -65,7 +94,7 @@ def host_auth(monkeypatch):
 
 
 def test_universe_without_credential_does_not_inherit_host_auth(host_auth, tmp_path):
-    """MUTATION: delete the env.pop loop in subprocess_env_for_provider -> RED."""
+    """MUTATION: use host/default credential homes for an empty universe -> RED."""
     universe = tmp_path / "u-newborn"
     universe.mkdir()
 
@@ -74,13 +103,21 @@ def test_universe_without_credential_does_not_inherit_host_auth(host_auth, tmp_p
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_relative_to(universe)
     assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert ".runtime/provider-child/claude-code/auth-empty" in (
+        Path(env["CLAUDE_CONFIG_DIR"]).as_posix()
+    )
+    assert ".runtime/provider-child/claude-code/auth-empty" in (
+        Path(env["CODEX_HOME"]).as_posix()
+    )
+    assert claude_subscription_auth_available(universe) is False
+    assert not (universe / ".credentials").exists()
 
 
 def test_host_local_daemon_keeps_its_own_auth(host_auth):
     """The guard must not break the host's own flows.
 
-    MUTATION: strip unconditionally (drop the `resolved is not None` condition)
-    -> RED, because the host daemon would lose its own credentials.
+    MUTATION: apply the universe empty-base environment without a universe
+    binding -> RED, because the host daemon would lose its own credentials.
     """
     env = subprocess_env_for_provider("claude-code", universe_dir=None)
 
@@ -106,12 +143,12 @@ def test_api_keys_are_still_stripped_when_not_opted_in(host_auth, tmp_path):
         os.environ.pop("OPENAI_API_KEY", None)
 
 
-def test_universe_vault_auth_survives_after_host_auth_is_removed(
+def test_selected_universe_vault_auth_survives_empty_base(
     host_auth, tmp_path, monkeypatch
 ):
     """When the vault supplies auth, that universe-owned value must survive.
 
-    MUTATION: strip host vars after applying the overlay -> RED.
+    MUTATION: discard the recognized selected-universe overlay -> RED.
     """
     universe = tmp_path / "u-with-vault"
     universe.mkdir()
@@ -128,14 +165,14 @@ def test_universe_vault_auth_survives_after_host_auth_is_removed(
     env = subprocess_env_for_provider("claude-code", universe_dir=universe)
     assert env.get("CLAUDE_CONFIG_DIR") == str(vault_config_dir), (
         "the vault supplied a credential for this universe and the guard "
-        "discarded it; strip inherited host authority before the vault overlay"
+        "discarded it; apply the validated overlay after empty-base isolation"
     )
 
 
 def test_partial_vault_overlay_cannot_retain_alternate_host_auth(
     host_auth, tmp_path, monkeypatch
 ):
-    """MUTATION: apply the overlay before stripping inherited auth -> RED."""
+    """MUTATION: seed the selected overlay from the host environment -> RED."""
     universe = tmp_path / "u-partial-vault"
     universe.mkdir()
     vault_config_dir = universe / ".credentials" / "claude-custom"
@@ -175,6 +212,28 @@ def test_universe_credential_resolution_failure_is_explicit(
     assert "do-not-leak" not in str(exc.value)
     assert exc.value.__cause__ is None
     assert exc.value.__context__ is None
+    assert claude_subscription_auth_available(universe) is False
+    assert not (universe / ".credentials").exists()
+
+
+def test_malformed_real_vault_failure_is_sanitized_without_artifact_creation(
+    tmp_path,
+):
+    universe = tmp_path / "u-malformed-vault"
+    universe.mkdir()
+    credential_vault_path(universe).write_text(
+        '{"credentials": [not-json]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert "not valid JSON" not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert not (universe / ".credentials").exists()
+    assert not (universe / ".runtime").exists()
 
 
 def test_environment_bound_universe_does_not_inherit_host_auth(
@@ -206,6 +265,68 @@ def test_nonexistent_environment_binding_is_still_universe_scope(
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
     assert Path(env["CLAUDE_CONFIG_DIR"]).is_relative_to(universe)
     assert Path(env["CODEX_HOME"]).is_relative_to(universe)
+    assert Path(env["CLAUDE_CONFIG_DIR"]).is_absolute()
+    assert Path(env["CODEX_HOME"]).is_absolute()
+
+
+def test_relative_universe_binding_emits_absolute_child_paths(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    universe = Path("relative-universe")
+
+    env = subprocess_env_for_provider("codex", universe_dir=universe)
+
+    canonical_universe = (tmp_path / universe).resolve()
+    for name in (
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_RUNTIME_DIR",
+        "TMPDIR",
+        "TMP",
+        "TEMP",
+        "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
+    ):
+        assert Path(env[name]).is_absolute()
+        assert Path(env[name]).is_relative_to(canonical_universe)
+
+
+def test_explicit_universe_overrides_environment_bound_universe(
+    tmp_path, monkeypatch
+):
+    universe_a = tmp_path / "u-env-a"
+    universe_b = tmp_path / "u-explicit-b"
+    write_credential_vault(
+        universe_a,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "claude",
+            "claude_config_dir": "auth-a",
+        }],
+    )
+    write_credential_vault(
+        universe_b,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "claude",
+            "claude_config_dir": "auth-b",
+        }],
+    )
+    monkeypatch.setenv("TINYASSETS_UNIVERSE", str(universe_a))
+
+    env = subprocess_env_for_provider("claude-code", universe_dir=universe_b)
+
+    assert Path(env["CLAUDE_CONFIG_DIR"]).resolve() == (
+        universe_b / "auth-b"
+    ).resolve()
+    assert not (universe_a / "auth-a").exists()
 
 
 def test_host_api_provider_opt_in_does_not_leak_into_universe_cli(
@@ -286,6 +407,8 @@ def test_universe_child_environment_is_default_deny_with_safe_runtime_basics(
         "PATH": os.environ.get("PATH", ""),
         "LANG": "en_US.UTF-8",
         "LC_CTYPE": "en_US.UTF-8",
+        "LC_MONETARY": "en_US.UTF-8",
+        "LC_FUTURE_PROVIDER_MASTER_TOKEN": "must-not-enter-child",
         "TZ": "UTC",
         "TERM": "xterm-256color",
         "NO_COLOR": "1",
@@ -313,6 +436,7 @@ def test_universe_child_environment_is_default_deny_with_safe_runtime_basics(
         "PATH",
         "LANG",
         "LC_CTYPE",
+        "LC_MONETARY",
         "TZ",
         "TERM",
         "NO_COLOR",
@@ -350,6 +474,7 @@ def test_universe_child_environment_is_default_deny_with_safe_runtime_basics(
     assert not (set(AMBIENT_CLOUD_AUTH_VARS) & set(env))
     assert not (set(AMBIENT_ROUTING_VARS) & set(env))
     assert "FUTURE_PROVIDER_MASTER_TOKEN" not in env
+    assert "LC_FUTURE_PROVIDER_MASTER_TOKEN" not in env
     assert "NODE_OPTIONS" not in env
     assert "SSL_CERT_DIR" not in env
     for name in ("TMPDIR", "TMP", "TEMP"):
@@ -406,6 +531,68 @@ def test_universe_child_replaces_every_ambient_home_and_profile_root(
         assert "HOMEPATH" not in env
 
 
+def test_universe_child_rejects_runtime_root_symlink_escape_before_writes(
+    tmp_path,
+):
+    universe = tmp_path / "u-linked-runtime"
+    runtime_root = universe / ".runtime" / "provider-child" / "claude-code"
+    runtime_root.mkdir(parents=True)
+    outside = tmp_path / "outside-host-home"
+    outside.mkdir()
+    linked_home = runtime_root / "home"
+    _make_directory_link(linked_home, outside)
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert list(outside.iterdir()) == []
+    assert not (runtime_root / "tmp").exists()
+    assert not (runtime_root / "auth-empty").exists()
+
+
+def test_default_vault_materialization_target_escape_is_rejected_before_helper(
+    tmp_path,
+):
+    universe = tmp_path / "u-linked-credential-root"
+    universe.mkdir()
+    outside = tmp_path / "outside-credential-root"
+    outside.mkdir()
+    _make_directory_link(universe / ".credentials", outside)
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert list(outside.iterdir()) == []
+    assert not (universe / ".runtime").exists()
+
+
+@pytest.mark.parametrize("provider_name", ["future-cli", "gemini", "CODEX"])
+def test_universe_child_rejects_noncanonical_provider_before_vault_helper(
+    provider_name, tmp_path, monkeypatch
+):
+    universe = tmp_path / "u-provider-name"
+    helper_called = False
+
+    def tracking_apply(env, provider_name, *, universe_dir=None):
+        nonlocal helper_called
+        helper_called = True
+        return env
+
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.apply_provider_auth_env", tracking_apply
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution"):
+        subprocess_env_for_provider(provider_name, universe_dir=universe)
+
+    assert helper_called is False
+    assert not universe.exists()
+
+
 def test_universe_child_accepts_only_valid_ca_bundle_files(tmp_path, monkeypatch):
     """MUTATION: copy CA directories, relative paths, or missing files -> RED."""
     universe = tmp_path / "u-ca"
@@ -448,6 +635,52 @@ def test_universe_overlay_cannot_add_arbitrary_environment_authority(
     assert exc.value.__context__ is None
 
 
+def test_real_vault_outside_path_is_rejected_before_helper_side_effects(
+    tmp_path,
+):
+    universe = tmp_path / "u-outside-vault-path"
+    outside = tmp_path / "outside-claude-auth"
+    write_credential_vault(
+        universe,
+        [{
+            "credential_type": "llm_subscription",
+            "service": "claude",
+            "claude_config_dir": str(outside),
+        }],
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert not outside.exists()
+    assert not (universe / ".runtime").exists()
+    assert not (universe / ".credentials").exists()
+
+
+def test_helper_outside_overlay_path_is_rejected_after_helper(
+    tmp_path, monkeypatch
+):
+    universe = tmp_path / "u-outside-overlay"
+    outside = tmp_path / "outside-overlay"
+
+    def outside_apply(env, provider_name, *, universe_dir=None):
+        env["CLAUDE_CONFIG_DIR"] = str(outside)
+        return env
+
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.apply_provider_auth_env", outside_apply
+    )
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert not outside.exists()
+
+
 def test_host_local_countercase_preserves_unknown_ambient_authority(
     host_auth, monkeypatch
 ):
@@ -455,6 +688,16 @@ def test_host_local_countercase_preserves_unknown_ambient_authority(
     monkeypatch.setenv("FUTURE_PROVIDER_MASTER_TOKEN", "host-local-only")
 
     env = subprocess_env_for_provider("claude-code", universe_dir=None)
+
+    assert env["FUTURE_PROVIDER_MASTER_TOKEN"] == "host-local-only"
+
+
+def test_host_local_countercase_preserves_future_provider_name(
+    host_auth, monkeypatch
+):
+    monkeypatch.setenv("FUTURE_PROVIDER_MASTER_TOKEN", "host-local-only")
+
+    env = subprocess_env_for_provider("future-cli", universe_dir=None)
 
     assert env["FUTURE_PROVIDER_MASTER_TOKEN"] == "host-local-only"
 

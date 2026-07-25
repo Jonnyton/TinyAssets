@@ -16,8 +16,8 @@
 
 ## 3. Minimal implementation
 
-- [x] 3.1 Establish universe scope, strip inherited tokens/API variables, and pin CLI auth homes before the canonical runtime applies the universe overlay
-- [x] 3.2 Fail universe-scoped credential-resolution errors explicitly while preserving malformed-vault and host-local semantics
+- [x] 3.1 Establish universe scope, construct an empty-base runtime allowlist, and pin CLI auth homes before the canonical runtime applies the universe overlay
+- [x] 3.2 Convert malformed or unexpected universe credential-resolution failures to sanitized provider errors while preserving host-local semantics
 - [x] 3.3 Apply the identical behavior to the packaged runtime mirror
 
 ## 4. Verification and foldback
@@ -35,5 +35,6 @@
 - [x] 5.4 Implement the least-code empty-base allowlist, private universe runtime roots, recognized selected-provider overlay, and sanitized fail-loud behavior
 - [x] 5.5 Apply byte-identical behavior to the packaged runtime mirror
 - [x] 5.6 Run focused and surrounding GREEN, Ruff, mirror parity, strict full-tree OpenSpec validation, and diff checks
+- [x] 5.6a Address Opus ADAPT findings with RED/GREEN proof for runtime-only auth homes, physical path containment, exact providers, explicit locales, real malformed/outside vaults, and explicit-universe precedence
 - [ ] 5.7 Obtain required Opus 5 security/diff re-review with no critical or required findings
 - [ ] 5.8 After the canonical vault-clobber lane releases the spec, sync/archive and retire the STATUS row in the merge lane

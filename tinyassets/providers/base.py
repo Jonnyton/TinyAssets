@@ -131,12 +131,8 @@ def require_api_key_provider_opt_in(provider_name: str) -> None:
     )
 
 
-# Host subscription auth that must NOT serve a universe's turn. These are how
-# the platform host's own `claude -p` / `codex exec` authenticate, and prod
-# mounts shared auth homes into the container (deploy/compose.yml). Before this
-# guard, a universe with no credential of its own silently inherited them: only
-# API keys were stripped, so a stranger's `converse` ran on the host's
-# subscription and nothing recorded that it had.
+# Legacy denylist retained for regression assertions. Universe-scoped children
+# now start from an empty allowlisted environment instead of mutating this set.
 HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
     "CLAUDE_CODE_OAUTH_TOKEN",
     "CLAUDE_CONFIG_DIR",
@@ -152,6 +148,19 @@ _PROVIDER_CHILD_INHERITED_ENV_VARS: tuple[str, ...] = (
     "SYSTEMDRIVE",
     "LANG",
     "LANGUAGE",
+    "LC_ALL",
+    "LC_COLLATE",
+    "LC_CTYPE",
+    "LC_MESSAGES",
+    "LC_MONETARY",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_ADDRESS",
+    "LC_IDENTIFICATION",
+    "LC_MEASUREMENT",
+    "LC_NAME",
+    "LC_PAPER",
+    "LC_TELEPHONE",
     "TZ",
     "TERM",
     "COLORTERM",
@@ -203,10 +212,6 @@ def _safe_provider_child_base_env() -> dict[str, str]:
         for name in _PROVIDER_CHILD_INHERITED_ENV_VARS
         if (value := _inherited_env_value(name)) is not None
     }
-    for name, value in os.environ.items():
-        canonical = name.upper() if os.name == "nt" else name
-        if canonical.startswith("LC_"):
-            env[canonical] = value
     for name in _PROVIDER_CHILD_CA_FILE_ENV_VARS:
         value = _inherited_env_value(name)
         if not value:
@@ -228,66 +233,71 @@ def _ensure_private_provider_dir(path: Path) -> None:
         pass
 
 
+def _resolved_universe_child(universe_root: Path, path: Path) -> Path:
+    resolved = path.resolve(strict=False)
+    if not resolved.is_relative_to(universe_root):
+        raise ValueError("provider path escapes universe")
+    return resolved
+
+
+def _preflight_provider_auth_paths(
+    provider_name: str,
+    universe_root: Path,
+    configured_auth_path: Path | None,
+) -> None:
+    service = "claude" if provider_name == "claude-code" else "codex"
+    default_materialization = universe_root / ".credentials" / service
+    _resolved_universe_child(universe_root, default_materialization)
+    if configured_auth_path is not None:
+        _resolved_universe_child(universe_root, configured_auth_path)
+
+
 def _provider_child_runtime_env(
     provider_name: str, universe_dir: Path,
 ) -> dict[str, str]:
-    provider = provider_name.strip().lower()
-    safe_chars = frozenset(
-        "abcdefghijklmnopqrstuvwxyz0123456789._-"
-    )
-    if (
-        not provider
-        or provider in {".", ".."}
-        or any(char not in safe_chars for char in provider)
-    ):
-        raise ValueError("invalid provider name")
+    if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
+        raise ValueError("unsupported universe provider")
 
-    runtime_root = universe_dir / ".runtime" / "provider-child" / provider
-    home = runtime_root / "home"
-    appdata = home / "AppData" / "Roaming"
-    local_appdata = home / "AppData" / "Local"
-    xdg_config = home / ".config"
-    xdg_cache = home / ".cache"
-    xdg_data = home / ".local" / "share"
-    xdg_state = home / ".local" / "state"
-    xdg_runtime = runtime_root / "xdg-runtime"
-    temp = runtime_root / "tmp"
-    credential_root = universe_dir / ".credentials"
-    claude_config = credential_root / "claude"
-    codex_home = credential_root / "codex"
-    for path in (
-        home,
-        appdata,
-        local_appdata,
-        xdg_config,
-        xdg_cache,
-        xdg_data,
-        xdg_state,
-        xdg_runtime,
-        temp,
-        claude_config,
-        codex_home,
-    ):
+    runtime_root = universe_dir / ".runtime" / "provider-child" / provider_name
+    raw_paths = {
+        "home": runtime_root / "home",
+        "appdata": runtime_root / "home" / "AppData" / "Roaming",
+        "local_appdata": runtime_root / "home" / "AppData" / "Local",
+        "xdg_config": runtime_root / "home" / ".config",
+        "xdg_cache": runtime_root / "home" / ".cache",
+        "xdg_data": runtime_root / "home" / ".local" / "share",
+        "xdg_state": runtime_root / "home" / ".local" / "state",
+        "xdg_runtime": runtime_root / "xdg-runtime",
+        "temp": runtime_root / "tmp",
+        "claude_config": runtime_root / "auth-empty" / "claude",
+        "codex_home": runtime_root / "auth-empty" / "codex",
+    }
+    paths = {
+        name: _resolved_universe_child(universe_dir, path)
+        for name, path in raw_paths.items()
+    }
+    for path in paths.values():
         _ensure_private_provider_dir(path)
 
     env = _safe_provider_child_base_env()
     env.update({
-        "HOME": str(home),
-        "USERPROFILE": str(home),
-        "APPDATA": str(appdata),
-        "LOCALAPPDATA": str(local_appdata),
-        "XDG_CONFIG_HOME": str(xdg_config),
-        "XDG_CACHE_HOME": str(xdg_cache),
-        "XDG_DATA_HOME": str(xdg_data),
-        "XDG_STATE_HOME": str(xdg_state),
-        "XDG_RUNTIME_DIR": str(xdg_runtime),
-        "TMPDIR": str(temp),
-        "TMP": str(temp),
-        "TEMP": str(temp),
-        "CLAUDE_CONFIG_DIR": str(claude_config),
-        "CODEX_HOME": str(codex_home),
+        "HOME": str(paths["home"]),
+        "USERPROFILE": str(paths["home"]),
+        "APPDATA": str(paths["appdata"]),
+        "LOCALAPPDATA": str(paths["local_appdata"]),
+        "XDG_CONFIG_HOME": str(paths["xdg_config"]),
+        "XDG_CACHE_HOME": str(paths["xdg_cache"]),
+        "XDG_DATA_HOME": str(paths["xdg_data"]),
+        "XDG_STATE_HOME": str(paths["xdg_state"]),
+        "XDG_RUNTIME_DIR": str(paths["xdg_runtime"]),
+        "TMPDIR": str(paths["temp"]),
+        "TMP": str(paths["temp"]),
+        "TEMP": str(paths["temp"]),
+        "CLAUDE_CONFIG_DIR": str(paths["claude_config"]),
+        "CODEX_HOME": str(paths["codex_home"]),
         "AWS_EC2_METADATA_DISABLED": "true",
     })
+    home = paths["home"]
     if os.name == "nt" and len(home.drive) == 2 and home.drive.endswith(":"):
         env["HOMEDRIVE"] = home.drive
         env["HOMEPATH"] = str(home)[len(home.drive):]
@@ -299,19 +309,15 @@ def _valid_provider_auth_overlay(
 ) -> bool:
     if not isinstance(overlay, dict):
         return False
-    allowed = _PROVIDER_AUTH_OVERLAY_ENV_VARS.get(
-        provider_name.strip().lower(), frozenset(),
-    )
-    universe_root = universe_dir.resolve()
+    allowed = _PROVIDER_AUTH_OVERLAY_ENV_VARS.get(provider_name, frozenset())
     for name, value in overlay.items():
         if name not in allowed or not isinstance(value, str) or not value:
             return False
         if name not in {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}:
             continue
         try:
-            if not Path(value).resolve().is_relative_to(universe_root):
-                return False
-        except OSError:
+            _resolved_universe_child(universe_dir, Path(value))
+        except (OSError, RuntimeError, ValueError):
             return False
     return True
 
@@ -337,14 +343,29 @@ def subprocess_env_for_provider(
     credential_resolution_failed = False
     env: dict[str, str] = {}
     try:
-        from tinyassets.credential_vault import apply_provider_auth_env
+        if provider_name not in _PROVIDER_AUTH_OVERLAY_ENV_VARS:
+            raise ValueError("unsupported universe provider")
+        universe_root = resolved_universe.expanduser().resolve(strict=False)
+        from tinyassets.credential_vault import (
+            apply_provider_auth_env,
+            resolve_claude_config_dir,
+            resolve_codex_home,
+        )
 
-        env = _provider_child_runtime_env(provider_name, resolved_universe)
+        configured_auth_path = (
+            resolve_claude_config_dir(universe_root)
+            if provider_name == "claude-code"
+            else resolve_codex_home(universe_root)
+        )
+        _preflight_provider_auth_paths(
+            provider_name, universe_root, configured_auth_path,
+        )
+        env = _provider_child_runtime_env(provider_name, universe_root)
         overlay = apply_provider_auth_env(
-            {}, provider_name, universe_dir=resolved_universe,
+            {}, provider_name, universe_dir=universe_root,
         )
         if not _valid_provider_auth_overlay(
-            overlay, provider_name, resolved_universe,
+            overlay, provider_name, universe_root,
         ):
             credential_resolution_failed = True
         else:
