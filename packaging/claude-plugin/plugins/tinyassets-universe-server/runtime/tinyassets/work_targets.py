@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -56,6 +57,7 @@ SYNTHESIS_RETRY_LIMIT = 3
 PATCH_REQUEST_PICKUP_SIGNAL_TAG = "pickup-incentive"
 REQUESTER_DIRECTED_DAEMON_TAG = "requester-directed-daemon"
 PATCH_REQUEST_PICKUP_SIGNAL_CAP = 5.0
+EPOCH2_MATERIALIZATION_RESULT_LIMIT = 512
 
 EXECUTION_KIND_NOTES = "notes"
 # Phase C.2: BOOK/CHAPTER/SCENE moved to
@@ -304,7 +306,7 @@ def list_selectable_targets(
         if target.lifecycle != LIFECYCLE_ACTIVE:
             continue
         filtered.append(target)
-    return filtered
+    return _filter_live_epoch2_targets(universe_path, filtered)
 
 
 def get_target(
@@ -411,10 +413,83 @@ def requests_path(universe_path: str | Path) -> Path:
     return Path(universe_path) / REQUESTS_FILENAME
 
 
+def _list_live_epoch2_requests(
+    universe_path: str | Path,
+) -> list[Any]:
+    """Read this worker's live v2 requests, bound to the canonical root."""
+    from tinyassets import branch_tasks_v2
+    from tinyassets.storage import data_dir
+
+    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
+        return []
+    worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+    resolved_universe_path = Path(universe_path).resolve(strict=False)
+    canonical_root = data_dir().resolve(strict=False)
+    universe_id = resolved_universe_path.name.strip()
+    if (
+        not worker_id
+        or not universe_id
+        or resolved_universe_path.parent != canonical_root
+    ):
+        return []
+    try:
+        records = branch_tasks_v2.Epoch2BranchTaskAdapter(
+            canonical_root,
+        ).list_live_claimed_requests(
+            universe_id=universe_id,
+            worker_id=worker_id,
+            limit=EPOCH2_MATERIALIZATION_RESULT_LIMIT,
+        )
+        if len(records) == EPOCH2_MATERIALIZATION_RESULT_LIMIT:
+            logger.warning(
+                "epoch-2 live-claim read reached the %s-row result cap for %s",
+                EPOCH2_MATERIALIZATION_RESULT_LIMIT,
+                resolved_universe_path,
+            )
+        return records
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "epoch-2 live-claim read failed for %s",
+            resolved_universe_path,
+            exc_info=True,
+        )
+        return []
+
+
+def _filter_live_epoch2_targets(
+    universe_path: str | Path,
+    targets: list[WorkTarget],
+) -> list[WorkTarget]:
+    """Fail closed for v2 targets whose claim is not live for this worker."""
+    if not any(target.metadata.get("queue_epoch") == 2 for target in targets):
+        return targets
+    live_claims = {
+        (
+            request.branch_task_id,
+            request.claimed_by,
+            request.claimed_at,
+        )
+        for request in _list_live_epoch2_requests(universe_path)
+    }
+    filtered: list[WorkTarget] = []
+    for target in targets:
+        if target.metadata.get("queue_epoch") != 2:
+            filtered.append(target)
+            continue
+        claim_identity = (
+            str(target.metadata.get("branch_task_id") or ""),
+            str(target.metadata.get("claimed_by") or ""),
+            str(target.metadata.get("claimed_at") or ""),
+        )
+        if claim_identity in live_claims:
+            filtered.append(target)
+    return filtered
+
+
 def materialize_pending_requests(
     universe_path: str | Path,
 ) -> list[WorkTarget]:
-    """Convert pending ``requests.json`` entries into WorkTargets.
+    """Convert executable v1/v2 requests into WorkTargets.
 
     MCP ``submit_request`` writes user requests to ``requests.json``
     with ``status="pending"``. Before this helper landed, nothing in
@@ -428,18 +503,21 @@ def materialize_pending_requests(
     3. Flips the request's ``status`` to ``seen`` and stamps
        ``seen_at`` so the same request doesn't materialize twice.
 
-    Returns the list of WorkTargets created/updated. Safe to call every
-    cycle — idempotent on request_id.
+    Protocol-v2 requests never enter that file.  They are materialized only
+    after this exact worker owns a live unexpired epoch-2 reservation, using
+    the canonical transactional Request/task read model.  This helper never
+    mutates the v2 aggregate.
+
+    Returns the list of WorkTargets created/updated. Safe to call every cycle;
+    v1 is idempotent on request status and v2 on task claim identity.
     """
     path = requests_path(universe_path)
     requests = _read_json(path, [])
-    if not isinstance(requests, list) or not requests:
-        return []
 
     created: list[WorkTarget] = []
     dirty = False
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    for req in requests:
+    for req in requests if isinstance(requests, list) else []:
         if not isinstance(req, dict):
             continue
         if req.get("status") != "pending":
@@ -500,6 +578,92 @@ def materialize_pending_requests(
 
     if dirty:
         _write_json(path, requests)
+    created.extend(_materialize_live_epoch2_requests(universe_path))
+    return created
+
+
+def _materialize_live_epoch2_requests(
+    universe_path: str | Path,
+) -> list[WorkTarget]:
+    """Upsert this worker's live claimed v2 Request without queue mutation."""
+    records = _list_live_epoch2_requests(universe_path)
+    if not records:
+        return []
+
+    existing = {
+        target.target_id: target
+        for target in load_work_targets(universe_path)
+    }
+    created: list[WorkTarget] = []
+    for request in records:
+        target_id = _slugify(
+            f"request-{request.request_id}",
+            fallback=f"request-{request.request_id}",
+        )
+        prior = existing.get(target_id)
+        claim_identity = (
+            request.branch_task_id,
+            request.claimed_by,
+            request.claimed_at,
+        )
+        if prior is not None and (
+            prior.metadata.get("branch_task_id"),
+            prior.metadata.get("claimed_by"),
+            prior.metadata.get("claimed_at"),
+        ) == claim_identity:
+            continue
+
+        metadata: dict[str, Any] = {
+            "request_id": request.request_id,
+            "request_type": request.request_type,
+            "request_source": request.actor_id,
+            "request_timestamp": request.queued_at,
+            "branch_id": request.branch_id,
+            "queue_epoch": 2,
+            "admission_id": request.admission_id,
+            "branch_task_id": request.branch_task_id,
+            "trigger_source": request.trigger_source,
+            "accepted_priority_weight": (
+                request.accepted_priority_weight
+            ),
+            "claimed_by": request.claimed_by,
+            "claimed_at": request.claimed_at,
+        }
+        if request.pickup_incentive:
+            metadata["pickup_incentive_text"] = request.pickup_incentive
+        if request.directed_daemon_id:
+            metadata["requester_directed_daemon"] = {
+                "daemon_id": request.directed_daemon_id,
+                "instruction": request.directed_daemon_instruction,
+            }
+            if request.accepted_priority_weight > 0:
+                metadata["requester_directed_daemon"]["effect"] = "applied"
+
+        tags = ["user-request", request.request_type]
+        if _bounded_pickup_signal(metadata) > 0:
+            tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
+        title_stub = (
+            request.text.splitlines()[0][:70]
+            if request.text
+            else request.request_type
+        )
+        target = WorkTarget(
+            target_id=target_id,
+            title=f"Request: {title_stub or request.request_type}",
+            role=ROLE_NOTES,
+            publish_stage=PUBLISH_STAGE_NONE,
+            lifecycle=LIFECYCLE_ACTIVE,
+            current_intent=(
+                request.text
+                or f"address user {request.request_type} request"
+            ),
+            tags=tags,
+            selection_reason=f"user_request:{request.actor_id}",
+            metadata=metadata,
+        )
+        upsert_work_target(universe_path, target)
+        existing[target_id] = target
+        created.append(target)
     return created
 
 
@@ -959,7 +1123,10 @@ def choose_authorial_targets(
         # Producer path has already run seed + list_selectable_targets;
         # just score the merged set. Empty means the daemon should idle,
         # not resurrect completed or paused targets.
-        candidates = list(candidate_override)
+        candidates = _filter_live_epoch2_targets(
+            universe_path,
+            list(candidate_override),
+        )
 
     def score(target: WorkTarget) -> tuple[int, float, int, float]:
         role_score = 2 if target.role == ROLE_PUBLISHABLE else 1
