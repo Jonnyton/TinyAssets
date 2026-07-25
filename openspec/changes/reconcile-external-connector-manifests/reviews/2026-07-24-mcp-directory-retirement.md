@@ -79,6 +79,25 @@ optional-status contract. After renaming the helpers and making help, callers,
 tests, and canonical as-built requirements agree on exact seven, the follow-up
 returned `APPROVE` and rechecked all seven Opus findings clean.
 
+### Production result
+
+The Worker publish inside run `30141555761` succeeded; its old misplaced name
+gate then failed and skipped the workflow's old retirement step, as predicted.
+The repaired probe independently reached the deployed Worker and proved the
+complete retired method/path matrix is ordinary 404.
+
+Build run `30141556536` published image `14aabcb2f968`; deploy-prod run
+`30141691915` deployed it successfully with a passing canonical canary,
+handle-set canary, health check, and release-state receipt. Direct
+post-deploy probes on 2026-07-24 then passed:
+
+- `--assert-name TinyAssets`;
+- `--assert-handles` with required exact seven;
+- the complete `/mcp-directory*` ordinary-404 matrix.
+
+PR #1722 makes those checks durable in their correct owning workflows. Rendered
+supported-chatbot proof and post-fix normal-user evidence remain open.
+
 ## Verification evidence
 
 Fresh local evidence on Windows/Python and Node, 2026-07-24:
