@@ -235,6 +235,10 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     adapter, committed, clock = epoch2
     observed: list[bool] = []
 
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is False
     trusted_descriptor = _descriptor()
 
     def trusted(conn, _worker_id):
@@ -269,6 +273,14 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
     assert claimed.claimed_by == "worker-a"
     assert claimed.lease_expires_at == "2026-07-24T08:02:30+00:00"
     assert observed == [True, True]
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is True
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-b",
+    ) is False
     assert _request_status(
         adapter.base_path,
         committed["request_id"],
@@ -281,6 +293,11 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
             worker_id="worker-b"
         ),
     ) is None
+    clock.set("2026-07-24T08:02:31+00:00")
+    assert adapter.has_active_claim(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) is False
 
 
 def test_claim_uses_transaction_time_for_descriptor_freshness(
@@ -489,6 +506,48 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
         tmp_path,
         second["request_id"],
     ) == "pending"
+
+
+def test_recovery_poll_without_expired_claim_stays_read_only(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+    monkeypatch,
+) -> None:
+    adapter, _committed, _clock = epoch2
+    statements: list[str] = []
+    real_connection = adapter._store.connection
+
+    @contextmanager
+    def traced_connection():
+        with real_connection() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+
+    monkeypatch.setattr(
+        adapter._store,
+        "connection",
+        traced_connection,
+    )
+
+    assert adapter.recover_expired() == []
+    assert not any(
+        "BEGIN IMMEDIATE" in statement.upper()
+        for statement in statements
+    )
+
+
+def test_recovery_fails_closed_for_partial_epoch2_schema(tmp_path) -> None:
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    with adapter._store.connection() as conn:
+        conn.execute(
+            "CREATE TABLE branch_tasks_v2 (branch_task_id TEXT PRIMARY KEY)"
+        )
+        conn.commit()
+
+    with pytest.raises(
+        sqlite3.OperationalError,
+        match="branch_tasks_v2 recovery schema incomplete",
+    ):
+        adapter.recover_expired()
 
 
 def test_pending_cancel_is_terminal_without_claim(

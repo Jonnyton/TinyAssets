@@ -323,23 +323,3 @@ def test_canonical_handles_unaffected_by_deprecated_middleware():
     # Reads (and the canonical handles generally) pass the middleware;
     # write_graph/write_page enforce their own gate inside the handler.
     assert _run(middleware.on_call_tool(_Ctx(), _call_next)) == "reached-tool"
-
-
-# ── directory_server handle wiring ──────────────────────────────────────────
-
-def test_directory_write_graph_rejects_anonymous_when_gated():
-    from tinyassets import directory_server
-
-    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
-    auth_middleware(None)
-    payload = _payload(directory_server.write_graph(target="__gate_probe__"))
-    assert payload.get("auth_required") is True
-
-
-def test_directory_write_page_filing_rejects_anonymous_when_gated():
-    from tinyassets import directory_server
-
-    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
-    auth_middleware(None)
-    payload = _payload(directory_server.write_page(kind="bug", title="x"))
-    assert payload.get("auth_required") is True

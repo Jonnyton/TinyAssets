@@ -12,7 +12,6 @@ from pathlib import Path
 
 import pytest
 
-import tinyassets.directory_server as directory_server
 import tinyassets.universe_server as universe_server
 from tinyassets.api import universe as universe_api
 from tinyassets.auth.provider import Identity
@@ -113,11 +112,6 @@ def admission_context(
         lambda _tool: None,
     )
     monkeypatch.setattr(
-        directory_server,
-        "write_gate_rejection",
-        lambda _tool: None,
-    )
-    monkeypatch.setattr(
         universe_api,
         "_universe_loop_dispatch",
         lambda _udir: ("loop-branch", {"mode": "v2"}),
@@ -186,35 +180,20 @@ def _table_count(base_path: Path, table: str) -> int:
     return int(row[0])
 
 
-def test_main_and_directory_advertise_the_same_request_fields() -> None:
-    main_signature = inspect.signature(universe_server.write_graph)
-    directory_signature = inspect.signature(directory_server.write_graph)
+def test_canonical_write_graph_advertises_request_fields() -> None:
+    signature = inspect.signature(universe_server.write_graph)
     for field in REQUEST_FIELDS:
-        assert field in main_signature.parameters
-        assert field in directory_signature.parameters
-        assert (
-            main_signature.parameters[field].default
-            == directory_signature.parameters[field].default
-        )
+        assert field in signature.parameters
 
-    main_tool = next(
+    tool = next(
         tool
         for tool in asyncio.run(
             universe_server.mcp.list_tools(run_middleware=False)
         )
         if tool.name == "write_graph"
     )
-    directory_tool = next(
-        tool
-        for tool in asyncio.run(
-            directory_server.directory_mcp.list_tools(run_middleware=False)
-        )
-        if tool.name == "write_graph"
-    )
-    assert REQUEST_FIELDS <= set(main_tool.parameters["properties"])
-    assert REQUEST_FIELDS <= set(directory_tool.parameters["properties"])
-    assert main_tool.annotations.idempotentHint is False
-    assert directory_tool.annotations.idempotentHint is False
+    assert REQUEST_FIELDS <= set(tool.parameters["properties"])
+    assert tool.annotations.idempotentHint is False
 
 
 def test_all_runtime_manifests_include_rfc8785() -> None:
@@ -266,11 +245,11 @@ import tinyassets.universe_server
     assert completed.returncode == 0, completed.stderr
 
 
-def test_main_and_directory_use_one_transactional_result_contract(
+def test_canonical_write_graph_uses_transactional_result_contract(
     admission_context: dict[str, str | Path],
 ) -> None:
     first = json.loads(universe_server.write_graph(**_request()))
-    replay = json.loads(directory_server.write_graph(**_request()))
+    replay = json.loads(universe_server.write_graph(**_request()))
 
     assert set(first) == SUCCESS_FIELDS
     assert first["admission_state"] == "committed"
@@ -391,7 +370,7 @@ def test_committed_replay_survives_later_loop_removal(
         lambda _udir: ("", {"error": "universe_loop_not_declared"}),
     )
 
-    replay = json.loads(directory_server.write_graph(**_request()))
+    replay = json.loads(universe_server.write_graph(**_request()))
 
     assert replay == {**first, "idempotent_replay": True}
 
@@ -621,16 +600,10 @@ def test_lost_delivery_replay_skips_mutation_ledger_and_legacy_writer(
         "_universe_impl",
         lambda **_kwargs: pytest.fail("public request used legacy writer"),
     )
-    monkeypatch.setattr(
-        directory_server,
-        "_universe_impl",
-        lambda **_kwargs: pytest.fail("directory request used legacy writer"),
-    )
-
     first = json.loads(universe_server.write_graph(**_request()))
     # The first commit succeeded, but its response is treated as lost. A retry
-    # through the other connector must reconstruct the original durable IDs.
-    replay = json.loads(directory_server.write_graph(**_request()))
+    # through the canonical connector must reconstruct the original durable IDs.
+    replay = json.loads(universe_server.write_graph(**_request()))
 
     assert first["idempotent_replay"] is False
     assert replay["idempotent_replay"] is True

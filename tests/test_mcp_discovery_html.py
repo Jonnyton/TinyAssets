@@ -1,10 +1,11 @@
 """Tests for substrate-fix #11 / Family A Phase 1.A: MCP endpoint discovery.
 
-When a browser GETs /mcp or /mcp-directory with Accept: text/html, the server
-should return a discovery HTML page explaining the endpoint and how to connect.
+When a browser GETs canonical /mcp with Accept: text/html, the server should
+return a discovery HTML page explaining the endpoint and how to connect.
 Default curl and JSON probes should receive compact discovery JSON. MCP
 transport requests (POST with JSON-RPC, GET with text/event-stream, or any
 request with MCP transport/session headers) must pass through unchanged.
+The retired /mcp-directory surface is never a discovery or transport route.
 """
 
 from __future__ import annotations
@@ -41,12 +42,16 @@ def test_browser_get_mcp_returns_discovery_html(client):
     assert "<code>workflow</code>" not in body
 
 
-def test_browser_get_mcp_directory_returns_discovery_html(client):
-    """GET /mcp-directory with Accept: text/html returns discovery HTML."""
-    response = client.get("/mcp-directory", headers={"Accept": "text/html"})
-    assert response.status_code == 200
-    assert "text/html" in response.headers["content-type"]
-    assert "TinyAssets MCP Server" in response.text
+def test_browser_get_mcp_directory_is_an_ordinary_404(client):
+    response = client.get(
+        "/mcp-directory",
+        headers={"Accept": "text/html"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 404
+    assert "location" not in response.headers
+    assert response.text == "Not Found"
 
 
 def test_default_get_mcp_returns_discovery_json(client):
@@ -55,25 +60,23 @@ def test_default_get_mcp_returns_discovery_json(client):
     assert response.status_code == 200
     assert "application/json" in response.headers["content-type"]
     payload = response.json()
-    assert payload["name"] == "tinyassets"
+    assert payload["name"] == "TinyAssets"
     assert payload["type"] == "mcp_server_endpoint"
     assert payload["transport"] == "streamable-http"
     assert payload["related"]["source"] == "https://github.com/Jonnyton/TinyAssets"
     assert "text/event-stream" in payload["how_to_connect"]["client_accept_header"]
 
 
-def test_json_get_mcp_directory_returns_discovery_json(client):
-    """GET /mcp-directory with Accept: application/json returns discovery JSON."""
+def test_json_get_mcp_directory_is_an_ordinary_404(client):
     response = client.get(
         "/mcp-directory",
         headers={"Accept": "application/json"},
+        follow_redirects=False,
     )
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["name"] == "tinyassets"
-    assert payload["related"]["source"] == "https://github.com/Jonnyton/TinyAssets"
-    assert payload["related"]["mcp_endpoint"] == "https://tinyassets.io/mcp"
-    assert payload["connect"]["catalog_path"].startswith("/mcp-directory")
+
+    assert response.status_code == 404
+    assert "location" not in response.headers
+    assert response.text == "Not Found"
 
 
 def test_head_mcp_returns_discovery_headers(client):

@@ -372,12 +372,14 @@ def select_next_task(
     config: DispatcherConfig,
     now_iso: str | None = None,
     epoch2_adapter: Any | None = None,
+    queue_epochs: frozenset[int] | None = None,
 ) -> BranchTask | None:
     """Read eligible v1/v2 queues and return the top task without mutation.
 
     Returns ``None`` on empty / no-eligible. Called event-driven at
     graph-cycle boundaries. Passing no epoch-2 adapter is the legacy-worker
-    boundary: that caller can read and claim v1 only.
+    boundary: that caller can read and claim v1 only. ``queue_epochs`` lets
+    readiness probes restrict a merged read without changing ordinary callers.
     """
     queue = read_queue(universe_path)
     if epoch2_adapter is not None:
@@ -394,6 +396,8 @@ def select_next_task(
         if task.status != "pending":
             continue
         queue_epoch = int(getattr(task, "queue_epoch", 1))
+        if queue_epochs is not None and queue_epoch not in queue_epochs:
+            continue
         if task.trigger_source == "operator_request" and queue_epoch != 2:
             continue
         if queue_epoch == 2 and int(

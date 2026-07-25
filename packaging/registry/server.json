@@ -3,7 +3,7 @@
   "name": "io.github.Jonnyton/tinyassets-universe-server",
   "title": "TinyAssets",
   "description": "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "repository": {
     "url": "https://github.com/Jonnyton/TinyAssets",
     "source": "github"
@@ -21,7 +21,7 @@
   "remotes": [
     {
       "type": "streamable-http",
-      "url": "https://tinyassets.io/mcp-directory/catalog/2026-06-24-underscore-handles"
+      "url": "https://tinyassets.io/mcp"
     }
   ]
 }
