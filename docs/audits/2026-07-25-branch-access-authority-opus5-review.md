@@ -28,6 +28,8 @@ The canonical chatbot connector is the acceptance surface. Agent Village is defe
 8. `patch_branch` has a caller-controlled `force=true` authority bypass.
 9. Canonical `run_graph` can execute another actor's private branch; this belongs to a named sibling lane because it writes `tinyassets/api/runs.py`.
 10. Existing direct author checks use `_current_actor()`, whose environment fallback is an open authority defect and must not be propagated.
+11. `_resolve_branch_id` performs name lookup with `_current_actor()`. When environment identity names a private branch author, a guessed private name can resolve to the stored ID before a later denial emits that canonical ID instead of the original selector.
+12. `patch_branch`'s non-author response is itself an oracle: it returns the canonical branch ID, stored author, caller identity, and explicit `force=true` bypass guidance instead of preserving private-or-missing equivalence or a generic readable-object denial.
 
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
@@ -36,10 +38,10 @@ The drafted change additionally records that branch create/build paths accept ca
 `harden-branch-access-authority` owns:
 
 - authenticated-subject authorship and the shared branch read/author helper;
-- exact-ID not-found equivalence;
+- ID/name selector not-found equivalence without canonical-ID resolution leaks;
 - cross-branch source reuse;
 - lineage filtering;
-- mutation and deletion authority;
+- mutation and deletion authority with private-or-missing equivalence and generic readable-object denial;
 - separation of commit-conflict force from authority;
 - branch-originated related-wiki visibility, counting, and stable empty output.
 

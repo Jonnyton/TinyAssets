@@ -15,8 +15,8 @@ The system SHALL derive branch authorship and every branch authority decision fr
 - **WHEN** the credential-validated subject equals the stored branch author
 - **THEN** author-only reads and writes remain available subject to their other existing gates
 
-### Requirement: Exact-ID branch reads preserve not-found equivalence
-The system SHALL apply one shared branch-read authority helper to `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search before constructing branch-derived output. A foreign private branch and a nonexistent branch MUST return the byte-identical JSON envelope `{"error": "Branch '<id>' not found."}` with no existence, author, visibility, structure, validation, lineage, or projection metadata.
+### Requirement: Branch-selector reads preserve not-found equivalence
+The system SHALL apply one shared selector-resolution and branch-read authority helper to `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search before constructing branch-derived output. Name resolution MUST use the credential-validated request subject rather than environment identity. A foreign private branch and a nonexistent branch MUST return the byte-identical JSON envelope `{"error": "Branch '<selector>' not found."}` using the original caller-supplied ID or name, with no resolved canonical ID, existence, author, visibility, structure, validation, lineage, or projection metadata.
 
 #### Scenario: Non-owner describes a private branch by exact ID
 - **WHEN** an authenticated subject requests `describe_branch` for another author's private branch
@@ -25,6 +25,10 @@ The system SHALL apply one shared branch-read authority helper to `get_branch`, 
 #### Scenario: Non-owner validates a private branch by exact ID
 - **WHEN** an authenticated subject requests validation or exact-branch node search for another author's private branch
 - **THEN** the response contains only the canonical not-found envelope
+
+#### Scenario: Guessed private name does not reveal the canonical ID
+- **WHEN** a caller supplies another author's private branch name while process environment identity names that author
+- **THEN** resolution grants no authority and the not-found envelope contains the original name rather than the stored branch ID
 
 #### Scenario: Owner reads a private branch
 - **WHEN** the authenticated subject is the author of the requested private branch
@@ -73,11 +77,15 @@ The system SHALL authorize the requested lineage root and every ancestor through
 - **THEN** the foreign private fork contributes no row or count
 
 ### Requirement: Branch mutation and deletion require author authority
-The system SHALL require the credential-validated subject to equal the stored branch author before `add_node`, `connect_nodes`, `set_entry_point`, `add_state_field`, `update_node`, `patch_nodes`, `approve_source_code`, `patch_branch`, or `delete_branch` changes state. Batch, empty-selection, and exact-ID forms MUST NOT bypass this gate. Caller-supplied `force` SHALL apply only to an already-authorized commit-conflict path and MUST NOT relax or alter an authority denial.
+The system SHALL resolve every mutation/deletion target through the shared readable-branch helper, then require the credential-validated subject to equal the stored branch author before `add_node`, `connect_nodes`, `set_entry_point`, `add_state_field`, `update_node`, `patch_nodes`, `approve_source_code`, `patch_branch`, or `delete_branch` changes state. A foreign private target and missing selector MUST return the same original-selector not-found envelope. A readable non-owned target MUST return a generic author-authority denial that exposes no stored author or target internals. Batch, empty-selection, and exact-ID forms MUST NOT bypass either gate. Caller-supplied `force` SHALL apply only to an already-authorized commit-conflict path and MUST NOT relax or alter an authority denial.
 
 #### Scenario: Non-author mutation is denied
 - **WHEN** a caller attempts any branch mutation against a branch authored by another subject
 - **THEN** the operation is denied before state changes and the branch remains byte-equivalent to its pre-call state
+
+#### Scenario: Foreign private mutation is not an existence oracle
+- **WHEN** a caller mutates another author's private branch by ID or guessed name
+- **THEN** the response matches the missing-selector not-found envelope, preserves the original selector, and exposes no stored author
 
 #### Scenario: Empty patch selection cannot mutate all foreign nodes
 - **WHEN** a non-author calls a batch patch form whose empty selection would otherwise target every node

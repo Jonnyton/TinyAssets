@@ -14,32 +14,41 @@
 
 ## 3. Wave 1 — reads, projections, and lineage
 
-- [ ] 3.1 Add RED tests proving private exact-ID get/describe/validate/fork-tree/node-search responses are byte-identical to missing-branch responses for non-owners, while public and owner reads remain unchanged.
-- [ ] 3.2 Add RED related-wiki tests proving visibility filtering precedes matching/sort/cap/count, restricted pages expose no fields or counts, all-hidden results keep `[]`/`0`, and related paths are a subset of wiki-list paths for the same caller.
-- [ ] 3.3 Add the shared authenticated-subject branch read/author helper and server-bind branch creation/composite authorship; do not accept environment or caller identity as authority.
-- [ ] 3.4 Wire the shared read helper into get, describe, validate, fork-tree root, and exact-branch node search before response construction.
-- [ ] 3.5 Wire `page_visible_in_listing` into `_related_wiki_pages` before match/score/sort/cap/count without adding audience filtering or changing stable keys.
-- [ ] 3.6 Authorize lineage ancestors and pass the authenticated viewer into descendant enumeration so owners see own private forks and non-owners do not.
-- [ ] 3.7 Run the focused Wave 1 tests and surrounding branch/wiki visibility suites; mutation-probe each new gate and resolve every failure.
+- [ ] 3.1 In `tests/test_branch_read_authority.py`, add RED tests for server-bound create/build authorship, `anonymous` denial, and an environment-only actor; each test must fail against the current `_current_actor()`/caller-author behavior.
+- [ ] 3.2 In the same file, add RED table tests for get/describe/validate/fork-tree/exact-node-search private-or-missing byte equivalence, plus a private-name case proving environment identity cannot resolve or replace the original selector with the canonical ID; keep explicit public and owner controls.
+- [ ] 3.3 In `tinyassets/api/branches.py`, add `_request_branch_actor() -> str | None`, `_resolve_readable_branch(selector: str, base_path: str) -> tuple[str, dict[str, Any]] | None`, and `_branch_not_found(selector: str) -> str`. These consume `current_request_actor_id()`, treat `anonymous` as absent, resolve names only through visibility-aware enumeration, and preserve the original selector for denial output.
+- [ ] 3.4 Server-bind branch create/build authorship through `_request_branch_actor`, then wire `_resolve_readable_branch` before output construction in get, describe, validate, fork-tree root, and exact-branch node search.
+- [ ] 3.5 In `tests/test_related_wiki_visibility.py`, add RED tests for filter-before-match/sort/cap/count, zero hidden fields/counts, all-hidden `[]`/`0`, public/granted controls, and related-path subset equality against wiki list.
+- [ ] 3.6 Wire `page_visible_in_listing` into `_related_wiki_pages` before matching without adding audience filtering or changing stable keys.
+- [ ] 3.7 Add RED lineage cases for an unreadable ancestor, owner-private descendant, and foreign-private descendant; then authorize each ancestor through `_resolve_readable_branch` and pass `_request_branch_actor()` as the descendant viewer.
+- [ ] 3.8 Run `python -m pytest tests/test_branch_read_authority.py tests/test_related_wiki_visibility.py tests/test_universe_visibility.py -q`; require all tests to pass, then independently mutation-probe selector resolution, page filtering, and ancestor/descendant gates before the Wave 1 commit.
 
 ## 4. Wave 2 — private source reuse
 
-- [ ] 4.1 Add RED tests for foreign-private `node_ref.source` and `fork_from`, including source-code/prompt/tool/provenance non-copy and byte-identical destination state after denial.
-- [ ] 4.2 Gate node-reference lookup and fork cloning through the shared read helper before reading or copying source content.
-- [ ] 4.3 Prove public and author-owned private reuse remain unchanged, then mutation-probe both source gates.
+- [ ] 4.1 Add a RED `node_ref.source` test that snapshots destination bytes, attempts foreign-private reuse, and proves source code, prompt, tools, description, and approval provenance are neither returned nor persisted; include public and owner-private controls.
+- [ ] 4.2 Gate node-reference lookup through `_resolve_readable_branch` before `_lookup_node_body` reads any source field; run the Wave 2 node-reference cases to green and commit independently.
+- [ ] 4.3 Add a RED `fork_from` test that snapshots destination/nonexistence, attempts a foreign-private clone, and proves no `node_defs`, metadata, version, or partial destination survives; include public and owner-private controls.
+- [ ] 4.4 Gate fork snapshot loading through `_resolve_readable_branch` before clone materialization; run `python -m pytest tests/test_branch_read_authority.py -q`, mutation-probe both reuse gates, and commit independently.
 
 ## 5. Wave 3 — mutation and deletion authority
 
-- [ ] 5.1 Add RED tests for every mutation handler, empty-selection batch patch, source-code approval, deletion persistence, and caller-supplied force bypass.
-- [ ] 5.2 Apply one author-authority gate before target expansion or state change in add-node, connect, entry-point, state-field, update-node, patch-nodes, approve-source-code, patch-branch, and delete-branch.
-- [ ] 5.3 Separate force from authority: preserve authorized commit-conflict recovery while making non-author denial invariant under force and removing retry-with-force guidance.
-- [ ] 5.4 Verify the action-scope registry denies missing metadata and retains non-read classification for every Wave 3 handler.
-- [ ] 5.5 Run focused and surrounding mutation/storage tests and mutation-probe every authority gate.
+- [ ] 5.1 In `tests/test_branch_mutation_authority.py`, add RED non-author and owner controls for add-node, connect, entry-point, and state-field mutations, asserting byte-identical branch state after denial; foreign-private ID/name cases must match missing selectors and readable-public non-owner cases must expose no stored author.
+- [ ] 5.2 Add `_branch_authorized(branch: dict[str, Any]) -> bool` using `_request_branch_actor`; resolve targets through `_resolve_readable_branch`, then gate the four structural mutations before target expansion or persistence and emit one generic no-author-details denial for readable non-owned branches. Run only those cases to green and commit.
+- [ ] 5.3 Add RED non-author and owner controls for update-node, patch-nodes (including empty selection), and approve-source-code, asserting no source/provenance or batch expansion changes after denial and private-or-missing response equivalence.
+- [ ] 5.4 Resolve targets through `_resolve_readable_branch`, then gate update-node, patch-nodes, and approve-source-code through `_branch_authorized` before selection expansion or persistence; run those cases to green and commit.
+- [ ] 5.5 Add RED patch-branch tests proving private-or-missing equivalence, generic readable-public non-author denial, identical denial under `force=true`, no stored-author/retry-with-force guidance, and preserved authorized conflict recovery.
+- [ ] 5.6 Resolve patch-branch through `_resolve_readable_branch` and move `_branch_authorized` ahead of force/conflict handling; run the patch cases to green and commit without changing authorized force semantics.
+- [ ] 5.7 Add RED delete tests proving private-or-missing equivalence and that a readable-public non-author cannot remove the branch, versions, or backing files while the author still can.
+- [ ] 5.8 Resolve the target through `_resolve_readable_branch`, then gate delete through `_branch_authorized` before any deletion call and run the delete cases to green.
+- [ ] 5.9 Add registry assertions that structural/node/patch actions are `write`, approval/deletion are `admin`, and missing metadata is denied; coordinate these exact effects with retirement tasks 4.2/4.4.
+- [ ] 5.10 Run `python -m pytest tests/test_branch_mutation_authority.py tests/test_branch_read_authority.py -q`, surrounding branch/storage suites, and mutation probes for every authority call site before the Wave 3 commit.
 
 ## 6. Sibling canonical execution boundary
 
 - [ ] 6.1 Create and separately claim `harden-run-branch-access-authority` for `tinyassets/api/runs.py` and `tests/test_run_branch_authority.py` after the shared helper and broad test claims are available.
-- [ ] 6.2 Make canonical `run_graph` authorize the target branch through the shared read boundary before loading or executing it; preserve public and owner execution.
+- [ ] 6.2 Add RED tests proving a foreign-private run selector matches the missing-selector response and starts no run/provider work; include public and owner-private controls.
+- [ ] 6.3 Import `_resolve_readable_branch` lazily in `tinyassets/api/runs.py` and authorize before branch loading or execution, preserving the original selector on denial.
+- [ ] 6.4 Run `python -m pytest tests/test_run_branch_authority.py -q`, the surrounding run/branch suites, and a mutation probe that removes the helper call and makes the foreign-private test fail.
 
 ## 7. Concurrency, public acceptance, and completion
 

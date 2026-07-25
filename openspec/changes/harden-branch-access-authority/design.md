@@ -1,6 +1,6 @@
 ## Context
 
-TinyAssets exposes branch authoring and execution through the canonical chatbot connector. Branch visibility currently exists as a storage/listing concept, but exact-ID handlers in `tinyassets/api/branches.py` apply it inconsistently. `get_branch` contains a local owner check, while `describe_branch`, `validate_branch`, lineage reads, cross-branch node reuse, branch cloning, most mutations, and deletion do not share that boundary. `patch_branch` has an author check that a caller can bypass with `force=true`.
+TinyAssets exposes branch authoring and execution through the canonical chatbot connector. Branch visibility currently exists as a storage/listing concept, but branch-selector handlers in `tinyassets/api/branches.py` apply it inconsistently. `get_branch` contains a local owner check, while `describe_branch`, `validate_branch`, lineage reads, cross-branch node reuse, branch cloning, most mutations, and deletion do not share that boundary. `_resolve_branch_id` also performs name lookup with the environment-fallback actor and can translate a guessed private name into its canonical ID before a later denial changes the not-found envelope. `patch_branch` has an author check that a caller can bypass with `force=true`.
 
 The result is not only metadata exposure. A canonical `write_graph` request can copy `source_code`, prompts, tools, and approval provenance from another actor's private branch through `node_ref.source`. The canonical `run_graph` surface can execute a foreign private branch in `tinyassets/api/runs.py`; that runtime is tracked as a separately claimed sibling because this change must not silently broaden its write-set.
 
@@ -13,7 +13,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 **Goals:**
 
 - Establish one request-local, credential-validated subject as branch authorship and authority truth.
-- Make exact-ID reads of a foreign private branch indistinguishable from a missing branch.
+- Make ID/name selector reads of a foreign private branch indistinguishable from a missing branch without exposing a resolved canonical ID.
 - Gate cross-branch content reuse before executable content is copied.
 - Preserve branch visibility across lineage projections.
 - Require author authority for every mutation and deletion path.
@@ -40,13 +40,13 @@ Branch creation and composite build paths persist the authenticated subject as `
 
 Alternative: reuse `_current_actor()` everywhere. Rejected because its environment fallback is an open authority defect and copying the expression would entrench it across every handler.
 
-### 2. Read authorization returns one not-found envelope
+### 2. Selector resolution and read authorization return one not-found envelope
 
-The helper resolves a branch and returns either the branch or the canonical JSON error `{"error": "Branch '<id>' not found."}`. `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search use it before constructing any branch-derived output.
+The helper consumes the original caller-supplied ID or name selector, resolves names only through visibility-aware enumeration using `current_request_actor_id()`, and returns either the readable canonical ID plus branch or the canonical JSON error `{"error": "Branch '<selector>' not found."}`. `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search use it before constructing any branch-derived output.
 
-A missing branch and a foreign private branch have byte-identical serialized errors, key order, punctuation, and status behavior. No denial note, existence flag, author, visibility value, or different key set is emitted.
+A missing branch and a foreign private branch have byte-identical serialized errors, key order, punctuation, and status behavior. A denied name selector never changes into or exposes the stored branch ID. No denial note, existence flag, author, visibility value, or different key set is emitted.
 
-Alternative: return an explicit forbidden error. Rejected because exact IDs are enumerable and the private branch's existence is itself restricted metadata.
+Alternative: return an explicit forbidden error. Rejected because caller-supplied IDs and names are enumerable and the private branch's existence or resolved canonical ID is itself restricted metadata.
 
 ### 3. Cross-branch reuse is a read before it is a write
 
@@ -64,7 +64,9 @@ Alternative: use `include_private=False`. Rejected because it prevents a legitim
 
 ### 5. Mutation and deletion require author authority
 
-`add_node`, `connect_nodes`, `set_entry_point`, `add_state_field`, `update_node`, `patch_nodes`, `approve_source_code`, `patch_branch`, and `delete_branch` all use one author-authority gate before changing state. Batch and empty-selection forms do not bypass the gate.
+`add_node`, `connect_nodes`, `set_entry_point`, `add_state_field`, `update_node`, `patch_nodes`, `approve_source_code`, `patch_branch`, and `delete_branch` first resolve the target through the shared readable-branch helper, so a foreign private target remains indistinguishable from a missing selector. A readable target then passes one author-authority gate before changing state. Batch and empty-selection forms do not bypass either gate.
+
+A readable public branch owned by someone else returns one generic author-authority denial without the stored author, target internals, or retry guidance. A foreign private target returns the original-selector not-found envelope instead; mutation errors never turn a privacy denial into an existence or author oracle.
 
 `force` remains available only after authority succeeds and only for the existing commit-conflict behavior. It cannot relax an author denial, and denial text never instructs a caller to retry with force.
 
@@ -86,7 +88,7 @@ Alternative: filter after scoring/capping. Rejected because hidden pages would s
 
 ### 7. Delivery is split by collision and module ownership
 
-Wave 1 implements exact-ID reads, related-wiki filtering, and lineage in `branches.py`. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion and removes the force authority bypass. Each wave gets new focused RED-first tests after broad `tests/` claims release.
+Wave 1 implements ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py`. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
 
 The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and imports the shared read helper for canonical `run_graph`. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
 

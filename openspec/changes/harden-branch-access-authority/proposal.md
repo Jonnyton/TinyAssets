@@ -1,11 +1,11 @@
 ## Why
 
-Canonical connector branch actions do not share one authenticated-subject authority boundary. A caller can currently reuse executable node content from another actor's private branch, while legacy exact-ID reads, mutations, deletion, lineage, and related-wiki projections expose or alter private material through inconsistent or missing checks.
+Canonical connector branch actions do not share one authenticated-subject authority boundary. A caller can currently reuse executable node content from another actor's private branch, while legacy ID/name selector reads, mutations, deletion, lineage, and related-wiki projections expose or alter private material through inconsistent or missing checks.
 
 ## What Changes
 
 - Add one fail-closed branch authority contract keyed to the authenticated subject, never an environment-derived or caller-supplied actor.
-- Make every exact-ID branch read return the same not-found envelope for a nonexistent branch and a foreign private branch.
+- Make every ID/name selector read return the same not-found envelope for a nonexistent branch and a foreign private branch, without leaking a resolved canonical ID from a guessed private name.
 - Gate cross-branch node references and branch cloning before private source content is read or copied.
 - Make lineage enumeration preserve the same visibility boundary for roots, ancestors, and descendants.
 - Require author authority for branch mutation and deletion; a caller-supplied `force` value may resolve a commit conflict but cannot bypass authority.
