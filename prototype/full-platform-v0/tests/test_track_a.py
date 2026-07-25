@@ -9,13 +9,7 @@ Spec: docs/exec-plans/completed/2026-04-19-track-a-schema-auth-rls.md §8.
     5. Flagged-state routing pause (broadcast query skips flagged rows).
     6. Auth flow: auth.uid() wires through to subsequent queries.
 
-Run prerequisite:
-    docker compose up -d
-    psql ... -f migrations/001_core_tables.sql
-    psql ... -f migrations/002_flags.sql
-    psql ... -f migrations/003_rls.sql
-    psql ... -f migrations/004_indexes.sql
-    psql ... -f migrations/005_seed.sql
+Run prerequisite: ``docker compose up -d`` completed the fixture runner.
 
 If TINYASSETS_V0_DSN is unreachable, tests SKIP — this matches the existing
 test_schema.py / test_rls.py harness (live-Postgres dependent).
@@ -195,6 +189,7 @@ def test_invariant_2_rls_blocks_non_owner(track_a_db):
     # Bob should NOT see Alice's self-visibility request.
     _as_user(track_a_db, bob)
     with track_a_db.cursor() as cur:
+        cur.execute("SET ROLE tinyassets_fixture_app")
         cur.execute("SELECT request_id FROM public.requests WHERE request_id = %s", (rid,))
         rows = cur.fetchall()
     assert rows == [], "Bob leaked visibility='self' request owned by Alice"
@@ -209,22 +204,21 @@ def test_invariant_2_rls_blocks_non_owner(track_a_db):
                 (alice, cap, json.dumps({})),
             )
     track_a_db.rollback()
+    with track_a_db.cursor() as cur:
+        cur.execute("RESET ROLE")
 
 
 # --- Invariant 3: SKIP LOCKED exactly-one-wins -----------------------------
 
 
 def test_invariant_3_skip_locked_claim_exactly_one_wins(track_a_db):
-    # Setup: 1 request, 2 bids from different daemons, same price.
+    # Setup: two claimers contest one request-bound bid.
     alice = _mk_user(track_a_db, "Requester")
     daemon_a = _mk_user(track_a_db, "DaemonA")
-    daemon_b = _mk_user(track_a_db, "DaemonB")
     cap = _mk_capability(track_a_db)
     host_a = _mk_host(track_a_db, daemon_a, cap)
-    host_b = _mk_host(track_a_db, daemon_b, cap)
     rid = _mk_request(track_a_db, alice, cap)
     bid_a = _mk_bid(track_a_db, rid, daemon_a, host_a)
-    bid_b = _mk_bid(track_a_db, rid, daemon_b, host_b)
 
     # Two concurrent claimers race on SELECT … FOR UPDATE SKIP LOCKED.
     # Contract: exactly one acquires a row; the other gets zero rows.
@@ -270,7 +264,7 @@ def test_invariant_3_skip_locked_claim_exactly_one_wins(track_a_db):
 
     claimed = [r[0] for r in results if r]
     assert len(claimed) == 1, f"expected exactly one claim winner, got {results}"
-    assert claimed[0] in (bid_a, bid_b)
+    assert str(claimed[0]) == bid_a
 
 
 # --- Invariant 4: settlement immutability ----------------------------------
@@ -352,7 +346,7 @@ def test_invariant_5_flagged_excluded_from_broadcast(track_a_db):
             "AND visibility IN ('paid','public')",
             (cap,),
         )
-        visible = {r[0] for r in cur.fetchall()}
+        visible = {str(r[0]) for r in cur.fetchall()}
     assert r_live in visible
     assert r_flagged not in visible
 

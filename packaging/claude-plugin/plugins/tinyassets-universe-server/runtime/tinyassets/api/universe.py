@@ -1510,16 +1510,24 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory unreadable ({base}): {exc}",
         })
 
+    from tinyassets.api import visibility
+
     universes = []
+    hidden_by_visibility = 0
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
             continue
-        if not permissions.universe_access_allows(child.name):
+        # Existence is a privileged, separately-granted capability: a universe
+        # whose declared level withholds discovery (e.g. `unlisted`) is not
+        # enumerated even though its content may be readable by direct id.
+        if not visibility.visibility_permits(child.name, "discover_existence"):
+            hidden_by_visibility += 1
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
         info: dict[str, Any] = {
             "id": child.name,
+            "visibility": visibility.declared_level_name(child.name),
             "has_premise": liveness["has_premise"],
             "has_soul": liveness["has_soul"],
             "word_count": liveness["word_count"],
@@ -1533,7 +1541,12 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
     result: dict[str, Any] = {"universes": universes, "count": len(universes)}
     if not universes:
-        if not all_entries:
+        if hidden_by_visibility:
+            # Some universes exist but none are visible to this caller. Do NOT
+            # leak the hidden count or the base path — that is aggregate
+            # disclosure about withheld universes (existence is privileged).
+            result["note"] = "No universes are visible to you."
+        elif not all_entries:
             result["note"] = f"Base directory is empty: {base}"
         else:
             result["note"] = (
@@ -1557,7 +1570,24 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
             ] if _base_path().is_dir() else [],
         })
 
+    # Metadata gate: inspect returns describe-surface metadata (premise, daemon
+    # phase/counts, notes, targets, file listings), so an EXISTING universe must
+    # be gated on the `read_metadata` capability — not merely the legacy read
+    # gate. A content-only (`unlisted`) universe sets public_read=True to keep
+    # content readable, which the legacy preflight allows; without this gate an
+    # anonymous caller would read its metadata even though the level withholds it.
+    from tinyassets.api import permissions, visibility
+
+    if not visibility.visibility_permits(uid, "read_metadata"):
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=False, action="inspect", surface="universe",
+        ))
+
     result: dict[str, Any] = {"universe_id": uid}
+
+    # Declared visibility is observable to a permitted reader (spec Req 4): the
+    # boundary is stated, not inferred from its absence.
+    result["visibility"] = visibility.declared_level_name(uid)
 
     # Daemon liveness block — always present, so downstream readers (humans
     # and chat clients) can always tell whether the daemon is alive, why
@@ -5472,9 +5502,25 @@ def _action_create_universe(
     universe_id: str = "",
     text: str = "",
     branch_def_id: str = "",
+    visibility: str = "",
     **_kwargs: Any,
 ) -> str:
     base = _base_path()
+    # Creation-time visibility declaration: a new universe must be born with an
+    # explicit level so undeclared rows stop being produced (undeclared fails
+    # closed). The creator may choose a level; default is the host-knob
+    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
+    # create loudly rather than silently leaving the universe undeclared.
+    from tinyassets.api import visibility as _visibility
+
+    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
+    if _visibility.parse_level(create_level) is None:
+        return json.dumps({
+            "error": (
+                f"Invalid visibility {create_level!r}; expected one of "
+                f"{sorted(_visibility.LEVELS)}."
+            ),
+        })
     # universe-creation D2: universe_id is optional. When absent, generate one
     # opaque immutable serial (u- + lowercase ULID). Provided ids are still
     # accepted (dev / existing-universe operations).
@@ -5545,19 +5591,25 @@ def _action_create_universe(
 
         # D0a founder-grant-on-create: the authenticated founder OWNS the
         # universe they create (admin grant) — the mechanism that makes the
-        # per-universe write boundary real. Ownership is orthogonal to
-        # visibility: we do NOT touch public_read, so the universe stays
-        # publicly readable by default. A dev/no-auth (anonymous) create
-        # seeds no grant, so local dev-mode creates keep working.
-        # Register in the universes index so a founder universe has a
-        # universes + universe_rules row (not just an ACL grant) — home
-        # resolution + reset rely on a consistent registry.
+        # per-universe write boundary real. Ownership (ACL grant) stays
+        # orthogonal to visibility (the declared level). Register in the
+        # universes index so a founder universe has a universes + universe_rules
+        # row (not just an ACL grant) — home resolution + reset rely on a
+        # consistent registry.
         try:
             from tinyassets.daemon_server import ensure_universe_registered
 
             ensure_universe_registered(base, universe_id=uid, universe_path=udir)
         except Exception:  # noqa: BLE001 - registry is best-effort at create
             logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
+
+        # Declare the universe's visibility explicitly at birth (both the explicit
+        # `create_universe` action and the converse/first-contact auto-birth route
+        # through here), so no universe is ever produced undeclared. This is on
+        # the critical path: a failure rolls the partial create back via the
+        # outer except, keeping create atomic.
+        _visibility.set_universe_visibility(uid, create_level)
+        result["visibility"] = create_level
 
         founder = permissions.current_actor_id()
         if permissions.is_authenticated_request():

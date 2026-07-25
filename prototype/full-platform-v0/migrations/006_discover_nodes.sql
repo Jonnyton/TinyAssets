@@ -4,6 +4,91 @@
 --   - structural_match_score always returns NULL (no schema-compat function in v0).
 --   - No similar_subscriptions_index side-effect (defer to track K).
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
+ALTER TABLE public.nodes
+  ADD COLUMN IF NOT EXISTS concept jsonb NOT NULL DEFAULT '{}'::jsonb,
+  ADD COLUMN IF NOT EXISTS concept_visibility text NOT NULL DEFAULT 'public'
+    CHECK (concept_visibility IN ('public', 'network', 'private')),
+  ADD COLUMN IF NOT EXISTS structural_hash text,
+  ADD COLUMN IF NOT EXISTS embedding vector(16),
+  ADD COLUMN IF NOT EXISTS usage_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS success_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS fail_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS upvote_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS fork_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS remix_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS editing_now_count bigint NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS last_edited_at timestamptz NOT NULL DEFAULT now(),
+  ADD COLUMN IF NOT EXISTS deprecated boolean NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS parents jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+ALTER TABLE public.nodes
+  ALTER COLUMN node_type SET DEFAULT 'generic';
+
+CREATE POLICY nodes_select_concept_public ON public.nodes
+  FOR SELECT TO PUBLIC
+  USING (concept_visibility = 'public');
+
+CREATE TABLE IF NOT EXISTS public.artifact_field_visibility (
+  artifact_id uuid NOT NULL,
+  artifact_kind text NOT NULL,
+  field_path text NOT NULL CHECK (field_path LIKE '/%'),
+  visibility text NOT NULL CHECK (visibility IN ('public', 'network', 'private')),
+  decided_by text NOT NULL,
+  PRIMARY KEY (artifact_id, artifact_kind, field_path),
+  CONSTRAINT artifact_field_visibility_node_fk
+    FOREIGN KEY (artifact_id) REFERENCES public.nodes(node_id) ON DELETE CASCADE
+);
+
+ALTER TABLE public.artifact_field_visibility ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY afv_owner_only ON public.artifact_field_visibility
+  FOR ALL TO PUBLIC
+  USING (
+    artifact_kind = 'node'
+    AND EXISTS (
+      SELECT 1 FROM public.nodes n
+      WHERE n.node_id = artifact_field_visibility.artifact_id
+        AND n.owner_user_id = auth.uid()
+    )
+  )
+  WITH CHECK (
+    artifact_kind = 'node'
+    AND EXISTS (
+      SELECT 1 FROM public.nodes n
+      WHERE n.node_id = artifact_field_visibility.artifact_id
+        AND n.owner_user_id = auth.uid()
+    )
+  );
+
+CREATE OR REPLACE FUNCTION public.strip_private_fields(
+  p_concept jsonb,
+  p_artifact_id uuid,
+  p_kind text
+) RETURNS jsonb
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+DECLARE
+  v_out jsonb := p_concept;
+  v_path text;
+BEGIN
+  FOR v_path IN
+    SELECT field_path
+    FROM public.artifact_field_visibility
+    WHERE artifact_id = p_artifact_id
+      AND artifact_kind = p_kind
+      AND visibility = 'private'
+  LOOP
+    v_out := v_out #- string_to_array(trim(leading '/' from v_path), '/');
+  END LOOP;
+  RETURN v_out;
+END;
+$$;
+
 CREATE OR REPLACE FUNCTION public.discover_nodes(
   p_intent        text,
   p_intent_embedding vector(16),
@@ -38,6 +123,7 @@ BEGIN
     FROM public.nodes n
     WHERE
       (p_domain_hint IS NULL OR n.domain = p_domain_hint OR p_cross_domain)
+      AND (n.owner_user_id = v_caller_id OR n.concept_visibility = 'public')
       AND n.deprecated = false
       AND n.embedding IS NOT NULL
   ),
@@ -92,3 +178,5 @@ END;
 $$;
 
 GRANT EXECUTE ON FUNCTION public.discover_nodes TO PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE
+  ON public.artifact_field_visibility TO tinyassets_fixture_app;
