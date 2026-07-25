@@ -37,8 +37,13 @@
 ## 5. Foldback and Public Proof
 
 - [x] 5.1 Sync the accepted delta into canonical `openspec/specs/wiki-commons/spec.md` and archive the change in the same landing lane.
-- [ ] 5.2 Publish the reviewed PR and land it through required GitHub checks.
-- [ ] 5.3 Prove the deployed source SHA and exact-seven `https://tinyassets.io/mcp` surface.
-- [ ] 5.4 Rerun the dated changed-since and four onboarding-query contamination probes against live and record the before/after result mix.
-- [ ] 5.5 Record a rendered chatbot onboarding conversation through the installed TinyAssets connector where default `read_page` returns useful commons material and excludes coordination history; defer build-success acceptance to the branch-authoring lane.
-- [ ] 5.6 Inspect post-fix organic use and over-filtering; if none is visible, leave a dated monitoring row rather than claiming clean-user proof.
+- [x] 5.2 Publish the reviewed PR and land it through required GitHub checks.
+- [x] 5.3 Prove the deployed source SHA and exact-seven `https://tinyassets.io/mcp` surface.
+  - Evidence: deploy run `30150082355` completed successfully for merge SHA `fdfde5f1bd74ff74bd808e02bf453721db38a1fb`; canonical-name, exact-seven, binding, access-gate, and release-receipt steps passed.
+- [x] 5.4 Rerun the dated changed-since and four onboarding-query contamination probes against live and record the before/after result mix.
+  - Evidence: 2026-07-25 live changed-since default returned 73 discovery results versus 1,418 unscoped baseline matches. The four top tens fell from 40/40 coordination at baseline to a 5/40 strict original-marker lower bound; a broader human-visible operational-marker pass still found 13/40, chiefly legacy `drafts/workflows/patch-request-*` and engineering pages that need audience-data cleanup.
+- [x] 5.5 Record a rendered chatbot onboarding conversation through the installed TinyAssets connector where default `read_page` returns useful commons material and excludes coordination history; defer build-success acceptance to the branch-authoring lane.
+  - Evidence: 2026-07-25 Opus 5 drove a two-prompt, one-tab, Incognito Claude.ai conversation through the installed live connector. The default route returned real public-universe examples and, after one natural request for shared guides, two substantive commons guides. A full rendered-text marker scan found no BUG/PR/STATUS/worktree/handoff artifact. See `output/user_sim_session.md` and `output/claude_chat_trace.md`.
+  - Follow-up: the conversation exposed stale command references, an unfollowable branch-ID prerequisite, a missing starter branch, and category-level awareness of engineering material. These are recorded as onboarding/content follow-up rather than misreported as a regression in the scoped router.
+- [x] 5.6 Inspect post-fix organic use and over-filtering; if none is visible, leave a dated monitoring row rather than claiming clean-user proof.
+  - Evidence: inspected 2026-07-25. Current traffic/error logs cannot distinguish organic wiki reads from probes and the wiki audit log records writes, not reads. No post-fix organic-use claim is made; `STATUS.md` retains a dated monitoring row.
