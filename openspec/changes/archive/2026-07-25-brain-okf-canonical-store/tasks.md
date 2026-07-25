@@ -53,7 +53,7 @@
 
 > **These three boxes stay unchecked on purpose, forever. They are unbuilt, and this change archives that way.** §5 was out of scope for this change by its own heading; checking them off without the build would be a false completion claim, and archiving does not change what the code does.
 >
-> **Successor:** `openspec/changes/build-brain-canonical-store/` now owns them — 5.1 → its 2.1, 5.2 → its 2.2, 5.3 → its 2.3, plus a new 2.4 for the `tinyassets/brain/` package they all need, and a 3.1 that performs the spec sync once the behavior exists. The verified partial-landing notes below were carried across verbatim so the successor's builder reuses shipped code instead of rebuilding it. The open design questions from `design.md` moved with them.
+> **Successor:** `openspec/changes/build-brain-canonical-store/` now owns them — 5.1 → its 2.1, 5.2 → its 2.2, 5.3 → its 2.3, plus a new 2.4 for the `tinyassets/brain/` package they all need, and a 3.1 that performs the spec sync once the behavior exists. The verified partial-landing notes below were carried across in substance and refined (condensed, drafts/ conclusion updated, transactional-journal constraint added) so the successor's builder reuses shipped code instead of rebuilding it. The open design questions from `design.md` moved with them.
 >
 > Premise re-verified against the tree 2026-07-24 (`origin/main` @ `6dd2bdf0`), re-confirmed 2026-07-25, so a future builder does not rebuild shipped code:
 
