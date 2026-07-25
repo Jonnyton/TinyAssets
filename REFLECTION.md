@@ -411,3 +411,22 @@ fresh-host rollback edges found later.
   reference as current, historical, generated, or test-only before the first
   code edit, then make the operational-guidance boundary part of the initial
   review brief.
+
+## 2026-07-24 - epoch-2 operational truth
+
+- **What surprised me:** a fresh worker heartbeat was insufficient evidence
+  of compatible capacity. Status has to match the complete heartbeat
+  descriptor against the durable runtime descriptor or it can promise
+  capacity that the claim transaction will correctly reject.
+- **Pattern worth capturing:** operational state is an exclusive integrity
+  classification layered over lifecycle state. Count physical depth once,
+  keep valid pending lifecycle counts, and expose invalid, quarantined, and
+  policy-parked rows separately with bounded ID/digest diagnostics. Corrupt
+  rows outside the known status enum or authoritative universe scope must
+  reduce completeness explicitly; a filtered-out row is not a clean queue.
+  Collapse corrupt dimensions in SQL, and include authorization class in any
+  cache key whose response contains privilege-conditioned diagnostics.
+- **What I would do differently:** define the read-model schema beside the
+  quarantine receipt schema at the start. Stable pre-quarantine digests,
+  bounded diagnostics, and durable-descriptor matching would then arrive in
+  the first red test rather than during integration hardening.

@@ -1088,6 +1088,15 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
 _WORKER_SUPERVISOR_FILENAME = ".worker_supervisor.json"
 _WORKER_SUPERVISOR_PREFIX = ".worker_supervisor."
 _WORKER_SUPERVISOR_SUFFIX = ".json"
+_WORKER_QUEUE_DESCRIPTOR_FIELDS = (
+    "queue_protocol_version",
+    "capabilities",
+    "boot_id",
+    "build_sha",
+    "config_hash",
+    "universe_id",
+    "expires_at",
+)
 
 
 def _worker_id_from_heartbeat_path(path: Path) -> str:
@@ -1102,7 +1111,11 @@ def _worker_id_from_heartbeat_path(path: Path) -> str:
     return ""
 
 
-def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
+def _read_worker_liveness_entry(
+    beat_path: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
         beat = json.loads(beat_path.read_text(encoding="utf-8"))
@@ -1127,10 +1140,16 @@ def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
             "worker_id": worker_id,
             "runtime_instance_id": runtime_instance_id,
         }
-    age_s = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age_s = max(
+        0.0,
+        (observed_at.astimezone(timezone.utc) - ts).total_seconds(),
+    )
     planned_sleep = float(beat.get("planned_sleep_s") or 0.0)
     allowed = max(300.0, planned_sleep + 120.0)
-    return {
+    result = {
         "present": True,
         "alive": age_s <= allowed,
         "beat_age_s": round(age_s, 1),
@@ -1142,9 +1161,17 @@ def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
         "worker_id": worker_id,
         "runtime_instance_id": runtime_instance_id,
     }
+    for field in _WORKER_QUEUE_DESCRIPTOR_FIELDS:
+        if field in beat:
+            result[field] = beat[field]
+    return result
 
 
-def _worker_liveness(udir: Path) -> dict[str, Any]:
+def _worker_liveness(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """Supervisor-heartbeat liveness, distinct from content activity.
 
     ``last_activity_at`` answers "when did the daemon last DO something"
@@ -1167,9 +1194,12 @@ def _worker_liveness(udir: Path) -> dict[str, Any]:
     if not worker_paths:
         return {"present": False}
 
-    workers = [_read_worker_liveness_entry(path) for path in worker_paths]
+    workers = [
+        _read_worker_liveness_entry(path, now=now)
+        for path in worker_paths
+    ]
     if legacy_path.exists():
-        summary = _read_worker_liveness_entry(legacy_path)
+        summary = _read_worker_liveness_entry(legacy_path, now=now)
     else:
         summary = min(
             workers,
@@ -1184,6 +1214,257 @@ def _worker_liveness(udir: Path) -> dict[str, Any]:
         if worker.get("runtime_instance_id")
     })
     return out
+
+
+def _compatible_epoch2_workers(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
+) -> list[dict[str, str]]:
+    """Return workers with live, complete, universe-bound v2 evidence."""
+    from tinyassets.branch_tasks_v2 import (
+        WorkerClaimDescriptor,
+        _descriptor_is_live,
+    )
+
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    observed_at = observed_at.astimezone(timezone.utc)
+    runtime_by_id: dict[str, dict[str, Any]] = {}
+    if trusted_descriptors is None:
+        from tinyassets.daemon_registry import list_runtime_instances
+
+        runtimes = list_runtime_instances(
+            udir.parent,
+            universe_id=udir.name,
+        )
+        runtime_by_id = {
+            str(runtime.get("runtime_instance_id") or ""): runtime
+            for runtime in runtimes
+            if runtime.get("status") == "provisioned"
+        }
+        trusted_descriptors = {
+            runtime_id: (
+                runtime.get("metadata", {}).get(
+                    "queue_protocol_descriptor"
+                )
+            )
+            for runtime_id, runtime in runtime_by_id.items()
+        }
+    else:
+        runtime_by_id = {
+            runtime_id: {
+                "runtime_instance_id": runtime_id,
+                "daemon_id": "",
+                "provider_name": "",
+                "model_name": "",
+            }
+            for runtime_id in trusted_descriptors
+        }
+    workers = _worker_liveness(udir, now=observed_at).get("workers", [])
+    compatible: list[dict[str, str]] = []
+    for worker in workers:
+        capabilities = worker.get("capabilities")
+        if (
+            not worker.get("alive")
+            or not worker.get("subprocess_alive")
+            or not isinstance(capabilities, (list, tuple, set, frozenset))
+        ):
+            continue
+        try:
+            descriptor = WorkerClaimDescriptor(
+                queue_protocol_version=int(
+                    worker.get("queue_protocol_version")
+                ),
+                capabilities=frozenset(str(item) for item in capabilities),
+                worker_id=str(worker.get("worker_id") or ""),
+                runtime_instance_id=str(
+                    worker.get("runtime_instance_id") or ""
+                ),
+                boot_id=str(worker.get("boot_id") or ""),
+                build_sha=str(worker.get("build_sha") or ""),
+                config_hash=str(worker.get("config_hash") or ""),
+                universe_id=str(worker.get("universe_id") or ""),
+                expires_at=str(worker.get("expires_at") or ""),
+            )
+        except (TypeError, ValueError):
+            continue
+        heartbeat_descriptor = {
+            "queue_protocol_version": descriptor.queue_protocol_version,
+            "capabilities": sorted(descriptor.capabilities),
+            "worker_id": descriptor.worker_id,
+            "runtime_instance_id": descriptor.runtime_instance_id,
+            "boot_id": descriptor.boot_id,
+            "build_sha": descriptor.build_sha,
+            "config_hash": descriptor.config_hash,
+            "universe_id": descriptor.universe_id,
+            "expires_at": descriptor.expires_at,
+        }
+        trusted = trusted_descriptors.get(descriptor.runtime_instance_id)
+        runtime = runtime_by_id.get(descriptor.runtime_instance_id)
+        if (
+            descriptor.universe_id == udir.name
+            and runtime is not None
+            and trusted == heartbeat_descriptor
+            and _descriptor_is_live(
+                descriptor,
+                transaction_at=observed_at.isoformat(),
+            )
+        ):
+            compatible.append({
+                "worker_id": descriptor.worker_id,
+                "runtime_instance_id": descriptor.runtime_instance_id,
+                "daemon_id": str(runtime.get("daemon_id") or ""),
+                "provider_name": str(runtime.get("provider_name") or ""),
+                "model_name": str(runtime.get("model_name") or ""),
+            })
+    return sorted(
+        compatible,
+        key=lambda worker: (
+            worker["worker_id"],
+            worker["runtime_instance_id"],
+        ),
+    )
+
+
+def _compatible_epoch2_worker_ids(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
+) -> list[str]:
+    """Compatibility helper for liveness tests and concise status callers."""
+    try:
+        workers = _compatible_epoch2_workers(
+            udir,
+            now=now,
+            trusted_descriptors=trusted_descriptors,
+        )
+    except Exception:  # noqa: BLE001 — missing trust means no capacity
+        return []
+    return sorted({worker["worker_id"] for worker in workers})
+
+
+def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "queue_epoch": 2,
+        "error": error,
+        "depth": None,
+        "lifecycle_counts": None,
+        "lifecycle_oldest_age_s": None,
+        "unknown_lifecycle_status_counts": None,
+        "operational_state_counts": None,
+        "operational_oldest_age_s": None,
+        "operational_reason_counts": None,
+        "valid_pending_count": None,
+        "eligible_pending_count": None,
+        "operational_counts_authoritative": False,
+        "integrity_scope_complete": None,
+        "unclassified_active_count": None,
+        "active_scan_limit": None,
+        "diagnostics": [],
+        "diagnostics_truncated": False,
+        "compatible_worker_count": None,
+        "capacity_evidence_available": False,
+    }
+
+
+def _may_view_unscoped_epoch2_integrity(udir: Path) -> bool:
+    """Restrict exact unscoped corruption counts to universe admins."""
+    actor_id = permissions.current_actor_id()
+    if actor_id == "anonymous":
+        return False
+    try:
+        from tinyassets.daemon_server import universe_access_permission
+
+        return universe_access_permission(
+            udir.parent,
+            universe_id=udir.name,
+            actor_id=actor_id,
+        ) == "admin"
+    except Exception:  # noqa: BLE001 - observability auth fails closed
+        return False
+
+
+def _epoch2_operational_read(
+    udir: Path,
+    *,
+    dispatcher_config: Any | None = None,
+):
+    """Read counts and safe candidates from one bounded SQLite snapshot."""
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        Epoch2OperationalRead,
+    )
+    from tinyassets.dispatcher import (
+        load_dispatcher_config,
+        prefers_request_type,
+    )
+    from tinyassets.storage import DB_FILENAME
+
+    database = udir.parent / DB_FILENAME
+    if not database.is_file():
+        return Epoch2OperationalRead(
+            summary=_unavailable_epoch2_summary(
+                "epoch2_store_unavailable"
+            ),
+            candidates=(),
+        )
+    cfg = dispatcher_config or load_dispatcher_config(udir)
+    capacity_error = ""
+    try:
+        workers = _compatible_epoch2_workers(udir)
+    except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+        workers = []
+        capacity_error = str(exc)
+
+    def capacity_matches(task) -> bool:
+        if (
+            task.required_llm_type
+            and cfg.served_llm_type
+            and task.required_llm_type != cfg.served_llm_type
+        ):
+            return False
+        if not prefers_request_type(task.request_type):
+            return False
+        if task.directed_daemon_id:
+            return any(
+                worker["daemon_id"] == task.directed_daemon_id
+                for worker in workers
+            )
+        return bool(workers)
+
+    try:
+        result = Epoch2BranchTaskAdapter(
+            udir.parent,
+        ).operational_read(
+            universe_id=udir.name,
+            capacity_matcher=capacity_matches,
+            policy_matcher=lambda task: cfg.tier_enabled(
+                task.trigger_source
+            ),
+            include_unscoped_invalid=(
+                _may_view_unscoped_epoch2_integrity(udir)
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — preserve epoch-1 reads
+        return Epoch2OperationalRead(
+            summary=_unavailable_epoch2_summary(str(exc)),
+            candidates=(),
+        )
+    result.summary["compatible_worker_count"] = len(workers)
+    result.summary["capacity_evidence_available"] = not capacity_error
+    if capacity_error:
+        result.summary["operational_counts_authoritative"] = False
+        result.summary["capacity_evidence_error"] = capacity_error
+    return result
+
+
+def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
+    return _epoch2_operational_read(udir).summary
 
 
 _TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
@@ -1938,6 +2219,27 @@ def _action_submit_request(
     })
 
 
+def _safe_epoch2_queue_row(
+    task: Any,
+    *,
+    score: float,
+    tier_enabled: bool,
+) -> dict[str, Any]:
+    """Serialize only non-private operational identity and state."""
+    return {
+        "branch_task_id": task.branch_task_id,
+        "admission_id": task.admission_id,
+        "request_id": task.request_id,
+        "status": task.status,
+        "queue_epoch": task.queue_epoch,
+        "protocol_version": task.protocol_version,
+        "trigger_source": task.trigger_source,
+        "queued_at": task.queued_at,
+        "score": score,
+        "tier_enabled": tier_enabled,
+    }
+
+
 def _action_queue_list(
     universe_id: str = "",
     **_kwargs: Any,
@@ -1956,22 +2258,34 @@ def _action_queue_list(
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
+    v1_error = ""
     try:
         queue = read_queue(udir)
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({
-            "universe_id": uid,
-            "error": f"Failed to read queue: {exc}",
-        })
+        queue = []
+        v1_error = str(exc)
 
     cfg = load_dispatcher_config(udir)
     now_iso = datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
+    epoch2_read = _epoch2_operational_read(
+        udir,
+        dispatcher_config=cfg,
+    )
+    epoch2 = epoch2_read.summary
     for task in queue:
         row = task.to_dict()
+        row.setdefault("queue_epoch", 1)
         row["score"] = score_task(task, now_iso=now_iso, config=cfg)
         row["tier_enabled"] = cfg.tier_enabled(task.trigger_source)
         rows.append(row)
+    for task in epoch2_read.candidates:
+        score = score_task(task, now_iso=now_iso, config=cfg)
+        rows.append(_safe_epoch2_queue_row(
+            task,
+            score=score,
+            tier_enabled=cfg.tier_enabled(task.trigger_source),
+        ))
     # Primary: status pending first, then score desc. Non-pending
     # sorted by queued_at desc.
     rows.sort(
@@ -1982,12 +2296,115 @@ def _action_queue_list(
         ),
     )
 
+    epoch1_lifecycle = {
+        "depth": len(queue),
+        "lifecycle": {
+            status: sum(
+                1 for task in queue if task.status == status
+            )
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "cancelled",
+                "succeeded",
+                "failed",
+            )
+        },
+    }
+    epoch_counts: dict[str, Any] = {
+        "1": (
+            {"available": False, "error": v1_error}
+            if v1_error
+            else {"available": True, **epoch1_lifecycle}
+        ),
+        "2": (
+            {
+                "available": True,
+                "depth": epoch2["depth"],
+                "lifecycle": epoch2["lifecycle_counts"],
+                "operational": epoch2["operational_state_counts"],
+            }
+            if epoch2["available"]
+            else {
+                "available": False,
+                "error": epoch2["error"],
+            }
+        ),
+    }
+    v1_pending = epoch1_lifecycle["lifecycle"]["pending"]
+    v1_running = epoch1_lifecycle["lifecycle"]["running"]
+    v2_lifecycle = epoch2.get("lifecycle_counts") or {}
+    operational_counts_authoritative = bool(
+        epoch2.get("operational_counts_authoritative", False)
+    )
     return json.dumps({
         "universe_id": uid,
         "queue": rows,
-        "pending_count": sum(1 for r in rows if r.get("status") == "pending"),
-        "running_count": sum(1 for r in rows if r.get("status") == "running"),
+        "pending_count": v1_pending + int(v2_lifecycle.get("pending", 0)),
+        "running_count": v1_running + int(v2_lifecycle.get("running", 0)),
+        "counts_complete": (
+            not v1_error
+            and epoch2["available"]
+            and operational_counts_authoritative
+        ),
+        "epoch_counts": epoch_counts,
+        "epoch_health": {
+            epoch: {
+                "available": data["available"],
+                **(
+                    {"error": data["error"]}
+                    if not data["available"]
+                    else {}
+                ),
+            }
+            for epoch, data in epoch_counts.items()
+        },
+        "operational_state_counts": epoch2.get(
+            "operational_state_counts"
+        ),
+        "operational_state_oldest_age_s": epoch2.get(
+            "operational_oldest_age_s"
+        ),
+        "operational_reason_counts": epoch2.get(
+            "operational_reason_counts"
+        ),
+        "operational_diagnostics": epoch2["diagnostics"],
+        "operational_diagnostics_truncated": epoch2[
+            "diagnostics_truncated"
+        ],
+        "operational_counts_authoritative": (
+            operational_counts_authoritative
+        ),
+        "integrity_scope_complete": epoch2.get(
+            "integrity_scope_complete"
+        ),
+        "unknown_epoch2_lifecycle_status_counts": epoch2.get(
+            "unknown_lifecycle_status_counts"
+        ),
+        "unclassified_epoch2_active_count": epoch2.get(
+            "unclassified_active_count"
+        ),
+        "epoch2_active_scan_limit": epoch2.get("active_scan_limit"),
+        "capacity_evidence_available": epoch2.get(
+            "capacity_evidence_available"
+        ),
+        "capacity_evidence_error": epoch2.get("capacity_evidence_error"),
+        "valid_epoch2_pending_count": epoch2.get("valid_pending_count"),
+        "eligible_epoch2_pending_count": epoch2.get(
+            "eligible_pending_count"
+        ),
+        "compatible_worker_count": epoch2.get("compatible_worker_count"),
         "tier_status": cfg.tier_status_map(),
+        **(
+            {
+                "unscoped_invalid_count": int(
+                    epoch2["unscoped_invalid_count"]
+                ),
+            }
+            if "unscoped_invalid_count" in epoch2
+            else {}
+        ),
     })
 
 
@@ -3069,7 +3486,8 @@ def _action_daemon_overview(
 
     Composes queue + subscriptions + bids + settlements + gates +
     activity tail + run state into one response. 1s TTL cache keyed
-    on (universe_id, limit) keeps hot-path cost bounded (R1).
+    on (universe_id, limit, integrity-visibility class) keeps hot-path
+    cost bounded without replaying admin-only diagnostics to readers.
 
     Read-only: no mutations. Absent features gracefully degrade
     (empty lists / zero counts) rather than error.
@@ -3085,7 +3503,12 @@ def _action_daemon_overview(
         "full" if isinstance(limit, str)
         and limit.strip().lower() == "full" else str(limit)
     )
-    cache_key = f"{uid}::{limit_key}"
+    integrity_visibility = (
+        "admin"
+        if _may_view_unscoped_epoch2_integrity(udir)
+        else "reader"
+    )
+    cache_key = f"{uid}::{limit_key}::{integrity_visibility}"
     now_s = _time.time()
     cached = _OVERVIEW_CACHE.get(cache_key)
     if cached and (now_s - cached[0]) < _OVERVIEW_TTL_SECONDS:
@@ -3115,31 +3538,62 @@ def _action_daemon_overview(
 
     # Queue top-N.
     try:
-        from tinyassets.branch_tasks import read_queue
-        from tinyassets.dispatcher import score_task
-        queue = read_queue(udir)
-        q_cfg = load_dispatcher_config(udir)
-        now_iso = datetime.now(timezone.utc).isoformat()
-        scored: list[tuple[float, dict]] = []
-        pending = 0
-        for task in queue:
-            if task.status == "pending":
-                pending += 1
-                row = task.to_dict()
-                row["score"] = score_task(
-                    task, now_iso=now_iso, config=q_cfg,
-                )
-                scored.append((row["score"], row))
-        scored.sort(key=lambda p: -p[0])
+        queue_read = json.loads(_action_queue_list(universe_id=uid))
+        pending_rows = [
+            row
+            for row in queue_read["queue"]
+            if row.get("status") == "pending"
+        ]
         response["queue"] = {
-            "pending_count": pending,
-            "top": [row for _, row in scored[: limits["queue_top"]]],
+            "pending_count": queue_read["pending_count"],
+            "top": pending_rows[: limits["queue_top"]],
             "archived_recent_count": 0,
+            **{
+                key: queue_read[key]
+                for key in (
+                    "counts_complete",
+                    "epoch_counts",
+                    "epoch_health",
+                    "operational_state_counts",
+                    "operational_state_oldest_age_s",
+                    "operational_reason_counts",
+                    "operational_diagnostics",
+                    "operational_diagnostics_truncated",
+                    "operational_counts_authoritative",
+                    "integrity_scope_complete",
+                    "unknown_epoch2_lifecycle_status_counts",
+                    "unclassified_epoch2_active_count",
+                    "epoch2_active_scan_limit",
+                    "capacity_evidence_available",
+                    "capacity_evidence_error",
+                    "valid_epoch2_pending_count",
+                    "eligible_epoch2_pending_count",
+                    "compatible_worker_count",
+                )
+            },
+            **(
+                {
+                    "unscoped_invalid_count": queue_read[
+                        "unscoped_invalid_count"
+                    ],
+                }
+                if "unscoped_invalid_count" in queue_read
+                else {}
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("daemon_overview: queue read failed: %s", exc)
-        response["queue"] = {"pending_count": 0, "top": [],
-                             "archived_recent_count": 0}
+        response["queue"] = {
+            "pending_count": None,
+            "top": [],
+            "archived_recent_count": 0,
+            "counts_complete": False,
+            "epoch_health": {
+                "1": {"available": False, "error": str(exc)},
+                "2": {"available": False, "error": str(exc)},
+            },
+            "error": str(exc),
+        }
 
     # Subscriptions + drift.
     try:

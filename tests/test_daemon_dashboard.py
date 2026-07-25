@@ -71,6 +71,78 @@ def test_daemon_overview_response_shape(universe_harness):
     assert "run_state" in resp
 
 
+def test_daemon_overview_exposes_merged_epoch_counts(
+    universe_harness,
+    monkeypatch,
+):
+    epoch_counts = {
+        "1": {
+            "available": True,
+            "depth": 0,
+            "lifecycle": {"pending": 0},
+        },
+        "2": {
+            "available": True,
+            "depth": 3,
+            "lifecycle": {"pending": 3},
+            "operational": {
+                "awaiting_compatible_capacity": 1,
+                "invalid_operator_admission": 1,
+                "quarantined": 1,
+                "policy_parked": 0,
+            },
+        },
+    }
+    queue_read = {
+        "universe_id": universe_harness["uid"],
+        "queue": [],
+        "pending_count": 3,
+        "running_count": 0,
+        "counts_complete": True,
+        "epoch_counts": epoch_counts,
+        "epoch_health": {
+            "1": {"available": True},
+            "2": {"available": True},
+        },
+        "operational_state_counts": epoch_counts["2"]["operational"],
+        "operational_state_oldest_age_s": {},
+        "operational_reason_counts": {
+            "quarantined": {"unsupported_protocol": 1},
+        },
+        "operational_diagnostics": [],
+        "operational_diagnostics_truncated": False,
+        "operational_counts_authoritative": True,
+        "integrity_scope_complete": True,
+        "unknown_epoch2_lifecycle_status_counts": {},
+        "unclassified_epoch2_active_count": 0,
+        "epoch2_active_scan_limit": 1000,
+        "capacity_evidence_available": True,
+        "capacity_evidence_error": None,
+        "valid_epoch2_pending_count": 1,
+        "eligible_epoch2_pending_count": 0,
+        "compatible_worker_count": 0,
+        "tier_status": {},
+    }
+    monkeypatch.setattr(
+        "tinyassets.api.universe._action_queue_list",
+        lambda **_kwargs: json.dumps(queue_read),
+    )
+
+    response = json.loads(_action_daemon_overview(
+        universe_id=universe_harness["uid"],
+    ))
+
+    assert response["queue"]["pending_count"] == 3
+    assert response["queue"]["epoch_counts"]["1"]["depth"] == 0
+    assert response["queue"]["epoch_counts"]["2"]["depth"] == 3
+    assert response["queue"]["operational_state_counts"] == (
+        epoch_counts["2"]["operational"]
+    )
+    assert response["queue"]["operational_reason_counts"] == {
+        "quarantined": {"unsupported_protocol": 1},
+    }
+
+
 def test_daemon_overview_top_n_limit_honored(universe_harness, monkeypatch):
     """Seed queue with 50 tasks; default limit returns top 20."""
     from tinyassets.branch_tasks import BranchTask, append_task, new_task_id
@@ -97,6 +169,60 @@ def test_daemon_overview_ttl_cache(universe_harness):
     r1 = _action_daemon_overview(universe_id=universe_harness["uid"])
     r2 = _action_daemon_overview(universe_id=universe_harness["uid"])
     assert r1 == r2
+
+
+def test_daemon_overview_cache_separates_admin_integrity_counts(
+    universe_harness,
+    monkeypatch,
+):
+    authorization = {"admin": True}
+
+    def queue_list(**_kwargs):
+        response = {
+            "queue": [],
+            "pending_count": 0,
+            "counts_complete": False,
+            "epoch_counts": {},
+            "epoch_health": {},
+            "operational_state_counts": {},
+            "operational_state_oldest_age_s": {},
+            "operational_reason_counts": {},
+            "operational_diagnostics": [],
+            "operational_diagnostics_truncated": False,
+            "operational_counts_authoritative": False,
+            "integrity_scope_complete": False,
+            "unknown_epoch2_lifecycle_status_counts": {},
+            "unclassified_epoch2_active_count": 0,
+            "epoch2_active_scan_limit": 1000,
+            "capacity_evidence_available": True,
+            "capacity_evidence_error": None,
+            "valid_epoch2_pending_count": 0,
+            "eligible_epoch2_pending_count": 0,
+            "compatible_worker_count": 0,
+        }
+        if authorization["admin"]:
+            response["unscoped_invalid_count"] = 7
+        return json.dumps(response)
+
+    monkeypatch.setattr(
+        "tinyassets.api.universe._may_view_unscoped_epoch2_integrity",
+        lambda _udir: authorization["admin"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.api.universe._action_queue_list",
+        queue_list,
+    )
+
+    admin = json.loads(_action_daemon_overview(
+        universe_id=universe_harness["uid"],
+    ))
+    authorization["admin"] = False
+    reader = json.loads(_action_daemon_overview(
+        universe_id=universe_harness["uid"],
+    ))
+
+    assert admin["queue"]["unscoped_invalid_count"] == 7
+    assert "unscoped_invalid_count" not in reader["queue"]
 
 
 def test_daemon_overview_cache_invalidated_on_set_tier_config(universe_harness):

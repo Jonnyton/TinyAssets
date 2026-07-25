@@ -5,8 +5,9 @@ import json
 import shutil
 import sqlite3
 import threading
+from contextlib import contextmanager
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1967,3 +1968,469 @@ def test_concurrent_maintenance_writes_one_receipt_per_digest(
             """
         ).fetchone()
     assert receipt == (1,)
+
+
+def test_operational_snapshot_separates_inert_and_waiting_rows(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    waiting = _commit(
+        tmp_path,
+        key="waiting",
+        created_at="2026-07-24T08:00:00+00:00",
+    )
+    parked = _commit(
+        tmp_path,
+        key="parked",
+        created_at="2026-07-24T08:01:00+00:00",
+    )
+    quarantined = _commit(
+        tmp_path,
+        key="quarantined",
+        created_at="2026-07-24T08:02:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET disabled = 1 "
+            "WHERE branch_task_id = ?",
+            (parked["branch_task_id"],),
+        )
+        conn.execute(
+            "UPDATE request_admissions SET receipt_json = '{}' "
+            "WHERE branch_task_id = ?",
+            (quarantined["branch_task_id"],),
+        )
+
+    clock = _MutableClock("2026-07-24T08:10:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+    maintenance = adapter.maintain_quarantine()
+    assert maintenance.quarantined == 1
+    forged = _commit(
+        tmp_path,
+        key="forged",
+        created_at="2026-07-24T08:03:00+00:00",
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE request_admissions SET receipt_json = '{}' "
+            "WHERE branch_task_id = ?",
+            (forged["branch_task_id"],),
+        )
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET universe_id = 'universe-b' "
+            "WHERE branch_task_id = ?",
+            (forged["branch_task_id"],),
+        )
+
+    snapshot = adapter.operational_snapshot(
+        universe_id="universe-a",
+        compatible_capacity=False,
+    )
+
+    assert snapshot["queue_epoch"] == 2
+    assert snapshot["depth"] == 4
+    assert snapshot["lifecycle_counts"]["pending"] == 4
+    assert sum(snapshot["lifecycle_counts"].values()) == snapshot["depth"]
+    assert snapshot["valid_pending_count"] == 1
+    assert snapshot["eligible_pending_count"] == 0
+    assert snapshot["operational_state_counts"] == {
+        "awaiting_compatible_capacity": 1,
+        "invalid_operator_admission": 1,
+        "quarantined": 1,
+        "policy_parked": 1,
+    }
+    assert snapshot["operational_reason_counts"] == {
+        "awaiting_compatible_capacity": {
+            "no_live_compatible_worker": 1,
+        },
+        "invalid_operator_admission": {
+            "invalid_operator_admission": 1,
+        },
+        "quarantined": {
+            "invalid_operator_admission": 1,
+        },
+        "policy_parked": {"disabled": 1},
+    }
+    assert snapshot["operational_oldest_age_s"] == {
+        "awaiting_compatible_capacity": 600,
+        "invalid_operator_admission": 420,
+        "quarantined": 480,
+        "policy_parked": 540,
+    }
+    diagnostics = {
+        item["operational_state"]: item
+        for item in snapshot["diagnostics"]
+    }
+    assert diagnostics["awaiting_compatible_capacity"][
+        "branch_task_id"
+    ] == waiting["branch_task_id"]
+    assert diagnostics["policy_parked"]["branch_task_id"] == (
+        parked["branch_task_id"]
+    )
+    assert diagnostics["quarantined"]["row_digest"] == (
+        maintenance.receipts[0].row_digest
+    )
+    assert len(diagnostics["invalid_operator_admission"]["row_digest"]) == 64
+    serialized = json.dumps(snapshot, sort_keys=True)
+    assert "repair the queue" not in serialized
+    assert "request-local" not in serialized
+    assert "tenant-a" not in serialized
+    other_universe = adapter.operational_snapshot(
+        universe_id="universe-b",
+        compatible_capacity=False,
+    )
+    assert other_universe["depth"] == 0
+    assert sum(other_universe["lifecycle_counts"].values()) == 0
+
+    with_capacity = adapter.operational_snapshot(
+        universe_id="universe-a",
+        compatible_capacity=True,
+    )
+    assert (
+        with_capacity["operational_state_counts"][
+            "awaiting_compatible_capacity"
+        ]
+        == 0
+    )
+    assert with_capacity["lifecycle_counts"]["pending"] == 4
+    assert with_capacity["valid_pending_count"] == 1
+    assert with_capacity["eligible_pending_count"] == 1
+    invalid_digest = diagnostics["invalid_operator_admission"]["row_digest"]
+    followup = adapter.maintain_quarantine()
+    assert followup.quarantined == 1
+    assert followup.receipts[0].branch_task_id == forged["branch_task_id"]
+    assert followup.receipts[0].row_digest == invalid_digest
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET disabled = 0 "
+            "WHERE branch_task_id = ?",
+            (forged["branch_task_id"],),
+        )
+    inconsistent = adapter.operational_snapshot(
+        universe_id="universe-a",
+        compatible_capacity=True,
+    )
+    assert inconsistent["operational_state_counts"][
+        "invalid_operator_admission"
+    ] == 1
+    assert forged["branch_task_id"] not in {
+        task.branch_task_id
+        for task in adapter.list_candidates(universe_id="universe-a")
+    }
+
+
+def test_operational_capacity_is_evaluated_per_pending_task(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    ordinary = _commit(tmp_path, key="ordinary-capacity")
+    daemon = create_daemon(
+        tmp_path,
+        display_name="Directed capacity target",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="A stable directed capacity target.",
+    )
+    directed = _commit(
+        tmp_path,
+        key="directed-capacity",
+        directed_daemon_id=daemon["daemon_id"],
+        directed_soul_hash=daemon["soul_hash"],
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    read = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda task: not task.directed_daemon_id,
+    )
+
+    assert read.summary["lifecycle_counts"]["pending"] == 2
+    assert read.summary["valid_pending_count"] == 2
+    assert read.summary["eligible_pending_count"] == 1
+    assert read.summary["operational_state_counts"][
+        "awaiting_compatible_capacity"
+    ] == 1
+    assert {
+        task.branch_task_id for task in read.candidates
+    } == {
+        ordinary["branch_task_id"],
+        directed["branch_task_id"],
+    }
+
+
+def test_operational_scope_uses_admission_then_request_fallback(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    mismatched = _commit(tmp_path, key="mismatched-linked-universes")
+    request_fallback = _commit(tmp_path, key="request-universe-fallback")
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE user_requests SET universe_id = 'universe-b' "
+            "WHERE request_id = ?",
+            (mismatched["request_id"],),
+        )
+        conn.execute(
+            "DELETE FROM request_admissions WHERE admission_id = ?",
+            (request_fallback["admission_id"],),
+        )
+
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    universe_a = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+    )
+    universe_b = adapter.operational_read(
+        universe_id="universe-b",
+        capacity_matcher=lambda _task: True,
+    )
+
+    assert universe_a.summary["depth"] == 2
+    assert universe_a.summary["operational_state_counts"][
+        "invalid_operator_admission"
+    ] == 2
+    assert universe_b.summary["depth"] == 0
+
+
+def test_operational_read_surfaces_unknown_and_unscoped_rows_as_incomplete(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    unknown_status = _commit(tmp_path, key="unknown-lifecycle-status")
+    unscoped = _commit(tmp_path, key="unscoped-missing-links")
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            "UPDATE branch_tasks_v2 SET status = 'forged' "
+            "WHERE branch_task_id = ?",
+            (unknown_status["branch_task_id"],),
+        )
+        conn.execute(
+            "DELETE FROM request_admissions WHERE admission_id = ?",
+            (unscoped["admission_id"],),
+        )
+        conn.execute(
+            "DELETE FROM user_requests WHERE request_id = ?",
+            (unscoped["request_id"],),
+        )
+
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    owner_read = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+        include_unscoped_invalid=True,
+    )
+    public_read = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+        include_unscoped_invalid=False,
+    )
+
+    assert owner_read.summary["depth"] == 1
+    assert owner_read.summary["lifecycle_counts"]["unknown"] == 1
+    assert sum(owner_read.summary["lifecycle_counts"].values()) == 1
+    assert owner_read.summary["unknown_lifecycle_status_counts"] == {
+        "unknown": 1,
+    }
+    assert owner_read.summary["operational_state_counts"][
+        "invalid_operator_admission"
+    ] == 1
+    assert owner_read.summary["unscoped_invalid_count"] == 1
+    assert owner_read.summary["integrity_scope_complete"] is False
+    assert owner_read.summary["operational_counts_authoritative"] is False
+    assert owner_read.summary["diagnostics"][0]["branch_task_id"] == (
+        unknown_status["branch_task_id"]
+    )
+    assert "unscoped_invalid_count" not in public_read.summary
+    assert public_read.summary["integrity_scope_complete"] is False
+    assert public_read.summary["operational_counts_authoritative"] is False
+
+    maintenance = adapter.maintain_quarantine()
+    after_quarantine = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+        include_unscoped_invalid=True,
+    )
+
+    assert maintenance.quarantined == 2
+    assert after_quarantine.summary["depth"] == 1
+    assert after_quarantine.summary["lifecycle_counts"]["unknown"] == 1
+    assert after_quarantine.summary["operational_state_counts"][
+        "quarantined"
+    ] == 1
+    assert after_quarantine.summary["unscoped_invalid_count"] == 1
+    assert (
+        after_quarantine.summary["operational_counts_authoritative"]
+        is False
+    )
+
+
+def test_unknown_lifecycle_status_output_is_fixed_and_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    committed = [
+        _commit(tmp_path, key=f"forged-status-{index}")
+        for index in range(25)
+    ]
+    private_status = "PRIVATE-STATUS-SENTINEL-" + ("x" * 4096)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        for index, row in enumerate(committed):
+            conn.execute(
+                "UPDATE branch_tasks_v2 SET status = ? "
+                "WHERE branch_task_id = ?",
+                (f"{private_status}-{index}", row["branch_task_id"]),
+            )
+    monkeypatch.setattr(
+        request_admission_storage,
+        "MAX_OPERATIONAL_SCAN_ROWS",
+        5,
+    )
+
+    read = Epoch2BranchTaskAdapter(tmp_path).operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+    )
+    serialized = json.dumps(read.summary, sort_keys=True)
+
+    assert read.summary["depth"] == 25
+    assert read.summary["lifecycle_counts"]["unknown"] == 25
+    assert read.summary["unknown_lifecycle_status_counts"] == {
+        "unknown": 25,
+    }
+    assert read.summary["operational_state_counts"][
+        "invalid_operator_admission"
+    ] == 5
+    assert read.summary["unclassified_active_count"] == 20
+    assert len(read.summary["diagnostics"]) == 5
+    assert read.summary["diagnostics_truncated"] is True
+    assert read.summary["operational_counts_authoritative"] is False
+    assert "PRIVATE-STATUS-SENTINEL" not in serialized
+    assert len(serialized) < 20_000
+
+
+def test_public_operational_read_uses_existence_not_exact_unscoped_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    _commit(tmp_path, key="unscoped-query-shape")
+    store = RequestAdmissionStore(tmp_path)
+    original_connection = store.connection
+    statements: list[str] = []
+
+    @contextmanager
+    def traced_connection():
+        with original_connection() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+            conn.set_trace_callback(None)
+
+    monkeypatch.setattr(store, "connection", traced_connection)
+
+    store.read_v2_operational_data(
+        universe_id="universe-a",
+        include_unscoped_invalid=False,
+    )
+    public_sql = "\n".join(
+        " ".join(statement.split()) for statement in statements
+    )
+    assert "SELECT 1 FROM branch_tasks_v2 AS t" in public_sql
+    assert "SELECT COUNT(*) FROM branch_tasks_v2 AS t" not in public_sql
+
+    statements.clear()
+    store.read_v2_operational_data(
+        universe_id="universe-a",
+        include_unscoped_invalid=True,
+    )
+    admin_sql = "\n".join(
+        " ".join(statement.split()) for statement in statements
+    )
+    assert "SELECT COUNT(*) FROM branch_tasks_v2 AS t" in admin_sql
+
+
+def test_operational_counts_and_candidates_share_one_sqlite_snapshot(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    committed = _commit(tmp_path, key="snapshot-consistency")
+    start_write = threading.Event()
+    write_done = threading.Event()
+    failures: list[Exception] = []
+
+    def transition() -> None:
+        try:
+            assert start_write.wait(timeout=5)
+            with sqlite3.connect(db_path(tmp_path)) as conn:
+                conn.execute(
+                    "UPDATE branch_tasks_v2 SET status = 'running' "
+                    "WHERE branch_task_id = ?",
+                    (committed["branch_task_id"],),
+                )
+                conn.execute(
+                    "UPDATE user_requests SET status = 'running' "
+                    "WHERE request_id = ?",
+                    (committed["request_id"],),
+                )
+            write_done.set()
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            failures.append(exc)
+            write_done.set()
+
+    writer = threading.Thread(target=transition)
+    writer.start()
+
+    def after_lifecycle_counts() -> None:
+        start_write.set()
+        assert write_done.wait(timeout=5)
+
+    read = Epoch2BranchTaskAdapter(tmp_path).operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: True,
+        snapshot_hook=after_lifecycle_counts,
+    )
+    writer.join(timeout=5)
+
+    assert failures == []
+    assert read.summary["lifecycle_counts"]["pending"] == 1
+    assert read.summary["lifecycle_counts"]["running"] == 0
+    assert [task.branch_task_id for task in read.candidates] == [
+        committed["branch_task_id"]
+    ]
+
+
+def test_operational_diagnostics_are_output_and_scan_bounded(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    initialize_author_server(tmp_path)
+    for index in range(105):
+        _commit(
+            tmp_path,
+            key=f"bounded-{index}",
+            created_at=(
+                datetime.fromisoformat("2026-07-24T08:00:00+00:00")
+                + timedelta(seconds=index)
+            ).isoformat(),
+        )
+    monkeypatch.setattr(
+        request_admission_storage,
+        "MAX_OPERATIONAL_SCAN_ROWS",
+        5,
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    read = adapter.operational_read(
+        universe_id="universe-a",
+        capacity_matcher=lambda _task: False,
+    )
+
+    assert read.summary["lifecycle_counts"]["pending"] == 105
+    assert read.summary["active_scan_limit"] == 5
+    assert read.summary["operational_counts_authoritative"] is False
+    assert read.summary["unclassified_active_count"] == 100
+    assert len(read.summary["diagnostics"]) == 5
+    assert read.summary["diagnostics_truncated"] is True
