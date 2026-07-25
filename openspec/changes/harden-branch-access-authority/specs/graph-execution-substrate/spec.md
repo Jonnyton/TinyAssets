@@ -205,6 +205,14 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 - **WHEN** a schedule, subscription, universe loop, queue payload, or branch-authored input names a private branch without a valid server-owned author binding
 - **THEN** execution fails before delivery marking, provider work, run-row creation, or branch-derived output
 
+#### Scenario: Legacy binding has only caller-selected ownership
+- **WHEN** migration encounters any receiptless background binding whose principal cannot be independently reconstructed from credential-bound server provenance
+- **THEN** it becomes inactive with `reauthorization_required`, no receipt is minted from legacy owner/environment/content fields, and it cannot mark delivery or fire until an authenticated subject creates a fresh authorized binding
+
+#### Scenario: Legacy binding has independent credential provenance
+- **WHEN** migration can prove a credential-bound principal from an independent server record and that principal is authorized for the unchanged public or own-private target
+- **THEN** the server may atomically write an audited receipt for that exact binding/target without trusting caller-controlled legacy fields
+
 #### Scenario: Public background branch remains runnable
 - **WHEN** an authenticated subject binds a public branch to their schedule, subscription, or universe loop
 - **THEN** the server binds that subject as the owner, persists the receipt, and zero-host execution remains available subject to the existing universe/scheduler and action-scope gates without requiring the public branch's author
