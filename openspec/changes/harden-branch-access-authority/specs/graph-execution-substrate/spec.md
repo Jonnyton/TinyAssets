@@ -195,11 +195,15 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 
 #### Scenario: Valid private branch runs after every human host is offline
 - **WHEN** an authenticated branch author binds their private branch to a schedule or universe loop and the server later fires it without a live request
-- **THEN** execution consumes the server-owned binding authority, revalidates the target author, and may run without environment or caller actor fallback
+- **THEN** the server atomically persists an immutable `.runs.db` receipt containing schema version, binding kind/ID, target kind/ID, authenticated author, and issuance time; execution matches that receipt to the current binding, revalidates the target author, and may run without environment or caller actor fallback
+
+#### Scenario: Editable loop intent changes after authorization
+- **WHEN** `soul.md`, schedule inputs, a queue payload, or any other caller/branch-controlled field changes or substitutes the target without a new authenticated binding
+- **THEN** it cannot mutate the server-owned receipt, receipt/target mismatch fails closed before delivery marking or execution, and a private target requires fresh authorization by its authenticated author
 
 #### Scenario: Legacy or forged background binding lacks authenticated authority
 - **WHEN** a schedule, subscription, universe loop, queue payload, or branch-authored input names a private branch without a valid server-owned author binding
-- **THEN** execution fails before provider work, run-row creation, or branch-derived output
+- **THEN** execution fails before delivery marking, provider work, run-row creation, or branch-derived output
 
 #### Scenario: Public background branch remains runnable
 - **WHEN** a valid schedule or universe loop targets a public branch
