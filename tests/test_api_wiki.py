@@ -9,9 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 
 import pytest
 
+from tinyassets.api import visibility
 from tinyassets.api import wiki as wiki_mod
 from tinyassets.api.wiki import (
     _BUG_DEDUP_THRESHOLD,
@@ -35,6 +40,9 @@ from tinyassets.api.wiki import (
     _wiki_similarity_score,
     wiki,
 )
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import DevAuthProvider, Identity
+from tinyassets.daemon_server import ensure_universe_registered, grant_universe_access
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -47,6 +55,61 @@ def wiki_env(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     _ensure_wiki_scaffold(wiki_root)
     return wiki_root
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_context():
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+    yield
+    set_provider(DevAuthProvider())
+    auth_middleware(None)
+
+
+class _StaticAuthProvider(DevAuthProvider):
+    def __init__(self, identity: Identity) -> None:
+        self.identity = identity
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self.identity if token == "ok" else None
+
+    def is_auth_required(self) -> bool:
+        return True
+
+
+def _authenticate_reader(user_id: str) -> None:
+    identity = Identity(user_id, user_id, capabilities=["tinyassets.wiki.read"])
+    set_provider(_StaticAuthProvider(identity))
+    auth_middleware("ok")
+
+
+def _write_page(
+    wiki_root: Path,
+    relative_path: str,
+    *,
+    title: str,
+    body: str,
+    audience: str | None = None,
+    updated: str = "2026-07-24T12:00:00Z",
+    visibility_value: str = "",
+) -> Path:
+    path = wiki_root / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frontmatter = ["---", f"title: {title}", "type: note", f"updated: {updated}"]
+    if audience is not None:
+        frontmatter.append(f"audience: {audience}")
+    if visibility_value:
+        frontmatter.append(f"visibility: {visibility_value}")
+    path.write_text(
+        "\n".join([*frontmatter, "---", "", body, ""]),
+        encoding="utf-8",
+        newline="\n",
+    )
+    return path
+
+
+def _result_paths(payload: dict[str, Any]) -> set[str]:
+    return {item["path"] for item in payload.get("results", [])}
 
 
 # ── module surface ──────────────────────────────────────────────────────────
@@ -226,50 +289,57 @@ def test_wiki_search_no_results_returns_empty_list(wiki_env):
 
 
 def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
-    page = wiki_env / "pages" / "notes" / "search-target.md"
-    page.write_text(
-        "---\n"
-        "title: Search Target\n"
-        "type: note\n"
-        "updated: 2026-05-06T12:00:00Z\n"
-        "---\n\n"
-        "This page mentions cross AI discovery gaps.\n",
-        encoding="utf-8",
-        newline="\n",
+    _write_page(
+        wiki_env,
+        "pages/workflows/search-target.md",
+        title="Search Target",
+        body="This reusable workflow mentions cross AI discovery gaps.",
+        audience="discovery",
+        updated="2026-05-06T12:00:00Z",
+    )
+    _write_page(
+        wiki_env,
+        "pages/notes/internal-search-target.md",
+        title="Internal Search Target",
+        body="This coordination note also mentions cross AI discovery gaps.",
+        audience="coordination",
+        updated="2026-05-06T12:00:00Z",
     )
 
     res = json.loads(wiki(action="search", query="discovery"))
 
     assert res["count"] == 1
+    assert res["scope"] == "discovery"
+    assert _result_paths(res) == {"pages/workflows/search-target.md"}
     assert res["search_complete"] is False
     assert "lexical" in res["completeness_warning"]
     assert "action=since" in res["completeness_warning"]
 
 
 def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
-    fresh_dir = wiki_env / "pages" / "patch-requests"
-    fresh_dir.mkdir(parents=True, exist_ok=True)  # scaffold already creates this category dir
-    fresh = fresh_dir / "fresh-patch.md"
-    fresh.write_text(
-        "---\n"
-        "title: Fresh Patch\n"
-        "type: patch_request\n"
-        "updated: 2026-05-06T12:00:00Z\n"
-        "---\n\n"
-        "Fresh patch request content.\n",
-        encoding="utf-8",
-        newline="\n",
+    _write_page(
+        wiki_env,
+        "pages/research/fresh-research.md",
+        title="Fresh Research",
+        body="Fresh discovery research content.",
+        audience="discovery",
+        updated="2026-05-06T12:00:00Z",
     )
-    older = wiki_env / "pages" / "notes" / "older-note.md"
-    older.write_text(
-        "---\n"
-        "title: Older Note\n"
-        "type: note\n"
-        "updated: 2026-05-01T12:00:00Z\n"
-        "---\n\n"
-        "Older note content.\n",
-        encoding="utf-8",
-        newline="\n",
+    _write_page(
+        wiki_env,
+        "pages/patch-requests/fresh-patch.md",
+        title="Fresh Patch",
+        body="Fresh coordination patch request content.",
+        audience="coordination",
+        updated="2026-05-06T12:00:00Z",
+    )
+    _write_page(
+        wiki_env,
+        "pages/research/older-research.md",
+        title="Older Research",
+        body="Older discovery content.",
+        audience="discovery",
+        updated="2026-05-01T12:00:00Z",
     )
 
     res = json.loads(
@@ -277,9 +347,10 @@ def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
     )
 
     assert res["changed_since"] == "2026-05-05T00:00:00Z"
+    assert res["scope"] == "discovery"
     assert res["count"] == 1
-    assert res["results"][0]["path"] == "pages/patch-requests/fresh-patch.md"
-    assert res["results"][0]["title"] == "Fresh Patch"
+    assert res["results"][0]["path"] == "pages/research/fresh-research.md"
+    assert res["results"][0]["title"] == "Fresh Research"
     assert res["results"][0]["updated"] == "2026-05-06T12:00:00Z"
 
 
@@ -309,6 +380,7 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "title: Live Brain\n"
         "type: note\n"
         "updated: 2026-05-01\n"
+        "audience: coordination\n"
         "tags: ambient relevance\n"
         "---\n\n"
         "# Live Brain\n\n"
@@ -322,6 +394,7 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "title: Fresh Related\n"
         "type: note\n"
         "updated: 2026-05-06T12:00:00Z\n"
+        "audience: coordination\n"
         "tags: relevance feed\n"
         "---\n\n"
         "This note mentions ambient source-read proof for adjacent goals.\n",
@@ -334,11 +407,20 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
         "title: Old Related\n"
         "type: note\n"
         "updated: 2026-04-01\n"
+        "audience: coordination\n"
         "tags: ambient relevance\n"
         "---\n\n"
         "Old ambient relevance should be excluded by changed_since.\n",
         encoding="utf-8",
         newline="\n",
+    )
+    _write_page(
+        wiki_env,
+        "pages/workflows/discovery-related.md",
+        title="Discovery Related",
+        body="A discovery page mentions ambient source-read proof.",
+        audience="discovery",
+        updated="2026-05-06T12:00:00Z",
     )
 
     res = json.loads(
@@ -356,12 +438,281 @@ def test_wiki_read_returns_source_proof_and_ambient_feed(wiki_env):
     assert len(res["source_read_proof"]["sha256"]) == 64
     feed = res["ambient_relevance_feed"]
     assert feed["source_path"] == "pages/notes/live-brain.md"
+    assert feed["scope"] == "coordination"
     paths = [item["path"] for item in feed["items"]]
     assert "pages/notes/fresh-related.md" in paths
     assert "pages/notes/old-related.md" not in paths
     assert "pages/notes/live-brain.md" not in paths
+    assert "pages/workflows/discovery-related.md" not in paths
     fresh = next(item for item in feed["items"] if item["path"].endswith("fresh-related.md"))
     assert "ambient" in fresh["matched_terms"]
+
+
+def test_wiki_scope_and_audience_matrix_is_fail_closed_and_self_auditing(
+    wiki_env, caplog
+):
+    cases = [
+        ("pages/plans/explicit-discovery.md", "discovery", "discovery"),
+        ("pages/workflows/explicit-coordination.md", "coordination", "coordination"),
+        ("pages/notes/unset.md", None, "coordination"),
+        ("pages/notes/blank.md", "", "coordination"),
+        ("pages/notes/whitespace.md", "   ", "coordination"),
+        ("pages/plans/padded.md", "   DiScOvErY   ", "discovery"),
+        ("pages/feature-requests/feature.md", None, "coordination"),
+        ("pages/magic-systems/custom.md", None, "discovery"),
+        ("pages/root-page.md", None, "discovery"),
+        ("drafts/root-draft.md", None, "discovery"),
+        *((f"pages/workflows/invalid-{i}.md", "external", "coordination") for i in range(8)),
+    ]
+    for path, audience, classified in cases:
+        marker = " quiet-default" if classified == "discovery" else ""
+        _write_page(
+            wiki_env,
+            path,
+            title=Path(path).stem,
+            body=f"audience-matrix{marker} canary",
+            audience=audience,
+        )
+    expected = {
+        scope: {path for path, _audience, classified in cases if classified == scope}
+        for scope in ("discovery", "coordination")
+    }
+
+    for raw_scope in (None, "", "   ", "discovery", "coordination", "all"):
+        kwargs = dict(
+            action="search", query="audience-matrix", max_results=100
+        )
+        if raw_scope is not None:
+            kwargs["scope"] = raw_scope
+        result = json.loads(wiki(**kwargs))
+        applied = raw_scope.strip() if raw_scope and raw_scope.strip() else "discovery"
+        paths = (
+            expected["discovery"] | expected["coordination"]
+            if applied == "all"
+            else expected[applied]
+        )
+        assert result["scope"] == applied
+        assert _result_paths(result) == paths
+        if raw_scope in (None, "", "   "):
+            assert all(value in result["scope_note"] for value in ("coordination", "all"))
+        else:
+            assert "scope_note" not in result
+
+    invalid = json.loads(wiki(action="search", query="audience-matrix", scope="private"))
+    assert all(value in invalid["error"] for value in ("discovery", "coordination", "all"))
+    assert invalid.get("results") == []
+    assert "scope" not in invalid and "scope_note" not in invalid
+
+    quiet = json.loads(wiki(action="search", query="quiet-default", max_results=100))
+    assert quiet["scope"] == "discovery"
+    assert "scope_note" not in quiet
+
+    caplog.set_level(logging.WARNING)
+    json.loads(wiki(action="search", query="audience-matrix", scope="coordination"))
+    assert sum("audience" in record.getMessage().lower() for record in caplog.records) <= 1
+
+
+def test_wiki_category_filters_search_since_and_ambient_without_widening(wiki_env):
+    for path, audience in (
+        ("pages/magic-systems/discovery.md", "discovery"),
+        ("drafts/magic-systems/coordination.md", "coordination"),
+        ("pages/workflows/other.md", "discovery"),
+    ):
+        _write_page(
+            wiki_env,
+            path,
+            title=Path(path).stem,
+            body="category-matrix ambient-category canary",
+            audience=audience,
+        )
+    for action in ("search", "since"):
+        kwargs = dict(action=action, category="Magic Systems", scope="all")
+        kwargs["query" if action == "search" else "changed_since"] = (
+            "category-matrix" if action == "search" else "2026-07-01T00:00:00Z"
+        )
+        assert _result_paths(json.loads(wiki(**kwargs))) == {
+            "pages/magic-systems/discovery.md",
+            "drafts/magic-systems/coordination.md",
+        }
+        absent = json.loads(wiki(**{**kwargs, "category": "not-yet-created"}))
+        assert "error" not in absent and absent["results"] == []
+        for invalid_category in ("///", "   "):
+            invalid = json.loads(
+                wiki(**{**kwargs, "category": invalid_category})
+            )
+            assert "category" in invalid["error"].lower()
+            assert invalid.get("results") == []
+
+    source_body = "exact source body stays unchanged"
+    _write_page(
+        wiki_env,
+        "pages/workflows/source.md",
+        title="Source",
+        body=source_body,
+        audience="discovery",
+    )
+    ambient = json.loads(
+        wiki(
+            action="read",
+            page="pages/workflows/source.md",
+            query="ambient-category",
+            category="Magic Systems",
+            scope="all",
+        )
+    )
+    assert source_body in ambient["content"]
+    assert {item["path"] for item in ambient["ambient_relevance_feed"]["items"]} == {
+        "pages/magic-systems/discovery.md",
+        "drafts/magic-systems/coordination.md",
+    }
+    ordered = json.loads(
+        wiki(action="search", query="category-matrix", category="Magic Systems",
+             scope="discovery")
+    )
+    assert _result_paths(ordered) == {"pages/magic-systems/discovery.md"}
+    for invalid_category in ("!!!", "   "):
+        nested = json.loads(
+            wiki(
+                action="read",
+                page="pages/workflows/source.md",
+                category=invalid_category,
+            )
+        )
+        assert source_body in nested["content"] and "error" not in nested
+        assert nested["ambient_relevance_feed"]["items"] == []
+        assert "category" in nested["ambient_relevance_feed"]["error"].lower()
+
+
+def test_wiki_exact_read_source_scope_and_list_structure_stay_distinct(wiki_env):
+    for path, audience in (
+        ("pages/workflows/source-discovery.md", "discovery"),
+        ("pages/notes/source-coordination.md", "coordination"),
+        ("pages/workflows/source-invalid.md", "external"),
+        ("pages/workflows/sibling-discovery.md", "discovery"),
+        ("pages/notes/sibling-coordination.md", "coordination"),
+    ):
+        _write_page(
+            wiki_env,
+            path,
+            title=Path(path).stem,
+            body="source-scope exact-body canary",
+            audience=audience,
+        )
+    expected = {
+        "source-discovery": ("discovery", "sibling-discovery", "sibling-coordination"),
+        "source-coordination": ("coordination", "sibling-coordination", "sibling-discovery"),
+        "source-invalid": ("coordination", "sibling-coordination", "sibling-discovery"),
+    }
+    for source, (scope, included, excluded) in expected.items():
+        result = json.loads(
+            wiki(action="read", page=source, query="source-scope")
+        )
+        assert "exact-body" in result["content"]
+        feed = result["ambient_relevance_feed"]
+        assert feed["scope"] == scope
+        blob = json.dumps(feed["items"])
+        assert included in blob and excluded not in blob
+
+    opposite = json.loads(
+        wiki(action="read", page="source-discovery", scope="coordination")
+    )
+    assert "exact-body" in opposite["content"]
+    assert opposite["ambient_relevance_feed"]["scope"] == "coordination"
+
+    listed = json.loads(wiki(action="list"))
+    listed_blob = json.dumps(listed)
+    assert "source-discovery" in listed_blob and "source-coordination" in listed_blob
+    assert "scope" not in listed and "scope_note" not in listed
+
+
+@pytest.mark.parametrize("surface", ["search", "since", "ambient"])
+@pytest.mark.parametrize("scope", ["discovery", "coordination", "all"])
+def test_wiki_visibility_denial_precedes_scope_with_real_grant_control(
+    wiki_env, surface, scope
+):
+    data_root = wiki_env.parent
+    universe_id = f"visibility-{surface}-{scope}"
+    universe_dir = data_root / universe_id
+    ensure_universe_registered(
+        data_root, universe_id=universe_id, universe_path=universe_dir
+    )
+    visibility.set_universe_visibility(universe_id, "public")
+    universe_wiki = universe_dir / "wiki"
+    _ensure_wiki_scaffold(universe_wiki)
+    audience = "coordination" if scope == "coordination" else "discovery"
+    for path, title, marker, restricted in (
+        ("pages/workflows/source.md", "Source", "visibility-matrix", False),
+        ("pages/workflows/public.md", "Public", "PUBLIC-CONTROL visibility-matrix", False),
+        ("pages/workflows/secret.md", "Secret", "SECRET-BODY visibility-matrix", True),
+    ):
+        _write_page(
+            universe_wiki,
+            path,
+            title=title,
+            body=marker,
+            audience=audience,
+            visibility_value="private" if restricted else "",
+        )
+
+    def invoke() -> dict[str, Any]:
+        with wiki_mod._scoped_wiki_root(universe_wiki):
+            if surface == "search":
+                raw = wiki_mod._wiki_search(
+                    query="visibility-matrix", scope=scope, universe_id=universe_id
+                )
+            elif surface == "since":
+                raw = wiki_mod._wiki_since(
+                    changed_since="2026-07-01T00:00:00Z",
+                    scope=scope,
+                    universe_id=universe_id,
+                )
+            else:
+                raw = wiki_mod._wiki_read(
+                    page="source",
+                    query="visibility-matrix",
+                    scope=scope,
+                    universe_id=universe_id,
+                )
+        result = json.loads(raw)
+        return result["ambient_relevance_feed"] if surface == "ambient" else result
+
+    denied_result = invoke()
+    grant_universe_access(
+        data_root, universe_id=universe_id, actor_id="alice", permission="read"
+    )
+    _authenticate_reader("alice")
+    granted_result = invoke()
+    denied, granted = json.dumps(denied_result), json.dumps(granted_result)
+    assert "Public" in denied
+    assert all(secret in granted for secret in ("secret.md", "Secret", "SECRET-BODY"))
+    assert not any(secret in denied for secret in ("secret.md", "Secret", "SECRET-BODY"))
+    assert granted_result["scope"] == scope
+
+
+def test_wiki_default_discovery_dispatch_is_deterministic_across_256_calls(wiki_env):
+    for path, audience in (
+        ("pages/workflows/concurrency-discovery.md", "discovery"),
+        ("pages/notes/concurrency-coordination.md", "coordination"),
+    ):
+        _write_page(
+            wiki_env,
+            path,
+            title=Path(path).stem,
+            body="dispatcher-concurrency canary",
+            audience=audience,
+        )
+
+    def invoke(_: int) -> str:
+        return wiki(action="search", query="dispatcher-concurrency")
+
+    reference = invoke(-1)
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        responses = list(executor.map(invoke, range(256)))
+    assert len(responses) == 256 and all(item == reference for item in responses)
+    assert 0 < len(reference.encode()) < 16_384
+    parsed = json.loads(reference)
+    assert parsed["scope"] == "discovery"
+    assert _result_paths(parsed) == {"pages/workflows/concurrency-discovery.md"}
 
 
 def test_wiki_read_large_page_marks_content_and_supports_offset(wiki_env):

@@ -1191,7 +1191,7 @@ Notes:
 
 - Provider: codex-gpt56-wiki-scope
 - Branch: codex/wiki-discovery-scope
-- Lane state: Active lane
+- Lane state: Merged as PR #1745 at `fdfde5f1bd74ff74bd808e02bf453721db38a1fb`; proof moved to `wf-wiki-discovery-proof`
 - Worktree: C:\Users\Jonathan\Projects\wf-wiki-discovery-scope
 - STATUS/Issue/PR: R2-4a wiki discovery scoping; #1550 closed source-only
 - PLAN refs: Module API & MCP Interface; composable primitive and visibility principles
@@ -1216,3 +1216,18 @@ Notes:
 - Related implications: Slice A0; provider-attempt receipts; universe-creation; complete-independent-full-platform-targets
 - Idea feed refs: #1469 remains optional source-only encrypted server custody unless separately approved
 - Ship/abandon: Opus APPROVE/ADAPT gates a strict spec PR; runtime remains blocked on listed owners
+
+## 2026-07-25 - verify deployed wiki discovery
+
+- Provider: codex-gpt56-wiki-proof with Claude Opus 5 browser peer
+- Branch: codex/wiki-discovery-proof
+- Lane state: Active post-merge proof
+- Worktree: C:\Users\Jonathan\Projects\wf-wiki-discovery-proof
+- STATUS/Issue/PR: Verify deployed wiki discovery; PR #1745 merged
+- PLAN refs: Module API & MCP Interface; canonical `/mcp`; visibility principles
+- Purpose: prove deployed source, exact-seven surface, rendered connector behavior, and organic use/watch
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-wiki-discovery-proof\_PURPOSE.md
+- Memory refs: archived `2026-07-25-scope-wiki-discovery`; PR #1745
+- Review gate: ui-test through real chatbot + independent evidence review
+- Ship/abandon: publish proof/task foldback only; no runtime changes
+- Foldback: proof complete and independently approved; PR #1747 merged

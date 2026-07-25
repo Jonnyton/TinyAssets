@@ -76,6 +76,19 @@ _WIKI_SEARCH_COMPLETENESS_WARNING = (
 )
 _WIKI_READ_DEFAULT_MAX_CHARS = 128_000
 _WIKI_READ_MAX_CHARS = 256_000
+_WIKI_SCOPES = ("discovery", "coordination", "all")
+_WIKI_COORDINATION_CATEGORIES = frozenset({
+    "notes",
+    "plans",
+    "bugs",
+    "feature-requests",
+    "design-proposals",
+    "patch-requests",
+})
+_WIKI_SCOPE_NOTE = (
+    "Default discovery scope omitted coordination pages. In-process callers "
+    "can request scope=coordination or scope=all."
+)
 
 
 _logger_wiki = logging.getLogger("universe_server.wiki")
@@ -327,6 +340,54 @@ def _coerce_read_max_chars(value: Any) -> int:
     return max(1, min(raw, _WIKI_READ_MAX_CHARS))
 
 
+def _normalize_wiki_scope(
+    scope: str,
+    *,
+    default: str,
+) -> tuple[str | None, bool]:
+    normalized = scope.strip()
+    if not normalized:
+        return default, True
+    if normalized not in _WIKI_SCOPES:
+        return None, False
+    return normalized, False
+
+
+def _normalize_read_category(category: str) -> tuple[str | None, str | None]:
+    if category == "":
+        return None, None
+    requested = category.strip()
+    normalized = _sanitize_slug(requested)
+    if not normalized:
+        return None, (
+            "category must resolve to a non-empty slug; valid custom "
+            "categories are accepted."
+        )
+    return normalized, None
+
+
+def _wiki_page_category(path: Path) -> str:
+    parts = Path(_page_rel_path(path)).parts
+    if len(parts) >= 3 and parts[0] in {"pages", "drafts"}:
+        return parts[1].casefold()
+    return ""
+
+
+def _wiki_page_audience(meta: dict[str, str], path: Path) -> str:
+    audience = meta.get("audience", "").strip().casefold()
+    if audience in {"discovery", "coordination"}:
+        return audience
+    if audience:
+        return "coordination"
+    if _wiki_page_category(path) in _WIKI_COORDINATION_CATEGORIES:
+        return "coordination"
+    return "discovery"
+
+
+def _wiki_scope_includes(scope: str, audience: str) -> bool:
+    return scope == "all" or scope == audience
+
+
 def _ambient_relevance_feed(
     *,
     source: Path,
@@ -336,16 +397,45 @@ def _ambient_relevance_feed(
     max_results: int,
     source_meta: dict[str, str],
     source_body: str,
+    scope: str = "",
+    category: str = "",
+    universe_id: str = "",
 ) -> dict[str, Any]:
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default=_wiki_page_audience(source_meta, source),
+    )
     terms = _wiki_read_terms(
         page=page,
         query=query,
         meta=source_meta,
         body=source_body,
     )
+    base_response: dict[str, Any] = {
+        "source_path": _page_rel_path(source),
+        "query_terms": sorted(terms)[:20],
+        "changed_since": changed_since.strip(),
+        "items": [],
+        "truncated_count": 0,
+    }
+    if applied_scope is None:
+        base_response["error"] = (
+            "scope must be one of: discovery, coordination, all."
+        )
+        return base_response
+
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        base_response["scope"] = applied_scope
+        base_response["error"] = category_error
+        return base_response
+
+    from tinyassets.api import visibility
+
     since = _parse_wiki_timestamp(changed_since)
     limit = _coerce_feed_limit(max_results)
     candidates: list[dict[str, Any]] = []
+    scope_filtered = False
     for candidate in (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     ):
@@ -355,6 +445,34 @@ def _ambient_relevance_feed(
         if not raw:
             continue
         meta, body = _parse_frontmatter(raw)
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
+        candidate_category = _wiki_page_category(candidate)
+        audience = _wiki_page_audience(meta, candidate)
+        if not _wiki_scope_includes(applied_scope, audience):
+            haystack = " ".join(
+                part for part in (
+                    meta.get("title", ""),
+                    meta.get("tags", ""),
+                    meta.get("type", ""),
+                    body,
+                ) if part
+            ).lower()
+            updated_at = _page_updated_at(candidate, meta)
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and (since is None or updated_at > since)
+                and any(term in haystack for term in terms)
+            ):
+                scope_filtered = True
+            continue
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
+            continue
         updated_at = _page_updated_at(candidate, meta)
         if since is not None and updated_at <= since:
             continue
@@ -382,13 +500,12 @@ def _ambient_relevance_feed(
 
     candidates.sort(key=lambda item: (-item["score"], item["path"]))
     items = candidates[:limit]
-    return {
-        "source_path": _page_rel_path(source),
-        "query_terms": sorted(terms)[:20],
-        "changed_since": changed_since.strip(),
-        "items": items,
-        "truncated_count": max(0, len(candidates) - len(items)),
-    }
+    base_response["scope"] = applied_scope
+    base_response["items"] = items
+    base_response["truncated_count"] = max(0, len(candidates) - len(items))
+    if scope_filtered:
+        base_response["scope_note"] = _WIKI_SCOPE_NOTE
+    return base_response
 
 
 def _add_to_index(category: str, slug: str, title: str) -> None:
@@ -555,6 +672,8 @@ def _resolve_filed_page_canonical(parent: Path, slug: str, *, category: str) -> 
 def _wiki_read(
     page: str = "",
     query: str = "",
+    category: str = "",
+    scope: str = "",
     changed_since: str = "",
     max_results: int = 10,
     offset: int = 0,
@@ -607,6 +726,9 @@ def _wiki_read(
         max_results=max_results,
         source_meta=meta,
         source_body=body,
+        scope=scope,
+        category=category,
+        universe_id=universe_id,
     )
 
     read_start = _coerce_read_offset(offset)
@@ -661,18 +783,37 @@ def _draft_read_content(text: str, *, is_draft: bool) -> str:
 
 
 def _wiki_search(
-    query: str = "", max_results: int = 10, universe_id: str = "", **_kwargs: Any
+    query: str = "",
+    max_results: int = 10,
+    universe_id: str = "",
+    scope: str = "",
+    category: str = "",
+    **_kwargs: Any,
 ) -> str:
     if not query:
         return json.dumps({"error": "query parameter is required."})
 
     from tinyassets.api import visibility
 
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default="discovery",
+    )
+    if applied_scope is None:
+        return json.dumps({
+            "error": "scope must be one of: discovery, coordination, all.",
+            "results": [],
+        })
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        return json.dumps({"error": category_error, "results": []})
+
     all_pages = (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
     )
     terms = query.lower().split()
     scored: list[dict[str, Any]] = []
+    scope_filtered = False
 
     for p in all_pages:
         raw = _read_text(p)
@@ -683,6 +824,22 @@ def _wiki_search(
         # A restricted page's title/excerpt/path are disclosure — withhold the
         # whole result from a non-granted reader (spec Req 3).
         if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
+        candidate_category = _wiki_page_category(p)
+        audience = _wiki_page_audience(meta, p)
+        if not _wiki_scope_includes(applied_scope, audience):
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and any(term in lower for term in terms)
+            ):
+                scope_filtered = True
+            continue
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
             continue
         title = meta.get("title", p.stem)
         is_draft = _wiki_drafts_dir() in p.parents
@@ -714,19 +871,27 @@ def _wiki_search(
     top = scored[:max_results]
 
     if not top:
-        return json.dumps({
+        response: dict[str, Any] = {
             "results": [],
             "note": f"No results for: {query}",
+            "scope": applied_scope,
             "search_complete": False,
             "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
-        })
-    return json.dumps({
+        }
+        if scope_filtered:
+            response["scope_note"] = _WIKI_SCOPE_NOTE
+        return json.dumps(response)
+    response = {
         "query": query,
         "results": top,
         "count": len(top),
+        "scope": applied_scope,
         "search_complete": False,
         "completeness_warning": _WIKI_SEARCH_COMPLETENESS_WARNING,
-    })
+    }
+    if scope_filtered:
+        response["scope_note"] = _WIKI_SCOPE_NOTE
+    return json.dumps(response)
 
 
 def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
@@ -747,6 +912,8 @@ def _wiki_since(
     changed_since: str = "",
     max_results: int = 10,
     universe_id: str = "",
+    scope: str = "",
+    category: str = "",
     **_kwargs: Any,
 ) -> str:
     if not changed_since.strip():
@@ -763,22 +930,49 @@ def _wiki_since(
 
     from tinyassets.api import visibility
 
-    def _visible(path: Path) -> bool:
-        meta, _ = _parse_frontmatter(_read_text(path))
-        return visibility.page_visible_in_listing(meta, universe_id)
+    applied_scope, scope_omitted = _normalize_wiki_scope(
+        scope,
+        default="discovery",
+    )
+    if applied_scope is None:
+        return json.dumps({
+            "error": "scope must be one of: discovery, coordination, all.",
+            "results": [],
+        })
+    normalized_category, category_error = _normalize_read_category(category)
+    if category_error:
+        return json.dumps({"error": category_error, "results": []})
 
     candidates: list[dict[str, Any]] = []
-    for path in _find_all_pages(_wiki_pages_dir()):
-        if not _visible(path):
+    scope_filtered = False
+    all_pages = (
+        ((path, False) for path in _find_all_pages(_wiki_pages_dir()))
+    )
+    all_drafts = (
+        ((path, True) for path in _find_all_pages(_wiki_drafts_dir()))
+    )
+    for path, is_draft in (*all_pages, *all_drafts):
+        meta, _ = _parse_frontmatter(_read_text(path))
+        if not visibility.page_visible_in_listing(meta, universe_id):
             continue
-        item = _wiki_result_item(path, is_draft=False)
-        updated_at = _parse_wiki_timestamp(item["updated"])
-        if updated_at is not None and updated_at > since:
-            candidates.append(item)
-    for path in _find_all_pages(_wiki_drafts_dir()):
-        if not _visible(path):
+        candidate_category = _wiki_page_category(path)
+        audience = _wiki_page_audience(meta, path)
+        updated_at = _page_updated_at(path, meta)
+        if not _wiki_scope_includes(applied_scope, audience):
+            if (
+                scope_omitted
+                and (normalized_category is None
+                     or candidate_category == normalized_category)
+                and updated_at > since
+            ):
+                scope_filtered = True
             continue
-        item = _wiki_result_item(path, is_draft=True)
+        if (
+            normalized_category is not None
+            and candidate_category != normalized_category
+        ):
+            continue
+        item = _wiki_result_item(path, is_draft=is_draft)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
             candidates.append(item)
@@ -786,13 +980,17 @@ def _wiki_since(
     candidates.sort(key=lambda item: (item["updated"], item["path"]), reverse=True)
     limit = _coerce_result_limit(max_results)
     results = candidates[:limit]
-    return json.dumps({
+    response: dict[str, Any] = {
         "changed_since": changed_since.strip(),
         "results": results,
         "count": len(results),
         "total_matches": len(candidates),
         "truncated_count": max(0, len(candidates) - len(results)),
-    })
+        "scope": applied_scope,
+    }
+    if scope_filtered:
+        response["scope_note"] = _WIKI_SCOPE_NOTE
+    return json.dumps(response)
 
 
 def _wiki_list(universe_id: str = "", **_kwargs: Any) -> str:
@@ -2505,6 +2703,7 @@ def wiki(
     reporter_context: str = "",
     verbose: bool = False,
     changed_since: str = "",
+    scope: str = "",
     universe_id: str = "",
 ) -> str:
     """Dispatch entry for the wiki MCP tool. See universe_server.py for the
@@ -2632,6 +2831,7 @@ def wiki(
             "reporter_context": reporter_context,
             "verbose": verbose,
             "changed_since": changed_since,
+            "scope": scope,
             "universe_id": target_universe_id,
         }
 
