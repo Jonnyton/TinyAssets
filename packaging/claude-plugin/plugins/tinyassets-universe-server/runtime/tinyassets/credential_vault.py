@@ -36,6 +36,36 @@ _LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
     "grok": "XAI_API_KEY",
 }
 
+_SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[
+    str, tuple[frozenset[str], ...]
+] = {
+    "claude": (
+        frozenset({
+            "claude_config_dir",
+            "config_dir",
+            "path",
+            "claude_home",
+            "home",
+            "auth_home",
+        }),
+        frozenset({
+            "oauth_token",
+            "claude_code_oauth_token",
+            "token_b64",
+            "secret_b64",
+        }),
+    ),
+    "codex": (
+        frozenset({
+            "codex_home",
+            "home",
+            "auth_home",
+            "path",
+            "auth_json_path",
+        }),
+    ),
+}
+
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
     """Return the vault file path for *universe_dir*."""
@@ -151,6 +181,23 @@ def _credentials_match(
     return bool(_vcs_purposes(existing) & _vcs_purposes(incoming))
 
 
+def _merge_subscription_records(
+    existing: list[dict[str, Any]],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    replacement: dict[str, Any] = {}
+    for record in reversed(existing):
+        replacement.update(record)
+    for slot in _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE.get(
+        _service(incoming), ()
+    ):
+        if not slot.isdisjoint(incoming):
+            for field in slot:
+                replacement.pop(field, None)
+    replacement.update(incoming)
+    return replacement
+
+
 def _merge_single_record(
     existing: list[dict[str, Any]],
     incoming: dict[str, Any],
@@ -165,10 +212,10 @@ def _merge_single_record(
 
     replacement = incoming
     if incoming["credential_type"] == "llm_subscription":
-        replacement = {}
-        for index in reversed(matching_indexes):
-            replacement.update(existing[index])
-        replacement.update(incoming)
+        replacement = _merge_subscription_records(
+            [existing[index] for index in matching_indexes],
+            incoming,
+        )
 
     first_match = matching_indexes[0]
     matching_set = set(matching_indexes)

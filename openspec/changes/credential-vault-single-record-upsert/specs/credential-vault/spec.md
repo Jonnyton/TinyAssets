@@ -17,7 +17,7 @@ The system SHALL treat a validated one-record payload written to an existing vau
 
 #### Scenario: Subscription partial writes preserve sibling fields
 - **WHEN** one `llm_subscription` record is upserted into one or more matching subscription records
-- **THEN** stored fields are combined with first-record precedence, incoming fields override stored fields, and all matching records collapse to the combined record
+- **THEN** stored fields are combined with first-record precedence, stored members of any Claude or Codex resolver-equivalent alias family named by the incoming record are removed, incoming fields are applied, unrelated sibling fields survive, and all matching records collapse to the combined record
 
 #### Scenario: Single upsert cleans duplicate resolver slots
 - **WHEN** exact bulk replacement has stored multiple matching BYO-key or Claude-subscription records whose first record shadows later records

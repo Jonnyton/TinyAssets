@@ -32,7 +32,10 @@ sibling temporary path.
   an overlapping normalized purpose set.
 - Every match is collapsed to one record at the first matching position.
   Non-subscription types replace the whole slot. Subscription matches are
-  field-merged in stored first-record precedence, then incoming fields win.
+  field-merged in stored first-record precedence. When incoming fields target a
+  Claude or Codex resolver alias family, stored members of that family are
+  removed before incoming fields are applied, so a lower-priority incoming alias
+  cannot be shadowed by a higher-priority stored alias.
 - Malformed existing JSON fails the single-record write before the temporary
   file is written. This preserves fail-loud behavior rather than silently
   healing or discarding unreadable secret state.
