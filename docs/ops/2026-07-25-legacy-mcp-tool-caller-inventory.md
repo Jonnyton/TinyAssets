@@ -2,8 +2,10 @@
 
 **Change:** `openspec/changes/retire-legacy-live-mcp-tools` — evidence for tasks 2.1, 2.2, 2.3.
 **Date:** 2026-07-25. **Provider:** claude-code (Opus 5), branch `claude/o5-retire-inventory`.
-**Revision:** **v2 (reworked)** after an opposite-provider review returned **reject** on v1
-(`18379010`). See §10 for what the review refuted and what was re-verified.
+**Revision:** **v3** — v2 (`9bd88a07`) reworked v1 (`18379010`) after an opposite-provider review
+returned **reject**; a second opposite-provider review of v2 returned **adapt**, and v3 folds its
+three required corrections (B2 file count, 2.3-D/2.3-E blocker prose, and a new
+authorization-metadata class). See §10 for the full disposition of both rounds.
 **Base:** analysis tree = `18379010`. Re-verified against `origin/main` on 2026-07-25; the
 intervening main commits are STATUS/coordination-only and touch no file cited here.
 **Method:** read-only static analysis over the working tree — Python AST (binding-aware),
@@ -114,7 +116,7 @@ actually is, not by a rolled-up number.
 | **A.** Python explicit imports (`from ...universe_server import <legacy>`) | 57 | 26 | No |
 | **B.** Python module-attr **references** (`us.<legacy>` / `us2.<legacy>`) | 119 | 41 | No |
 | ⤷ B1. of which are **calls** | 102 | — | No |
-| ⤷ B2. of which are **non-call introspection** (`callable`, `inspect.signature`, `__doc__`, `pytest.param`) | 17 | 4 | No |
+| ⤷ B2. of which are **non-call introspection** (`callable`, `inspect.signature`, `__doc__`, `pytest.param`) | 17 | **5** | No |
 | **C.** Python **call expressions**, total (C1 + B1) | **376** | **62** | No |
 | ⤷ C1. via explicitly imported names | 274 | — | No |
 | **D.** Python star import of the module (`import *`) | 1 | 1 | No |
@@ -125,6 +127,14 @@ actually is, not by a rolled-up number.
 | **I.** Metadata residue (`data_source.tool`) | 3 panels | 1 | No dispatch |
 | **J.** Response-label residue (`"tool": "goals"` / `"gates"`) | 3 | 1 | No dispatch |
 | **K.** Instructions telling a client/user to call a legacy name | 8+ | 6+ | User-visible breakage |
+| **L.** Authorization / action-scope metadata keyed by legacy tool name | 5 tool keys | 1 | No dispatch — **but see 2.3-F** |
+
+> **B2 file-count correction (v3).** v2's B2 row said these 17 references occupy **4** files; a
+> re-run of the binding-aware AST pass returns **5**: `tests/test_api_market.py` (2),
+> `tests/test_api_universe.py` (1), `tests/test_goals_discoverability.py` (2),
+> `tests/test_mcp_dispatch_docstring_parity.py` (11), `tests/test_validate_ship_packet_action.py`
+> (1) = 17. The count **17** was correct; only the file count was wrong. Class-B totals (119/41)
+> and the call/non-call split (102/17) are unchanged.
 
 > **Label correction (v1 defect).** v1 reported "**176** Python bindings" in a table whose second
 > row was headed *"module-attr call"*. Both labels were wrong:
@@ -255,15 +265,31 @@ dead call path today — real code, lower blast radius than the rest of class F.
 **Per-tool totals for class F:** `wiki` 7, `goals` 9, `universe` 5, `community_change_context` 2,
 `extensions` 15, `gates` 0 = **38**.
 
-> ### 🔴 Finding 2.3-D (new in v2) — `extensions action=stream_run` is a second orphaned website dependency
+> ### 🔴 Finding 2.3-D (new in v2, corrected in v3) — `extensions action=stream_run` is canonically unreachable
 >
-> `read_graph` emits only `list`, `get`, `search`, `inspect`, `list_runs`, `get_run`, `get_branch`
-> (AST-extracted literal `action=` kwargs). **`stream_run` is emitted by no canonical handle** — it
-> appears in the repository only inside the legacy `extensions` docstring
-> (`universe_server.py:1413`). Both `live.ts` trees call it from `fetchMcpPatchLoopFeed`
-> (`live.ts:836`), which is reached from the rendered `/loop` page via the exported
+> **The blocker is canonical *unreachability*, not non-existence.** `read_graph` emits only `list`,
+> `get`, `search`, `inspect`, `list_runs`, `get_run`, `get_branch` (AST-extracted literal `action=`
+> kwargs), so **no canonical handle emits `stream_run`**. Both `live.ts` trees call it from
+> `fetchMcpPatchLoopFeed` (`live.ts:836`), reached from the rendered `/loop` page via the exported
 > `fetchPatchLoopFeed` — and `source='mcp'` is that function's **default** branch. So this is a
-> live rendered-page dependency on an orphaned action, not a helper on a dead path.
+> live rendered-page dependency reachable *only* through the legacy `extensions` handle.
+>
+> **v2 prose defect, corrected.** v2 claimed `stream_run` "appears in the repository only inside
+> the legacy `extensions` docstring (`universe_server.py:1413`)". **That is false.** It is a fully
+> implemented action: `_action_stream_run` at `tinyassets/api/runs.py:924`, dispatch entry
+> `_RUN_ACTIONS["stream_run"]` at `tinyassets/api/runs.py:1891`, enumerated in the extensions
+> action list at `tinyassets/api/extensions.py:737`, and covered by live tests
+> (`tests/test_branch_runner.py:751,925,963`, `tests/test_api_runs.py:37,65,96`). The retirement
+> therefore does **not** delete dead code — it removes the only wire route to working functionality.
+> That makes the migration decision *harder*, not easier: a canonical route can be added cheaply
+> because the implementation already exists and is tested.
+>
+> **The same correction applies to every other action this artifact called "orphaned."** "Orphaned"
+> throughout §5, §4c, and §4d means **unreachable through the canonical seven**, never
+> "unimplemented." Spot-verified: `get_node_output` → `_action_get_node_output`
+> (`api/evaluation.py:394`, dispatch `:783`); `get_activity` → `api/universe.py:6084`;
+> `give_direction` → `:6088`; `read_premise` → `:6089`; `set_premise` → `:6090`;
+> `submit_node_bid` → `:6109`. All are real, dispatchable, and canonically unreachable.
 
 > ### 📌 Class F deployment ambiguity — both trees must be treated as live
 >
@@ -287,7 +313,9 @@ the component ships five legacy presets (`Playground.svelte:33-37` — `wiki act
 `wiki action=read`), seeds the input with `wiki action=list` (line 46), injects
 `extensions action=get_run` / `extensions action=get_node_output` on click (lines 111-112), and
 **auto-fires on load** ("The terminal is loaded with `wiki action=list` and will fire
-automatically", line 212). `get_node_output` is also orphaned (docstring-only, `:1414`).
+automatically", line 212). `get_node_output` is also canonically unreachable — but it is a real
+implemented action (`_action_get_node_output`, `api/evaluation.py:394`, dispatch entry `:783`),
+not docstring residue (v2 mis-stated this; see 2.3-D).
 
 #### H — registration-level test (1 site)
 
@@ -301,24 +329,83 @@ is the one test that **must** be updated by task 4.1.
 |---|---|---|---|
 | I | `packaging/conway/panel-metadata.json` (×3 panels) | `data_source.tool: "universe"` + `action: inspect / get_activity / query_world` | **Fix metadata.** No programmatic loader exists; `packaging/INDEX.md` calls `conway/` "speculative". Task 4.5 residue. |
 | J | `tinyassets/api/market.py:2600, 3907, 3946` | `"tool": "goals"` / `"tool": "gates"` in error payloads and `_action_gates_list`'s self-description | **Fix strings.** User-facing labels naming a tool that will no longer exist. Task 4.5 residue. |
-| K | `packaging/.../skills/premise/SKILL.md:13,15` | instructs the client to call `universe` (`get_premise` / `set_premise`) | **Migrate before 4.4.** |
-| K | `packaging/.../skills/progress/SKILL.md:14` | instructs `universe action="inspect"` + `action="get_activity"` | **Migrate.** `get_activity` is **orphaned**. |
-| K | `packaging/.../skills/status/SKILL.md:14` | instructs `universe action="inspect"` | **Migrate** → `read_graph target="graph"`. |
-| K | `packaging/.../skills/steer/SKILL.md:15,30` | instructs `universe action="give_direction"` | **Migrate.** `give_direction` is **orphaned**. |
-| K | `bids/README.md:24` | instructs `universe action=submit_node_bid` | **Migrate or retire.** `submit_node_bid` is **orphaned**. |
+| K | `packaging/.../skills/premise/SKILL.md:13,15` | instructs `universe action="read_premise"` / `action="set_premise"` | **Migrate before 4.4.** Both canonically unreachable. |
+| K | `packaging/.../skills/progress/SKILL.md:14` | instructs `universe action="inspect"` + `action="get_activity"` | **Migrate before 4.4.** `get_activity` is canonically unreachable. |
+| K | `packaging/.../skills/status/SKILL.md:14` | instructs `universe action="inspect"` | **Migrate before 4.4** → `read_graph target="graph"`. |
+| K | `packaging/.../skills/steer/SKILL.md:15,30` | instructs `universe action="give_direction"` | **Migrate before 4.4.** Canonically unreachable. |
+| K | `bids/README.md:24` | instructs `universe action=submit_node_bid` | **Migrate or retire.** Canonically unreachable. |
 | K | `WebSite/site/src/lib/components/Playground.svelte:212` | tells users `wiki action=list` fires automatically | **Migrate with class G.** |
 | K | `tinyassets/api/universe.py:2540` | hint string `"Use \`wiki action=list category=…\`"` | **Fix string.** Task 4.5 residue. |
 
-> ### 🔴 Finding 2.3-E (new in v2) — task 4.4's mirror rebuild breaks packaged slash commands
+> ### 🔴 Finding 2.3-E (new in v2, corrected in v3) — task **4.4**'s mirror rebuild breaks packaged slash commands
 >
 > The Claude plugin boots the mirrored server directly:
 > `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/server.py:39-40` does
 > `from tinyassets import universe_server; universe_server.main(transport="stdio")`. Four packaged
-> skills (`premise`, `progress`, `status`, `steer`) instruct the client to call `universe`. Task 4.4
-> regenerates that mirror from `tinyassets/` — so the moment 4.1 lands, those four slash commands
-> instruct a call to a name the mirrored server no longer registers. **Three of the five actions
-> they name (`get_activity`, `give_direction`, and `universe`'s premise verbs) have no canonical
-> equivalent**, so this is a migration *and* a surface-reduction decision, not a rename.
+> skills instruct the client to call `universe`:
+>
+> | Skill | Action(s) instructed | Canonically reachable? |
+> |---|---|---|
+> | `premise/SKILL.md:13,15` | `read_premise`, `set_premise` | 🔴 no / 🔴 no |
+> | `progress/SKILL.md:14` | `inspect`, `get_activity` | ✅ `read_graph target="graph"` / 🔴 no |
+> | `status/SKILL.md:14` | `inspect` | ✅ `read_graph target="graph"` |
+> | `steer/SKILL.md:15,30` | `give_direction` | 🔴 no |
+>
+> **Five unique actions; four of them (`read_premise`, `set_premise`, `get_activity`,
+> `give_direction`) have no canonical equivalent** — only `inspect` survives. So this is a
+> migration *and* a surface-reduction decision, not a rename.
+>
+> **Three v2 prose defects, corrected:**
+>
+> 1. **The trigger is task 4.4, not task 4.1.** The mirror is a checked-in copy that still carries
+>    its own `_DEPRECATED_TOOL_NAMES` (`runtime/tinyassets/universe_server.py:1030`) and its own
+>    registrations. Task 4.1 edits **source only** (`tinyassets/universe_server.py`); the packaged
+>    plugin boots the **mirror**, so the slash commands keep working until **task 4.4 regenerates
+>    it**. v2's "the moment 4.1 lands" was wrong — the breakage window opens at 4.4. This matters
+>    for sequencing: the skill migration must land **before 4.4**, not before 4.1.
+> 2. **The premise skill calls `read_premise`, not `get_premise`.** v2 named `get_premise`, which is
+>    a tool on the *separate* stdio server `tinyassets/mcp_server.py` (§3) — not a `universe`
+>    action. The real `universe` action is `read_premise` (`api/universe.py:6089`).
+> 3. **Four of five, not three.** v2 said "three of the five actions … have no canonical
+>    equivalent" while listing only two names plus a vague "premise verbs." Enumerated exactly
+>    above: four unreachable, one reachable.
+
+### 4f. Class L — authorization / action-scope metadata (new in v3)
+
+> ### 🔴 Finding 2.3-F (new in v3) — legacy tool names are load-bearing **security** state, not residue
+>
+> `tinyassets/auth/provider.py:516-618` builds the runtime action-scope table by calling
+> `_extend_scope_rows(..., tool=<name>, ...)` five times, keyed on **five of the six legacy tool
+> names**: `universe` (`:516`), `wiki` (`:525`), `extensions` (`:580`), `gates` (`:600`), `goals`
+> (`:610`). Each row carries `write_actions`, `costly_actions`, and `admin_actions` — including the
+> money-write set (`escrow_lock/release/refund/fund/set_wallet/withdraw`) that a prior review
+> flagged as silently read-classified.
+>
+> **These names stay live after retirement.** The api-layer dispatchers hardcode them as string
+> literals when enforcing scope, and — per Finding 2.3-A — the canonical handles delegate into
+> **those same api-layer impls**. So a call arriving via `read_graph`/`write_graph` still enforces
+> against the legacy-named scope rows:
+>
+> | Enforcement site | Tool name passed | Reached from canonical handles? |
+> |---|---|---|
+> | `api/universe.py:6235` → `_dispatch_scope_error("universe", …)` → `:6151` | `"universe"` | **Yes** — `_universe_impl` is the shared body |
+> | `api/wiki.py:2789` → `_dispatch_scope_error("wiki", …)` → `:2651` | `"wiki"` | **Yes** |
+> | `api/extensions.py:399` → `_dispatch_scope_error("extensions", …)` → `:248` | `"extensions"` | **Yes** |
+> | `api/market.py:3936` `_gates_scope_error` | `"gates"` (hardcoded) | **Yes** |
+> | `api/market.py:2595` | `"goals"` (hardcoded) | **Yes** |
+> | `api/first_contact.py:50` | `"universe"` (hardcoded) | **Yes** |
+>
+> **Consequence for task 4.2.** 4.2's contract is to "remove … the legacy-name set, and dead
+> registration-only state." This metadata **looks** like exactly that — five tables keyed by names
+> the change is retiring — but it is **not registration-only state**. Deleting or renaming it
+> without migrating every `require_action_scope` call site would strip write/admin/costly
+> classification from the canonical surface, silently failing **open** on money-write actions.
+> **Task 4.2 must explicitly preserve this table (or migrate it in lockstep with the call sites),
+> and must say which it did.** It is not a wire caller and does **not** change the 42-site count;
+> `community_change_context` has no scope row (it is a fixed single action).
+>
+> `get_action_scope_status` (`api/extensions.py:399`, returning `action_scope_audit()`) is the
+> read-back surface for this table and is itself canonically unreachable.
 
 ### 4e. Explicitly excluded false positives
 
@@ -368,6 +455,11 @@ Orphaned sets in full for the three smallest:
 - **`goals` (10):** `archive_consultation`, `bind`, `common_nodes`, `define_protocol`,
   `get_protocol`, `leaderboard`, `run_canonical`, `set_canonical`, `set_selector`, `update`.
 - **`gates` (20):** all of them — no canonical handle routes to `gates` at all.
+
+**Terminology (tightened in v3).** "Orphaned" here means **not reachable through any of the
+canonical seven**. It does **not** mean unimplemented, untested, or dead. Every orphaned action
+sampled has a real implementation and dispatch entry (2.3-D). Retirement removes the *route*, not
+the code — so restoring any one of them is a routing decision, not new feature work.
 
 **Interpretation.** 169 orphans does *not* mean 169 regressions: the reshape's stated intent was
 to shrink the advertised surface, so many are deliberately dropped. What the number establishes is
@@ -536,7 +628,9 @@ was directionally honest but understated its blind spots.
 
 ---
 
-## 10. v1 → v2: what the opposite-provider review refuted
+## 10. Review rounds — what each opposite-provider review refuted
+
+### Round 1 → v2. Verdict: **reject**
 
 Review verdict: **reject** (2026-07-25, opposite-provider, read-only static analysis of
 `18379010`). Every count in the verdict was independently re-derived here before folding; all
@@ -563,6 +657,27 @@ Also corrected in v2: the `callTool('loop', …)` sites are **not** legacy calle
 registered tool at all) and were correctly excluded from the 38 — logged in §4e so a later reader
 does not re-add them.
 
+### Round 2 → v3. Verdict: **adapt**
+
+Second opposite-provider review, of v2 at `9bd88a07` (2026-07-25, read-only static analysis plus
+read-only GitHub PR queries). It **confirmed every headline count in v2** — reproducing 38 website
+sites / 8 files with the per-tool split 7/9/5/2/15, 42 literal wire sites / 10 files, 57 imports /
+26 files, 119 references / 41 files, 176 references, 376 calls / 62 files, 17 non-call references,
+and the non-test star import — and confirmed both new blockers are real and the 2.3 uncheck
+correct. It required three corrections, each **independently re-derived before folding**:
+
+| # | Required correction | Re-derivation | Disposition |
+|---|---|---|---|
+| 1 | B2's 17 non-call references occupy **5** files, not 4 | Re-ran the binding-aware AST pass: `test_api_market.py` 2, `test_api_universe.py` 1, `test_goals_discoverability.py` 2, `test_mcp_dispatch_docstring_parity.py` 11, `test_validate_ship_packet_action.py` 1 = **17 / 5 files**. Verdict's file list matches exactly. | **Accepted.** §4a row + inline note. Count 17 stands. |
+| 2 | 2.3-D: `stream_run` is **not** docstring-only | Confirmed `_action_stream_run` `api/runs.py:924`, `_RUN_ACTIONS` `:1891`, `api/extensions.py:737`, tests in `test_branch_runner.py` / `test_api_runs.py`. v2's claim was **false**. | **Accepted.** 2.3-D reframed to canonical *unreachability*; the same fix applied to every other "docstring-only" claim (`get_node_output` et al.) and §5's "orphaned" definition tightened. |
+| 3 | 2.3-E: `read_premise` not `get_premise`; **four** of five unreachable; breakage at **4.4** not 4.1 | `premise/SKILL.md:13` reads `action="read_premise"`; `get_premise` is a `tinyassets/mcp_server.py` tool, a different server. Unique actions = {`read_premise`, `set_premise`, `inspect`, `get_activity`, `give_direction`}; only `inspect` is canonically reachable ⇒ **4** unreachable. Mirror at `runtime/tinyassets/universe_server.py:1030` still carries its own `_DEPRECATED_TOOL_NAMES`, so the plugin keeps working until 4.4 regenerates it. | **Accepted.** All three corrected; 2.3-E retitled to task 4.4. |
+| 4 | Add a typed **authorization/action-scope metadata** class | Confirmed `auth/provider.py:516-618` builds scope rows for `universe`/`wiki`/`extensions`/`gates`/`goals`, and traced all six `require_action_scope` call sites to hardcoded legacy tool names on the **shared** api-layer bodies the canonical handles delegate into. | **Accepted.** New class **L** + **Finding 2.3-F**, plus precondition 10. Does **not** change the 42. |
+
+The round-2 verdict also confirmed the 2.1/2.2 checkoffs may remain checked (fresh PR queries
+reproduced #1493/#1467/#1466/#1465 OPEN with matching head SHAs, and #1561 OPEN draft at
+`1a5d45af` with exactly 3 files), that 2.3 is correctly unchecked, and that
+`openspec validate retire-legacy-live-mcp-tools --strict` passes.
+
 ---
 
 ## 11. Binding preconditions for the implementation lane
@@ -581,7 +696,10 @@ recommendations.
    that one tree is irreversibly retired. `deploy-site.yml` is the documented rollback path, so
    "React is live" is not sufficient grounds to skip the Svelte tree (§4c).
 5. **Migrate the four packaged plugin skills before task 4.4 regenerates the mirror**
-   (Finding 2.3-E), and decide `bids/README.md:24`.
+   (Finding 2.3-E), and decide `bids/README.md:24`. The deadline is **4.4, not 4.1** — the mirror
+   carries its own registrations, so the plugin keeps working through 4.1. Four of the five actions
+   they name (`read_premise`, `set_premise`, `get_activity`, `give_direction`) need a canonical
+   route or explicit retirement; only `inspect` has one today.
 6. **Migrate the 33 straightforward wire sites now**, using the `last_activity_canary.py` pattern
    (Finding 2.3-C). They are safe today and shrink the retirement diff.
 7. **Add wire-surface coverage** (§7 Gap 2) — no current test exercises any class E/F/G caller, so
@@ -589,3 +707,8 @@ recommendations.
 8. **Fold the §5 orphan table into the task 1.5 host-approval packet.**
 9. **Keep task 1.3's predeclared telemetry window and installed-client migration gate open** —
    repository static analysis cannot substitute for it (§9).
+10. **Task 4.2 must explicitly preserve (or lockstep-migrate) the action-scope table at
+    `tinyassets/auth/provider.py:516-618`** and state which it did (Finding 2.3-F). It is keyed by
+    five legacy tool names and therefore *looks* like the "legacy-name set … dead registration-only
+    state" 4.2 is told to delete, but it is live authorization state that the canonical handles
+    still enforce against. Deleting it fails **open** on money-write actions.
