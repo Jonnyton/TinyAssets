@@ -893,3 +893,307 @@ def test_public_tool_wrappers_omit_the_trust_flag():
 
     for tool in (universe, write_graph):
         assert "allow_named_universe_id" not in inspect.signature(tool).parameters
+
+
+# ---------------------------------------------------------------------------
+# Can the newborn SPEAK? (universe-creation 1.14)
+#
+# Every test above proves a universe is BORN. None proved it can answer. In
+# production it could not: 92dd60c5 correctly stopped a credential-less
+# universe from spending the host's subscription, and nothing gives a newborn
+# a credential of its own — so the founder's very first turn came back as
+# "All providers exhausted for role=writer".
+# ---------------------------------------------------------------------------
+
+
+def _engine_raises(monkeypatch, exc: BaseException):
+    """Make the assigned engine fail, and record whether it was ever called."""
+    import tinyassets.universe_intelligence as intelligence
+
+    called: dict = {"count": 0}
+
+    def fake_call_provider(prompt, system="", *, role="writer", **kwargs):
+        called["count"] += 1
+        raise exc
+
+    monkeypatch.setattr(intelligence, "call_provider", fake_call_provider)
+    return called
+
+
+def _exhausted() -> BaseException:
+    """The exact error a universe with no provider authority produces.
+
+    Built the way `ProviderRouter.call` builds it (router.py) — with the
+    FEAT-006 `chain_state` diagnostics that the genuine every-provider-failed
+    raise carries. The policy hard-fails raise the same class BARE; see
+    `_policy_hard_fail`.
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.providers.diagnostics import (
+        ProviderAttemptDiagnostic,
+        build_chain_state,
+    )
+
+    chain = ["claude-code", "codex", "ollama-local"]
+    attempts = [
+        ProviderAttemptDiagnostic(
+            provider=name, status="skipped", skip_class="auth_invalid",
+            detail="no credential for this universe",
+        )
+        for name in chain
+    ]
+    return AllProvidersExhaustedError(
+        "All providers exhausted for role=writer. Daemon should retry with backoff.",
+        attempts=attempts,
+        chain_state=build_chain_state(role="writer", chain=chain, attempts=attempts),
+    )
+
+
+def _policy_hard_fail() -> BaseException:
+    """The bare exhaustion the router raises when policy empties the chain."""
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    return AllProvidersExhaustedError(
+        "All providers for role='writer' are blocked by the universe's "
+        "allowed_providers=['ollama-local']. Daemon will not silently fall "
+        "back to a disallowed provider."
+    )
+
+
+def _attach_engine_credential(universe_dir: Path) -> None:
+    """Attach a BYO engine key the same way `universe action=set_engine` does."""
+    import base64
+
+    from tinyassets.credential_vault import write_credential_vault
+
+    write_credential_vault(universe_dir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"sk-founder-key").decode("ascii"),
+    }])
+
+
+def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
+    data_dir, monkeypatch
+):
+    """P0 #1582: first contact births a universe that cannot answer.
+
+    Birth still succeeds; the founder gets an actionable setup reply naming the
+    real attachment path instead of `All providers exhausted for role=writer`.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+    rendered = json.dumps(out)
+
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert (data_dir / uid / "soul.md").is_file()  # birth still succeeded
+    assert out["status"] == "held"
+    assert out["reason"] == "setup_required"
+    assert "All providers exhausted" not in rendered
+    assert "set_engine" in rendered
+    assert "byo_api_key" in rendered
+
+
+def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
+    data_dir, monkeypatch
+):
+    """The held payload must never masquerade as the universe speaking.
+
+    `reply` is the key the connector renders verbatim as the universe's own
+    first-person voice; a deterministic platform message carries `note`
+    instead — the same split `write_page` / `universe` brain-write relays use.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert "reply" not in out
+    assert out["note"].strip()
+    assert out["missing"] == ["compute", "model_access"]
+
+
+def test_credentialed_universe_still_surfaces_transient_exhaustion_honestly(
+    data_dir, monkeypatch
+):
+    """Distinguishability: BUG-038/039 must not be masked as onboarding.
+
+    An ESTABLISHED universe that HAS an attached credential and hits provider
+    exhaustion is a real failure. Telling its founder to go attach a provider
+    they already attached would hide the outage.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+    assert "reply" not in out
+
+
+def test_credentialless_universe_still_surfaces_non_provider_failures(
+    data_dir, monkeypatch
+):
+    """Only provider exhaustion becomes onboarding — nothing else is swallowed."""
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    _engine_raises(monkeypatch, RuntimeError("soul bundle is corrupt"))
+
+    assert not credential_vault_path(data_dir / uid).exists()
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "soul bundle is corrupt" in out["error"]
+
+
+def test_unreadable_vault_never_claims_the_credential_is_missing(
+    data_dir, monkeypatch
+):
+    """Fail-safe direction: a vault we cannot parse is not proof of absence.
+
+    Claiming "no credential attached" from a read failure would send a founder
+    to re-attach a key they already have, and would hide a corrupt vault.
+    """
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    credential_vault_path(data_dir / uid).write_text("{not json", encoding="utf-8")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_held_payload_does_not_invoke_a_second_provider_call(
+    data_dir, monkeypatch
+):
+    """The held path is deterministic — it never retries onto another engine."""
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    called = _engine_raises(monkeypatch, _exhausted())
+
+    json.loads(converse(message="Hello"))
+
+    assert called["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("engine_source", "extra"),
+    [
+        ("self_hosted_endpoint", {"engine_endpoint": "https://llm.internal/v1"}),
+        ("market_rented", {"market_model": "glm-5.2"}),
+        ("host_daemon", {}),
+    ],
+)
+def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
+    data_dir, monkeypatch, engine_source, extra
+):
+    """Codex ADAPT 2026-07-25 finding 1: a vault-only test misreads three engines.
+
+    `set_engine` records `self_hosted_endpoint` / `market_rented` /
+    `host_daemon` in config and writes NO vault credential. Reading an empty
+    vault as "never set up" would send a founder who already chose an engine
+    back to onboarding and hide that their engine is down.
+    """
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    write_universe_config_fields(
+        data_dir / uid, engine_source=engine_source, **extra
+    )
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_unreadable_config_never_claims_the_engine_is_missing(
+    data_dir, monkeypatch
+):
+    """Codex ADAPT round 2 (2026-07-25), reviewer's exact repro.
+
+    `load_universe_config` degrades a corrupt config to a default
+    `UniverseConfig`, whose `engine_source` is the same value that means "the
+    founder never chose an engine". Without a separate parseability probe, a
+    corrupt config reads as "no engine yet" — losing the founder's recorded
+    choice AND hiding that their config is broken.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    (data_dir / uid / "config.yaml").write_text(
+        "engine_source: [unterminated\n", encoding="utf-8"
+    )
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_non_string_engine_source_does_not_crash_the_failing_turn(
+    data_dir, monkeypatch
+):
+    """Codex ADAPT round 2 (2026-07-25): `engine_source: 7` parses fine.
+
+    `_build_config` assigns YAML values without type coercion, so a non-string
+    reaches the comparison. An AttributeError there would escape while we are
+    already handling the founder's failed turn.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    (data_dir / uid / "config.yaml").write_text("engine_source: 7\n", encoding="utf-8")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_policy_hard_fail_keeps_its_own_message(data_dir, monkeypatch):
+    """Codex ADAPT 2026-07-25 finding 2: not every exhaustion is missing setup.
+
+    The router raises `AllProvidersExhaustedError` bare when a universe's
+    `allowed_providers` allowlist empties the chain. Retelling that policy
+    block as "you have no engine yet" would send the founder to attach a
+    credential the allowlist would still refuse.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _policy_hard_fail())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "allowed_providers" in out["error"]
