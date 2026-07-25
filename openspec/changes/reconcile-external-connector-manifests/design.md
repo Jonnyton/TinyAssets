@@ -168,9 +168,18 @@ that had not happened at their evidence date.
 
 ### Fold PR #1522 without restoring stale product claims
 
-Preserve useful TinyAssets naming/provenance corrections, but replace the
-three-row and pre-cutover material with a two-row remote/local product matrix.
-Never restore the archived five-handle change.
+PR #1522 supplies only the verified handoff filename and identifier cleanup.
+`WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md` was absent from the June rename commit
+`aa30a9c8` and first entered git through recovery PR #1490 (`d4d279a0`) on
+2026-07-21 under its pre-rename name. Preserve history with `git mv` to
+`TINYASSETS_DESIGN_HANDOFF_FOR_POLSIA.md`; preserve the TinyAssets product
+name, `TINYASSETS_PAID_MARKET`, canonical repository URL, and `tinyassets/...`
+package paths.
+
+Replace the stale body with the source-linked two-row remote `/mcp` / local
+MCPB matrix. Do not carry forward its five-handle task edit, three-product
+guidance, or any `/mcp-directory*` product premise. Never restore the archived
+five-handle change.
 
 ### Accept each product through its real path
 
