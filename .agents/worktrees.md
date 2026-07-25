@@ -1252,13 +1252,14 @@ Notes:
 
 - Provider: codex-gpt5-desktop-village-security
 - Branch: codex/secure-agent-village
-- Lane state: Active P0 security lane
+- Lane state: PR #1760 landed; containment foldback complete
 - Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
-- STATUS/Issue/PR: Secure Agent Village local surface; shipped surface #1489
-- PLAN refs: Scoping Rules §3/§5; platform-owned enforcement boundaries
-- Purpose: remove unauthenticated LAN/session reads, query-token leakage, and CSRF-capable talk/hire while preserving intentional phone access.
+- STATUS/Issue/PR: #1760 merged; active row retired
+- PLAN refs: API & MCP Interface; chatbot + connector is canonical, Agent Village deferred
+- Purpose: minimum containment of the already-shipped unsafe surface; no continuing Village product lane.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
 - Memory refs: PR #1489 recovery and clean-checkout proof
 - Related implications: local-app capability axis; host-private coordination state; explicit write actions
 - Idea feed refs: none
 - Ship/abandon: strict OpenSpec change, exact HTTP/browser contract tests, security review, and short-lived PR; abandon only if current main already enforces equivalent authentication
+- Foldback: OpenSpec archived; Opus 5 approved; #1760 merged; all checks green; connector-first priority recorded

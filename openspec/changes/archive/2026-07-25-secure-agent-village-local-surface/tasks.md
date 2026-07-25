@@ -33,5 +33,5 @@
 
 - [x] 4.1 Update `REFLECTION.md`, sync the development-coordination-runtime
   delta, archive the change, and validate all specs strictly.
-- [ ] 4.2 Run required pre-merge gates, publish and merge the PR only when
+- [x] 4.2 Run required pre-merge gates, publish and merge the PR only when
   green, then remove the landed STATUS work row.
