@@ -5,7 +5,7 @@
 - [x] 1.3 Adapt proposal, design, delta specs, and tasks from three products to two: remote `/mcp` and local MCPB.
 - [x] 1.4 Obtain independent architecture, security, and coverage review of the adapted contract before runtime work.
 - [ ] 1.5 Coordinate PR #1522 so its useful naming/provenance corrections fold into this lane without restoring the retired directory-product premise.
-- [ ] 1.6 Before either dependent change applies or syncs, adapt and strict-validate `retire-legacy-live-mcp-tools` so it depends on this change, removes every directory-preservation requirement/scenario, and leaves directory deletion here; block `operator-request-trigger-contract` tasks 4.1/4.6 and its delta sync until that change binds request-admission invariants once to canonical `universe_server` at `/mcp` and removes directory parity implementation/tests.
+- [x] 1.6 Adapt and strict-validate `retire-legacy-live-mcp-tools` so it depends on this change, removes every directory-preservation requirement/scenario, and leaves directory deletion here; adapt `operator-request-trigger-contract` to bind request-admission invariants once to canonical `universe_server` at `/mcp` and require directory parity implementation/tests to leave during retirement.
 
 ## 2. Preserve Completed MCPB Parity
 

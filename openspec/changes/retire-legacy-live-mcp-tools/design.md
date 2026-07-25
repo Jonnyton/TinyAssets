@@ -8,7 +8,11 @@ Three evidence gaps prevent immediate removal:
 2. Production telemetry and rendered host proof must show that supported consumers no longer call hidden names; the host must accept the migration evidence before a breaking removal.
 3. The current canary requires six handles and merely allows `get_status`, while the canonical contract says exactly seven. The live-surface test proves registration/listing but never calls `run_graph` through MCP and reads the resulting durable run back.
 
-The directory server is an intentional separate reviewed surface. PR #1561 concerns the unrelated legacy stdio process in `tinyassets/mcp_server.py`; PR #1553 concerns authorization inside the directory server. Neither is this live-registration retirement.
+`reconcile-external-connector-manifests` retires the separate directory server.
+PR #1561 concerns the unrelated legacy stdio process in
+`tinyassets/mcp_server.py`. Neither concern is owned by this hidden
+live-registration retirement, and this change must not restore the directory
+route.
 
 Collision inventory observed 2026-07-22, to be rechecked before implementation:
 
@@ -68,9 +72,12 @@ The proof SHALL start an authenticated in-process MCP client against the real `u
 
 A direct Python call or a `tools/list` assertion was rejected because neither proves the user-visible dispatch round trip.
 
-### 5. Directory and stdio surfaces retain separate ownership
+### 5. Retired directory and local stdio retain separate ownership
 
-The reviewed `/mcp-directory` server remains narrower and intentionally distinct; its tool set need not become seven. The live retirement SHALL not modify it. PR #1561 may fence `tinyassets/mcp_server.py`, and PR #1553 may repair directory `run_graph` authorization, but neither counts as evidence that the six live registrations were removed.
+`reconcile-external-connector-manifests` owns removal of `/mcp-directory*`.
+This change SHALL neither restore that route nor treat its former five-handle
+server as a parity target. PR #1561 may fence `tinyassets/mcp_server.py`; local
+stdio remains separate from the canonical remote seven-handle proof.
 
 ## Risks / Trade-offs
 

@@ -28,14 +28,15 @@
 
 ## 4. Canonical Public Admission
 
-- [x] 4.1 Add failing schema/behavior tests in `tests/test_request_admission_surface.py` for `idempotency_key`, all request fields, exact success fields, and parity between `tinyassets/universe_server.py` and `tinyassets/directory_server.py`.
-- [x] 4.2 Extend `write_graph` in both server modules with the one public `idempotency_key` name plus request incentive/direction/priority fields; reject unknown request-target fields and preserve handle-level `idempotentHint=false`.
+- [x] 4.1 Add failing schema/behavior tests in `tests/test_request_admission_surface.py` for `idempotency_key`, all request fields, and exact success fields. Historical directory parity coverage is superseded by `reconcile-external-connector-manifests` and must not survive route retirement.
+- [x] 4.2 Extend canonical `write_graph` with the one public `idempotency_key` name plus request incentive/direction/priority fields; reject unknown request-target fields and preserve handle-level `idempotentHint=false`. Historical directory duplication is not a final requirement.
 - [ ] 4.3 Route `write_graph(target="request")` through the trusted transaction in `tinyassets/api/universe.py`; retire the public v1 request writer at per-universe v2 cutover instead of maintaining a second final path.
 - [x] 4.4 Validate key length/regex and JSON-number `[0,100]` semantics before persistence; test `0`, `1e-9`, just below `100`, `100`, Boolean, string, NaN, infinities, negative, and over-cap.
 - [x] 4.5 Implement SHA-256 over RFC 8785 canonical body fields with exact UTF-8 text and server-derived universe; test same-body replay, changed-body conflict, independent cross-scope raw keys, unknown fields, and no Unicode normalization drift.
-- [x] 4.6 Return exactly the specified committed result fields and remove `queue_position`, `ahead_of_yours`, `what_happens_next`, evidence, and “next” language from main and directory results.
+- [x] 4.6 Return exactly the specified committed result fields and remove `queue_position`, `ahead_of_yours`, `what_happens_next`, evidence, and “next” language from canonical results.
 - [x] 4.7 Teach `_dispatch_with_ledger` that an idempotent replay is access-audit only and must not append another mutation-ledger row.
 - [x] 4.8 Add dependency/parity coverage so retirement of the hidden legacy universe tool cannot remove the only priority-capable request path.
+- [ ] 4.9 Remove directory-parity implementation/tests when `reconcile-external-connector-manifests` retires `/mcp-directory*`; canonical `/mcp` remains the only public admission surface.
 
 ## 5. Epoch-2 Queue, Selection, and Claim
 

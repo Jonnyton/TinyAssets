@@ -15,10 +15,10 @@ positive weight without active exact-universe priority authority SHALL return
 `priority_authorization_required` with zero persistence rather than silently
 demoting the request.
 
-The public directory implementation SHALL expose the same request-admission
-schema and behavior as the main connector. The handle-level
-`idempotentHint` SHALL remain false because other `write_graph` targets are not
-idempotent.
+Canonical `/mcp` SHALL be the only public request-admission implementation.
+The retired `/mcp-directory*` surface SHALL NOT remain as a parity target. The
+handle-level `idempotentHint` SHALL remain false because other `write_graph`
+targets are not idempotent.
 
 #### Scenario: valid numeric boundaries are accepted
 - **WHEN** otherwise valid request writes use priority weights `0`, `1e-9`, a finite value immediately below `100`, or exactly `100`
@@ -40,10 +40,10 @@ idempotent.
 - **THEN** the result is a validation error with zero Request/admission/task persistence
 - **AND** it exposes no authority evidence
 
-#### Scenario: directory and main connector remain request-compatible
-- **WHEN** the same authenticated request is sent through the main connector and `/mcp-directory`
-- **THEN** both enforce the same fields, authorization, idempotency, and result contract
-- **AND** neither surface silently demotes or uses a legacy request writer
+#### Scenario: retired directory route is not an admission alternative
+- **WHEN** a caller sends a request-admission write to `/mcp-directory*`
+- **THEN** the ordinary absent-route 404 is returned
+- **AND** no directory parity writer, alias, or legacy request writer handles it
 
 ### Requirement: Successful request-admission results are complete, exact, and rank-free
 A committed canonical request write SHALL return exactly

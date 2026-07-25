@@ -205,9 +205,10 @@ block selection or claim of valid rows in either epoch.
 
 `write_graph(target="request")` accepts `idempotency_key` and numeric
 `priority_weight`, rejects unknown request-target fields, and routes through
-the transactional boundary. `/mcp-directory` implements the same protocol
-rather than silently diverging. The handle-level `idempotentHint` stays false
-because other `write_graph` targets are not idempotent.
+the transactional boundary on canonical `/mcp`. The retired
+`/mcp-directory*` surface is not a second admission implementation or parity
+target. The handle-level `idempotentHint` stays false because other
+`write_graph` targets are not idempotent.
 
 A success result contains exactly:
 
