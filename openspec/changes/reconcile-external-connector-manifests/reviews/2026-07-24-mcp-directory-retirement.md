@@ -73,6 +73,12 @@ the stale docs. Its red phase produced four focused failures; its green phase
 passed 105 tests, strict OpenSpec validation, and a real public
 `/mcp-directory*` ordinary-404 matrix.
 
+An independent Codex follow-up initially rejected one residual contradiction:
+canary help and `assert_five_handles*` identifiers still described the old
+optional-status contract. After renaming the helpers and making help, callers,
+tests, and canonical as-built requirements agree on exact seven, the follow-up
+returned `APPROVE` and rechecked all seven Opus findings clean.
+
 ## Verification evidence
 
 Fresh local evidence on Windows/Python and Node, 2026-07-24:
