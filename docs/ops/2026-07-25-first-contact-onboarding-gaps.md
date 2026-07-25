@@ -1,6 +1,6 @@
 # First-contact branch/wiki onboarding evidence and correction manifest
 
-**Freshness:** 2026-07-25, rebased `origin/main` source at `3010c66f` plus direct reads from `https://tinyassets.io/mcp`.
+**Freshness:** 2026-07-25, rebased `origin/main` source at `c94575c9` plus direct reads from `https://tinyassets.io/mcp`.
 **Mode:** read-only audit. No live wiki, runtime, deployment, or canonical-spec mutation was performed.
 **Scope:** current first-contact branch journey, registered MCP prompts, user-facing hints, repository handoff copy, and an exact-path but lower-bound public wiki planning inventory. It is not exhaustive until a privileged `scope=all` inventory or volume export is reconciled.
 
@@ -94,7 +94,7 @@ The current wiki patch owner conflicts on SHA mismatch or when `old_text` does n
 ## Gates before any runtime or live write
 
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
-- Explicit accept/adapt from the active universe-creation and universe-visibility owners, `fable-fleet-opus5` for claimed `retire-legacy-live-mcp-tools` tasks 2.1–2.3, and `fable-fleet-codex` for the claimed `control_station` prompt-truth lane. The retire-legacy owner must write the `publish_version` plus `approve_source_code` replacement-first dependency into its task 2.3 caller inventory and STATUS row before either lane advances; there is no current `broad-test` lane.
+- Explicit accept/adapt from the active universe-creation, universe-visibility, newborn-BYOC, and `control_station` prompt-truth owners. Retire-legacy caller inventory v4 landed in #1772; this packet adds the missing `publish_version` plus `approve_source_code` replacement-first gates as retire tasks 2.3a/4.0 and in STATUS, which any future retirement owner must accept before implementation. There is no current `broad-test` lane.
 - Rotation-catalogued `TINYASSETS_BRANCH_CRYPTO_KEYRING` provisioned with no ephemeral/default-key fallback.
 - V1 remains public-commons-only; private authoring needs a separate PLAN-approved user-controlled-storage contract.
 - Failing tests precede implementation.
