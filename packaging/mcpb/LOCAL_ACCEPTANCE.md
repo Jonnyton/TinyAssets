@@ -31,17 +31,30 @@ Reproduce with `python -m pytest tests/test_packaging_build.py`:
 - **Optional default universe is validated then exported.** A blank host
   substitution is treated as unset; separators, a leading dot, or an
   unsubstituted `${...}` template are rejected before transport.
-- **Provider-free.** Every packaging probe strips provider credentials from
-  its environment and calls no tool — enumeration only. A green packaging
-  gate can never depend on maintainer provider quota.
+- **Provider-free.** `build_bundle.py`'s import and catalog probes and the
+  stdio probes all strip provider credentials (`PROVIDER_CREDENTIAL_ENV`)
+  from the environment they hand a subprocess, and no probe calls a tool —
+  enumeration only. A green packaging gate cannot spend maintainer quota.
 
 ## Observed local auth posture
 
-The bundle configures no WorkOS/OAuth boundary and the wrapper introduces no
-auth environment. An uncredentialed stdio client completes `initialize` and
-enumerates the catalog; requests then run as the runtime's anonymous local
-actor. The product's boundary is the local OS process plus the user-selected
-data directory — nothing else.
+The bundle configures no auth: its manifest declares only
+`TINYASSETS_DATA_DIR` and `UNIVERSE_SERVER_DEFAULT_UNIVERSE`, and the wrapper
+introduces no environment of its own. Auth provider selection reads
+`UNIVERSE_SERVER_AUTH` from the inherited environment
+(`tinyassets/auth/provider.py`, `create_provider`), so with nothing
+configured the staged runtime selects the no-auth `DevAuthProvider` — proven
+by probing the staged runtime under exactly the bundle's environment.
+Requests then run as the runtime's anonymous local actor, and an
+uncredentialed client completes `initialize` and enumerates the catalog. The
+product's boundary is the local OS process plus the user-selected data
+directory — nothing else.
+
+Two honest qualifications. Enumeration is not an authorization check, so
+per-call gating behavior is not established by that handshake. And a host
+that exports `UNIVERSE_SERVER_AUTH` into the bundle's process would change
+the selected provider; that is an environment posture the package neither
+configures nor claims.
 
 Sharing handle names with hosted `/mcp` is catalog parity.
 It is **not** identity parity: no hosted isolation, no WorkOS subject, no
@@ -56,7 +69,8 @@ its own reviewed package change.
   `npx @anthropic-ai/mcpb`) is separate evidence and is not asserted here.
 - **Tool execution.** Nothing beyond enumeration runs. No `converse`,
   `run_graph`, or other result payload is exercised locally, so
-  provider-backed behavior is unproven by this record.
+  provider-backed behavior — and every per-call permission, visibility, and
+  ownership check — is unproven by this record.
 - **Actor-dependent behavior.** Because the local actor is anonymous with no
   founder identity, permission-gated, visibility-gated, ownership-gated, and
   founder-grant behavior is unproven locally and may legitimately differ from

@@ -18,6 +18,7 @@ These are smoke tests — actual ``--validate`` / ``--pack`` requires
 """
 from __future__ import annotations
 
+import functools
 import importlib.util
 import json
 import os
@@ -76,6 +77,12 @@ def _load_module(name: str, path: Path):
 
 def _load_mcpb_build_module():
     return _load_module("tinyassets_mcpb_build_bundle_test", MCPB_BUILD)
+
+
+@functools.lru_cache(maxsize=1)
+def build_bundle_module():
+    """Cached load, for reading constants without monkeypatch interference."""
+    return _load_mcpb_build_module()
 
 
 # ─── build_bundle.py ─────────────────────────────────────────────────
@@ -316,18 +323,6 @@ def test_bundle_and_plugin_tinyassets_trees_match():
 # directory fails closed (never silently falling back to the platform
 # default), and none of this proof may spend maintainer provider quota.
 
-# Provider credentials are stripped from every packaging probe so a green
-# packaging gate can never depend on maintainer quota (task 2.7).
-PROVIDER_CREDENTIAL_ENV = (
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
-    "GOOGLE_API_KEY",
-    "GROQ_API_KEY",
-    "XAI_API_KEY",
-    "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
-)
-
 # Pinned probe script: enumeration only. Adding `tools/call` here would let
 # the packaging gate execute `converse`/`run_graph` — i.e. a provider call.
 STDIO_PROBE_METHODS = (
@@ -338,16 +333,36 @@ STDIO_PROBE_METHODS = (
 
 
 def _provider_free_env(data_dir: str) -> dict[str, str]:
+    """Environment for a packaging probe: no provider credentials.
+
+    Deliberately does NOT touch ``UNIVERSE_SERVER_AUTH``. That variable
+    selects the runtime's auth provider (`tinyassets/auth/provider.py`
+    ``create_provider``), so a probe that removed it could not then claim
+    anything about the observed auth posture — it would have arranged the
+    answer. Tests that reason about auth assert its absence instead.
+    """
     env = {
         **os.environ,
         "PYTHONDONTWRITEBYTECODE": "1",
         "TINYASSETS_DATA_DIR": data_dir,
     }
     env.pop("TINYASSETS_REPO_ROOT", None)
-    env.pop("UNIVERSE_SERVER_AUTH", None)
-    for name in PROVIDER_CREDENTIAL_ENV:
+    for name in build_bundle_module().PROVIDER_CREDENTIAL_ENV:
         env.pop(name, None)
     return env
+
+
+def _build_staged_bundle() -> None:
+    """Stage the bundle, failing the test when the build itself fails.
+
+    An ignored return code would let a launch test run against whatever the
+    previous build left in the fixed stage directory.
+    """
+    result = _run(MCPB_BUILD)
+    assert result.returncode == 0, (
+        f"build_bundle.py failed:\nstdout={result.stdout}\n"
+        f"stderr={result.stderr}"
+    )
 
 
 def _stdio_handshake(env: dict[str, str]) -> dict[int, dict]:
@@ -579,6 +594,7 @@ def test_mcpb_launcher_unsets_a_blank_default_universe(
         "nested/universe",
         "nested\\universe",
         ".hidden",
+        "stream:name",
     ],
 )
 def test_mcpb_launcher_rejects_unusable_default_universe(
@@ -644,7 +660,7 @@ def test_mcpb_manifest_declares_local_stdio_configuration():
 
 def test_staged_bundle_launches_over_stdio_and_enumerates_seven():
     """Real launcher proof: install-shaped stdio boot from an isolated dir."""
-    _run(MCPB_BUILD)
+    _build_staged_bundle()
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-stdio-") as data:
         responses = _stdio_handshake(_provider_free_env(data))
 
@@ -656,7 +672,7 @@ def test_staged_bundle_launches_over_stdio_and_enumerates_seven():
 
 def test_staged_bundle_stdio_launch_fails_closed_without_data_dir():
     """The same fail-closed guard, proven on the artifact users install."""
-    _run(MCPB_BUILD)
+    _build_staged_bundle()
     env = _provider_free_env("")
     env.pop("TINYASSETS_DATA_DIR")
 
@@ -676,32 +692,70 @@ def test_staged_bundle_stdio_launch_fails_closed_without_data_dir():
     assert '"result"' not in proc.stdout, "transport must not have started"
 
 
-def test_staged_bundle_stdio_launch_has_no_local_identity_gate():
-    """Observed posture, recorded honestly: local stdio is unauthenticated.
+def test_bundle_configures_no_auth_provider_selection():
+    """Observed local auth posture, stated as what is actually provable.
 
-    The bundle ships no WorkOS/OAuth boundary, so an uncredentialed client
-    completes initialize and enumerates the catalog. Its only boundary is
-    the local process and the user-selected data directory — which is why
-    catalog parity with hosted `/mcp` is not identity parity.
+    ``create_provider()`` picks the runtime's auth provider from
+    ``UNIVERSE_SERVER_AUTH`` in the *inherited* environment. The bundle
+    declares no such value, so a bundle-configured process gets the
+    no-auth ``DevAuthProvider`` default. Proven by asking the staged
+    runtime which provider it selects under exactly the environment the
+    manifest configures — not by deleting the variable and calling the
+    result unauthenticated.
     """
-    _run(MCPB_BUILD)
+    _build_staged_bundle()
+    manifest = json.loads(MCPB_MANIFEST.read_text(encoding="utf-8"))
+    assert "UNIVERSE_SERVER_AUTH" not in manifest["server"]["mcp_config"]["env"]
+
     with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-auth-") as data:
         env = _provider_free_env(data)
-        for name in list(env):
-            if name.startswith("WORKOS_") or name.startswith("TINYASSETS_AUTH"):
-                env.pop(name)
-        responses = _stdio_handshake(env)
+        assert "UNIVERSE_SERVER_AUTH" not in env, (
+            "this proof needs an environment where the bundle's own "
+            "configuration decides the auth provider"
+        )
+        probe = subprocess.run(
+            [
+                sys.executable, "-c",
+                f"import sys; sys.path.insert(0, {str(DIST_STAGE)!r}); "
+                "from tinyassets.auth.provider import create_provider; "
+                "print(type(create_provider()).__name__)",
+            ],
+            cwd=str(DIST_STAGE),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=300,
+        )
 
-    assert "error" not in responses[2], (
-        "unauthenticated local enumeration is the observed posture"
+    assert probe.returncode == 0, (
+        f"auth provider probe failed:\nstdout={probe.stdout}\n"
+        f"stderr={probe.stderr}"
     )
+    assert "DevAuthProvider" in probe.stdout, (
+        f"expected the no-auth default, got: {probe.stdout.strip()}"
+    )
+
+
+def test_staged_bundle_enumerates_without_credentials():
+    """An uncredentialed client completes initialize and enumeration.
+
+    Enumeration is not an authorization check — per-call gating is not
+    proven here, and `LOCAL_ACCEPTANCE.md` says so.
+    """
+    _build_staged_bundle()
+    with tempfile.TemporaryDirectory(prefix="tinyassets-mcpb-anon-") as data:
+        responses = _stdio_handshake(_provider_free_env(data))
+
+    assert "error" not in responses[2]
     assert responses[2]["result"]["tools"], "catalog must enumerate"
 
 
 def test_packaging_probes_are_provider_free():
     """Task 2.7: no packaging/parity/acceptance probe may spend maintainer quota."""
     env = _provider_free_env("/tmp/does-not-matter")
-    leaked = [name for name in PROVIDER_CREDENTIAL_ENV if name in env]
+    credentials = build_bundle_module().PROVIDER_CREDENTIAL_ENV
+    leaked = [name for name in credentials if name in env]
     assert leaked == [], f"provider credentials leaked into a probe: {leaked}"
     assert STDIO_PROBE_METHODS == (
         "initialize",
@@ -711,6 +765,43 @@ def test_packaging_probes_are_provider_free():
         "the stdio proof is enumeration-only; adding tools/call would let "
         "packaging execute converse/run_graph against a provider"
     )
+
+
+def test_build_bundle_probes_strip_provider_credentials(monkeypatch, tmp_path):
+    """The build's own runtime probes must not inherit maintainer credentials.
+
+    ``_probe_catalog`` boots the staged runtime, so an inherited provider key
+    is exactly the shape that turns a packaging gate into billable work.
+    """
+    build = _load_mcpb_build_module()
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    (stage / "manifest.json").write_text(
+        json.dumps(
+            {"tools": [{"name": name} for name in sorted(CANONICAL_MCPB_TOOLS)]},
+        ),
+        encoding="utf-8",
+    )
+    for name in build.PROVIDER_CREDENTIAL_ENV:
+        monkeypatch.setenv(name, "must-not-reach-a-probe")
+
+    captured: list[dict[str, str]] = []
+
+    def _fake_run(cmd, **kwargs):
+        captured.append(dict(kwargs.get("env") or {}))
+        payload = json.dumps(sorted(CANONICAL_MCPB_TOOLS))
+        return subprocess.CompletedProcess(
+            cmd, 0, f"TINYASSETS_MCPB_CATALOG={payload}\nprobe-ok\n", "",
+        )
+
+    monkeypatch.setattr(build.subprocess, "run", _fake_run)
+    build._probe_import(stage)
+    build._probe_catalog(stage)
+
+    assert len(captured) == 2, "both probes must run"
+    for env in captured:
+        leaked = [name for name in build.PROVIDER_CREDENTIAL_ENV if name in env]
+        assert leaked == [], f"probe inherited provider credentials: {leaked}"
 
 
 def test_mcpb_local_acceptance_record_is_explicit():
@@ -729,3 +820,7 @@ def test_mcpb_local_acceptance_record_is_explicit():
     assert "tests/test_packaging_build.py" in text, (
         "the record must name the tests that back it"
     )
+    # Structural only — it cannot judge prose. Its job is to keep the two
+    # claims that would silently become false from being made at all.
+    for overclaim in ("oauth-backed", "workos-backed", "hosted parity"):
+        assert overclaim not in lowered, f"record overclaims: {overclaim}"

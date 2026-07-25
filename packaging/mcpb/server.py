@@ -45,10 +45,15 @@ def _resolve_default_universe() -> str | None:
     The host substitutes ``${user_config.default_universe}`` with an empty
     string when the user leaves the optional field alone, so blank means
     unset — passing it through would make the runtime resolve a blank or
-    whitespace universe id instead of its ordinary default. A value that
-    cannot name a directory under the data root (separators, a leading dot,
-    an unsubstituted template) is a misconfiguration, and failing here beats
-    failing per-request after the transport is already up.
+    whitespace universe id instead of its ordinary default.
+
+    The rejected shapes are the runtime's own: ``storage.active_universe_id``
+    discards a marker containing ``/`` or ``\\`` or starting with ``.``, and
+    ``api.helpers._default_universe`` skips dot-prefixed directories when it
+    scans. ``:`` is added because a Windows path with a colon names an
+    alternate data stream rather than a universe folder, and ``${`` catches a
+    template the host never substituted. Failing here beats failing
+    per-request once the transport is already up.
     """
     value = os.environ.get("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "").strip()
     if not value:
@@ -57,6 +62,7 @@ def _resolve_default_universe() -> str | None:
         "${" in value
         or "/" in value
         or "\\" in value
+        or ":" in value
         or value.startswith(".")
     ):
         raise RuntimeError(
