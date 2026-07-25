@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -94,7 +95,7 @@ gh() {
       ;;
     *"actions/runs?branch=main"*)
       if [ "${ACTIVE_API_FAIL:-0}" = "1" ]; then return 1; fi
-      printf '%s\n' "${ACTIVE_SHAS:-}"
+      printf '%s\n' "${ACTIVE_RUNS_JSON:-}"
       ;;
     *)
       echo "unexpected gh call: $*" >&2
@@ -108,7 +109,7 @@ gh() {
 def _run_decision(
     repo: Path,
     *,
-    active_shas: str = "",
+    active_runs: list[dict[str, str]] | None = None,
     deployed_shas: str = "",
     active_api_fail: bool = False,
     deploy_api_fail: bool = False,
@@ -126,7 +127,9 @@ def _run_decision(
         encoding="utf-8",
         env={
             **os.environ,
-            "ACTIVE_SHAS": active_shas,
+            "ACTIVE_RUNS_JSON": json.dumps(
+                {"workflow_runs": active_runs or []}
+            ),
             "DEPLOYED_SHAS": deployed_shas,
             "ACTIVE_API_FAIL": "1" if active_api_fail else "0",
             "DEPLOY_API_FAIL": "1" if deploy_api_fail else "0",
@@ -144,12 +147,17 @@ def _run_decision(
 
 
 _GH_CONVERGE_HARNESS = r"""
+python3() { "${PYTHON_BIN}" "$@"; }
 gh() {
   printf '%s\n' "$*" >> "${GH_CALLS}"
   if [ "$1" = "run" ] && [ "$2" = "list" ]; then
-    printf '%s\n' "${STUB_BUILD_RUN_ID}"
+    printf '%s\n' "${BUILD_RUNS_JSON}"
   elif [ "$1" = "run" ] && [ "$2" = "watch" ]; then
     return "${WATCH_STATUS:-0}"
+  elif [ "$1" = "run" ] && [ "$2" = "view" ]; then
+    printf '%s\n' "${WATCH_CONCLUSION}"
+  elif [ "$1" = "api" ] && [[ "$*" == *"deploy-prod.yml/runs"* ]]; then
+    printf '%s\n' "${DEPLOY_RUNS_JSON}"
   elif [ "$1" = "api" ] && [[ "$*" == *"/commits/main"* ]]; then
     printf '%s\n' "${CURRENT_MAIN}"
   fi
@@ -158,9 +166,34 @@ sleep() { :; }
 """
 
 
-def _run_converge(repo: Path, current_main: str) -> list[str]:
+def _run_converge(
+    repo: Path,
+    current_main: str,
+    *,
+    build_runs: list[dict[str, object]] | None = None,
+    deploy_runs: list[dict[str, object]] | None = None,
+    watch_status: int = 0,
+    watch_conclusion: str = "success",
+    expected_returncode: int = 0,
+) -> list[str]:
     if not _BASH:
         pytest.skip("bash is required to execute the exact convergence script")
+    target_sha = _git(repo, "rev-parse", "HEAD")
+    if build_runs is None:
+        build_runs = [
+            {
+                "databaseId": 111,
+                "headSha": "0" * 40,
+                "createdAt": "9999-01-01T00:00:00Z",
+            },
+            {
+                "databaseId": 12345,
+                "headSha": target_sha,
+                "createdAt": "9999-01-02T00:00:00Z",
+            },
+        ]
+    if deploy_runs is None:
+        deploy_runs = []
     result = subprocess.run(
         [_BASH, "-c", f"{_GH_CONVERGE_HARNESS}\n{_step_script('Converge')}"],
         cwd=repo,
@@ -170,16 +203,44 @@ def _run_converge(repo: Path, current_main: str) -> list[str]:
         encoding="utf-8",
         env={
             **os.environ,
-            "STUB_BUILD_RUN_ID": "12345",
+            "BUILD_RUNS_JSON": json.dumps(build_runs),
             "CURRENT_MAIN": current_main,
             "DETAIL": "test drift",
+            "DEPLOY_RUNS_JSON": json.dumps({"workflow_runs": deploy_runs}),
             "GH_CALLS": ".gh-calls",
             "GITHUB_STEP_SUMMARY": ".summary",
+            "PYTHON_BIN": Path(sys.executable).as_posix(),
             "REPO": "owner/repo",
+            "WATCH_CONCLUSION": watch_conclusion,
+            "WATCH_STATUS": str(watch_status),
         },
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == expected_returncode, (
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
     return (repo / ".gh-calls").read_text(encoding="utf-8").splitlines()
+
+
+def _active_run(
+    sha: str,
+    *,
+    status: str = "in_progress",
+    path: str = ".github/workflows/build-image.yml",
+) -> dict[str, str]:
+    return {"head_sha": sha, "status": status, "path": path}
+
+
+def _one_running_one_replaceable_pending(arrivals: list[int]) -> list[int]:
+    assert arrivals
+    running: int | None = None
+    pending: int | None = None
+    for arrival in arrivals:
+        if running is None:
+            running = arrival
+        else:
+            pending = arrival
+    assert running is not None
+    return [running] + ([pending] if pending is not None else [])
 
 
 def test_retains_backstops_and_wakes_on_completed_main_docker_smoke() -> None:
@@ -227,7 +288,7 @@ def test_permissions_checkout_and_reconcile_concurrency_remain_narrow() -> None:
     )
 
 
-def test_manual_image_build_cannot_cancel_active_push_build() -> None:
+def test_build_image_concurrency_declares_push_only_cancellation() -> None:
     build_workflow = _load(_BUILD_WORKFLOW)
 
     assert build_workflow["concurrency"] == {
@@ -239,7 +300,7 @@ def test_manual_image_build_cannot_cancel_active_push_build() -> None:
 def test_exact_decision_defers_for_current_active_release(tmp_path: Path) -> None:
     repo, _, relevant_sha = _release_repo(tmp_path)
 
-    result = _run_decision(repo, active_shas=relevant_sha)
+    result = _run_decision(repo, active_runs=[_active_run(relevant_sha)])
 
     assert result["action"] == "none"
     assert "in-flight release run" in result["detail"]
@@ -248,12 +309,31 @@ def test_exact_decision_defers_for_current_active_release(tmp_path: Path) -> Non
 def test_exact_decision_stale_active_does_not_suppress(tmp_path: Path) -> None:
     repo, stale_sha, _ = _release_repo(tmp_path)
 
-    result = _run_decision(repo, active_shas=stale_sha)
+    result = _run_decision(repo, active_runs=[_active_run(stale_sha)])
 
     assert result == {
         "action": "dispatch",
         "detail": "no successful deploy to main on record",
     }
+
+
+def test_completed_and_unrelated_runs_do_not_suppress_recovery(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    result = _run_decision(
+        repo,
+        active_runs=[
+            _active_run(relevant_sha, status="completed"),
+            _active_run(
+                relevant_sha,
+                path=".github/workflows/uptime-canary.yml",
+            ),
+        ],
+    )
+
+    assert result["action"] == "dispatch"
 
 
 @pytest.mark.parametrize("failed_query", ["active", "deploy"])
@@ -296,13 +376,18 @@ def test_exact_scripts_coalesce_thousand_arrivals_to_one_dispatch(
 ) -> None:
     repo, _, relevant_sha = _release_repo(tmp_path)
     arrivals = list(range(1_000))
-    executed = [arrivals[0], arrivals[-1]]
-
-    first = _run_decision(repo)
-    coalesced = _run_decision(repo, active_shas=relevant_sha)
+    executed = _one_running_one_replaceable_pending(arrivals)
+    shared_active_runs: list[dict[str, str]] = []
+    actions: list[str] = []
+    for _arrival in executed:
+        decision = _run_decision(repo, active_runs=shared_active_runs)
+        actions.append(decision["action"])
+        if decision["action"] == "dispatch":
+            shared_active_runs = [_active_run(relevant_sha)]
 
     assert executed == [0, 999]
-    assert [first["action"], coalesced["action"]] == ["dispatch", "none"]
+    assert actions == ["dispatch", "none"]
+    assert actions.count("dispatch") == 1
 
 
 def test_exact_converge_waits_for_build_then_deploys_unchanged_main(
@@ -332,4 +417,72 @@ def test_exact_converge_does_not_deploy_after_main_advances(
     calls = _run_converge(repo, current_main="f" * 40)
 
     assert "run watch 12345 --repo owner/repo --exit-status" in calls
+    assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+def test_exact_converge_does_not_duplicate_active_deploy(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main=relevant_sha,
+        deploy_runs=[
+            {
+                "id": 67890,
+                "head_sha": relevant_sha,
+                "status": "in_progress",
+                "conclusion": None,
+            }
+        ],
+    )
+
+    assert any("deploy-prod.yml/runs" in call for call in calls)
+    assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+def test_exact_converge_cancelled_build_defers_without_deploy(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main=relevant_sha,
+        watch_status=1,
+        watch_conclusion="cancelled",
+    )
+
+    assert "run view 12345 --repo owner/repo --json conclusion --jq .conclusion" in calls
+    assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+def test_exact_converge_failed_build_stays_visible(tmp_path: Path) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main=relevant_sha,
+        watch_status=1,
+        watch_conclusion="failure",
+        expected_returncode=1,
+    )
+
+    assert "run view 12345 --repo owner/repo --json conclusion --jq .conclusion" in calls
+    assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+def test_exact_converge_main_advance_during_discovery_defers(
+    tmp_path: Path,
+) -> None:
+    repo, _, _ = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main="f" * 40,
+        build_runs=[],
+    )
+
+    assert not any(call.startswith("run watch ") for call in calls)
     assert not any("workflow run deploy-prod.yml" in call for call in calls)

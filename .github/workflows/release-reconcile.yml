@@ -39,8 +39,8 @@ name: Release reconcile
 
 on:
   schedule:
-    # Every 15 minutes. A check costs two API calls; not checking cost us a
-    # storage data-loss fix sitting unshipped on main.
+    # Every 15 minutes. This best-effort check is lightweight; not checking cost
+    # us a storage data-loss fix sitting unshipped on main.
     - cron: '*/15 * * * *'
   workflow_dispatch:
   workflow_run:
@@ -74,7 +74,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,13 +126,14 @@ jobs:
             echo "could not read build-image paths — treating HEAD as release-relevant"
             RELEVANT="$(git rev-parse HEAD)"
           else
+            # Disable shell glob expansion before both the diagnostic and git
+            # call so the log shows the exact workflow path patterns.
+            set -f
             echo "release paths:"
             printf '  %s\n' $PATHS
             # Newest commit on main touching anything the image is built from.
             # Docs-only commits after it genuinely need no deploy.
-            # Disable shell glob expansion so git receives the workflow's path
-            # patterns exactly; word splitting is intentional (no path spaces).
-            set -f
+            # Word splitting is intentional (release paths contain no spaces).
             # shellcheck disable=SC2086
             RELEVANT="$(git log -1 --format=%H -- $PATHS)"
             set +f
@@ -152,14 +153,32 @@ jobs:
           # group with push builds, so blindly dispatching here can restart a
           # nearly-complete release. The ancestry check is load-bearing: stale
           # active work must not suppress recovery for newer main.
-          if ! ACTIVE_SHAS="$(gh api --paginate \
-                "repos/${REPO}/actions/runs?branch=main&per_page=100" \
-                --jq '.workflow_runs[]
-                      | select(.status != "completed")
-                      | select(.path == ".github/workflows/build-image.yml"
-                            or .path == ".github/workflows/deploy-prod.yml")
-                      | .head_sha')"; then
+          if ! ACTIVE_RUNS_JSON="$(gh api \
+                "repos/${REPO}/actions/runs?branch=main&per_page=100")"; then
             echo "::warning::active release-run query failed; deferring"
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! ACTIVE_SHAS="$(
+            printf '%s' "$ACTIVE_RUNS_JSON" | python3 -c '
+          import json
+          import sys
+
+          release_paths = {
+              ".github/workflows/build-image.yml",
+              ".github/workflows/deploy-prod.yml",
+          }
+          for run in json.load(sys.stdin).get("workflow_runs", []):
+              if run.get("status") == "completed":
+                  continue
+              if run.get("path") not in release_paths:
+                  continue
+              if run.get("head_sha"):
+                  print(run["head_sha"])
+          '
+          )"; then
+            echo "::warning::active release-run response was unreadable; deferring"
             echo "action=none" >> "$GITHUB_OUTPUT"
             echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
@@ -232,26 +251,73 @@ jobs:
 
           BUILD_RUN_ID=""
           for _ in {1..12}; do
-            BUILD_RUN_ID="$(
+            if ! BUILD_RUNS_JSON="$(
               gh run list \
                 --repo "$REPO" \
                 --workflow build-image.yml \
                 --branch main \
                 --event workflow_dispatch \
                 --limit 20 \
-                --json databaseId,headSha,createdAt \
-                --jq "map(select(.headSha == \"${TARGET_SHA}\" and .createdAt >= \"${DISPATCHED_AT}\")) | sort_by(.createdAt) | last | .databaseId // empty"
-            )"
+                --json databaseId,headSha,createdAt
+            )"; then
+              echo "::error::could not list reconcile-initiated image builds"
+              exit 1
+            fi
+            if ! BUILD_RUN_ID="$(
+              printf '%s' "$BUILD_RUNS_JSON" |
+                TARGET_SHA="$TARGET_SHA" DISPATCHED_AT="$DISPATCHED_AT" python3 -c '
+              import json
+              import os
+              import sys
+
+              target = os.environ["TARGET_SHA"]
+              dispatched_at = os.environ["DISPATCHED_AT"]
+              matches = [
+                  run
+                  for run in json.load(sys.stdin)
+                  if run.get("headSha") == target
+                  and run.get("createdAt", "") >= dispatched_at
+              ]
+              if matches:
+                  print(max(matches, key=lambda run: run["createdAt"])["databaseId"])
+              '
+            )"; then
+              echo "::error::image-build run response was unreadable"
+              exit 1
+            fi
             [ -n "$BUILD_RUN_ID" ] && break
             sleep 5
           done
 
           if [ -z "$BUILD_RUN_ID" ]; then
+            if ! DISCOVERY_MAIN="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"; then
+              echo "::error::could not identify the image build or re-read main"
+              exit 1
+            fi
+            if [ "$DISCOVERY_MAIN" != "$TARGET_SHA" ]; then
+              echo "::notice::main advanced to ${DISCOVERY_MAIN:0:8} during image-build dispatch; deferring"
+              exit 0
+            fi
             echo "::error::could not identify the reconcile-initiated image build"
             exit 1
           fi
 
-          gh run watch "$BUILD_RUN_ID" --repo "$REPO" --exit-status
+          if ! gh run watch "$BUILD_RUN_ID" --repo "$REPO" --exit-status; then
+            if ! BUILD_CONCLUSION="$(
+              gh run view "$BUILD_RUN_ID" \
+                --repo "$REPO" \
+                --json conclusion \
+                --jq '.conclusion'
+            )"; then
+              BUILD_CONCLUSION="unknown"
+            fi
+            if [ "$BUILD_CONCLUSION" = "cancelled" ]; then
+              echo "::notice::image build ${BUILD_RUN_ID} was superseded by newer main work; deferring"
+              exit 0
+            fi
+            echo "::error::image build ${BUILD_RUN_ID} concluded ${BUILD_CONCLUSION}"
+            exit 1
+          fi
 
           if ! CURRENT_MAIN="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"; then
             echo "::warning::could not re-read main after image build; not deploying"
@@ -259,6 +325,40 @@ jobs:
           fi
           if [ "$CURRENT_MAIN" != "$TARGET_SHA" ]; then
             echo "::notice::main advanced to ${CURRENT_MAIN:0:8}; not deploying ${TARGET_SHA:0:8}"
+            exit 0
+          fi
+
+          # Token-created workflow runs normally suppress workflow_run chaining,
+          # but GitHub history contains an exception. Avoid a duplicate explicit
+          # deploy if a successful or active same-SHA deploy already exists.
+          if ! DEPLOY_RUNS_JSON="$(
+            gh api \
+              "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?branch=main&per_page=20"
+          )"; then
+            echo "::warning::could not check for an existing deploy; deferring"
+            exit 0
+          fi
+          if ! EXISTING_DEPLOY_ID="$(
+            printf '%s' "$DEPLOY_RUNS_JSON" |
+              TARGET_SHA="$TARGET_SHA" python3 -c '
+            import json
+            import os
+            import sys
+
+            target = os.environ["TARGET_SHA"]
+            for run in json.load(sys.stdin).get("workflow_runs", []):
+                if run.get("head_sha") != target:
+                    continue
+                if run.get("status") != "completed" or run.get("conclusion") == "success":
+                    print(run["id"])
+                    break
+            '
+          )"; then
+            echo "::warning::existing deploy response was unreadable; deferring"
+            exit 0
+          fi
+          if [ -n "$EXISTING_DEPLOY_ID" ]; then
+            echo "::notice::deploy run ${EXISTING_DEPLOY_ID} already covers ${TARGET_SHA:0:8}; not dispatching a duplicate"
             exit 0
           fi
 

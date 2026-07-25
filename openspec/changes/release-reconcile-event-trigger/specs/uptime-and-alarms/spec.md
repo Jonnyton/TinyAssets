@@ -5,7 +5,7 @@ The system SHALL declare release reconciliation with a `*/15 * * * *` schedule, 
 
 When executed, reconciliation SHALL check out current `main`, derive the newest release-relevant commit on `main` from the push-path list in `build-image.yml`, and fall back to current `HEAD` when that list cannot be read. Before dispatching, it SHALL enumerate queued or running main-branch `build-image.yml` and `deploy-prod.yml` runs. If any active run's `head_sha` contains the release-relevant commit by Git ancestry, it SHALL report that release work is already converging; an older active SHA that does not contain the relevant commit SHALL NOT suppress recovery. A failure to read active-run or successful-deploy state SHALL make no corrective dispatch and SHALL defer to a later wake-up.
 
-Reconciliation SHALL enumerate successful `Deploy prod` workflow runs filtered to `main`; when any returned run `head_sha` contains the release-relevant commit by Git ancestry it SHALL report in sync. Otherwise it SHALL dispatch `build-image.yml` on `main`, identify and wait for the resulting same-SHA workflow-dispatch run, and explicitly dispatch `deploy-prod.yml` with the built commit's 12-character immutable image tag only if current repository `main` still equals the built SHA. A reconcile-initiated manual image build SHALL NOT cancel an active push image build; a newer push MAY still supersede older image work. Docker-smoke success SHALL be only a wake-up signal and SHALL NOT replace the deploy-ancestry decision. This current proxy SHALL NOT claim to read the live release receipt or prove that production still serves the returned deploy-run SHA.
+Reconciliation SHALL enumerate successful `Deploy prod` workflow runs filtered to `main`; when any returned run `head_sha` contains the release-relevant commit by Git ancestry it SHALL report in sync. Otherwise it SHALL dispatch `build-image.yml` on `main`, identify and wait for the resulting same-SHA workflow-dispatch run, and explicitly dispatch `deploy-prod.yml` with the built commit's 12-character immutable image tag only if current repository `main` still equals the built SHA and no active or successful same-SHA deploy already exists. A reconcile-initiated manual image build SHALL NOT cancel an active push image build; a newer push MAY still supersede older image work. Main advancement before run discovery or after build completion, and cancellation caused by newer main work, SHALL defer without stale deployment; other image-build failures SHALL remain visible as errors. Docker-smoke success SHALL be only a wake-up signal and SHALL NOT replace the deploy-ancestry decision. This current proxy SHALL NOT claim to read the live release receipt or prove that production still serves the returned deploy-run SHA.
 
 #### Scenario: Trusted main Docker smoke wakes reconciliation
 - **WHEN** own-repository `Docker build smoke` completes successfully for a `push` or `workflow_dispatch` event with `head_branch` equal to `main`
@@ -36,9 +36,18 @@ Reconciliation SHALL enumerate successful `Deploy prod` workflow runs filtered t
 - **WHEN** no active or successful release run contains the relevant commit, the requested main image build succeeds, and repository `main` still equals the built SHA
 - **THEN** reconciliation explicitly dispatches `deploy-prod.yml` with the built SHA's 12-character image tag
 
+#### Scenario: Existing same-SHA deploy suppresses duplicate dispatch
+- **WHEN** an active or successful deploy already exists for the built main SHA
+- **THEN** reconciliation performs no duplicate explicit deploy dispatch
+
 #### Scenario: Main advancement suppresses stale image deployment
 - **WHEN** repository `main` advances while a reconcile-initiated image build runs
 - **THEN** reconciliation does not dispatch deployment of the older image and leaves the newer main for a later release evaluation
+
+#### Scenario: Newer push supersedes recovery build without false alarm
+- **WHEN** a newer push cancels the reconcile-initiated image build
+- **THEN** reconciliation records benign supersession and performs no stale deployment
+- **AND** a failed, timed-out, or otherwise non-successful build that was not cancelled remains a visible error
 
 #### Scenario: Manual recovery build preserves active push build
 - **WHEN** a reconcile-initiated manual image build enters the same concurrency group as an active push image build

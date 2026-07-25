@@ -94,9 +94,10 @@ When drift remains, reconciliation dispatches `build-image.yml` on `main`,
 finds the newly created same-SHA workflow-dispatch run, and waits for it to
 succeed. It then re-reads the repository's current `main` SHA. If `main`
 advanced or that check fails, it does not deploy the older image. Otherwise it
-dispatches `deploy-prod.yml` explicitly with the built commit's 12-character
-immutable image tag. This uses the reconciler's existing `actions: write`
-permission and adds no grant to the image builder.
+checks for an active or successful same-SHA deploy and skips duplicate work
+when one exists; only then does it dispatch `deploy-prod.yml` explicitly with
+the built commit's 12-character immutable image tag. This uses the reconciler's
+existing `actions: write` permission and adds no grant to the image builder.
 
 ### Keep the existing fixed reconcile concurrency group
 
@@ -137,9 +138,12 @@ scheduler-model limitation.
 - **The Docker-smoke and release path sets differ** → The event trigger reduces
   latency only for their intersection; the schedule still covers
   release-relevant paths with no smoke trigger.
-- **Main advances while a reconcile build runs** → The post-build main-SHA
-  check refuses to deploy the older image; a later wake-up evaluates the newer
-  main.
+- **Main advances while a reconcile build is dispatched, discovered, or runs**
+  → Run discovery and the post-build main-SHA check treat the newer main as
+  benign deferral and never deploy the older image.
+- **A newer push cancels the reconcile-initiated image build** → Cancellation
+  is benign supersession and defers; non-cancellation build failures remain
+  visible as errors.
 - **Workflow metadata is not live production truth** → The existing spec
   caveat remains unchanged; this trigger only changes when the proxy is
   evaluated.

@@ -12,7 +12,7 @@
 python -m pytest tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `13 passed in 5.54s`.
+Result: `18 passed in 10.79s`.
 
 Surrounding release/uptime regression command:
 
@@ -20,7 +20,7 @@ Surrounding release/uptime regression command:
 python -m pytest tests/test_build_image_workflow.py tests/test_deploy_prod_workflow.py tests/test_uptime_canary_workflow.py tests/test_uptime_canary_concurrency.py tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `94 passed in 7.85s`.
+Result: `99 passed in 13.05s`.
 
 Environment:
 
@@ -52,11 +52,12 @@ cannot cancel an active push build.
 
 ## 1,000-arrival result
 
-The scheduler model starts the first of 1,000 same-group arrivals and replaces
-the pending slot on each subsequent arrival, leaving arrivals `0` and `999` to
-execute. The first exact decision-script execution sees drift and emits one
-`dispatch`. Shared state then exposes that same relevant SHA as an active image
-build. The coalesced final execution emits `none`.
+The scheduler model walks all 1,000 same-group arrivals while maintaining one
+running and one replaceable pending slot. Each arrival after the first replaces
+the pending slot, deriving arrivals `0` and `999` as the only executions. The
+first exact decision-script execution sees drift and emits one `dispatch`.
+Shared state then exposes that same relevant SHA as an active image build. The
+coalesced final execution emits `none`.
 
 Proved outcomes:
 
@@ -64,11 +65,16 @@ Proved outcomes:
 - no second dispatch while current release work is active;
 - a stale active SHA does not suppress current-main recovery;
 - active-run and successful-deploy query failures produce no corrective action;
+- completed and unrelated workflow runs are excluded by the production JSON
+  selector and do not suppress recovery;
 - successful deploy ancestry produces no action;
 - missing deploy ancestry produces dispatch;
 - unchanged main yields one image dispatch, one same-SHA build wait, and one
   explicit deploy using the 12-character immutable image tag;
-- advanced main completes the build wait but emits no stale-image deploy.
+- an already active same-SHA deploy suppresses duplicate explicit dispatch;
+- advanced main before or after build discovery emits no stale-image deploy;
+- a cancelled/superseded image build defers without red failure, while a failed
+  image build remains a visible non-zero failure.
 
 ## Scheduler-model limitation
 
