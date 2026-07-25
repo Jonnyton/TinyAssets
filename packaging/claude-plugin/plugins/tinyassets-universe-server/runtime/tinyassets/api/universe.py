@@ -2560,7 +2560,7 @@ def _change_loop_plan_context() -> dict[str, str]:
     for heading in _CHANGE_LOOP_PLAN_HEADINGS:
         excerpt = _extract_plan_section(text, heading)
         sections[heading] = (
-            _shorten(excerpt, 2400)
+            _shorten(excerpt, 1400)
             if excerpt
             else (
                 "[ERROR: unable to resolve bundled PLAN.md section: "

@@ -705,6 +705,7 @@ def test_change_loop_plan_context_survives_pool_volume_override(
     sections = univ_mod._change_loop_plan_context()
 
     assert set(sections) == set(univ_mod._CHANGE_LOOP_PLAN_HEADINGS)
+    assert len(univ_mod._CHANGE_LOOP_PLAN_HEADINGS) == 4
     for heading in univ_mod._CHANGE_LOOP_PLAN_HEADINGS:
         assert sections[heading].startswith(f"## {heading}")
 
