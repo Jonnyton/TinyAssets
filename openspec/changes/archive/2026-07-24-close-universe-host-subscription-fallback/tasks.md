@@ -24,8 +24,8 @@
 
 - [x] 4.1 Run focused credential/provider tests and mutation-check both repaired failure paths
 - [x] 4.2 Run runtime mirror parity, Ruff, full strict OpenSpec validation, and `git diff --check`
-- [ ] 4.3 Obtain independent security and diff review with no critical or required findings
-- [ ] 4.4 Sync the proven delta into canonical `credential-vault`, archive the change, and remove the completed CLI-isolation row while leaving the P0 plus R2-1a/R2-1b unchanged
+- [x] 4.3 Obtain independent security and diff review with no critical or required findings
+- [x] 4.4 Sync the proven delta into canonical `credential-vault`, archive the change, and remove the completed CLI-isolation row while leaving the P0 plus R2-1a/R2-1b unchanged
 
 ## 5. Opus 5 default-deny adaptation
 
@@ -37,5 +37,5 @@
 - [x] 5.6 Run focused and surrounding GREEN, Ruff, mirror parity, strict full-tree OpenSpec validation, and diff checks
 - [x] 5.6a Address Opus ADAPT findings with RED/GREEN proof for runtime-only auth homes, physical path containment, exact providers, explicit locales, real malformed/outside vaults, and explicit-universe precedence
 - [x] 5.6b Reject linked vault sources before public resolver/helper reads, preserve the canonical host-local six-variable stripping contract, and broaden the documented TOCTOU boundary
-- [ ] 5.7 Obtain required Opus 5 security/diff re-review with no critical or required findings
-- [ ] 5.8 After the canonical vault-clobber lane releases the spec, sync/archive and retire the STATUS row in the merge lane
+- [x] 5.7 Obtain required Opus 5 security/diff re-review with no critical or required findings
+- [x] 5.8 After the canonical vault-clobber lane releases the spec, sync/archive and retire the STATUS row in the merge lane
