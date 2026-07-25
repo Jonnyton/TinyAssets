@@ -19,8 +19,10 @@ storage.rotation) follow the pattern that was already in place pre-extraction.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -42,6 +44,31 @@ def _policy_hash(payload: dict[str, Any]) -> str:
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_identity_evidence() -> dict[str, object]:
+    """Return token-free, self-only identity evidence for this request."""
+    from tinyassets.auth.middleware import current_bearer_present, current_identity
+
+    bearer_present = current_bearer_present()
+    key = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_KEY", "").encode()
+    version = os.environ.get(
+        "TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1"
+    ).strip()
+    if len(key) < 32 or not re.fullmatch(r"[A-Za-z0-9._-]+", version):
+        return {
+            "bearer_present": bearer_present,
+            "principal_fingerprint": None,
+        }
+
+    subject = current_identity().user_id.strip() or "anonymous"
+    message = f"tinyassets:request-identity:{version}\0{subject}".encode()
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest()
+    prefix = f"{version}:anonymous:" if subject == "anonymous" else f"{version}:"
+    return {
+        "bearer_present": bearer_present,
+        "principal_fingerprint": f"{prefix}{digest}",
+    }
 
 
 # Heartbeat refresh interval observed in fantasy_daemon's BUG-011 Phase A
@@ -891,6 +918,14 @@ def get_status(universe_id: str = "") -> str:
     This function is observational and idempotent. It never creates or repairs
     a universe, home binding, or soul bundle.
     """
+    request_identity = _request_identity_evidence()
+    if request_identity["principal_fingerprint"] is None:
+        return json.dumps({
+            "schema_version": 1,
+            "error": "identity_fingerprint_unavailable",
+            "request_identity": request_identity,
+        })
+
     uid, needs_birth = _resolve_entry_universe(universe_id)
     if needs_birth:
         _about = (
@@ -910,6 +945,7 @@ def get_status(universe_id: str = "") -> str:
             "next_step_for_user": (
                 "Start a conversation with your universe to meet it in its own voice."
             ),
+            "request_identity": request_identity,
             "schema_version": 1,
         })
     # Per-universe read gate: never expose a private universe's status / activity
@@ -939,6 +975,7 @@ def get_status(universe_id: str = "") -> str:
             "detail": str(exc),
             "universe_id": uid,
             "universe_exists": universe_exists,
+            "request_identity": request_identity,
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
@@ -1181,9 +1218,9 @@ def get_status(universe_id: str = "") -> str:
     # Scans the activity.log for any entry within the last 30 days that
     # can be attributed to the current account user. Best-effort; never
     # raises so a log-read error doesn't break the status probe.
-    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.auth.middleware import current_identity
 
-    account_user = _current_actor()
+    account_user = current_identity().user_id.strip()
     prior_session_ts: str | None = None
     try:
         if activity_tail:
@@ -1197,25 +1234,38 @@ def get_status(universe_id: str = "") -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    if account_user and account_user != "anonymous":
+        activity_tail = [
+            line.replace(account_user, "[request-principal]")
+            for line in activity_tail
+        ]
+        last_n_calls = [
+            {
+                key: (
+                    value.replace(account_user, "[request-principal]")
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in call.items()
+            }
+            for call in last_n_calls
+        ]
+
     if prior_session_ts:
         session_boundary = {
             "prior_session_context_available": True,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": prior_session_ts,
-            "note": (
-                f"Activity log contains entries for account '{account_user}'. "
-                "Prior session context may be available in the log."
-            ),
+            "note": "Activity log contains entries for this request principal.",
         }
     else:
         session_boundary = {
             "prior_session_context_available": False,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": None,
             "note": (
-                f"No activity log entries found for account '{account_user}' "
-                "in this universe's log. Chatbot has no prior session record "
-                "to reference — do not assert prior session context."
+                "No activity log entries found for this request principal. "
+                "Do not assert prior session context."
             ),
         }
 
@@ -1314,6 +1364,7 @@ def get_status(universe_id: str = "") -> str:
         "evidence_caveats": evidence_caveats,
         "caveats": caveats,
         "actionable_next_steps": actionable_next_steps,
+        "request_identity": request_identity,
         "session_boundary": session_boundary,
         "storage_utilization": storage_utilization,
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,

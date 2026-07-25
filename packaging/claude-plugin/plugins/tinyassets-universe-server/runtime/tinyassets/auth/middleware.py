@@ -34,6 +34,10 @@ _current_identity: ContextVar[Identity | None] = ContextVar(
     "workflow_current_identity",
     default=ANONYMOUS,
 )
+_current_bearer_present: ContextVar[bool] = ContextVar(
+    "tinyassets_current_bearer_present",
+    default=False,
+)
 
 # Module-level provider (initialized once at startup)
 _provider: AuthProvider | None = None
@@ -68,6 +72,7 @@ def auth_middleware(token: str | None) -> Identity:
     The resolved identity is stored in thread-local storage
     for tools to access via `current_identity()`.
     """
+    _current_bearer_present.set(bool(token))
     provider = _get_provider()
 
     identity = ANONYMOUS
@@ -255,6 +260,11 @@ def current_identity() -> Identity:
     return _current_identity.get() or ANONYMOUS
 
 
+def current_bearer_present() -> bool:
+    """Whether this request presented bearer material, without retaining it."""
+    return _current_bearer_present.get()
+
+
 class AuthContextMiddleware:
     """Resolve bearer auth into request-local identity for MCP tool calls."""
 
@@ -270,6 +280,7 @@ class AuthContextMiddleware:
             return
 
         previous: Token[Identity | None] = _current_identity.set(ANONYMOUS)
+        previous_bearer: Token[bool] = _current_bearer_present.set(False)
         try:
             auth_header = ""
             for key, value in scope.get("headers", []):
@@ -323,6 +334,7 @@ class AuthContextMiddleware:
                 receive = _replay_receive(messages, receive)
             await self.app(scope, receive, send)
         finally:
+            _current_bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)
 
 

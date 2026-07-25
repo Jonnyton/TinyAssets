@@ -559,6 +559,7 @@ def test_get_status_schema_contract() -> None:
         "evidence_caveats",
         "caveats",
         "actionable_next_steps",
+        "request_identity",
         "session_boundary",
         "storage_utilization",
         "per_provider_cooldown_remaining",
@@ -580,7 +581,7 @@ def test_get_status_schema_contract() -> None:
 
     required_session_boundary = {
         "prior_session_context_available",
-        "account_user",
+        "principal_fingerprint",
         "last_session_ts",
         "note",
     }
@@ -598,11 +599,15 @@ def test_get_status_session_boundary_no_prior_when_empty_log(tmp_path) -> None:
     sb = payload["session_boundary"]
     assert sb["prior_session_context_available"] is False
     assert sb["last_session_ts"] is None
-    assert "account_user" in sb and sb["account_user"]
+    assert sb["principal_fingerprint"] == payload["request_identity"][
+        "principal_fingerprint"
+    ]
 
 
-def test_get_status_session_boundary_prior_when_log_has_user(tmp_path, monkeypatch) -> None:
-    """Universe with activity for current user returns prior_session_context_available=true."""
+def test_get_status_session_boundary_does_not_use_environment_actor(
+    tmp_path, monkeypatch
+) -> None:
+    """Ambient host identity cannot become request or prior-session identity."""
     user = "test_session_user"
     monkeypatch.setenv("UNIVERSE_SERVER_USER", user)
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -614,13 +619,17 @@ def test_get_status_session_boundary_prior_when_log_has_user(tmp_path, monkeypat
     )
     payload = json.loads(get_status(universe_id="active_sb_universe"))
     sb = payload["session_boundary"]
-    assert sb["prior_session_context_available"] is True
-    assert sb["last_session_ts"] is not None
-    assert sb["account_user"] == user
+    assert sb["prior_session_context_available"] is False
+    assert sb["last_session_ts"] is None
+    assert "account_user" not in sb
 
 
-def test_get_status_session_boundary_account_user_matches_env(monkeypatch) -> None:
-    """account_user field must reflect UNIVERSE_SERVER_USER env var."""
+def test_get_status_request_identity_ignores_environment_actor(monkeypatch) -> None:
+    """The status identity is request-local and never falls back to host env."""
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "my_user")
     payload = json.loads(get_status())
-    assert payload["session_boundary"]["account_user"] == "my_user"
+    assert payload["request_identity"]["bearer_present"] is False
+    assert payload["request_identity"]["principal_fingerprint"].startswith(
+        "v1:anonymous:"
+    )
+    assert "my_user" not in json.dumps(payload, sort_keys=True)

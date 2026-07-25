@@ -20,6 +20,15 @@ _provider_call.set_force_mock(True)
 
 
 @pytest.fixture(autouse=True)
+def _identity_fingerprint_key(monkeypatch):
+    """Give tests an explicit dedicated status-fingerprint key."""
+    monkeypatch.setenv(
+        "TINYASSETS_IDENTITY_FINGERPRINT_KEY",
+        "pytest-only-identity-fingerprint-key-32-bytes",
+    )
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime():
     """Clear runtime singletons before AND after every test to prevent leakage.
 
