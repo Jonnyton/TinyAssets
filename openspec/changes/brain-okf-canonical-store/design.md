@@ -79,10 +79,35 @@ shim; later slices build the commit protocol, index rebuild, and steward behind
 the Codex gates. **Rollback:** retire/revert the active change; nothing runtime
 depends on it yet.
 
+## Dependent-lane contract
+
+Two active lanes carry `brain-okf-canonical-store` as a dependency, and this
+change is host-blocked indefinitely (see `tasks.md` lane disposition). Neither
+lane should wait on it. What a dependent may and may not rely on today:
+
+- **May rely on:** this change is the sole in-flight owner of the brain's
+  canonical-store *target* — the OKF bundle as source of truth, the rebuildable
+  operational index, and the write-through commit protocol. Cross-referencing
+  those concepts here (rather than restating them) is correct and stays correct
+  after the host decision lands.
+- **May rely on:** the *shipped* OKF surface is `tinyassets/wiki/okf_export.py`,
+  spec'd as-built in `openspec/specs/knowledge-retrieval-and-memory/spec.md`
+  (curated one-way export; deliberately narrow local `conformant` flag). A
+  dependent needing OKF behavior **today** cites that capability, not this change.
+- **MUST NOT rely on:** any assembled-view / `assemble(lens)` runtime. It is
+  unbuilt and ungated — there is no `tinyassets/brain/` package. A lane that
+  needs assembled-view content today must either scope around it or own the
+  build in its own change; `reconcile-universe-personification-relay` already
+  does this correctly (its 2.3 records the mechanism as REVERSED and relocates
+  the intent here rather than blocking on it).
+- **MUST NOT rely on:** `openspec/specs/brain-canonical-store/` existing. It does
+  not, and will not until the host store decision unblocks task 4.1. A dependent
+  that needs a stable spec path must cite `openspec/changes/brain-okf-canonical-store/`.
+
 ## Open Questions
 
 - Bundle topology: one physical bundle per universe with the commons as a union *view*, or a physical commons bundle?
-- Is `drafts/` a set of bundle concepts (visibility=candidate) or operational staging outside the bundle? (D5 must declare this.)
+- Is `drafts/` a set of bundle concepts (visibility=candidate) or operational staging outside the bundle? (D5 must declare this.) — **shipped code now answers this in one direction:** the OKF exporter treats `drafts/` as operational staging and excludes it from the bundle (`tinyassets/wiki/okf_export.py:15`, as-built in `openspec/specs/knowledge-retrieval-and-memory/spec.md:386`). That settles the *export* direction; D5 must still declare whether the canonical write path adopts the same rule, since exclusion-on-export and non-membership-in-canon are not the same claim.
 - Render-time coexistence of Tiny's typed relations (`supersedes`, `evidence_refs`, goal-graph edges) with OKF's untyped body cross-links.
 - Exact outbox/commit-protocol mechanism (SQLite outbox table vs WAL hooks) — deferred to the build slice.
 - `okf_version` pin cadence + the steward's escalation thresholds (org-chart routed).

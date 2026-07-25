@@ -2368,8 +2368,8 @@ _GOAL_ACTIONS: dict[str, Any] = {
     "set_selector": _action_goal_set_selector,
 }
 
-# Provider-routing compatibility: ChatGPT can render `/mcp-directory` tool
-# names but dispatch them through the legacy `Goals` wrapper.
+# Provider-routing compatibility: older clients can render legacy goal tool
+# names but dispatch them through the canonical `Goals` wrapper.
 _GOAL_ACTION_ALIASES: dict[str, str] = {
     "list_workflow_goals": "list",
     "search_workflow_goals": "search",

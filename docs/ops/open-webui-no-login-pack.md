@@ -1,7 +1,9 @@
 # Open WebUI No-Chatbot-Login Pack
 
-Date: 2026-05-01
-Status: verified local Docker proof on 2026-05-01
+Created: 2026-05-01
+Current contract checked: 2026-07-24
+Status: current anonymous-read-only guidance; canonical host proof pending;
+historical Docker proof retained below
 Owner: lead + available provider
 
 This pack is the first no-hosted-chatbot-login path for TinyAssets. It is for
@@ -12,16 +14,23 @@ or access an Open WebUI instance.
 
 - Open WebUI docs say native MCP support starts in Open WebUI `v0.6.31+`.
 - Native MCP support is `MCP (Streamable HTTP)` only.
-- TinyAssets exposes a public Streamable HTTP MCP endpoint at
-  `https://tinyassets.io/mcp-directory`.
-- The full custom-connector endpoint remains `https://tinyassets.io/mcp`, but
-  the directory endpoint is the safer first proof surface because it exposes
-  only 11 narrow tools.
+- TinyAssets has one public Streamable HTTP MCP endpoint:
+  `https://tinyassets.io/mcp`.
+- The public name is exactly `TinyAssets`. Do not add `DEV`, `directory`, or
+  another lifecycle qualifier.
+- Canonical `/mcp` advertises exactly seven tools: `read_graph`, `write_graph`,
+  `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`.
+- A connection configured with authentication `None` is
+  **anonymous-read-only**. It may call `read_graph` and `read_page`. Do not
+  expose `get_status` through this pack until the versioned public-status
+  projection is implemented and verified; the current result is unredacted.
+  Mutation, execution, and conversation entry require OAuth and are
+  unsupported by this no-login pack.
 
-Public claim scope: Open WebUI 0.9.2 local Docker proof is verified against
-TinyAssets' directory endpoint. Do not generalize that claim to every Open WebUI
-version, hosted deployment, auth mode, model, or write/proposal flow without a
-host-specific proof update.
+Public claim scope: the 2026-05-01 Open WebUI 0.9.2 Docker observation below is
+historical evidence from the retired endpoint. Current support requires a fresh
+proof against canonical `/mcp`. Do not generalize it to another Open WebUI
+version, hosted deployment, auth mode, model, or mutation flow.
 
 ## Recommended Open WebUI Settings
 
@@ -33,29 +42,23 @@ In Open WebUI:
 4. Set `Server URL` to:
 
 ```text
-https://tinyassets.io/mcp-directory
+https://tinyassets.io/mcp
 ```
 
 5. Set authentication to `None`.
-6. Leave the function-name filter empty for the first connection proof.
-7. Save. Restart Open WebUI if prompted.
-
-Optional hardening after first proof:
+6. If Open WebUI supports a function-name filter, allow only:
 
 ```text
-get_workflow_status,list_workflow_goals,search_workflow_wiki,read_workflow_wiki_page,list_workflow_runs
+read_graph,read_page
 ```
 
-Use the optional filter only after proving the unfiltered directory endpoint
-connects, because the filter itself can become the source of setup failures.
+7. Treat OAuth-required tools as unsupported in this no-login configuration.
+   Do not test or document anonymous mutation.
+8. Save. Restart Open WebUI if prompted.
 
 ## User-Facing First Prompts
 
 Use read-only prompts first:
-
-```text
-Use TinyAssets to check the daemon status and tell me any caveats.
-```
 
 ```text
 Use TinyAssets to list available goals.
@@ -65,26 +68,26 @@ Use TinyAssets to list available goals.
 Use TinyAssets to search the TinyAssets wiki for launch risks and summarize the best match.
 ```
 
-Only test write/propose flows after read-only invocation is visible in the chat
-and Open WebUI's approval/tool-call UX is understood.
+Do not test write, run, or `converse` flows with this no-login configuration.
+Those calls require an OAuth-capable, authenticated host proof.
 
 ## Troubleshooting Notes
 
 - If the connection fails, verify the tool type is `MCP (Streamable HTTP)`, not
   OpenAPI.
 - If auth is set to `Bearer` without a key, Open WebUI may send an empty
-  authorization header. Use `None` for TinyAssets' current public directory
-  endpoint.
+  authorization header. Use `None` only for the anonymous-read-only path.
 - If Open WebUI runs in Docker and the MCP server is on the host machine, Open
   WebUI docs recommend `host.docker.internal`. That is not needed for
-  `https://tinyassets.io/mcp-directory` because it is a public HTTPS endpoint.
+  `https://tinyassets.io/mcp` because it is a public HTTPS endpoint.
 - Open WebUI recommends setting `WEBUI_SECRET_KEY` for stable OAuth-connected
-  tools. TinyAssets' directory endpoint does not require OAuth today, but a
-  stable key is still a good Open WebUI deployment practice.
+  tools. This pack does not establish Open WebUI OAuth interoperability with
+  TinyAssets; mutation remains unsupported until separately proven.
 
-## Runtime Proof Checklist
+## Historical Runtime Proof — 2026-05-01
 
-Record all values before claiming support:
+The following table and trace record what was observed on the retired endpoint
+on 2026-05-01. Preserve it as evidence; do not use it as current setup guidance.
 
 | Field | Value |
 |---|---|
@@ -99,7 +102,7 @@ Record all values before claiming support:
 | Screenshot/trace path | `docs/ops/open-webui-runtime-proof-2026-05-01.md` |
 | Date/time | 2026-05-01 UTC |
 
-Acceptance criteria:
+Historical acceptance criteria used for that proof:
 
 - Open WebUI adds the TinyAssets MCP server without crashing or infinite loading.
 - A chat can invoke at least one read-only TinyAssets tool.
@@ -117,23 +120,19 @@ Proof trace:
 Run these before and after the Open WebUI proof:
 
 ```powershell
-python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp-directory --timeout 15 --verbose
-python scripts/mcp_probe.py --url https://tinyassets.io/mcp-directory tools
+python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --timeout 15 --verbose
+python scripts/mcp_probe.py --url https://tinyassets.io/mcp tools
 ```
 
-Expected directory tools:
+Expected canonical tools:
 
-- `get_workflow_status`
-- `list_workflow_universes`
-- `inspect_workflow_universe`
-- `list_workflow_goals`
-- `search_workflow_goals`
-- `get_workflow_goal`
-- `search_workflow_wiki`
-- `read_workflow_wiki_page`
-- `list_workflow_runs`
-- `propose_workflow_goal`
-- `submit_workflow_request`
+- Anonymous reads approved for this pack: `read_graph`, `read_page`
+- OAuth-required mutation/costly work: `write_graph`, `run_graph`,
+  `write_page`, `converse`
+
+The server advertises all seven. A no-login proof passes only through the two
+approved anonymous-read handles; it must not expose unredacted `get_status` or
+claim mutation parity.
 
 ## Source Notes
 
@@ -141,4 +140,5 @@ Fresh docs checked on 2026-05-01:
 
 - Open WebUI MCP docs: `https://docs.openwebui.com/features/mcp/`
 - TinyAssets proof registry: `docs/ops/mcp-host-proof-registry.md`
-- TinyAssets directory queue: `docs/ops/mcp-directory-rollout-action-queue.md`
+- Current connector reconciliation:
+  `openspec/changes/reconcile-external-connector-manifests/`

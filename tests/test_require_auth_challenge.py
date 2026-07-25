@@ -146,7 +146,7 @@ def test_auth_challenge_path_targets_mcp_only():
     assert _auth_challenge_path("/mcp/") is True
     assert _auth_challenge_path("/mcp/.well-known/oauth-protected-resource") is False
     assert _auth_challenge_path("/.well-known/oauth-protected-resource") is False
-    assert _auth_challenge_path("/mcp-directory") is False  # sibling public surface
+    assert _auth_challenge_path("/not-mcp") is False
 
 
 def test_challenge_metadata_url_is_routed_in_production(monkeypatch):
