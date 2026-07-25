@@ -559,6 +559,7 @@ def _wiki_read(
     max_results: int = 10,
     offset: int = 0,
     max_chars: int = _WIKI_READ_DEFAULT_MAX_CHARS,
+    universe_id: str = "",
     **_kwargs: Any,
 ) -> str:
     if not page:
@@ -574,11 +575,11 @@ def _wiki_read(
     meta, body = _parse_frontmatter(text)
 
     # Per-page visibility narrows — never widens — the universe content grant:
-    # a page marked restrictive stays restricted from an anonymous reader even
-    # inside an openly-readable universe (spec Req 3).
+    # a page marked restrictive stays restricted from any non-granted reader
+    # (authenticated or not) even inside an openly-readable universe (spec Req 3).
     from tinyassets.api import visibility
 
-    if not visibility.page_content_permitted(meta):
+    if not visibility.page_content_permitted(meta, universe_id):
         return json.dumps({
             "error": "page_content_restricted",
             "path": rel,
@@ -659,9 +660,13 @@ def _draft_read_content(text: str, *, is_draft: bool) -> str:
     return "[DRAFT] " + text
 
 
-def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
+def _wiki_search(
+    query: str = "", max_results: int = 10, universe_id: str = "", **_kwargs: Any
+) -> str:
     if not query:
         return json.dumps({"error": "query parameter is required."})
+
+    from tinyassets.api import visibility
 
     all_pages = (
         _find_all_pages(_wiki_pages_dir()) + _find_all_pages(_wiki_drafts_dir())
@@ -675,6 +680,10 @@ def _wiki_search(query: str = "", max_results: int = 10, **_kwargs: Any) -> str:
             continue
         lower = raw.lower()
         meta, body = _parse_frontmatter(raw)
+        # A restricted page's title/excerpt/path are disclosure — withhold the
+        # whole result from a non-granted reader (spec Req 3).
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
         title = meta.get("title", p.stem)
         is_draft = _wiki_drafts_dir() in p.parents
 
@@ -737,6 +746,7 @@ def _wiki_result_item(path: Path, *, is_draft: bool) -> dict[str, Any]:
 def _wiki_since(
     changed_since: str = "",
     max_results: int = 10,
+    universe_id: str = "",
     **_kwargs: Any,
 ) -> str:
     if not changed_since.strip():
@@ -751,13 +761,23 @@ def _wiki_since(
             "changed_since": changed_since,
         })
 
+    from tinyassets.api import visibility
+
+    def _visible(path: Path) -> bool:
+        meta, _ = _parse_frontmatter(_read_text(path))
+        return visibility.page_visible_in_listing(meta, universe_id)
+
     candidates: list[dict[str, Any]] = []
     for path in _find_all_pages(_wiki_pages_dir()):
+        if not _visible(path):
+            continue
         item = _wiki_result_item(path, is_draft=False)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
             candidates.append(item)
     for path in _find_all_pages(_wiki_drafts_dir()):
+        if not _visible(path):
+            continue
         item = _wiki_result_item(path, is_draft=True)
         updated_at = _parse_wiki_timestamp(item["updated"])
         if updated_at is not None and updated_at > since:
@@ -775,7 +795,9 @@ def _wiki_since(
     })
 
 
-def _wiki_list(**_kwargs: Any) -> str:
+def _wiki_list(universe_id: str = "", **_kwargs: Any) -> str:
+    from tinyassets.api import visibility
+
     promoted = _find_all_pages(_wiki_pages_dir())
     drafts = _find_all_pages(_wiki_drafts_dir())
 
@@ -783,6 +805,9 @@ def _wiki_list(**_kwargs: Any) -> str:
     for p in promoted:
         raw = _read_text(p)
         meta, _ = _parse_frontmatter(raw)
+        # A restricted page's path/title is disclosure — omit for non-granted.
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
         pages_list.append({
             "path": _page_rel_path(p),
             "title": meta.get("title", p.stem),
@@ -795,6 +820,8 @@ def _wiki_list(**_kwargs: Any) -> str:
     for p in drafts:
         raw = _read_text(p)
         meta, _ = _parse_frontmatter(raw)
+        if not visibility.page_visible_in_listing(meta, universe_id):
+            continue
         drafts_list.append({
             "path": _page_rel_path(p),
             "title": meta.get("title", p.stem),

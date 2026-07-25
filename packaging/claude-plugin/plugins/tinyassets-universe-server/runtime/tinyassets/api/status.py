@@ -912,20 +912,29 @@ def get_status(universe_id: str = "") -> str:
             ),
             "schema_version": 1,
         })
-    # Per-universe metadata gate: never expose a universe's status / activity
-    # tail (name, word count, activity dates, phase) to a reader the declared
-    # visibility level does not grant `read_metadata`. Metadata is a separately-
-    # granted capability: a content-only (`unlisted`) universe is discoverable
-    # by direct id yet withholds this describe surface. A founder reads their
-    # own universe via their grant regardless of level.
-    from tinyassets.api import permissions, visibility
-
-    if not visibility.visibility_permits(uid, "read_metadata"):
-        return json.dumps(permissions.universe_access_error(
-            universe_id=uid, write=False, action="get_status", surface="universe",
-        ))
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
+
+    # Per-universe metadata gate: never expose an EXISTING universe's status /
+    # activity tail (name, word count, activity dates, phase) to a reader the
+    # declared visibility level does not grant `read_metadata`. Metadata is a
+    # separately-granted capability: a content-only (`unlisted`) universe is
+    # discoverable by direct id yet withholds this describe surface. A founder
+    # reads their own universe via their grant regardless of level. A universe
+    # that does NOT exist has no metadata to protect, so the not-found diagnostic
+    # is left ungated (it reveals nothing about any real universe).
+    from tinyassets.api import permissions, visibility
+
+    if universe_exists and not visibility.visibility_permits(uid, "read_metadata"):
+        # When the caller supplied no universe_id, the server RESOLVED one for
+        # them. Echoing that resolved name in a denial would leak the identity
+        # of a hidden universe (existence is privileged), so blank it out for
+        # an omitted-scope request. An explicit-id request echoes the id.
+        requested_blank = not (universe_id or "").strip()
+        return json.dumps(permissions.universe_access_error(
+            universe_id="" if requested_blank else uid,
+            write=False, action="get_status", surface="universe",
+        ))
     host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
 
     # Load the dispatcher config for the universe.

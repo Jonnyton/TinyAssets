@@ -12,18 +12,29 @@ delta spec ``openspec/specs/universe-visibility``):
     closed** on an undeclared, unrecognized, or unreadable level rather than
     defaulting to visible.
 
-Design invariant: this layer only ever *tightens* the existing gate. A reader
-holding a read/write/admin grant on a universe is never limited by anonymous
-visibility. For a non-granted reader, the level is derived from an explicit
-declaration when present, otherwise from the legacy ``public_read`` bit, and any
-genuinely-undeclared / corrupt / unrecognized state resolves to the fail-closed
-``private`` level.
+Two structural invariants (both demanded by the cross-family review that
+rejected the first cut):
+
+  1. **Tighten-only by construction.** The effective read decision is
+     ``legacy_gate AND new_layer`` — ``visibility_permits`` returns ``False``
+     whenever the legacy ``universe_access_allows`` read gate denies, so the new
+     layer can never *grant* a read the legacy gate withholds (an inconsistent
+     row with ``public_read=False`` plus a permissive explicit level can no
+     longer open a read).
+  2. **Fail closed by default.** ``universe_visibility`` returns the *declared*
+     level or ``CLOSED``; it never derives an open default from ``public_read``.
+     Undeclared, blank, unrecognized, wrong-type, corrupt, and non-dict states
+     all resolve to ``private``. Existing universes are declared by
+     ``backfill_universe_visibility`` (the migration path), not by a fail-open
+     fallback or an env opt-in to strictness.
+
+A reader holding a read/write/admin grant on a universe is never limited by
+anonymous visibility.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -71,18 +82,8 @@ LEVEL_METADATA_KEY = "visibility_level"
 #: Page frontmatter keys a page may use to narrow its own content visibility.
 _PAGE_VISIBILITY_KEYS = ("visibility", "content_visibility")
 
-
-def _strict_undeclared() -> bool:
-    """Whether a genuinely-missing rules row fails closed.
-
-    Default off: a missing row resolves to ``public`` to preserve today's live
-    behavior until the backfill has declared every existing universe. Switched
-    on (post-backfill) it resolves a missing row to ``private`` — full spec
-    compliance, so an undeclared universe never defaults to visible.
-    """
-    return os.environ.get(
-        "TINYASSETS_VISIBILITY_STRICT_UNDECLARED", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
+#: Page-level string values that explicitly withhold content ("content: false").
+_PAGE_FALSE_VALUES = frozenset({"false", "no", "off", "0", "none"})
 
 
 def parse_level(name: Any) -> VisibilityLevel | None:
@@ -127,48 +128,49 @@ def _read_rules(universe_id: str) -> dict[str, Any] | object:
 
 
 def universe_visibility(universe_id: str) -> VisibilityLevel:
-    """Resolve the declared visibility level for a universe (fail closed).
+    """Resolve the *declared* visibility level for a universe, or ``CLOSED``.
 
-    Resolution order:
-      1. Rules unreadable (corrupt store) -> ``CLOSED`` (never fall open).
-      2. Explicit ``visibility_level`` declared -> that level; an unrecognized
-         name -> ``CLOSED``.
-      3. No explicit level but a rules row exists -> derive from the legacy
-         ``public_read`` bit (``True`` -> ``public``, ``False`` -> ``private``).
-      4. No rules row at all (undeclared) -> ``public`` normally, ``private``
-         under ``TINYASSETS_VISIBILITY_STRICT_UNDECLARED`` (see design 1.3).
+    This is a strict, fail-closed resolver. It NEVER derives an open default
+    from ``public_read`` — that bit is the legacy gate's concern, composed
+    separately and only as a *ceiling* in :func:`visibility_permits`. Every one
+    of the following resolves to the fail-closed ``private`` level:
 
-    A blank universe id is a degenerate input with no universe to be public
-    about; it fails closed.
+      * blank universe id;
+      * rules unreadable (corrupt store) or no rules row at all (undeclared);
+      * the whole rules value, or its ``metadata`` container, is not a dict;
+      * no ``visibility_level`` key present (undeclared — the backfill declares);
+      * the declared value is not a string, is blank/whitespace, or is an
+        unrecognized level name.
+
+    Only a rules row carrying an explicit, recognized ``visibility_level``
+    resolves to that named level.
     """
     if not (universe_id or "").strip():
         return CLOSED
 
     rules = _read_rules(universe_id)
-    if rules is _CORRUPT:
+    if rules is _CORRUPT or rules is _MISSING:
         return CLOSED
-    if rules is _MISSING:
-        return CLOSED if _strict_undeclared() else PUBLIC
+    if not isinstance(rules, dict):
+        return CLOSED  # never AssertionError on a hand-forged/non-dict row.
 
-    assert isinstance(rules, dict)
     metadata = rules.get("metadata")
-    declared = None
-    if isinstance(metadata, dict):
-        declared = metadata.get(LEVEL_METADATA_KEY)
-    if declared not in (None, ""):
-        level = parse_level(declared)
-        if level is None:
-            logger.warning(
-                "visibility: unrecognized declared level %r for universe %r "
-                "-> failing closed",
-                declared,
-                universe_id,
-            )
-            return CLOSED
-        return level
+    if not isinstance(metadata, dict) or LEVEL_METADATA_KEY not in metadata:
+        return CLOSED  # undeclared -> fail closed (backfill declares).
 
-    # No explicit level: honor the legacy public_read bit.
-    return PUBLIC if bool(rules.get("public_read", True)) else PRIVATE
+    declared = metadata[LEVEL_METADATA_KEY]
+    if not isinstance(declared, str):
+        return CLOSED  # null / number / bool / list / object -> fail closed.
+    level = parse_level(declared)  # blank / whitespace / unrecognized -> None.
+    if level is None:
+        logger.warning(
+            "visibility: undeclared-or-unrecognized level %r for universe %r "
+            "-> failing closed",
+            declared,
+            universe_id,
+        )
+        return CLOSED
+    return level
 
 
 def declared_level_name(universe_id: str) -> str:
@@ -211,52 +213,83 @@ def _reader_has_grant(universe_id: str) -> bool:
 def visibility_permits(universe_id: str, capability: str) -> bool:
     """Whether the current caller may exercise ``capability`` on a universe.
 
-    A granted reader always may. A non-granted / anonymous reader is bound by
-    the universe's declared level (which collapses to fully-closed for a
-    ``public_read=False`` / undeclared / corrupt universe).
+    Structurally tighten-only: the legacy read gate is the ceiling. If
+    ``universe_access_allows`` denies the read, this returns ``False`` — the new
+    layer can never grant what legacy denies (so an inconsistent row with
+    ``public_read=False`` plus a permissive explicit level cannot open a read).
+    Within what legacy allows, a granted reader gets full access and every other
+    (anonymous / non-granted) reader is bound by the declared level, which is
+    ``CLOSED`` for any undeclared universe.
     """
     if capability not in CAPABILITIES:
         raise ValueError(f"unknown visibility capability: {capability!r}")
+
+    from tinyassets.api import permissions
+
+    # Ceiling: legacy read gate. New layer only narrows from here.
+    if not permissions.universe_access_allows(universe_id, write=False):
+        return False
     if _reader_has_grant(universe_id):
         return True
     return universe_visibility(universe_id).permits(capability)
 
 
-def page_content_permitted(page_meta: dict[str, Any]) -> bool:
-    """Whether a single wiki page's *content* may be served to this caller.
-
-    A page narrows — never widens — its universe's content grant. A page that
-    declares a restrictive visibility (``private``, ``metadata_only``, or an
-    explicit ``content: false``) is withheld from an unauthenticated reader even
-    inside an openly-readable universe (spec Req 3). Authenticated callers are
-    not withheld at the page layer (the universe gate governs them).
-    """
-    from tinyassets.api import permissions
-
-    if permissions.is_authenticated_request():
-        return True
-
-    declared = ""
+def _page_declared_visibility(page_meta: dict[str, Any]) -> str:
+    """The page's own declared visibility string, or '' if none."""
+    if not isinstance(page_meta, dict):
+        return ""
     for key in _PAGE_VISIBILITY_KEYS:
         raw = page_meta.get(key)
         if raw not in (None, ""):
-            declared = str(raw).strip()
-            break
+            return str(raw).strip()
+    return ""
+
+
+def page_content_permitted(
+    page_meta: dict[str, Any], universe_id: str = ""
+) -> bool:
+    """Whether a single wiki page's *content* may be served to this caller.
+
+    A page narrows — never widens — its universe's content grant. A page that
+    declares a restrictive visibility (``private``, ``metadata_only``, an
+    unrecognized level, or an explicit ``content: false``) is withheld from any
+    reader that is not a *granted* reader of the page's universe (spec Req 3).
+
+    Authentication alone is NOT authority here: a valid user with ordinary wiki
+    scope but no universe ACL grant is treated exactly like an anonymous reader,
+    so page restrictions cannot be bypassed by merely logging in.
+    """
+    declared = _page_declared_visibility(page_meta)
     if not declared:
         return True  # no page-level restriction -> defer to the universe gate.
 
+    # A granted reader of the universe is exempt from page-level restriction.
+    if _reader_has_grant(universe_id):
+        return True
+
     lowered = declared.lower()
-    if lowered in {"false", "no", "off", "0"}:
+    if lowered in _PAGE_FALSE_VALUES:
         return False  # explicit `content: false`
     level = parse_level(lowered)
     if level is None:
-        # Unrecognized page level -> fail closed for the anonymous reader.
         logger.warning(
             "visibility: unrecognized page visibility %r -> withholding content",
             declared,
         )
-        return False
+        return False  # fail closed for a non-granted reader.
     return level.read_content
+
+
+def page_visible_in_listing(
+    page_meta: dict[str, Any], universe_id: str = ""
+) -> bool:
+    """Whether a page may appear in a sibling read (search / since / list).
+
+    A restricted page's body, excerpt, title, and path are all disclosure; a
+    page withheld from content is withheld from these enumerations too, unless
+    the caller is a granted reader. Reuses the same rule as content serving.
+    """
+    return page_content_permitted(page_meta, universe_id)
 
 
 def set_universe_visibility(universe_id: str, level: str) -> VisibilityLevel:
@@ -279,11 +312,19 @@ def set_universe_visibility(universe_id: str, level: str) -> VisibilityLevel:
 
     base = _base_path()
     ensure_universe_rules(base, universe_id=universe_id)
+    # Keep the legacy public_read ceiling consistent: it is True iff the level
+    # grants an anonymous reader ANY capability. This makes the legacy gate a
+    # correct ceiling for `visibility_permits` (which ANDs with it).
+    any_anon_capability = (
+        resolved.discover_existence
+        or resolved.read_metadata
+        or resolved.read_content
+    )
     update_universe_rules(
         base,
         universe_id=universe_id,
         updates={
-            "public_read": resolved.read_content or resolved.discover_existence,
+            "public_read": any_anon_capability,
             "metadata": {LEVEL_METADATA_KEY: resolved.name},
         },
     )
