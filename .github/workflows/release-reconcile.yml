@@ -15,11 +15,11 @@ name: Release reconcile
 #      suppressed when the token performed the merge. It has been deleted
 #      rather than left in place looking like a safety net.
 #
-# Every link in an event chain fails silently and independently. So this does
-# not react to an event. It asks one question on a timer — IS PRODUCTION
-# RUNNING CURRENT MAIN? — and converges. `schedule` is driven by GitHub itself
-# rather than by any token, so nothing can suppress it. A broken chain stays
-# broken; a loop heals.
+# Every link in an event chain fails silently and independently. So the timer
+# remains the independent backstop that asks one question — IS PRODUCTION
+# RUNNING CURRENT MAIN? — and converges. A successful main-branch Docker smoke
+# completion also wakes the same idempotent loop sooner; it never replaces the
+# schedule. A broken event chain still heals on the next timer tick.
 #
 # What "production" means here
 # ----------------------------
@@ -43,6 +43,13 @@ on:
     # storage data-loss fix sitting unshipped on main.
     - cron: '*/15 * * * *'
   workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Docker build smoke
+    types:
+      - completed
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -55,8 +62,19 @@ concurrency:
 jobs:
   reconcile:
     name: Is prod running current main?
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        (
+          github.event.workflow_run.event == 'push' ||
+          github.event.workflow_run.event == 'workflow_dispatch'
+        )
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,11 +126,16 @@ jobs:
             echo "could not read build-image paths — treating HEAD as release-relevant"
             RELEVANT="$(git rev-parse HEAD)"
           else
-            echo "release paths:"; printf '  %s\n' $PATHS
+            echo "release paths:"
+            printf '  %s\n' $PATHS
             # Newest commit on main touching anything the image is built from.
             # Docs-only commits after it genuinely need no deploy.
+            # Disable shell glob expansion so git receives the workflow's path
+            # patterns exactly; word splitting is intentional (no path spaces).
+            set -f
             # shellcheck disable=SC2086
             RELEVANT="$(git log -1 --format=%H -- $PATHS)"
+            set +f
           fi
 
           if [ -z "$RELEVANT" ]; then
@@ -124,13 +147,46 @@ jobs:
           echo "main HEAD             : $(git rev-parse HEAD)"
           echo "last release-relevant : ${RELEVANT}"
 
+          # Do not dispatch over release work that already contains the commit
+          # we need. A manual build-image dispatch shares the main concurrency
+          # group with push builds, so blindly dispatching here can restart a
+          # nearly-complete release. The ancestry check is load-bearing: stale
+          # active work must not suppress recovery for newer main.
+          if ! ACTIVE_SHAS="$(gh api --paginate \
+                "repos/${REPO}/actions/runs?branch=main&per_page=100" \
+                --jq '.workflow_runs[]
+                      | select(.status != "completed")
+                      | select(.path == ".github/workflows/build-image.yml"
+                            or .path == ".github/workflows/deploy-prod.yml")
+                      | .head_sha')"; then
+            echo "::warning::active release-run query failed; deferring"
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          for sha in $ACTIVE_SHAS; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "in-flight release run ${sha:0:8} already contains ${RELEVANT:0:8}"
+              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "detail=in-flight release run ${sha:0:8} contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+
           # Successful DEPLOY runs on main — not builds. A deploy only reaches
           # success after its post-deploy canary passes, so this is the closest
           # available proxy for "production is serving this". Filtered to main
           # so a feature-branch run can never be mistaken for production.
-          DEPLOYED="$(gh api --paginate \
-                       "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
-                       --jq '.workflow_runs[].head_sha' 2>/dev/null || true)"
+          if ! DEPLOYED="$(gh api --paginate \
+                "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
+                --jq '.workflow_runs[].head_sha')"; then
+            echo "::warning::successful deploy-run query failed; deferring"
+            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "detail=successful deploy-run query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           if [ -z "$DEPLOYED" ]; then
             echo "no successful deploy on record — dispatching"
@@ -167,13 +223,55 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
+          TARGET_SHA="$(git rev-parse HEAD)"
+          IMAGE_TAG="$(git rev-parse --short=12 HEAD)"
+          DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
           gh workflow run build-image.yml --repo "$REPO" --ref main
+
+          BUILD_RUN_ID=""
+          for _ in {1..12}; do
+            BUILD_RUN_ID="$(
+              gh run list \
+                --repo "$REPO" \
+                --workflow build-image.yml \
+                --branch main \
+                --event workflow_dispatch \
+                --limit 20 \
+                --json databaseId,headSha,createdAt \
+                --jq "map(select(.headSha == \"${TARGET_SHA}\" and .createdAt >= \"${DISPATCHED_AT}\")) | sort_by(.createdAt) | last | .databaseId // empty"
+            )"
+            [ -n "$BUILD_RUN_ID" ] && break
+            sleep 5
+          done
+
+          if [ -z "$BUILD_RUN_ID" ]; then
+            echo "::error::could not identify the reconcile-initiated image build"
+            exit 1
+          fi
+
+          gh run watch "$BUILD_RUN_ID" --repo "$REPO" --exit-status
+
+          if ! CURRENT_MAIN="$(gh api "repos/${REPO}/commits/main" --jq '.sha')"; then
+            echo "::warning::could not re-read main after image build; not deploying"
+            exit 0
+          fi
+          if [ "$CURRENT_MAIN" != "$TARGET_SHA" ]; then
+            echo "::notice::main advanced to ${CURRENT_MAIN:0:8}; not deploying ${TARGET_SHA:0:8}"
+            exit 0
+          fi
+
+          gh workflow run deploy-prod.yml \
+            --repo "$REPO" \
+            --ref main \
+            -f image_tag="$IMAGE_TAG"
           {
             echo "### Release drift corrected"
             echo ""
             echo "${DETAIL}."
             echo ""
-            echo "Dispatched \`Build and publish image\`; \`Deploy prod\` chains from it."
+            echo "Built image \`${IMAGE_TAG}\` in run ${BUILD_RUN_ID} and explicitly dispatched \`Deploy prod\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: In sync
@@ -185,7 +283,9 @@ jobs:
 
 # On the 15-minute interval
 # -------------------------
-# This is now the ONLY thing that starts a release, so the interval is the
-# expected latency rather than a worst case. Fifteen minutes was chosen because
-# "merged but not shipped" must not survive long enough to be mistaken for
-# shipped — which is exactly what happened when it survived for hours.
+# The successful Docker-smoke completion normally wakes reconciliation sooner.
+# The interval remains the independent best-effort backstop; GitHub does not
+# guarantee schedule latency.
+# Fifteen minutes was chosen because "merged but not shipped" must not survive
+# long enough to be mistaken for shipped — which is exactly what happened when
+# it survived for hours.
