@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-WORKFLOW = (
-    Path(__file__).resolve().parents[2]
-    / ".github"
-    / "workflows"
-    / "desktop-release.yml"
-)
+WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "desktop-release.yml"
 
 
 def _workflow_text() -> str:
@@ -51,10 +46,7 @@ def test_workflow_emits_provenance_sbom_channels_and_rollback_evidence() -> None
     assert "actions/attest-build-provenance" in workflow
     assert "desktop_metadata.py sbom" in workflow
     assert "rollout_percent" in workflow
-    assert (
-        "rollback-evidence-${{ matrix.platform }}-${{ matrix.architecture }}.json"
-        in workflow
-    )
+    assert "rollback-evidence-${{ matrix.platform }}-${{ matrix.architecture }}.json" in workflow
     assert "channel" in workflow
 
 
@@ -68,15 +60,20 @@ def test_macos_bundle_is_archived_before_cross_job_transport() -> None:
 def test_signed_outputs_are_attested_after_signing() -> None:
     workflow = _workflow_text()
 
+    build = workflow.split("  build:", 1)[1].split("  test-unsigned-windows-install:", 1)[0]
     signing = workflow.split("sign-and-verify:", 1)[1]
     assert "actions/attest-build-provenance@v2" in signing
     assert "subject-path:" in signing
     assert "packaging/dist/${{ matrix.platform }}/*.json" in signing
     assert '--sbom "$sbom" --metadata "${artifact}.metadata.json"' in signing
+    assert "--pyinstaller-analysis" in build
+    assert "desktop_metadata.py sbom" in build
+    assert "desktop_metadata.py sbom" not in signing
     signed_metadata = signing.split(
         "- name: Emit signed metadata, manifests, and rollback evidence", 1
     )[1]
-    assert signed_metadata.index("desktop_metadata.py sbom") < signed_metadata.index(
+    assert "desktop_metadata.py verify-build-sbom" in signed_metadata
+    assert signed_metadata.index("desktop_metadata.py verify-build-sbom") < signed_metadata.index(
         "desktop_metadata.py metadata"
     )
     assert signed_metadata.index("desktop_metadata.py metadata") < signed_metadata.index(
@@ -93,9 +90,7 @@ def test_macos_certificate_is_imported_into_temporary_keychain() -> None:
 
 def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> None:
     workflow = _workflow_text()
-    lifecycle = (
-        Path(__file__).with_name("windows_lifecycle.ps1").read_text(encoding="utf-8")
-    )
+    lifecycle = Path(__file__).with_name("windows_lifecycle.ps1").read_text(encoding="utf-8")
 
     assert "test-unsigned-windows-install:" in workflow
     assert "windows_lifecycle.ps1" in workflow

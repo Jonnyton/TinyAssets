@@ -142,9 +142,7 @@ def test_linux_build_defines_deb_and_portable_artifacts() -> None:
 
 
 def test_windows_installer_preserves_user_content_on_uninstall() -> None:
-    installer = (ROOT / "packaging" / "windows" / "TinyAssets.iss").read_text(
-        encoding="utf-8"
-    )
+    installer = (ROOT / "packaging" / "windows" / "TinyAssets.iss").read_text(encoding="utf-8")
 
     assert installer.count("{userappdata}\\TinyAssets") == 2
     assert '{userappdata}\\TinyAssets\\updates"' in installer
@@ -178,6 +176,120 @@ def test_metadata_json_round_trips_without_absolute_build_paths(
     encoded = json.dumps(result, sort_keys=True)
 
     assert str(tmp_path) not in encoded
+
+
+def test_sbom_inventory_comes_from_pyinstaller_bundle_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metadata = _load_metadata_module()
+    analysis = tmp_path / "Analysis-00.toc"
+    analysis.write_text(
+        repr(
+            (
+                [],
+                [
+                    ("PIL.Image", "/build/site-packages/PIL/Image.py", "PYMODULE"),
+                    ("pystray", "/build/site-packages/pystray/__init__.py", "PYMODULE"),
+                    (
+                        "pyi_rth_inspect",
+                        "/build/site-packages/PyInstaller/hooks/rthooks/pyi_rth_inspect.py",
+                        "PYSOURCE",
+                    ),
+                    ("tinyassets", "/repo/tinyassets/__init__.py", "PYMODULE"),
+                    ("json", "/python/Lib/json/__init__.py", "PYMODULE"),
+                ],
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        metadata.importlib.metadata,
+        "packages_distributions",
+        lambda: {
+            "PIL": ["Pillow"],
+            "PyInstaller": ["pyinstaller"],
+            "pystray": ["pystray"],
+        },
+    )
+    versions = {
+        "Pillow": "11.1.0",
+        "pyinstaller": "6.19.0",
+        "pystray": "0.19.5",
+    }
+
+    def package_version(name: str) -> str:
+        try:
+            return versions[name]
+        except KeyError as exc:
+            raise metadata.importlib.metadata.PackageNotFoundError(name) from exc
+
+    monkeypatch.setattr(metadata.importlib.metadata, "version", package_version)
+
+    assert metadata.packages_from_pyinstaller_analysis(
+        analysis,
+        project_name="TinyAssets",
+        project_version="1.2.3",
+    ) == [
+        "Pillow==11.1.0",
+        "pyinstaller==6.19.0",
+        "pystray==0.19.5",
+        "TinyAssets==1.2.3",
+    ]
+
+
+def test_nonempty_artifact_cannot_have_an_empty_sbom() -> None:
+    metadata = _load_metadata_module()
+
+    with pytest.raises(ValueError, match="non-empty artifact"):
+        metadata.build_spdx_sbom(
+            artifact_name="TinyAssetsSetup.exe",
+            artifact_size=9,
+            packages=[],
+            source_date_epoch=1_700_000_000,
+        )
+
+
+def test_build_sbom_integrity_binding_rejects_changed_sbom(tmp_path: Path) -> None:
+    metadata = _load_metadata_module()
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    sbom = tmp_path / "TinyAssetsSetup.exe.spdx.json"
+    build_metadata = tmp_path / "TinyAssetsSetup.exe.metadata.json"
+    artifact.write_bytes(b"non-empty installer")
+    sbom.write_text(
+        json.dumps(
+            {
+                "spdxVersion": "SPDX-2.3",
+                "packages": [{"name": "Pillow", "versionInfo": "11.1.0"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    build_metadata.write_text(
+        json.dumps(
+            {
+                "artifact": {"name": artifact.name},
+                "sbom": {
+                    "name": sbom.name,
+                    "sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    metadata.verify_build_sbom(
+        artifact=artifact,
+        sbom=sbom,
+        build_metadata=build_metadata,
+    )
+
+    sbom.write_text('{"spdxVersion":"SPDX-2.3","packages":[]}\n', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="differs from build-generated SBOM"):
+        metadata.verify_build_sbom(
+            artifact=artifact,
+            sbom=sbom,
+            build_metadata=build_metadata,
+        )
 
 
 def test_update_manifest_uses_provisioned_ed25519_identity(tmp_path: Path) -> None:
@@ -222,6 +334,4 @@ def test_update_manifest_uses_provisioned_ed25519_identity(tmp_path: Path) -> No
     assert verified.version == "1.2.3"
     assert verified.rollout_percent == 25
     assert verified.sbom_sha256 == hashlib.sha256(sbom.read_bytes()).hexdigest()
-    assert verified.metadata_sha256 == hashlib.sha256(
-        provenance.read_bytes()
-    ).hexdigest()
+    assert verified.metadata_sha256 == hashlib.sha256(provenance.read_bytes()).hexdigest()

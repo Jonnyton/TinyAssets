@@ -196,7 +196,10 @@ jobs:
           $staged = Join-Path $stage $artifact.Name
           $sbom = "$staged.spdx.json"
           python packaging/desktop_metadata.py sbom `
-            --artifact-name $artifact.Name --output $sbom
+            --artifact $staged `
+            --pyinstaller-analysis "packaging/build/windows/TinyAssets/Analysis-00.toc" `
+            --project-name TinyAssets --project-version "${{ needs.plan.outputs.version }}" `
+            --output $sbom
           python packaging/desktop_metadata.py metadata `
             --artifact $staged --output "$staged.metadata.json" `
             --version "${{ needs.plan.outputs.version }}" `
@@ -223,7 +226,10 @@ jobs:
           staged="$stage/$(basename "$artifact")"
           sbom="${staged}.spdx.json"
           python packaging/desktop_metadata.py sbom \
-            --artifact-name "$(basename "$artifact")" --output "$sbom"
+            --artifact "$staged" \
+            --pyinstaller-analysis packaging/build/macos/TinyAssets/Analysis-00.toc \
+            --project-name TinyAssets --project-version "${{ needs.plan.outputs.version }}" \
+            --output "$sbom"
           python packaging/desktop_metadata.py metadata \
             --artifact "$staged" --output "${staged}.metadata.json" \
             --version "${{ needs.plan.outputs.version }}" \
@@ -251,7 +257,10 @@ jobs:
             count=$((count + 1))
             sbom="${staged}.spdx.json"
             python packaging/desktop_metadata.py sbom \
-              --artifact-name "$(basename "$staged")" --output "$sbom"
+              --artifact "$staged" \
+              --pyinstaller-analysis packaging/build/linux/TinyAssets/Analysis-00.toc \
+              --project-name TinyAssets --project-version "${{ needs.plan.outputs.version }}" \
+              --output "$sbom"
             python packaging/desktop_metadata.py metadata \
               --artifact "$staged" --output "${staged}.metadata.json" \
               --version "${{ needs.plan.outputs.version }}" \
@@ -497,8 +506,9 @@ jobs:
             [[ -f "$artifact" ]] || continue
             count=$((count + 1))
             sbom="${artifact}.spdx.json"
-            python packaging/desktop_metadata.py sbom \
-              --artifact-name "$(basename "$artifact")" --output "$sbom"
+            python packaging/desktop_metadata.py verify-build-sbom \
+              --artifact "$artifact" --sbom "$sbom" \
+              --build-metadata "${artifact}.metadata.json"
             python packaging/desktop_metadata.py metadata \
               --artifact "$artifact" --output "${artifact}.metadata.json" \
               --version "$VERSION" --source-commit "${{ github.sha }}" \

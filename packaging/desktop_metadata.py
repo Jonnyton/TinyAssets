@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import base64
 import hashlib
 import importlib.metadata
@@ -19,6 +20,13 @@ from cryptography.hazmat.primitives.serialization import load_pem_private_key
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _SIGNING_STATUSES = {"unsigned-ci", "signed", "signed-and-notarized"}
 _CHANNELS = {"stable", "prerelease"}
+_BUNDLE_ENTRY_TYPES = {
+    "BINARY",
+    "DATA",
+    "EXTENSION",
+    "PYMODULE",
+    "PYSOURCE",
+}
 
 
 def _sha256(path: Path) -> str:
@@ -96,30 +104,78 @@ def build_metadata(
     }
 
 
-def installed_packages() -> list[str]:
-    """Return stable ``name==version`` entries for the build environment."""
-    packages = {
-        f"{distribution.metadata['Name']}=={distribution.version}"
-        for distribution in importlib.metadata.distributions()
-        if distribution.metadata.get("Name")
+def _bundle_entries(value: object) -> Iterable[tuple[str, str]]:
+    if (
+        isinstance(value, tuple)
+        and len(value) == 3
+        and isinstance(value[0], str)
+        and isinstance(value[1], str)
+        and value[2] in _BUNDLE_ENTRY_TYPES
+    ):
+        yield value[0], value[1]
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _bundle_entries(item)
+
+
+def packages_from_pyinstaller_analysis(
+    analysis: Path,
+    *,
+    project_name: str,
+    project_version: str,
+) -> list[str]:
+    """Return distributions whose modules or files are in a PyInstaller bundle."""
+    analysis = Path(analysis)
+    try:
+        bundle_graph = ast.literal_eval(analysis.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError) as exc:
+        raise ValueError(f"unreadable PyInstaller analysis: {analysis}") from exc
+
+    package_distributions = importlib.metadata.packages_distributions()
+    roots = {
+        name.casefold(): distributions for name, distributions in package_distributions.items()
     }
+    distribution_names: set[str] = set()
+    project_is_bundled = False
+    for bundled_name, source_path in _bundle_entries(bundle_graph):
+        module_root = bundled_name.replace("\\", "/").split("/", 1)[0].split(".", 1)[0]
+        source_parts = source_path.replace("\\", "/").split("/")
+        source_root = next(
+            (
+                source_parts[index + 1]
+                for index, part in enumerate(source_parts[:-1])
+                if part.casefold() in {"site-packages", "dist-packages"}
+            ),
+            "",
+        )
+        candidates = {module_root, source_root}
+        for candidate in candidates:
+            distribution_names.update(roots.get(candidate.casefold(), ()))
+        if module_root.casefold() == project_name.casefold().replace("-", "_"):
+            project_is_bundled = True
+
+    packages = {f"{name}=={importlib.metadata.version(name)}" for name in distribution_names}
+    if project_is_bundled:
+        packages.add(f"{project_name}=={project_version}")
     return sorted(packages, key=str.casefold)
 
 
 def build_spdx_sbom(
     *,
     artifact_name: str,
+    artifact_size: int,
     packages: Iterable[str],
     source_date_epoch: int,
 ) -> dict[str, object]:
     """Create a minimal deterministic SPDX 2.3 package inventory."""
     package_list = sorted(set(packages), key=str.casefold)
+    if artifact_size > 0 and not package_list:
+        raise ValueError("non-empty artifact cannot have an empty SBOM")
     namespace_hash = hashlib.sha256(
         (artifact_name + "\n" + "\n".join(package_list)).encode()
     ).hexdigest()
-    created = datetime.fromtimestamp(source_date_epoch, tz=UTC).strftime(
-        "%Y-%m-%dT%H:%M:%SZ"
-    )
+    created = datetime.fromtimestamp(source_date_epoch, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
         "spdxVersion": "SPDX-2.3",
         "dataLicense": "CC0-1.0",
@@ -143,6 +199,35 @@ def build_spdx_sbom(
             for index, item in enumerate(package_list, start=1)
         ],
     }
+
+
+def verify_build_sbom(*, artifact: Path, sbom: Path, build_metadata: Path) -> None:
+    """Verify that signing uses the exact non-empty SBOM emitted by the build."""
+    artifact = Path(artifact)
+    sbom = Path(sbom)
+    build_metadata = Path(build_metadata)
+    for path in (artifact, sbom, build_metadata):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    try:
+        metadata_document = json.loads(build_metadata.read_text(encoding="utf-8"))
+        expected_artifact = metadata_document["artifact"]["name"]
+        expected_sbom = metadata_document["sbom"]
+        expected_sbom_name = expected_sbom["name"]
+        expected_sbom_sha256 = expected_sbom["sha256"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("build metadata has no usable SBOM binding") from exc
+    if expected_artifact != artifact.name or expected_sbom_name != sbom.name:
+        raise ValueError("build metadata names do not match the signing artifact and SBOM")
+    if expected_sbom_sha256 != _sha256(sbom):
+        raise ValueError("attested SBOM differs from build-generated SBOM")
+    try:
+        sbom_document = json.loads(sbom.read_text(encoding="utf-8"))
+        packages = sbom_document["packages"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("build-generated SBOM has no usable package inventory") from exc
+    if artifact.stat().st_size > 0 and (not isinstance(packages, list) or not packages):
+        raise ValueError("non-empty artifact cannot have an empty SBOM")
 
 
 def sign_update_manifest(
@@ -220,8 +305,15 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
     sbom = subparsers.add_parser("sbom")
-    sbom.add_argument("--artifact-name", required=True)
+    sbom.add_argument("--artifact", type=Path, required=True)
+    sbom.add_argument("--pyinstaller-analysis", type=Path, required=True)
+    sbom.add_argument("--project-name", required=True)
+    sbom.add_argument("--project-version", required=True)
     sbom.add_argument("--output", type=Path, required=True)
+    verify_sbom = subparsers.add_parser("verify-build-sbom")
+    verify_sbom.add_argument("--artifact", type=Path, required=True)
+    verify_sbom.add_argument("--sbom", type=Path, required=True)
+    verify_sbom.add_argument("--build-metadata", type=Path, required=True)
     metadata = subparsers.add_parser("metadata")
     metadata.add_argument("--artifact", type=Path, required=True)
     metadata.add_argument("--output", type=Path, required=True)
@@ -257,21 +349,33 @@ def main() -> int:
     except (KeyError, ValueError) as exc:
         raise SystemExit("SOURCE_DATE_EPOCH must be provisioned for reproducible builds") from exc
     if args.command == "sbom":
+        if not args.artifact.is_file():
+            raise FileNotFoundError(args.artifact)
         _write_json(
             args.output,
             build_spdx_sbom(
-                artifact_name=args.artifact_name,
-                packages=installed_packages(),
+                artifact_name=args.artifact.name,
+                artifact_size=args.artifact.stat().st_size,
+                packages=packages_from_pyinstaller_analysis(
+                    args.pyinstaller_analysis,
+                    project_name=args.project_name,
+                    project_version=args.project_version,
+                ),
                 source_date_epoch=source_date_epoch,
             ),
+        )
+        return 0
+    if args.command == "verify-build-sbom":
+        verify_build_sbom(
+            artifact=args.artifact,
+            sbom=args.sbom,
+            build_metadata=args.build_metadata,
         )
         return 0
     if args.command == "sign-update-manifest":
         encoded_key = os.environ.get("DESKTOP_UPDATE_SIGNING_KEY_BASE64", "")
         if not encoded_key:
-            raise SystemExit(
-                "signing identity not provisioned: desktop update manifest key"
-            )
+            raise SystemExit("signing identity not provisioned: desktop update manifest key")
         try:
             private_key_pem = base64.b64decode(encoded_key, validate=True)
         except ValueError as exc:
