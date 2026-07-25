@@ -442,9 +442,9 @@ def run_windows_desktop_effector(
             "intent": packet,
             "matched_output_key": matched_key,
             "hint": (
-                "Call extensions action=grant_effector_consent "
-                f"sink={EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME} "
-                f"destination={destination} before dispatching host-local "
+                "Effector consent grants are not exposed by the advertised "
+                "handles; an operator must authorize this destination through "
+                "the internal consent surface before dispatching host-local "
                 "Windows desktop effects."
             ),
         }

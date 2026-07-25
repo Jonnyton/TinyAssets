@@ -580,9 +580,10 @@ def run_twitter_post_effector(
             idempotency_hint=idempotency_hint,
         )
         evidence["hint"] = (
-            "Call extensions action=grant_effector_consent "
-            f"sink={EXTERNAL_WRITE_SINK_TWITTER_POST} "
-            f"destination={destination} before dispatching twitter_post effects."
+            "Effector consent grants are not exposed by the advertised "
+            "handles; an operator must authorize this destination through "
+            "the internal consent surface before dispatching twitter_post "
+            "effects."
         )
         return evidence
 

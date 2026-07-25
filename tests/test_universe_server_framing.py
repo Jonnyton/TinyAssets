@@ -91,7 +91,7 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
     assert "build_branch" in text
     assert "no simulation" not in text
     assert "affirmative consent" not in text
-    assert len(tool.description or "") < 2200
+    assert len(tool.description or "") < 900
 
 
 def test_wiki_tool_description_is_not_a_catchall() -> None:

@@ -1121,8 +1121,9 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
     approval_warning_lines = [
         f"  - APPROVAL REQUIRED: node '{n['node_id']}' ({n['display_name']}) has"
-        " unapproved source_code — host must run extensions action=approve_source_code"
-        " before this branch can run."
+        " unapproved source_code — the host must approve it through the internal "
+        "operator surface before this branch can run; approval is not exposed "
+        "by the advertised handles."
         for n in unapproved_sc
     ]
 
@@ -1159,8 +1160,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "approved before it can run."
         if unapproved_sc
         else (
-            "Note: run this branch with action='run_branch' once validated. "
-            "Pass state field values via inputs_json."
+            f'Note: run this branch with run_graph branch_def_id="{bid}" '
+            'inputs_json="<state JSON>" once validated.'
         )
     )
     summary_parts += ["", "Graph:", mermaid, "", run_note]
@@ -1526,7 +1527,8 @@ def _lookup_node_body(
         if not hit:
             return {}, (
                 f"standalone node '{node_id}' not found. "
-                "Check `extensions action=list` for registered nodes."
+                "Global registered-node discovery is not exposed by the "
+                "advertised handles."
             )
         return {
             "node_id": hit.get("node_id", node_id),
@@ -1585,7 +1587,7 @@ def _lookup_node_body(
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
-        "Use `extensions action=get_branch` to list its nodes."
+        f'Use `read_graph target="branch" branch_id="{source}"` to list its nodes.'
     )
 
 
@@ -2619,10 +2621,9 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 f"patch_branch denied: branch '{bid}' is authored by "
-                f"'{branch_author}'; caller is '{caller}'. Pass "
-                "force=true to mutate another author's branch, or fork "
-                "it (publish_version + build_branch with fork_from) and "
-                "amend your own copy. See BUG-081."
+                f"'{branch_author}'; caller is '{caller}'. Cross-author "
+                "mutation and fork creation are not exposed by the advertised "
+                "handles; use an internal operator surface. See BUG-081."
             ),
             "branch_author": branch_author,
             "caller": caller,
@@ -3018,11 +3019,11 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             lines.append(f"- … and {len(entries) - 12} more.")
         lines.append("")
         lines.append(
-            "_To reuse: call `add_node` with "
-            "`node_ref_json={\"source\": \"<branch_def_id>\", "
-            "\"node_id\": \"<node_id>\"}`, or include the same "
-            "`node_ref` inside a `spec_json` / `changes_json` node "
-            "entry on build_branch / patch_branch. See #66._"
+            "_To reuse: send an `add_node` operation containing "
+            "`node_ref={\"source\": \"<branch_def_id>\", "
+            "\"node_id\": \"<node_id>\"}` through "
+            '`write_graph target="branch" branch_id="<target id>" '
+            'changes_json="[...]". See #66._'
         )
     else:
         if query or role:
@@ -3033,9 +3034,8 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             )
         else:
             lines.append(
-                "_No nodes registered yet. Build one with "
-                "`extensions action=build_branch` and future callers "
-                "will find it here._"
+                "_No nodes registered yet. Standalone node and new-workflow "
+                "creation are not exposed by the advertised handles._"
             )
 
     return json.dumps({
