@@ -7,8 +7,10 @@
 > clause — standing goals per active universe, ahead of the weekly gate-claims
 > north star — moved with it but now lives in that change's separate metrics
 > requirement, where the visibility scoping it needs belongs. They were moved
-> rather than copied so each requirement keeps exactly one active owner,
-> matching the release pattern of
+> rather than copied so each requirement keeps exactly one active owner — the
+> granularity the ownership convention in `proposal.md` was restated at on the
+> same date, since this is the umbrella's first partial release and the earlier
+> per-delta wording did not cover it. It otherwise follows the release pattern of
 > umbrella tasks 1.1, 1.2, and 2.1. The three requirements below stay with the
 > umbrella pending tasks 4.2 (bounties, escrow, claims, refunds) and 4.3 (the
 > measured direct-service gate), so the `demand-side` capability has two active

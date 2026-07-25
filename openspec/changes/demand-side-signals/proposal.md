@@ -21,10 +21,10 @@ Nothing here is shipped behavior. What exists on `main` is adjacent, not equival
 
 - **Consumes, does not redefine:** `shared-goals-and-convergence` (the Goal primitive, binding, gates, and the goal action surface), `identity-auth-and-access-control` (authenticated principal, visibility and ownership axes), `graph-execution-substrate` (compilation and run state), `constraint-evaluation` + `evaluation-outcomes-and-attribution` (gate evaluation and claim ordering).
 - **Consumes an unbuilt owner:** inbox addressing, ingress, receipt, typing, and eligibility cutoff belong to `outbound-boundary-layer`. This change owns only the schedule that consumes eligible items and SHALL NOT define ingress or addressing. Until that owner lands, the inbox-consuming requirement is implementable only against its contract, not against a live inbox.
-- **Delegates money:** every value-moving consequence settles through the single authenticated transaction transport owned by `paid-market-track-e-wave-2-transport`. This change creates no accounting path and no payment surface.
+- **Delegates money:** every value-moving consequence settles through the single authenticated double-entry transaction boundary owned by the `paid-market-economy` capability (whose transport `paid-market-track-e-wave-2-transport` is currently building). Normative text here names the *capability*, not the change slug — change names expire on archive, capabilities do not. This change creates no accounting path and no payment surface.
 - **Delegates published demand aggregates:** the bucketed, k-anonymized, off-by-default `TINYASSETS_DEMAND_SIGNAL` contract is owned by `paid-market-live-price-discovery`. This change defines no second aggregation or publication path.
 - **Leaves with the umbrella:** goal-bounty posting/escrow/claims/refunds (task 4.2) and the measured direct-service volume gate and its parameters (task 4.3).
-- **Supersession is carried as a delta, not as a promise:** the scheduler's declared missed-tick policy contradicts the as-built limitation in `openspec/specs/daemon-runtime-and-dispatch/spec.md`, so that contradiction is carried here as a MODIFIED delta. `demand-side` SHALL NOT sync without it — a synced standing-goal guarantee beside an unmodified "cron ticks are silently dropped" limitation is the exact drift `reclassify-forward-vision-specs` removed.
+- **Supersession is carried as deltas, not as promises:** two as-built requirements contradict this target — the scheduler's silent missed-tick behavior in `openspec/specs/daemon-runtime-and-dispatch/spec.md`, and the **fixed** `goals` action table in `openspec/specs/shared-goals-and-convergence/spec.md`. Both contradictions are carried here as MODIFIED deltas. `demand-side` SHALL NOT sync without them — a synced standing-goal guarantee beside an unmodified "cron ticks are silently dropped" limitation, or beside an action table that no longer matches, is the exact drift `reclassify-forward-vision-specs` removed.
 
 ## Capabilities
 
@@ -34,7 +34,10 @@ Nothing here is shipped behavior. What exists on `main` is adjacent, not equival
 
 ### Modified Capabilities
 
-- `daemon-runtime-and-dispatch`: the persisted scheduler requirement gains a required IANA timezone per cron-class schedule and a declared, recorded missed-tick policy, replacing the as-built behavior in which cron ticks missed during downtime were silently dropped. Only that requirement is modified; `operator-request-trigger-contract` owns the dispatcher requirement in the same capability and is untouched.
+- `daemon-runtime-and-dispatch`: the persisted scheduler requirement gains a required IANA timezone per cron-class schedule, a declared and recorded missed-tick policy with a determinate period identity under every policy, and explicit DST gap/overlap semantics — replacing the as-built behavior in which cron ticks missed during downtime were silently dropped. Only that requirement is modified; `operator-request-trigger-contract` owns the *dispatcher* requirement in the same capability and is untouched, so the two changes do not collide.
+- `shared-goals-and-convergence`: the Goal record carries the standing-goal coordination fields, and the fixed `goals` action table gains `set_schedule`, `clear_schedule`, `pause`, and `resume`. The as-built requirement specifies that table as **fixed** and enumerates it, so extending it changes that requirement; asserting the extension only in the `demand-side` delta would leave canonical truth describing a table that no longer matches. Nothing else in the capability is touched.
+
+All three deltas are unsynced targets. Canonical truth stays as-built until this change is implemented and synced, and `demand-side` SHALL NOT sync without both MODIFIED deltas.
 
 ### Released from the umbrella
 

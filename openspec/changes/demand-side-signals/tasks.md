@@ -25,10 +25,13 @@
 - [ ] 0.4 Confirm the umbrella's decisions D1–D8 still hold for this slice and record any divergence as a design change here, not as silent drift.
 - [ ] 0.5 Take no requirement from the host-gated open-production-commons reframe. Per umbrella D9 it is provenance only and binds nothing in either direction — "keep the reframe reachable" is not a constraint on this slice and not a review gate against it.
 - [ ] 0.6 Re-read PLAN.md Scoping Rules 1, 3, and 4 as amended by the 2026-07-25 host decisions before implementing; if PR #1761 landed with different wording than this change was authored against, reconcile `design.md` D2/D5/D6 first.
+- [ ] 0.7 Re-verify the two authority concerns `design.md` D3 cites, against code rather than against `STATUS.md`: the client-supplied `owner_actor` path (`runtime_ops.py:350-392`, filed 2026-07-25) and the `_current_actor` env fallback (`engine_helpers.py:192`, filed 2026-06-30 / verified 2026-07-22). If either has since been fixed, relabel the corresponding §1 task as a regression guard rather than a fix — still worth building, but do not claim to close a defect that is already closed.
+- [ ] 0.8 Re-verify that `openspec/specs/shared-goals-and-convergence/spec.md` still specifies the `goals` action table as **fixed** and still enumerates it without the four standing-goal actions. If a later change already extended it, drop or rewrite the MODIFIED delta rather than restating a table that has moved.
 
 ## 1. Standing-goal record and execution authority
 
 - [ ] 1.1 Add standing-goal fields to the existing Goal record — desired outcome, owning principal, universe, IANA-timezone cron-class schedule or event trigger, declared budget posture, success gates, pause state — with the next numbered storage migration. No parallel store.
+- [ ] 1.1a Extend the existing fixed `goals` action table with `set_schedule`, `clear_schedule`, `pause`, and `resume`, under the same `require_action_scope("goals", …)` gate, the same unknown-action error path, and the same best-effort contribution attribution. Add no second Goal surface and no new top-level handle. This is what the `shared-goals-and-convergence` MODIFIED delta covers; do not implement it while that delta is absent or stale (see 0.8).
 - [ ] 1.2 Bind the owning principal server-side from the authenticated actor at registration and persist it as the sole execution authority.
 - [ ] 1.3 Remove caller-supplied owner/actor/universe/authority resolution from the scheduled-execution path; ignore such fields and record any discrepancy with the persisted owner.
 - [ ] 1.4 Remove ambient environment fallback from the scheduled-execution path; an unresolvable, revoked, paused, or under-scoped owner fails closed with a recorded reason and no host, maintainer, platform, or cached identity substitution.
@@ -40,9 +43,10 @@
 - [ ] 2.1 Require a resolvable IANA timezone on every cron-class schedule at registration; refuse registration otherwise, with a reason naming the missing timezone. Never persist a row that would later evaluate in the daemon's local zone.
 - [ ] 2.2 Add a per-schedule missed-tick policy (`skip` / `fire_once` / `backfill_bounded(n)`) persisted with the schedule; default existing rows to `skip` so migration changes no current behavior.
 - [ ] 2.3 Apply the policy deterministically on tick-loop resume and record which policy ran and how many periods were skipped or replayed, including the count discarded beyond `n`.
-- [ ] 2.4 Make a bounded replay reuse the missed period's `(goal_id, schedule_period)` identity rather than minting a new one, so the `outbound-boundary-layer` effect key deduplicates instead of double-firing.
-- [ ] 2.5 Tests: downtime spanning multiple due periods resolves identically under each policy; a replayed period is byte-identical in period identity to its original; a DST transition in the goal's zone does not double-fire or skip a period.
-- [ ] 2.6 Do not sync `demand-side` without the `daemon-runtime-and-dispatch` MODIFIED delta. A synced standing-goal guarantee beside an unmodified "cron ticks are silently dropped" limitation is the drift `reclassify-forward-vision-specs` removed.
+- [ ] 2.4 Give every policy a determinate period identity: `skip` mints none; `fire_once` fires once for the **most recent** missed period and reuses that period's identity; `backfill_bounded(n)` replays the most recent `n` in chronological order, each under its own identity. Never mint a fresh identity for a missed period — that is what would defeat the `outbound-boundary-layer` effect key.
+- [ ] 2.5 Implement explicit DST semantics: a nonexistent local time (spring-forward gap) fires once at the next valid instant retaining the nominal period identity; an ambiguous local time (fall-back overlap) fires once on the first UTC occurrence with exactly one identity, and the second occurrence neither fires nor mints an identity.
+- [ ] 2.6 Tests: downtime spanning multiple due periods resolves identically under each policy; a replayed period is identical in period identity to its original; `fire_once` after three missed periods fires exactly once under the third period's identity; both DST cases fire exactly once with exactly one identity.
+- [ ] 2.7 Do not sync `demand-side` without **both** MODIFIED deltas (`daemon-runtime-and-dispatch` and `shared-goals-and-convergence`). A synced standing-goal guarantee beside an unmodified "cron ticks are silently dropped" limitation, or beside a `goals` action table that no longer matches, is the drift `reclassify-forward-vision-specs` removed.
 
 ## 3. Inbox consumption (schedule side only)
 
@@ -62,6 +66,7 @@
 ## 5. Owner-scoped demand metrics
 
 - [ ] 5.1 Derive standing-goals-per-active-universe and weekly gate-claim counts on read from records this capability persists; add no metrics service, table of denormalized counters, or new action namespace.
+- [ ] 5.1a Pin the metric's terms so two readers of the same universe get the same number: the numerator counts non-paused standing goals currently eligible to fire (excluding paused, expired, soft-deleted); the paused count is reported **alongside**, never folded in, so pausing never looks like deleting; the denominator counts universes with at least one such goal. Every response states its window and the definitions applied.
 - [ ] 5.2 Return them through the canonical read-only evidence handle and existing graph reads only.
 - [ ] 5.3 Scope every metric to what the reading principal can already read under `identity-auth-and-access-control`; a metric never widens a counted goal's visibility.
 - [ ] 5.4 Adversarial test from a principal with partial visibility: no count, label, schedule detail, or derived breakdown identifies a goal that principal cannot read directly.
@@ -77,7 +82,7 @@
 
 - [ ] 7.1 Assert by test that registration, scheduling, firing, inbox consumption, onboarding attachment, and metric derivation write no escrow, fee, price, ledger, or settlement record.
 - [ ] 7.2 Persist declared budget posture as a readable limit only; test that no spend path accepts posture as authorization.
-- [ ] 7.3 Make a value-moving due action refuse, record the refusal, and name the required owner (`paid-market-track-e-wave-2-transport`); test that no local balance, escrow, or ledger row is written as a substitute.
+- [ ] 7.3 Make a value-moving due action refuse, record the refusal, and name the required **capability** — the `paid-market-economy` authenticated double-entry transaction boundary — not a change slug, which expires on archive. Test that no local balance, escrow, or ledger row is written as a substitute.
 - [ ] 7.4 Specify and stage nothing from umbrella tasks 4.2 (bounty posting, escrow, tranches, first-verified-claim settlement, refunds, fee/attribution) or 4.3 (measured direct-service volume gate). Those stay with the umbrella.
 
 ## 8. Acceptance, sync, and archive
