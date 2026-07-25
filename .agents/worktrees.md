@@ -1167,9 +1167,9 @@ Notes:
 
 - Provider: codex-gpt56-deploy-summary
 - Branch: fix/deploy-summary-quoting
-- Lane state: active
+- Lane state: PR open; awaiting Opus 5 review and required checks
 - Worktree: C:\Users\Jonathan\Projects\wf-deploy-summary-quoting
-- STATUS/Issue/PR: production Deploy prod run 30141691915; PR pending
+- STATUS/Issue/PR: production Deploy prod run 30141691915; PR #1725
 - Scope: fix the post-deploy receipt Summary literal-escape SyntaxError
 - Review gate: focused RED/GREEN test, workflow suite, actionlint, independent Opus 5 review
 - Memory/implications: receipt validation/publication succeeded; Summary rendering alone failed
