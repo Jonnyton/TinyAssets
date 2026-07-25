@@ -48,6 +48,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
+| Raise the Claude Code monthly-spend ceiling; Opus 5 CLI is rejected before inference despite the model-rate reset | Claude account usage settings | - | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
