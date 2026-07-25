@@ -49,9 +49,16 @@ NOW = 1_780_000_000  # fixed unix anchor for index tests
 UTC = timezone.utc
 
 
-def _trade(price, tokens, buyer="b", seller="s", age=0, cap="llama-405b:batch"):
+def _trade(
+    price,
+    tokens,
+    buyer="b",
+    seller="s",
+    age=0,
+    market_class="llama-405b:batch",
+):
     return SettledTrade(
-        capability_id=cap,
+        market_class_id=market_class,
         price_micros_per_mtok=price,
         tokens_out=tokens,
         buyer_id=buyer,
@@ -169,9 +176,11 @@ class TestComputeVwap:
         assert n_pairs == 6  # both wash trades share one pair key
         assert vwap == 16_250_000
 
-    def test_mixed_capability_rejected(self):
+    def test_mixed_market_class_rejected(self):
         with pytest.raises(IndexError_):
-            compute_vwap([_trade(1, 1), _trade(1, 1, cap="other:batch")])
+            compute_vwap(
+                [_trade(1, 1), _trade(1, 1, market_class="other:batch")]
+            )
 
     def test_empty_rejected(self):
         with pytest.raises(IndexError_):
@@ -184,7 +193,7 @@ class TestComputeVwap:
 class TestComputeSpotQuote:
     def _quote(self, trades, **kw):
         args = dict(
-            capability_id="llama-405b:batch",
+            market_class_id="llama-405b:batch",
             trades=trades,
             now=NOW,
             best_ask_micros=None,
@@ -238,9 +247,11 @@ class TestComputeSpotQuote:
         with pytest.raises(IndexError_):
             self._quote([_trade(1_000_000, 1, age=-10)])
 
-    def test_capability_mismatch_rejected(self):
+    def test_market_class_mismatch_rejected(self):
         with pytest.raises(IndexError_):
-            self._quote([_trade(1_000_000, 1, cap="other:batch")])
+            self._quote(
+                [_trade(1_000_000, 1, market_class="other:batch")]
+            )
 
 
 # ------------------------------------------------------------- buckets
