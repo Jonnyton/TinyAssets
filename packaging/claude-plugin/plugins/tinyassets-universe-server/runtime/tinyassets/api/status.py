@@ -418,15 +418,29 @@ def _compute_supervisor_liveness(
             "depth": 0,
             "pending": 0,
             "running": 0,
+            "cancel_requested": 0,
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            "unknown": 0,
             "policy_parked_pending": 0,
+            "policy_parked": 0,
+            "awaiting_compatible_capacity": 0,
+            "invalid_operator_admission": 0,
+            "quarantined": 0,
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
+            "awaiting_compatible_capacity_max_age_s": 0,
+            "invalid_operator_admission_max_age_s": 0,
+            "quarantined_max_age_s": 0,
+            "policy_parked_max_age_s": 0,
             "stuck_running_max_age_s": 0,
             "recent_succeeded_count": 0,
+            "epoch_counts": {},
         },
+        "epoch2_operational": {},
+        "epoch_health": {},
+        "counts_complete": True,
         "running_tasks_lease": [],
         "stale_running_tasks": [],
         "warnings": [],
@@ -463,22 +477,22 @@ def _compute_supervisor_liveness(
             "loop-wedge signature.)"
         )
 
+    v1_error = ""
     try:
         from tinyassets.branch_tasks import read_queue
         queue = read_queue(udir)
     except Exception as exc:  # noqa: BLE001 — best-effort observability
+        queue = []
+        v1_error = str(exc)
         out["warnings"].append(f"queue_read_failed: {exc}")
-        return out
 
     out["queue_state"]["depth"] = len(queue)
-    if not queue:
-        return out
 
+    dispatcher_config = None
     try:
         from tinyassets.dispatcher import load_dispatcher_config
         dispatcher_config = load_dispatcher_config(Path(udir))
-    except Exception as exc:  # noqa: BLE001 — status must remain best-effort
-        dispatcher_config = None
+    except Exception as exc:  # noqa: BLE001 — best-effort status
         out["warnings"].append(f"dispatcher_config_read_failed: {exc}")
 
     any_lease_field_seen = False
@@ -608,8 +622,159 @@ def _compute_supervisor_liveness(
             stale["stale_reasons"] = stale_reasons
             out["stale_running_tasks"].append(stale)
 
+    v1_lifecycle = {
+        "depth": len(queue),
+        "lifecycle": {
+            status: int(out["queue_state"][status])
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "succeeded",
+                "failed",
+                "cancelled",
+            )
+        },
+        "operational": {
+            "policy_parked": int(
+            out["queue_state"]["policy_parked_pending"]
+            ),
+        },
+    }
+    if v1_error:
+        out["queue_state"]["epoch_counts"]["1"] = {
+            "available": False,
+            "error": v1_error,
+        }
+        out["epoch_health"]["1"] = {
+            "available": False,
+            "error": v1_error,
+        }
+        out["counts_complete"] = False
+    else:
+        out["queue_state"]["epoch_counts"]["1"] = {
+            "available": True,
+            **v1_lifecycle,
+        }
+        out["epoch_health"]["1"] = {"available": True}
+    try:
+        from tinyassets.api.universe import _epoch2_operational_snapshot
+
+        epoch2 = _epoch2_operational_snapshot(Path(udir))
+        out["epoch2_operational"] = epoch2
+        if not epoch2["available"]:
+            out["queue_state"]["epoch_counts"]["2"] = {
+                "available": False,
+                "error": epoch2["error"],
+            }
+            out["epoch_health"]["2"] = {
+                "available": False,
+                "error": epoch2["error"],
+            }
+            out["counts_complete"] = False
+            out["warnings"].append(
+                "epoch2_operational_read_failed: " + epoch2["error"]
+            )
+        else:
+            epoch2_lifecycle = epoch2["lifecycle_counts"]
+            epoch2_states = epoch2["operational_state_counts"]
+            out["queue_state"]["depth"] += int(epoch2["depth"])
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "unknown",
+            ):
+                out["queue_state"][status] += int(
+                    epoch2_lifecycle.get(status, 0)
+                )
+            for state in (
+                "awaiting_compatible_capacity",
+                "invalid_operator_admission",
+                "quarantined",
+                "policy_parked",
+            ):
+                out["queue_state"][state] = int(
+                    epoch2_states.get(state, 0)
+                )
+                out["queue_state"][f"{state}_max_age_s"] = int(
+                    epoch2["operational_oldest_age_s"].get(state, 0)
+                )
+            out["queue_state"]["policy_parked"] += int(
+                out["queue_state"]["policy_parked_pending"]
+            )
+            out["queue_state"]["epoch_counts"]["2"] = {
+                "available": True,
+                "depth": int(epoch2["depth"]),
+                "lifecycle": epoch2_lifecycle,
+                "operational": epoch2_states,
+            }
+            out["epoch_health"]["2"] = {"available": True}
+            if epoch2_states.get("invalid_operator_admission"):
+                out["warnings"].append(
+                    "invalid_operator_admission: epoch-2 contains inert "
+                    "rows that failed admission integrity; run quarantine "
+                    "maintenance and inspect bounded diagnostics."
+                )
+            if epoch2_states.get("quarantined"):
+                out["warnings"].append(
+                    "quarantined: epoch-2 contains disabled rows with durable "
+                    "quarantine receipts; inspect bounded diagnostics."
+                )
+            if not epoch2["operational_counts_authoritative"]:
+                out["counts_complete"] = False
+                if epoch2.get("unclassified_active_count"):
+                    out["warnings"].append(
+                        "epoch2_operational_scan_overflow: active rows exceed "
+                        f"bounded scan limit {epoch2['active_scan_limit']}."
+                    )
+                if not epoch2.get("capacity_evidence_available", True):
+                    out["warnings"].append(
+                        "epoch2_capacity_evidence_unavailable: worker "
+                        "compatibility could not be established; pending "
+                        "work remains conservatively classified as awaiting "
+                        "compatible capacity."
+                    )
+                if not epoch2.get("integrity_scope_complete", True):
+                    count = epoch2.get("unscoped_invalid_count")
+                    count_text = (
+                        f" ({count} row(s))"
+                        if count is not None
+                        else ""
+                    )
+                    out["warnings"].append(
+                        "epoch2_unscoped_integrity_rows"
+                        + count_text
+                        + ": corrupt rows without an authoritative "
+                        "admission/request universe exist; exact counts are "
+                        "restricted to universe admins."
+                    )
+                if epoch2.get("unknown_lifecycle_status_counts"):
+                    out["warnings"].append(
+                        "epoch2_unknown_lifecycle_status: corrupt rows use "
+                        "unsupported lifecycle states; inspect bounded "
+                        "integrity diagnostics."
+                    )
+    except Exception as exc:  # noqa: BLE001 — status remains best-effort
+        out["queue_state"]["epoch_counts"]["2"] = {
+            "available": False,
+            "error": str(exc),
+        }
+        out["epoch_health"]["2"] = {
+            "available": False,
+            "error": str(exc),
+        }
+        out["counts_complete"] = False
+        out["warnings"].append(f"epoch2_operational_read_failed: {exc}")
+
     if pending_ages:
-        out["queue_state"]["stuck_pending_max_age_s"] = int(max(pending_ages))
+        out["queue_state"]["stuck_pending_max_age_s"] = max(
+            out["queue_state"]["stuck_pending_max_age_s"],
+            int(max(pending_ages)),
+        )
     if policy_parked_pending_ages:
         out["queue_state"]["policy_parked_pending_max_age_s"] = int(
             max(policy_parked_pending_ages)
@@ -645,21 +810,25 @@ def _compute_supervisor_liveness(
     if (
         recent_succeeded_count == 0
         and any_terminal_at_seen
-        and out["queue_state"]["pending"] > 0
+        and v1_lifecycle["lifecycle"]["pending"] > 0
         and out["queue_state"]["stuck_pending_max_age_s"] > _LOOP_STALL_WINDOW_S
     ):
         out["warnings"].append(
             f"loop_stalled: 0 successful completions in the last "
             f"{_LOOP_STALL_WINDOW_S}s despite "
-            f"{out['queue_state']['pending']} pending "
+            f"{v1_lifecycle['lifecycle']['pending']} pending "
             f"(oldest {out['queue_state']['stuck_pending_max_age_s']}s) and "
-            f"{out['queue_state']['failed']} failed total. The loop is claiming "
+            f"{v1_lifecycle['lifecycle']['failed']} failed total. "
+            "The loop is claiming "
             "but not succeeding — provider auth, double-claim, or finalize crash "
             "(2026-06-25 loop-wedge signature). Check worker logs for provider "
             "'exhausted' / 'Invalid transition'."
         )
 
-    if out["queue_state"]["running"] > 0 and not any_lease_field_seen:
+    if (
+        v1_lifecycle["lifecycle"]["running"] > 0
+        and not any_lease_field_seen
+    ):
         out["lease_data_available"] = False
         out["warnings"].append(
             "lease_data_unavailable: running tasks present but no lease "
