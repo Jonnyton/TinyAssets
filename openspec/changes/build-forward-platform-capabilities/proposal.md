@@ -19,7 +19,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 ### New Capabilities
 
 - `data-commons`: Dataset assets, provenance, pricing, quality gates, contribution settlement, and Dataset Forge.
-- `demand-side`: Standing goals, binding onboarding outcomes, goal bounties, and the measured gate for later universe services.
+- `demand-side`: Goal bounties and the measured gate for later universe services. The standing-goal, timezone-scheduling, onboarding-outcome, and per-universe-metric half was released to `demand-side-signals` on 2026-07-25 (task 4.1) and is no longer specified here.
 - `hardware-creation`: Verified design-to-silicon and physical-fabrication product workflows.
 - `paid-market-training`: Training instruments, verification, checkpoint payment, gate integration, capability minting, and input provenance.
 - `pooled-training-ownership`: Persisted funding, frozen lineage ownership, refunds, and revenue distribution.
@@ -30,6 +30,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 Each released delta has exactly one active successor owner. The umbrella keeps only the cross-slice invariants those successors must preserve: design decisions **D0–D8** and the slice dependency ledger. D9 is host-gated context recorded for provenance and imposes no successor obligation in either direction.
 
 - `boundary-layer` → `outbound-boundary-layer` (released 2026-07-24, task 1.2).
+- `demand-side` **non-monetary half** → `demand-side-signals` (released 2026-07-25, task 4.1). This is the umbrella's first *partial* release: two of the five `demand-side` requirements were physically moved to the successor, and the three bounty/direct-service requirements stay here pending tasks 4.2 and 4.3. The one-active-owner invariant holds at requirement granularity — the split is disjoint, so no requirement has two owners.
 - `paid-market-economy` transaction delta → `paid-market-track-e-wave-2-transport` (task 1.1).
 - `paid-market-price-index-and-forwards` delta → `paid-market-live-price-discovery` (task 2.1).
 
