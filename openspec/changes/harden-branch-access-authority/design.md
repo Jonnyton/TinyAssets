@@ -2,7 +2,9 @@
 
 TinyAssets exposes branch authoring and execution through the canonical chatbot connector. Branch visibility currently exists as a storage/listing concept, but listing and branch-selector handlers in `tinyassets/api/branches.py` apply it inconsistently. `list_branches` passes the environment-fallback actor as viewer, so an unauthenticated request can inherit the daemon user and enumerate that user's private branch summaries and counts. `get_branch` contains a local owner check, while `describe_branch`, `validate_branch`, lineage reads, cross-branch node reuse, branch cloning, most mutations, and deletion do not share that boundary. `_resolve_branch_id` also performs name lookup with the environment-fallback actor and can translate a guessed private name into its canonical ID before a later denial changes the not-found envelope. `patch_branch` has an author check that a caller can bypass with `force=true`.
 
-The result is not only metadata exposure. A canonical `write_graph` request can copy `source_code`, prompts, tools, and approval provenance from another actor's private branch through `node_ref.source`. The canonical `run_graph` surface can execute a foreign private branch in `tinyassets/api/runs.py`. `tinyassets/api/evaluation.py` can publish a foreign private branch with caller-selected publisher provenance, return/list its immutable versions, read node suggestion/history material, and roll back a foreign node. Run and evaluation/version hardening are tracked as separately claimed siblings because this change must not silently broaden its write-set.
+The result is not only metadata exposure. A canonical `write_graph` request can copy `source_code`, prompts, tools, and approval provenance from another actor's private branch through `node_ref.source`. The canonical `run_graph` and `run_branch_version` surfaces can execute a foreign private branch or immutable version in `tinyassets/api/runs.py`; `goals action=run_canonical` delegates to that same unchecked version path. `tinyassets/api/evaluation.py` can publish a foreign private branch with caller-selected publisher provenance, return/list its immutable versions, read node suggestion/history material, and roll back a foreign node. Run and evaluation/version hardening are tracked as separately claimed siblings because this change must not silently broaden its write-set.
+
+Other live connector actions cross the same object boundary outside those modules. `goals action=bind` updates any named branch's `goal_id` without branch-author authority. `set_canonical` and `set_selector` accept any active guessed `branch_version_id`; a global binding can therefore retain and later execute a foreign private snapshot. `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` can attach claims or evidence to a foreign branch. Gate and quality-leaderboard projections derive private visibility from `_current_actor()` and can inherit process identity, while `extensions action=dry_inspect_node|dry_inspect_patch` loads an arbitrary branch before structural preview. These paths are a third separately claimed sibling so the core branch helper remains the shared contract rather than an ever-growing write-set.
 
 Branch-originated `related_wiki_pages` is also a wiki enumeration surface, but it bypasses the existing page-listing visibility predicate used by wiki search, changed-since, ambient feeds, and list. Restricted pages currently contribute paths, titles, summaries, match labels, ordering, cap displacement, and hidden counts.
 
@@ -27,6 +29,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 - Using audience or discovery scope as authority.
 - Implementing `run_branch` authority in this write-set; a sibling change consumes the helper.
 - Implementing branch-version/evaluation authority in `tinyassets/api/evaluation.py`; a sibling change consumes the read/author helpers and coordinates run-linked evidence with the run sibling.
+- Implementing branch-adjacent goal binding, global canonical/selector binding, gate/conformance attachment, leaderboard/gate projection, or dry-inspection authority in this write-set; a third sibling consumes the same helpers and coordinates version execution with the run sibling.
 - Changing the public MCP handle set or response schema.
 - Making filesystem scans constant-time or claiming timing-side-channel resistance.
 - Building or validating an Agent Village surface.
@@ -90,11 +93,23 @@ The allowed related-page paths for a caller must be a subset of the paths return
 
 Alternative: filter after scoring/capping. Rejected because hidden pages would still influence ordering, displace visible results, and leak through `truncated_count`.
 
-### 7. Delivery is split by collision and module ownership
+### 7. Stored versions and branch-adjacent actions preserve the parent branch boundary
+
+An immutable version does not become public merely because its identifier is guessed or stored on a Goal. Before direct version execution, global canonical/selector binding, version retrieval, or any branch-derived projection, the system resolves the version's `branch_def_id` and applies the parent branch boundary. A missing parent branch fails closed.
+
+`run_branch_version` and personal canonical execution allow only a public parent branch or the authenticated subject's private parent branch. A Goal-wide canonical or selector is callable by other users, so it may bind only a public parent branch. Denials occur before provider work, selector execution, leaderboard aggregation, or canonical history changes and do not expose the parent branch ID.
+
+Live branch-adjacent writes apply object authority before mutation: `goals action=bind` requires branch author authority; `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` require branch author authority before reading run output or persisting an attachment. Gate/leaderboard listing derives its viewer only from the request subject. Dry inspection is a branch read and uses the same private-or-missing boundary.
+
+Alternative: treat publication or possession of a version ID as read authority. Rejected because published versions retain private branch code and provenance, and their IDs are enumerable capability-shaped strings without capability semantics.
+
+### 8. Delivery is split by collision and module ownership
 
 Wave 1 implements request-subject listing/search, ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py` plus the narrow `daemon_server.search_nodes(viewer=...)` seam. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
 
-The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and imports the shared read helper for canonical `run_graph`. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
+The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py`: both live-branch and immutable-version execution must authorize the parent branch before provider work. `goals action=run_canonical` remains safe only by delegating to that guarded version path. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling.
+
+The sibling `harden-branch-adjacent-access-authority` owns the narrow action seams in `tinyassets/api/market.py`, `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, and any minimal `tinyassets/daemon_server.py` canonical/selector validation seam. It covers goal binding, global canonical/selector public-parent enforcement, gate/conformance attachments, request-subject gate/leaderboard filtering, and dry inspection. `quality_leaderboard.py`, `canonical_dispatch.py`, and `selector_dispatch.py` are read dependencies unless RED tests prove a minimal owned change is required; any write-set expansion must pass claim collision checks first. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
 
 ## Risks / Trade-offs
 
@@ -113,8 +128,9 @@ The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/run
 4. Implement Wave 2 source reuse and clone gates with no-partial-copy tests.
 5. Coordinate action-scope migration, then implement Wave 3 mutation/deletion authority and force separation.
 6. Land the separately claimed `run_branch` and branch-evaluation/version siblings using the same helpers.
-7. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
-8. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
+7. Land the separately claimed branch-adjacent goals/gates/projection sibling using the same helpers and the guarded version-execution path.
+8. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
+9. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
 
 Rollback reverts the unactivated implementation commits. Once activated, rollback must not re-enable unauthorized reads, reuse, mutation, deletion, or execution; a forward fix or fail-closed disablement is required.
 

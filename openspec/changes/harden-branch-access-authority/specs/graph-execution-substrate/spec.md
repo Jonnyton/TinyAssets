@@ -129,3 +129,34 @@ The system SHALL keep every branch mutation and deletion action classified as no
 #### Scenario: Write scope does not grant foreign ownership
 - **WHEN** a caller has the outer write/action scope but is not the branch author
 - **THEN** object-level author authority still denies mutation or deletion
+
+### Requirement: Stored versions and branch-adjacent actions preserve branch authority
+The system SHALL resolve every stored branch version to its parent `branch_def_id` and apply the parent branch read boundary before direct version execution, version-derived inspection, or personal canonical use. Goal-wide canonical and selector bindings SHALL accept only versions whose parent branch is public because other users can execute those bindings. A missing parent definition SHALL fail closed. `goals action=bind`, `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` SHALL require branch author authority before branch/run material is read or state is attached. Gate and quality-leaderboard private filtering SHALL derive its viewer only from the credential-validated request subject. Dry branch inspection SHALL use the same private-or-missing read envelope as other branch reads.
+
+#### Scenario: Foreign private version is executed directly
+- **WHEN** a caller supplies a version whose parent is another author's private branch to `run_branch_version`
+- **THEN** the response matches a missing-version denial and no provider call, run row, output, snapshot field, or parent branch ID is exposed
+
+#### Scenario: Global canonical or selector targets a private parent
+- **WHEN** a Goal owner attempts to bind an active version whose parent branch is private
+- **THEN** the bind is denied before canonical/selector history or Goal state changes, even when the Goal owner authored that private branch
+
+#### Scenario: Personal canonical targets the caller's private parent
+- **WHEN** an authenticated subject binds or runs a personal canonical whose parent is their own private branch
+- **THEN** the existing personal behavior remains available without making that version globally runnable
+
+#### Scenario: Caller binds another author's branch to a Goal
+- **WHEN** a caller invokes `goals action=bind` for a branch they do not author
+- **THEN** the operation is denied before `goal_id`, mirrored storage, or git state changes
+
+#### Scenario: Caller attaches gate evidence to another author's branch
+- **WHEN** a caller claims a gate rung, claims from a run, or records a branch-scoped conformance pack for a branch they do not author
+- **THEN** the operation is denied before run output is disclosed or claim/conformance state is persisted
+
+#### Scenario: Environment identity affects a private projection
+- **WHEN** a request without an authenticated subject lists gate claims or a quality leaderboard while process identity names a private branch author
+- **THEN** the private branch contributes no row, rank, count, recommendation, or selector input
+
+#### Scenario: Caller dry-inspects a foreign private branch
+- **WHEN** a caller requests `dry_inspect_node` or `dry_inspect_patch` for another author's private branch
+- **THEN** the response matches the missing-branch envelope and exposes no graph, node, validation, or patch-preview material

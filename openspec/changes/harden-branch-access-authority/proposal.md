@@ -13,6 +13,7 @@ Canonical connector branch actions do not share one authenticated-subject author
 - Preserve public behavior, owner access (including owner-private reusable-node search), granted-reader access, and stable empty response keys while eliminating hidden paths, titles, summaries, match metadata, and counts.
 - Track canonical `run_graph` execution of a foreign private branch as a separately claimed sibling change that consumes the shared helper.
 - Track branch-version and node-evaluation reads/mutations in `tinyassets/api/evaluation.py` as a separately claimed sibling change that consumes the same read/author helpers.
+- Track live branch-adjacent `goals`, `gates`, leaderboard, and dry-inspection paths as a separately claimed sibling change: branch/version binding, claims and conformance attachments, private-filtered projections, and structural previews must consume the same request-subject authority boundary.
 
 ## Capabilities
 
@@ -27,4 +28,4 @@ None.
 
 ## Impact
 
-The later implementation affects `tinyassets/api/branches.py`, the `search_nodes(viewer=...)` storage seam in `tinyassets/daemon_server.py`, and new focused branch-authority tests. It consumes the as-built no-environment-fallback actor resolver in `tinyassets/api/permissions.py`, and reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them; any predicate change remains owned by `universe-visibility`. It depends on lockstep action-scope classification in `retire-legacy-live-mcp-tools` and release of broad `tests/` claims. This proposal changes no MCP schema, deployment, canonical as-built spec, or Agent Village surface.
+The core implementation affects `tinyassets/api/branches.py`, the `search_nodes(viewer=...)` storage seam in `tinyassets/daemon_server.py`, and new focused branch-authority tests. Separately claimed siblings own `tinyassets/api/runs.py`, `tinyassets/api/evaluation.py`, and the branch-adjacent goals/gates/projection modules enumerated in the design and tasks. All consume the as-built no-environment-fallback actor resolver in `tinyassets/api/permissions.py`; the core lane reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them, and any predicate change remains owned by `universe-visibility`. The work depends on lockstep action-scope classification in `retire-legacy-live-mcp-tools` and release of broad `tests/` claims. This proposal changes no MCP schema, deployment, canonical as-built spec, or Agent Village surface.

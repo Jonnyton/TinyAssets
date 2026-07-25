@@ -1,6 +1,6 @@
 ## 1. Contract promotion
 
-- [x] 1.1 Audit current-main branch reads, source reuse, lineage, mutation, deletion, related-wiki projection, run execution, active visibility ownership, and existing tests against the connector-first product boundary.
+- [x] 1.1 Audit current-main branch reads, source reuse, lineage, mutation, deletion, related-wiki projection, live/version/canonical execution, goal/gate attachments, private-filtered projections, dry inspection, active visibility ownership, and existing tests against the connector-first product boundary.
 - [x] 1.2 Define target requirements for authenticated-subject authorship, not-found read equivalence, source reuse, lineage, mutation/deletion authority, action-scope defense in depth, and cross-surface wiki visibility.
 - [ ] 1.3 Obtain Opus 5 review of the drafted proposal, design, both delta specs, tasks, and sibling-lane boundary; resolve every Critical and Important finding.
 - [ ] 1.4 Run strict OpenSpec validation and land this target change active and unsynced.
@@ -46,9 +46,10 @@
 ## 6. Sibling canonical execution boundary
 
 - [ ] 6.1 Create and separately claim `harden-run-branch-access-authority` for `tinyassets/api/runs.py` and `tests/test_run_branch_authority.py` after the shared helper and broad test claims are available.
-- [ ] 6.2 Add RED tests proving a foreign-private run selector matches the missing-selector response and starts no run/provider work; include public and owner-private controls.
-- [ ] 6.3 Import `_resolve_readable_branch` lazily in `tinyassets/api/runs.py` and authorize before branch loading or execution, preserving the original selector on denial.
-- [ ] 6.4 Run `python -m pytest tests/test_run_branch_authority.py -q`, the surrounding run/branch suites, and a mutation probe that removes the helper call and makes the foreign-private test fail.
+- [ ] 6.2 Add RED tests proving a foreign-private live selector and a version whose parent is foreign-private each match their missing-selector/version response and start no run/provider work; include public and owner-private controls plus a missing-parent version that fails closed.
+- [ ] 6.3 Import the shared branch/version-readable helpers lazily in `tinyassets/api/runs.py` and authorize before live branch or immutable snapshot loading and execution, preserving the original selector/version ID on denial.
+- [ ] 6.4 Add a `goals action=run_canonical` regression proving delegation cannot bypass the guarded version path and exposes no parent branch ID or snapshot.
+- [ ] 6.5 Run `python -m pytest tests/test_run_branch_authority.py -q`, the surrounding run/branch/canonical suites, and mutation probes that independently remove the live and version helper calls.
 
 ## 7. Sibling branch evaluation and version boundary
 
@@ -58,10 +59,20 @@
 - [ ] 7.4 Import `_resolve_readable_branch`, `_branch_authorized`, and `_request_branch_actor` lazily in `tinyassets/api/evaluation.py`; authorize before branch/version/node/run material is loaded or mutated and server-bind publisher/rollback provenance.
 - [ ] 7.5 Run `python -m pytest tests/test_branch_evaluation_authority.py -q`, surrounding evaluation/version/run suites, and mutation probes that independently remove each read/author gate.
 
-## 8. Concurrency, public acceptance, and completion
+## 8. Sibling branch-adjacent goals, gates, and projections
 
-- [ ] 8.1 Run a §14 concurrent cross-actor proof with at least two request contexts interleaving listing/search, selector reads, lineage, source reuse, mutation/deletion, execution, version/evaluation reads, and rollback against one private branch and restricted page set; prove zero cross-actor disclosure or mutation.
-- [ ] 8.2 Run focused tests, surrounding suites, Ruff, strict OpenSpec validation, and independent correctness/security/concurrency/diff review; resolve every Critical and Important finding.
-- [ ] 8.3 After deploy, pass canonical MCP handle canaries and a rendered two-actor chatbot conversation: actor A creates private branch/restricted material; actor B receives not-found and cannot list/search, reuse, mutate, delete, execute, version, inspect history, or roll it back.
-- [ ] 8.4 Record dated post-fix clean-use evidence from real connector activity, or leave a monitoring row explicitly stating that organic evidence is not yet available.
-- [ ] 8.5 Sync the graph and wiki requirements into as-built specs and archive only after all owned runtime, both sibling boundaries, proof, and acceptance tasks pass.
+- [ ] 8.1 Create and separately claim `harden-branch-adjacent-access-authority` for `tinyassets/api/market.py`, `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, a minimal `tinyassets/daemon_server.py` canonical/selector validation seam if required, and `tests/test_branch_adjacent_authority.py`; treat quality/canonical/selector modules as read dependencies unless RED evidence requires a claim expansion.
+- [ ] 8.2 Add RED goal tests proving non-author bind changes no branch/mirror/git state; global canonical/selector rejects every private parent before Goal/history changes; personal canonical permits only the authenticated subject's own private parent; and missing-parent versions fail closed without parent-ID disclosure.
+- [ ] 8.3 Add RED gate tests proving non-authors cannot claim, claim from a run, or record a branch-scoped conformance pack; denial precedes run-output reads and persists no attachment. Include owner controls and a request-without-subject/environment-owner case.
+- [ ] 8.4 Add RED projection tests proving gate claims and quality leaderboard/recommendation derive the viewer only from the request subject and that environment/foreign-private branches contribute no rows, ranks, counts, cap displacement, or selector input.
+- [ ] 8.5 Add RED dry-inspection tests proving foreign-private and missing branches are equivalent for node and patch previews, no graph/node/validation material leaks, and public/owner-private previews remain available.
+- [ ] 8.6 Consume the shared request-subject, readable-branch, version-parent, and author helpers at each action boundary before lookup, projection, attachment, or Goal mutation; do not create a new capability or treat version-ID possession/publication as authority.
+- [ ] 8.7 Run `python -m pytest tests/test_branch_adjacent_authority.py tests/test_run_branch_authority.py tests/test_branch_evaluation_authority.py -q`, surrounding goal/gate/leaderboard/selector suites, and mutation probes for bind, global version binding, gate attachment, projection viewer, and dry-inspect gates.
+
+## 9. Concurrency, public acceptance, and completion
+
+- [ ] 9.1 Run a §14 concurrent cross-actor proof with at least two request contexts interleaving listing/search, selector reads, lineage, source reuse, mutation/deletion, live/version/canonical execution, evaluation/version reads, goal binding, gate/conformance attachment, private projections, dry inspection, and rollback against one private branch and restricted page set; prove zero cross-actor disclosure or mutation.
+- [ ] 9.2 Run focused tests, surrounding suites, Ruff, strict OpenSpec validation, and independent correctness/security/concurrency/diff review; resolve every Critical and Important finding.
+- [ ] 9.3 After deploy, pass canonical MCP handle canaries and a rendered two-actor chatbot conversation: actor A creates private branch/restricted material; actor B receives not-found and cannot list/search, reuse, mutate, delete, execute live/version/canonical paths, bind, attach gate evidence, inspect/dry-inspect, version, inspect history, or roll it back.
+- [ ] 9.4 Record dated post-fix clean-use evidence from real connector activity, or leave a monitoring row explicitly stating that organic evidence is not yet available.
+- [ ] 9.5 Sync the graph and wiki requirements into as-built specs and archive only after all owned runtime, all three sibling boundaries, proof, and acceptance tasks pass.

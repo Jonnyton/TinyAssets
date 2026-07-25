@@ -34,6 +34,11 @@ The canonical chatbot connector is the acceptance surface. Agent Village is defe
 14. New node definitions accept caller-supplied `author`, while approval, authoring-receipt, git, and version-publisher attribution use `_current_actor()`; durable provenance can therefore be caller-selected or environment-attributed instead of request-subject-bound.
 15. Global `search_nodes` is public-only because its storage helper omits `viewer`; this does not leak private nodes, but it hides an authenticated author's own private reuse candidates and makes their private nodes contribute to neither cards nor reuse counts.
 16. `evaluation.py` publishes any branch with caller-supplied `publisher`, returns/lists immutable versions without branch read authority, and reads node suggestion/history or rolls a foreign node back without shared branch authority.
+17. `run_branch_version` executes any guessed immutable version without checking the parent branch. `goals action=run_canonical` delegates to that path, and `set_canonical` / `set_selector` accept any active version without requiring a public/readable parent, so a Goal owner can bind and execute another actor's private snapshot.
+18. `goals action=bind` calls `update_branch_definition` for any exact branch ID without a branch read or author check, changing its `goal_id` before commit handling.
+19. `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` can attach claims/evidence to another actor's branch; the run-derived form also reads arbitrary completed-run output before any branch-owner check.
+20. Gate-claim and quality-leaderboard private filters use `_current_actor()` rather than the credential-validated request subject, so environment identity can influence private rows, ranks, counts, recommendations, and selector input.
+21. `extensions action=dry_inspect_node|dry_inspect_patch` loads an exact branch definition and returns structural/validation material without branch read authority.
 
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
@@ -57,6 +62,7 @@ It does not own:
 - audience or discovery scope;
 - `run_branch` implementation in `tinyassets/api/runs.py`;
 - branch evaluation/version implementation in `tinyassets/api/evaluation.py`;
+- branch-adjacent goal binding, canonical/selector binding, gate/conformance attachment, private-filtered projection, and dry-inspection implementation in `tinyassets/api/market.py`, `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, and any minimal storage validation seam;
 - legacy action-registry migration;
 - Agent Village.
 
@@ -86,3 +92,5 @@ A 2026-07-25 dependency freshness check found that PR #1691 owns provider-destin
 The same freshness pass resolved the blank-root wiki grant gate without changing the active visibility owner's files. In current main, `tinyassets.daemon_server.list_universe_acl` returns `[]` immediately for `universe_id=""`. A dated temporary-database probe authenticated `alice`, injected an otherwise-valid ACL row whose universe ID was the empty string through raw DML, and observed `page_visible_in_listing({"visibility": "private"}, "") == False`. Blank-root page grants are therefore fail-closed even under the forged-row case.
 
 The action-scope audit also narrowed task 2.3. `build_action_scope_registry()` currently emits `write` for branch create/build/edit/patch actions and `admin` for `approve_source_code` and `delete_branch`; `action_scope_for("extensions", "missing_branch_action")` returns `None`, and `require_action_scope` rejects that absence. The remaining dependency is preserving those exact-or-stricter effects through `retire-legacy-live-mcp-tools` tasks 4.2/4.4, not inventing classifications in this lane.
+
+A follow-up repository-wide call-site pass on 2026-07-25 found the additional live connector paths in findings 17–21. Internal reserved-branch storage in `extensions.py`, public-only goal-pool discovery, and epoch-1 enqueue's explicit public-only target validation are not authorization defects. `quality_leaderboard.py`, `canonical_dispatch.py`, and `selector_dispatch.py` remain read dependencies unless focused RED tests prove a minimal change is necessary. The target change now specifies a guarded immutable-version execution path and a third separately claimed branch-adjacent sibling rather than silently expanding the core branch-module write-set.
