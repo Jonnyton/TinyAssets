@@ -732,12 +732,24 @@ def _compute_supervisor_liveness(
                         f"bounded scan limit {epoch2['active_scan_limit']}."
                     )
                 if not epoch2.get("capacity_evidence_available", True):
-                    out["warnings"].append(
-                        "epoch2_capacity_evidence_unavailable: worker "
-                        "compatibility could not be established; pending "
-                        "work remains conservatively classified as awaiting "
-                        "compatible capacity."
-                    )
+                    if (
+                        epoch2.get("capacity_evidence_error")
+                        == "epoch2_consumer_not_ready"
+                    ):
+                        out["warnings"].append(
+                            "epoch2_consumer_not_ready: descriptor "
+                            "publication and wakeup are intentionally staged "
+                            "off until daemon claim/lifecycle integration "
+                            "lands; pending work remains awaiting compatible "
+                            "capacity."
+                        )
+                    else:
+                        out["warnings"].append(
+                            "epoch2_capacity_evidence_unavailable: worker "
+                            "compatibility could not be established; pending "
+                            "work remains conservatively classified as "
+                            "awaiting compatible capacity."
+                        )
                 if not epoch2.get("integrity_scope_complete", True):
                     count = epoch2.get("unscoped_invalid_count")
                     count_text = (

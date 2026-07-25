@@ -1369,6 +1369,7 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
         "diagnostics_truncated": False,
         "compatible_worker_count": None,
         "capacity_evidence_available": False,
+        "consumer_ready": False,
     }
 
 
@@ -1396,6 +1397,7 @@ def _epoch2_operational_read(
 ):
     """Read counts and safe candidates from one bounded SQLite snapshot."""
     from tinyassets.branch_tasks_v2 import (
+        EPOCH2_QUEUE_CONSUMER_READY,
         Epoch2BranchTaskAdapter,
         Epoch2OperationalRead,
     )
@@ -1405,7 +1407,8 @@ def _epoch2_operational_read(
     )
     from tinyassets.storage import DB_FILENAME
 
-    database = udir.parent / DB_FILENAME
+    base_path = udir.parent
+    database = base_path / DB_FILENAME
     if not database.is_file():
         return Epoch2OperationalRead(
             summary=_unavailable_epoch2_summary(
@@ -1415,11 +1418,16 @@ def _epoch2_operational_read(
         )
     cfg = dispatcher_config or load_dispatcher_config(udir)
     capacity_error = ""
-    try:
-        workers = _compatible_epoch2_workers(udir)
-    except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+    consumer_ready = EPOCH2_QUEUE_CONSUMER_READY is True
+    if not consumer_ready:
         workers = []
-        capacity_error = str(exc)
+        capacity_error = "epoch2_consumer_not_ready"
+    else:
+        try:
+            workers = _compatible_epoch2_workers(udir)
+        except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+            workers = []
+            capacity_error = str(exc)
 
     def capacity_matches(task) -> bool:
         if (
@@ -1439,7 +1447,7 @@ def _epoch2_operational_read(
 
     try:
         result = Epoch2BranchTaskAdapter(
-            udir.parent,
+            base_path,
         ).operational_read(
             universe_id=udir.name,
             capacity_matcher=capacity_matches,
@@ -1456,6 +1464,7 @@ def _epoch2_operational_read(
             candidates=(),
         )
     result.summary["compatible_worker_count"] = len(workers)
+    result.summary["consumer_ready"] = consumer_ready
     result.summary["capacity_evidence_available"] = not capacity_error
     if capacity_error:
         result.summary["operational_counts_authoritative"] = False
@@ -2390,6 +2399,7 @@ def _action_queue_list(
             "capacity_evidence_available"
         ),
         "capacity_evidence_error": epoch2.get("capacity_evidence_error"),
+        "consumer_ready": epoch2.get("consumer_ready"),
         "valid_epoch2_pending_count": epoch2.get("valid_pending_count"),
         "eligible_epoch2_pending_count": epoch2.get(
             "eligible_pending_count"
