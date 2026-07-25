@@ -19,11 +19,12 @@ The `create` default *value* (public vs private) remains a host knob (design 1.3
       → `design.md` §1.2; composition `effective = universe AND page` — a page narrows,
       never widens (`page_content_permitted`); universe gate runs first.
 - [x] 1.3 Decide the default for new universes
-      → `design.md` §1.3. Undeclared fails closed **unconditionally** (no env flag — the
-      review rejected that as a config-text guard). `backfill_universe_visibility()` is
-      the deploy migration that declares existing universes from `public_read`. The
-      *value* `create` records is a **host-decision** knob (public-commons `public` vs
-      conservative `private`); mechanism built, value is a one-line default.
+      → `design.md` §1.3. Undeclared fails closed **unconditionally** (no env flag). Two
+      runtime gates make it safe/enforceable (round-3 ADAPT): (a) `run_visibility_startup_gate()`
+      runs the idempotent backfill at boot (HTTP lifespan + `main()`) and refuses readiness if
+      any universe stays undeclared; (b) `_action_create_universe` writes an explicit level at
+      birth (both explicit create + converse auto-birth). The *value* is the host-knob
+      `DEFAULT_CREATE_VISIBILITY` (default `public` per Hard Rule #12; creator may override).
 - [x] 1.4 Decide disposition of the legacy universes (concordance, workflow-voice,
       echoes-of-the-cosmos, default-universe) — explicit level or recorded grandfather reason
       → `design.md` §1.4 (all four → explicit `public`; `default-universe`'s internal

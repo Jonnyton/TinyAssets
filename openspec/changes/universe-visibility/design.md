@@ -90,18 +90,25 @@ undeclared state, and undeclared never defaults to visible"** (spec Req 1).
   recognized `visibility_level` — no env opt-in, no `public_read` fall-through.
   The review rejected the env-flag approach (a config-text guard, not a runtime
   gate), so strictness is the default and only behavior.
-- **`backfill_universe_visibility()` is the migration path.** It declares every
-  pre-existing universe from its current `public_read` bit (`True → public`,
-  `False → private`) so no live universe changes visibility — it only becomes
-  *declared*. After the deploy runs it, "undeclared" means only genuine
-  corruption, which fails closed. Deploy must run the backfill as part of the
-  rollout (a one-time migration step).
-- **`create` default level** is a **host-decision knob**: the create path should
-  record an explicit level so a new universe is never undeclared. Hard Rule #12
-  ("public-draft by default") and the public-commons/discovery-remix vision point
-  to `public`; a conservative security posture points to `private`. The mechanism
-  (`set_universe_visibility`) is built and the value is a one-line default;
-  recorded in `tasks.md` as the host choice.
+- **`backfill_universe_visibility()` is the migration, and the startup gate makes
+  it enforceable.** The backfill declares every pre-existing universe from its
+  current `public_read` bit (`True → public`, `False → private`) so no live
+  universe changes visibility — it only becomes *declared*.
+  `run_visibility_startup_gate()` runs the backfill at server boot (HTTP
+  `lifespan` + `main()` for sse/stdio) and then **refuses readiness**
+  (`VisibilityStartupGateError`) if any universe remains undeclared, with the
+  exact remediation. This is a runtime gate, not a prose deploy instruction — an
+  un-migrated deploy fails fast instead of silently serving legacy universes as
+  `CLOSED`.
+- **Creation writes an explicit level.** `_action_create_universe` (the single
+  path both explicit `create_universe` and the converse/first-contact auto-birth
+  route through) declares `visibility` at birth on the create's critical path, so
+  undeclared rows stop being produced going forward. The value is
+  `DEFAULT_CREATE_VISIBILITY` (a **host-decision knob**, default `public`, matching
+  Hard Rule #12 "public-draft by default" and today's `public_read=1` default);
+  the creator may pass an explicit level, and an invalid value fails the create
+  loudly. The delta spec mandates only that an *explicit* level be written, not a
+  specific value.
 
 **Test-harness note:** the pre-visibility test suite (hundreds of tests) creates
 bare universes and was written against the post-backfill world. `tests/conftest.py`

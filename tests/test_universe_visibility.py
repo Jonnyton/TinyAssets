@@ -574,3 +574,72 @@ class TestBackfill:
         _make_universe(base, "u", level="unlisted")
         assert "u" not in vis.backfill_universe_visibility()
         assert vis.universe_visibility("u") is vis.UNLISTED
+
+
+# --------------------------------------------------------------------------- #
+# 12. Enforceable startup gate (auto-backfill-at-boot, fail-loud on remainder)
+# --------------------------------------------------------------------------- #
+class TestStartupGate:
+    def test_gate_declares_undeclared_universes(self, base):
+        _make_universe(base, "reg")   # registered rules row, no explicit level
+        (base / "bare").mkdir()       # bare dir, no rules row at all
+        assert not vis.is_declared("reg") and not vis.is_declared("bare")
+
+        summary = vis.run_visibility_startup_gate()
+
+        assert vis.is_declared("reg") and vis.is_declared("bare")
+        assert vis.universe_visibility("reg") is vis.PUBLIC
+        assert set(summary["declared_now"]) >= {"reg", "bare"}
+        assert summary["undeclared_remaining"] == []
+
+    def test_gate_derives_private_from_public_read(self, base):
+        _make_universe(base, "priv")
+        _forge_public_read_raw(base, "priv", 0)  # public_read False, undeclared
+        vis.run_visibility_startup_gate()
+        assert vis.is_declared("priv")
+        assert vis.universe_visibility("priv") is vis.PRIVATE
+
+    def test_gate_is_idempotent(self, base):
+        _make_universe(base, "u", level="public")
+        first = vis.run_visibility_startup_gate()
+        assert first["undeclared_remaining"] == []
+        second = vis.run_visibility_startup_gate()
+        assert second["declared_now"] == {}
+
+    def test_gate_refuses_readiness_on_undeclared_remainder(self, base, monkeypatch):
+        _make_universe(base, "u")  # undeclared
+        # Simulate a backfill that could not declare it (e.g. corruption): the
+        # gate must fail loudly rather than serve it CLOSED.
+        monkeypatch.setattr(vis, "backfill_universe_visibility", lambda *a, **k: {})
+        with pytest.raises(vis.VisibilityStartupGateError):
+            vis.run_visibility_startup_gate()
+
+
+# --------------------------------------------------------------------------- #
+# 13. Creation-time declaration — no universe is born undeclared
+# --------------------------------------------------------------------------- #
+class TestCreationDeclaration:
+    def test_create_declares_default_level(self, base):
+        _anonymous()
+        out = json.loads(us._action_create_universe(universe_id="u1", text="hi"))
+        assert out.get("status") == "created"
+        assert out["visibility"] == vis.DEFAULT_CREATE_VISIBILITY
+        assert vis.is_declared("u1")
+        assert vis.universe_visibility("u1") is vis.LEVELS[vis.DEFAULT_CREATE_VISIBILITY]
+
+    def test_create_honors_explicit_visibility(self, base):
+        _anonymous()
+        out = json.loads(
+            us._action_create_universe(universe_id="u2", text="hi", visibility="private")
+        )
+        assert out["visibility"] == "private"
+        assert vis.is_declared("u2")
+        assert vis.universe_visibility("u2") is vis.PRIVATE
+
+    def test_create_rejects_invalid_visibility_without_partial_dir(self, base):
+        _anonymous()
+        out = json.loads(
+            us._action_create_universe(universe_id="u3", text="hi", visibility="wide-open")
+        )
+        assert "error" in out
+        assert not (base / "u3").exists()  # rejected before mkdir; no partial create
