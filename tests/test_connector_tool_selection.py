@@ -27,6 +27,7 @@ from scripts.connector_tool_selection_eval import (
     MeasurementError,
     compare_to_baseline,
     load_dataset,
+    main,
     score_run,
 )
 
@@ -252,3 +253,288 @@ class TestBaselineGate:
             "measurement",
             "baseline",
         ]
+
+
+# --------------------------------------------------------------------------- #
+# 4. Baseline value integrity — a threshold nothing can be compared against
+#    is not a threshold
+# --------------------------------------------------------------------------- #
+class TestBaselineValueIntegrity:
+    """Cross-family review finding 1 (Codex REJECT 2026-07-25).
+
+    ``drop > tolerance`` is False for *every* drop when the tolerance is NaN, so
+    one non-finite value silently converts the gate into an unconditional
+    ``GATE PASS`` without touching the comparison logic. The same hole exists on
+    each rate (``baseline - NaN`` is NaN) and, less sharply, on a rate outside
+    [0, 1], which shifts the comparison by an arbitrary amount. None of it may be
+    accepted at construction — which is also where ``_load_baseline`` builds.
+    """
+
+    def _twenty_of_twentyone(self) -> Measurement:
+        """A real regression on the shipped instrument: 20/21 top-1."""
+        dataset = load_dataset(SHIPPED_DATASET)
+        run = _perfect_run(dataset)
+        flipped = next(e for e in dataset.entries if e.expected_handle == "read_page")
+        run[flipped.prompt] = "read_graph"
+        measurement = score_run(
+            dataset, run, source="claude.ai", observed_on="2026-07-25"
+        )
+        assert 0.90 < measurement.top1_rate < 1.0  # precondition, not the assertion
+        return measurement
+
+    def test_nan_tolerance_cannot_pass_a_real_regression(self):
+        measurement = self._twenty_of_twentyone()
+        with pytest.raises(MeasurementError, match="permitted_regression"):
+            Baseline(
+                "v1", "claude.ai", "2026-07-20", 1.0, 1.0,
+                permitted_regression=float("nan"),
+            )
+        # ...and the honest tolerance still fails that same candidate, so the
+        # refusal above is not passing because the run happened to be fine.
+        honest = Baseline("v1", "claude.ai", "2026-07-20", 1.0, 1.0)
+        assert compare_to_baseline(measurement, honest).passed is False
+
+    def test_infinite_tolerance_is_refused(self):
+        with pytest.raises(MeasurementError, match="permitted_regression"):
+            Baseline(
+                "v1", "claude.ai", "2026-07-20", 1.0, 1.0,
+                permitted_regression=float("inf"),
+            )
+
+    def test_negative_tolerance_is_refused(self):
+        with pytest.raises(MeasurementError, match="permitted_regression"):
+            Baseline(
+                "v1", "claude.ai", "2026-07-20", 0.9, 1.0, permitted_regression=-0.1
+            )
+
+    def test_tolerance_wider_than_the_rate_range_is_refused(self):
+        """A tolerance of 2.0 is not a loose gate, it is no gate."""
+        with pytest.raises(MeasurementError, match="permitted_regression"):
+            Baseline(
+                "v1", "claude.ai", "2026-07-20", 0.9, 1.0, permitted_regression=2.0
+            )
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+    def test_non_finite_baseline_rate_is_refused(self, bad):
+        with pytest.raises(MeasurementError, match="top1_rate"):
+            Baseline("v1", "claude.ai", "2026-07-20", bad, 1.0)
+        with pytest.raises(MeasurementError, match="opening_converse_rate"):
+            Baseline("v1", "claude.ai", "2026-07-20", 1.0, bad)
+
+    @pytest.mark.parametrize("bad", [1.5, -0.1, 100.0])
+    def test_out_of_range_baseline_rate_is_refused(self, bad):
+        with pytest.raises(MeasurementError, match="top1_rate"):
+            Baseline("v1", "claude.ai", "2026-07-20", bad, 1.0)
+
+    def test_non_numeric_baseline_value_is_refused_as_unusable(self):
+        with pytest.raises(MeasurementError, match="top1_rate"):
+            Baseline("v1", "claude.ai", "2026-07-20", "not-a-number", 1.0)
+        with pytest.raises(MeasurementError, match="permitted_regression"):
+            Baseline(
+                "v1", "claude.ai", "2026-07-20", 1.0, 1.0,
+                permitted_regression="not-a-number",
+            )
+
+    def test_non_finite_measurement_rate_is_refused(self):
+        """The mirror of the tolerance hole: a NaN *candidate* also passes.
+
+        ``baseline - NaN`` is NaN and ``NaN > tolerance`` is False, so the gate
+        reads PASS from the candidate side too. ``score_run`` divides ints and
+        cannot produce one, but a hand-built ``Measurement`` can.
+        """
+        with pytest.raises(MeasurementError, match="top1_rate"):
+            Measurement(
+                dataset_version="v1",
+                surface="claude.ai",
+                observed_on="2026-07-25",
+                top1_rate=float("nan"),
+                opening_converse_rate=1.0,
+                total=21,
+                correct=20,
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 5. Provenance — the source label is a trusted transcription, not proof
+# --------------------------------------------------------------------------- #
+class TestEvidenceBinding:
+    """Cross-family review finding 2 (Codex REJECT 2026-07-25).
+
+    The harness refuses an honestly labelled non-rendered source, but it cannot
+    tell a transcribed rendered session from a synthetic file labelled
+    ``claude.ai``. So the format binds an optional reviewable pointer and the
+    harness says plainly when there is none — it does not claim a provenance
+    check it cannot perform.
+    """
+
+    def test_evidence_reference_is_carried_onto_the_measurement(self, tmp_path):
+        dataset = load_dataset(_write_dataset(tmp_path / "d_v1.jsonl", _valid_rows()))
+        result = score_run(
+            dataset,
+            _perfect_run(dataset),
+            source="claude.ai",
+            observed_on="2026-07-25",
+            evidence="output/user_sim_session.md#2026-07-25-tool-selection",
+        )
+        assert result.evidence.endswith("#2026-07-25-tool-selection")
+
+    def test_evidence_is_optional(self, tmp_path):
+        dataset = load_dataset(_write_dataset(tmp_path / "d_v1.jsonl", _valid_rows()))
+        result = score_run(
+            dataset, _perfect_run(dataset), source="claude.ai", observed_on="2026-07-25"
+        )
+        assert result.evidence == ""
+
+    def test_non_string_evidence_is_refused(self, tmp_path):
+        dataset = load_dataset(_write_dataset(tmp_path / "d_v1.jsonl", _valid_rows()))
+        with pytest.raises(MeasurementError, match="evidence"):
+            score_run(
+                dataset,
+                _perfect_run(dataset),
+                source="claude.ai",
+                observed_on="2026-07-25",
+                evidence={"screenshot": "shot.png"},
+            )
+
+
+# --------------------------------------------------------------------------- #
+# 6. CLI contract — exit 0 pass, 1 failed gate, 2 unusable input, no overlap
+# --------------------------------------------------------------------------- #
+_GOOD_BASELINE = {
+    "dataset_version": "v1",
+    "surface": "claude.ai",
+    "recorded_on": "2026-07-20",
+    "top1_rate": 1.0,
+    "opening_converse_rate": 1.0,
+}
+
+
+def _write_json(path: Path, payload) -> Path:
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+def _cli_argv(tmp_path, *, run=None, baseline=None, dataset_rows=None):
+    """Build a well-formed invocation, overriding one piece at a time."""
+    dataset_path = _write_dataset(
+        tmp_path / "cli_v1.jsonl", dataset_rows if dataset_rows is not None else _valid_rows()
+    )
+    if run is None:
+        dataset = load_dataset(dataset_path)
+        run = {
+            "source": "claude.ai",
+            "observed_on": "2026-07-25",
+            "observations": _perfect_run(dataset),
+        }
+    argv = [
+        "--dataset", str(dataset_path),
+        "--run", str(_write_json(tmp_path / "run.json", run)),
+    ]
+    if baseline is not None:
+        argv += ["--baseline", str(_write_json(tmp_path / "baseline.json", baseline))]
+    return argv
+
+
+def _one_wrong_run(tmp_path) -> dict:
+    dataset = load_dataset(_write_dataset(tmp_path / "probe_v1.jsonl", _valid_rows()))
+    observations = _perfect_run(dataset)
+    observations["prompt for read_page"] = "read_graph"
+    return {
+        "source": "claude.ai",
+        "observed_on": "2026-07-25",
+        "observations": observations,
+    }
+
+
+class TestCliExitCodes:
+    def test_passing_gate_exits_zero(self, tmp_path):
+        assert main(_cli_argv(tmp_path, baseline=dict(_GOOD_BASELINE))) == 0
+
+    def test_no_baseline_reports_rates_and_exits_zero(self, tmp_path, capsys):
+        assert main(_cli_argv(tmp_path)) == 0
+        assert "top1=1.000" in capsys.readouterr().out
+
+    def test_failed_gate_exits_one(self, tmp_path):
+        argv = _cli_argv(
+            tmp_path, run=_one_wrong_run(tmp_path), baseline=dict(_GOOD_BASELINE)
+        )
+        assert main(argv) == 1
+
+    def test_nan_tolerance_in_the_baseline_file_exits_two_not_zero(self, tmp_path):
+        """The end-to-end bypass: a real regression must not report GATE PASS."""
+        baseline = dict(_GOOD_BASELINE, permitted_regression=float("nan"))
+        argv = _cli_argv(tmp_path, run=_one_wrong_run(tmp_path), baseline=baseline)
+        assert main(argv) == 2
+
+    def test_non_numeric_tolerance_exits_two_not_one(self, tmp_path):
+        """Exit 1 is reserved for a *valid* failed gate; this input is unusable."""
+        baseline = dict(_GOOD_BASELINE, permitted_regression="not-a-number")
+        assert main(_cli_argv(tmp_path, baseline=baseline)) == 2
+
+    @pytest.mark.parametrize(
+        "bad", [float("nan"), float("inf"), 1.5, -0.2, "high", None, [1.0]]
+    )
+    def test_unusable_baseline_rate_exits_two(self, tmp_path, bad):
+        baseline = dict(_GOOD_BASELINE, top1_rate=bad)
+        assert main(_cli_argv(tmp_path, baseline=baseline)) == 2
+
+    def test_missing_baseline_key_exits_two(self, tmp_path):
+        baseline = {k: v for k, v in _GOOD_BASELINE.items() if k != "opening_converse_rate"}
+        assert main(_cli_argv(tmp_path, baseline=baseline)) == 2
+
+    def test_baseline_that_is_not_an_object_exits_two(self, tmp_path):
+        assert main(_cli_argv(tmp_path, baseline=[_GOOD_BASELINE])) == 2
+
+    def test_missing_baseline_file_exits_two(self, tmp_path):
+        argv = _cli_argv(tmp_path) + ["--baseline", str(tmp_path / "nope.json")]
+        assert main(argv) == 2
+
+    def test_run_that_is_not_an_object_exits_two(self, tmp_path):
+        assert main(_cli_argv(tmp_path, run=["prompt for converse"])) == 2
+
+    def test_run_whose_observations_are_not_an_object_exits_two(self, tmp_path):
+        run = {
+            "source": "claude.ai",
+            "observed_on": "2026-07-25",
+            "observations": ["converse"],
+        }
+        assert main(_cli_argv(tmp_path, run=run)) == 2
+
+    def test_unrendered_source_exits_two(self, tmp_path):
+        dataset = load_dataset(
+            _write_dataset(tmp_path / "probe_v1.jsonl", _valid_rows())
+        )
+        run = {
+            "source": "direct-mcp",
+            "observed_on": "2026-07-25",
+            "observations": _perfect_run(dataset),
+        }
+        assert main(_cli_argv(tmp_path, run=run)) == 2
+
+    def test_malformed_dataset_exits_two(self, tmp_path):
+        rows = [r for r in _valid_rows() if r["expected_handle"] != "run_graph"]
+        run = {
+            "source": "claude.ai",
+            "observed_on": "2026-07-25",
+            "observations": {r["prompt"]: r["expected_handle"] for r in rows},
+        }
+        assert main(_cli_argv(tmp_path, run=run, dataset_rows=rows)) == 2
+
+    def test_absent_evidence_is_reported_not_assumed(self, tmp_path, capsys):
+        """The CLI states the trust model instead of implying provenance."""
+        assert main(_cli_argv(tmp_path)) == 0
+        out = capsys.readouterr().out
+        assert "trusted transcription" in out
+
+    def test_recorded_evidence_is_printed(self, tmp_path, capsys):
+        dataset = load_dataset(
+            _write_dataset(tmp_path / "probe_v1.jsonl", _valid_rows())
+        )
+        run = {
+            "source": "claude.ai",
+            "observed_on": "2026-07-25",
+            "evidence": "output/user_sim_session.md#run-7",
+            "observations": _perfect_run(dataset),
+        }
+        assert main(_cli_argv(tmp_path, run=run)) == 0
+        assert "output/user_sim_session.md#run-7" in capsys.readouterr().out

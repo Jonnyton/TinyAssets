@@ -62,18 +62,47 @@ Discarding an unrecognized observation would hide a systematic mis-selection ont
 hallucinated tool. It counts as a miss and the observed value is surfaced, so the failure mode is
 diagnosable rather than merely counted.
 
-### D7 — The measurement is human-in-the-loop, and that is not a gap
+### D7 — The measurement is human-in-the-loop, and the source label is a trusted transcription
 
 Handle choice is a property of the host chatbot. It cannot be observed by calling the MCP server
 directly — a direct call *is* the selection. So observations come from a rendered `ui-test` session
 (AGENTS.md § Quality Gates), and `score_run` refuses any source outside `RENDERED_SOURCES`.
 
-This is the honest boundary of what can be automated here. What the harness does automate is
-everything that could turn a bad run into a good-looking number: coverage, integrity, tolerance
-handling, and cross-version/cross-surface comparison.
+**What that refusal is and is not.** It refuses an *honestly labelled* non-rendered source. It does
+not establish provenance: Codex demonstrated on 2026-07-25 that a fully synthetic observation file
+declaring `source: "claude.ai"` scores 1.000/1.000, while the honestly labelled `direct-mcp` run is
+refused. A label a fabricator controls cannot be an authenticity check, and pretending otherwise is
+worse than the gap — it invites a reviewer to skip the evidence.
+
+So the harness carries an optional `evidence` reference (a `ui-test` log anchor, trace, or
+screenshot path), reports it, and states plainly when it is absent. Requiring it on a recorded
+baseline is a **review** obligation (task 3.1), enforced by the person landing the baseline, not by
+this module. Rejected: hashing or fingerprinting observations to "prove" rendering — anything
+computed from the file the fabricator writes is fabricable too.
+
+What the harness does automate is everything that could turn a bad run into a good-looking number:
+coverage, integrity, threshold validity, tolerance handling, and cross-version/cross-surface
+comparison.
 
 Per-surface rates are never averaged — `claude.ai` and `chatgpt` are different subjects under test,
 and a single blended number would let a regression on one hide behind the other.
+
+### D8 — A threshold that cannot be compared against is refused, not tolerated
+
+Rates and the permitted regression are validated at construction (`Baseline.__post_init__`,
+`Measurement.__post_init__`), which is also where `_load_baseline` builds — so a file cannot smuggle
+in a value the comparison silently mishandles.
+
+NaN is why this is a critical rather than a tidiness rule: `drop > NaN` is False for *every* drop, so
+one non-finite tolerance converts the gate into an unconditional `GATE PASS` while every other part
+of the system behaves normally. Codex reproduced it on 2026-07-25 — a 20/21 candidate against a
+1.000 baseline exited 0. The same hole exists on each rate (`baseline - NaN` is NaN), including from
+the *candidate* side, so `Measurement` is validated too. Out-of-range values are refused for the
+blunt version of the same reason, and a tolerance wider than the rate range is not a loose gate but
+no gate.
+
+Refusal is exit 2 (unusable input), never exit 1 (failed gate) — an unusable threshold is not a
+regression, and conflating them teaches a reader to treat one as the other.
 
 ## Why this is not synced into `openspec/specs/`
 

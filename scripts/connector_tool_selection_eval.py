@@ -18,16 +18,28 @@ Gates: direct MCP calls are supporting evidence, not user-surface proof). This
 module scores a *recorded* run and gates it against a *recorded* baseline.
 
 Everything here fails loudly. A malformed dataset, a partial run, a
-non-rendered source, or a cross-version comparison raises rather than producing a
-number that looks like evidence:
+non-rendered source, an unusable threshold, or a cross-version comparison raises
+rather than producing a number that looks like evidence:
 
   * a partial run cannot be scored, so the gate cannot be passed by omitting the
     prompts that failed;
   * the permitted regression lives on the baseline, not in the call, so a failing
-    run cannot be rescued by loosening the threshold at the call site;
+    run cannot be rescued by loosening the threshold at the call site — and it
+    must be a finite rate in [0, 1], because ``drop > NaN`` is False for every
+    drop and would turn the gate into an unconditional pass;
   * the opening-turn rate is reported separately from top-1, because a regression
     confined to first-contact turns is invisible in a pooled average — and
     first-contact is exactly the flow that depends on ``converse`` being picked.
+
+**What ``source`` is, precisely.** A *trusted transcription* — not proof of
+provenance. The harness refuses an honestly labelled non-rendered source, and
+that is the whole of what it enforces: it cannot distinguish a transcribed
+rendered session from a synthetic file labelled ``claude.ai``. Provenance is
+therefore established by *review of the evidence*, not by the label. A recorded
+run may carry an ``evidence`` pointer (a ``ui-test`` log anchor, trace, or
+screenshot path); the harness carries and reports it, and says plainly when it is
+absent. Requiring that pointer on a recorded baseline is a review obligation
+(task 3.1), not a check this module performs.
 
 Usage
 -----
@@ -37,14 +49,17 @@ Usage
         --baseline docs/ops/tool-selection-baseline.json
 
 ``--run`` is a JSON object of ``{"source": ..., "observed_on": ...,
-"observations": {prompt: observed_handle}}`` transcribed from the rendered
-session. Exit 0 = gate passed, 1 = gate failed, 2 = the input was unusable.
+"evidence": ..., "observations": {prompt: observed_handle}}`` transcribed from
+the rendered session (``evidence`` optional). Exit 0 = gate passed, 1 = gate
+failed, 2 = the input was unusable — every unusable shape, so exit 1 always means
+a valid run that failed a valid gate.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -65,6 +80,8 @@ CANONICAL_HANDLES = frozenset({
 
 #: Sources that count as a measurement. Handle choice can only be observed where
 #: a host chatbot actually chooses, so a direct MCP call is not a measurement.
+#: This refuses an *honestly labelled* non-rendered source; it does not and
+#: cannot verify that an accepted label was truthful — see the module docstring.
 RENDERED_SOURCES = frozenset({"claude.ai", "chatgpt"})
 
 _VERSION_RE = re.compile(r"_(v\d+)\.jsonl$")
@@ -76,6 +93,56 @@ class DatasetError(ValueError):
 
 class MeasurementError(ValueError):
     """A run or comparison is unusable as evidence."""
+
+
+def _as_rate(value: object, field_name: str) -> float:
+    """Coerce and range-check a rate, refusing anything a comparison cannot use.
+
+    NaN is the sharp case: ``baseline - NaN`` is NaN and ``NaN > tolerance`` is
+    False, so a single non-finite value converts a failing gate into
+    ``GATE PASS`` without touching the comparison logic at all. An out-of-range
+    rate is the blunt version — it shifts every drop by an arbitrary amount.
+    """
+    try:
+        rate = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise MeasurementError(
+            f"{field_name} {value!r} is not a number — an unreadable rate cannot "
+            "gate anything"
+        ) from exc
+    if not math.isfinite(rate):
+        raise MeasurementError(
+            f"{field_name} is {rate} — a non-finite rate makes every comparison "
+            "against it vacuously true, which reads as a passing gate"
+        )
+    if not 0.0 <= rate <= 1.0:
+        raise MeasurementError(
+            f"{field_name} is {rate}, outside the [0.0, 1.0] range a rate can occupy"
+        )
+    return rate
+
+
+def _as_tolerance(value: object) -> float:
+    """Coerce and range-check the permitted regression. Same hole, same refusal."""
+    try:
+        tolerance = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise MeasurementError(
+            f"permitted_regression {value!r} is not a number — an unreadable "
+            "threshold cannot gate anything"
+        ) from exc
+    if not math.isfinite(tolerance):
+        raise MeasurementError(
+            f"permitted_regression is {tolerance} — `drop > tolerance` is False for "
+            "every drop, so every regression would pass the gate"
+        )
+    if not 0.0 <= tolerance <= 1.0:
+        raise MeasurementError(
+            f"permitted_regression is {tolerance}: a negative tolerance is "
+            "meaningless, and one wider than the rate range is not a loose gate "
+            "but no gate"
+        )
+    return tolerance
 
 
 @dataclass(frozen=True)
@@ -108,6 +175,20 @@ class Measurement:
     correct: int
     non_canonical_observed: tuple[str, ...] = ()
     misses: tuple[tuple[str, str, str], ...] = ()  # (prompt, expected, observed)
+    #: Optional reviewable pointer to the rendered session this was transcribed
+    #: from (a ``ui-test`` log anchor, trace, or screenshot path). Carried, not
+    #: verified — see the module docstring on trusted transcription.
+    evidence: str = ""
+
+    def __post_init__(self) -> None:
+        # Validated here rather than only in `score_run`, so a hand-built
+        # Measurement cannot carry a NaN rate into the gate either.
+        object.__setattr__(self, "top1_rate", _as_rate(self.top1_rate, "top1_rate"))
+        object.__setattr__(
+            self,
+            "opening_converse_rate",
+            _as_rate(self.opening_converse_rate, "opening_converse_rate"),
+        )
 
 
 @dataclass(frozen=True)
@@ -122,6 +203,23 @@ class Baseline:
     #: records a tolerance. Recorded here rather than passed per-invocation so a
     #: failing run cannot be rescued by loosening it at the call site.
     permitted_regression: float = 0.0
+    #: Reviewable pointer to the rendered session this baseline was transcribed
+    #: from. Optional in the type, required by the recording task (3.1).
+    evidence: str = ""
+
+    def __post_init__(self) -> None:
+        # Construction is the single validation point, so `_load_baseline` gets
+        # the same refusals for free: a non-numeric, non-finite, or out-of-range
+        # value never reaches `compare_to_baseline` to be silently tolerated.
+        object.__setattr__(self, "top1_rate", _as_rate(self.top1_rate, "top1_rate"))
+        object.__setattr__(
+            self,
+            "opening_converse_rate",
+            _as_rate(self.opening_converse_rate, "opening_converse_rate"),
+        )
+        object.__setattr__(
+            self, "permitted_regression", _as_tolerance(self.permitted_regression)
+        )
 
 
 @dataclass(frozen=True)
@@ -209,13 +307,27 @@ def score_run(
     *,
     source: str,
     observed_on: str,
+    evidence: str = "",
 ) -> Measurement:
     """Score a recorded rendered-chatbot run against ``dataset``.
 
     Refuses anything that would yield a misleading number: a non-rendered source,
     a missing date, a run that omits dataset prompts, or a run carrying prompts
     the dataset does not contain.
+
+    ``evidence`` is an optional reviewable pointer to the rendered session (a
+    ``ui-test`` log anchor, trace, or screenshot path). It is carried and
+    reported, never checked — the label is a trusted transcription.
     """
+    if not isinstance(observations, dict):
+        raise MeasurementError(
+            "observations must be a JSON object of prompt->observed handle, got "
+            f"{type(observations).__name__}"
+        )
+    if not isinstance(evidence, str):
+        raise MeasurementError(
+            f"evidence must be a string reference, got {type(evidence).__name__}"
+        )
     surface = (source or "").strip()
     if surface not in RENDERED_SOURCES:
         raise MeasurementError(
@@ -276,6 +388,7 @@ def score_run(
         correct=correct,
         non_canonical_observed=tuple(dict.fromkeys(non_canonical)),
         misses=tuple(misses),
+        evidence=evidence.strip(),
     )
 
 
@@ -330,14 +443,23 @@ def compare_to_baseline(
 
 def _load_baseline(path: Path) -> Baseline:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise MeasurementError(
+            f"baseline {path} is not a JSON object (got {type(data).__name__})"
+        )
     try:
         return Baseline(
             dataset_version=data["dataset_version"],
             surface=data["surface"],
             recorded_on=data["recorded_on"],
-            top1_rate=float(data["top1_rate"]),
-            opening_converse_rate=float(data["opening_converse_rate"]),
-            permitted_regression=float(data.get("permitted_regression", 0.0)),
+            # Passed unconverted on purpose: `Baseline.__post_init__` raises
+            # MeasurementError for a non-numeric, non-finite, or out-of-range
+            # value, so an unusable baseline exits 2 rather than crashing out of
+            # the CLI's envelope with the exit code reserved for a failed gate.
+            top1_rate=data["top1_rate"],
+            opening_converse_rate=data["opening_converse_rate"],
+            permitted_regression=data.get("permitted_regression", 0.0),
+            evidence=str(data.get("evidence") or ""),
         )
     except KeyError as exc:
         raise MeasurementError(f"baseline {path} is missing {exc}") from exc
@@ -356,16 +478,27 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Exit 2 covers EVERY unusable input, so it never collides with exit 1 (a
+    # valid run that failed a valid gate). TypeError/ValueError are caught as a
+    # class, not enumerated: JSON is untyped, so any field can arrive as the
+    # wrong shape, and a traceback out of here would be misread as exit 1.
+    # (DatasetError, MeasurementError and json.JSONDecodeError are all
+    # ValueError subclasses; named for the reader.)
     try:
         dataset = load_dataset(args.dataset)
         run = json.loads(args.run.read_text(encoding="utf-8"))
+        if not isinstance(run, dict):
+            raise MeasurementError(
+                f"run {args.run} is not a JSON object (got {type(run).__name__})"
+            )
         measurement = score_run(
             dataset,
             run.get("observations") or {},
             source=str(run.get("source") or ""),
             observed_on=str(run.get("observed_on") or ""),
+            evidence=str(run.get("evidence") or ""),
         )
-    except (DatasetError, MeasurementError, OSError, json.JSONDecodeError) as exc:
+    except (DatasetError, MeasurementError, OSError, TypeError, ValueError) as exc:
         print(f"UNUSABLE: {exc}", file=sys.stderr)
         return 2
 
@@ -380,12 +513,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  MISS  {prompt!r}: expected {expected}, observed {observed!r}")
     if measurement.non_canonical_observed:
         print(f"  non-canonical handles observed: {list(measurement.non_canonical_observed)}")
+    if measurement.evidence:
+        print(f"  rendered-session evidence: {measurement.evidence}")
+    else:
+        print(
+            "  rendered-session evidence: none recorded — the source label is a "
+            "trusted transcription, not proof of provenance"
+        )
 
     if not args.baseline:
         return 0
     try:
         verdict = compare_to_baseline(measurement, _load_baseline(args.baseline))
-    except (MeasurementError, OSError, json.JSONDecodeError) as exc:
+    except (MeasurementError, OSError, TypeError, ValueError) as exc:
         print(f"UNUSABLE: {exc}", file=sys.stderr)
         return 2
     print(f"GATE {'PASS' if verdict.passed else 'FAIL'}: {verdict.reason}")

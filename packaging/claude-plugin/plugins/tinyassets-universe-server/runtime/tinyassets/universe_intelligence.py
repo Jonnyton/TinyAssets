@@ -497,10 +497,11 @@ def converse(
     logged and the founder still gets their answer. Returns the reply text.
 
     ``tier`` is the bound interlocutor tier of the party being answered. ``None``
-    means "the landed in-process founder contract" — this function's only
-    production caller is the founder-gated `converse` MCP handle, which resolves
-    the tier from authenticated request state and passes it explicitly, so the
-    live path never relies on that default.
+    is NOT a founder default: it resolves the caller's real tier from
+    authenticated request state (see the note below — the old founder default was
+    fail-open and was removed). The production caller, the founder-gated
+    `converse` MCP handle, still resolves and passes the tier explicitly, so the
+    live path does not depend on that fallback either.
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)

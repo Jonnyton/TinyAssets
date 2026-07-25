@@ -1,10 +1,14 @@
 ## ADDED Requirements
 
-> **⚠ Target requirements — NOT as-built.** None of these is implemented. They MUST NOT be synced
-> into `openspec/specs/live-mcp-connector-surface/` until the dataset, harness, and a recorded
-> baseline exist (`openspec/config.yaml`: *"do not spec aspirations"*; AGENTS.md § Spec-driven
-> development). Note that `openspec archive` performs that sync — archiving this change before the
-> tasks land is the same failure. Provenance: task 6.3 of
+> **⚠ Target requirements — NOT as-built.** The *instrument* is built and tested (tasks §1–2:
+> `tests/data/connector_tool_selection_v1.jsonl`, `scripts/connector_tool_selection_eval.py`,
+> `tests/test_connector_tool_selection.py`). What does not exist is the *measurement*: no baseline
+> has been recorded, so no connector-prose change is gated on anything and these requirements are
+> not in force. They MUST NOT be synced into `openspec/specs/live-mcp-connector-surface/` until a
+> recorded baseline exists (`openspec/config.yaml`: *"do not spec aspirations"*; AGENTS.md
+> § Spec-driven development) — syncing a defined-but-unenforced gate asserts an enforcement that is
+> not happening. Note that `openspec archive` performs that sync — archiving this change before
+> task 3.1 lands is the same failure. Provenance: task 6.3 of
 > `reconcile-universe-personification-relay`, itself the residual of retired task 2.9.
 
 ### Requirement: Connector tool-selection accuracy is measured against a fixed labelled dataset
@@ -71,6 +75,18 @@ failing run cannot be rescued by loosening the threshold at the call site.
 A baseline SHALL record the dataset version it was measured against, and a comparison across
 different dataset versions SHALL fail rather than silently compare incomparable numbers.
 
+Both recorded rates and the permitted regression SHALL be finite numbers inside the range a rate can
+occupy, and a baseline carrying a non-numeric, non-finite, or out-of-range value SHALL be refused as
+unusable rather than compared against. A non-finite tolerance is the sharp case: every comparison
+against it is vacuously satisfied, so a real regression is reported as a passing gate without any
+part of the comparison appearing to malfunction.
+
+#### Scenario: A baseline carrying an unusable threshold is refused, not tolerated
+- **WHEN** a baseline records a non-numeric, non-finite, or out-of-range rate or permitted regression
+- **THEN** the comparison is refused as unusable input and no gate verdict is produced
+- **AND** the refusal is distinguishable from a failed gate, so an unusable threshold is never read
+  as a regression that merely failed
+
 #### Scenario: A regression beyond tolerance fails the gate
 - **WHEN** a candidate measurement's top-1 rate is below the baseline by more than the permitted
   regression
@@ -92,13 +108,27 @@ property of the host chatbot and cannot be observed by calling the MCP server di
 calls, local scripts, and canary probes SHALL be treated as supporting evidence and SHALL NOT be
 recorded as a measurement.
 
+The recorded source SHALL be treated as a **trusted transcription**, not as proof of provenance. The
+harness SHALL refuse a run whose declared source is not a rendered surface, but it cannot verify
+that an accepted declaration is truthful — a fabricated observation file declaring a rendered
+surface is indistinguishable from a transcribed one. A recorded baseline SHALL therefore carry a
+reviewable reference to its rendered-session evidence (the `ui-test` session log entry plus a trace
+or screenshot path), and provenance SHALL be established by review of that reference rather than by
+the declared label. A baseline recorded without reviewable evidence SHALL NOT be treated as a
+measurement.
+
 A recorded measurement SHALL carry the surface it was observed on (for example `claude.ai` or
 `chatgpt`) and the date observed, and rates from different surfaces SHALL NOT be averaged into a
 single number — they are different subjects under test.
 
-#### Scenario: A run recorded from direct MCP calls is refused
-- **WHEN** a run is submitted whose source is not a rendered chatbot session
+#### Scenario: A run declaring a non-rendered source is refused
+- **WHEN** a run is submitted whose declared source is not a rendered chatbot session
 - **THEN** it is refused as a measurement and no baseline is recorded from it
+
+#### Scenario: A baseline without reviewable rendered-session evidence is not a measurement
+- **WHEN** a baseline is recorded whose rendered-session evidence reference is absent or does not
+  resolve to a reviewable `ui-test` session log, trace, or screenshot
+- **THEN** it is rejected in review as unprovenanced, regardless of the source label it declares
 
 #### Scenario: Per-surface rates stay separate
 - **WHEN** measurements exist for more than one chatbot surface

@@ -33,8 +33,25 @@ host/verifier-actionable, not code. Section 4 must not run before section 3.
       and refuse cross-version / cross-surface comparison
       → `compare_to_baseline` (takes no tolerance argument — asserted structurally by
       `::test_compare_takes_no_tolerance_argument`); `TestBaselineGate` (8 tests).
-- [x] 2.6 CLI entry that reports rates and exits 1 on a failed gate, 2 on unusable input
-      → `python scripts/connector_tool_selection_eval.py --dataset … --run … [--baseline …]`.
+- [x] 2.6 CLI entry that reports rates and exits 1 on a failed gate, 2 on **every** unusable input
+      → `python scripts/connector_tool_selection_eval.py --dataset … --run … [--baseline …]`;
+      `TestCliExitCodes` (21 collected) pins each shape: unusable baseline value, missing key, non-object
+      baseline or run, non-object observations, unreadable path, malformed dataset, unrendered
+      source → 2; valid failed gate → 1; pass → 0. Cross-family finding 3 (2026-07-25): a
+      non-numeric `permitted_regression` used to raise an uncaught `ValueError` and exit **1**, the
+      code reserved for a valid failed gate. Conversion and type failures are now caught in
+      `_load_baseline` (via `Baseline.__post_init__`) and in both CLI envelopes.
+- [x] 2.7 Refuse a baseline or measurement whose rates or tolerance cannot be compared against —
+      non-numeric, non-finite, or out of range — at construction, so `_load_baseline` inherits it
+      → `_as_rate` / `_as_tolerance` + `__post_init__` on both dataclasses;
+      `TestBaselineValueIntegrity` (12 collected). Cross-family finding 1, **critical** (2026-07-25):
+      `permitted_regression: NaN` made `compare_to_baseline` return `GATE PASS` and the CLI exit 0
+      on a 20/21-vs-1.000 regression, because `drop > NaN` is False for every drop (design D8).
+- [x] 2.8 Carry an optional reviewable `evidence` reference through the run format onto the
+      measurement, and state plainly when none is recorded — the harness binds the pointer, it does
+      not verify provenance (design D7)
+      → `score_run(..., evidence=...)` → `Measurement.evidence` / `Baseline.evidence`;
+      `TestEvidenceBinding` (3 tests) + `TestCliExitCodes::test_absent_evidence_is_reported_not_assumed`.
 
 ## 3. Measurement — needs a rendered session (host / verifier)
 
@@ -42,9 +59,16 @@ host/verifier-actionable, not code. Section 4 must not run before section 3.
       through a browser-rendered conversation with the TinyAssets connector installed at
       `https://tinyassets.io/mcp` per the `ui-test` skill, transcribe prompt→observed handle, and
       commit the baseline JSON (`dataset_version`, `surface`, `recorded_on`, `top1_rate`,
-      `opening_converse_rate`, `permitted_regression`). Log the session in
-      `output/user_sim_session.md`. **Blocked on a human at a browser — cannot be fabricated in
-      source, and a simulated run is refused by the harness by design (D7).**
+      `opening_converse_rate`, `permitted_regression`, `evidence`). Log the session in
+      `output/user_sim_session.md`.
+      **Provenance is a review obligation, not a harness check (D7).** The `source` label is a
+      *trusted transcription*: the harness refuses an honestly labelled non-rendered source, but it
+      cannot distinguish a transcribed rendered session from a synthetic file labelled
+      `claude.ai` — Codex demonstrated exactly that on 2026-07-25, scoring a fabricated run
+      1.000/1.000. So the baseline commit MUST carry reviewable rendered-session evidence in its
+      `evidence` field (the `output/user_sim_session.md` anchor plus a trace or screenshot path),
+      and the reviewer checks *that pointer*, not the label. A baseline landed without reviewable
+      evidence is not a measurement regardless of what the harness exits.
 - [ ] 3.2 **host-decision:** confirm the permitted regression before the baseline is recorded.
       Default is 0 pp; with 21 prompts a single flipped prompt moves top-1 by ~4.8 pp, so the owner
       may prefer a larger v2 dataset first (design §"Open question").

@@ -476,10 +476,12 @@ class TestEntrypointBindsTier:
     def test_mcp_converse_passes_the_resolved_tier(self, base, monkeypatch):
         """Mutation gate: drop the resolution at the MCP boundary and this reds.
 
-        ``universe_intelligence.converse`` defaults ``tier`` to T2 (its landed
-        in-process founder-only contract). That default must NOT be what the live
-        path relies on — the boundary that actually holds the authenticated
-        request state has to resolve and pass the tier explicitly.
+        ``universe_intelligence.converse`` resolves an omitted ``tier`` itself —
+        there is no founder default (that fail-open default was removed; see
+        ``test_converse_without_an_explicit_tier_resolves_it``). That fallback
+        must still not be what the live path relies on: the boundary that
+        actually holds the authenticated request state has to resolve and pass
+        the tier explicitly.
         """
         import tinyassets.universe_server as us
         from tinyassets.api import helpers, permissions
