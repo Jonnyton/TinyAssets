@@ -155,16 +155,28 @@ def _merge_single_record(
     existing: list[dict[str, Any]],
     incoming: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    merged = list(existing)
-    for index, record in enumerate(merged):
-        if _credentials_match(record, incoming):
-            if incoming["credential_type"] == "llm_subscription":
-                merged[index] = {**record, **incoming}
-            else:
-                merged[index] = incoming
-            return merged
-    merged.append(incoming)
-    return merged
+    matching_indexes = [
+        index
+        for index, record in enumerate(existing)
+        if _credentials_match(record, incoming)
+    ]
+    if not matching_indexes:
+        return [*existing, incoming]
+
+    replacement = incoming
+    if incoming["credential_type"] == "llm_subscription":
+        replacement = {}
+        for index in reversed(matching_indexes):
+            replacement.update(existing[index])
+        replacement.update(incoming)
+
+    first_match = matching_indexes[0]
+    matching_set = set(matching_indexes)
+    return [
+        replacement if index == first_match else record
+        for index, record in enumerate(existing)
+        if index == first_match or index not in matching_set
+    ]
 
 
 def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
