@@ -11,9 +11,10 @@ The defect is both instructional and structural:
 1. The public connector advertises exactly seven handles, but registered prompts and returned hints teach hidden legacy tools.
 2. `read_graph(target="branch")` and `run_graph` require a pre-known branch identifier.
 3. `write_graph(target="branch")` patches only; the exact-seven surface has no branch catalog or complete-definition create path.
-4. The internal list/build seams are reusable only after authority, privacy, pagination, idempotency, and error-projection hardening.
+4. The exact-seven surface has no deliberate branch publication path; ordinary patching currently mints snapshots that listing can mistake for publication.
+5. The internal list/build/publication seams are reusable only after authority, privacy, pagination, idempotency, explicit-publication, and error-projection hardening.
 
-Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and a closed, transactionally idempotent `write_graph(target="branch", definition_json=...)` create mode without adding a tool. Both new modes remain unavailable until every exact branch projection filters restricted related-wiki metadata.
+Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and closed, transactionally idempotent create/publish modes under `write_graph(target="branch")` without adding a tool. Catalog/create/publish remain unavailable until every exact branch projection filters restricted related-wiki metadata.
 
 ## Source-owned first-contact gaps
 
@@ -36,6 +37,9 @@ Canonical sources and packaged plugin mirrors were byte-identical when inspected
 - Freshness check on 2026-07-25 found no `UNIVERSE_SERVER_USER` configuration in `deploy/` or `.github/workflows/`; the environment fallback resolves to anonymous in the inspected deployment configuration and cannot supply verified authority.
 - `tinyassets/api/branches.py:548-619`: internal list is visibility-filtered but unbounded, lacks stable pagination, and exposes ambiguous internal scopes.
 - `tinyassets/api/branches.py:2080-2329`: internal full-definition build validates then saves atomically at the branch level, but accepts caller-influenceable author fields, defaults public visibility, lacks body-bound idempotency, and can echo attempted definitions on error.
+- `tinyassets/api/branches.py:2687,2702`, `tinyassets/api/evaluation.py:863`, and `tinyassets/api/selector_dispatch.py:331` write branch versions; ordinary patch snapshots can appear published because the store has no deliberate catalog-publication bit.
+- The hidden `publish_version` action is the only deliberate user publication path, while `set_published` changes only the non-authoritative definition boolean. Replacement must precede retirement.
+- The legacy publication seam derives `publisher` from `UNIVERSE_SERVER_USER`; V1 catalog publication must instead require the verified branch owner. Service publication needs a later scoped-capability review.
 - A private `fork_from` version can be loaded before a safe source-visibility decision in the legacy build seam. V1 rejects fork/remix input instead of publishing that unsafe behavior.
 - Exact branch reads currently derive `related_wiki_pages`; the open STATUS concern records restricted path/title/summary leakage. The new catalog must not reuse that projection.
 - Existing branch patch batches are transactional across their operations, but the public router exposes no expected hash/version. They are not compare-and-swap and must not be described as CAS.
@@ -91,7 +95,8 @@ The current wiki patch owner conflicts on SHA mismatch or when `old_text` does n
 
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
 - Explicit accept/adapt from active universe-creation and universe-visibility owners. Re-check the currently unclaimed legacy-retirement change when it gains an owner; there is no current `broad-test` lane.
+- Rotation-catalogued `TINYASSETS_BRANCH_CRYPTO_KEYRING` provisioned with no ephemeral/default-key fallback.
 - V1 remains public-commons-only; private authoring needs a separate PLAN-approved user-controlled-storage contract.
 - Failing tests precede implementation.
 - Exact-seven canary, 500-client load proof, packaged mirror parity, and real browser-rendered chatbot acceptance are required.
-- No founder/maintainer provider quota or compute is used by created branches; later execution remains BYOC/market-authorized independently.
+- No founder/maintainer provider quota or compute is used by created/published branches; guidance requires requester BYOC/market authority before any run.

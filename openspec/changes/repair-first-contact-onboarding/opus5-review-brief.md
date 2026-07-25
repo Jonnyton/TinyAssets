@@ -13,7 +13,7 @@ Review the exact current working-tree artifacts:
 - current code seams in `tinyassets/universe_server.py` and `tinyassets/api/branches.py`
 - active changes `universe-creation`, `universe-visibility`, and `retire-legacy-live-mcp-tools`
 
-The first Opus 5 review in `opus5-review.md` returned ADAPT against the pre-hardening draft. Re-check every C1-C3, I1-I9, and M1-M3 against the current rebased head; do not assume the claimed fixes are sufficient.
+The first Opus 5 review in `opus5-review.md` returned ADAPT against the pre-hardening draft. The second review in `opus5-review-final.md` returned ADAPT against commit `8c3c0b21`, finding the missing deliberate publication route plus I1-I8/M1-M5. Re-check every finding from both reviews against the current amended head; do not assume the claimed fixes are sufficient.
 
 Check:
 
@@ -26,6 +26,9 @@ Check:
 - actor-scoped body-bound idempotency, rolling-key rotation, transaction, outbox, crash, and expiry claims;
 - bounded catalog projection, authoritative publication verification, encrypted cursor, mutation, scan-window, and read-only semantics;
 - visibility-safe composition across catalog/create and every exact branch alias/helper;
+- explicit owner/idempotency-bound publication, `status='active' AND catalog_published=true`, non-publishing snapshots, shared writer chokepoint, and replacement-first `publish_version`;
+- exact AES-GCM envelope/nonce/tag/key-issuance rules, keyring catalog/fail-closed behavior, immutable non-starving pagination, duplicate-safe JSON, bounded outputs, and crash-atomic consumer dedupe;
+- requester BYOC/market authority before any run and zero maintainer/founder quota;
 - minimal non-secret results/errors;
 - concurrency/load proof;
 - registered-guide and live-wiki correction safety;

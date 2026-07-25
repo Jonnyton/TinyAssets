@@ -5,8 +5,8 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 ## What Changes
 
 - Keep the advertised MCP surface at exactly seven handles and add a bounded, commons-only `read_graph(target="branches")` catalog target.
-- Extend `write_graph(target="branch")` with a closed create-or-patch discriminator: a complete `definition_json` creates one atomically validated branch, while `branch_id` plus `changes_json` preserves transactional patching.
-- Backfill the currently unspecced branch catalog and composite authoring contract, including verified-principal authorship, V1 public-commons-only storage, atomic validation failure, bounded results, and closed nested request/response shapes.
+- Extend `write_graph(target="branch")` with a closed create-patch-publish discriminator: a complete `definition_json` creates one atomically validated branch, `branch_id` plus `changes_json` preserves transactional patching, and explicit `publish=true` deliberately mints a catalog-published version.
+- Backfill the currently unspecced branch catalog and composite authoring contract, including verified-principal authorship/publication, V1 public-commons-only storage, atomic validation failure, versioned cryptographic keying, bounded results, and closed nested request/response shapes.
 - Replace registered prompt instructions that name hidden legacy tools with compositions over the canonical handles.
 - Produce an exact-path, lower-bound repository/live-wiki planning manifest; prove exhaustiveness before apply, and do not treat the existing race-prone SHA precondition as atomic compare-and-swap.
 - Add no default branch, eighth tool, compatibility alias, provider/compute authority, or runtime implementation in this review lane.
