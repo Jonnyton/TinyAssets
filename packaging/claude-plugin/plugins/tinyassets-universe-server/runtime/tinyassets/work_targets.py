@@ -57,7 +57,7 @@ SYNTHESIS_RETRY_LIMIT = 3
 PATCH_REQUEST_PICKUP_SIGNAL_TAG = "pickup-incentive"
 REQUESTER_DIRECTED_DAEMON_TAG = "requester-directed-daemon"
 PATCH_REQUEST_PICKUP_SIGNAL_CAP = 5.0
-EPOCH2_MATERIALIZATION_SCAN_LIMIT = 1000
+EPOCH2_MATERIALIZATION_RESULT_LIMIT = 512
 
 EXECUTION_KIND_NOTES = "notes"
 # Phase C.2: BOOK/CHAPTER/SCENE moved to
@@ -438,12 +438,12 @@ def _list_live_epoch2_requests(
         ).list_live_claimed_requests(
             universe_id=universe_id,
             worker_id=worker_id,
-            limit=EPOCH2_MATERIALIZATION_SCAN_LIMIT,
+            limit=EPOCH2_MATERIALIZATION_RESULT_LIMIT,
         )
-        if len(records) == EPOCH2_MATERIALIZATION_SCAN_LIMIT:
+        if len(records) == EPOCH2_MATERIALIZATION_RESULT_LIMIT:
             logger.warning(
-                "epoch-2 live-claim read reached the %s-row scan cap for %s",
-                EPOCH2_MATERIALIZATION_SCAN_LIMIT,
+                "epoch-2 live-claim read reached the %s-row result cap for %s",
+                EPOCH2_MATERIALIZATION_RESULT_LIMIT,
                 resolved_universe_path,
             )
         return records
@@ -641,8 +641,6 @@ def _materialize_live_epoch2_requests(
 
         tags = ["user-request", request.request_type]
         if _bounded_pickup_signal(metadata) > 0:
-            if request.pickup_incentive:
-                tags.append(PATCH_REQUEST_PICKUP_SIGNAL_TAG)
             if request.directed_daemon_id:
                 tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
         title_stub = (

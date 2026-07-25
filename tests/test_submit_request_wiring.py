@@ -443,10 +443,13 @@ def test_epoch2_materialization_rejects_same_basename_outside_data_root(
     assert not (outside_universe / "work_targets.json").exists()
 
 
-def test_epoch2_materialization_uses_bounded_operational_scan_limit(
+def test_epoch2_materialization_uses_bounded_result_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import tinyassets.work_targets as work_targets
+
     universe_dir = tmp_path / "test-universe"
     universe_dir.mkdir()
     observed: dict[str, object] = {}
@@ -461,13 +464,13 @@ def test_epoch2_materialization_uses_bounded_operational_scan_limit(
             universe_id: str,
             worker_id: str,
             limit: int,
-        ) -> list:
+        ) -> list[object]:
             observed.update(
                 universe_id=universe_id,
                 worker_id=worker_id,
                 limit=limit,
             )
-            return []
+            return [object() for _ in range(limit)]
 
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
@@ -480,13 +483,14 @@ def test_epoch2_materialization_uses_bounded_operational_scan_limit(
         _Adapter,
     )
 
-    assert materialize_pending_requests(universe_dir) == []
+    assert len(work_targets._list_live_epoch2_requests(universe_dir)) == 512
     assert observed == {
         "base": tmp_path.resolve(),
         "universe_id": universe_dir.name,
         "worker_id": "worker-a",
-        "limit": 1000,
+        "limit": 512,
     }
+    assert "reached the 512-row result cap" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -538,7 +542,7 @@ def test_epoch2_pickup_signal_requires_positive_authorized_priority(
     assert directed["daemon_id"] == daemon["daemon_id"]
     assert directed["instruction"] == "Draft only."
     assert directed.get("effect") == expected_effect
-    assert ("pickup-incentive" in target.tags) is expect_signal_tags
+    assert "pickup-incentive" not in target.tags
     assert (
         "requester-directed-daemon" in target.tags
     ) is expect_signal_tags
