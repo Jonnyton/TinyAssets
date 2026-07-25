@@ -24,11 +24,31 @@ Current `/mcp` cannot simply replace the old directory URL today:
 - current privacy disclosure is draft/incomplete;
 - several clients and Registry metadata still point to `/mcp-directory`.
 
-The migration therefore hardens `/mcp`, moves consumers, proves the real paths,
-and removes the old route. The old route does not become a redirect or
-indefinite compatibility shim.
+The transition therefore removes the old route first, then hardens `/mcp`,
+moves maintained registrations, and proves the surviving real paths. The old
+route does not become a redirect or indefinite compatibility shim.
 
 Completed MCPB manifest parity remains valid and is preserved.
+
+### Source freshness
+
+Rechecked 2026-07-24 against primary sources:
+
+- OpenAI MCP-app developer mode is a web surface; mobile is not a required
+  custom-app acceptance path:
+  <https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt-beta>.
+- OpenAI requires per-tool auth metadata, Protected Resource Metadata, and
+  runtime OAuth challenges:
+  <https://developers.openai.com/plugins/build/auth>.
+- Anthropic remote connectors accept a remote MCP URL and support Streamable
+  HTTP plus OAuth:
+  <https://support.anthropic.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers>.
+- MCP Registry remote metadata binds a public Streamable HTTP URL:
+  <https://modelcontextprotocol.io/registry/remote-servers>.
+
+These source-derived hardening and registration details still require the
+project's opposite-provider review before implementation. The direct host
+decision to remove `/mcp-directory*` is independent of vendor acceptance.
 
 ## Goals / Non-Goals
 
