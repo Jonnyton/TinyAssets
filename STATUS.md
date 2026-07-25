@@ -5,7 +5,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
-- **[watch filed:2026-07-25]** retire-legacy inventory 2.3-F: auth/provider.py:516-618 keys require_action_scope to hardcoded legacy names on canonically-shared bodies; possible fail-open on money writes — Codex round-3 adjudicating before P1/fix.
+- [filed:2026-07-25] retire-legacy 4.2/4.4 must lockstep-migrate the require_action_scope registry (auth/provider.py): it fails CLOSED on row removal (2.3-F fail-open REFUTED vs prod sha 0603aae1), but dropping only write/costly classifications while actions default to read could fail open — needs a missing-metadata-denies + mutating-action-non-read regression test.
 - **[P1 filed:2026-07-24]** Branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages`; visibility bypass.
 - **[P2 filed:2026-07-25]** Scheduler trusts client-supplied owner_actor, no caller binding or branch-authority check (runtime_ops.py:350-392, legacy-reachable); server-bind before any canonical exposure.
 - **[P0 filed:2026-07-22 verified:2026-07-25]** Newborn contact has no BYOC/market authority path; never use maintainer quota. Host 2026-07-25: no authority until BYOC + friendly onboarding reply; fix lane in flight. See #1582.
