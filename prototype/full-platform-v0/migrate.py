@@ -158,7 +158,12 @@ def _verify_existing_fixture(connection) -> None:
             SELECT to_regclass('market.transactions') IS NOT NULL
                AND to_regclass('market.postings') IS NOT NULL
                AND to_regclass('market.balances') IS NOT NULL
-               AND to_regprocedure('market.apply_tx(text,text,jsonb)') IS NOT NULL
+               AND to_regprocedure(
+                     'market.apply_tx(text,text,text,text,jsonb)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'market.apply_settlement(bytea,text)'
+                   ) IS NOT NULL
                AND to_regprocedure('market.assert_drained(text)') IS NOT NULL
         """,
         "row security": """

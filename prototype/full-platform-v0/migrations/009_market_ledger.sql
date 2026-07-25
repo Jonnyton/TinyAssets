@@ -1,160 +1,298 @@
--- 009 — Double-entry market ledger + THE single money-movement RPC.
--- ⚠ FOUNDER-GATED: this migration implements the ledger-coexistence decision
--- (crash-test findings §2a/§3). Do not apply until the founder signs off.
+-- 009 — Fixture-only double-entry market ledger and its one bounded transport.
+-- FOUNDER-GATED: do not apply this prototype chain to live data.
 --
--- Decision it implements: public.ledger (001) is FROZEN as the v1 historical
--- single-entry table ("v1 shape must outlive token-launch migration
--- byte-for-byte" — preserved). The bundle's double-entry, zero-sum,
--- integer-micros ledger (tinyassets/paid_market/ledger.py) persists here.
---
--- HARD RULE this schema enforces: every money movement in the market goes
--- through market.apply_tx() and NOTHING ELSE. Application code never
--- computes a balance and writes it. The pure ledger.py stays the validation
--- oracle and the executable spec; this RPC is its one transport.
---
--- Concurrency proof-of-need: 8 unlocked threads against the pure ledger
--- created 278 units from nothing (lost updates); single-writer did 1M tx
--- with zero drift. Serialization is not optional.
+-- public.ledger remains frozen v1 history.  The market schema is logical
+-- accounting only: a committed row proves neither wallet funding nor a chain
+-- settlement.  No user-facing role can write it, and all accepted settlements
+-- pass through apply_settlement(bytea,text).
 
 CREATE SCHEMA IF NOT EXISTS market;
 
-CREATE TABLE IF NOT EXISTS market.transactions (
+DO $roles$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = 'tinyassets_fixture_market_owner'
+  ) THEN
+    CREATE ROLE tinyassets_fixture_market_owner NOLOGIN;
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = 'tinyassets_fixture_settlement'
+  ) THEN
+    CREATE ROLE tinyassets_fixture_settlement NOLOGIN;
+  END IF;
+END
+$roles$;
+
+CREATE TABLE market.transactions (
   tx_id            bigserial PRIMARY KEY,
-  idempotency_key  text NOT NULL UNIQUE,   -- deterministic key from the effect layer
+  tenant_id        text NOT NULL,
+  idempotency_key  text NOT NULL,
+  request_sha256   text NOT NULL CHECK (request_sha256 ~ '^[0-9a-f]{64}$'),
+  encoding_version smallint NOT NULL DEFAULT 1 CHECK (encoding_version = 1),
   memo             text NOT NULL DEFAULT '',
-  at               timestamptz NOT NULL DEFAULT now()
+  at               timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (tenant_id, idempotency_key)
 );
 
-CREATE TABLE IF NOT EXISTS market.postings (
+CREATE TABLE market.postings (
   posting_id   bigserial PRIMARY KEY,
   tx_id        bigint NOT NULL REFERENCES market.transactions(tx_id),
-  account      text   NOT NULL,        -- 'user:<id>'|'escrow:<id>'|'collateral:<id>'
-                                       -- |'pool:<id>'|'treasury'|'external:<name>'
-  delta_micros bigint NOT NULL CHECK (delta_micros <> 0),
+  account      text NOT NULL,
+  delta_micros bigint NOT NULL,
   CONSTRAINT postings_account_shape CHECK (
-    account = 'treasury' OR account ~ '^(user|escrow|collateral|pool|external):[^\s]+$'
+    account = 'treasury'
+    OR account ~ '^(user|escrow|collateral):[^\s]+$'
   )
 );
-CREATE INDEX IF NOT EXISTS postings_account ON market.postings (account, tx_id);
-CREATE INDEX IF NOT EXISTS postings_tx      ON market.postings (tx_id);
+CREATE INDEX postings_account ON market.postings (account, tx_id);
+CREATE INDEX postings_tx ON market.postings (tx_id);
 
-CREATE TABLE IF NOT EXISTS market.balances (
+CREATE TABLE market.balances (
   account        text PRIMARY KEY,
-  balance_micros bigint NOT NULL DEFAULT 0,
-  -- external:* are boundary contra accounts and MAY go negative (their
-  -- negative balance is the audit total of net inflows). Everything else
-  -- may not — same rule as ledger.py, enforced here so a bypassing write
-  -- still cannot overdraw.
-  CONSTRAINT balances_no_internal_overdraft CHECK (
-    balance_micros >= 0 OR account LIKE 'external:%'
-  )
+  balance_micros bigint NOT NULL DEFAULT 0 CHECK (balance_micros >= 0)
 );
 
--- ---------------------------------------------------------------------------
--- market.apply_tx — the ONLY writer. SECURITY DEFINER; direct table
--- INSERT/UPDATE is revoked from application roles below.
---
--- p_postings: jsonb array of {"account": text, "delta_micros": bigint}.
--- Returns tx_id. EXACTLY-ONCE: replay with the same idempotency_key returns
--- the original tx_id without re-applying (caller treats both cases the same).
--- ---------------------------------------------------------------------------
-CREATE OR REPLACE FUNCTION market.apply_tx(
+-- Private primitive.  It consumes only values already checked and derived by
+-- apply_settlement.  No service/application role receives EXECUTE.
+CREATE FUNCTION market.apply_tx(
+  p_tenant_id       text,
   p_idempotency_key text,
+  p_request_sha256  text,
   p_memo            text,
   p_postings        jsonb
-) RETURNS bigint
-LANGUAGE plpgsql SECURITY DEFINER AS $$
+) RETURNS TABLE(status text, tx_id bigint)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, market, pg_temp
+AS $function$
 DECLARE
-  v_tx_id    bigint;
-  v_sum      bigint;
-  v_rec      record;
+  v_tx_id bigint;
+  v_existing_sha256 text;
+  v_sum numeric;
+  v_rec record;
 BEGIN
-  IF p_idempotency_key IS NULL OR length(p_idempotency_key) = 0 THEN
-    RAISE EXCEPTION 'idempotency_key required';
-  END IF;
-  IF jsonb_typeof(p_postings) <> 'array' OR jsonb_array_length(p_postings) < 2 THEN
-    RAISE EXCEPTION 'postings must be an array of >= 2 entries';
-  END IF;
+  INSERT INTO market.transactions (
+    tenant_id, idempotency_key, request_sha256, memo
+  ) VALUES (
+    p_tenant_id, p_idempotency_key, p_request_sha256, p_memo
+  )
+  ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+  RETURNING market.transactions.tx_id INTO v_tx_id;
 
-  -- (1) Exactly-once seam. Claim the key; on replay return the recorded tx.
-  INSERT INTO market.transactions (idempotency_key, memo)
-  VALUES (p_idempotency_key, coalesce(p_memo, ''))
-  ON CONFLICT (idempotency_key) DO NOTHING
-  RETURNING tx_id INTO v_tx_id;
   IF v_tx_id IS NULL THEN
-    SELECT tx_id INTO v_tx_id FROM market.transactions
-      WHERE idempotency_key = p_idempotency_key;
-    RETURN v_tx_id;  -- replay: effect already applied (or applying in a
-                     -- committed sibling); never apply twice.
+    SELECT t.tx_id, t.request_sha256
+      INTO v_tx_id, v_existing_sha256
+      FROM market.transactions AS t
+     WHERE t.tenant_id = p_tenant_id
+       AND t.idempotency_key = p_idempotency_key
+     FOR SHARE;
+    IF v_existing_sha256 <> p_request_sha256 THEN
+      RAISE EXCEPTION 'idempotency conflict';
+    END IF;
+    RETURN QUERY SELECT 'replayed'::text, v_tx_id;
+    RETURN;
   END IF;
 
-  -- (2) Zero-sum: money moves, it is never created or destroyed.
-  SELECT coalesce(sum((e->>'delta_micros')::bigint), 0) INTO v_sum
-    FROM jsonb_array_elements(p_postings) e;
+  SELECT sum((entry->>'delta_micros')::bigint)
+    INTO v_sum
+    FROM jsonb_array_elements(p_postings) AS entry;
   IF v_sum <> 0 THEN
     RAISE EXCEPTION 'postings do not zero-sum (sum=%)', v_sum;
   END IF;
 
-  -- (3) Net per account, ensure balance rows exist, then LOCK them in
-  --     account-name order (stable order prevents deadlock between
-  --     concurrent transactions touching overlapping account sets).
-  DROP TABLE IF EXISTS _net;  -- same-session/same-tx reentrancy safety
-  CREATE TEMP TABLE _net ON COMMIT DROP AS
-    SELECT e->>'account' AS account,
-           sum((e->>'delta_micros')::bigint) AS delta
-      FROM jsonb_array_elements(p_postings) e
-     GROUP BY 1;
-
   INSERT INTO market.balances (account, balance_micros)
-    SELECT account, 0 FROM _net
+    SELECT entry->>'account', 0
+      FROM jsonb_array_elements(p_postings) AS entry
+     GROUP BY entry->>'account'
   ON CONFLICT (account) DO NOTHING;
 
-  -- (4) Overdraft check against LOCKED balances, applied on the NET result
-  --     so ordering inside a transaction cannot matter (same as ledger.py).
   FOR v_rec IN
-    SELECT b.account, b.balance_micros, n.delta
-      FROM market.balances b
-      JOIN _net n USING (account)
+    SELECT b.account, b.balance_micros, net.delta
+      FROM market.balances AS b
+      JOIN (
+        SELECT entry->>'account' AS account,
+               sum((entry->>'delta_micros')::bigint) AS delta
+          FROM jsonb_array_elements(p_postings) AS entry
+         GROUP BY entry->>'account'
+      ) AS net USING (account)
      ORDER BY b.account
-       FOR UPDATE OF b
+     FOR UPDATE OF b
   LOOP
-    IF v_rec.account NOT LIKE 'external:%'
-       AND v_rec.balance_micros + v_rec.delta < 0 THEN
+    IF v_rec.balance_micros + v_rec.delta < 0 THEN
       RAISE EXCEPTION 'overdraft on % (balance %, delta %) [%]',
         v_rec.account, v_rec.balance_micros, v_rec.delta, p_memo;
     END IF;
   END LOOP;
 
-  -- (5) Apply: balances + full posting rows (original, un-netted entries —
-  --     the audit trail preserves what the caller stated).
-  UPDATE market.balances b
-     SET balance_micros = b.balance_micros + n.delta
-    FROM _net n
-   WHERE b.account = n.account;
+  UPDATE market.balances AS b
+     SET balance_micros = b.balance_micros + net.delta
+    FROM (
+      SELECT entry->>'account' AS account,
+             sum((entry->>'delta_micros')::bigint) AS delta
+        FROM jsonb_array_elements(p_postings) AS entry
+       GROUP BY entry->>'account'
+    ) AS net
+   WHERE b.account = net.account;
 
   INSERT INTO market.postings (tx_id, account, delta_micros)
-    SELECT v_tx_id, e->>'account', (e->>'delta_micros')::bigint
-      FROM jsonb_array_elements(p_postings) e;
+    SELECT v_tx_id, entry->>'account', (entry->>'delta_micros')::bigint
+      FROM jsonb_array_elements(p_postings) AS entry;
 
-  RETURN v_tx_id;
-END;
-$$;
+  RETURN QUERY SELECT 'applied'::text, v_tx_id;
+END
+$function$;
 
--- Escrow drain audit (ledger.py assert_drained analogue) — call after any
--- settlement; a non-zero escrow is a caught fault, not a silent leak.
-CREATE OR REPLACE FUNCTION market.assert_drained(p_account text)
-RETURNS void LANGUAGE plpgsql AS $$
-DECLARE v bigint;
+-- The only callable logical-accounting transport.  The hash is recomputed
+-- from the exact canonical bytes; the body itself supplies all applied fields,
+-- so a parallel caller-selected posting/hash representation cannot diverge.
+CREATE FUNCTION market.apply_settlement(
+  p_canonical_body bytea,
+  p_supplied_sha256 text
+) RETURNS TABLE(status text, tx_id bigint)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, market, pg_temp
+AS $function$
+DECLARE
+  v_body jsonb;
+  v_sha256 text;
+  v_tenant_id text;
+  v_idempotency_key text;
+  v_memo text;
+  v_postings jsonb;
+  v_bad_account boolean;
+  v_fee bigint;
 BEGIN
-  SELECT balance_micros INTO v FROM market.balances WHERE account = p_account;
-  IF coalesce(v, 0) <> 0 THEN
-    RAISE EXCEPTION 'account % not drained: %', p_account, v;
+  IF p_canonical_body IS NULL OR octet_length(p_canonical_body) > 16384 THEN
+    RAISE EXCEPTION 'canonical body must be at most 16384 bytes';
   END IF;
-END;
-$$;
+  v_sha256 := encode(sha256(p_canonical_body), 'hex');
+  IF p_supplied_sha256 IS NULL
+     OR p_supplied_sha256 !~ '^[0-9a-f]{64}$'
+     OR p_supplied_sha256 <> v_sha256 THEN
+    RAISE EXCEPTION 'canonical hash mismatch';
+  END IF;
 
--- (6) Lock the side doors: application roles cannot write tables directly.
-REVOKE INSERT, UPDATE, DELETE ON market.transactions, market.postings,
-  market.balances FROM PUBLIC;
--- grant EXECUTE on market.apply_tx / market.assert_drained to the app role
--- in the environment-specific grants file (role names differ per deploy).
+  BEGIN
+    v_body := convert_from(p_canonical_body, 'UTF8')::jsonb;
+  EXCEPTION
+    WHEN OTHERS THEN
+      RAISE EXCEPTION 'canonical body is not valid UTF-8 JSON';
+  END;
+  IF jsonb_typeof(v_body) <> 'object'
+     OR v_body->>'schema_version' <> '1' THEN
+    RAISE EXCEPTION 'unsupported canonical body';
+  END IF;
+
+  v_tenant_id := v_body->'authority'->>'tenant_id';
+  v_idempotency_key := v_body->>'idempotency_key';
+  v_memo := coalesce(v_body->>'memo', '');
+  v_postings := v_body->'postings';
+  IF v_tenant_id IS NULL OR v_tenant_id = ''
+     OR octet_length(v_tenant_id) > 128 THEN
+    RAISE EXCEPTION 'tenant_id is required and bounded';
+  END IF;
+  IF v_idempotency_key IS NULL OR v_idempotency_key = ''
+     OR octet_length(v_idempotency_key) > 128 THEN
+    RAISE EXCEPTION 'idempotency_key is required and bounded';
+  END IF;
+  IF octet_length(v_memo) > 512 THEN
+    RAISE EXCEPTION 'memo exceeds 512 bytes';
+  END IF;
+  IF jsonb_typeof(v_postings) <> 'array'
+     OR jsonb_array_length(v_postings) < 2
+     OR jsonb_array_length(v_postings) > 16 THEN
+    RAISE EXCEPTION 'postings must contain between 2 and 16 entries';
+  END IF;
+
+  BEGIN
+    SELECT bool_or(
+             entry->>'account' IS NULL
+             OR octet_length(entry->>'account') > 256
+             OR NOT (
+               entry->>'account' = 'treasury'
+               OR entry->>'account' ~ '^(user|escrow|collateral):[^\s]+$'
+             )
+             OR jsonb_typeof(entry->'delta_micros') <> 'number'
+             OR (entry->>'delta_micros') !~ '^-?[0-9]+$'
+           )
+      INTO v_bad_account
+      FROM jsonb_array_elements(v_postings) AS entry;
+    SELECT coalesce(sum((entry->>'delta_micros')::bigint), 0)
+      INTO v_fee
+      FROM jsonb_array_elements(v_postings) AS entry
+     WHERE entry->>'account' = 'treasury';
+  EXCEPTION
+    WHEN numeric_value_out_of_range THEN
+      RAISE EXCEPTION 'posting delta exceeds bigint';
+  END;
+  IF coalesce(v_bad_account, true) THEN
+    RAISE EXCEPTION 'posting account or integer delta is invalid';
+  END IF;
+  IF v_fee < 0 THEN
+    RAISE EXCEPTION 'canonical treasury fee is invalid';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1
+      FROM jsonb_array_elements(v_postings) AS entry
+     WHERE entry->>'account' = 'treasury'
+  ) THEN
+    RAISE EXCEPTION 'every settlement requires the canonical treasury fee';
+  END IF;
+
+  RETURN QUERY
+    SELECT applied.status, applied.tx_id
+      FROM market.apply_tx(
+        v_tenant_id,
+        v_idempotency_key,
+        v_sha256,
+        v_memo,
+        v_postings
+      ) AS applied;
+END
+$function$;
+
+CREATE FUNCTION market.assert_drained(p_account text)
+RETURNS void
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = pg_catalog, market, pg_temp
+AS $function$
+DECLARE
+  v_balance bigint;
+BEGIN
+  SELECT b.balance_micros
+    INTO v_balance
+    FROM market.balances AS b
+   WHERE b.account = p_account;
+  IF coalesce(v_balance, 0) <> 0 THEN
+    RAISE EXCEPTION 'account % not drained: %', p_account, v_balance;
+  END IF;
+END
+$function$;
+
+ALTER SCHEMA market OWNER TO tinyassets_fixture_market_owner;
+ALTER TABLE market.transactions OWNER TO tinyassets_fixture_market_owner;
+ALTER TABLE market.postings OWNER TO tinyassets_fixture_market_owner;
+ALTER TABLE market.balances OWNER TO tinyassets_fixture_market_owner;
+ALTER SEQUENCE market.transactions_tx_id_seq OWNER TO tinyassets_fixture_market_owner;
+ALTER SEQUENCE market.postings_posting_id_seq OWNER TO tinyassets_fixture_market_owner;
+ALTER FUNCTION market.apply_tx(text, text, text, text, jsonb)
+  OWNER TO tinyassets_fixture_market_owner;
+ALTER FUNCTION market.apply_settlement(bytea, text)
+  OWNER TO tinyassets_fixture_market_owner;
+ALTER FUNCTION market.assert_drained(text)
+  OWNER TO tinyassets_fixture_market_owner;
+
+REVOKE ALL ON SCHEMA market FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA market FROM PUBLIC;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA market FROM PUBLIC;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA market FROM PUBLIC;
+REVOKE ALL ON SCHEMA market FROM tinyassets_fixture_app;
+REVOKE ALL ON ALL TABLES IN SCHEMA market FROM tinyassets_fixture_app;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA market FROM tinyassets_fixture_app;
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA market FROM tinyassets_fixture_app;
+
+GRANT USAGE ON SCHEMA market TO tinyassets_fixture_settlement;
+GRANT EXECUTE ON FUNCTION market.apply_settlement(bytea, text)
+  TO tinyassets_fixture_settlement;
