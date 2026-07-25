@@ -44,6 +44,8 @@ unchanged:
 
 ## Green evidence
 
+- All green commands below were rerun after merging current `origin/main`
+  `e567c6c0a4a7bed45feaa9b0d5716b9c2f305854`.
 - RED proof before the runtime reversion: both exact-set tests failed only
   because runtime contained the extra `workflow` tag.
 - Corrected metadata tests: `2 passed`.
@@ -57,10 +59,16 @@ unchanged:
 - `tests/test_branches.py`: `75 passed`.
 - Ruff on all five changed Python paths: `All checks passed!`.
 - `git diff --check`: clean.
-- `python packaging/claude-plugin/build_plugin.py`: staged 267 runtime files;
+- `python packaging/claude-plugin/build_plugin.py`: staged 278 runtime files;
   `Import probe: probe-ok`.
 - Canonical/plugin mirror SHA-256 parity:
-  `60701DDCDCD8E5D700FD0A38A607BFD15AE10FC04E55466F899F891D92566E61`.
-- Merge-tree against current `origin/main`: pending final committed-tree check.
+  `B41A2C2136705CD501A2EBFEFC4BA4B616FC795586D7D9E45C29EFC0491008C2`.
+- `origin/main` `e567c6c0a4a7bed45feaa9b0d5716b9c2f305854` was merged
+  after its unrelated `LANE_REPORT.md` addition caused the only preliminary
+  add/add conflict.
+- Final `git merge-tree --write-tree --messages origin/main HEAD` against the
+  newer `origin/main` `0b8fb8c153427c0298dda8d62e9cb8af496de02d`
+  exited 0: the canonical and mirrored server files auto-merged with no
+  conflicts.
 
-LANE_RESULT: partial - corrected findings 4 and 5 are green; final committed merge-tree and push remain.
+LANE_RESULT: done - findings 4 and 5 are corrected test-side, all required checks are green, and the branch is merge-clean.
