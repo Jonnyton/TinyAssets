@@ -1828,7 +1828,8 @@ def wiki(
         str,
         Field(
             description=(
-                'Optional ISO timestamp for action="read"; only pages updated '
+                'Optional ISO timestamp for action="read" ambient feed and '
+                'required ISO timestamp for action="since"; only pages updated '
                 "after this timestamp are returned."
             ),
         ),
@@ -1851,14 +1852,19 @@ def wiki(
     it returns status="similar_found" with the existing match.
 
     Args:
-        action: One of — reads: read, search, list, lint;
-            writes: write, consolidate, promote, ingest, supersede,
+        action: One of — reads: read, search, since, list, lint;
+            writes: write, patch, delete, consolidate, promote, ingest, supersede,
             sync_projects, file_bug, cosign_bug;
             `search` is lexical best-effort, not a completeness proof; use
-            `read` with `changed_since` to review pages updated after a known
-            timestamp.
-        changed_since: Optional ISO timestamp for action="read"; only pages
-            updated after this timestamp are returned.
+            `since` with `changed_since` to review pages updated after a known
+            timestamp, then `read` the candidate pages.
+        old_text/new_text: For action="patch", exact text to replace server-side.
+        expected_sha256: Optional full-page hash guard for action="patch" or
+            action="delete".
+        reason: Required for action="delete" when dry_run=false.
+        changed_since: Optional ISO timestamp for action="read" ambient feed
+            and required ISO timestamp for action="since"; only pages updated
+            after this timestamp are returned.
         offset/max_chars: For action="read", read a bounded character window
             from large pages. Truncated responses include `next_offset`.
         universe_id: Optional target universe page substrate. Omit to use the
