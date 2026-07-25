@@ -1,7 +1,9 @@
 # Lane report: test-identity-and-reset
 
-Date: 2026-07-24  
-Branch: `codex/osx-test-identity-reset`  
+Date: 2026-07-24
+
+Branch: `codex/osx-test-identity-reset`
+
 Result: partial — token-safe identity observability shipped to the review
 branch; scoped reset correctly stopped at its stale inventory/writer-fence gate.
 
