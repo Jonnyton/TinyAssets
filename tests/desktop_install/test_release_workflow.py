@@ -80,6 +80,20 @@ def test_macos_certificate_is_imported_into_temporary_keychain() -> None:
     assert "APPLE_CERTIFICATE_P12" in workflow
 
 
+def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> None:
+    workflow = _workflow_text()
+    lifecycle = (
+        Path(__file__).with_name("windows_lifecycle.ps1").read_text(encoding="utf-8")
+    )
+
+    assert "test-unsigned-windows-install:" in workflow
+    assert "windows_lifecycle.ps1" in workflow
+    assert "health-probe" in lifecycle
+    assert "Invoke-Installer" in lifecycle
+    assert "unins000.exe" in lifecycle
+    assert "clean-machine-content-marker.txt" in lifecycle
+
+
 def test_release_workflow_has_no_fake_signature_fallback() -> None:
     workflow = _workflow_text().lower()
 

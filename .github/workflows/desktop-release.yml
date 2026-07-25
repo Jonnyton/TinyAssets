@@ -278,8 +278,30 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  test-unsigned-windows-install:
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download unsigned Windows installer
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-unsigned-windows-x86_64
+          path: packaging/dist/windows
+
+      - name: Install, probe, repair, and uninstall exact CI artifact
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
+          if ($installer.Count -ne 1) {
+            throw "expected exactly one Windows installer"
+          }
+          ./tests/desktop_install/windows_lifecycle.ps1 `
+            -Installer $installer.FullName
+
   sign-and-verify:
-    needs: [plan, build]
+    needs: [plan, build, test-unsigned-windows-install]
     permissions:
       contents: read
       id-token: write
