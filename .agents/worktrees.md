@@ -1120,10 +1120,21 @@ Notes:
 
 - Provider: codex-gpt5-desktop
 - Branch: codex/distributed-execution-d0
-- Lane state: active implementation lane
+- Lane state: landed via PR #1701 (`aa328495`)
 - Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-d0
-- STATUS/Issue/PR: claimed; draft PR #1701
+- STATUS/Issue/PR: merged; coordination retirement follows on current main
 - Scope: implement the dark fake/test-only signed-authority spine from `distributed-execution` tasks 1.1-1.16; no production wiring
 - Review gate: focused TDD plus independent security/diff review; opposite-provider review remains required before any real-provider path
 - Memory/implications: PR #1699; #1697 non-promotion invariant; stale PR extraction sources named in the OpenSpec design
 - Ship/abandon: ship only with the D0 focused path, mutation proof, full strict OpenSpec validation, and zero production imports/routes/adapters
+
+## 2026-07-24 - retire distributed-execution-d0
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/retire-distributed-execution-d0
+- Lane state: current-main coordination follow-up
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-distributed-execution-d0
+- STATUS/Issue/PR: retire merged #1701 row and mark D0 tasks landed
+- Scope: coordination/docs only; no runtime behavior
+- Review gate: strict OpenSpec validation and exact coordination diff
+- Ship/abandon: land immediately after current-main checks; no deployment

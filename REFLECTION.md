@@ -380,3 +380,20 @@ fresh-host rollback edges found later.
 - **What I would do differently:** design the first quarantine integration
   test around the complete mixed queue. It exposes selector, claim, epoch
   fallback, purity, and maintenance behavior in one production-shaped trace.
+
+## 2026-07-24 - dark distributed-execution authority spine
+
+- **What surprised me:** the most consequential review findings were not
+  signature failures; they were ordinary-language authority leaks between
+  otherwise valid mechanisms—transplantable evidence provenance, mutable
+  verified metadata, an unbound multi-blob result digest, and SQLite
+  hardening that accidentally weakened POSIX locks.
+- **Pattern worth capturing:** prove authority at the consuming sink with
+  executable mutations, and stop hardening at the honest threat boundary.
+  A fake/test root can reject aliases and own its connection without claiming
+  hostile-host custody; production must wait for the OS/custom-VFS boundary
+  that can actually uphold that stronger promise.
+- **What I would do differently:** write the threat-boundary table and the
+  exact designated-result rule before the first storage implementation. That
+  would have prevented both the unsafe descriptor experiment and the late
+  multi-blob ambiguity.
