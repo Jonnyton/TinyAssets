@@ -27,7 +27,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ### Released Capabilities
 
-Each released delta has exactly one active successor owner. The umbrella keeps only the cross-slice invariants those successors must preserve (design decisions D0–D9 and the slice dependency ledger).
+Each released delta has exactly one active successor owner. The umbrella keeps only the cross-slice invariants those successors must preserve: design decisions **D0–D8** and the slice dependency ledger. D9 is host-gated context recorded for provenance and imposes no successor obligation in either direction.
 
 - `boundary-layer` → `outbound-boundary-layer` (released 2026-07-24, task 1.2).
 - `paid-market-economy` transaction delta → `paid-market-track-e-wave-2-transport` (task 1.1).
