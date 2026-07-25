@@ -1293,3 +1293,18 @@ Notes:
 - Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
 - Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
 - Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
+
+## 2026-07-25 - first-contact branch/wiki onboarding
+
+- Provider: codex-gpt56-first-contact
+- Branch: codex/repair-first-contact-onboarding
+- Lane state: Active spec/review lane; runtime blocked
+- Worktree: C:\Users\Jonathan\Projects\wf-first-contact-onboarding
+- STATUS/Issue/PR: Specify/review first-contact branch/wiki onboarding
+- PLAN refs: Scoping Rules; Daemon Platform; API & MCP Interface; Distribution & Discoverability; Full-Platform Architecture
+- Purpose: define visible branch discovery, starter-branch creation, and truthful first-contact guidance without adding an MCP tool.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-first-contact-onboarding\_PURPOSE.md
+- Memory refs: PRs #1745/#1747 rendered Opus 5 proof; `scope_first_contact_onboarding`
+- Related implications: universe-creation; universe-visibility; wiki-audience backfill; host-principal draft #1753
+- Idea feed refs: none
+- Ship/abandon: draft spec PR only after Opus 5 verdict; abandon if current owners land an equivalent complete contract
