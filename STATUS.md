@@ -7,7 +7,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P1 filed:2026-07-24]** Branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages`; visibility bypass.
-- **[P1 filed:2026-07-25]** Self-approvable full-builtins exec: approve_source_code lacks host-role/author check (api/branches.py:514-531; graph_compiler.py:1805 denylist-only). GAP-8, 0xCodez audit.
+- **[P2 filed:2026-07-25]** contradicted: GAP-8 self-approval refuted by Codex (extensions.admin scope gates it upstream, provider.py:410); residual = regression-cover every dispatch path reaches that gate. OS-sandbox P1 unchanged.
+- **[P2 filed:2026-07-25]** Scheduler trusts client-supplied owner_actor, no caller binding or branch-authority check (runtime_ops.py:350-392, legacy-reachable); server-bind before any canonical exposure.
 - **[P0 filed:2026-07-22 verified:2026-07-25]** Newborn contact has no BYOC/market authority path; never use maintainer quota. Host 2026-07-25: no authority until BYOC + friendly onboarding reply; fix lane in flight. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
