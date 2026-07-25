@@ -33,24 +33,33 @@ Section 0 (new, added by this lane — verification work, not implementation):
 
 | Task | What it did |
 |---|---|
-| 0.1 | Premise-verified all 28 open tasks against `origin/main`; labeled each unbuilt-target / path-corrected / in-flight external / blocked |
-| 0.2 | Corrected the four task premises that named nonexistent files (see below) |
+| 0.1 | Premise-verified all 28 open tasks against `origin/main`; labeled each unbuilt-target / path-corrected / owner-corrected / in-flight external / blocked |
+| 0.2 | Corrected the four misdirecting task premises — three dead paths, one misattributed owner (see below) |
 | 0.3 | Recorded that moderation implementation started outside this change (#1662, #1667) and fenced section 2 |
-| 0.4 | Recorded the host-owned gates that block section 3 in full |
+| 0.4 | Recorded the host-owned gates in section 3, scoped to the two steps they gate: signed publication and final acceptance |
 | 0.5 | Re-ran the pre-claim collision guard and strict-validated the change |
 
 ### The four premise corrections
 
-1. **5.4** named `tinyassets/external_effects.py` and
+Two kinds, deliberately kept distinct: a **dead path** (the named file does not
+exist) and a **misattributed owner** (the named file exists but does not own
+what the task said it owns). Conflating them misleads an implementer in
+opposite directions.
+
+1. **5.4 — dead path.** Named `tinyassets/external_effects.py` and
    `tinyassets/external_write_receipts.py`. **Neither path exists.** Real
    canonical owners: the `tinyassets/effectors/` package (incl. `authority.py`),
    `tinyassets/storage/external_write_receipts.py`, and
    `tinyassets/storage/effector_consents.py`.
-2. **5.1 / 5.2** located the whole `outcome_event` registry in
-   `tinyassets/api/extensions.py`. The DDL and `OutcomeEvent` dataclass actually
-   live in **`tinyassets/outcomes/schema.py`**; `extensions.py` only routes
-   `record_outcome` / `list_outcomes` / `get_outcome` and the `gate_event`
-   actions. The old wording would have extended the router and missed the store.
+2. **5.1 / 5.2 — misattributed owner, not a dead path.** They located the whole
+   `outcome_event` registry in `tinyassets/api/extensions.py`. That path
+   **exists** and legitimately owns the router half (`record_outcome` /
+   `list_outcomes` / `get_outcome` and the `gate_event` actions); the DDL and
+   `OutcomeEvent` dataclass live in **`tinyassets/outcomes/schema.py`**. The old
+   wording would have extended the router and missed the store. Round-2
+   cross-family review caught that this lane first filed it as `path-corrected`,
+   which wrongly implied `extensions.py` was absent; it is now
+   `owner-corrected`.
 3. **4.4** said to reuse `tinyassets/runtime/lease_store.py`. That path does not
    exist, and `openspec/changes/distributed-execution/` is still an active,
    unarchived change — so the reuse conditional is currently **false**.
@@ -91,13 +100,27 @@ acceptance, sync, and archive ownership. A naming note is not a split.
 
 ## Tasks skipped — blocked
 
-**Section 3, packaged tray (5 tasks) — blocked on host, entire section.**
-Nothing in 3.1-3.5 can be *proven* without a Windows Authenticode signing
-identity, an Apple Developer ID plus notarization account, a Linux package
-signing key, and a clean-machine OS matrix. None exists as a provisioned CI
-secret. Building 3.1-3.3 anyway would yield unverifiable artifacts and a release
-workflow that can never go green — 3.3 in particular would become a permanently
-red required check. Recorded as blocked with the gate named, per instruction.
+**Section 3, packaged tray (5 tasks) — one task blocked end-to-end, the rest
+buildable with one gated step.** The three signing identities (Windows
+Authenticode, Apple Developer ID + notarization, Linux package key) and the
+clean-machine OS matrix are genuinely absent — `gh secret list` on 2026-07-24
+shows no signing, notarization, or Apple/Authenticode credential of any kind.
+What that gates is narrow: **signed publication** of installable artifacts, and
+**3.5's final acceptance proof**, which the spec explicitly says build success
+cannot satisfy. Only 3.5 is blocked as a whole task, because 3.5 *is* a proof.
+
+3.1's packaging definitions and signing hooks, 3.2's onboarding/credential/
+updater modules, 3.4's clean-machine and upgrade tests, and a 3.3 workflow whose
+signing and publication steps are gated on secret presence can all proceed now.
+
+This corrects an overstatement in the first version of this report and of
+`tasks.md`: a section-wide "nothing can be proven" blanket, plus a claim that
+adding `desktop-release.yml` early yields a permanently red *required* check.
+That claim is false — `main`'s protection requires exactly two contexts,
+`policy` and `Diff scope declared` (verified 2026-07-24), and required checks
+are an explicit allowlist, so a new workflow is only gating if someone adds it.
+The blanket also contradicted 3.2/3.4 carrying a plain `unbuilt-target` label;
+the blanket was the error, not those labels.
 
 **Section 4, authoring/autoresearch (7 tasks) — live unbuilt target.** Not
 blocked by a host decision; simply four-subsystems-of-greenfield, ending in a
@@ -198,6 +221,35 @@ is checked by this lane, and none may be checked by annotation, delegation, or
 host-gating" statement in section 0; and an explicit statement in 6.3 that the
 moderation split was recorded, not discharged.
 
+### Cross-family review, round 2 (post-commit)
+
+The committed result was dispatched back to Codex, read-only, 2026-07-24.
+Verdict **adapt** again, with two required corrections plus one miscount. It
+independently re-confirmed everything else: the packaged-tray and handoff
+absences, the 4.4/5.4 dead paths and their replacement owners, the #1662/#1667
+moderation scope and the fence matching it, all 28 runtime tasks still open with
+only 0.1-0.5 checked, no requirement spec touched, and strict validation green.
+
+Both corrections were verified against `origin/main` before folding — the
+reviewer was right on both, and on the miscount:
+
+1. **5.1/5.2 misclassified as `path-corrected`.** Verified: `git cat-file -e
+   origin/main:tinyassets/api/extensions.py` succeeds, and `origin/main`'s
+   pre-lane 5.1 text reads "extend the existing `outcome_event` registry ... in
+   `tinyassets/api/extensions.py`". The path was never dead; the ownership
+   attribution was wrong. Folded as a new `owner-corrected` label, with 0.2, the
+   note vocabulary, and both task notes reworded.
+2. **Section-3 blocker overstated.** Verified in both directions: no signing
+   credential exists (`gh secret list`), *and* `main` requires only the `policy`
+   and `Diff scope declared` contexts, so the "permanently red required check"
+   rationale does not hold. Folded by scoping the gate to signed publication and
+   3.5's acceptance proof — see *Tasks skipped — blocked* above.
+3. **Miscount:** 31 workflow files on `origin/main`, not 32. Fixed in the 3.3
+   note. Confirmed by `git ls-tree -r --name-only origin/main .github/workflows`.
+
+Nothing in round 2 was refuted; no counter-evidence was found against either
+required fold.
+
 ## Commits pushed
 
 - `826b6b6c` — `spec: premise-verify the independent full-platform target tasks`
@@ -213,6 +265,9 @@ instruction — cross-family review precedes any PR.
    successors with implementation lanes — not more spec work.
 2. The moderation split (6.3) is the one live structural obligation and it needs
    an owner who is not fenced out of `tinyassets/moderation/`.
-3. Section 3 needs a host decision before any lane touches it: provision the
-   three signing identities and the clean-machine matrix, or explicitly park
-   packaged distribution.
+3. Section 3 does **not** need a host decision before a lane touches it. A build
+   lane can take 3.1, 3.2, 3.4, and a publication-gated 3.3 today. The host
+   decision — provision the three signing identities and the clean-machine
+   matrix, or explicitly park packaged distribution — is what unblocks signed
+   publication and 3.5's acceptance proof, and it can be made in parallel with
+   that build work rather than ahead of it.
