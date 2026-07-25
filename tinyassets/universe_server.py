@@ -381,7 +381,7 @@ A user might register a "consistency-checker" node that:
 
 @mcp.prompt(
     title="Extension Authoring Guide",
-    tags={"extensions", "nodes", "plugins", "tinyassets", "workflow"},
+    tags={"extensions", "nodes", "plugins", "tinyassets"},
 )
 def extension_guide() -> str:
     """Learn how to extend the TinyAssets Server with custom LangGraph nodes."""
@@ -1202,7 +1202,7 @@ _mcp_universe = _register_structured_tool(
     title="Universe Operations",
     tags={
         "universe", "daemon", "collaboration",
-        "tinyassets", "workflow", "workflow-builder", "custom-ai", "agent-workflow",
+        "tinyassets", "workflow-builder", "custom-ai", "agent-workflow",
         "ai-builder", "universe-builder", "general-purpose",
     },
     annotations=ToolAnnotations(
