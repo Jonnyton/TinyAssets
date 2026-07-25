@@ -286,9 +286,9 @@ async def _landing_index(request):  # type: ignore[no-untyped-def]
 _warn_if_no_upload_whitelist()
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # MCP PROMPTS — behavioral instructions for connecting chatbots
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 @mcp.prompt(
@@ -398,12 +398,12 @@ def branch_design_guide() -> str:
     return _branch_design_guide_prompt()
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# CANONICAL USER SURFACE — the five handles (PR-178 / PR-047 fold-map)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# read_graph / write_graph / run_graph / read_page / write_page are the
-# canonical user-facing tools. Each is a thin shape/target router over the
-# EXISTING tinyassets.api.* handlers — no behavior change, only surface shape.
+# ---------------------------------------------------------------------------
+# CANONICAL USER SURFACE — the seven handles (PR-178 / PR-047 fold-map)
+# ---------------------------------------------------------------------------
+# read_graph / write_graph / run_graph / read_page / write_page, plus converse
+# and get_status, are the canonical user-facing tools. The first five are thin
+# shape/target routers over existing tinyassets.api.* handlers.
 # The legacy fat tools below stay registered + callable for one release but
 # are hidden from tools/list and logged as deprecated by the
 # _DeprecatedToolVisibility middleware (see _DEPRECATED_TOOL_NAMES), so
@@ -1021,9 +1021,9 @@ _mcp_converse = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # LEGACY FAT SURFACE — deprecated, hidden from tools/list, callable 1 release
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # These names are dropped from tools/list and logged on call by
 # _DeprecatedToolVisibility (PR-178). They remain dispatchable so existing
 # connectors keep working through the migration window.
@@ -1051,9 +1051,9 @@ _BRAIN_WRITE_RELAY_ACTIONS = frozenset({
 })
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 1 — Universe (all universe operations in one tool)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def universe(
@@ -1263,9 +1263,9 @@ _mcp_community_change_context = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 2 — Extensions (workflow builder surface)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def extensions(
@@ -1400,10 +1400,28 @@ def extensions(
     Behavioral rules live in `control_station`, `extension_guide`, and
     `branch_design_guide`; this description is the I/O contract.
 
-    Core actions include build_branch, patch_branch, list_branches,
-    describe_branch, get_branch, run_branch, get_run, wait_for_run,
-    judge_run, publish_version, schedule_branch, fork_tree, search_nodes,
-    get_action_scope_status, record_run_receipt, and list_run_receipts.
+    Action groups:
+    - Node registry: register, list, inspect, approve, disable, enable, remove.
+    - Branches: add_node, add_state_field, approve_source_code, build_branch,
+      connect_nodes, create_branch, delete_branch, describe_branch, fork_tree,
+      get_branch, list_branches, patch_branch, patch_nodes, search_nodes,
+      set_entry_point, update_node, validate_branch.
+    - Runs: attach_existing_child_run, cancel_run, estimate_run_cost,
+      get_memory_scope_status, get_rollback_history, get_routing_evidence,
+      get_run, get_run_output, list_run_receipts, list_runs, query_runs,
+      record_run_receipt, resume_run, rollback_merge, run_branch,
+      run_branch_version, stream_run, wait_for_run.
+    - Judgments: compare_runs, get_node_output, judge_run, list_judgments,
+      list_node_versions, rollback_node, suggest_node_edit.
+    - Project memory: project_memory_get, project_memory_list,
+      project_memory_set.
+    - Branch versions: get_branch_version, list_branch_versions,
+      publish_version.
+    - Escrow: escrow_balance, escrow_fund, escrow_set_wallet, escrow_withdraw.
+    - Scheduling: list_scheduler_subscriptions, list_schedules,
+      schedule_branch, subscribe_branch, unschedule_branch,
+      unsubscribe_branch.
+
     Pass `action` plus the matching ids or JSON payload fields.
     Receipt actions use `run_id`, `receipt_type`, `payload_json`, and optional
     `node_id` / `subject_id` to preserve source acquisition, claim lineage,
@@ -1557,9 +1575,9 @@ _mcp_extensions = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 3 — Goals (Pattern A2 wrapper)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def goals(
@@ -1619,6 +1637,9 @@ def goals(
                    tags. Needs query.
       leaderboard  Rank bound Branches by metric (run_count/forks/outcome).
       common_nodes Nodes appearing in >=`min_branches` Branches.
+      archive_consultation Rank bound Branches as fork parents using
+                   quality, diversity, and gates leaderboard outcome
+                   signal. Optional query filters the candidate space.
 
     """
     return _goals_impl(
@@ -1656,9 +1677,9 @@ _mcp_goals = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 4 — Outcome Gates (Pattern A2 wrapper)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def gates(
@@ -1700,13 +1721,14 @@ def gates(
                     and `ladder` (JSON list of {rung_key, name,
                     description}).
       get_ladder    Read a Goal's ladder. Needs goal_id.
-      record_conformance_pack
-                    Store a standards/readiness conformance pack for a
+      record_conformance_pack Store a standards/readiness conformance pack for a
                     Goal or Branch before gated rungs.
+      get_conformance_pack Read one conformance pack by conformance_pack_id.
+      list_conformance_packs Browse conformance packs, optionally filtered by
+                    goal_id, branch_def_id, or standard_id.
       claim         Report a rung reached. Needs branch_def_id,
                     rung_key, evidence_url.
-      claim_from_branch_run
-                    Claim a rung whose key (and optionally evidence
+      claim_from_branch_run Claim a rung whose key (and optionally evidence
                     URL) came from a completed run's final output.
                     Needs run_id. The branch's
                     ``recommended_rung_claim`` field selects the rung;
@@ -1764,9 +1786,9 @@ _mcp_gates = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 5 — Wiki (global knowledge base)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def wiki(
@@ -1806,8 +1828,7 @@ def wiki(
         str,
         Field(
             description=(
-                'Optional ISO timestamp for action="read" ambient feed and '
-                'required ISO timestamp for action="since"; only pages updated '
+                'Optional ISO timestamp for action="read"; only pages updated '
                 "after this timestamp are returned."
             ),
         ),
@@ -1830,19 +1851,14 @@ def wiki(
     it returns status="similar_found" with the existing match.
 
     Args:
-        action: One of — reads: read, search, since, list, lint;
-            writes: write, patch, delete, consolidate, promote, ingest, supersede,
-            sync_projects, file_bug, cosign_bug.
+        action: One of — reads: read, search, list, lint;
+            writes: write, consolidate, promote, ingest, supersede,
+            sync_projects, file_bug, cosign_bug;
             `search` is lexical best-effort, not a completeness proof; use
-            `since` with `changed_since` to review pages updated after a known
-            timestamp, then `read` the candidate pages.
-        old_text/new_text: For action="patch", exact text to replace server-side.
-        expected_sha256: Optional full-page hash guard for action="patch" or
-            action="delete".
-        reason: Required for action="delete" when dry_run=false.
-        changed_since: Optional ISO timestamp for action="read" ambient feed
-            and required ISO timestamp for action="since"; only pages updated
-            after this timestamp are returned.
+            `read` with `changed_since` to review pages updated after a known
+            timestamp.
+        changed_since: Optional ISO timestamp for action="read"; only pages
+            updated after this timestamp are returned.
         offset/max_chars: For action="read", read a bounded character window
             from large pages. Truncated responses include `next_offset`.
         universe_id: Optional target universe page substrate. Omit to use the
@@ -1900,9 +1916,9 @@ _mcp_wiki = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # TOOL 6 — Daemon Status / Routing Evidence
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 def get_status(universe_id: str = "") -> str:
@@ -1948,9 +1964,9 @@ _mcp_get_status = _register_structured_tool(
 )
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # Deprecated-tool visibility (PR-178)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # Hide the legacy fat tools from tools/list while keeping them callable, and
 # log every deprecated-tool invocation. FastMCP applies on_list_tools to the
 # advertised list only — tools/call resolution is unaffected — so the legacy
@@ -1993,15 +2009,15 @@ class _DeprecatedToolVisibility(Middleware):
 mcp.add_middleware(_DeprecatedToolVisibility())
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # Server Entry Point
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 
 
 
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
-# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+# ---------------------------------------------------------------------------
 # When a browser, recruiter, or fresh AI session GETs /mcp without an MCP
 # transport handshake, return discovery metadata explaining
 # what the endpoint is and how to connect via MCP client.

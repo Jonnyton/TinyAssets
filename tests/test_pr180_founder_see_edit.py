@@ -1,5 +1,5 @@
 """PR-180: a founder can SEE and EDIT their own graph via the live /mcp
-connector — within the PR-178 five-handle invariant (no new handles; the
+connector — within the canonical seven-handle invariant (no new handles; the
 capability is added as new *targets* on read_graph / write_graph).
 
 SEE half:  read_graph(target="run", run_id=...) -> get_run snapshot
@@ -8,8 +8,8 @@ EDIT half: write_graph(target="branch", branch_id=..., changes_json=...) ->
            the existing transactional, author-gated patch_branch handler.
 
 Precedent: write_graph already carries a non-first-class target (persona),
-so adding targets keeps the advertised handle set at exactly five (+status)
-and the PR-178 ``mcp_public_canary --assert-handles`` guard stays green.
+so adding targets preserves the exact canonical handle set and the
+``mcp_public_canary --assert-handles`` guard stays green.
 """
 from __future__ import annotations
 
@@ -19,12 +19,13 @@ import json
 
 import pytest
 
-ADVERTISED = {
+CANONICAL_HANDLES = {
     "read_graph",
     "write_graph",
     "run_graph",
     "read_page",
     "write_page",
+    "converse",
     "get_status",
 }
 
@@ -58,10 +59,11 @@ def server_env(tmp_path, monkeypatch):
 
 # ── PR-178 invariant: the new targets add NO new handles ────────────────────
 
-def test_five_handles_unchanged_after_new_targets(server_env):
+def test_new_targets_preserve_canonical_handle_set(server_env):
+    """PR-180 targets must not change the canonical seven-handle catalog."""
     us = server_env
     advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
-    assert advertised == ADVERTISED
+    assert advertised == CANONICAL_HANDLES
 
 
 # ── SEE half: read_graph target=run ─────────────────────────────────────────
