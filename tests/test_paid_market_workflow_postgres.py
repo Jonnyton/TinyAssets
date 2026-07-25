@@ -54,6 +54,10 @@ def test_fixture_workflow_migration_is_dark_and_omits_unowned_delivery_authority
     assert "delivery_receipt" not in sql
     assert "CREATE TABLE market_workflow.disput" not in sql
     assert "CREATE TABLE market_workflow.accept" not in sql
+    assert (
+        "REVOKE EXECUTE ON FUNCTION market.apply_settlement(bytea, text)\n"
+        "  FROM tinyassets_fixture_settlement;"
+    ) in sql
 
 
 @pytest.fixture
@@ -176,6 +180,13 @@ def test_workflow_roles_deny_direct_dml_and_commands_use_fixed_non_login_owner(
         assert settings == [
             "search_path=pg_catalog, market_workflow, auth, pg_temp"
         ]
+        assert connection.execute(
+            "SELECT "
+            "has_function_privilege('tinyassets_fixture_settlement', "
+            "'market.apply_settlement(bytea,text)', 'EXECUTE'), "
+            "has_function_privilege('tinyassets_fixture_workflow_owner', "
+            "'market.apply_settlement(bytea,text)', 'EXECUTE')"
+        ).fetchone() == (False, True)
 
         _set_actor(
             connection,
@@ -186,6 +197,18 @@ def test_workflow_roles_deny_direct_dml_and_commands_use_fixed_non_login_owner(
         with pytest.raises(psycopg.errors.InsufficientPrivilege):
             connection.execute(
                 "INSERT INTO market_workflow.requests DEFAULT VALUES"
+            )
+        connection.execute("RESET ROLE")
+        _set_actor(
+            connection,
+            role="tinyassets_fixture_settlement",
+            actor=uuid.uuid4(),
+            tenant="tenant-a",
+        )
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            connection.execute(
+                "SELECT * FROM market.apply_settlement(%s::bytea, %s)",
+                (b"{}", "0" * 64),
             )
 
 

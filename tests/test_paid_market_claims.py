@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 
 from tinyassets.paid_market.match import best_execution
+from tinyassets.payments import market_workflow
 from tinyassets.payments.market_workflow import (
     Applied,
     CancelRequestCommand,
@@ -33,6 +35,7 @@ def _workflow_with_book(
     request_key: str = "request",
     capacity_grant_id: str | None = None,
     shared_owner: bool = True,
+    bid_expires_at: int = 2_000_000_000,
 ):
     store = store or InMemoryMarketRequestStore()
     workflow = MarketWorkflow(store)
@@ -78,7 +81,7 @@ def _workflow_with_book(
                 capability_digest="cap:v1",
                 size_mtok=size_mtok,
                 price_micros_per_mtok=price,
-                expires_at=2_000_000_000,
+                expires_at=bid_expires_at,
                 capacity_grant_id=capacity_grant_id or f"capacity-{bid_id}",
                 capacity_fence=index + 1,
             ),
@@ -235,7 +238,10 @@ def test_stale_selected_bid_rejects_every_selected_bid_atomically():
 
 
 def test_insufficient_supply_is_honest_and_creates_no_match_or_claim():
-    workflow, store, request = _workflow_with_book((("bid-a", 1, 5),))
+    workflow, store, request = _workflow_with_book(
+        (("bid-a", 1, 5),),
+        bid_expires_at=2_000_000_001,
+    )
     result = workflow.match_and_claim(
         MatchAndClaimCommand(
             idempotency_key="short",
@@ -245,7 +251,7 @@ def test_insufficient_supply_is_honest_and_creates_no_match_or_claim():
             need_mtok=10,
             matcher_version="best_execution:v1",
         ),
-        now=1_900_000_002,
+        now=request.bid_window_ends_at,
     )
     assert isinstance(result, InsufficientSupply)
     assert store.get(request.request_id).state == "bidding"
@@ -424,3 +430,93 @@ def test_one_capacity_grant_cannot_sell_across_two_requests():
     assert sum(isinstance(outcome, Applied) for outcome in outcomes) == 1
     assert sum(isinstance(outcome, Contention) for outcome in outcomes) == 1
     assert store.capacity_consumptions("shared-capacity") == 1
+
+
+def test_requester_can_close_bid_window_early_for_selected_host_claim():
+    workflow, _store, request = _workflow_with_book((("bid-a", 10, 5),))
+    match = _record_match(workflow, request)
+    assert match.requester_authorized is True
+
+    claimed = workflow.claim_match(
+        ClaimMatchCommand(
+            idempotency_key="requester-closed-early",
+            authority=_authority("seller"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            match_id=match.match_id,
+        ),
+        now=request.bid_window_ends_at - 1,
+    )
+
+    assert isinstance(claimed, Applied)
+
+
+def test_host_cannot_claim_after_request_deadline_even_if_bid_remains_live():
+    workflow, _store, request = _workflow_with_book(
+        (("bid-a", 10, 5),),
+        bid_expires_at=2_000_003_700,
+    )
+    match = _record_match(workflow, request)
+
+    denied = workflow.claim_match(
+        ClaimMatchCommand(
+            idempotency_key="post-deadline-claim",
+            authority=_authority("seller"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            match_id=match.match_id,
+        ),
+        now=request.deadline,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "request_deadline_elapsed"
+
+
+def test_claim_rechecks_recorded_total_against_requester_spend_cap():
+    workflow, store, request = _workflow_with_book((("bid-a", 10, 5),))
+    match = _record_match(workflow, request)
+    store._matches[match.match_id] = replace(
+        match,
+        total_cost_micros=request.spend_cap_micros + 1,
+    )
+
+    denied = workflow.claim_match(
+        ClaimMatchCommand(
+            idempotency_key="over-cap-claim",
+            authority=_authority("seller"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            match_id=match.match_id,
+        ),
+        now=1_900_000_002,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "match_spend_cap_exceeded"
+    assert store.get(request.request_id).state == "bidding"
+
+
+def test_removing_claim_edge_from_runtime_table_blocks_claim(monkeypatch):
+    workflow, store, request = _workflow_with_book((("bid-a", 10, 5),))
+    match = _record_match(workflow, request)
+    monkeypatch.setattr(
+        market_workflow,
+        "_ALLOWED_TRANSITIONS",
+        market_workflow._ALLOWED_TRANSITIONS - {("bidding", "claimed")},
+    )
+
+    denied = workflow.claim_match(
+        ClaimMatchCommand(
+            idempotency_key="missing-edge-claim",
+            authority=_authority("seller"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            match_id=match.match_id,
+        ),
+        now=1_900_000_002,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "state_transition_forbidden"
+    assert store.get(request.request_id).state == "bidding"

@@ -236,6 +236,7 @@ class MarketMatch:
     matcher_version: str
     need_mtok: int
     total_cost_micros: int
+    requester_authorized: bool
     decision_digest: str
 
 
@@ -372,6 +373,11 @@ class FaultInjector(Protocol):
 def allowed_transition(source: str, target: str) -> bool:
     """Return whether the delta spec explicitly permits this lifecycle edge."""
     return (source, target) in _ALLOWED_TRANSITIONS
+
+
+def _enforce_transition(source: RequestState, target: RequestState) -> None:
+    if not allowed_transition(source, target):
+        raise ValueError("state_transition_forbidden")
 
 
 class InMemoryMarketRequestStore:
@@ -550,7 +556,6 @@ class InMemoryMarketRequestStore:
         return self._transition(
             command=command,
             target_state="bidding",
-            allowed_sources=frozenset({"pending"}),
             action="open_bidding",
             now=now,
         )
@@ -561,7 +566,6 @@ class InMemoryMarketRequestStore:
         return self._transition(
             command=command,
             target_state="cancelled",
-            allowed_sources=frozenset({"pending", "bidding"}),
             action="cancel_request",
             now=now,
         )
@@ -571,7 +575,6 @@ class InMemoryMarketRequestStore:
         *,
         command: OpenBiddingCommand | CancelRequestCommand,
         target_state: RequestState,
-        allowed_sources: frozenset[RequestState],
         action: str,
         now: datetime,
     ) -> WorkflowResult:
@@ -597,9 +600,9 @@ class InMemoryMarketRequestStore:
                 return Conflict("requester_authority_required")
             if request.version != command.expected_version:
                 return Contention("stale_request_version")
-            if request.state not in allowed_sources or not allowed_transition(
-                request.state, target_state
-            ):
+            try:
+                _enforce_transition(request.state, target_state)
+            except ValueError:
                 return Conflict("state_transition_forbidden")
 
             updated = replace(
@@ -759,6 +762,16 @@ class InMemoryMarketRequestStore:
                 or request.state != "bidding"
             ):
                 return Contention("request_already_transitioned")
+            if now >= request.deadline:
+                return Conflict("request_deadline_elapsed")
+            if now < request.bid_window_ends_at and not decision.requester_authorized:
+                return Conflict("bid_window_open")
+            if decision.total_cost_micros > request.spend_cap_micros:
+                return Conflict("match_spend_cap_exceeded")
+            try:
+                _enforce_transition(request.state, "claimed")
+            except ValueError:
+                return Conflict("state_transition_forbidden")
 
             selected = decision.selected_bid_versions
             if not selected or len(selected) > request.fanout_limit:
@@ -955,7 +968,8 @@ class InMemoryMarketRequestStore:
                 return Conflict("need_mtok_invalid")
             if command.matcher_version != "best_execution:v1":
                 return Conflict("matcher_version_invalid")
-
+            if now >= request.deadline:
+                return Conflict("request_deadline_elapsed")
             eligible = tuple(
                 bid
                 for bid in self._current_bids(command.request_id)
@@ -978,6 +992,8 @@ class InMemoryMarketRequestStore:
             )
             if not actor_is_requester and not actor_is_eligible_host:
                 return Conflict("match_authority_required")
+            if now < request.bid_window_ends_at and not actor_is_requester:
+                return Conflict("bid_window_open")
             oracle = best_execution(
                 [bid.as_book_offer() for bid in eligible],
                 command.need_mtok,
@@ -985,6 +1001,8 @@ class InMemoryMarketRequestStore:
             if oracle is None:
                 return InsufficientSupply()
             total_cost, selected_ids = oracle
+            if total_cost > request.spend_cap_micros:
+                return Conflict("match_spend_cap_exceeded")
             if len(selected_ids) > request.fanout_limit:
                 return Conflict("fanout_limit_exceeded")
             selected = {
@@ -1001,6 +1019,7 @@ class InMemoryMarketRequestStore:
                     "rejected_bids": rejected,
                     "request_id": command.request_id,
                     "request_version": request.version,
+                    "requester_authorized": actor_is_requester,
                     "selected_bid_versions": selected_versions,
                     "total_cost_micros": total_cost,
                 }
@@ -1021,6 +1040,7 @@ class InMemoryMarketRequestStore:
                 matcher_version=command.matcher_version,
                 need_mtok=command.need_mtok,
                 total_cost_micros=total_cost,
+                requester_authorized=actor_is_requester,
                 decision_digest=decision_digest,
             )
             self._checkpoint("before_match_recording_commit")

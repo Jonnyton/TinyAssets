@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from tinyassets.api import market as market_api
+from tinyassets.payments import market_workflow
 from tinyassets.payments.market_workflow import (
     Applied,
     CancelRequestCommand,
@@ -174,6 +175,62 @@ def test_every_specified_state_edge_is_explicit_and_other_edges_are_forbidden():
         for target in states
         if allowed_transition(source, target)
     } == allowed
+
+
+def test_opening_runtime_transition_table_changes_command_behavior(monkeypatch):
+    workflow = MarketWorkflow(InMemoryMarketRequestStore())
+    submitted = workflow.submit(_submission())
+    assert isinstance(submitted, Applied)
+    opened = workflow.open_bidding(
+        OpenBiddingCommand(
+            idempotency_key="open",
+            request_id=submitted.request.request_id,
+            expected_version=1,
+            authority=_authority(),
+        )
+    )
+    assert isinstance(opened, Applied)
+    cancelled = workflow.cancel(
+        CancelRequestCommand(
+            idempotency_key="cancel",
+            request_id=opened.request.request_id,
+            expected_version=2,
+            authority=_authority(),
+        )
+    )
+    assert isinstance(cancelled, Applied)
+
+    states = {
+        "pending",
+        "bidding",
+        "claimed",
+        "running",
+        "completed",
+        "accepted",
+        "auto_accepted",
+        "settled",
+        "cancelled",
+        "expired",
+        "failed",
+        "refunded",
+        "disputed",
+    }
+    monkeypatch.setattr(
+        market_workflow,
+        "_ALLOWED_TRANSITIONS",
+        frozenset((source, target) for source in states for target in states),
+    )
+    mutated = workflow.cancel(
+        CancelRequestCommand(
+            idempotency_key="cancel-again",
+            request_id=cancelled.request.request_id,
+            expected_version=3,
+            authority=_authority(),
+        )
+    )
+
+    assert isinstance(mutated, Applied)
+    assert mutated.request.state == "cancelled"
 
 
 def test_requester_or_current_bounded_grant_can_open_bidding_but_other_actor_cannot():

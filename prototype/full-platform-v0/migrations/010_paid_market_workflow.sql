@@ -883,6 +883,8 @@ GRANT SELECT ON
   market_workflow.outbox
 TO tinyassets_fixture_workflow_reader;
 
+REVOKE EXECUTE ON FUNCTION market.apply_settlement(bytea, text)
+  FROM tinyassets_fixture_settlement;
 GRANT USAGE ON SCHEMA market TO tinyassets_fixture_workflow_owner;
 GRANT EXECUTE ON FUNCTION market.apply_settlement(bytea, text)
   TO tinyassets_fixture_workflow_owner;

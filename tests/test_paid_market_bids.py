@@ -30,6 +30,9 @@ def _open_request(
     *,
     key: str = "request-1",
     capability_digest: str = "cap:gpu:v1",
+    spend_cap_micros: int = 1_000_000,
+    bid_window_ends_at: int = 2_000_000_000,
+    deadline: int = 2_000_003_600,
 ):
     submitted = workflow.submit(
         SubmitRequestCommand(
@@ -39,9 +42,9 @@ def _open_request(
             capability_digest=capability_digest,
             payload_sha256="a" * 64,
             budget_micros=1_000_000,
-            spend_cap_micros=1_000_000,
-            bid_window_ends_at=2_000_000_000,
-            deadline=2_000_003_600,
+            spend_cap_micros=spend_cap_micros,
+            bid_window_ends_at=bid_window_ends_at,
+            deadline=deadline,
             acceptance_policy="machine_gate_only:v1",
             settlement_policy_version="spot:v1",
             visibility="paid",
@@ -325,5 +328,113 @@ def test_match_uses_exact_oracle_snapshot_tie_break_and_persists_rejections():
     assert oracle == (50, ["bid-a"])
     assert result.match.selected_bid_versions == (("bid-a", 1),)
     assert result.match.total_cost_micros == oracle[0]
+    assert result.match.requester_authorized is True
     assert result.match.rejected_bids == (("bid-expired", "expired"),)
     assert store.match_decision(result.match.match_id) == result.match
+
+
+def test_host_cannot_self_record_match_above_requester_spend_cap():
+    store = InMemoryMarketRequestStore()
+    workflow = MarketWorkflow(store)
+    request = _open_request(workflow, spend_cap_micros=1_000_000)
+    cheap = _bid(
+        request.request_id,
+        bid_id="cheap",
+        host_id="host-cheap",
+        owner_id="seller-cheap",
+        size_mtok=1,
+        price_micros_per_mtok=100,
+        expires_at=request.deadline,
+    )
+    attacker = _bid(
+        request.request_id,
+        bid_id="attacker",
+        host_id="host-attacker",
+        owner_id="seller-attacker",
+        size_mtok=10,
+        price_micros_per_mtok=99_900_000,
+        expires_at=request.deadline,
+    )
+    assert isinstance(workflow.place_bid(cheap, now=1_900_000_000), Applied)
+    assert isinstance(workflow.place_bid(attacker, now=1_900_000_000), Applied)
+
+    denied = workflow.record_match(
+        RecordMatchCommand(
+            idempotency_key="attacker-match",
+            authority=_authority("seller-attacker"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            need_mtok=10,
+            matcher_version="best_execution:v1",
+        ),
+        now=request.bid_window_ends_at,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "match_spend_cap_exceeded"
+    assert store.matches_for_request(request.request_id) == ()
+
+
+def test_host_cannot_record_match_before_bid_window_ends():
+    workflow = MarketWorkflow(InMemoryMarketRequestStore())
+    request = _open_request(workflow)
+    assert isinstance(
+        workflow.place_bid(
+            _bid(
+                request.request_id,
+                bid_id="bid-1",
+                host_id="host-1",
+                owner_id="seller",
+            ),
+            now=1_900_000_000,
+        ),
+        Applied,
+    )
+
+    denied = workflow.record_match(
+        RecordMatchCommand(
+            idempotency_key="early-host-match",
+            authority=_authority("seller"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            need_mtok=10,
+            matcher_version="best_execution:v1",
+        ),
+        now=request.bid_window_ends_at - 1,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "bid_window_open"
+
+
+def test_match_cannot_be_recorded_at_or_after_request_deadline():
+    workflow = MarketWorkflow(InMemoryMarketRequestStore())
+    request = _open_request(workflow)
+    assert isinstance(
+        workflow.place_bid(
+            _bid(
+                request.request_id,
+                bid_id="bid-1",
+                host_id="host-1",
+                owner_id="seller",
+                expires_at=request.deadline + 100,
+            ),
+            now=1_900_000_000,
+        ),
+        Applied,
+    )
+
+    denied = workflow.record_match(
+        RecordMatchCommand(
+            idempotency_key="late-match",
+            authority=_authority("buyer"),
+            request_id=request.request_id,
+            expected_request_version=2,
+            need_mtok=10,
+            matcher_version="best_execution:v1",
+        ),
+        now=request.deadline,
+    )
+
+    assert isinstance(denied, Conflict)
+    assert denied.reason == "request_deadline_elapsed"
