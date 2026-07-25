@@ -56,6 +56,30 @@ Pooled shares remain non-transferable in v1. Public TINY mint/redeem, governance
 
 The original bounty target used “ANYONE” to mean an open marketplace rather than an invitation-only claimant list. The implementation SHALL preserve open discovery and eligibility for any authenticated principal or universe satisfying published admission rules, but SHALL NOT permit anonymous money movement. This is an explicit safety clarification, not a product narrowing.
 
+### D9 — The open-production-commons reframe is a gate, not a requirement source
+
+A platform-shape reframe — one generic work-order primitive over a Goal/Branch/Asset/Claim/Order+Offer/Pool kernel, commons plus market plus funding on one lineage and reputation ledger, and a platform that never executes or holds custody — was captured on 2026-07-19 and is recorded in `.agents/handoffs/2026-07-19-distributed-execution-resume/RESUME-SPEC.md` §9. It is **explicitly not authorized for implementation**: it is blocked on a host Q6 confirmation about private fulfillment and on explicit PLAN.md foldback approval, and its design artifacts were never tracked in the repo.
+
+The slices below are therefore specified as they stand — separate lifecycles composing shared oracles, gates, and one accounting transport — and no requirement in this umbrella or any successor may be taken from the reframe while it is unapproved. The obligation runs the other way: implementations SHALL NOT foreclose a later unified work-order and lineage model. Concretely, that means no slice may hard-code its request/claim/settlement lifecycle in a way that could not later be expressed as a payload type, and attribution and lineage records SHALL stay referenceable rather than being privately duplicated per slice.
+
+STATUS.md carries the matching `host-decision` row for target-spec PLAN conflicts (store, private data, primitives, privacy). Anything that depends on those positions is noted in `tasks.md` and left unbuilt.
+
+## Slice dependency ledger
+
+Task 1.3. Every market slice depends on the `paid-market-economy` transaction owner; no slice may open a second accounting path (D3). "Unassigned" means the slice has no narrower successor change yet, and per D1 it needs one before any implementation.
+
+| Slice | Active owner | Depends on | Why the edge exists |
+|---|---|---|---|
+| `boundary-layer` | `outbound-boundary-layer` | `identity-auth-and-access-control`; `credential-vault`; `external-effect-adapters` + `external-effect-receipts`; `graph-execution-substrate`; transaction owner for value-moving effects only | Grants bind to an authenticated owner, custody stays with the vault, the landed effect path is what gets superseded, and compile-time artifact typing lives in the substrate. |
+| `paid-market-economy` transport | `paid-market-track-e-wave-2-transport` | `identity-auth-and-access-control`; canonical `paid-market-economy` pure oracles; storage migration history | This is the root money edge. Every row below it inherits this dependency. |
+| `paid-market-price-index-and-forwards` | `paid-market-live-price-discovery` | transaction owner; `distributed-execution` (verified execution evidence); `provider-routing` | Quotes consume accepted settlement observations and verified eligibility; the price owner creates no settlement truth. |
+| `data-commons` | unassigned | transaction owner; `boundary-layer` (byte movement to storage the platform does not own); `identity-auth-and-access-control`; `constraint-evaluation` + `evaluation-runtime-and-scenarios` (contamination, privacy, quality gates); `shared-goals-and-convergence` (annotation campaigns are Goals) | Manifest and license validation is the admission gate every downstream training or hardware claim invokes. |
+| `demand-side` | unassigned | transaction owner (escrow, tranches, refunds); `boundary-layer` (inbox ingress, receipt, cutoff); `daemon-runtime-and-dispatch` (proactivity heartbeat and schedules); `shared-goals-and-convergence`; `constraint-evaluation` + `evaluation-outcomes-and-attribution` (machine gates and first-verified-claim ordering) | A bounty is money released by a frozen machine gate; without gates and a transport it is a promise, not a market. |
+| `paid-market-training` | unassigned | transaction owner; `data-commons` (license/manifest validation contract); `distributed-execution` (attestation inputs, leases, execution evidence); price owner (instrument pricing); gate capabilities | Checkpoint payment is verified-evidence-gated, and mint enforcement calls the data-commons contract rather than reimplementing it. |
+| `pooled-training-ownership` | unassigned | transaction owner; `paid-market-training` (capability mint and frozen lineage); `identity-auth-and-access-control` | Ownership is a function of accepted contributions to a training instrument, frozen at that instrument's mint. |
+| `hardware-creation` | unassigned | transaction owner; price owner (quotes, ranking, estimate provenance); `boundary-layer` (outbound fabrication requests and receipts); `data-commons` (design artifacts, license registry); `pooled-training-ownership` (fractional shuttle ownership); gate capabilities | It composes every other primitive, so it is last in the D1 order. |
+| `token-architecture` | unassigned | written counsel approvals (task 5.2); transaction owner (ledger separation); `pooled-training-ownership` (v1 transfer refusal); `identity-auth-and-access-control` | Dark by default; the only hard technical edge is that settlement must never import the fund module. |
+
 ## Risks / Trade-offs
 
 - [Risk] The umbrella is too large for one review or release. → Every build slice is split into a narrower change before code, preserving explicit dependencies here.
