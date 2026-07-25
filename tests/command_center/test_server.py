@@ -127,6 +127,19 @@ def test_private_reads_require_header_token_and_reject_query_token(
     assert json.loads(body)
 
 
+def test_non_ascii_header_token_is_rejected_without_crashing(village) -> None:
+    _, port = village
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.putrequest("GET", "/api/state")
+    conn.putheader("X-Village-Token", "\xff\xfe")
+    conn.endheaders()
+    response = conn.getresponse()
+    response.read()
+    conn.close()
+
+    assert response.status == 401
+
+
 def test_talk_and_chat_roundtrip_requires_header(village) -> None:
     _, port = village
     status, body, _ = _request(
@@ -257,6 +270,10 @@ def test_auth_preparation_generates_strong_token_and_rejects_weak_explicit(
     )
     with pytest.raises(ValueError, match="at least 16"):
         prepare_auth(collector.Config(root=tmp_path, token="s3cret"))
+    with pytest.raises(ValueError, match="ASCII"):
+        prepare_auth(
+            collector.Config(root=tmp_path, token="contraseña-muy-larga-2026")
+        )
 
 
 def test_cli_and_config_default_to_loopback() -> None:
@@ -276,6 +293,11 @@ def test_browser_uses_fragment_session_and_header_without_query_bearer() -> None
     assert "sessionStorage" in source
     assert "history.replaceState" in source
     assert "X-Village-Token" in source
+    assert "error.status = r.status" in source
+    assert "showAuthError" in source
+    assert "if (error.status === 401)" in source
+    assert "authBlocked" in source
+    assert "shareUrl.hash = new URLSearchParams({ token: TOKEN }).toString()" in source
     assert 'params.get("token")' not in source
     assert "localStorage" not in source
     assert 'sep + "token="' not in source

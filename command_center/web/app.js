@@ -42,13 +42,19 @@ function api(path, opts) {
   return fetch(path, { ...opts, headers })
     .then(async (r) => {
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `${r.status}`);
+      if (!r.ok) {
+        const error = new Error(data.error || `${r.status}`);
+        error.status = r.status;
+        throw error;
+      }
       return data;
     });
 }
 function toast(text, ms = 2600) {
   const el = $("toast"); el.textContent = text; el.hidden = false;
-  clearTimeout(toast._t); toast._t = setTimeout(() => { el.hidden = true; }, ms);
+  el.setAttribute("role", "alert");
+  clearTimeout(toast._t);
+  if (ms > 0) toast._t = setTimeout(() => { el.hidden = true; }, ms);
 }
 
 // ------------------------------------------------------------ sound
@@ -121,6 +127,12 @@ function fireworks(x, y) {
 let latest = null;
 const historyBuf = [];           // snapshots for time travel
 let replaying = false;
+let authBlocked = false;
+
+function showAuthError() {
+  authBlocked = true;
+  toast("Access required — reopen the #token=… URL printed by Agent Village.", 0);
+}
 
 function pushHistory(state) {
   historyBuf.push(state);
@@ -131,6 +143,7 @@ function pushHistory(state) {
 }
 
 function poll() {
+  if (authBlocked) return;
   if (replaying) { schedule(); return; }
   api("/api/state").then((state) => {
     const prevEventId = latest ? topEventId(latest) : -1;
@@ -140,7 +153,9 @@ function poll() {
       const u = (state.universes || []).find((x) => x.id === pendingSheet);
       if (u) { openUniverseSheet(u); pendingSheet = null; }
     }
-  }).catch(() => { /* keep last frame; server may be restarting */ });
+  }).catch((error) => {
+    if (error.status === 401) showAuthError();
+  });
   schedule();
 }
 let pendingSheet = params.get("universe");
@@ -574,9 +589,13 @@ function boot() {
   // hud buttons
   $("btn-sound").addEventListener("click", () => sound.toggle());
   $("btn-share").addEventListener("click", () => {
-    navigator.clipboard?.writeText(location.href).then(
+    const shareUrl = new URL(location.href);
+    if (TOKEN) {
+      shareUrl.hash = new URLSearchParams({ token: TOKEN }).toString();
+    }
+    navigator.clipboard?.writeText(shareUrl.href).then(
       () => toast("link copied — open it on any device on this network"),
-      () => toast(location.href));
+      () => toast(shareUrl.href));
   });
   // replay
   $("btn-replay").addEventListener("click", () => { $("replay-bar").hidden = !$("replay-bar").hidden; });
@@ -601,7 +620,11 @@ function boot() {
   $("chat-form").addEventListener("submit", sendChat);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
   // repo name in header
-  api("/api/state").then((s) => { if (s.repo) $("brand-sub").textContent = s.repo; }).catch(() => {});
+  api("/api/state").then((s) => {
+    if (s.repo) $("brand-sub").textContent = s.repo;
+  }).catch((error) => {
+    if (error.status === 401) showAuthError();
+  });
   if (params.get("zoom") === "world") setZoom(true);
   poll();
 }

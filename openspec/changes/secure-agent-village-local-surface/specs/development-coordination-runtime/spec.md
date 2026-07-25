@@ -2,7 +2,7 @@
 
 ### Requirement: Agent Village Observes Durable Coordination State
 
-The `command_center` runtime SHALL serve a zero-build browser interface and a JSON state endpoint that aggregate detected provider sessions, `STATUS.md` claims, worktree status, recent file/git/activity signals, local universes, and reachable public MCP state. Missing transcripts, provider homes, worktree probes, or remote platform data MUST degrade to absent or explicitly unavailable state rather than fabricated agents, universes, or health. The CLI SHALL default to loopback. Every server process SHALL use either a minimum-strength operator-supplied token or a newly generated high-entropy token. Static bootstrap assets and the liveness probe MAY be unauthenticated, but every private state, chat, or provider API request SHALL require the matching token in `X-Village-Token`, compared in constant time. Query-string tokens SHALL NOT authenticate any API request. The browser SHALL accept a share token from the URL fragment, remove that fragment from visible history, retain the token for no longer than the browser session, and send it only in the request header.
+The `command_center` runtime SHALL serve a zero-build browser interface and a JSON state endpoint that aggregate detected provider sessions, `STATUS.md` claims, worktree status, recent file/git/activity signals, local universes, and reachable public MCP state. Missing transcripts, provider homes, worktree probes, or remote platform data MUST degrade to absent or explicitly unavailable state rather than fabricated agents, universes, or health. The CLI SHALL default to loopback. Every server process SHALL use either a minimum-strength operator-supplied ASCII token or a newly generated high-entropy token. Static bootstrap assets and the liveness probe MAY be unauthenticated, but every private state, chat, or provider API request SHALL require the matching token in `X-Village-Token`, compared in constant time. Malformed or non-ASCII bearer headers SHALL fail closed with an unauthorized response. Query-string tokens SHALL NOT authenticate any API request. The browser SHALL accept a share token from the URL fragment, remove that fragment from visible history, retain the token for no longer than the browser session, and send it only in the request header. When the browser lacks a valid token, it SHALL display a persistent access-required message that directs the operator to the printed share URL.
 
 #### Scenario: Remote world data is unreachable
 
@@ -32,6 +32,17 @@ The `command_center` runtime SHALL serve a zero-build browser interface and a JS
 
 - **WHEN** a private API request supplies the correct token only as `?token=`
 - **THEN** the server returns unauthorized
+
+#### Scenario: Malformed bearer fails closed
+
+- **WHEN** a private API request supplies a non-ASCII bearer header
+- **THEN** the server returns unauthorized without raising an unhandled exception
+
+#### Scenario: Browser starts without a bearer
+
+- **WHEN** the app shell loads without a fragment or session token
+- **THEN** the browser persistently explains that access is required
+- **AND** it directs the operator to reopen the share URL printed by the server
 
 ### Requirement: Agent Village Writes Only Through Explicit Talk And Hire Actions
 

@@ -64,7 +64,7 @@ On any universe sheet: pick an engine, a task, and a count.
 |---|---|---|
 | `--host` | `127.0.0.1` | loopback-only bind; use `0.0.0.0` for intentional LAN/phone access |
 | `--port` | `8787` | bind port |
-| `--token` | generated | explicit shared API token (minimum 16 characters); fragment share URL prints at startup |
+| `--token` | generated | explicit shared API token (minimum 16 ASCII characters); fragment share URL prints at startup |
 | `--dispatch` | off | also send agent talk to provider CLIs (spends their budget) |
 | `--interval` | `3` | seconds between state polls |
 | `--directory-url` | `https://tinyassets.io` | platform base for the world view (`''` = offline) |
