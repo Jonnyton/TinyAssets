@@ -16,6 +16,11 @@ The April audit described three blocking gaps, but current code has moved:
 
 The implementation must be additive, preserve existing author/capability
 authority, and avoid `tinyassets/api/universe.py` and `universe_server.py`.
+That boundary leaves actor-scoped writes and canonical runs reachable only
+through CLI/internal Goal actions in this slice. The advertised canonical MCP
+surface exposes the actor-aware read result, but `write_graph` and `run_graph`
+do not yet route `set_canonical` or `run_canonical`. User-facing reachability is
+therefore a named follow-up, not part of the shipped claim for this slice.
 
 ## Goals / Non-Goals
 
@@ -138,9 +143,12 @@ This decision is specified now but remains unimplemented in this slice.
   transaction and test overwrite/unset/fallback cases.
 - [Personal binding exposes another actor's private choice] → No list surface is
   added; exact-scope reads are derived from current authenticated identity.
-- [A stored version is rolled back after binding] → Existing runner/version
-  failure behavior remains fail-loud; route-back implementation must classify
-  the missing/inactive artifact explicitly.
+- [A stored version is rolled back after binding] → Binding rejects inactive
+  versions, but canonical resolution and the existing runner do not re-check
+  status after a later rollback, so the stored immutable snapshot can still be
+  queued. This behavior is inherited from the existing default-canonical path;
+  route-back implementation must classify inactive artifacts explicitly, and a
+  separate follow-up is required if all canonical runs must reject them.
 - [Migration 011 is present before parallel migration 010] → Do not renumber or
   add a placeholder. Record that the strict PostgreSQL chain cannot apply 011
   until 010 lands.

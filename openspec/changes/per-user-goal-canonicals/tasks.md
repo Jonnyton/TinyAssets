@@ -26,10 +26,18 @@
 - [ ] 4.3 Execute routed patch notes synchronously through the immutable version runner
 - [ ] 4.4 Add end-to-end gate rejection tests for personal/default routing and fail-loud loop/missing-canonical cases
 
-## 5. Verification and Delivery
+> **Archive guard:** Do not archive this change, including with
+> `openspec archive --yes`, while any of 4.1–4.4 is incomplete. Syncing before
+> `route_back` lands would write target-only requirements into as-built specs.
 
-- [x] 5.1 Run all touched test files and focused regression suites
-- [x] 5.2 Run Ruff on every touched Python file
-- [x] 5.3 Rebuild the plugin runtime mirror and pass its import probe
-- [x] 5.4 Review the diff for correctness, authorization, migration safety, and unnecessary complexity
-- [x] 5.5 Write the uncommitted lane report, commit the implementation, and push `codex/osx-goal-canonicals`
+## 5. Canonical MCP Surface Follow-Up
+
+- [ ] 5.1 `canonical-surface-route`: expose actor-scoped `set_canonical` and `run_canonical` through the advertised `write_graph` and `run_graph` handles, update their user-facing contracts, and add live-connector acceptance coverage
+
+## 6. Verification and Delivery
+
+- [x] 6.1 Run all touched test files and focused regression suites
+- [x] 6.2 Run Ruff on every touched Python file
+- [x] 6.3 Rebuild the plugin runtime mirror and pass its import probe
+- [x] 6.4 Review the diff for correctness, authorization, migration safety, and unnecessary complexity
+- [x] 6.5 Write the uncommitted lane report, commit the implementation, and push `codex/osx-goal-canonicals`

@@ -46,5 +46,12 @@ The change affects the Goal SQLite store and PostgreSQL prototype migrations,
 Goal action handling in `tinyassets/api/market.py`, canonical resolution in
 `tinyassets/api/canonical_dispatch.py`, and focused canonical/runner tests.
 Future route-back implementation will additionally affect evaluation result
-types and the run orchestration seam. It adds no dependency and does not modify
-`tinyassets/api/universe.py` or `universe_server.py`.
+types and the run orchestration seam.
+
+This slice is CLI/internal for its write and run halves: the advertised
+canonical MCP handles do not yet route actor-scoped `set_canonical` or
+`run_canonical`. Only actor-aware read data is reachable through the live
+canonical surface. The named `canonical-surface-route` follow-up in `tasks.md`
+must plumb those operations through `write_graph` and `run_graph`; this change
+does not imply that user-facing route is shipped. It adds no dependency and
+does not modify `tinyassets/api/universe.py` or `universe_server.py`.

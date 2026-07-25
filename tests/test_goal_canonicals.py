@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from tinyassets import daemon_server
 from tinyassets.branch_versions import publish_branch_version
 from tinyassets.branches import (
@@ -109,6 +111,34 @@ def test_default_write_updates_new_table_and_legacy_column(tmp_path):
         tmp_path,
         goal_id="g1",
     )["canonical_branch_version_id"] == branch_version_id
+
+
+def test_personal_storage_rejects_empty_scope_to_protect_default_dual_write(
+    tmp_path,
+):
+    _seed_goal(tmp_path)
+    branch_version_id = _seed_version(tmp_path, "personal")
+
+    with pytest.raises(ValueError, match="scope_actor is required"):
+        _set_personal(
+            tmp_path,
+            goal_id="g1",
+            scope_actor="  ",
+            branch_version_id=branch_version_id,
+            set_by="alice",
+        )
+
+    with _connect(tmp_path) as conn:
+        default_row = conn.execute(
+            "SELECT branch_version_id FROM goal_canonicals "
+            "WHERE goal_id = ? AND scope_actor = ''",
+            ("g1",),
+        ).fetchone()
+    assert default_row is None
+    assert get_goal(
+        tmp_path,
+        goal_id="g1",
+    )["canonical_branch_version_id"] is None
 
 
 def test_personal_canonicals_coexist_and_resolve_without_changing_default(tmp_path):
@@ -289,6 +319,36 @@ def test_action_allows_actor_to_set_only_their_personal_scope(
         tmp_path,
         goal_id="g1",
     )["canonical_branch_version_id"] == default_version
+
+
+def test_action_rejects_anonymous_personal_scope_in_optional_auth_mode(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.api import engine_helpers, market
+
+    _seed_goal(tmp_path, author="alice")
+    branch_version_id = _seed_version(tmp_path, "anonymous")
+    monkeypatch.setattr(market, "_base_path", lambda: tmp_path)
+    monkeypatch.setattr(engine_helpers, "_current_actor", lambda: "anonymous")
+
+    result = json.loads(
+        market._action_goal_set_canonical(
+            {
+                "goal_id": "g1",
+                "branch_version_id": branch_version_id,
+                "scope": "anonymous",
+            }
+        )
+    )
+
+    assert result["status"] == "rejected"
+    assert "Authentication is required" in result["error"]
+    assert _get_personal(
+        tmp_path,
+        goal_id="g1",
+        scope_actor="anonymous",
+    ) is None
 
 
 def test_action_rejects_cross_actor_scope_even_for_goal_author(
