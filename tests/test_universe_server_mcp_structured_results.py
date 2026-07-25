@@ -5,6 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """Isolate the data dir so a blank-scope ``get_status`` resolves the
+    first-contact path deterministically instead of the developer's ambient
+    ``TINYASSETS_DATA_DIR`` (which, under the universe-visibility contract, holds
+    an undeclared universe that now fails closed). These tests assert the MCP
+    result CONTRACT, not visibility — an empty data dir gives them a clean,
+    reproducible first-contact payload."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
 
 def test_direct_wrappers_keep_json_string_contract() -> None:
     """Local callers still import wrappers directly and json.loads the result."""

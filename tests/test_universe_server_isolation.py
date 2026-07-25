@@ -23,9 +23,7 @@ from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.daemon_server import (
     ensure_universe_registered,
-    ensure_universe_rules,
     grant_universe_access,
-    update_universe_rules,
 )
 
 
@@ -97,19 +95,30 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
+    # Under the universe-visibility contract an undeclared universe fails closed
+    # (withheld from list/status/wiki). Declare public explicitly so these tests
+    # exercise public-universe behavior.
+    from tinyassets.api.visibility import set_universe_visibility
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_universe_visibility(uid, "public")
     return udir
 
 
 def _make_private_universe(base: Path, uid: str) -> Path:
-    """Create a universe made *private* the ratified way — via the
-    ``public_read`` visibility rule, NOT by seeding an ACL row. In the D0c
-    model ownership (ACL grants) and visibility (public_read) are orthogonal:
-    an admin grant alone does not hide a universe.
+    """Create a universe made *private* the ratified way — via the declared
+    visibility level, NOT by seeding an ACL row. In the D0c model ownership
+    (ACL grants) and visibility are orthogonal: an admin grant alone does not
+    hide a universe.
     """
-    udir = _make_universe(base, uid)
+    from tinyassets.api.visibility import set_universe_visibility
+
+    udir = base / uid
+    udir.mkdir(parents=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    ensure_universe_rules(base, universe_id=uid)
-    update_universe_rules(base, universe_id=uid, updates={"public_read": False})
+    # `private` sets public_read=False AND declares the explicit level, so the
+    # legacy gate and the visibility layer agree (no inconsistent row).
+    set_universe_visibility(uid, "private")
     return udir
 
 
