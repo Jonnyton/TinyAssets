@@ -408,7 +408,12 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         # never block on the codex live-probe subprocess (up to 120s).
         # Fast paths + cached verdicts only; the worker gate owns probing.
         health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
+        status = health["status"]
+        detail = {
+            "ok": "subscription auth available",
+            "not_logged_in": "subscription auth unavailable; reauthentication required",
+        }.get(status, "subscription auth state inconclusive")
+        writers[name] = {"status": status, "detail": detail}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
     all_down = bool(known_states) and all(

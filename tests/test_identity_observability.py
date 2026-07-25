@@ -81,6 +81,9 @@ def test_authenticated_status_returns_stable_self_only_fingerprint(
     from tinyassets.api.status import get_status
 
     universe_id = _create_universe(tmp_path, monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "provider-key-must-not-appear")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-secret-must-not-appear")
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "private-auth-home"))
     set_provider(_StaticProvider())
     auth_middleware(_BEARER)
 
@@ -96,6 +99,10 @@ def test_authenticated_status_returns_stable_self_only_fingerprint(
     assert "ambient-maintainer" not in encoded
     assert _BEARER not in encoded
     assert _FINGERPRINT_KEY not in encoded
+    assert "tinyassets.universe.read" not in encoded
+    assert "provider-key-must-not-appear" not in encoded
+    assert "oauth-secret-must-not-appear" not in encoded
+    assert "private-auth-home" not in encoded
 
 
 def test_authenticated_status_redacts_subject_from_activity_evidence(
@@ -224,3 +231,38 @@ async def test_bearer_presence_is_request_local_and_cleans_up() -> None:
 
     assert seen == [True]
     assert current_bearer_present() is False
+
+
+@pytest.mark.asyncio
+async def test_invalid_bearer_is_rejected_before_status_dispatch() -> None:
+    from tinyassets.auth.middleware import AuthContextMiddleware
+
+    dispatched = False
+
+    async def app(scope, receive, send):  # type: ignore[no-untyped-def]
+        nonlocal dispatched
+        dispatched = True
+
+    set_provider(_StaticProvider())
+    middleware = AuthContextMiddleware(app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"authorization", b"Bearer invalid-secret")],
+    }
+
+    async def receive() -> dict[str, Any]:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(message: dict[str, Any]) -> None:
+        sent.append(message)
+
+    await middleware(scope, receive, send)
+
+    assert dispatched is False
+    assert sent[0]["type"] == "http.response.start"
+    assert sent[0]["status"] == 401
+    assert b"invalid-secret" not in sent[-1].get("body", b"")
