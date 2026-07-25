@@ -106,6 +106,29 @@
     rejected + not materialized + binding left intact; legitimate pre-existing
     serial reservation materializes; a public-schema reachability lock asserting
     the trust flag is absent from both public tool wrappers.
+  - ADAPT fold round 2 (2026-07-24, Codex): `is_universe_serial(winner)` proves
+    FORMAT, not GENERATION provenance — a hostile/legacy value like
+    `u-00000000000000000000000000` satisfies the regex yet was never generated
+    by the platform, and `founder_home` has TWO writers (`claim_founder_home` +
+    the general `set_founder_home`), so sole-writer provenance cannot be
+    assumed. STRUCTURAL FIX (route 2): added a `founder_home.platform_generated`
+    marker (schema + ALTER migration; existing rows default 0 → fail closed
+    until host-run backfill). `claim_founder_home` stamps it for a freshly
+    reserved serial; `set_founder_home` gained a `platform_generated` param and
+    `_action_create_universe` passes True only when IT generated the id (public
+    births self-serialize → True; caller/dev-supplied → False). First-contact's
+    gate now requires the marker (`founder_home_is_platform_generated`) AND
+    serial shape (defense-in-depth), replacing the format-only check. Stamping
+    both writers truthfully (not claim-only) preserves the legitimate
+    interrupted-birth repair of a genuine platform serial while failing closed
+    on any caller-influenced or unproven binding. New/updated tests
+    (`tests/test_first_contact.py`): serial-SHAPED-but-unproven value fails
+    closed (the exact reviewer repro, can-fail); proven-marker serial
+    materializes; `claim_founder_home` stamps provenance vs unproven
+    `set_founder_home`; interrupted-birth repair updated to record true
+    provenance. Also adapted two `test_universe_server_isolation.py` create
+    tests to self-serialization (round-1 boundary regression they weren't in the
+    prior focused set).
 - [x] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
   - DONE (2026-07-24): the `universes` index is keyed by the immutable
     `universe_id` (PK / `ON CONFLICT(universe_id)`), and creation registers one

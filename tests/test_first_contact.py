@@ -444,7 +444,15 @@ def test_bound_incomplete_dir_repairs_on_conversation_entry(data_dir):
     _login("founder-1")
     stuck = new_universe_id()
     (data_dir / stuck).mkdir()                  # incomplete: dir exists, no soul.md
-    set_founder_home(data_dir, founder_sub="founder-1", universe_id=stuck)
+    # The interrupted birth was of a PLATFORM-GENERATED serial, so its binding
+    # carries the provenance marker — that is what lets first-contact repair it
+    # rather than fail closed (universe-creation 5.2).
+    set_founder_home(
+        data_dir,
+        founder_sub="founder-1",
+        universe_id=stuck,
+        platform_generated=True,
+    )
 
     # First retry repairs it — same bound id, now materialized (not stuck).
     assert ensure_founder_home(data_dir, "founder-1") == stuck
@@ -764,7 +772,8 @@ def test_stale_descriptive_binding_is_rejected_not_materialized(data_dir, monkey
     pre-existing binding verbatim (ON CONFLICT DO NOTHING). A stale,
     founder-influenced *descriptive* id must NEVER cross the internal-trust flag
     and become a materialized named universe — first-contact fails closed and
-    never rebinds it here.
+    never rebinds it here. `set_founder_home` without the provenance flag records
+    the binding as unproven (marker 0), so the gate rejects it.
     """
     from tinyassets.api import universe as universe_api
     from tinyassets.api.first_contact import ensure_founder_home
@@ -784,12 +793,40 @@ def test_stale_descriptive_binding_is_rejected_not_materialized(data_dir, monkey
     assert get_founder_home(data_dir, "founder-legacy") == "chosen-name"
 
 
-def test_legitimate_reserved_serial_binding_materializes(data_dir, monkeypatch):
-    """An already-recorded *valid serial* binding (incomplete dir) materializes.
+def test_serial_shaped_unproven_value_fails_closed(data_dir, monkeypatch):
+    """A serial-SHAPED but non-platform-GENERATED binding must fail closed.
 
-    The provenance gate's second accepted case: a pre-existing binding that is
-    itself a valid platform serial (e.g. a prior reservation whose dir was
-    removed/never completed) is trusted and repaired to a complete serial home.
+    Round-3 review finding: `is_universe_serial` proves only format, not
+    generation provenance. A hostile/legacy value like
+    `u-00000000000000000000000000` satisfies the regex yet was never generated
+    by the platform. Seeding it via `set_founder_home` (no provenance flag →
+    marker 0) must NOT be materialized: the structural provenance marker, not
+    the format, is what the gate trusts. This test can only pass with the marker
+    gate; a format-only gate materializes the hostile id.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-hostile")
+    hostile = "u-00000000000000000000000000"
+    assert is_universe_serial(hostile)  # passes FORMAT — the whole point
+    set_founder_home(data_dir, founder_sub="founder-hostile", universe_id=hostile)
+
+    result = ensure_founder_home(data_dir, "founder-hostile")
+
+    assert result == ""                          # fail closed on unproven serial
+    assert not (data_dir / hostile).exists()     # never materialized
+
+
+def test_legitimate_reserved_serial_binding_materializes(data_dir, monkeypatch):
+    """A proven platform-generated serial binding (incomplete dir) materializes.
+
+    The gate's accepted case: a pre-existing binding recorded WITH the
+    provenance marker (e.g. a prior reservation whose dir was removed/never
+    completed) is trusted and repaired to a complete serial home.
     """
     from tinyassets.api import universe as universe_api
     from tinyassets.api.first_contact import ensure_founder_home
@@ -799,13 +836,47 @@ def test_legitimate_reserved_serial_binding_materializes(data_dir, monkeypatch):
     monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
     _login("founder-reserved")
     reserved = new_universe_id()
-    set_founder_home(data_dir, founder_sub="founder-reserved", universe_id=reserved)
+    set_founder_home(
+        data_dir,
+        founder_sub="founder-reserved",
+        universe_id=reserved,
+        platform_generated=True,
+    )
 
     result = ensure_founder_home(data_dir, "founder-reserved")
 
     assert result == reserved
     assert is_universe_serial(result)
     assert (data_dir / reserved / "soul.md").is_file()
+
+
+def test_claim_founder_home_stamps_generation_provenance(data_dir):
+    """`claim_founder_home` records provenance structurally, per writer.
+
+    A freshly reserved serial is marked platform-generated (the reservation
+    contract), so first-contact trusts it. A value bound WITHOUT the flag stays
+    unproven. This is the structural difference the 5.2 gate reads — not id
+    shape.
+    """
+    from tinyassets.daemon_server import (
+        claim_founder_home,
+        founder_home_is_platform_generated,
+        set_founder_home,
+    )
+    from tinyassets.ids import new_universe_id
+
+    reserved = new_universe_id()
+    assert claim_founder_home(data_dir, "founder-fresh", reserved) == reserved
+    assert founder_home_is_platform_generated(
+        data_dir, founder_sub="founder-fresh", universe_id=reserved
+    )
+
+    # Same-shaped serial, but bound without proving generation → unproven.
+    shaped = new_universe_id()
+    set_founder_home(data_dir, founder_sub="founder-unproven", universe_id=shaped)
+    assert not founder_home_is_platform_generated(
+        data_dir, founder_sub="founder-unproven", universe_id=shaped
+    )
 
 
 def test_public_tool_wrappers_omit_the_trust_flag():

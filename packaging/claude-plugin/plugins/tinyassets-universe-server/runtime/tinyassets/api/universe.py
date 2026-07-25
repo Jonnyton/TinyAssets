@@ -5468,7 +5468,14 @@ def _action_create_universe(
     # universe-creation D2: universe_id is optional. When absent, generate one
     # opaque immutable serial (u- + lowercase ULID). Provided ids are still
     # accepted (dev / existing-universe operations).
-    uid = (universe_id or "").strip() or new_universe_id()
+    supplied_id = (universe_id or "").strip()
+    # Provenance (universe-creation 5.2): the id is platform-generated iff this
+    # function generated it (no caller value). The public MCP boundary rejects a
+    # caller-selected id upstream, so public births always land here with an
+    # empty ``universe_id`` and are generated=True; a supplied id is a dev /
+    # migration / already-reserved value whose provenance is the caller's.
+    id_is_platform_generated = not supplied_id
+    uid = supplied_id or new_universe_id()
     udir = base / uid
 
     # Sanitize
@@ -5563,7 +5570,12 @@ def _action_create_universe(
 
             _home = get_founder_home(base, founder)
             if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
+                set_founder_home(
+                    base,
+                    founder_sub=founder,
+                    universe_id=uid,
+                    platform_generated=id_is_platform_generated,
+                )
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
