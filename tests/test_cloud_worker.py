@@ -9,14 +9,16 @@ without touching the OS process table.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import rfc8785
 
 _WORKFLOW = Path(__file__).resolve().parent.parent / "workflow"
 if str(_WORKFLOW.parent) not in sys.path:
@@ -375,6 +377,112 @@ def test_subprocess_env_preserves_openai_api_key_when_opted_in(monkeypatch):
 # ---- queue pickup --------------------------------------------------------
 
 
+def _commit_epoch2_worker_task(
+    base_path: Path,
+    *,
+    universe_id: str = "universe-a",
+    directed_daemon_id: str = "",
+    directed_soul_hash: str = "",
+) -> dict:
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    initialize_author_server(base_path)
+    created_at = datetime.now(timezone.utc).isoformat()
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": 5,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": "run the eligible worker task",
+        "universe_id": universe_id,
+    })
+    return RequestAdmissionStore(base_path).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id=universe_id,
+        idempotency_key_hash=(
+            "hmac-sha256:" + hashlib.sha256(
+                f"{universe_id}:{directed_daemon_id}".encode()
+            ).hexdigest()
+        ),
+        body_digest="sha256:" + hashlib.sha256(canonical_body).hexdigest(),
+        body_digest_version="rfc8785-v1",
+        request_type="general",
+        text="run the eligible worker task",
+        branch_id="",
+        branch_def_id="loop-branch",
+        trigger_source=(
+            "owner_queued" if directed_daemon_id else "operator_request"
+        ),
+        accepted_priority_weight=5,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 1,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": (
+                {
+                    "daemon_id": directed_daemon_id,
+                    "daemon_soul_hash": directed_soul_hash,
+                    "authority_scope": "owner",
+                }
+                if directed_daemon_id
+                else {}
+            ),
+        },
+        directed_daemon_id=directed_daemon_id,
+        created_at=created_at,
+    )
+
+
+def _seed_epoch2_worker_capacity(
+    base_path: Path,
+    monkeypatch,
+    *,
+    worker_id: str = "worker-a",
+) -> tuple[Path, dict, dict]:
+    _write_worker_release_state(base_path)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", worker_id)
+    monkeypatch.setattr(cw, "_WORKER_PROTOCOL_IDENTITIES", {})
+    monkeypatch.setattr(cw, "_WORKER_RUNTIME_INSTANCE_IDS", {}, raising=False)
+    universe = base_path / "universe-a"
+    universe.mkdir(exist_ok=True)
+    daemon = daemon_registry.create_daemon(
+        base_path,
+        display_name="Eligible Worker",
+        created_by="actor-a",
+        soul_text="Run compatible epoch-2 queue work.",
+    )
+    runtime = daemon_registry.ensure_daemon_runtime(
+        base_path,
+        daemon_id=daemon["daemon_id"],
+        universe_id=universe.name,
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="cloud-droplet",
+        worker_id=worker_id,
+    )
+    monkeypatch.setenv(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        runtime["runtime_instance_id"],
+    )
+    cw._snapshot_worker_protocol_identity_at_boot()
+    cw.write_supervisor_heartbeat(
+        universe,
+        cw.SupervisorState(),
+        iteration=1,
+        phase="polling",
+        subprocess_alive=True,
+    )
+    return universe, daemon, runtime
+
+
 def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
     from tinyassets.branch_tasks import BranchTask, append_task
 
@@ -389,6 +497,121 @@ def test_has_pickable_branch_task_detects_pending_dispatcher_row(tmp_path):
     )
 
     assert cw._has_pickable_branch_task(tmp_path) is True
+
+
+def test_has_pickable_branch_task_detects_current_worker_epoch2_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+
+    assert cw._has_pickable_branch_task(universe) is True
+
+
+def test_has_pickable_branch_task_rejects_epoch2_capacity_owned_by_other_worker(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+        worker_id="worker-a",
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    monkeypatch.setenv("TINYASSETS_RUNTIME_INSTANCE_ID", "runtime-b")
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_enforces_current_runtime_daemon_direction(
+    tmp_path,
+    monkeypatch,
+):
+    universe, daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(
+        tmp_path,
+        directed_daemon_id=daemon["daemon_id"],
+        directed_soul_hash=daemon["soul_hash"],
+    )
+
+    assert cw._has_pickable_branch_task(universe) is True
+
+
+def test_has_pickable_branch_task_leaves_other_daemon_epoch2_work_pending(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    other_daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Other Worker",
+        created_by="actor-a",
+        soul_text="Own different directed work.",
+    )
+    _commit_epoch2_worker_task(
+        tmp_path,
+        directed_daemon_id=other_daemon["daemon_id"],
+        directed_soul_hash=other_daemon["soul_hash"],
+    )
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_applies_request_type_filter_to_epoch2(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    monkeypatch.setenv(
+        "TINYASSETS_REQUEST_TYPE_PRIORITIES",
+        "bug_investigation",
+    )
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_rejects_expired_epoch2_capacity(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    future = datetime.now(timezone.utc) + timedelta(minutes=2)
+    monkeypatch.setattr(cw, "_utcnow", lambda: future)
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_has_pickable_branch_task_applies_unified_execution_opt_out_to_epoch2(
+    tmp_path,
+    monkeypatch,
+):
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "0")
+
+    assert cw._has_pickable_branch_task(universe) is False
 
 
 def test_has_pickable_branch_task_respects_unified_execution_opt_out(
@@ -408,6 +631,79 @@ def test_has_pickable_branch_task_respects_unified_execution_opt_out(
     monkeypatch.setenv("TINYASSETS_UNIFIED_EXECUTION", "0")
 
     assert cw._has_pickable_branch_task(tmp_path) is False
+
+
+def test_supervisor_restarts_for_current_worker_epoch2_candidate_after_grace(
+    tmp_path,
+    monkeypatch,
+):
+    import itertools
+
+    universe, _daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    _commit_epoch2_worker_task(tmp_path)
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe_path):
+        proc = FakeProc(returncode=0, steps_until_exit=10)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        universe,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is True
+
+
+def test_supervisor_does_not_restart_epoch2_work_without_compatible_capacity(
+    tmp_path,
+    monkeypatch,
+):
+    import itertools
+
+    universe = tmp_path / "universe-a"
+    universe.mkdir()
+    committed = _commit_epoch2_worker_task(tmp_path)
+    times = itertools.chain([100.0, 100.0, 100.0], itertools.repeat(131.0))
+    monkeypatch.setattr(cw.time, "monotonic", lambda: next(times))
+    _sleep_calls, sleep_fn = _make_sleep_recorder()
+    spawned: list[FakeProc] = []
+
+    def spawn(universe_path):
+        proc = FakeProc(returncode=0, steps_until_exit=1)
+        spawned.append(proc)
+        return proc
+
+    state = cw.run_supervisor(
+        universe,
+        producer_poll_interval=30.0,
+        poll_interval=0.01,
+        max_iterations=1,
+        spawn_fn=spawn,
+        sleep_fn=sleep_fn,
+    )
+
+    assert state.total_clean_exits == 1
+    assert spawned[0].terminate_called is False
+    from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+
+    task = Epoch2BranchTaskAdapter(tmp_path).get(
+        committed["branch_task_id"],
+    )
+    assert task is not None
+    assert task.status == "pending"
 
 
 def test_supervisor_does_not_restart_pending_task_before_claim_grace(
