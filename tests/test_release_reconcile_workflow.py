@@ -87,6 +87,12 @@ on:
 
 _GH_DECISION_HARNESS = r"""
 python3() { "${PYTHON_BIN}" "$@"; }
+git() {
+  if [ "$1" = "log" ] && [ "${GIT_LOG_STATUS:-0}" != "0" ]; then
+    return "${GIT_LOG_STATUS}"
+  fi
+  command git "$@"
+}
 gh() {
   case "$*" in
     *"actions/workflows/deploy-prod.yml/runs"*)
@@ -113,6 +119,7 @@ def _run_decision(
     deployed_shas: str = "",
     active_api_fail: bool = False,
     deploy_api_fail: bool = False,
+    git_log_status: int = 0,
 ) -> dict[str, str]:
     if not _BASH:
         pytest.skip("bash is required to execute the exact reconciliation script")
@@ -134,6 +141,7 @@ def _run_decision(
             "ACTIVE_API_FAIL": "1" if active_api_fail else "0",
             "DEPLOY_API_FAIL": "1" if deploy_api_fail else "0",
             "GITHUB_OUTPUT": ".github-output",
+            "GIT_LOG_STATUS": str(git_log_status),
             "PYTHON_BIN": Path(sys.executable).as_posix(),
             "REPO": "owner/repo",
         },
@@ -184,6 +192,11 @@ def _run_converge(
             {
                 "databaseId": 111,
                 "headSha": "0" * 40,
+                "createdAt": "9999-01-03T00:00:00Z",
+            },
+            {
+                "databaseId": 222,
+                "headSha": target_sha,
                 "createdAt": "9999-01-01T00:00:00Z",
             },
             {
@@ -288,6 +301,17 @@ def test_permissions_checkout_and_reconcile_concurrency_remain_narrow() -> None:
     )
 
 
+def test_operator_summary_distinguishes_deferred_from_in_sync() -> None:
+    steps = _load()["jobs"]["reconcile"]["steps"]
+    deferred = next(step for step in steps if step.get("name") == "Deferred")
+    in_sync = next(step for step in steps if step.get("name") == "In sync")
+
+    assert deferred["if"] == "steps.check.outputs.action == 'defer'"
+    assert in_sync["if"] == "steps.check.outputs.action == 'none'"
+    assert "No release decision" in deferred["run"]
+    assert "Production is current" in in_sync["run"]
+
+
 def test_build_image_concurrency_declares_push_only_cancellation() -> None:
     build_workflow = _load(_BUILD_WORKFLOW)
 
@@ -302,7 +326,7 @@ def test_exact_decision_defers_for_current_active_release(tmp_path: Path) -> Non
 
     result = _run_decision(repo, active_runs=[_active_run(relevant_sha)])
 
-    assert result["action"] == "none"
+    assert result["action"] == "defer"
     assert "in-flight release run" in result["detail"]
 
 
@@ -348,8 +372,19 @@ def test_exact_decision_api_failure_fails_closed(
         deploy_api_fail=failed_query == "deploy",
     )
 
-    assert result["action"] == "none"
+    assert result["action"] == "defer"
     assert "query failed" in result["detail"]
+
+
+def test_exact_decision_git_history_failure_defers_with_warning_state(
+    tmp_path: Path,
+) -> None:
+    repo, _, _ = _release_repo(tmp_path)
+
+    result = _run_decision(repo, git_log_status=55)
+
+    assert result["action"] == "defer"
+    assert result["detail"] == "release-history query failed — no decision made"
 
 
 def test_exact_decision_successful_deploy_ancestry_is_in_sync(
@@ -386,7 +421,7 @@ def test_exact_scripts_coalesce_thousand_arrivals_to_one_dispatch(
             shared_active_runs = [_active_run(relevant_sha)]
 
     assert executed == [0, 999]
-    assert actions == ["dispatch", "none"]
+    assert actions == ["dispatch", "defer"]
     assert actions.count("dispatch") == 1
 
 
@@ -407,6 +442,29 @@ def test_exact_converge_waits_for_build_then_deploys_unchanged_main(
         f"workflow run deploy-prod.yml --repo owner/repo --ref main "
         f"-f image_tag={relevant_sha[:12]}"
     ) in calls
+
+
+def test_exact_converge_rejects_predispatch_same_sha_run(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main=relevant_sha,
+        build_runs=[
+            {
+                "databaseId": 444,
+                "headSha": relevant_sha,
+                "createdAt": "2000-01-01T00:00:00Z",
+            }
+        ],
+        expected_returncode=1,
+    )
+
+    assert sum(call.startswith("run list ") for call in calls) == 12
+    assert not any(call.startswith("run watch ") for call in calls)
+    assert not any("workflow run deploy-prod.yml" in call for call in calls)
 
 
 def test_exact_converge_does_not_deploy_after_main_advances(
@@ -440,6 +498,38 @@ def test_exact_converge_does_not_duplicate_active_deploy(
 
     assert any("deploy-prod.yml/runs" in call for call in calls)
     assert not any("workflow run deploy-prod.yml" in call for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("status", "conclusion", "expect_dispatch"),
+    [
+        ("completed", "failure", True),
+        ("completed", "success", False),
+    ],
+)
+def test_exact_converge_completed_deploy_state_controls_retry(
+    tmp_path: Path,
+    status: str,
+    conclusion: str,
+    expect_dispatch: bool,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    calls = _run_converge(
+        repo,
+        current_main=relevant_sha,
+        deploy_runs=[
+            {
+                "id": 67890,
+                "head_sha": relevant_sha,
+                "status": status,
+                "conclusion": conclusion,
+            }
+        ],
+    )
+
+    dispatched = any("workflow run deploy-prod.yml" in call for call in calls)
+    assert dispatched is expect_dispatch
 
 
 def test_exact_converge_cancelled_build_defers_without_deploy(

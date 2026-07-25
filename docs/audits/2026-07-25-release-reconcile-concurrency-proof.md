@@ -12,7 +12,7 @@
 python -m pytest tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `18 passed in 10.79s`.
+Result: `23 passed in 15.78s`.
 
 Surrounding release/uptime regression command:
 
@@ -20,7 +20,7 @@ Surrounding release/uptime regression command:
 python -m pytest tests/test_build_image_workflow.py tests/test_deploy_prod_workflow.py tests/test_uptime_canary_workflow.py tests/test_uptime_canary_concurrency.py tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `99 passed in 13.05s`.
+Result: `104 passed in 18.11s`.
 
 Environment:
 
@@ -57,14 +57,15 @@ running and one replaceable pending slot. Each arrival after the first replaces
 the pending slot, deriving arrivals `0` and `999` as the only executions. The
 first exact decision-script execution sees drift and emits one `dispatch`.
 Shared state then exposes that same relevant SHA as an active image build. The
-coalesced final execution emits `none`.
+coalesced final execution emits `defer`.
 
 Proved outcomes:
 
 - one corrective dispatch across the modeled stampede;
 - no second dispatch while current release work is active;
 - a stale active SHA does not suppress current-main recovery;
-- active-run and successful-deploy query failures produce no corrective action;
+- active-run, successful-deploy, and release-history query failures produce a
+  distinct deferred result and no corrective action or false in-sync summary;
 - completed and unrelated workflow runs are excluded by the production JSON
   selector and do not suppress recovery;
 - successful deploy ancestry produces no action;
@@ -73,8 +74,12 @@ Proved outcomes:
   explicit deploy using the 12-character immutable image tag;
 - an already active same-SHA deploy suppresses duplicate explicit dispatch;
 - advanced main before or after build discovery emits no stale-image deploy;
+- pre-dispatch same-SHA build runs and later wrong-SHA candidates are rejected
+  by the production run selector;
 - a cancelled/superseded image build defers without red failure, while a failed
   image build remains a visible non-zero failure.
+- a completed failed same-SHA deploy does not suppress retry, while a completed
+  successful deploy does.
 
 ## Scheduler-model limitation
 

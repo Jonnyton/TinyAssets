@@ -124,7 +124,12 @@ jobs:
 
           if [ -z "$PATHS" ]; then
             echo "could not read build-image paths — treating HEAD as release-relevant"
-            RELEVANT="$(git rev-parse HEAD)"
+            if ! RELEVANT="$(git rev-parse HEAD)"; then
+              echo "::warning::could not read current release history; deferring"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=release-history query failed — no decision made" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
           else
             # Disable shell glob expansion before both the diagnostic and git
             # call so the log shows the exact workflow path patterns.
@@ -135,7 +140,13 @@ jobs:
             # Docs-only commits after it genuinely need no deploy.
             # Word splitting is intentional (release paths contain no spaces).
             # shellcheck disable=SC2086
-            RELEVANT="$(git log -1 --format=%H -- $PATHS)"
+            if ! RELEVANT="$(git log -1 --format=%H -- $PATHS)"; then
+              set +f
+              echo "::warning::could not read release-path history; deferring"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=release-history query failed — no decision made" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             set +f
           fi
 
@@ -156,7 +167,7 @@ jobs:
           if ! ACTIVE_RUNS_JSON="$(gh api \
                 "repos/${REPO}/actions/runs?branch=main&per_page=100")"; then
             echo "::warning::active release-run query failed; deferring"
-            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
             echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -179,7 +190,7 @@ jobs:
           '
           )"; then
             echo "::warning::active release-run response was unreadable; deferring"
-            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
             echo "detail=active release-run query failed — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -188,7 +199,7 @@ jobs:
             git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
             if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
               echo "in-flight release run ${sha:0:8} already contains ${RELEVANT:0:8}"
-              echo "action=none" >> "$GITHUB_OUTPUT"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
               echo "detail=in-flight release run ${sha:0:8} contains ${RELEVANT:0:8}" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -202,7 +213,7 @@ jobs:
                 "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?status=success&branch=main&per_page=100" \
                 --jq '.workflow_runs[].head_sha')"; then
             echo "::warning::successful deploy-run query failed; deferring"
-            echo "action=none" >> "$GITHUB_OUTPUT"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
             echo "detail=successful deploy-run query failed — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -375,11 +386,18 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: In sync
-        if: steps.check.outputs.action != 'dispatch'
+        if: steps.check.outputs.action == 'none'
         env:
           DETAIL: ${{ steps.check.outputs.detail }}
         shell: bash
         run: echo "Production is current with main — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deferred
+        if: steps.check.outputs.action == 'defer'
+        env:
+          DETAIL: ${{ steps.check.outputs.detail }}
+        shell: bash
+        run: echo "No release decision — ${DETAIL}." >> "$GITHUB_STEP_SUMMARY"
 
 # On the 15-minute interval
 # -------------------------

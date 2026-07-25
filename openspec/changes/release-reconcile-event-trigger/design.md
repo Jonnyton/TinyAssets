@@ -81,7 +81,9 @@ Before reading successful deploys, reconciliation enumerates queued or running
 contains the relevant commit by Git ancestry, it reports that the release chain
 is already converging and does not dispatch. A stale active run does not
 suppress a newer relevant commit. Failure to query either active or successful
-run state yields no corrective action and defers to a later wake-up.
+run state, or to read release history, yields an explicit deferred result with
+no corrective action. Deferred results have a distinct operator summary and
+never claim production is current.
 
 The main-build workflow keeps one group but makes cancellation conditional on
 the new run being a push. New pushes may still supersede older work; a manual
@@ -114,9 +116,9 @@ Focused tests load the exact YAML scripts. A harness executes the production
 decision script against a temporary Git history and shared fake GitHub run
 state. Under a 1,000-arrival one-running/one-replaceable-pending model, the
 first run dispatches once and the coalesced last run observes the same relevant
-build as active and does not dispatch again. Complementary cases prove a stale
-active SHA does not suppress recovery and failed GitHub queries do not mutate
-release state.
+build as active and defers without dispatching again. Complementary cases prove
+a stale active SHA does not suppress recovery, failed GitHub/history queries do
+not mutate release state, and deferred output cannot render as in sync.
 
 The converge-script harness proves one image dispatch, one wait, and one
 explicit deploy for unchanged main, while advanced main suppresses deploy. A
