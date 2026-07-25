@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS scoped_reset_operations (
     source_path TEXT NOT NULL,
     staging_path TEXT NOT NULL,
     journal_path TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
     commit_witness INTEGER NOT NULL DEFAULT 0 CHECK (commit_witness IN (0, 1)),
     receipt_json TEXT NOT NULL DEFAULT '{}',
     created_at REAL NOT NULL,
@@ -1028,6 +1029,16 @@ def _connect_control(data_dir: Path) -> sqlite3.Connection:
 
 def _ensure_control_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_CONTROL_SCHEMA)
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(scoped_reset_operations)")
+    }
+    if "plan_json" not in columns:
+        conn.execute(
+            "ALTER TABLE scoped_reset_operations "
+            "ADD COLUMN plan_json TEXT NOT NULL DEFAULT '{}'"
+        )
+        conn.commit()
 
 
 def _resolve_roster_principal(
@@ -1202,14 +1213,22 @@ def _prepare_operation(
     journal_path: Path,
 ) -> None:
     now = time.time()
+    plan_json = json.dumps(
+        {
+            "database_actions": plan["database_actions"],
+            "state_digest": plan["state_digest"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     conn.execute(
         """
         INSERT INTO scoped_reset_operations (
             plan_id, principal_fingerprint, roster_revision,
             inventory_revision, home_id, fence, state, source_path,
-            staging_path, journal_path, commit_witness, receipt_json,
+            staging_path, journal_path, plan_json, commit_witness, receipt_json,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, 0, '{}', ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, 'prepared', ?, ?, ?, ?, 0, '{}', ?, ?)
         ON CONFLICT(plan_id) DO UPDATE SET
             principal_fingerprint = excluded.principal_fingerprint,
             roster_revision = excluded.roster_revision,
@@ -1220,6 +1239,7 @@ def _prepare_operation(
             source_path = excluded.source_path,
             staging_path = excluded.staging_path,
             journal_path = excluded.journal_path,
+            plan_json = excluded.plan_json,
             commit_witness = 0,
             receipt_json = '{}',
             updated_at = excluded.updated_at
@@ -1234,6 +1254,7 @@ def _prepare_operation(
             str(source_path) if source_path else "",
             str(staging_path) if staging_path else "",
             str(journal_path),
+            plan_json,
             now,
             now,
         ),
@@ -1299,6 +1320,11 @@ def _delete_planned_rows(
                 f"plan attempts an unapproved table action: {table}"
             )
         keys = _action_key_values(action, principal=principal)
+        primary_key = set(_primary_key_columns(conn, table))
+        if set(keys) != primary_key:
+            raise ScopedResetPlanChanged(
+                f"planned delete must use the exact primary key for {table}"
+            )
         where = " AND ".join(f'"{key}" = ?' for key in keys)
         values = tuple(keys.values())
         row = conn.execute(
@@ -1524,6 +1550,7 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
                 principal_fingerprint=str(row["principal_fingerprint"]),
             )
             continue
+        _verify_precommit_database_state(conn, row)
         if staging is not None and staging.exists():
             if source is None:
                 raise ScopedResetRecoveryError(
@@ -1533,7 +1560,12 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
                 raise ScopedResetRecoveryError(
                     f"rollback would overwrite replacement state: {plan_id}"
                 )
-            os.replace(staging, source)
+            try:
+                os.replace(staging, source)
+            except OSError as exc:
+                raise ScopedResetRecoveryError(
+                    f"rollback rename failed for plan {plan_id}"
+                ) from exc
             _fsync_directory(root)
         if staging is not None:
             operation_dir = staging.parent
@@ -1558,6 +1590,40 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
         except Exception:
             conn.rollback()
             raise
+
+
+def _verify_precommit_database_state(
+    conn: sqlite3.Connection,
+    operation: sqlite3.Row,
+) -> None:
+    try:
+        plan = json.loads(str(operation["plan_json"]))
+        actions = plan["database_actions"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ScopedResetRecoveryError(
+            "incomplete reset has invalid content-free plan evidence"
+        ) from exc
+    if not isinstance(actions, list):
+        raise ScopedResetRecoveryError(
+            "incomplete reset has invalid database action evidence"
+        )
+    for action in actions:
+        if not isinstance(action, dict):
+            raise ScopedResetRecoveryError(
+                "incomplete reset has invalid database action evidence"
+            )
+        table = str(action.get("table") or "")
+        expected_digest = str(action.get("row_digest") or "")
+        if table not in MAIN_DB_TABLE_CLASSIFICATIONS or not expected_digest:
+            raise ScopedResetRecoveryError(
+                "incomplete reset has unclassified database action evidence"
+            )
+        rows = conn.execute(f'SELECT * FROM "{table}"').fetchall()
+        if not any(_row_digest(row) == expected_digest for row in rows):
+            raise ScopedResetRecoveryError(
+                f"pre-commit database state changed for plan "
+                f"{operation['plan_id']}: {table}"
+            )
 
 
 def recover_scoped_resets(data_dir: Path) -> None:

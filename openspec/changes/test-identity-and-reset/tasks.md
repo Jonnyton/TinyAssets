@@ -49,10 +49,14 @@
     completed replay returns its receipt without touching a replacement home.
     All writer process entrypoints recover before traffic and hold shared
     barriers. The global reset is unchanged and no MCP/API route was added.
-- [ ] 1.4 Add a CI-executable mutation/fault-injection proof that goes red when principal filtering is
+- [x] 1.4 Add a CI-executable mutation/fault-injection proof that goes red when principal filtering is
   removed or widened and when either side of the filesystem/SQLite recovery boundary is broken.
-  - **Premise: live but blocked (2026-07-24).** There is intentionally no
-    scoped apply/recovery implementation to mutate until 1.1-1.3 pass.
+  - **Completed (2026-07-25).** The dedicated pytest mutation proof widens the
+    ACL delete predicate and requires exact-primary-key rejection, corrupts the
+    SQLite commit witness after deletion and requires recovery to stop before
+    restoring files, and injects a rollback rename failure and requires loud,
+    retryable recovery. Removing either filter/recovery guard makes the proof
+    red in CI.
 
 ## 2. Real multiple test identities
 
