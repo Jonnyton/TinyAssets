@@ -70,6 +70,8 @@ Alternative: use `include_private=False`. Rejected because it prevents a legitim
 
 Action-scope metadata in `retire-legacy-live-mcp-tools` remains an outer classification gate and must migrate in lockstep. It is defense in depth, not a substitute for object-level author authority.
 
+Current-main audit evidence classifies `create_branch`, `build_branch`, `add_node`, `connect_nodes`, `set_entry_point`, `add_state_field`, `update_node`, `patch_nodes`, and `patch_branch` as `write`; `approve_source_code` and `delete_branch` remain the stricter `admin`. `require_action_scope` denies a gated dispatch when metadata is absent. This change preserves or tightens those effects and adds author authority underneath them; it never downgrades approval or deletion to ordinary write.
+
 Alternative: rely on write/costly action classification alone. Rejected because action permission does not prove ownership of the target branch and missing metadata can drift.
 
 ### 6. Related wiki projection reuses the existing page-listing predicate
