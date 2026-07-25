@@ -209,6 +209,139 @@ def test_adapter_reads_canonical_epoch2_task_and_ids_are_unique(
     assert task.inputs["request_type"] == "general"
 
 
+def test_live_claimed_request_read_model_is_worker_bound_and_lease_bound(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, clock = epoch2
+
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+    claimed = adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+        lease_seconds=90,
+    )
+    assert claimed is not None
+
+    records = adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    )
+
+    assert len(records) == 1
+    record = records[0]
+    assert record.request_id == committed["request_id"]
+    assert record.admission_id == committed["admission_id"]
+    assert record.branch_task_id == committed["branch_task_id"]
+    assert record.universe_id == "universe-a"
+    assert record.request_type == "general"
+    assert record.text == "repair the queue"
+    assert record.branch_def_id == "loop-branch"
+    assert record.trigger_source == "operator_request"
+    assert record.accepted_priority_weight == 50.0
+    assert record.claimed_by == "worker-a"
+    assert record.claimed_at == "2026-07-24T08:01:00+00:00"
+    assert record.lease_expires_at == "2026-07-24T08:02:30+00:00"
+    assert not {
+        "receipt",
+        "tenant_id",
+        "idempotency_key_hash",
+        "body_digest",
+        "grant_generation",
+    } & record.__dict__.keys()
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-b",
+    ) == []
+
+    clock.set("2026-07-24T08:02:30+00:00")
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+
+def test_invalid_live_claim_does_not_block_later_valid_claim_at_limit_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import tinyassets.storage.request_admissions as request_admissions
+
+    initialize_author_server(tmp_path)
+    first = _commit(
+        tmp_path,
+        key="first-live-claim",
+        created_at="2026-07-24T08:00:00+00:00",
+    )
+    second = _commit(
+        tmp_path,
+        key="second-live-claim",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+    descriptor = _descriptor()
+    for committed in (first, second):
+        assert adapter.claim(
+            committed["branch_task_id"],
+            descriptor=descriptor,
+            descriptor_reader=lambda _conn, _worker_id: descriptor,
+        ) is not None
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE user_requests SET text = ? WHERE request_id = ?",
+            ("tampered after claim", first["request_id"]),
+        )
+
+    records = adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+        limit=1,
+    )
+
+    assert [record.branch_task_id for record in records] == [
+        second["branch_task_id"]
+    ]
+
+    monkeypatch.setattr(
+        request_admissions,
+        "MAX_OPERATIONAL_SCAN_ROWS",
+        1,
+    )
+    caplog.clear()
+
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+        limit=1,
+    ) == []
+    assert "integrity scan reached the 1-row operational bound" in caplog.text
+
+
+def test_cancel_requested_claim_is_not_materializable(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, _clock = epoch2
+    assert adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+    ) is not None
+
+    cancelled = adapter.request_cancel(committed["branch_task_id"])
+
+    assert cancelled.status == "cancel_requested"
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+
 @pytest.mark.parametrize(
     "universe_id",
     ["fantasy", "default-universe", "patch-loop-live"],

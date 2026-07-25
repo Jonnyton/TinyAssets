@@ -6,6 +6,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
+- **[P1 filed:2026-07-24]** Branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages`; visibility bypass.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
 - **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
@@ -14,24 +15,23 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - [filed:2026-07-02 verified:2026-07-22] Dogfood open: persona payload rework + OKF reserved-file frontmatter. Founder-seed-at-create closed by #1462.
 - [filed:2026-04-17 verified:2026-07-22] Privacy Q6.3 still platform: gemini/groq/grok remain in the fallback chains (`providers/router.py:89`).
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
-- [filed:2026-05-19] Wiki drifting to agent scratch space (81% of post-05-01 notes); host conversation: split coordination off the knowledge wiki?
 - [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
 - [filed:2026-07-24] PLAN still says one file-locked claimer; epoch-2 OpenSpec is transactional. Reconcile before claim integration/rollout.
 
 ## Work
-
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Slice A0 default-deny provider environment** — Opus5 ADAPT: land #1592 successor; isolate auth homes, fail loud, preserve canonical delta truth | openspec/changes/close-universe-host-subscription-fallback/; tinyassets/providers/base.py; packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1727 verdict; vault-clobber lane releases canonical credential-vault sync | dev-ready |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
 | **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance; store call gates `brain-okf-canonical-store` 2.1/4.1 (else unbuildable) | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
 | **Specify PLAN-gated full-platform targets** — catalog/collaboration, discovery/remix, presence, portability/deletion/succession/feedback | openspec/changes/complete-plan-gated-platform-targets/ | PLAN store/private-data/primitive/privacy decisions; build-forward-platform-capabilities | pending |
-| **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
+| **Observe release-reconcile live wake/retry** — prove first main Docker-smoke wake after #1749 and first drift repair/failure-cap path | STATUS.md | PR #1749; production Actions history | monitoring |
 | **R2-1a set_engine must constrain allowed_providers** — remaining half gated by #1691 partitions; live action is `_action_set_engine` in tinyassets/api/universe.py (api/engine.py does not exist — stale Files corrected 2026-07-24) | tinyassets/providers/router.py, tinyassets/api/universe.py (set_engine seam), tests/ | #1691 prereqs: #1484, #1660, #1617, provider-authority-propagation, overlay seam release | pending |
 | **R2-1b provider-attempt receipts** — strict-valid result-local reply + learning evidence; preserve `call_provider()->str`; no secret-bearing fields or invented sink | openspec/changes/provider-attempt-receipts/ | #1606 / R2-1a apply blocker; runtime files remain unclaimed | claimed:fable-fleet-codex ACTIVE 2026-07-24 |
-| **R2-4 wiki onboarding split** — read_page returns agent-coordination logs; assistant refused to build and offered to replace TinyAssets with a chat artifact (live 2026-07-21) | tinyassets/api/wiki.py, wiki/ | - | in-flight PR #1550 |
+| **Backfill wiki audience metadata** — 13/40 residual appearances map to 8 pages; use exact-path proof + dry-run + CAS, never router heuristics | openspec/changes/backfill-wiki-audience-metadata/**; docs/ops/2026-07-25-wiki-audience-backfill-manifest.md | brain-okf-canonical-store; opposite-provider review before writes | pending |
+| **Repair first-contact branch/wiki onboarding** — rendered chat found stale commands, unknowable branch-ID prerequisite, and missing starter branch | openspec/changes/repair-first-contact-onboarding/**; docs/ops/2026-07-25-first-contact-onboarding-gaps.md | branch-authoring and universe-visibility owners; opposite-provider review | pending |
+| **Retire MCP provider-secret deposit (review/spec only)** — replacement-first OS custody; no new MCP verb; runtime stays blocked | openspec/changes/retire-mcp-provider-secret-deposit/; docs/audits/2026-07-24-retire-mcp-provider-secret-deposit-opus5-review.md | Opus 5 current-main review; #1736; #1691/R2-1a; account↔host binding | claimed:codex-gpt56-secret-custody ACTIVE 2026-07-24 |
 | **Universe-personification relay survivors** — Section 6 dispositioned (#1713): definition gates advanced/discharged; 6 impl tasks blocked by design. Mutation inventory done (implementation-notes.md) | openspec/changes/reconcile-universe-personification-relay/ | #1583 host decision, universe-visibility, live-mcp-connector-surface | monitoring |
 | **Complete test-identity-and-reset (narrowed: 1.1-1.4, 3.1-3.3, 2.1-2.2)** — reset must not be a public deletion surface | openspec/changes/test-identity-and-reset/, tinyassets/reset.py, tests/test_reset*.py | - | claimed:fable-fleet-codex ACTIVE 2026-07-24 |
 | **Complete universe-creation change** — premise-verify against #1552/#1581/#1596; build around draft PRs #1617/#1660 | openspec/changes/universe-creation/, tinyassets/universe_server.py, tinyassets/api/universe.py | - | claimed:fable-fleet-opus ACTIVE 2026-07-24 |
@@ -42,7 +42,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Complete independent-full-platform-targets change (minus moderation)** — moderation fenced to in-flight #1662/#1667 | openspec/changes/complete-independent-full-platform-targets/ (tray/node-authoring/handoff scopes) | #1684 direction packet | claimed:fable-fleet-opus5 ACTIVE 2026-07-24 |
 | **Implement paid-market workflow + live-price targets** — durable inbox/bid/match/claim/delivery plus quote authority and manipulation controls | tinyassets/paid_market/; prototype/full-platform-v0/migrations/; tests/test_paid_market_core.py; tests/test_api_market.py | active `paid-market-track-e-wave-2-transport` and `paid-market-live-price-discovery`; Harden canonical absolute guarantees; #1440; R2-1; S14/B36; boundary/tenant/domain owners | pending |
 | **Observe post-fix in-node enqueue use** — #1672 merged; no production-clean user evidence yet | production traces/logs; STATUS.md | deploy #1672, then inspect organic enqueue use | monitoring |
+| **Observe wiki discovery organic use** — prod `fdfde5f1`; rendered Opus 5 proof passed, but current logs cannot distinguish organic reads | production traces/logs; STATUS.md | privacy-reviewed read telemetry or user-visible evidence | monitoring |
 | Canonical `/mcp` acceptance — live 2026-07-24: exact `TinyAssets`, exact seven, and retired-route matrix green; rendered-chatbot + first-user evidence remain | docs/ops/mcp-*, output/user_sim_session.md, production traces/logs | ChatGPT connector registration | monitoring |
+| **Observe Slice A0 provider isolation** — prod `ec5e7b11` + uptime canary green; rendered requester-BYOC turn and organic-use proof remain | output/user_sim_session.md, production traces/logs | connector registration; requester BYOC | monitoring |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
 | Land #1484 — `_repo_root()` conflated `TINYASSETS_REPO_ROOT` (storage) with the bundled-source root, emptying deployed review context. The env is load-bearing; do NOT drop it | tinyassets/api/universe.py, deploy/compose.yml | - | host-review |
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
@@ -50,7 +52,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
-
 ## Next
 
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.

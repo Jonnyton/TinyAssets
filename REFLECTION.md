@@ -447,3 +447,32 @@ fresh-host rollback edges found later.
   daemon identity, plugin-isolated imports, real-data-dir leakage, partial
   schemas, and cross-epoch selector identity on the first pass. Those
   adversarial cases would have exposed the unsafe sequencing immediately.
+
+## 2026-07-24 - epoch-2 claim-bound request materialization
+
+- **What surprised me:** a correctly gated materialization write was not
+  enough. The durable target could outlive its lease and re-enter selection
+  through the producer override, while an SQL `LIMIT` ahead of integrity
+  filtering let one corrupt row hide valid work.
+- **Pattern worth capturing:** lease-gated artifacts need a fail-closed check
+  at the final selection boundary using the complete claim identity. Bounded
+  readers cap rows scanned, not rows fetched before validation, and optional
+  epoch readers must never mask legacy work when they fail.
+- **What I would do differently:** lead with corrupt-first pagination,
+  cross-worker selection, lease expiry/reclaim, same-basename root aliasing,
+  and optional-reader failure tests before implementing the happy path.
+
+## 2026-07-25 - release reconciliation wake-up and chain recovery
+
+- **What surprised me:** GitHub token-dispatched image builds rarely chained
+  into deploys, and Python 3.14 accepted indented `-c` programs that the
+  production runner's Python 3.12 rejected. A locally green exact-script test
+  was therefore still environment-incomplete.
+- **Pattern worth capturing:** executable workflow proofs need the production
+  interpreter, the exact YAML-dedented shell body, a stateful scheduler/run
+  model, and mutation probes. Retry policy belongs in that state model too:
+  permit bounded recovery, then stop before repeating production mutation.
+- **What I would do differently:** model the full token-dispatch-to-deploy
+  chain and pin the hosted runner interpreter in CI before adding the trigger.
+  That would have exposed both the missing deploy chain and parser mismatch in
+  the first red test.

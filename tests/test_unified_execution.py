@@ -523,6 +523,236 @@ def test_worldbuild_soft_stop_clears_when_branch_task_queue_has_work(tmp_path):
     assert repaired["health"]["worldbuild_noop_streak"] == 0
 
 
+def test_epoch2_probe_failure_does_not_mask_pending_legacy_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import sqlite3
+
+    import fantasy_daemon.branch_registrations as br
+
+    (tmp_path / "requests.json").write_text(
+        json.dumps([{"status": "pending"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        br,
+        "_live_epoch2_claim_exists",
+        lambda _universe_path: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database locked")
+        ),
+    )
+
+    repaired = br.clear_restartable_soft_stop(
+        {
+            "universe_id": "u1",
+            "universe_path": str(tmp_path),
+            "health": {
+                "stopped": True,
+                "idle_reason": "worldbuild_stuck",
+                "worldbuild_noop_streak": 3,
+                "cycle_noop_streak": 0,
+            },
+        }
+    )
+
+    assert repaired["health"]["stopped"] is False
+
+
+def test_legacy_probe_failure_does_not_mask_live_epoch2_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fantasy_daemon.branch_registrations as br
+
+    monkeypatch.setattr(
+        "tinyassets.work_targets.sync_source_synthesis_priorities",
+        lambda _universe_path: (_ for _ in ()).throw(
+            OSError("legacy registry unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        br,
+        "_live_epoch2_claim_exists",
+        lambda _universe_path: True,
+    )
+
+    assert br._restartable_work_exists(tmp_path) is True
+
+
+def test_epoch2_restart_probe_rejects_same_basename_outside_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fantasy_daemon.branch_registrations as br
+
+    data_root = tmp_path / "data"
+    outside_universe = tmp_path / "outside" / "test-universe"
+    data_root.mkdir()
+    outside_universe.mkdir(parents=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter",
+        lambda _base: (_ for _ in ()).throw(
+            AssertionError("outside-root lookup reached canonical adapter")
+        ),
+    )
+
+    assert br._live_epoch2_claim_exists(outside_universe) is False
+
+
+def test_soft_stop_observes_only_this_workers_live_canonical_epoch2_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The wrapper may resume for a won live claim, never pending v2 work."""
+    import hashlib
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+
+    import rfc8785
+
+    from fantasy_daemon.branch_registrations import (
+        clear_restartable_soft_stop,
+    )
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+    )
+    from tinyassets.daemon_server import initialize_author_server
+    from tinyassets.storage import db_path
+    from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+    universe_path = tmp_path / "test-universe"
+    universe_path.mkdir()
+    initialize_author_server(tmp_path)
+    body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": "",
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": 25.0,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": "Resume this claimed request.",
+        "universe_id": universe_path.name,
+    })
+    committed = RequestAdmissionStore(tmp_path).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id=universe_path.name,
+        idempotency_key_hash=(
+            "hmac-sha256:"
+            + hashlib.sha256(b"restart-key").hexdigest()
+        ),
+        body_digest="sha256:" + hashlib.sha256(body).hexdigest(),
+        body_digest_version="rfc8785-v1",
+        request_type="general",
+        text="Resume this claimed request.",
+        branch_id="",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        trigger_source="operator_request",
+        accepted_priority_weight=25.0,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 1,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": {},
+        },
+        directed_daemon_id="",
+        created_at="2026-07-24T10:00:00+00:00",
+    )
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    stopped = {
+        "universe_id": universe_path.name,
+        "universe_path": str(universe_path),
+        "health": {
+            "stopped": True,
+            "idle_reason": "worldbuild_stuck",
+            "worldbuild_noop_streak": 3,
+            "cycle_noop_streak": 0,
+        },
+    }
+
+    assert clear_restartable_soft_stop(stopped)["health"]["stopped"] is True
+
+    now = datetime.now(timezone.utc)
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-a",
+        runtime_instance_id="runtime-a",
+        boot_id="boot-a",
+        build_sha="a" * 40,
+        config_hash="b" * 64,
+        universe_id=universe_path.name,
+        expires_at=(now + timedelta(seconds=60)).isoformat(),
+    )
+    claimed = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: now,
+    ).claim(
+        committed["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed is not None
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        before = {
+            "request": conn.execute(
+                "SELECT * FROM user_requests ORDER BY rowid"
+            ).fetchall(),
+            "admission": conn.execute(
+                "SELECT * FROM request_admissions ORDER BY rowid"
+            ).fetchall(),
+            "task": conn.execute(
+                "SELECT * FROM branch_tasks_v2 ORDER BY rowid"
+            ).fetchall(),
+            "event": conn.execute(
+                "SELECT * FROM request_admission_events ORDER BY rowid"
+            ).fetchall(),
+        }
+
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    assert clear_restartable_soft_stop(stopped)["health"]["stopped"] is True
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    repaired = clear_restartable_soft_stop(stopped)
+
+    assert repaired["health"]["stopped"] is False
+    assert repaired["health"]["idle_reason"] == ""
+    assert not (universe_path / "requests.json").exists()
+    assert not (universe_path / "work_targets.json").exists()
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        after = {
+            "request": conn.execute(
+                "SELECT * FROM user_requests ORDER BY rowid"
+            ).fetchall(),
+            "admission": conn.execute(
+                "SELECT * FROM request_admissions ORDER BY rowid"
+            ).fetchall(),
+            "task": conn.execute(
+                "SELECT * FROM branch_tasks_v2 ORDER BY rowid"
+            ).fetchall(),
+            "event": conn.execute(
+                "SELECT * FROM request_admission_events ORDER BY rowid"
+            ).fetchall(),
+        }
+    assert after == before
+
+
 # ───────────────────────────────────────────────────────────────────────
 # Checkpoint regression under flag-on (§4.11, option-1 accepted)
 # ───────────────────────────────────────────────────────────────────────

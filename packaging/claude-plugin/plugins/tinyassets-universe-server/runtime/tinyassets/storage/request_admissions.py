@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.storage import db_path
+
+logger = logging.getLogger(__name__)
 
 PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
@@ -666,6 +669,98 @@ class RequestAdmissionStore:
                         break
         return candidates
 
+    def list_live_claimed_v2_requests(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+        limit: int = 10,
+        integrity_check: Callable[[Mapping[str, Any]], bool],
+    ) -> list[dict[str, Any]]:
+        """Return bounded canonical Request/task views for live running claims.
+
+        This is a read model only.  It cannot claim, renew, transition, or
+        project epoch-2 work into the legacy JSON queue.  A
+        ``cancel_requested`` task is intentionally excluded so cancellation
+        cannot start new materialized work; lifecycle finalization belongs to
+        the queue owner.
+        """
+        clean_universe_id = _required(universe_id, "universe_id")
+        clean_worker_id = _required(worker_id, "worker_id")
+        requested = min(
+            max(1, int(limit)),
+            MAX_OPERATIONAL_SCAN_ROWS,
+        )
+        records: list[dict[str, Any]] = []
+        scanned = 0
+        with self.connection() as conn:
+            cursor = self._v2_integrity_cursor(
+                conn,
+                universe_id=clean_universe_id,
+                pending_only=False,
+                live_claimed_by=clean_worker_id,
+                live_claim_at=_clock_iso(self._clock),
+                include_linked_universe_scope=True,
+            )
+            while (
+                len(records) < requested
+                and scanned < MAX_OPERATIONAL_SCAN_ROWS
+            ):
+                rows = cursor.fetchmany(
+                    min(128, MAX_OPERATIONAL_SCAN_ROWS - scanned)
+                )
+                if not rows:
+                    break
+                scanned += len(rows)
+                for row in rows:
+                    raw = dict(row)
+                    if not integrity_check(raw):
+                        continue
+                    inputs = json.loads(str(raw["inputs_json"]))
+                    records.append({
+                        "request_id": raw["request_id"],
+                        "admission_id": raw["admission_id"],
+                        "branch_task_id": raw["branch_task_id"],
+                        "universe_id": raw["universe_id"],
+                        "branch_def_id": raw["branch_def_id"],
+                        "request_type": raw["linked_request_type"],
+                        "text": raw["linked_request_text"],
+                        "branch_id": raw["linked_request_branch_id"] or "",
+                        "actor_id": raw["linked_admission_actor_id"],
+                        "trigger_source": raw["trigger_source"],
+                        "accepted_priority_weight": raw["priority_weight"],
+                        "directed_daemon_id": (
+                            raw["directed_daemon_id"] or ""
+                        ),
+                        "pickup_incentive": (
+                            inputs.get("pickup_incentive") or ""
+                        ),
+                        "directed_daemon_instruction": (
+                            inputs.get("directed_daemon_instruction") or ""
+                        ),
+                        "claimed_by": raw["claimed_by"],
+                        "claimed_at": raw["claimed_at"],
+                        "lease_expires_at": raw["lease_expires_at"],
+                        "queued_at": raw["queued_at"],
+                    })
+                    if len(records) >= requested:
+                        break
+        if (
+            scanned >= MAX_OPERATIONAL_SCAN_ROWS
+            and len(records) < requested
+        ):
+            logger.warning(
+                "epoch-2 live-claim integrity scan reached the %s-row "
+                "operational bound for universe=%s worker=%s with %s/%s "
+                "valid results",
+                MAX_OPERATIONAL_SCAN_ROWS,
+                clean_universe_id,
+                clean_worker_id,
+                len(records),
+                requested,
+            )
+        return records
+
     def has_active_v2_claim(
         self,
         *,
@@ -832,6 +927,8 @@ class RequestAdmissionStore:
         terminal_before: str = "",
         terminal_only: bool = False,
         uncompacted_only: bool = False,
+        live_claimed_by: str = "",
+        live_claim_at: str = "",
         limit: int | None = None,
         rowid_order: bool = False,
     ) -> sqlite3.Cursor:
@@ -865,6 +962,18 @@ class RequestAdmissionStore:
             )
         if uncompacted_only:
             clauses.append("a.compacted_at IS NULL")
+        if live_claimed_by:
+            if not live_claim_at:
+                raise ValueError(
+                    "live_claim_at is required with live_claimed_by"
+                )
+            clauses.extend([
+                "t.status = 'running'",
+                "t.claimed_by = ?",
+                "t.lease_expires_at IS NOT NULL",
+                "julianday(t.lease_expires_at) > julianday(?)",
+            ])
+            params.extend([live_claimed_by, live_claim_at])
         if terminal_before:
             clauses.append("a.terminal_at IS NOT NULL")
             clauses.append("a.terminal_at < ?")
