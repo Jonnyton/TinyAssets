@@ -11,3 +11,9 @@
 - [x] 2.1 Pin bulk replacement and empty clearing with boundary tests and docs
 - [x] 2.2 Verify canonical/package mirror parity and strict OpenSpec validation
 - [x] 2.3 Run the complete credential-vault regression set and Ruff
+
+## 3. Round-2 Review Folds
+
+- [x] 3.1 Reproduce and fix preserved-home Codex auth blob rotation
+- [x] 3.2 Report collapsed records and dropped VCS purpose slots without secrets
+- [x] 3.3 Re-run the full credential-vault set, Ruff, mirror parity, and strict validation

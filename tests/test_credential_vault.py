@@ -197,6 +197,40 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
     assert "ghs-OLD" not in str(load_credential_vault(tmp_path))
 
 
+def test_single_vcs_write_reports_dropped_purpose_slots(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purposes": ["write", "read"],
+        "token": "ghs-BOTH",
+    }])
+
+    summary = write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "read",
+        "token": "ghs-READONLY",
+    }])
+
+    assert summary["collapsed_credential_count"] == 0
+    assert summary["dropped_credential_slots"] == [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purposes": ["write"],
+    }]
+    assert "ghs-BOTH" not in str(summary)
+    assert "ghs-READONLY" not in str(summary)
+    assert resolve_github_token(
+        tmp_path, "Jonnyton/TinyAssets", purpose="read"
+    ) == "ghs-READONLY"
+    assert resolve_github_token(
+        tmp_path, "Jonnyton/TinyAssets", purpose="write"
+    ) == ""
+
+
 def test_single_subscription_write_preserves_sibling_fields(tmp_path):
     configured = tmp_path / "claude_cfg"
     write_credential_vault(tmp_path, [{
@@ -287,6 +321,8 @@ def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
         github_credential,
     ]
     assert summary["credential_count"] == 2
+    assert summary["collapsed_credential_count"] == 1
+    assert summary["dropped_credential_slots"] == []
 
 
 def test_two_record_write_replaces_existing_vault_exactly(tmp_path):
@@ -379,6 +415,37 @@ def test_codex_subscription_auth_can_materialize_from_vault(tmp_path):
     )
     assert resolve_codex_home(tmp_path) == codex_home
     assert codex_subscription_auth_available(tmp_path) is True
+
+
+def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
+    configured = tmp_path / "codex-home"
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": str(configured),
+        "auth_json_b64": "eyJ0b2tlbiI6Ik9MRC1DT0RFWC1BVVRIIn0=",
+    }])
+    assert ensure_codex_home_from_vault(tmp_path) == configured
+    assert (configured / "auth.json").read_text(encoding="utf-8") == (
+        '{"token":"OLD-CODEX-AUTH"}'
+    )
+
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": "eyJ0b2tlbiI6Ik5FVy1ST1RBVEVELUFVVEgifQ==",
+    }])
+
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": str(configured),
+        "auth_json_b64": "eyJ0b2tlbiI6Ik5FVy1ST1RBVEVELUFVVEgifQ==",
+    }]
+    assert ensure_codex_home_from_vault(tmp_path) == configured
+    assert (configured / "auth.json").read_text(encoding="utf-8") == (
+        '{"token":"NEW-ROTATED-AUTH"}'
+    )
 
 
 def test_codex_home_path_from_vault_is_resolved_without_env(tmp_path):

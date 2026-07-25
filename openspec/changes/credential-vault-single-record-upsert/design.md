@@ -13,6 +13,8 @@ sibling temporary path.
 - Match logical slots using the selectors consumed by current resolvers.
 - Prevent shadowed VCS rotations and uncleanable same-slot duplicates.
 - Preserve sibling fields across partial subscription deposits.
+- Keep materialized Codex auth synchronized with a changed vault blob.
+- Make intentional VCS capability narrowing visible without exposing secrets.
 - State the bulk, empty, malformed-file, and concurrency boundaries exactly.
 
 **Non-Goals:**
@@ -39,6 +41,11 @@ sibling temporary path.
 - Malformed existing JSON fails the single-record write before the temporary
   file is written. This preserves fail-loud behavior rather than silently
   healing or discarding unreadable secret state.
+- A non-empty Codex `auth_json_b64` value is decoded and compared with the
+  materialized `auth.json`; differing bytes are replaced atomically even when a
+  partial upsert preserves the configured Codex home.
+- Every write summary includes a collapsed-record count and non-secret
+  descriptors for VCS purpose selectors removed by an overlapping upsert.
 
 ## Risks / Trade-offs
 
@@ -48,7 +55,8 @@ sibling temporary path.
 - [Risk] A single-purpose VCS rotation replaces an overlapping multi-purpose
   record and can remove its other purpose. → Prefer removal of the old token
   over silently retaining a shadowing compromised credential; callers that need
-  both purposes must deposit both selectors.
+  both purposes must deposit both selectors, and removed purpose slots are
+  reported in the write summary.
 - [Risk] Social service-scoped matching supports one stored slot per service.
   → Do not invent unread identity selectors; expand the contract only when a
   concrete social resolver defines them.
