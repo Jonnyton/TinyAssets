@@ -22,7 +22,7 @@ A completed fabrication alone SHALL NOT mint a sellable hardware capability. Sig
 - **THEN** the system mints an immutable capability record referencing the design and evidence hashes
 
 ### Requirement: Physical fabrication composes artifacts, gates, shipping, and exact settlement
-Physical-fabrication requests SHALL reference STL/STEP build outputs plus profiles under the commons license registry, declare a physical capability such as `fdm-print:0.4mm:PETG`, bind photo/measurement QA gates, and validate their own fabrication descriptor facets — process and material families, tolerance and size capability, inspection or certification class, and declared service-region and shipping bands. Acceptance, inspection, delivery, cure, and rejection semantics are owned here.
+Physical-fabrication requests SHALL reference STL/STEP build outputs plus profiles under the commons license registry, declare a physical capability such as `fdm-print:0.4mm:PETG`, bind photo/measurement QA gates, and validate their own fabrication descriptor facets — process and material families, tolerance and size capability, inspection or certification class, and declared service-region and shipping bands. Acceptance, inspection, delivery, cure, and rejection semantics are owned here, including the disposition policy the settlement oracle applies: goods settle pro-rata to accepted units, shipping is paid if any unit is accepted, and shipping is refunded only on total rejection.
 
 This capability SHALL NOT re-implement the arithmetic or the published quote. Exact total-first integer quotation, distance as a pure numeric helper, exclusion of offers matching no declared shipping band, deterministic seller ranking, and conserved settlement across accepted units, rejected units, shipping disposition, treasury fee, seller net, and buyer refund are already canonical pure oracles in `paid-market-economy` and SHALL be called or differential-tested against, never duplicated. Executable landed totals, indicative-versus-firm quote provenance, freshness, public quote reads, and economic routing belong to `paid-market-live-price-discovery`. Hardware supplies the domain facts and the acceptance outcome; the oracle computes; the discovery surface publishes.
 
@@ -33,6 +33,10 @@ This capability SHALL NOT re-implement the arithmetic or the published quote. Ex
 #### Scenario: fabrication arithmetic comes from the canonical oracle
 - **WHEN** a fabrication request needs a quote, a ranking, or a settlement split
 - **THEN** it calls the canonical `paid-market-economy` helpers, or proves equality against them by differential test, rather than computing its own totals
+
+#### Scenario: partial acceptance pays shipping once
+- **WHEN** some units are accepted and others rejected
+- **THEN** goods settle pro-rata to the accepted units and shipping is paid, and shipping is refunded only when every unit is rejected
 
 ### Requirement: Mechanical deliverables are reproducible parametric programs
 For mechanical and code-CAD workflows, the canonical deliverable SHALL be OpenSCAD/CadQuery-class versioned source plus pinned toolchain/build instructions and generated STL/STEP hashes. A mesh or rendered preview alone SHALL not satisfy a source-artifact requirement. Before fabrication admission, the exact build SHALL pass declared printer-class gates for watertight/manifold geometry, minimum wall thickness, overhang/support, and clearance/tolerance; remix attribution SHALL follow source-code lineage.
