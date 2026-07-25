@@ -4,7 +4,7 @@ The public connector advertises exactly seven handles. `read_graph(target="branc
 
 The four registered MCP prompts also predate the canonical handle fold. They teach `extensions`, `goals`, `gates`, `wiki`, and `community_change_context`, while the active retirement change removes those hidden registrations. The retirement change cannot safely remove those tools until the canonical branch equivalents, migrated prompt consumers, and rendered proof land. Live wiki pages require a separate exact-path correction manifest. The current SHA-256 precondition is a useful stale-write guard but is not atomic compare-and-swap because the read/check/write sequence has no lock; repository prompt corrections cannot be treated as proof that live content changed.
 
-Runtime files are owned by the active universe-creation and universe-visibility lanes. The legacy-retirement change is present but unclaimed, and no `broad-test` lane exists as of 2026-07-25. This change therefore produces the contract and review packet only.
+Runtime files are owned by the active universe-creation and universe-visibility lanes. `retire-legacy-live-mcp-tools` tasks 2.1–2.3 are claimed by `fable-fleet-opus5`, and the `control_station` prompt region plus exact-handle invariant test are claimed by `fable-fleet-codex`, as of 2026-07-25. Those owners are explicit read-only dependencies of this packet. No `broad-test` lane exists. This change therefore produces the contract and review packet only.
 
 ## Goals / Non-Goals
 
@@ -94,7 +94,7 @@ Final acceptance then uses a real browser-rendered chatbot through `https://tiny
 ## Migration Plan
 
 1. Land this strict-valid spec/review packet as a blocked draft after Claude Opus 5 review.
-2. Obtain accept/adapt from the current universe-creation and universe-visibility owners, and provision/catalog `TINYASSETS_BRANCH_CRYPTO_KEYRING`. At runtime claim time, re-check whether the unclaimed legacy-retirement change has acquired an owner; that owner must preserve both `publish_version` and source approval until their canonical replacement/removal gates pass. No current `broad-test` owner/lane exists as of 2026-07-25.
+2. Obtain accept/adapt from the current universe-creation and universe-visibility owners and from the active `retire-legacy-live-mcp-tools` and `control_station` prompt-truth owners, and provision/catalog `TINYASSETS_BRANCH_CRYPTO_KEYRING`. The retire-legacy owner must record the replacement-first preservation of both `publish_version` and `approve_source_code` in task 2.3 and its STATUS dependency before either lane advances; the prompt owner must hand off its landed text and exact-handle invariant rather than be overwritten. No current `broad-test` owner/lane exists as of 2026-07-25.
 3. Claim exact runtime/test files after those owners release them; write failing contract, authority, idempotency, pagination, guidance, and load tests first.
 4. Implement the canonical router, shared patch/publication owners, catalog migration/backfill, keyring integration, and packaged-runtime parity.
 5. Deploy through the normal pipeline only after the exact-branch projection is visibility-safe; run exact-seven canary, the rendered chatbot journey, and post-fix organic-use check.

@@ -94,7 +94,7 @@ The current wiki patch owner conflicts on SHA mismatch or when `old_text` does n
 ## Gates before any runtime or live write
 
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
-- Explicit accept/adapt from active universe-creation and universe-visibility owners. Re-check the currently unclaimed legacy-retirement change when it gains an owner; there is no current `broad-test` lane.
+- Explicit accept/adapt from the active universe-creation and universe-visibility owners, `fable-fleet-opus5` for claimed `retire-legacy-live-mcp-tools` tasks 2.1–2.3, and `fable-fleet-codex` for the claimed `control_station` prompt-truth lane. The retire-legacy owner must write the `publish_version` plus `approve_source_code` replacement-first dependency into its task 2.3 caller inventory and STATUS row before either lane advances; there is no current `broad-test` lane.
 - Rotation-catalogued `TINYASSETS_BRANCH_CRYPTO_KEYRING` provisioned with no ephemeral/default-key fallback.
 - V1 remains public-commons-only; private authoring needs a separate PLAN-approved user-controlled-storage contract.
 - Failing tests precede implementation.

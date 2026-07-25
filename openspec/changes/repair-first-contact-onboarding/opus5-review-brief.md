@@ -13,7 +13,7 @@ Review the exact current working-tree artifacts:
 - current code seams in `tinyassets/universe_server.py` and `tinyassets/api/branches.py`
 - active changes `universe-creation`, `universe-visibility`, and `retire-legacy-live-mcp-tools`
 
-The first Opus 5 review in `opus5-review.md` returned ADAPT against the pre-hardening draft. The second review in `opus5-review-final.md` returned ADAPT against commit `8c3c0b21`, finding the missing deliberate publication route plus I1-I8/M1-M5. Re-check every finding from both reviews against the current amended head; do not assume the claimed fixes are sufficient.
+The first Opus 5 review in `opus5-review.md` returned ADAPT against the pre-hardening draft. The second review in `opus5-review-final.md` returned ADAPT against commit `8c3c0b21`, finding the missing deliberate publication route plus I1-I8/M1-M5. The third review in `opus5-review-approved.md` (despite its filename) returned ADAPT against commit `7e7fd9bb`, finding one stale owner fact plus selector-snapshot authority, patch-projection, Goal disclosure, nonce-lease lifecycle, and `control_station` ownership ambiguities. Re-check every finding from all three reviews against the current amended head; do not assume the claimed fixes are sufficient.
 
 Check:
 

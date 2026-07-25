@@ -24,5 +24,5 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 ## Impact
 
 - Future runtime integration will touch the canonical MCP router and its packaging mirror, the existing branch list/build adapters, focused first-contact tests, and public MCP acceptance probes.
-- The active `universe-creation` and `universe-visibility` owners remain read-only dependencies. The legacy-retirement change is unclaimed as of 2026-07-25 and must record this packet's replacement-first gate when claimed; no current `broad-test` owner/lane exists.
+- The active `universe-creation` and `universe-visibility` owners remain read-only dependencies. `retire-legacy-live-mcp-tools` tasks 2.1–2.3 are claimed by `fable-fleet-opus5` as of 2026-07-25; that owner must record this packet's `publish_version` and `approve_source_code` replacement-first dependency in its task 2.3 caller inventory before either lane advances. The active `control_station` prompt-truth lane is also a read-only dependency for prompt text and its exact-handle invariant test. No current `broad-test` owner/lane exists.
 - This lane changes only OpenSpec artifacts, the evidence manifest, and coordination metadata. Claude Opus 5 opposite-provider review gates a draft spec PR and all runtime work.
