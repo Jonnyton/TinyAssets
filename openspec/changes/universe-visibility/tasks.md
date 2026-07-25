@@ -1,11 +1,13 @@
 # Tasks — universe visibility
 
-Builder lane (claude/osx-universe-visibility): model + additive enforcement +
-tests landed. Concrete model pinned in `design.md`. Enforcement is additive —
-it only tightens the existing `public_read` gate when a more restrictive level
-is declared, so no live universe changes visibility (backfill declares intent).
-Full-strict rollout (`TINYASSETS_VISIBILITY_STRICT_UNDECLARED=on` + `create`
-default `private`) is host-gated; see design 1.3.
+Builder lane (claude/osx-universe-visibility): model + enforcement + tests
+landed, then hardened per a cross-family REJECT (verdict:
+`docs/audits/…verdict-universe-visibility`). Concrete model pinned in `design.md`.
+Enforcement composes as `legacy_gate AND new_layer` (tighten-only by
+construction) and fails closed by default on any undeclared/forged/corrupt state
+— no env opt-in. `backfill_universe_visibility()` is the deploy migration that
+declares existing universes from their `public_read` bit; the deploy must run it.
+The `create` default *value* (public vs private) remains a host knob (design 1.3).
 
 ## 1. Define the model
 
@@ -17,11 +19,11 @@ default `private`) is host-gated; see design 1.3.
       → `design.md` §1.2; composition `effective = universe AND page` — a page narrows,
       never widens (`page_content_permitted`); universe gate runs first.
 - [x] 1.3 Decide the default for new universes
-      → `design.md` §1.3. Security-load-bearing part (undeclared never defaults visible)
-      is DONE via the `TINYASSETS_VISIBILITY_STRICT_UNDECLARED` flag + backfill. The
-      *value* `create` records is a **host-decision** knob (conservative `private` default
-      vs public-commons `public`); mechanism built, value is a one-line change — this lane
-      does not silently flip the live product default.
+      → `design.md` §1.3. Undeclared fails closed **unconditionally** (no env flag — the
+      review rejected that as a config-text guard). `backfill_universe_visibility()` is
+      the deploy migration that declares existing universes from `public_read`. The
+      *value* `create` records is a **host-decision** knob (public-commons `public` vs
+      conservative `private`); mechanism built, value is a one-line default.
 - [x] 1.4 Decide disposition of the legacy universes (concordance, workflow-voice,
       echoes-of-the-cosmos, default-universe) — explicit level or recorded grandfather reason
       → `design.md` §1.4 (all four → explicit `public`; `default-universe`'s internal
@@ -33,27 +35,34 @@ default `private`) is host-gated; see design 1.3.
 ## 2. Enforce it
 
 - [x] 2.1 Gate universe enumeration on the declared level
-      → `_action_list_universes` gates on `visibility_permits(uid, "discover_existence")`
-      and reports the declared level per row (`tinyassets/api/universe.py`).
+      → `_action_list_universes` gates on `visibility_permits(uid, "discover_existence")`,
+      reports the declared level per row, and emits a neutral "no universes visible" note
+      that does not leak the hidden count or base path (`tinyassets/api/universe.py`).
 - [x] 2.2 Gate wiki/commons reads on the declared level
-      → wiki dispatcher gates reads on `read_content`; per-page narrowing in `_wiki_read`
-      (`tinyassets/api/wiki.py`). Metadata gate refined at `get_status` (`read_metadata`).
+      → wiki dispatcher gates reads on `read_content`; per-page narrowing applied across
+      `read`/`search`/`since`/`list` and is grant-based (authentication alone is not page
+      authority). Metadata gate at `get_status` + `inspect` (`read_metadata`), scoped to
+      existing universes; blank-id denials do not leak the resolved private name.
 - [x] 2.3 Fail closed on an undeclared level — never default to visible
-      → unrecognized declared level, corrupt rules read, and blank universe id all resolve
-      to `CLOSED`; a genuinely-missing row fails closed under
-      `TINYASSETS_VISIBILITY_STRICT_UNDECLARED`, and `backfill_universe_visibility()`
-      removes undeclared states so the flag only ever bites broken state.
+      → `universe_visibility` returns `CLOSED` for undeclared / blank / null / unrecognized
+      / wrong-type / malformed-JSON / non-object-metadata / corrupt states — no env opt-in.
+      Composition is `legacy_gate AND new_layer`, so an inconsistent `public_read=False` +
+      permissive explicit level is refused (tighten-only by construction).
 - [x] 2.4 Raw-DML forge probe per gate, proven RED without the gate
-      → `TestForgeProbes` writes a withholding level directly into `universe_rules`
-      (bypassing the API) and proves each gate withholds it, while asserting the ungated
-      primitive (listable dir / resolved level / existing content) would serve it.
+      → `TestForgeProbes` + `TestResolutionFailClosed` + `TestTightenOnlyComposition` write
+      withholding/forged rows directly into `universe_rules` and prove each gate withholds,
+      while asserting the ungated primitive would serve. Mutation-verified non-vacuous.
 
 ## 3. Prove it
 
 - [x] 3.1 Regression test: anonymous reader against each level sees exactly the declared surface
-      → `tests/test_universe_visibility.py` (enumeration / metadata / content gates per level +
-      grant-exemption + per-page narrowing). 36 tests pass; ruff clean; 70 pre-existing
-      isolation/observability/multi-tenant tests still pass.
+      → `tests/test_universe_visibility.py` (52 tests): fail-closed truth table row-by-row,
+      tighten-only composition, grant exemption, all three gates per level, per-page narrowing
+      (incl. authenticated-without-grant withheld), sibling-read leaks (search/since/list),
+      note-leak + blank-id-leak, forge probes, backfill. Mutation-verified non-vacuous; ruff
+      clean. Legacy get_status/telemetry suites migrated (fixtures declare, or the
+      `tests/conftest.py` backfill-emulation for pre-visibility modules) — zero net new
+      failures vs origin/main on the universe/wiki/status sweep.
 - [ ] 3.2 Re-run the first-contact ui-test and confirm what an anonymous caller can enumerate matches
       the declared intent
       → **BLOCKED on live acceptance**: requires a deployed build + browser connector

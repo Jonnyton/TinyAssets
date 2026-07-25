@@ -7,11 +7,24 @@ tasks (section 1 of `tasks.md`) so that enforcement (section 2) and proof
 
 Truth split: `tinyassets/api/permissions.py` already owns **ownership** (the
 `universe_acl` grant set) and the legacy binary **`public_read`** bit. This
-change adds a thin, additive layer — `tinyassets/api/visibility.py` — that
-decomposes the *anonymous read surface* into three separately-grantable
-capabilities, fails closed on an undeclared/unrecognized level, and composes a
-per-universe level with a per-page override. It never loosens the existing
-gate; it only tightens it when a more restrictive level is declared.
+change adds `tinyassets/api/visibility.py`, which decomposes the *anonymous read
+surface* into three separately-grantable capabilities and composes a per-universe
+level with a per-page override.
+
+Two structural invariants (required by the cross-family review that rejected the
+first cut):
+
+- **Tighten-only by construction.** The effective read decision is
+  `legacy_gate AND new_layer`: `visibility_permits` returns `False` whenever the
+  legacy `universe_access_allows` read gate denies, so the new layer can never
+  *grant* a read the legacy gate withholds. An inconsistent row (`public_read=False`
+  plus a permissive explicit level) is therefore refused, not opened.
+- **Fail closed by default.** `universe_visibility` returns the *declared* level
+  or `CLOSED`; it never derives an open default from `public_read`. Undeclared,
+  blank, null, unrecognized, wrong-type, corrupt, and non-dict states all resolve
+  to `private`. Existing universes are declared by `backfill_universe_visibility`
+  (the migration path) — not by a fail-open fallback or an env opt-in to
+  strictness (which the review flagged as a config-text guard, not a runtime gate).
 
 ## 1.1 Visibility levels and the capabilities each grants an unauthenticated reader
 
@@ -51,10 +64,17 @@ ceiling; a page may only *narrow* it, never widen it:
 effective_content(page) = universe.read_content AND page.read_content
 ```
 
-A page declares its own restriction via a `visibility:` (or `content:`)
-frontmatter key. A page marked restrictive is withheld from an anonymous reader
-even inside an openly-readable universe (spec Req 3). A page cannot make itself
-*more* visible than its universe — the universe gate runs first.
+A page declares its own restriction via a `visibility:` (or `content_visibility:`)
+frontmatter key. A page marked restrictive is withheld from any reader that is
+not a *granted* reader of the page's universe, even inside an openly-readable
+universe (spec Req 3). **Authentication alone is not page authority** — a valid
+user with ordinary wiki scope but no universe ACL grant is treated exactly like
+an anonymous reader (a first-cut bug the review caught). A page cannot make
+itself *more* visible than its universe — the universe gate runs first.
+
+The narrowing applies to **every read path that surfaces a page**, not just
+`read`: `search`, `since`, and `list` all filter restricted pages out (their
+body excerpt, title, and path are each disclosure).
 
 Rationale: the observed leak (`default-universe` commons) mixed internal
 engineering notes with an unrelated public note in one scope. A universe-level
@@ -64,25 +84,31 @@ flag alone cannot express that; per-page narrowing can.
 
 The security-load-bearing requirement is **"no universe may sit in an
 undeclared state, and undeclared never defaults to visible"** (spec Req 1).
-That is satisfied by *declaring a level at create time*, not by the value
-chosen. Two knobs:
 
-- **Undeclared resolution** (`universe_visibility()` when a rules row is
-  genuinely absent): governed by env flag
-  `TINYASSETS_VISIBILITY_STRICT_UNDECLARED`.
-  - Default **off** → missing row resolves to `public` (preserves today's live
-    behavior and the existing test suite until the backfill has run).
-  - **On** → missing row resolves to `private` (full spec compliance; the
-    fail-closed default). Intended to be switched on *after* the backfill has
-    declared every existing universe, so it only ever bites genuinely broken
-    state.
-- **`create` default level**: create records an **explicit** level so a new
-  universe is never undeclared. The autonomous-safe default is the conservative
-  `private` (Hard Rule #4). **Host-decision knob:** the public-commons /
-  discovery-remix vision may prefer `public` as the create default. The
-  *mechanism* is built and the value is a one-line change; recorded in
-  `tasks.md` as the host choice. This lane does not silently flip the live
-  product default.
+- **Undeclared resolution is fail-closed, unconditionally.**
+  `universe_visibility()` returns `CLOSED` for any universe without an explicit,
+  recognized `visibility_level` — no env opt-in, no `public_read` fall-through.
+  The review rejected the env-flag approach (a config-text guard, not a runtime
+  gate), so strictness is the default and only behavior.
+- **`backfill_universe_visibility()` is the migration path.** It declares every
+  pre-existing universe from its current `public_read` bit (`True → public`,
+  `False → private`) so no live universe changes visibility — it only becomes
+  *declared*. After the deploy runs it, "undeclared" means only genuine
+  corruption, which fails closed. Deploy must run the backfill as part of the
+  rollout (a one-time migration step).
+- **`create` default level** is a **host-decision knob**: the create path should
+  record an explicit level so a new universe is never undeclared. Hard Rule #12
+  ("public-draft by default") and the public-commons/discovery-remix vision point
+  to `public`; a conservative security posture points to `private`. The mechanism
+  (`set_universe_visibility`) is built and the value is a one-line default;
+  recorded in `tasks.md` as the host choice.
+
+**Test-harness note:** the pre-visibility test suite (hundreds of tests) creates
+bare universes and was written against the post-backfill world. `tests/conftest.py`
+carries an autouse fixture that *emulates the deployed backfill* for those legacy
+modules (undeclared → `public_read`-derived) so they keep asserting their own
+concern. Production code ships fully strict; the true pre-backfill fail-closed
+behavior is exercised un-emulated by `tests/test_universe_visibility.py`.
 
 ## 1.4 Disposition of the legacy universes
 
@@ -101,32 +127,35 @@ existing universe's explicit level from its current effective `public_read`
 bit, so **no live universe changes visibility** — it only becomes *declared*.
 The per-page restriction of `default-universe`'s internal pages is a runtime
 data step (adding frontmatter to those wiki pages) executed at deploy; the
-enforcement mechanism (`_wiki_read` page gate) is built and tested here.
-
-This is a backfill of *declaration*, not a visibility flip. The genuinely
-strict posture (`TINYASSETS_VISIBILITY_STRICT_UNDECLARED=on` +
-`create` default `private`) is a host-gated rollout, recorded in `tasks.md`,
-because it is a wide-blast-radius read-path change that must pass cross-family
-review before any live flip.
+enforcement mechanism (page gate across `read`/`search`/`since`/`list`) is built
+and tested here.
 
 ## Enforcement surfaces (section 2 map)
 
-| Capability          | Surface                                              | File                        |
-|---------------------|-----------------------------------------------------|-----------------------------|
-| `discover_existence`| `universe action=list` (`_action_list_universes`)   | `tinyassets/api/universe.py`|
-| `read_metadata`     | `get_status` per-universe gate                      | `tinyassets/api/status.py`  |
-| `read_content`      | `wiki` read dispatcher + per-page `_wiki_read`      | `tinyassets/api/wiki.py`    |
-| observability (Req 4)| declared level reported in `list` / `inspect`      | `tinyassets/api/universe.py`|
+| Capability          | Surface                                                          | File                        |
+|---------------------|-----------------------------------------------------------------|-----------------------------|
+| `discover_existence`| `universe action=list` (`_action_list_universes`); note-leak safe| `tinyassets/api/universe.py`|
+| `read_metadata`     | `get_status` gate (existing universes) + `inspect` gate; blank-id leak safe | `tinyassets/api/status.py`, `tinyassets/api/universe.py` |
+| `read_content`      | `wiki` read dispatcher + per-page narrowing across `read`/`search`/`since`/`list` | `tinyassets/api/wiki.py`    |
+| observability (Req 4)| declared level reported in `list` / `inspect`                  | `tinyassets/api/universe.py`|
+
+Composition is `legacy_gate AND new_layer` at every surface, so the new layer
+can only narrow. Page-level narrowing is grant-based (authentication alone is not
+authority). `get_status`/`inspect` gate only *existing* universes — a nonexistent
+universe has no metadata to protect, so the not-found diagnostic stays ungated.
 
 ## Proof (section 3 map)
 
-- Per-level regression: an anonymous reader against each of the four levels sees
-  exactly the declared triple (list / status / wiki).
-- Raw-DML forge probe (task 2.4): write a withholding level directly into
-  `universe_rules` (bypassing the public API), then prove each gate withholds —
-  and prove the same probe is RED with the gate removed.
-- Unrecognized-level and corrupt-rules → fail closed.
-- `TINYASSETS_VISIBILITY_STRICT_UNDECLARED` on/off both covered.
+- `tests/test_universe_visibility.py` (52 tests): the fail-closed truth table row
+  by row (blank/null/unrecognized/wrong-type/malformed-json/non-object-metadata/
+  corrupt/undeclared → `CLOSED`); tighten-only composition (inconsistent
+  `public_read=False` + permissive level denied at all three gates); grant
+  exemption; enumeration/metadata/content gates per level; per-page narrowing incl.
+  authenticated-without-grant withheld; sibling-read leaks (search/since/list);
+  note-leak + blank-id-leak; raw-DML forge probes RED without the gate; backfill.
+- Mutation-verified non-vacuous: forcing `visibility_permits`/`universe_visibility`
+  open turns 30 gate tests RED; forcing `page_content_permitted` open turns the
+  page/sibling tests RED.
 - Live first-contact `ui-test` re-run (task 3.2) requires a deployed build +
   browser connector — a verifier/host acceptance step, not runnable in this
   builder lane.
