@@ -20,6 +20,72 @@
 - [x] 1.5 Reclassify the remaining work under `identity-auth-and-access-control` and `universe-lifecycle-and-soul`; remove the obsolete proposed `universe-creation` capability delta.
 - [x] 1.6 Validate the reconciled active change strictly and confirm its residual deltas remain unsynced while implementation tasks are open.
 
+## 1B. Newborn Voice (P0 #1582 — host decision 2026-07-25)
+
+> NUMBERING NOTE: no task 1.14 existed when this lane opened — section 1 ended
+> at 1.6 (verified 2026-07-25, `grep -rn "1\.14" openspec/changes/` returns only
+> unrelated changes). The host's 2026-07-25 decision named "task 1.14: the
+> can-it-speak test", so this lane created it here under that number rather than
+> silently renumbering it into a section titled "Verified Prerequisites".
+>
+> GATE 2.0 RELATIONSHIP: this task grants no authority, resolves no authority
+> bundle, and selects no provider. It changes only how an ALREADY-FAILED turn is
+> reported, strictly on the fail-closed side of 92dd60c5. It is not
+> execution-authority runtime, so it does not open tasks 2.1-4.7 and no 2.x/4.x
+> task is checked below.
+
+- [x] 1.14 Add the can-it-speak test proving a newborn universe answers its founder's first turn, and make a universe with no engine of its own return an actionable setup reply instead of raw provider exhaustion.
+  - DONE (2026-07-25). RED FIRST: every one of the 97 first-contact tests
+    asserted BIRTH; none asserted SPEECH. Against current behavior the founder's
+    opening turn returned
+    `{"error": "Your universe couldn't be reached right now: All providers
+    exhausted for role=writer. Daemon should retry with backoff."}` — no
+    `universe_id`, no path forward. Cause: 92dd60c5 correctly refuses
+    host-credential fallback and nothing provisions a newborn a credential.
+  - FIX: `engine_setup_required_payload` (`tinyassets/api/universe.py`) returns
+    `status: held` / `reason: setup_required` / `universe_id` / `missing:
+    [compute, model_access]` / `note` / `setup_paths`, consumed by the `converse`
+    seam in `tinyassets/universe_server.py`. It carries NO `reply` key — `reply`
+    is what the connector renders verbatim as the universe's own first-person
+    voice, so a platform-authored message travels as `note`, the same split the
+    existing `write_page` / `_BRAIN_WRITE_RELAY_ACTIONS` relays use.
+  - ATTACHMENT PATH VERIFIED, NOT INVENTED: `setup_paths` names only
+    `universe action=set_engine` with `engine_source=byo_api_key`, which
+    `_set_engine_byo_api_key` wires end-to-end (vault `llm_api_key` record +
+    `preferred_writer`). The market path is deliberately OMITTED:
+    `_set_engine_market_rented` records terms only and `config.py:57-62` states
+    the market-matching runtime is post-M1, so naming it would promise a
+    capability that cannot produce a reply today.
+  - DISTINGUISHABILITY (BUG-038/039 not masked): the payload requires BOTH
+    `exc.chain_state is not None` (only router.py's genuine
+    every-provider-failed raise carries FEAT-006 diagnostics; the allowlist /
+    pinned-writer / api-key-policy / no-router raises are bare) AND
+    `not universe_has_assigned_engine(udir)` (vault `llm_subscription` /
+    `llm_api_key` record, OR a non-default `engine_source`). Unreadable vault or
+    config returns True — absence is never inferred from a read failure.
+  - Tests (`tests/test_first_contact.py`, 12 added, 54 pass): held payload +
+    platform-authored (no `reply`) + credentialed-universe exhaustion still raw
+    + non-provider failure still raw + unreadable vault fails safe + single
+    provider call + 3 non-vault engine sources + policy hard-fail keeps its own
+    message + unreadable config fails safe + non-string `engine_source` does not
+    crash. SIX guards mutation-proven (each disabled → its tests go red).
+  - Opposite-provider review: Codex (read-only), TWO `adapt` rounds, all four
+    findings folded with a failing-first test each — (r1) `self_hosted_endpoint`
+    / `market_rented` / `host_daemon` write no vault record; (r1) the allowlist
+    policy hard-fail shares the exception class; (r2) `load_universe_config`
+    degrades a corrupt config to defaults so the claimed config fail-safe never
+    fired; (r2) `engine_source: 7` reached `.strip()` and raised AttributeError
+    inside the failure handler. Full record: `LANE_REPORT.md`.
+  - KNOWN RESIDUAL GAP (Codex r2 finding 1, accepted not fixed): under
+    `TINYASSETS_PIN_WRITER`, a credential-less newborn gets the BARE pinned-writer
+    exhaustion (`router.py`, no `chain_state`), so the discriminator rejects it
+    and the raw error still reaches the founder. Not a production path —
+    `TINYASSETS_PIN_WRITER` appears in no `deploy/` config, no workflow, and no
+    repo variable (`gh variable list` → only `AUTO_FIX_DISABLED`,
+    `WORKOS_REQUIRE_AUTH`), verified 2026-07-25. The clean fix is to attach
+    `chain_state` to that raise in `tinyassets/providers/router.py`, which this
+    lane holds read-only and STATUS's R2-1a lane owns.
+
 ## 2. Execution-Authority Contract Tests
 
 - [ ] 2.0 Obtain opposite-provider APPROVE of provider-specific environment, cloud-chain, auth-home, local-subscription, hardware, and market-grant isolation, or incorporate every required ADAPT finding and have it re-reviewed to acceptance. Tasks 2.1-4.7 MUST NOT begin until this gate is satisfied; planning/spec work only.
@@ -35,6 +101,14 @@
 - [ ] 2.1 Add a requester-owned success test proving a complete requester compute/model bundle permits the universe intelligence to generate a reply which the chatbot relays/renders verbatim.
 - [ ] 2.2 Add an accepted-market success test proving accepted compute and, when separately required, model-access grants permit execution and are recorded as market authority.
 - [ ] 2.3 Add missing and partial authority tests proving birth/binding may complete but no provider is invoked and the result is `held` / `setup_required` with `universe_id`, missing elements, and BYOC/market paths.
+  - NOT SATISFIED by task 1.14, though 1.14 built the envelope this task asserts
+    against (verified 2026-07-25). Three requirements remain open: (a) **no
+    provider is invoked** — 1.14 REACTS to exhaustion, so a provider IS attempted
+    and fails first; pre-empting the invocation needs the 4.3/4.4 authority
+    bundle. (b) **partial** authority (compute without model access, or the
+    reverse) has no representation yet — 1.14 only distinguishes all-or-nothing.
+    (c) the **market** path is absent from `setup_paths` because no market
+    runtime consumes it. Stays gated behind 2.0; left unchecked.
 - [ ] 2.4 Add hostile ambient-credential tests proving project-maintainer, project-founder, and platform-operator credentials, quota, auth homes, cloud chains, hardware, and accounts are never selected for a requester workload.
 - [ ] 2.5 Add routing/fallback tests proving retries can use only providers admitted by the immutable authority bundle and hold when that set is exhausted. This is acceptance coverage for STATUS R2-1a plus task 4.3 and depends on the R2-1a `allowed_providers` boundary.
 - [ ] 2.6 Add phase-boundary tests proving reply generation and learning extraction use the same authority bundle, may select different providers admitted for their respective phases, and never invoke an uncovered provider.
@@ -64,6 +138,14 @@
 - [ ] 4.3 Construct an immutable complete authority bundle and pass only its eligible provider set into the R2-1a selection/fallback boundary. Depends: 4.1, 4.2, and STATUS R2-1a; extend its `allowed_providers` boundary, do not duplicate or replace it.
 - [ ] 4.4 Isolate provider child processes from ambient maintainer credential sources with the allowlisted environment/home/profile boundary. Depends: 2.0 and the reviewed isolation design.
 - [ ] 4.5 Return the structured `held` / `setup_required` envelope without provider invocation when the bundle is absent, partial, or loses all eligible fallbacks. Depends: 4.3 and 4.4.
+  - PARTIAL SHAPE LANDED, TASK NOT DONE (verified 2026-07-25). Task 1.14 built
+    the envelope itself (`engine_setup_required_payload`), matching this
+    change's `identity-auth-and-access-control` delta: `status: held`,
+    `reason: setup_required`, `universe_id`, missing elements, requester-facing
+    setup path, and never a fabricated universe reply. What 4.5 still owes:
+    move it UPSTREAM of provider invocation (1.14 is post-hoc on the exhaustion
+    error), and cover the partial-bundle and lost-all-eligible-fallbacks cases.
+    Extend `engine_setup_required_payload`; do not build a second envelope.
 - [ ] 4.6 Thread the same bundle through universe reply generation and learning extraction; keep the chatbot as relay/renderer only. Depends: 4.3-4.5.
 - [ ] 4.7 Extend the R2-1b result object with redacted per-phase authority class and accepted-market grant linkage without recording secrets. Depends: 4.6 and STATUS R2-1b; extend the provider result object and never use `_last_provider`.
 
@@ -179,6 +261,19 @@
     tests/test_soul_edit.py` → 97 passed. Provider-routing / learning-extraction
     / receipt coverage belongs to the blocked execution-authority tasks
     (2.1-4.7) and is not built here. Verifier runs the full suite.
+  - EXTENDED 2026-07-25 (task 1.14): `pytest tests/test_first_contact.py
+    tests/test_converse_handle.py tests/test_api_universe.py
+    tests/test_credential_fail_closed.py tests/test_credential_vault.py
+    tests/test_s2_engine_assignment.py tests/test_s6_s8_engine_sources.py
+    tests/test_relay_ux_prompts.py tests/test_per_universe_engine_resolution.py
+    tests/test_triage_classify_provider_exhaustion.py
+    tests/test_provider_allowlist.py tests/test_provider_router_diagnostics.py
+    tests/test_providers_call.py` → 251 passed, 1 skipped. `ruff check` clean on
+    the three touched files. Baseline debt NOT introduced by this lane and NOT
+    fixed here: 6 tests fail identically on `origin/main`
+    (`test_universe_server_framing.py` ×3, `test_universe_server_metadata.py`
+    ×2, `test_input_keys_isolation.py` ×1) — verified by re-running them in a
+    detached `origin/main` worktree. They belong to their own lane.
 - [x] 6.2 Re-run strict OpenSpec validation after implementation and before syncing or archiving this change.
   - DONE (2026-07-24): `openspec validate universe-creation --strict` →
     "Change 'universe-creation' is valid".
