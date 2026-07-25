@@ -1138,3 +1138,15 @@ Notes:
 - Scope: coordination/docs only; no runtime behavior
 - Review gate: strict OpenSpec validation and exact coordination diff
 - Ship/abandon: land immediately after current-main checks; no deployment
+
+## 2026-07-24 - created retire-mcp-directory
+
+- Provider: codex-gpt56-mcp-retirement
+- Branch: codex/retire-mcp-directory
+- Lane state: PR open
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-mcp-directory
+- STATUS/Issue/PR: claimed runtime retirement slice in PR #1718, based on merged PR #1688
+- Scope: remove `/mcp-directory*` runtime/catalog/discovery/edge routing, generated mirrors, maintained registrations/guidance, and prove ordinary 404
+- Review gate: red-first app/edge tests, provider-free canonical health, strict OpenSpec, independent architecture/security/diff review
+- Memory/implications: PR #1688; PR #1522 provenance; source-derived canonical hardening remains separately opposite-provider-gated
+- Ship/abandon: ship through a reviewed PR and deploy only after focused runtime/edge/packaging gates; abandon only for an explicit successor that preserves hard removal

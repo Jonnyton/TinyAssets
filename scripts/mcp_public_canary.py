@@ -229,7 +229,11 @@ def assert_five_handles_with_retry(
             _sleep(delay)
 
 
-def probe_result(url: str, timeout: float) -> None:
+def probe_result(
+    url: str,
+    timeout: float,
+    expected_name: str | None = None,
+) -> None:
     """Run the probe. Return None on success; raise ``CanaryError`` on failure.
 
     Importable by layered canary wrappers that need to log outcomes without
@@ -282,12 +286,22 @@ def probe_result(url: str, timeout: float) -> None:
     server_info = result.get("serverInfo") or {}
     if not server_info.get("name"):
         raise CanaryError(1, f"missing serverInfo.name in result from {url}: {result!r}")
+    if expected_name is not None and server_info["name"] != expected_name:
+        raise CanaryError(
+            1,
+            f"serverInfo.name drift from {url}: expected {expected_name!r}, "
+            f"got {server_info['name']!r}",
+        )
 
 
-def probe(url: str, timeout: float) -> None:
+def probe(
+    url: str,
+    timeout: float,
+    expected_name: str | None = None,
+) -> None:
     """CLI-shaped adapter — calls ``probe_result`` and ``_die``s on failure."""
     try:
-        probe_result(url, timeout)
+        probe_result(url, timeout, expected_name=expected_name)
     except CanaryError as exc:
         _die(exc.code, exc.msg)
 
@@ -299,6 +313,8 @@ def main(argv: list[str]) -> int:
                     help=f"request timeout seconds (default {DEFAULT_TIMEOUT})")
     ap.add_argument("--verbose", action="store_true",
                     help="print success line to stdout")
+    ap.add_argument("--assert-name",
+                    help="require an exact MCP serverInfo.name value")
     ap.add_argument("--assert-handles", action="store_true",
                     help="also assert tools/list advertises exactly the "
                          "canonical handle set incl. converse (PR-178 drift "
@@ -310,7 +326,7 @@ def main(argv: list[str]) -> int:
                     help="seconds between handle-assertion retries (default 3)")
     args = ap.parse_args(argv)
 
-    probe(args.url, args.timeout)
+    probe(args.url, args.timeout, expected_name=args.assert_name)
 
     if args.assert_handles:
         try:

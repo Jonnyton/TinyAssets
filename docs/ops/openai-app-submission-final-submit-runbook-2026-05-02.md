@@ -1,5 +1,11 @@
 # OpenAI App Final Submit Runbook - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** The route and submission steps
+> below are a preserved 2026-05-02 snapshot. The sole remote endpoint is
+> `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an ordinary 404.
+> Rebuild the submission packet from the active
+> `reconcile-external-connector-manifests` OpenSpec change.
+
 Purpose: give the final dashboard operator one truthful packet for submitting
 TinyAssets to OpenAI review, without mixing repo-side evidence with host-only
 legal/publisher assertions.

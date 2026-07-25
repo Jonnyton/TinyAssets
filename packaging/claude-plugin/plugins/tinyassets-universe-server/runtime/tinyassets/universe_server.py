@@ -55,12 +55,6 @@ from tinyassets.api.universe import (
 )
 from tinyassets.api.wiki import wiki as _wiki_impl
 from tinyassets.auth.middleware import write_gate_rejection
-from tinyassets.connector_catalog import (
-    DIRECTORY_MCP_PATH,
-    DIRECTORY_TOOL_CATALOG_VERSION,
-    VERSIONED_DIRECTORY_MCP_PATH,
-)
-from tinyassets.directory_server import directory_mcp
 from tinyassets.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
@@ -188,7 +182,7 @@ def _register_structured_tool(
 
 
 mcp = FastMCP(
-    "tinyassets",
+    "TinyAssets",
     instructions=(
         "On each conversation's opening message, relay the user's actual message "
         "through `converse` FIRST and render the universe's `reply` verbatim. "
@@ -413,10 +407,9 @@ def branch_design_guide() -> str:
 # The legacy fat tools below stay registered + callable for one release but
 # are hidden from tools/list and logged as deprecated by the
 # _DeprecatedToolVisibility middleware (see _DEPRECATED_TOOL_NAMES), so
-# existing connectors can migrate; a follow-up change removes them. This
-# router is forward-ported from tinyassets/directory_server.py (the
-# /mcp-directory surface) onto the live /mcp surface; read_graph target=status
-# uses the full (unredacted) status the live operator surface already exposed.
+# existing connectors can migrate; a follow-up change removes them.
+# read_graph target=status uses the full (unredacted) status the live operator
+# surface already exposed.
 
 
 def _unknown_target(handle: str, target: str, allowed: tuple[str, ...]) -> str:
@@ -2009,8 +2002,8 @@ mcp.add_middleware(_DeprecatedToolVisibility())
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 # MCP endpoint discovery (substrate-fix #11 / Family A Phase 1.A)
 # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-# When a browser, recruiter, or fresh AI session GETs /mcp or /mcp-directory
-# without an MCP transport handshake, return discovery metadata explaining
+# When a browser, recruiter, or fresh AI session GETs /mcp without an MCP
+# transport handshake, return discovery metadata explaining
 # what the endpoint is and how to connect via MCP client.
 # MCP clients (POST with JSON-RPC, GET with text/event-stream for SSE leg,
 # or any request with MCP transport/session headers) pass through unchanged.
@@ -2085,7 +2078,7 @@ TinyAssets MCP Server &middot; Streamable HTTP transport (MCP spec) &middot; 202
 
 
 _MCP_DISCOVERY_JSON = {
-    "name": "tinyassets",
+    "name": "TinyAssets",
     "type": "mcp_server_endpoint",
     "transport": "streamable-http",
     "description": (
@@ -2103,71 +2096,6 @@ _MCP_DISCOVERY_JSON = {
         "landing_page": "https://tinyassets.io/",
         "source": "https://github.com/Jonnyton/TinyAssets",
         "builder_profile": "https://github.com/Jonnyton",
-        "directory_endpoint": "https://tinyassets.io/mcp-directory",
-    },
-}
-
-
-# Real tool/resource catalog returned to plain (non-transport) JSON GETs on
-# /mcp-directory, so a technical evaluator can see what the server exposes
-# WITHOUT connecting an MCP client. Distinct from the /mcp descriptor above.
-# Source of truth for the tool list: tinyassets/directory_server.py (the
-# directory_mcp surface). Bump DIRECTORY_TOOL_CATALOG_VERSION there when the
-# chatbot-visible catalog changes; this stays in sync via that constant.
-_MCP_DIRECTORY_JSON = {
-    "name": "tinyassets",
-    "type": "mcp_tool_catalog",
-    "transport": "streamable-http",
-    "built_by": "Jonathan Farnsworth",
-    "description": (
-        "Catalog of the tools and prompts the TinyAssets MCP server exposes. "
-        "This is a read-only directory view for evaluators; connect an MCP "
-        "client to the endpoint below to actually call them."
-    ),
-    "connect": {
-        "mcp_endpoint": "https://tinyassets.io/mcp",
-        "catalog_path": VERSIONED_DIRECTORY_MCP_PATH,
-    },
-    "catalog_version": DIRECTORY_TOOL_CATALOG_VERSION,
-    "tools": [
-        {
-            "name": "read_graph",
-            "summary": "Read TinyAssets graph state without changing it — nodes, "
-            "edges, typed state, scopes, runs, and triggers.",
-        },
-        {
-            "name": "write_graph",
-            "summary": "Create or queue TinyAssets graph state — the write half "
-            "of the graph primitive (nodes, edges, branches).",
-        },
-        {
-            "name": "run_graph",
-            "summary": "Run a TinyAssets graph branch — execute a multi-step "
-            "workflow and stream its results.",
-        },
-        {
-            "name": "read_page",
-            "summary": "Read or search the TinyAssets wiki/commons — bugs, plans, "
-            "concepts, notes, and drafts.",
-        },
-        {
-            "name": "write_page",
-            "summary": "Write or patch a TinyAssets wiki/commons page, including "
-            "filing patch requests into the loop.",
-        },
-    ],
-    "note": (
-        "These five primitives (read/write over graph + page, plus run) are the "
-        "reviewed public directory surface, sourced from "
-        "tinyassets/directory_server.py. The legacy /mcp endpoint exposes a richer "
-        "action-tool surface (universe, extensions, goals, gates, wiki, "
-        "get_status) for custom MCP clients."
-    ),
-    "related": {
-        "landing_page": "https://tinyassets.io/",
-        "source": "https://github.com/Jonnyton/TinyAssets",
-        "builder_profile": "https://github.com/Jonnyton",
-        "mcp_endpoint": "https://tinyassets.io/mcp",
     },
 }
 
@@ -2189,7 +2117,7 @@ def _wants_discovery_html(request) -> bool:  # type: ignore[no-untyped-def]
 
 
 class _MCPDiscoveryMiddleware:
-    """Serve discovery output on non-transport /mcp + /mcp-directory GETs.
+    """Serve discovery output on non-transport canonical /mcp GETs.
 
     Browser-like clients receive HTML. Default curl and JSON probes receive
     compact JSON. FastMCP transport traffic passes through unchanged.
@@ -2206,7 +2134,7 @@ class _MCPDiscoveryMiddleware:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
-        if path not in {"/mcp", "/mcp/", "/mcp-directory", "/mcp-directory/"}:
+        if path not in {"/mcp", "/mcp/"}:
             await self.app(scope, receive, send)
             return
         # Build a Request-like view to inspect headers
@@ -2218,46 +2146,22 @@ class _MCPDiscoveryMiddleware:
             return
         from starlette.responses import HTMLResponse, JSONResponse
 
-        is_directory = path in {"/mcp-directory", "/mcp-directory/"}
         if _wants_discovery_html(request):
             response = HTMLResponse(_MCP_DISCOVERY_HTML)
         else:
-            response = JSONResponse(
-                _MCP_DIRECTORY_JSON if is_directory else _MCP_DISCOVERY_JSON
-            )
+            response = JSONResponse(_MCP_DISCOVERY_JSON)
         await response(scope, receive, send)
 
 
 def create_streamable_http_app() -> Starlette:
-    """Create the production HTTP app with both MCP surfaces.
-
-    `/mcp` preserves the legacy custom-connector surface. `/mcp-directory`
-    remains as the stable directory surface. The versioned directory path is
-    the advertised chatbot-host URL; changing it invalidates host-side cached
-    tool catalogs after substrate schema updates. Both route to the same
-    backend state.
-    """
-    legacy_app = mcp.http_app(path="/mcp", transport="streamable-http")
-    directory_app = directory_mcp.http_app(
-        path=DIRECTORY_MCP_PATH,
-        transport="streamable-http",
-    )
-    versioned_directory_app = directory_mcp.http_app(
-        path=VERSIONED_DIRECTORY_MCP_PATH,
-        transport="streamable-http",
-    )
+    """Create the production HTTP app for canonical `/mcp`."""
+    canonical_app = mcp.http_app(path="/mcp", transport="streamable-http")
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
-                legacy_app.router.lifespan_context(legacy_app),
-            )
-            await stack.enter_async_context(
-                directory_app.router.lifespan_context(directory_app),
-            )
-            await stack.enter_async_context(
-                versioned_directory_app.router.lifespan_context(versioned_directory_app),
+                canonical_app.router.lifespan_context(canonical_app),
             )
             yield
 
@@ -2269,17 +2173,14 @@ def create_streamable_http_app() -> Starlette:
     app = Starlette(
         routes=[
             *starlette_discovery_routes(),
-            *legacy_app.routes,
-            *directory_app.routes,
-            *versioned_directory_app.routes,
+            *canonical_app.routes,
         ],
         lifespan=lifespan,
     )
-    app.state.path = f"/mcp,{DIRECTORY_MCP_PATH},{VERSIONED_DIRECTORY_MCP_PATH}"
+    app.state.path = "/mcp"
     app.state.transport_type = "streamable-http"
     # Substrate-fix #11 / Family A Phase 1.A: serve discovery HTML to
-    # browser-style GETs on /mcp + /mcp-directory; pass MCP transport
-    # requests through unchanged.
+    # browser-style GETs on /mcp; pass MCP transport requests through unchanged.
     from tinyassets.auth.middleware import AuthContextMiddleware
 
     app = AuthContextMiddleware(_MCPDiscoveryMiddleware(app))

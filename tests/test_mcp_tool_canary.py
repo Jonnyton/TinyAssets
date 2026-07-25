@@ -166,7 +166,7 @@ def test_happy_path_accepts_structured_content_when_text_is_preview():
     assert result["universe_id"] == "structured-uni"
 
 
-def test_directory_tool_set_uses_workflow_status_probe():
+def test_canonical_tool_set_uses_workflow_status_probe():
     scripted = ScriptedPost([
         _init_resp(),
         _initialized_notif_resp(),
@@ -176,7 +176,7 @@ def test_directory_tool_set_uses_workflow_status_probe():
         ]),
         _workflow_status_resp(schema_version=1),
     ])
-    result = tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    result = tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert result["schema_version"] == 1
     assert result["universe_id"] == "demo-universe"
     assert scripted.calls[3]["payload"]["params"] == {
@@ -185,7 +185,7 @@ def test_directory_tool_set_uses_workflow_status_probe():
     }
 
 
-def test_directory_probe_accepts_nested_structured_content_result():
+def test_probe_accepts_nested_structured_content_result():
     scripted = ScriptedPost([
         _init_resp(),
         _initialized_notif_resp(),
@@ -197,14 +197,14 @@ def test_directory_probe_accepts_nested_structured_content_result():
             structured_content={
                 "result": {
                     "schema_version": 1,
-                    "universe_id": "directory-uni",
+                    "universe_id": "structured-uni",
                 },
             },
         ),
     ])
-    result = tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+    result = tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert result["schema_version"] == 1
-    assert result["universe_id"] == "directory-uni"
+    assert result["universe_id"] == "structured-uni"
 
 
 def test_main_exit_zero_on_happy_path(monkeypatch, capsys):
@@ -376,7 +376,7 @@ def test_exit_5_when_no_supported_probe_tool_advertised():
         ]),
     ])
     with pytest.raises(tc.ToolCanaryError) as ei:
-        tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+        tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 5
     assert "supported read-only probe" in ei.value.msg
 
@@ -389,7 +389,7 @@ def test_exit_5_when_workflow_status_missing_schema_version():
         _workflow_status_resp(raw_text=json.dumps({"universe_id": "demo"})),
     ])
     with pytest.raises(tc.ToolCanaryError) as ei:
-        tc.run_canary("https://fake/mcp-directory", 5.0, post_fn=scripted)
+        tc.run_canary("https://fake/mcp", 5.0, post_fn=scripted)
     assert ei.value.code == 5
     assert "schema_version" in ei.value.msg
 

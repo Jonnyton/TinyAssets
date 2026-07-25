@@ -15,7 +15,6 @@ REPO = Path(__file__).resolve().parents[1]
 MCP_SERVER_SURFACES = (
     "tinyassets/mcp_server.py",
     "tinyassets/universe_server.py",
-    "tinyassets/directory_server.py",
 )
 
 

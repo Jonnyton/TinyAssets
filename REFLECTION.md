@@ -398,6 +398,20 @@ fresh-host rollback edges found later.
   would have prevented both the unsafe descriptor experiment and the late
   multi-blob ambiguity.
 
+## 2026-07-24 - canonical MCP route retirement
+
+- **What surprised me:** deleting the runtime and edge routes was the easy
+  part; dated submission runbooks and PLAN still looked current enough to send
+  an operator back to the retired product after every focused test was green.
+- **Pattern worth capturing:** a public-route retirement is one transaction
+  across application mounts, edge routing, generated packages, registrations,
+  canaries, current guidance, and architectural truth. Preserve dated evidence,
+  but fence it from execution and record a live red pre-image before deploy.
+- **What I would do differently:** inventory and classify every old-route
+  reference as current, historical, generated, or test-only before the first
+  code edit, then make the operational-guidance boundary part of the initial
+  review brief.
+
 ## 2026-07-24 - epoch-2 operational truth
 
 - **What surprised me:** a fresh worker heartbeat was insufficient evidence
