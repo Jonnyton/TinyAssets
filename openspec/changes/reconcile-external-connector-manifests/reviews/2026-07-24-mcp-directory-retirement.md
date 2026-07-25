@@ -48,6 +48,37 @@ current guidance, exact discovery naming, and historical proof fences. Their
 initial findings were fixed before their approval; approval was not inferred
 from the first pass.
 
+### Post-merge correction
+
+A longer final Opus 5 pass completed after PR #1718 auto-merged and supersedes
+the earlier approval for the proof/spec layer. It confirmed the runtime and
+edge retirement itself, but rejected the production proof because:
+
+- the retired-route probe omitted a Cloudflare-safe `User-Agent`;
+- the Worker deploy asserted a daemon-owned server name before the daemon
+  image deploy could complete;
+- `--assert-handles` still treated `get_status` as optional despite the
+  exact-seven requirement;
+- two as-built scenarios incorrectly coupled Registry generation to runtime
+  handles and described the broad edge binding as no route;
+- two current operator documents retained the deleted files or lowercase
+  public name.
+
+The first production Worker dispatch confirmed the deploy-ownership finding:
+Wrangler deployed successfully, the name assertion exhausted its 60-second
+window, and the retired-route step was skipped. The urgent follow-up adds the
+probe identity, requires all seven handles, moves exact-name proof to
+`deploy-prod`, repairs both canonical and delta spec language, and corrects
+the stale docs. Its red phase produced four focused failures; its green phase
+passed 105 tests, strict OpenSpec validation, and a real public
+`/mcp-directory*` ordinary-404 matrix.
+
+An independent Codex follow-up initially rejected one residual contradiction:
+canary help and `assert_five_handles*` identifiers still described the old
+optional-status contract. After renaming the helpers and making help, callers,
+tests, and canonical as-built requirements agree on exact seven, the follow-up
+returned `APPROVE` and rechecked all seven Opus findings clean.
+
 ## Verification evidence
 
 Fresh local evidence on Windows/Python and Node, 2026-07-24:

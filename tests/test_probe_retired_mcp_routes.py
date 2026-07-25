@@ -130,6 +130,28 @@ def test_retries_transient_url_error_then_succeeds() -> None:
     assert opener.calls == 2
 
 
+def test_requests_identify_the_retirement_probe_to_cloudflare() -> None:
+    class Opener:
+        user_agent = None
+
+        def open(self, request, timeout):
+            self.user_agent = request.get_header("User-agent")
+            return _Response()
+
+    opener = Opener()
+    failures = verify_retired_routes(
+        base_url="https://example.invalid",
+        methods=("GET",),
+        paths=("/mcp-directory",),
+        deadline_seconds=0,
+        request_timeout=1,
+        opener=opener,
+    )
+
+    assert failures == []
+    assert opener.user_agent == "tinyassets-retired-route-probe/1.0"
+
+
 def test_never_starts_a_request_beyond_the_hard_deadline() -> None:
     now = [0.0]
     timeouts: list[float] = []

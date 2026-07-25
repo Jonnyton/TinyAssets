@@ -18,8 +18,8 @@ Exit codes
     field present).
 4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
     exactly the canonical handle set (``read_graph`` / ``write_graph`` /
-    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse``, plus the
-    optional ``get_status`` read — see ``CANONICAL_HANDLES`` below and
+    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse`` /
+    ``get_status`` — see ``CANONICAL_HANDLES`` below and
     ``openspec/specs/live-mcp-connector-surface/spec.md``). This is the
     PR-178 drift guard required by Hard Rule #11 after any
     DNS/tunnel/Worker/connector change.
@@ -61,9 +61,9 @@ _INIT_PAYLOAD = {
     },
 }
 
-# PR-178 + 2026-07-02 relay reshape: the live user-facing surface is exactly
-# these six handles. The canary asserts the deployed tools/list advertises them
-# and nothing beyond them (the get_status read MAY remain). Legacy fat tools are
+# PR-178 + 2026-07-24 canonical convergence: the live user-facing surface is
+# exactly these seven handles. The canary asserts the deployed tools/list
+# advertises all seven and nothing beyond them. Legacy fat tools are
 # dual-registered but hidden from tools/list, so they must NOT appear here.
 # `converse` is the relay handle (chatbot -> universe intelligence); the handle
 # shape is provisional pending host ratification of the design-note open-Q.
@@ -74,9 +74,9 @@ CANONICAL_HANDLES = frozenset({
     "read_page",
     "write_page",
     "converse",
+    "get_status",
 })
-# get_status MAY remain as a read affordance; everything else is drift.
-_ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}
+_ALLOWED_ADVERTISED = CANONICAL_HANDLES
 
 
 def _die(code: int, msg: str) -> None:
@@ -185,7 +185,7 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
     return {t.get("name") for t in tools if isinstance(t, dict) and t.get("name")}
 
 
-def assert_five_handles(url: str, timeout: float) -> None:
+def assert_canonical_handles(url: str, timeout: float) -> None:
     """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
     names = advertised_tool_names(url, timeout)
     missing = CANONICAL_HANDLES - names
@@ -198,14 +198,14 @@ def assert_five_handles(url: str, timeout: float) -> None:
         )
 
 
-def assert_five_handles_with_retry(
+def assert_canonical_handles_with_retry(
     url: str,
     timeout: float,
     retries: int = 5,
     delay: float = 3.0,
     _sleep=time.sleep,
 ) -> None:
-    """``assert_five_handles`` with retries for transient blips.
+    """``assert_canonical_handles`` with retries for transient blips.
 
     Wired into the post-deploy gate, where a single transient ``tools/list``
     failure would otherwise trip a rollback of an otherwise-healthy daemon
@@ -216,7 +216,7 @@ def assert_five_handles_with_retry(
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
         try:
-            assert_five_handles(url, timeout)
+            assert_canonical_handles(url, timeout)
             return
         except CanaryError as exc:
             if attempt >= attempts:
@@ -330,7 +330,7 @@ def main(argv: list[str]) -> int:
 
     if args.assert_handles:
         try:
-            assert_five_handles_with_retry(
+            assert_canonical_handles_with_retry(
                 args.url,
                 args.timeout,
                 retries=args.assert_handles_retries,
