@@ -1,7 +1,7 @@
 # Paid-market Track E Wave 2 transport lane report
 
-Date: 2026-07-24 PT  
-Branch: `codex/osx-paid-market-transport`  
+Date: 2026-07-24 PT
+Branch: `codex/osx-paid-market-transport`
 OpenSpec change: `paid-market-track-e-wave-2-transport`
 
 ## Outcome
