@@ -47,6 +47,7 @@ The canonical chatbot connector is the acceptance surface. Agent Village is defe
 27. `record_remix` accepts arbitrary parent/child branch IDs plus caller-selected attribution actors and writes edges/credits without branch authority. `get_provenance` traverses those edges and exposes private branch IDs, actors, credit shares, and counts without visibility filtering.
 28. Scheduler/subscription create actions do not authorize the target branch and persist caller-supplied `owner_actor`; list actions accept any owner or blank-for-all, while exact pause/unpause/remove actions trust the same caller-supplied owner.
 29. Outcome record/list/get actions accept arbitrary run IDs and expose outcome evidence/payloads without run/branch authority. This belongs to the separate outcome-and-gate-event lane, not branch authorship.
+30. A request-only branch gate would break 24/7 private scheduled/universe-loop execution. Current schedule rows carry a caller-selectable owner and universe soul bundles carry only a branch ID, so neither is a trustworthy offline authority receipt. Epoch-1 in-node enqueue correctly stays public-only for the same reason.
 
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
@@ -71,6 +72,7 @@ It does not own:
 - `run_branch` implementation in `tinyassets/api/runs.py`;
 - branch evaluation/version implementation in `tinyassets/api/evaluation.py`;
 - branch-adjacent goal binding, canonical/selector binding, gate/conformance attachment, private-filtered projection, and dry-inspection implementation in `tinyassets/api/market.py`, `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, and any minimal storage validation seam;
+- scheduled/universe-loop binding receipts and offline execution authority, tracked as `harden-background-branch-execution-authority` with active universe-owner coordination;
 - generic outcome record/read authority plus gate-event attest/verify/dispute/retract actor and lifecycle authority, tracked as the sequential `harden-outcome-and-gate-event-authority` lane; this change owns only cited-branch public-parent validation and privacy-safe projection;
 - legacy action-registry migration;
 - Agent Village.

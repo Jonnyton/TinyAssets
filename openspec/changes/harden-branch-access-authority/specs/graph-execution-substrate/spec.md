@@ -193,6 +193,22 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 - **WHEN** a caller supplies another actor's owner or an exact foreign schedule/subscription ID to list, pause, unpause, unschedule, or unsubscribe
 - **THEN** the server uses only the request subject and returns the same empty/not-found envelope as an unknown row without exposing target metadata
 
+#### Scenario: Valid private branch runs after every human host is offline
+- **WHEN** an authenticated branch author binds their private branch to a schedule or universe loop and the server later fires it without a live request
+- **THEN** execution consumes the server-owned binding authority, revalidates the target author, and may run without environment or caller actor fallback
+
+#### Scenario: Legacy or forged background binding lacks authenticated authority
+- **WHEN** a schedule, subscription, universe loop, queue payload, or branch-authored input names a private branch without a valid server-owned author binding
+- **THEN** execution fails before provider work, run-row creation, or branch-derived output
+
+#### Scenario: Public background branch remains runnable
+- **WHEN** a valid schedule or universe loop targets a public branch
+- **THEN** zero-host execution remains available subject to the existing universe/scheduler and action-scope gates
+
+#### Scenario: Epoch-one in-node enqueue targets a private branch
+- **WHEN** an executing node tries to enqueue a private target while the task schema carries no authenticated authority receipt
+- **THEN** the existing public-only refusal remains in force
+
 #### Scenario: Caller dry-inspects a foreign private branch
 - **WHEN** a caller requests `dry_inspect_node` or `dry_inspect_patch` for another author's private branch
 - **THEN** the response matches the missing-branch envelope and exposes no graph, node, validation, or patch-preview material

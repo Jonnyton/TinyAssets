@@ -32,6 +32,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 - Implementing `run_branch` authority in this write-set; a sibling change consumes the helper.
 - Implementing branch-version/evaluation authority in `tinyassets/api/evaluation.py`; a sibling change consumes the read/author helpers and coordinates run-linked evidence with the run sibling.
 - Implementing branch-adjacent goal binding, global canonical/selector binding, gate/conformance attachment, leaderboard/gate projection, or dry-inspection authority in this write-set; a third sibling consumes the same helpers and coordinates version execution with the run sibling.
+- Implementing scheduled or universe-loop binding/execution authority in this write-set; a background-authority sibling coordinates the active universe owner, scheduler storage, and the run executor.
 - Defining generic gate-event attest/verify/dispute/retract authority; a separate outcome-gate change owns server-bound event actors and lifecycle permissions, while this change covers only cited-branch visibility.
 - Changing the public MCP handle set or response schema.
 - Making filesystem scans constant-time or claiming timing-side-channel resistance.
@@ -108,13 +109,25 @@ Remix recording authorizes the parent as readable and the child as author-owned 
 
 Alternative: treat publication or possession of a version ID as read authority. Rejected because published versions retain private branch code and provenance, and their IDs are enumerable capability-shaped strings without capability semantics.
 
-### 8. Delivery is split by collision and module ownership
+### 8. Zero-host background execution consumes persisted authenticated authority
+
+Direct MCP branch/version runs authorize with the live credential-validated request subject. Scheduled runs, subscriptions, and universe loops have no live request at fire time, so their authority is established earlier: the authenticated branch author binds the exact branch/version to the schedule or universe and the server persists `authorized_by`, target context, and integrity/version metadata in its owned record. Caller-supplied `owner_actor`, environment identity, branch-authored inputs, and queue payload fields cannot create or alter that authority.
+
+At fire/claim time, the worker consumes only that server-owned record and revalidates that the target still exists and is public or remains authored by `authorized_by`. A missing, legacy-unreceipted, malformed, mismatched, or revoked private binding fails before provider work, run-row creation, or target-derived output. Public background execution remains available. An author-owned private branch remains runnable 24/7 after a valid binding even with every human host offline.
+
+The existing epoch-1 in-node enqueue path remains public-only because its task row carries no authenticated authority receipt. It MUST NOT be broadened to private targets until the distributed-execution owner adds an equivalent server-bound receipt.
+
+Alternative: require a live request subject for every run. Rejected because it breaks the project's zero-host-online contract. Alternative: trust the schedule's actor string or universe ID alone. Rejected because caller-controlled owner fields and universe collaboration do not prove private branch authority.
+
+### 9. Delivery is split by collision and module ownership
 
 Wave 1 implements request-subject listing/search, ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py` plus the narrow `daemon_server.search_nodes(viewer=...)` seam. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
 
-The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py`: both live-branch and immutable-version execution must authorize the parent branch before provider work. `goals action=run_canonical` remains safe only by delegating to that guarded version path. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling.
+The sibling `harden-background-branch-execution-authority` owns universe-loop and scheduler/subscription binding receipts in `tinyassets/api/universe.py`, `tinyassets/soul.py`, the scheduler seams in `tinyassets/api/runtime_ops.py`, and `tinyassets/scheduler.py`. It coordinates with the active universe-creation owner and lands before the run executor consumes those receipts.
 
-The sibling `harden-branch-adjacent-access-authority` owns the narrow action seams in `tinyassets/api/market.py`, `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, and any minimal `tinyassets/daemon_server.py` canonical/selector validation seam. It covers goal binding, global canonical/selector public-parent enforcement, gate/conformance attachments and reads, request-subject Goal/gate/quality/archive/common-node projections, gate-event cited-branch visibility, remix/provenance, scheduler/subscription ownership, and dry inspection. `quality_leaderboard.py`, `canonical_dispatch.py`, `selector_dispatch.py`, scheduler/attribution storage, and gate-event storage are read dependencies unless RED tests prove a minimal owned change is required; any write-set expansion must pass claim collision checks first. A separate `harden-outcome-and-gate-event-authority` lane follows it in the same module and owns outcome/run authority plus server-bound gate-event actors and attest/verify/dispute/retract permissions.
+The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and the narrow execution gate in `tinyassets/runs.py`: direct live-branch/version execution uses the request subject, while trusted background execution consumes the server-owned binding receipt. `goals action=run_canonical` remains safe only by delegating to that guarded version path. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling.
+
+The sibling `harden-branch-adjacent-access-authority` owns the narrow action seams in `tinyassets/api/market.py`, the dry-inspection seam in `tinyassets/api/runtime_ops.py`, `tinyassets/api/engine_helpers.py`, `tinyassets/api/extensions_leaderboard_actions.py`, and any minimal `tinyassets/daemon_server.py` canonical/selector validation seam. It covers goal binding, global canonical/selector public-parent enforcement, gate/conformance attachments and reads, request-subject Goal/gate/quality/archive/common-node projections, gate-event cited-branch visibility, remix/provenance, and dry inspection. `quality_leaderboard.py`, `canonical_dispatch.py`, `selector_dispatch.py`, attribution storage, and gate-event storage are read dependencies unless RED tests prove a minimal owned change is required; any write-set expansion must pass claim collision checks first. A separate `harden-outcome-and-gate-event-authority` lane follows it in the same module and owns outcome/run authority plus server-bound gate-event actors and attest/verify/dispute/retract permissions.
 
 Before either sibling implements a legacy action, it re-checks the action's current MCP reachability after `retire-legacy-live-mcp-tools`. If an action is gone from every registered/compatibility route, deletion plus an absence regression satisfies the public-boundary requirement; dead code is not hardened for its own sake. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
 
@@ -134,10 +147,11 @@ Before either sibling implements a legacy action, it re-checks the action's curr
 3. Implement Wave 1 reads, wiki projections, and lineage with RED-first tests.
 4. Implement Wave 2 source reuse and clone gates with no-partial-copy tests.
 5. Coordinate action-scope migration, then implement Wave 3 mutation/deletion authority and force separation.
-6. Land the separately claimed `run_branch` and branch-evaluation/version siblings using the same helpers.
-7. Land the separately claimed branch-adjacent goals/gates/projection sibling using the same helpers and the guarded version-execution path.
-8. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
-9. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
+6. Land the background binding-authority sibling after its active universe/scheduler owners release, then land the direct/background run executor gate.
+7. Land the separately claimed branch-evaluation/version sibling using the same helpers.
+8. Land the separately claimed branch-adjacent goals/gates/projection sibling using the same helpers and the guarded version-execution path.
+9. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
+10. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
 
 Rollback reverts the unactivated implementation commits. Once activated, rollback must not re-enable unauthorized reads, reuse, mutation, deletion, or execution; a forward fix or fail-closed disablement is required.
 
