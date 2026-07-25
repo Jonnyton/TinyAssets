@@ -14,7 +14,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Audit full product vision completion** — map compute/training/inference, Zapier outcomes, organizations/company brains, situational compliance, scale/concurrency, BYOC, and maker hardware to current proof and blockers | docs/audits/2026-07-25-full-product-vision-completion-audit.md; STATUS.md; .agents/worktrees.md | active OpenSpec/worktree/PR evidence read-only; no runtime | claimed:codex-gpt56-full-vision ACTIVE 2026-07-25 |
+| **Audit full product vision completion** — 34-outcome proof matrix approved by three Codex domain reviews; draft PR #1779 | docs/audits/2026-07-25-full-product-vision-completion-audit.md; STATUS.md; .agents/worktrees.md | active OpenSpec/worktree/PR evidence read-only; no runtime | host-review |
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |

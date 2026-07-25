@@ -1298,9 +1298,9 @@ Notes:
 
 - Provider: codex-gpt56-full-vision
 - Branch: codex/full-product-vision-audit-20260725
-- Lane state: claimed; read-only evidence audit
+- Lane state: host-review; read-only evidence audit
 - Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
-- STATUS/Issue/PR: STATUS Work row; draft PR after independent review
+- STATUS/Issue/PR: STATUS Work row; draft PR #1779
 - PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
 - Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
@@ -1308,4 +1308,4 @@ Notes:
 - Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
 - Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
 - Ship/abandon: ship a freshness-stamped evidence matrix after independent review; no implementation authority or runtime edits
-- Foldback: push audit branch and draft PR; promote gaps through separate OpenSpec/STATUS claims only
+- Foldback: branch pushed; draft PR #1779 open; promote gaps through separate OpenSpec/STATUS claims only
