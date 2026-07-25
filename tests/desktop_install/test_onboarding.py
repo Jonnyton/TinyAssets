@@ -30,6 +30,7 @@ class FakeOrigin:
     def __init__(self, onboarding, *, register_offline: bool = False) -> None:
         self.onboarding = onboarding
         self.register_offline = register_offline
+        self.refreshed_token = "refresh-secret"
         self.expected_nonce = ""
         self.registrations: list[dict[str, object]] = []
 
@@ -50,7 +51,7 @@ class FakeOrigin:
         assert refresh_token == "refresh-secret"
         return self.onboarding.TokenSet(
             access_token="refreshed-access",
-            refresh_token="refresh-secret",
+            refresh_token=self.refreshed_token,
             subject="acct-1",
             issuer="https://tinyassets.io",
             audience=("tinyassets-desktop",),
@@ -178,6 +179,25 @@ def test_expired_or_rejected_refresh_stops_online_advertising(tmp_path: Path) ->
     assert json.loads((tmp_path / "onboarding.json").read_text())["host_id"] == (
         attempt.host_id
     )
+
+
+def test_recovery_persists_a_rotated_refresh_token(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    service, origin, secrets = _service(onboarding, tmp_path, register_offline=True)
+    attempt = service.begin_authorization()
+    origin.expected_nonce = attempt.nonce
+    service.complete_authorization(
+        state=attempt.state,
+        code="authorization-code",
+        redirect_uri="http://127.0.0.1:43119/callback",
+    )
+
+    origin.register_offline = False
+    origin.refreshed_token = "rotated-refresh-secret"
+    result = service.recover_pending_registration()
+
+    assert result.status == "online"
+    assert list(secrets.values.values()) == ["rotated-refresh-secret"]
 
 
 def test_each_clean_machine_gets_a_distinct_host_identity(tmp_path: Path) -> None:

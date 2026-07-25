@@ -286,6 +286,12 @@ class UpdateService:
         if not lock.acquired:
             raise UpdateInProgress("another desktop update is already in progress")
         try:
+            if staged.artifact.name != staged.manifest.artifact_name:
+                raise UpdateVerificationError("staged artifact name does not match")
+            self._verifier.verify_artifact(
+                staged.manifest,
+                staged.artifact.read_bytes(),
+            )
             previous = _read_json(self._current_path) if self._current_path.exists() else None
             release_artifact = self._release_artifact(
                 staged.manifest.version, staged.manifest.artifact_name
@@ -330,11 +336,17 @@ class UpdateService:
     def recover_incomplete_update(self) -> UpdateResult | None:
         if not self._transaction_path.exists():
             return None
-        transaction = _read_json(self._transaction_path)
-        if transaction.get("status") == "activated":
-            return self._rollback(transaction, reason="recovered interrupted activation")
-        self._transaction_path.unlink(missing_ok=True)
-        return None
+        lock = acquire_singleton_lock(self._lock_path)
+        if not lock.acquired:
+            raise UpdateInProgress("another desktop update is already in progress")
+        try:
+            transaction = _read_json(self._transaction_path)
+            return self._rollback(
+                transaction,
+                reason="recovered interrupted update transaction",
+            )
+        finally:
+            release_singleton_lock(lock)
 
     def _verify_compatibility(self, manifest: UpdateManifest) -> None:
         if manifest.product != self._product:

@@ -250,6 +250,16 @@ class OnboardingService:
             self._write_state(**(state | {"status": "authorization_required"}))
             return self._result_from_state(self._read_state())
         self._validate_tokens(tokens, expected_nonce=None)
+        if tokens.subject != state["account_id"]:
+            raise AuthorizationValidationError(
+                "refreshed token account does not match pending registration"
+            )
+        if tokens.refresh_token != refresh_token:
+            self._credentials.save_refresh_token(
+                account_id=tokens.subject,
+                host_id=str(state["host_id"]),
+                refresh_token=tokens.refresh_token,
+            )
         return self._register_or_defer(
             tokens=tokens,
             host_id=str(state["host_id"]),

@@ -99,6 +99,19 @@ def test_tampered_artifact_is_rejected_before_activation(updater, tmp_path: Path
     assert service.current_version() == "1.0.0"
 
 
+def test_staged_artifact_is_reverified_at_activation(updater, tmp_path: Path) -> None:
+    module, service, key = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"expected release")
+    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged.artifact.write_bytes(b"tampered after staging")
+
+    with pytest.raises(module.UpdateVerificationError, match="checksum"):
+        service.apply_staged(staged, health_check=lambda _: True)
+
+    assert service.current_version() == "1.0.0"
+
+
 def test_failed_health_check_rolls_back_and_records_evidence(
     updater, tmp_path: Path
 ) -> None:
@@ -132,6 +145,38 @@ def test_crash_after_activation_is_recovered_on_next_start(
             staged,
             health_check=lambda _: (_ for _ in ()).throw(SimulatedProcessCrash()),
         )
+
+    recovered = service.recover_incomplete_update()
+
+    assert recovered is not None
+    assert recovered.status == "rolled_back"
+    assert service.current_version() == "1.0.0"
+
+
+def test_prepared_transaction_rolls_back_conservatively(
+    updater, tmp_path: Path
+) -> None:
+    _, service, key = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"candidate release")
+    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    current_path = service.install_root / "current.json"
+    previous = json.loads(current_path.read_text())
+    current_path.write_text(
+        json.dumps({"version": "1.1.0", "artifact": str(staged.artifact)}),
+        encoding="utf-8",
+    )
+    (service.install_root / "update-transaction.json").write_text(
+        json.dumps(
+            {
+                "status": "prepared",
+                "candidate_version": "1.1.0",
+                "candidate_artifact": str(staged.artifact),
+                "previous": previous,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     recovered = service.recover_incomplete_update()
 
