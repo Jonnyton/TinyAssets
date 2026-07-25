@@ -585,8 +585,8 @@ def _wiki_read(
             "path": rel,
             "required_permission": "read",
             "detail": (
-                "This page's declared visibility withholds its content from an "
-                "unauthenticated reader."
+                "This page's declared visibility withholds its content from a "
+                "reader without a grant on this universe."
             ),
         })
 

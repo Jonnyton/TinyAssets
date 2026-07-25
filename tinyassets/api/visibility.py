@@ -79,6 +79,14 @@ CLOSED = PRIVATE
 #: Rules-metadata key that stores the explicit declared level name.
 LEVEL_METADATA_KEY = "visibility_level"
 
+#: Default level the creation path records when the creator does not choose one.
+#: A host-decision knob (design 1.3): `public` preserves the platform's
+#: "public-draft by default" stance (Hard Rule #12) and today's `public_read=1`
+#: default; a creator may pass an explicit level to override. The delta spec
+#: mandates only that creation write an *explicit* level (so undeclared rows stop
+#: being produced), not a specific value.
+DEFAULT_CREATE_VISIBILITY = "public"
+
 #: Page frontmatter keys a page may use to narrow its own content visibility.
 _PAGE_VISIBILITY_KEYS = ("visibility", "content_visibility")
 
@@ -339,13 +347,15 @@ def backfill_universe_visibility(
     Idempotent. For each universe with no explicit ``visibility_level`` yet,
     derive it from the current effective ``public_read`` bit (``True`` ->
     ``public``, ``False`` -> ``private``) so **no universe changes visibility**
-    — it only becomes *declared*. This is what makes
-    ``TINYASSETS_VISIBILITY_STRICT_UNDECLARED`` safe to switch on afterward:
-    an undeclared state then means genuine corruption, and fails closed.
+    — it only becomes *declared*. This is the migration that keeps the strict
+    fail-closed default safe: after it runs, an undeclared state means genuine
+    corruption, and fails closed. :func:`run_visibility_startup_gate` runs this
+    at boot and refuses readiness if any undeclared row survives.
 
     Returns a map of universe_id -> declared level name for the ones written.
     """
     from tinyassets.daemon_server import (
+        ensure_universe_registered,
         ensure_universe_rules,
         get_universe_rules,
     )
@@ -357,6 +367,9 @@ def backfill_universe_visibility(
         uid = (uid or "").strip()
         if not uid:
             continue
+        # A bare universe dir may have no `universes` row yet; register it first
+        # so the rules-row FK is satisfied (universe_rules -> universes).
+        ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
         rules = ensure_universe_rules(base, universe_id=uid)
         metadata = rules.get("metadata") if isinstance(rules, dict) else None
         if isinstance(metadata, dict) and metadata.get(LEVEL_METADATA_KEY):
@@ -387,3 +400,68 @@ def _discover_universe_ids() -> list[str]:
             continue
         ids.append(child.name)
     return ids
+
+
+def is_declared(universe_id: str) -> bool:
+    """Whether a universe carries an explicit, recognized ``visibility_level``.
+
+    This is the *declaration* predicate — distinct from the *effective* level.
+    An explicitly-``private`` universe is declared (its level resolves to
+    ``CLOSED`` by intent); an undeclared universe is NOT declared (its level
+    resolves to ``CLOSED`` by fail-closed default). The startup gate uses this
+    to tell "correctly private" from "un-migrated undeclared".
+    """
+    rules = _read_rules(universe_id)
+    if not isinstance(rules, dict):
+        return False
+    meta = rules.get("metadata")
+    if not isinstance(meta, dict) or LEVEL_METADATA_KEY not in meta:
+        return False
+    declared = meta[LEVEL_METADATA_KEY]
+    return isinstance(declared, str) and parse_level(declared) is not None
+
+
+class VisibilityStartupGateError(RuntimeError):
+    """Raised when undeclared universes survive the boot backfill."""
+
+
+def run_visibility_startup_gate() -> dict[str, Any]:
+    """Enforceable boot preflight: declare every universe, refuse readiness if any
+    stays undeclared.
+
+    The strict fail-closed resolver means an *un-migrated* deployment would serve
+    every legacy undeclared universe as ``CLOSED`` — a silent availability
+    regression. Prose "run the backfill" instructions are a config-text guard,
+    not a runtime gate. This runs the idempotent, deterministic backfill (it
+    derives each level from ``public_read`` — safe derivation, not policy
+    invention) at boot, then verifies no undeclared universe remains. If one does
+    (e.g. a corrupt/unreadable rules row the backfill could not declare), it
+    raises loudly with the exact remediation rather than serving wrongly-closed
+    universes.
+
+    Returns a summary dict; raises :class:`VisibilityStartupGateError` on an
+    undeclared remainder.
+    """
+    declared = backfill_universe_visibility()
+    remaining = [uid for uid in _discover_universe_ids() if not is_declared(uid)]
+    summary: dict[str, Any] = {
+        "declared_now": declared,
+        "declared_count": len(declared),
+        "undeclared_remaining": remaining,
+    }
+    if remaining:
+        raise VisibilityStartupGateError(
+            "visibility startup gate: "
+            f"{len(remaining)} universe(s) remain undeclared after the boot "
+            f"backfill and would be served CLOSED: {remaining[:10]}"
+            f"{'…' if len(remaining) > 10 else ''}. Inspect the universe_rules "
+            "store for corruption, then re-run "
+            "`python -c \"from tinyassets.api.visibility import "
+            "backfill_universe_visibility as b; print(b())\"` against the data "
+            "dir before serving."
+        )
+    logger.info(
+        "visibility startup gate: %d universe(s) declared at boot; none undeclared.",
+        len(declared),
+    )
+    return summary

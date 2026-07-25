@@ -5502,9 +5502,25 @@ def _action_create_universe(
     universe_id: str = "",
     text: str = "",
     branch_def_id: str = "",
+    visibility: str = "",
     **_kwargs: Any,
 ) -> str:
     base = _base_path()
+    # Creation-time visibility declaration: a new universe must be born with an
+    # explicit level so undeclared rows stop being produced (undeclared fails
+    # closed). The creator may choose a level; default is the host-knob
+    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
+    # create loudly rather than silently leaving the universe undeclared.
+    from tinyassets.api import visibility as _visibility
+
+    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
+    if _visibility.parse_level(create_level) is None:
+        return json.dumps({
+            "error": (
+                f"Invalid visibility {create_level!r}; expected one of "
+                f"{sorted(_visibility.LEVELS)}."
+            ),
+        })
     # universe-creation D2: universe_id is optional. When absent, generate one
     # opaque immutable serial (u- + lowercase ULID). Provided ids are still
     # accepted (dev / existing-universe operations).
@@ -5575,19 +5591,25 @@ def _action_create_universe(
 
         # D0a founder-grant-on-create: the authenticated founder OWNS the
         # universe they create (admin grant) — the mechanism that makes the
-        # per-universe write boundary real. Ownership is orthogonal to
-        # visibility: we do NOT touch public_read, so the universe stays
-        # publicly readable by default. A dev/no-auth (anonymous) create
-        # seeds no grant, so local dev-mode creates keep working.
-        # Register in the universes index so a founder universe has a
-        # universes + universe_rules row (not just an ACL grant) — home
-        # resolution + reset rely on a consistent registry.
+        # per-universe write boundary real. Ownership (ACL grant) stays
+        # orthogonal to visibility (the declared level). Register in the
+        # universes index so a founder universe has a universes + universe_rules
+        # row (not just an ACL grant) — home resolution + reset rely on a
+        # consistent registry.
         try:
             from tinyassets.daemon_server import ensure_universe_registered
 
             ensure_universe_registered(base, universe_id=uid, universe_path=udir)
         except Exception:  # noqa: BLE001 - registry is best-effort at create
             logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
+
+        # Declare the universe's visibility explicitly at birth (both the explicit
+        # `create_universe` action and the converse/first-contact auto-birth route
+        # through here), so no universe is ever produced undeclared. This is on
+        # the critical path: a failure rolls the partial create back via the
+        # outer except, keeping create atomic.
+        _visibility.set_universe_visibility(uid, create_level)
+        result["visibility"] = create_level
 
         founder = permissions.current_actor_id()
         if permissions.is_authenticated_request():
