@@ -522,7 +522,7 @@ def test_running_guard_treats_missing_epoch2_store_as_no_active_claim(
     assert cw._queue_has_running_branch_task(universe) is False
 
 
-def test_running_guard_treats_partial_epoch2_schema_as_unavailable(
+def test_running_guard_fails_closed_for_partial_epoch2_schema(
     tmp_path,
     monkeypatch,
 ):
@@ -542,7 +542,7 @@ def test_running_guard_treats_partial_epoch2_schema_as_unavailable(
         )
         conn.commit()
 
-    assert cw._queue_has_running_branch_task(universe) is False
+    assert cw._queue_has_running_branch_task(universe) is True
 
 
 def test_epoch2_wakeup_stays_inert_until_daemon_claim_consumer_exists(
@@ -641,6 +641,40 @@ def test_has_pickable_branch_task_leaves_other_daemon_epoch2_work_pending(
         tmp_path,
         directed_daemon_id=other_daemon["daemon_id"],
         directed_soul_hash=other_daemon["soul_hash"],
+    )
+
+    assert cw._has_pickable_branch_task(universe) is False
+
+
+def test_epoch2_capacity_probe_does_not_reselect_v1_for_other_daemon(
+    tmp_path,
+    monkeypatch,
+):
+    from tinyassets.branch_tasks import BranchTask, append_task
+
+    universe, runtime_daemon, _runtime = _seed_epoch2_worker_capacity(
+        tmp_path,
+        monkeypatch,
+    )
+    configured_daemon = daemon_registry.create_daemon(
+        tmp_path,
+        display_name="Configured V1 Worker",
+        created_by="actor-a",
+        soul_text="Retain the subprocess dispatcher identity.",
+    )
+    (universe / "dispatcher_config.yaml").write_text(
+        f"active_daemon_id: {configured_daemon['daemon_id']}\n",
+        encoding="utf-8",
+    )
+    append_task(
+        universe,
+        BranchTask(
+            branch_task_id="v1-directed-runtime",
+            branch_def_id="branch-1",
+            universe_id=universe.name,
+            trigger_source="owner_queued",
+            directed_daemon_id=runtime_daemon["daemon_id"],
+        ),
     )
 
     assert cw._has_pickable_branch_task(universe) is False
@@ -930,7 +964,7 @@ def test_running_guard_protects_active_v2_claim_without_runtime_env(
     assert cw._queue_has_running_branch_task(universe) is True
 
 
-def test_supervisor_recovers_expired_v2_claim_before_wakeup_decision(
+def test_supervisor_does_not_recover_expired_v2_claim_while_child_is_alive(
     tmp_path,
     monkeypatch,
 ):
@@ -1007,12 +1041,12 @@ def test_supervisor_recovers_expired_v2_claim_before_wakeup_decision(
         sleep_fn=sleep_fn,
     )
 
-    assert spawned[0].terminate_called is True
-    recovered = Epoch2BranchTaskAdapter(tmp_path).get(
+    assert spawned[0].terminate_called is False
+    observed = Epoch2BranchTaskAdapter(tmp_path).get(
         running["branch_task_id"],
     )
-    assert recovered is not None
-    assert recovered.status == "pending"
+    assert observed is not None
+    assert observed.status == "running"
 
 
 def test_supervisor_does_not_restart_while_current_worker_has_active_v2_claim(

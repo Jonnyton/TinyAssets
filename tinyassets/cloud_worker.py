@@ -73,6 +73,7 @@ import subprocess
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -607,10 +608,6 @@ def _queue_has_running_branch_task(universe: Path) -> bool:
         from tinyassets.storage import data_dir
 
         adapter = Epoch2BranchTaskAdapter(data_dir())
-        adapter.recover_expired(
-            universe_id=universe.name,
-            worker_id=_worker_id(),
-        )
         return adapter.has_active_claim(
             universe_id=universe.name,
             worker_id=_worker_id(),
@@ -750,11 +747,15 @@ def _has_pickable_branch_task(universe: Path) -> bool:
         if capacity is None:
             return False
         epoch2_adapter, worker = capacity
-        config.active_daemon_id = worker["daemon_id"]
+        epoch2_config = replace(
+            config,
+            active_daemon_id=worker["daemon_id"],
+        )
         return select_next_task(
             universe,
-            config=config,
+            config=epoch2_config,
             epoch2_adapter=epoch2_adapter,
+            queue_epochs=frozenset({2}),
         ) is not None
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: pending BranchTask check failed")

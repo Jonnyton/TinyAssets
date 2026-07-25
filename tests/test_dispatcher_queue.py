@@ -373,12 +373,21 @@ def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
         now_iso="2026-07-24T08:00:02+00:00",
         epoch2_adapter=adapter,
     )
+    epoch2_only = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+        epoch2_adapter=adapter,
+        queue_epochs=frozenset({2}),
+    )
 
     assert legacy_selected is not None
     assert legacy_selected.branch_task_id == "v1-host"
     assert v2_selected is not None
     assert v2_selected.branch_task_id == committed["branch_task_id"]
     assert getattr(v2_selected, "queue_epoch") == 2
+    assert epoch2_only is not None
+    assert epoch2_only.branch_task_id == committed["branch_task_id"]
     assert read_queue(universe_dir)[0].status == "pending"
     assert adapter.get(committed["branch_task_id"]).status == "pending"
 
@@ -1219,7 +1228,17 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     assert "stubbed" in resp["tier_status"]["goal_pool"]
 
 
-def test_queue_list_merges_epoch2_without_exposing_request_text(server_base):
+def test_queue_list_merges_epoch2_without_exposing_request_text(
+    server_base,
+    monkeypatch,
+):
+    import tinyassets.branch_tasks_v2 as branch_tasks_v2
+
+    monkeypatch.setattr(
+        branch_tasks_v2,
+        "EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
     from tinyassets.api.universe import _action_queue_list
 
     base, uid = server_base
@@ -1465,7 +1484,17 @@ def test_queue_list_restricts_exact_unscoped_integrity_count_to_admin(
     assert admin_response["unscoped_invalid_count"] == 1
 
 
-def test_queue_list_capacity_is_specific_to_directed_daemon(server_base):
+def test_queue_list_capacity_is_specific_to_directed_daemon(
+    server_base,
+    monkeypatch,
+):
+    import tinyassets.branch_tasks_v2 as branch_tasks_v2
+
+    monkeypatch.setattr(
+        branch_tasks_v2,
+        "EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
     from tinyassets.api.universe import _action_queue_list
     from tinyassets.daemon_registry import (
         create_daemon,

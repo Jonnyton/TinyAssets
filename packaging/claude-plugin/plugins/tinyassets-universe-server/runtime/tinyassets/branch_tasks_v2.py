@@ -259,18 +259,10 @@ class Epoch2BranchTaskAdapter:
             )
         )
 
-    def recover_expired(
-        self,
-        *,
-        universe_id: str = "",
-        worker_id: str = "",
-    ) -> list[Epoch2BranchTask]:
+    def recover_expired(self) -> list[Epoch2BranchTask]:
         return [
             _as_epoch2_task(row)
-            for row in self._store.recover_expired_v2_tasks(
-                universe_id=universe_id,
-                worker_id=worker_id,
-            )
+            for row in self._store.recover_expired_v2_tasks()
         ]
 
     def maintain_quarantine(

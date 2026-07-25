@@ -53,7 +53,8 @@ def test_parse_iso_to_epoch_returns_none_on_garbage():
 # ── _compute_supervisor_liveness — empty queue ─────────────────────────────
 
 
-def test_empty_queue_returns_zero_counts(tmp_path):
+def test_empty_queue_returns_zero_counts(tmp_path, monkeypatch):
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     out = _compute_supervisor_liveness(tmp_path)
     assert out["queue_state"]["depth"] == 0
     assert out["queue_state"]["pending"] == 0
@@ -321,6 +322,58 @@ def test_missing_capacity_evidence_marks_operational_counts_incomplete(
     )
     assert not any(
         "epoch2_operational_scan_overflow" in warning
+        for warning in out["warnings"]
+    )
+
+
+def test_disabled_epoch2_consumer_is_visible_in_status(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_snapshot",
+        lambda _udir: {
+            "available": True,
+            "queue_epoch": 2,
+            "depth": 1,
+            "lifecycle_counts": {
+                "pending": 1,
+                "running": 0,
+                "cancel_requested": 0,
+                "cancelled": 0,
+                "succeeded": 0,
+                "failed": 0,
+            },
+            "lifecycle_oldest_age_s": {"pending": 10},
+            "operational_state_counts": {
+                "awaiting_compatible_capacity": 1,
+                "invalid_operator_admission": 0,
+                "quarantined": 0,
+                "policy_parked": 0,
+            },
+            "operational_oldest_age_s": {
+                "awaiting_compatible_capacity": 10,
+            },
+            "operational_reason_counts": {},
+            "valid_pending_count": 1,
+            "eligible_pending_count": 0,
+            "operational_counts_authoritative": False,
+            "unclassified_active_count": 0,
+            "active_scan_limit": 1000,
+            "diagnostics": [],
+            "diagnostics_truncated": False,
+            "compatible_worker_count": 0,
+            "capacity_evidence_available": False,
+            "capacity_evidence_error": "epoch2_consumer_not_ready",
+            "consumer_ready": False,
+        },
+    )
+
+    out = _compute_supervisor_liveness(tmp_path)
+
+    assert out["counts_complete"] is False
+    assert any(
+        "epoch2_consumer_not_ready" in warning
         for warning in out["warnings"]
     )
 
