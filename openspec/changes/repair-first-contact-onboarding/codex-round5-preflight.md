@@ -33,3 +33,16 @@
 ## Gate
 
 These amendments are not self-approval. Claude Opus 5 must review the exact amended committed head and return literal `VERDICT: APPROVE` before this packet is pushed or opened as a draft PR. The authenticated Claude Max CLI returned a monthly-spend-limit error before inference on 2026-07-25, so no round-5 Opus verdict exists yet.
+
+## Exact-head re-review of `be018740`
+
+Three independent read-only reviewers returned `ADAPT` again. The accepted follow-up findings were:
+
+- `intent="snapshot"` must synchronously create/reuse and return a canonical non-catalog Postgres BranchVersion for evaluation/selector/bootstrap; SQLite remains only its asynchronous replica.
+- Hosted/shared reads use Postgres, while an isolated OSS namespace may remain locally readable only behind distinct routing/IDs and never as shared fallback.
+- The dependency is the existing `establish-postgres-control-plane` draft PR #1670, not a newly invented duplicate baseline; it must land its driver in every serving artifact.
+- Reconciliation acceptance must exercise startup, cadence bounds, 500-row high-water continuation, lock exclusion, telemetry, and retry.
+- Rollback rehearsal must precede deployment without a production-receipt cycle; after the first canonical write, recovery is forward-fix and a prior image cannot serve.
+- Current universe and `control_station` owner truth must be reconciled now rather than deferred to implementation.
+
+The packet was amended accordingly. This second Codex pass is still not opposite-provider approval.
