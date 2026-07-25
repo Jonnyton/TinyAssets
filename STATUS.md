@@ -1,10 +1,7 @@
 # Status
 Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
-
 ## Concerns
-
-- **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
-- **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
+- **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy/P0 failure truth: #1645 has structural/CI proof only; no post-fix real pre/post-image repair-failure event yet.
 - [filed:2026-07-25] retire-legacy 4.2/4.4 must lockstep-migrate the require_action_scope registry (auth/provider.py): it fails CLOSED on row removal (2.3-F fail-open REFUTED vs prod sha 0603aae1), but dropping only write/costly classifications while actions default to read could fail open — needs a missing-metadata-denies + mutating-action-non-read regression test.
 - **[P1 filed:2026-07-24]** Branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages`; visibility bypass.
 - **[P2 filed:2026-07-25]** Scheduler trusts client-supplied owner_actor, no caller binding or branch-authority check (runtime_ops.py:350-392, legacy-reachable); server-bind before any canonical exposure.
@@ -18,7 +15,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
-| **Author harden-production-load-evidence** — shared §14 evidence protocol only; `passed|failed|not_run`; no scenarios/thresholds; nothing under `tests/` | openspec/changes/harden-production-load-evidence/, docs/specs/2026-04-18-load-test-harness-plan.md, docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md, ideas/INBOX.md, STATUS.md, .agents/worktrees.md | Opus 5 review of drafted change | claimed:codex-gpt5-desktop-full-product ACTIVE 2026-07-25 |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
 | **Specify PLAN-gated full-platform targets** — catalog/collaboration, discovery/remix, presence, portability/deletion/succession/feedback | openspec/changes/complete-plan-gated-platform-targets/ | PLAN foldback lane (1A/1C/1D decided 2026-07-25; 1B = open research); build-forward-platform-capabilities | pending |
@@ -38,8 +34,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Transport workflow chain building** — 4.1-4.6/3.5-3.7/5.1-5.2/5.6 (4.1's gate was circular; 4.5/4.6 released by #1737); 2.5/2.6/5.3/5.4/6.4 host-gated; no lease_fence stubs | openspec/changes/paid-market-track-e-wave-2-transport/, tinyassets/payments/ (market_workflow/realtime/delivery), prototype/full-platform-v0/migrations/ | - | claimed:fable-fleet-codex ACTIVE 2026-07-25 |
 | **independent-full-platform-targets** — node authoring 4.1-4.3 + moderation split 6.3 + tray core landed (#1770/#1736); handoffs 5.x remain (gated on boundary effector-identity); 4.5-4.7 autoresearch/deploy | openspec/changes/complete-independent-full-platform-targets/, tinyassets/handoffs/ | outbound-boundary land | pending |
 | **Market delivery/acceptance/dispute half** — needs lease_fence + accepted_result_sha256 (zero impls repo-wide; owner DE 4.15/5.36). Spine (inbox/bid/match/claim) is in the transport lane; quote authority landed #1737; #1440 released | tinyassets/payments/ (delivery), tests/ | DE 4.15/5.36 (S14/B36) | pending |
-| **Observe post-fix in-node enqueue use** — #1672 merged; no production-clean user evidence yet | production traces/logs; STATUS.md | deploy #1672, then inspect organic enqueue use | monitoring |
-| **Observe wiki discovery organic use** — prod `fdfde5f1`; rendered Opus 5 proof passed, but current logs cannot distinguish organic reads | production traces/logs; STATUS.md | privacy-reviewed read telemetry or user-visible evidence | monitoring |
+| **Observe post-fix organic connector use** — in-node enqueue #1672 has no clean user evidence; wiki discovery `fdfde5f1` rendered proof passed but logs cannot distinguish organic reads | production traces/logs; STATUS.md | deploy #1672; privacy-reviewed read telemetry or user-visible evidence | monitoring |
 | Canonical `/mcp` acceptance — live 2026-07-24: exact `TinyAssets`, exact seven, and retired-route matrix green; rendered-chatbot + first-user evidence remain | docs/ops/mcp-*, output/user_sim_session.md, production traces/logs | ChatGPT connector registration | monitoring |
 | **Observe Slice A0 provider isolation** — prod `ec5e7b11` + uptime canary green; rendered requester-BYOC turn and organic-use proof remain | output/user_sim_session.md, production traces/logs | connector registration; requester BYOC | monitoring |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
