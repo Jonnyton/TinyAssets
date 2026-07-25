@@ -15,8 +15,15 @@ canary = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(canary)
 
 
-def _scripted_post(tool_names):
+def _scripted_post(tool_names, status_payload=None, *, structured_status=False):
     """Return a fake _post that replays an MCP handshake advertising tool_names."""
+    if status_payload is None:
+        status_payload = {
+            "active_host": {"llm_endpoint_bound": True},
+            "release_state": {"git_sha": "abc123"},
+            "request_identity": {"principal_fingerprint": "v1:abc"},
+            "identity_evidence": {"status": "available"},
+        }
 
     def _post(url, payload, timeout, session_id=None):
         method = payload.get("method")
@@ -37,6 +44,24 @@ def _scripted_post(tool_names):
                 "result": {"tools": [{"name": n} for n in tool_names]},
             }).encode()
             return 200, {}, body
+        if method == "tools/call":
+            assert payload["params"] == {"name": "get_status", "arguments": {}}
+            result = {
+                "content": [
+                    {"type": "text", "text": json.dumps(status_payload)}
+                ]
+            }
+            if structured_status:
+                result["content"][0]["text"] = (
+                    '{"active_host":\n... [truncated; full payload in structuredContent]'
+                )
+                result["structuredContent"] = status_payload
+            body = json.dumps({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "result": result,
+            }).encode()
+            return 200, {}, body
         raise AssertionError(f"unexpected method {method}")
 
     return _post
@@ -51,14 +76,14 @@ _CANONICAL_PLUS_STATUS = [
 def test_assert_handles_passes_on_exact_surface(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     # No exception == green.
-    canary.assert_five_handles("https://example/mcp", 5.0)
+    canary.assert_canonical_handles("https://example/mcp", 5.0)
 
 
 def test_assert_handles_fails_on_legacy_leak(monkeypatch):
     leaky = _CANONICAL_PLUS_STATUS + ["universe", "extensions"]
     monkeypatch.setattr(canary, "_post", _scripted_post(leaky))
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles("https://example/mcp", 5.0)
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
     assert exc.value.code == 4
     assert "universe" in exc.value.msg
 
@@ -67,15 +92,127 @@ def test_assert_handles_fails_on_missing_handle(monkeypatch):
     short = [n for n in _CANONICAL_PLUS_STATUS if n != "run_graph"]
     monkeypatch.setattr(canary, "_post", _scripted_post(short))
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles("https://example/mcp", 5.0)
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
     assert exc.value.code == 4
     assert "run_graph" in exc.value.msg
+
+
+def test_assert_handles_fails_when_get_status_is_missing(monkeypatch):
+    short = [n for n in _CANONICAL_PLUS_STATUS if n != "get_status"]
+    monkeypatch.setattr(canary, "_post", _scripted_post(short))
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_canonical_handles("https://example/mcp", 5.0)
+    assert exc.value.code == 4
+    assert "get_status" in exc.value.msg
 
 
 def test_advertised_tool_names_round_trips(monkeypatch):
     monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
     names = canary.advertised_tool_names("https://example/mcp", 5.0)
     assert names == set(_CANONICAL_PLUS_STATUS)
+
+
+def test_status_surface_assertion_calls_get_status_and_checks_uptime_fields(
+    monkeypatch,
+):
+    monkeypatch.setattr(canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS))
+
+    identity_state = canary.assert_status_surface("https://example/mcp", 5.0)
+
+    assert identity_state == "available"
+
+
+def test_status_surface_assertion_accepts_explicit_identity_degradation(
+    monkeypatch,
+):
+    status_payload = {
+        "active_host": {"llm_endpoint_bound": False},
+        "release_state": {"git_sha": "abc123"},
+        "request_identity": {"principal_fingerprint": None},
+        "identity_evidence": {
+            "status": "unavailable",
+            "reason": "key_not_provisioned",
+        },
+    }
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, status_payload),
+    )
+
+    identity_state = canary.assert_status_surface("https://example/mcp", 5.0)
+
+    assert identity_state == "unavailable:key_not_provisioned"
+
+
+def test_status_surface_prefers_full_structured_content_over_truncated_text(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, structured_status=True),
+    )
+
+    identity_state = canary.assert_status_surface("https://example/mcp", 5.0)
+
+    assert identity_state == "available"
+
+
+@pytest.mark.parametrize("missing_field", ["active_host", "release_state"])
+def test_status_surface_assertion_fails_when_uptime_field_is_missing(
+    monkeypatch,
+    missing_field,
+):
+    status_payload = {
+        "active_host": {"llm_endpoint_bound": True},
+        "release_state": {"git_sha": "abc123"},
+        "request_identity": {"principal_fingerprint": None},
+        "identity_evidence": {
+            "status": "unavailable",
+            "reason": "key_not_provisioned",
+        },
+    }
+    status_payload.pop(missing_field)
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, status_payload),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_status_surface("https://example/mcp", 5.0)
+
+    assert exc.value.code == 5
+    assert missing_field in exc.value.msg
+
+
+def test_assert_handles_retry_includes_get_status_uptime_assertion(monkeypatch):
+    status_stub = {
+        "identity_evidence": {
+            "status": "unavailable",
+            "reason": "key_not_provisioned",
+        },
+        "request_identity": {"principal_fingerprint": None},
+    }
+    monkeypatch.setattr(
+        canary,
+        "_post",
+        _scripted_post(_CANONICAL_PLUS_STATUS, status_stub),
+    )
+
+    with pytest.raises(canary.CanaryError) as exc:
+        canary.assert_canonical_handles_with_retry(
+            "https://example/mcp",
+            5.0,
+            retries=1,
+            delay=0.0,
+            _sleep=lambda _: None,
+        )
+
+    assert exc.value.code == 5
+    assert "active_host" in exc.value.msg
+    assert "release_state" in exc.value.msg
 
 
 def test_retry_recovers_from_transient_blip(monkeypatch):
@@ -92,7 +229,7 @@ def test_retry_recovers_from_transient_blip(monkeypatch):
 
     monkeypatch.setattr(canary, "_post", flaky)
     # Should pass on the 2nd attempt; no real sleeping.
-    canary.assert_five_handles_with_retry(
+    canary.assert_canonical_handles_with_retry(
         "https://example/mcp", 5.0, retries=3, delay=0.0, _sleep=lambda _: None
     )
 
@@ -103,7 +240,7 @@ def test_retry_propagates_persistent_drift(monkeypatch):
         canary, "_post", _scripted_post(_CANONICAL_PLUS_STATUS + ["universe"])
     )
     with pytest.raises(canary.CanaryError) as exc:
-        canary.assert_five_handles_with_retry(
+        canary.assert_canonical_handles_with_retry(
             "https://example/mcp", 5.0, retries=3, delay=0.0, _sleep=lambda _: None
         )
     assert exc.value.code == 4

@@ -430,3 +430,20 @@ fresh-host rollback edges found later.
   quarantine receipt schema at the start. Stable pre-quarantine digests,
   bounded diagnostics, and durable-descriptor matching would then arrive in
   the first red test rather than during integration hardening.
+
+## 2026-07-24 - epoch-2 wakeup staging
+
+- **What surprised me:** wakeup eligibility is inseparable from executable
+  claim readiness. A truthful descriptor cannot be published just because the
+  queue adapter exists; the supervised child must be able to select, claim,
+  materialize, and lifecycle-manage the same task or the supervisor creates a
+  restart loop.
+- **Pattern worth capturing:** stage dormant readers with code-owned readiness
+  truth, visible status, exact-worker durable identity, and an epoch-filtered
+  selector. A live-child restart guard stays read-only and protects only
+  current live leases; expired/dead-peer recovery belongs in the lifecycle
+  integration that owns failover.
+- **What I would do differently:** test repeated restarts, empty canonical
+  daemon identity, plugin-isolated imports, real-data-dir leakage, partial
+  schemas, and cross-epoch selector identity on the first pass. Those
+  adversarial cases would have exposed the unsafe sequencing immediately.

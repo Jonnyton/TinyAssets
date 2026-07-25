@@ -459,6 +459,9 @@ def set_worker_queue_descriptor(
         if runtime["status"] == "retired":
             raise ValueError("queue_runtime_retired")
 
+    if runtime.get("metadata", {}).get("queue_protocol_descriptor") == normalized:
+        return runtime
+
     updated = daemon_server.update_runtime_instance_metadata(
         base_path,
         instance_id=runtime_instance_id,

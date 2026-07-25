@@ -35,7 +35,7 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 
 ### Requirement: Canonical Advertised Handle Set
 
-The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require the six core handles (`CANONICAL_HANDLES`, which includes `converse`) and permit `get_status` as an optional read affordance — the server advertises all seven; the canary treats `get_status` as allowed-but-not-required so a status-less deploy is not drift. As-built note: legacy "five handles" naming survives only in identifiers (e.g. `assert_five_handles_with_retry`, `test_universe_server_five_handles.py`) as historical naming; the enforced contract is the set above.
+The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require that exact set; a missing `get_status` or any extra advertised handle is drift.
 
 #### Scenario: Live surface advertises exactly the seven handles
 
@@ -151,7 +151,7 @@ presented as user-facing.
 
 - **WHEN** a client request arrives at `tinyassets.io/mcp`
 - **THEN** the Worker rewrites `Host` to `mcp.tinyassets.io`, adds the CF Access service-token headers from env secrets, and forwards method, body stream, and non-hop-by-hop headers
-- **AND** the same Worker has no route or translation for `/mcp-directory*`
+- **AND** the broad Worker binding terminates `/mcp-directory*` as an ordinary edge 404 without proxy, redirect, alias, or translation
 
 #### Scenario: SSE bodies stream without buffering
 
@@ -200,9 +200,9 @@ The checked-in MCP Registry manifest SHALL advertise
 `packaging/registry/server.json` differs from deterministic canonical runtime
 metadata. The generator SHALL run directly from a clean repository checkout.
 
-#### Scenario: Canonical catalog change makes stale metadata fail
+#### Scenario: Canonical registry metadata change makes stale metadata fail
 
-- **WHEN** the canonical endpoint or exact-seven runtime metadata changes without regenerating `packaging/registry/server.json`
+- **WHEN** the canonical Registry endpoint or manifest version changes without regenerating `packaging/registry/server.json`
 - **THEN** the focused artifact-equality test fails
 - **AND** the packaging workflow's generator `--check` step fails
 

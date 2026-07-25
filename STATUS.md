@@ -23,7 +23,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
+| **Slice A0 default-deny provider environment** — Opus5 ADAPT: land #1592 successor; isolate auth homes, fail loud, preserve canonical delta truth | openspec/changes/close-universe-host-subscription-fallback/; tinyassets/providers/base.py; packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1727 verdict; vault-clobber lane releases canonical credential-vault sync | dev-ready |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
@@ -43,13 +43,14 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Complete independent-full-platform-targets change (minus moderation)** — moderation fenced to in-flight #1662/#1667 | openspec/changes/complete-independent-full-platform-targets/ (tray/node-authoring/handoff scopes) | #1684 direction packet | claimed:fable-fleet-opus5 ACTIVE 2026-07-24 |
 | **Implement paid-market workflow + live-price targets** — durable inbox/bid/match/claim/delivery plus quote authority and manipulation controls | tinyassets/paid_market/; prototype/full-platform-v0/migrations/; tests/test_paid_market_core.py; tests/test_api_market.py | active `paid-market-track-e-wave-2-transport` and `paid-market-live-price-discovery`; Harden canonical absolute guarantees; #1440; R2-1; S14/B36; boundary/tenant/domain owners | pending |
 | **Observe post-fix in-node enqueue use** — #1672 merged; no production-clean user evidence yet | production traces/logs; STATUS.md | deploy #1672, then inspect organic enqueue use | monitoring |
-| Canonical `/mcp` acceptance — PR #1718 merged; deployment/name/exact-seven/ordinary-404, rendered-chatbot, and first-user evidence remain | docs/ops/mcp-*, output/user_sim_session.md, production traces/logs | deploy #1718; ChatGPT connector registration | monitoring |
+| Canonical `/mcp` acceptance — live 2026-07-24: exact `TinyAssets`, exact seven, and retired-route matrix green; rendered-chatbot + first-user evidence remain | docs/ops/mcp-*, output/user_sim_session.md, production traces/logs | ChatGPT connector registration | monitoring |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
 | Land #1484 — `_repo_root()` conflated `TINYASSETS_REPO_ROOT` (storage) with the bundled-source root, emptying deployed review context. The env is load-bearing; do NOT drop it | tinyassets/api/universe.py, deploy/compose.yml | - | host-review |
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
 | Mark-branch canonical decision (Task #33 phase 0) | live MCP `goals action=propose/bind/set_canonical` | - | host-decision |
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
+| Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 
 ## Next
 

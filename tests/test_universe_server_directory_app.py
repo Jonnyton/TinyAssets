@@ -88,3 +88,20 @@ def test_retired_directory_path_never_enters_discovery_or_transport(
     assert "location" not in response.headers
     assert response.headers["content-type"].startswith("text/plain")
     assert response.text == "Not Found"
+
+
+def test_http_app_exposes_no_universe_creation_route() -> None:
+    """universe-creation task 5.1: HTTP cannot create a universe.
+
+    There is no ``POST /v1/universes`` (or any universe-creation) REST route.
+    The only public universe-birth surface is the canonical MCP tools
+    (``universe action=create_universe`` and ``write_graph target=universe``),
+    whose public-birth boundary lives at the shared dispatch chokepoint. This
+    test fails loudly if a universe-creation HTTP route is ever mounted — and
+    holds alongside the #1722 /mcp-directory retirement, since the canonical
+    ``/mcp`` and discovery routes carry no "universe" path segment.
+    """
+    app = create_streamable_http_app()
+    paths = {getattr(route, "path", "") or "" for route in app.routes}
+
+    assert not any("universe" in path.lower() for path in paths), sorted(paths)

@@ -18,11 +18,13 @@ Exit codes
     field present).
 4   ``--assert-handles`` drift: the live ``tools/list`` does not advertise
     exactly the canonical handle set (``read_graph`` / ``write_graph`` /
-    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse``, plus the
-    optional ``get_status`` read — see ``CANONICAL_HANDLES`` below and
+    ``run_graph`` / ``read_page`` / ``write_page`` / ``converse`` /
+    ``get_status`` — see ``CANONICAL_HANDLES`` below and
     ``openspec/specs/live-mcp-connector-surface/spec.md``). This is the
     PR-178 drift guard required by Hard Rule #11 after any
     DNS/tunnel/Worker/connector change.
+5   ``--assert-handles`` status failure: ``tools/call get_status`` failed or
+    omitted the uptime-critical ``active_host`` / ``release_state`` fields.
 
 Usage
 -----
@@ -61,9 +63,9 @@ _INIT_PAYLOAD = {
     },
 }
 
-# PR-178 + 2026-07-02 relay reshape: the live user-facing surface is exactly
-# these six handles. The canary asserts the deployed tools/list advertises them
-# and nothing beyond them (the get_status read MAY remain). Legacy fat tools are
+# PR-178 + 2026-07-24 canonical convergence: the live user-facing surface is
+# exactly these seven handles. The canary asserts the deployed tools/list
+# advertises all seven and nothing beyond them. Legacy fat tools are
 # dual-registered but hidden from tools/list, so they must NOT appear here.
 # `converse` is the relay handle (chatbot -> universe intelligence); the handle
 # shape is provisional pending host ratification of the design-note open-Q.
@@ -74,9 +76,9 @@ CANONICAL_HANDLES = frozenset({
     "read_page",
     "write_page",
     "converse",
+    "get_status",
 })
-# get_status MAY remain as a read affordance; everything else is drift.
-_ALLOWED_ADVERTISED = CANONICAL_HANDLES | {"get_status"}
+_ALLOWED_ADVERTISED = CANONICAL_HANDLES
 
 
 def _die(code: int, msg: str) -> None:
@@ -185,7 +187,7 @@ def advertised_tool_names(url: str, timeout: float) -> set[str]:
     return {t.get("name") for t in tools if isinstance(t, dict) and t.get("name")}
 
 
-def assert_five_handles(url: str, timeout: float) -> None:
+def assert_canonical_handles(url: str, timeout: float) -> None:
     """Raise ``CanaryError(4)`` unless tools/list is exactly the canonical set."""
     names = advertised_tool_names(url, timeout)
     missing = CANONICAL_HANDLES - names
@@ -198,14 +200,99 @@ def assert_five_handles(url: str, timeout: float) -> None:
         )
 
 
-def assert_five_handles_with_retry(
+def assert_status_surface(url: str, timeout: float) -> str:
+    """Call ``get_status`` and verify its uptime-critical response fields.
+
+    Return a compact identity-evidence state so verbose canary output makes
+    fingerprint configuration degradation visible without treating it as a
+    status-surface outage.
+    """
+    status, headers, _ = _post(url, _INIT_PAYLOAD, timeout)
+    if status != 200:
+        raise CanaryError(2, f"non-200 status {status} from {url}")
+    session_id = headers.get("mcp-session-id")
+    if session_id:
+        _post(
+            url,
+            {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
+            timeout,
+            session_id,
+        )
+    status, _, body = _post(
+        url,
+        {
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "get_status", "arguments": {}},
+        },
+        timeout,
+        session_id,
+    )
+    if status != 200:
+        raise CanaryError(5, f"non-200 status {status} from {url} (get_status)")
+    try:
+        rpc_payload = _parse_sse_or_json(body)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise CanaryError(5, f"non-MCP get_status body from {url}: {exc}") from exc
+    if "error" in rpc_payload:
+        raise CanaryError(
+            5,
+            f"MCP error on get_status from {url}: {rpc_payload['error']}",
+        )
+    result = rpc_payload.get("result") or {}
+    if result.get("isError"):
+        raise CanaryError(5, f"get_status returned a tool error from {url}")
+    payload = result.get("structuredContent")
+    if not isinstance(payload, dict):
+        content = result.get("content") or []
+        text_blocks = [
+            item.get("text")
+            for item in content
+            if isinstance(item, dict)
+            and item.get("type") == "text"
+            and isinstance(item.get("text"), str)
+        ]
+        if not text_blocks:
+            raise CanaryError(5, f"get_status returned no text payload from {url}")
+        try:
+            payload = json.loads(text_blocks[0])
+        except json.JSONDecodeError as exc:
+            raise CanaryError(
+                5,
+                f"get_status returned non-JSON text from {url}",
+            ) from exc
+    if not isinstance(payload, dict):
+        raise CanaryError(5, f"get_status payload is not an object from {url}")
+    missing = [
+        field for field in ("active_host", "release_state") if field not in payload
+    ]
+    if missing:
+        raise CanaryError(
+            5,
+            f"get_status uptime fields missing from {url}: {missing}",
+        )
+
+    identity_evidence = payload.get("identity_evidence")
+    if not isinstance(identity_evidence, dict):
+        return "unknown"
+    identity_status = identity_evidence.get("status")
+    if identity_status == "unavailable":
+        reason = identity_evidence.get("reason")
+        return f"unavailable:{reason}" if isinstance(reason, str) else "unavailable"
+    return str(identity_status or "unknown")
+
+
+def assert_canonical_handles_with_retry(
     url: str,
     timeout: float,
     retries: int = 5,
     delay: float = 3.0,
     _sleep=time.sleep,
-) -> None:
-    """``assert_five_handles`` with retries for transient blips.
+) -> str:
+    """Assert canonical handles and status surface, retrying transient blips.
+
+    Return the compact identity-evidence state reported by ``get_status``.
 
     Wired into the post-deploy gate, where a single transient ``tools/list``
     failure would otherwise trip a rollback of an otherwise-healthy daemon
@@ -216,8 +303,8 @@ def assert_five_handles_with_retry(
     attempts = max(1, retries)
     for attempt in range(1, attempts + 1):
         try:
-            assert_five_handles(url, timeout)
-            return
+            assert_canonical_handles(url, timeout)
+            return assert_status_surface(url, timeout)
         except CanaryError as exc:
             if attempt >= attempts:
                 raise
@@ -330,7 +417,7 @@ def main(argv: list[str]) -> int:
 
     if args.assert_handles:
         try:
-            assert_five_handles_with_retry(
+            identity_state = assert_canonical_handles_with_retry(
                 args.url,
                 args.timeout,
                 retries=args.assert_handles_retries,
@@ -340,7 +427,12 @@ def main(argv: list[str]) -> int:
             _die(exc.code, exc.msg)
 
     if args.verbose:
-        suffix = " (canonical handle set advertised)" if args.assert_handles else ""
+        suffix = (
+            " (canonical handle set advertised; get_status uptime fields present; "
+            f"identity_evidence={identity_state})"
+            if args.assert_handles
+            else ""
+        )
         print(f"[canary] OK {args.url}{suffix}")
     return 0
 

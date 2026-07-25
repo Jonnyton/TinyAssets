@@ -270,7 +270,7 @@ def test_live_deploy_probes_run_in_safety_order_under_the_same_condition():
 
     canonical_probe = steps[names.index("Probe canonical URL after deploy")]
     assert "--url https://tinyassets.io/mcp" in canonical_probe.get("run", "")
-    assert "--assert-name TinyAssets" in canonical_probe.get("run", "")
+    assert "--assert-name" not in canonical_probe.get("run", "")
 
 
 # ---------------------------------------------------------------------------
