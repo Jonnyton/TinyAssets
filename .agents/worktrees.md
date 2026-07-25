@@ -1231,3 +1231,17 @@ Notes:
 - Review gate: ui-test through real chatbot + independent evidence review
 - Ship/abandon: publish proof/task foldback only; no runtime changes
 - Foldback: proof complete and independently approved; PR #1747 merged
+
+## 2026-07-25 - bind authenticated host principal to account
+
+- Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
+- Branch: codex/host-principal-binding
+- Lane state: Active OpenSpec planning; no runtime authorized
+- Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
+- STATUS/Issue/PR: Bind authenticated host principal to account
+- PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
+- Purpose: specify the missing authenticated server-side account-to-stable-host binding behind PR #1736's existing client protocol
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
+- Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
+- Review gate: Opus 5 exact-artifact review plus independent Codex verification
+- Ship/abandon: spec/audit draft PR only; runtime files remain unclaimed
