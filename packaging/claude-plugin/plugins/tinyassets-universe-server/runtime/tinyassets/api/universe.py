@@ -3220,16 +3220,23 @@ def _tail_file_lines(path: Path, n: int) -> list[str]:
 
 _CHANGE_LOOP_PLAN_HEADINGS = (
     "Scoping Rules",
-    "Work Targets And Review Gates",
-    "Multiplayer Daemon Platform",
-    "Multi-User Evolutionary Design",
+    "Module: Goals & Gates",
+    "Module: Daemon Platform",
+    "Module: Evolution & Evaluation",
 )
 
 
-def _repo_root() -> Path:
-    override = os.environ.get("TINYASSETS_REPO_ROOT")
-    if override:
-        return Path(override)
+def _bundled_source_root() -> Path:
+    """Root of the bundled source tree, where the shipped ``PLAN.md`` lives.
+
+    Deliberately NOT driven by ``TINYASSETS_REPO_ROOT``. That variable names
+    the git checkout used for ``producers.goal_pool`` and catalog writes; in
+    the deployed container ``deploy/compose.yml`` points it at the
+    ``/data/community-pool`` data volume, which ships no source assets. Wiring
+    this asset lookup to that storage variable silently emptied the deployed
+    review context. The package parent is the checkout root in development and
+    ``/app`` in the image, where the Dockerfile stages ``PLAN.md``.
+    """
     return Path(__file__).resolve().parents[2]
 
 
@@ -3311,16 +3318,22 @@ def _extract_plan_section(text: str, heading: str) -> str:
 
 
 def _change_loop_plan_context() -> dict[str, str]:
-    plan_path = _repo_root() / "PLAN.md"
+    plan_path = _bundled_source_root() / "PLAN.md"
     try:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
-        return {}
+        text = ""
     sections: dict[str, str] = {}
     for heading in _CHANGE_LOOP_PLAN_HEADINGS:
         excerpt = _extract_plan_section(text, heading)
-        if excerpt:
-            sections[heading] = _shorten(excerpt, 2400)
+        sections[heading] = (
+            _shorten(excerpt, 1400)
+            if excerpt
+            else (
+                "[ERROR: unable to resolve bundled PLAN.md section: "
+                f"## {heading}]"
+            )
+        )
     return sections
 
 
