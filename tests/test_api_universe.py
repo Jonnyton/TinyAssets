@@ -697,14 +697,55 @@ def test_bundled_source_root_ignores_even_a_checkout_shaped_override(
 def test_change_loop_plan_context_survives_pool_volume_override(
     monkeypatch, tmp_path,
 ) -> None:
-    """The deployed review context must not silently ship zero PLAN sections."""
+    """Every configured review heading must resolve from the bundled PLAN.md."""
     pool = tmp_path / "community-pool"
     pool.mkdir()
     monkeypatch.setenv("TINYASSETS_REPO_ROOT", str(pool))
 
     sections = univ_mod._change_loop_plan_context()
 
-    assert sections, (
-        "_change_loop_plan_context() returned no PLAN.md sections under the "
-        "deployed container config - the shipped /app/PLAN.md was unreachable"
+    assert set(sections) == set(univ_mod._CHANGE_LOOP_PLAN_HEADINGS)
+    for heading in univ_mod._CHANGE_LOOP_PLAN_HEADINGS:
+        assert sections[heading].startswith(f"## {heading}")
+
+
+def test_change_loop_plan_context_marks_unresolved_heading(
+    monkeypatch, tmp_path,
+) -> None:
+    """A stale configured heading must remain visible in review context."""
+    (tmp_path / "PLAN.md").write_text(
+        "## Present Section\nReview guidance.\n", encoding="utf-8",
     )
+    monkeypatch.setattr(univ_mod, "_bundled_source_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        univ_mod,
+        "_CHANGE_LOOP_PLAN_HEADINGS",
+        ("Present Section", "Missing Section"),
+    )
+
+    sections = univ_mod._change_loop_plan_context()
+
+    assert sections == {
+        "Present Section": "## Present Section\nReview guidance.",
+        "Missing Section": (
+            "[ERROR: unable to resolve bundled PLAN.md section: "
+            "## Missing Section]"
+        ),
+    }
+
+
+def test_change_loop_plan_context_marks_all_headings_when_plan_is_unreadable(
+    monkeypatch, tmp_path,
+) -> None:
+    """A missing bundled PLAN.md must degrade loudly without crashing."""
+    monkeypatch.setattr(univ_mod, "_bundled_source_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        univ_mod,
+        "_CHANGE_LOOP_PLAN_HEADINGS",
+        ("First Section", "Second Section"),
+    )
+
+    sections = univ_mod._change_loop_plan_context()
+
+    assert set(sections) == {"First Section", "Second Section"}
+    assert all(value.startswith("[ERROR:") for value in sections.values())

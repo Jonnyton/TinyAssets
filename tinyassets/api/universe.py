@@ -2453,9 +2453,9 @@ def _tail_file_lines(path: Path, n: int) -> list[str]:
 
 _CHANGE_LOOP_PLAN_HEADINGS = (
     "Scoping Rules",
-    "Work Targets And Review Gates",
-    "Multiplayer Daemon Platform",
-    "Multi-User Evolutionary Design",
+    "Module: Goals & Gates",
+    "Module: Daemon Platform",
+    "Module: Evolution & Evaluation",
 )
 
 
@@ -2555,12 +2555,18 @@ def _change_loop_plan_context() -> dict[str, str]:
     try:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
-        return {}
+        text = ""
     sections: dict[str, str] = {}
     for heading in _CHANGE_LOOP_PLAN_HEADINGS:
         excerpt = _extract_plan_section(text, heading)
-        if excerpt:
-            sections[heading] = _shorten(excerpt, 2400)
+        sections[heading] = (
+            _shorten(excerpt, 2400)
+            if excerpt
+            else (
+                "[ERROR: unable to resolve bundled PLAN.md section: "
+                f"## {heading}]"
+            )
+        )
     return sections
 
 
