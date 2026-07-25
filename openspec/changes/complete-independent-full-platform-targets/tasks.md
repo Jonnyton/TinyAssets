@@ -20,13 +20,19 @@ Note vocabulary:
   the whole task is a proof.
 
 Section 0 records verification work only. **No implementation, proof, sync, or
-archive task in sections 2-6 is checked by this lane**, and none may be checked
-by annotation, delegation, or host-gating — only by landed code plus its named
-acceptance evidence. Every one of those 28 tasks remains open.
+archive task in sections 2-6 was checked by the premise-verification lane
+(2026-07-24)**, and none may be checked by annotation, delegation, or
+host-gating — only by landed code plus its named acceptance evidence.
+
+Update 2026-07-25 (node-authoring implementation lane): **4.1, 4.2, and 4.3 are
+now checked on landed code plus the named test evidence** recorded in their notes;
+the moderation capability was split out of section 2 (task 6.3 discharge). Every
+other implementation, proof, sync, and archive task remains open, and the rule
+above still governs them.
 
 - [x] 0.1 Premise-verify every unchecked task in sections 2-6 against `origin/main` and label each one unbuilt-target, path-corrected, owner-corrected, in-flight external, or blocked (this lane, 2026-07-24).
 - [x] 0.2 Correct the misdirecting task premises, distinguishing absent paths from misattributed ownership: **path-corrected** — 4.4 named `tinyassets/runtime/lease_store.py` and 5.4 named `tinyassets/external_effects.py` / `tinyassets/external_write_receipts.py`, none of which exist; **owner-corrected** — 5.1/5.2 named `tinyassets/api/extensions.py`, which *does* exist and really does route the outcome actions, but is not the `outcome_event` storage owner (`tinyassets/outcomes/schema.py` is).
-- [x] 0.3 Record that `moderation-and-abuse-response` implementation has started outside this change (draft PRs #1662, #1667) and fence its tasks so no second lane writes `tinyassets/moderation/`.
+- [x] 0.3 Record that `moderation-and-abuse-response` implementation has started outside this change (draft PRs #1662, #1667) and fence its tasks so no second lane writes `tinyassets/moderation/`. **Superseded 2026-07-25:** the fence now lives with the capability in `openspec/changes/moderation-and-abuse-response/` (see section 2).
 - [x] 0.4 Record the host-owned gates in section 3 (platform code-signing identities, Apple notarization account, clean-machine OS matrix) and scope them to the two steps they actually gate — signed publication and the final acceptance proof — so no lane treats buildable packaging work as blocked.
 - [x] 0.5 Re-run the pre-claim collision guard for this change's write-set and strict-validate the change (evidence in 6.1/6.2 notes).
 
@@ -37,25 +43,20 @@ acceptance evidence. Every one of those 28 tasks remains open.
 - [x] 1.3 Check candidate moderation, authoring, handoff, and attestation action verbs against `origin/main`; do not introduce standalone advertised MCP handles.
 - [x] 1.4 Obtain independent opposite-family architecture-to-requirement review and resolve every overclaim, omission, and ownership collision. Claude Sonnet approved the corrected ownership model on 2026-07-22.
 
-## 2. Moderation And Abuse Response
+## 2. Moderation And Abuse Response — SPLIT OUT 2026-07-25
 
-**Fenced 2026-07-24 — do not write `tinyassets/moderation/` from this change.**
-Implementation began outside this change on draft PRs #1662 (`codex/moderation-abuse-runtime`)
-and #1667 (`codex/moderation-flag-planner`). Both are unmerged drafts. Because
-partial moderation code is landing outside this change while its delta spec is
-held here, the split obligation in 6.3 is now **live for this capability** and
-must be executed before any moderation code merges (see 6.3 note).
+**This capability no longer lives in this change.** Task 6.3's split obligation
+was discharged on 2026-07-25: `specs/moderation-and-abuse-response/spec.md` and
+the five implementation tasks that were here moved (via `git mv` for the spec, so
+the diff reads as a rename and the completed requirement review carries over) to
+the surviving active change **`openspec/changes/moderation-and-abuse-response/`**,
+which also carries the in-flight fence for PRs #1662/#1667 and the named
+implementation / acceptance / sync / archive ownership.
 
-- [ ] 2.1 Add moderation persistence and invariants in `tinyassets/moderation/models.py`, `tinyassets/moderation/store.py`, and the next numbered storage migration.
-  - _in-flight external (PR #1662)_ — `models.py` and `__init__.py` are on the #1662 branch. `store.py` and the storage migration are still unowned by any open PR.
-- [ ] 2.2 Implement flag, queue, decision, appeal, recusal, moderator-eligibility, and audit services in `tinyassets/moderation/service.py` and `tinyassets/moderation/policy.py`.
-  - _in-flight external (PR #1662, #1667)_ — `policy.py` on #1662, `service.py` on #1667. Neither is merged; neither claims the full service surface above.
-- [ ] 2.3 Route moderation actions through existing canonical API handles in `tinyassets/api/` without adding an advertised MCP handle; add web-surface adapters only after the same service boundary exists.
-  - _unbuilt-target_ — no open PR touches `tinyassets/api/` for moderation. Unowned.
-- [ ] 2.4 Add `tests/test_moderation_service.py`, `tests/test_moderation_authority.py`, and `tests/test_moderation_concurrency.py`, including distinct-flagger races, two-reviewer deletion, appeal independence, rate limits, and fail-closed authorization.
-  - _in-flight external (PR #1662, #1667)_ — `test_moderation_authority.py` on #1662, `test_moderation_service.py` on #1667. `test_moderation_concurrency.py` is unowned; none of the three exists on `origin/main`.
-- [ ] 2.5 Run §14 moderation proof with concurrent flag/decision/appeal traffic, queue-latency and write-contention bounds, anomaly-volume failure injection, and no lost or duplicated terminal decision.
-  - _unbuilt-target_ — gated on 2.1-2.4.
+Do not re-add moderation tasks or a moderation delta here. The only moderation
+reference this change retains is the *dependency* in task 5.5 (handoff/outcome
+disputes read `tinyassets/moderation/service.py`) — a read of the successor
+change's owner, not shared ownership.
 
 ## 3. Packaged Tray Installation
 
@@ -95,20 +96,20 @@ the error, not those two labels.
 
 ## 4. Node Authoring And Autoresearch
 
-- [ ] 4.1 Add owner-scoped authoring session/event models in `tinyassets/authoring/models.py`, `tinyassets/authoring/store.py`, and the next numbered storage migration.
-  - _unbuilt-target_ — `tinyassets/authoring/` does not exist. Latest storage migration on `origin/main` is `prototype/full-platform-v0/migrations/008_market_ledger.sql`; take the next free number at implementation time, not now.
-- [ ] 4.2 Implement inspect/edit/test/publish session behavior in `tinyassets/authoring/service.py`, typed file manifests in `tinyassets/authoring/io.py`, and sandbox policy in `tinyassets/authoring/sandbox.py`.
-  - _unbuilt-target_ — see 4.1. The sandbox requirement interacts with the open universe-engine OS-sandbox concern (STATUS P1, proposal on draft PR #1573): the authoring sandbox must not assume an OS isolation boundary that the platform does not yet have.
-- [ ] 4.3 Route node and evaluator authoring through existing canonical API handles in `tinyassets/api/extensions.py`; preserve the then-current canonical advertised handle set.
-  - _unbuilt-target_ — `tinyassets/api/extensions.py` exists and is the correct router. The handle set to preserve is the canonical seven (`read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, `get_status`) asserted by `CANONICAL_HANDLES` in `scripts/mcp_public_canary.py` and owned by `openspec/specs/live-mcp-connector-surface/spec.md`.
+- [x] 4.1 Add owner-scoped authoring session/event models in `tinyassets/authoring/models.py`, `tinyassets/authoring/store.py`, and the next numbered storage migration.
+  - _landed 2026-07-25_ — `models.py` (records + one path-scoped edit grammar + pure validation) and `store.py` (owner-scoped SQLite: sessions, events, versions, file handles, confirmations; compare-and-swap draft advance; immutable versions). Migration is `prototype/full-platform-v0/migrations/012_authoring_sessions.sql` — the number-note in the 2026-07-24 premise pass said `008_market_ledger.sql`, which was already stale (the real highest on `origin/main` is `009_market_ledger.sql`); 010/011 are held by parallel lanes, so this took **012** and the numbering gap is intentional. Evidence: `tests/test_authoring_sessions.py` (30 tests, incl. a store-level CAS test that holds independently of the service pre-check), `tests/test_authoring_scale.py` contiguous-event proof.
+- [x] 4.2 Implement inspect/edit/test/publish session behavior in `tinyassets/authoring/service.py`, typed file manifests in `tinyassets/authoring/io.py`, and sandbox policy in `tinyassets/authoring/sandbox.py`.
+  - _landed 2026-07-25_ — full/diff/summary/history inspection with anchored diffs that fail explicitly on a missing anchor; atomic edit batches (one event per batch, pure application so a rejected batch cannot mutate the draft); typed manifests binding attachments to expiring owner-scoped `fh_*` handles with no path in the definition; simulated-by-default effects with secret redaction, deny-first network decisions, budget ledger, and single-use per-run confirmation for irreversible effects. **The OS-sandbox honesty constraint is honored**: `sandbox.isolation_report()` reports `in_process_confined` unless the shipped `bwrap` probe says otherwise, and a draft declaring `requires_os_isolation` is refused rather than silently run in-process (STATUS P1 stays true; this lane does not claim to close it). Evidence: `tests/test_authoring_file_io.py` (24), `tests/test_authoring_sandbox.py` (22), `tests/test_evaluator_authoring.py` (11), plus a 16-mutation probe confirming each invariant's test goes red when the invariant is broken.
+- [x] 4.3 Route node and evaluator authoring through existing canonical API handles in `tinyassets/api/extensions.py`; preserve the then-current canonical advertised handle set.
+  - _landed 2026-07-25_ — seven `extensions` actions (`authoring_start` / `_inspect` / `_edit` / `_test` / `_confirm_effect` / `_publish` / `_list`) dispatch through the existing router. **No new advertised handle and no widened tool signature**: each parameter reuses an existing `extensions` kwarg (documented in both the router arm and `tinyassets/authoring/service.py`), the same technique as the effector-consent actions, so `universe_server.py` is untouched. Action-scope rows derive automatically because `tinyassets/auth/provider.py` now includes the authoring table (start/edit/publish/confirm = write, test = costly, inspect/list = read) — without that, `require_action_scope` would fail closed in production. Evidence: `test_authoring_actions_add_no_advertised_handle` asserts the advertised set is exactly the canonical seven; `test_authoring_actions_are_listed_and_scope_derived` asserts the derived effects.
 - [ ] 4.4 Add optimization specifications, fixed-evaluator binding, experiment leases/deduplication, budget enforcement, cycle detection, and merge policy in `tinyassets/autoresearch/models.py` and `tinyassets/autoresearch/runner.py`; reuse the `distributed-execution` lease-store owner if its landed contract is semantically compatible.
   - _unbuilt-target; path-corrected_ — `tinyassets/autoresearch/` does not exist. The task previously named `tinyassets/runtime/lease_store.py`; **that path does not exist** and `openspec/changes/distributed-execution/` is still an active, unarchived change, so the reuse conditional is currently **false**. Re-evaluate the real module path when `distributed-execution` lands; do not create a third general distributed lease mechanism in the meantime.
-- [ ] 4.5 Add `tests/test_authoring_sessions.py`, `tests/test_authoring_sandbox.py`, `tests/test_authoring_file_io.py`, `tests/test_evaluator_authoring.py`, and `tests/test_autoresearch_runtime.py`, including adversarial isolation and no-effect dry runs.
-  - _unbuilt-target_ — all five are absent from `origin/main`.
+- [ ] 4.5 Add `tests/test_authoring_sessions.py`, `tests/test_authoring_sandbox.py`, `tests/test_evaluator_authoring.py`, `tests/test_authoring_file_io.py`, and `tests/test_autoresearch_runtime.py`, including adversarial isolation and no-effect dry runs.
+  - _4 of 5 landed 2026-07-25; stays open on the fifth_ — `test_authoring_sessions.py` (30), `test_authoring_sandbox.py` (22), `test_authoring_file_io.py` (24), and `test_evaluator_authoring.py` (11) exist and pass, with adversarial isolation (cross-user session/handle reads, expiry, revocation, undeclared-destination egress) and no-effect dry runs covered. `test_autoresearch_runtime.py` is **not** written because it tests task 4.4's `tinyassets/autoresearch/` package, which this lane deliberately did not build (4.4's lease-reuse conditional is still false while `distributed-execution` is unarchived). This task cannot be checked until 4.4 lands its runtime.
 - [ ] 4.6 Run §14 authoring/optimization proof: 100 concurrent author sessions, 1,000 isolated sequential sessions with no cross-user bleed, one execution per candidate lease, duplicate-candidate suppression, budget-stop races, and bounded evaluator-cache fan-out.
-  - _unbuilt-target_ — gated on 4.1-4.5.
+  - _authoring half landed 2026-07-25; optimization half blocked on 4.4_ — `tests/test_authoring_scale.py` proves the authoring clauses: 100 concurrent sessions across 100 accounts with every event owner-bound and reported p50/p95/max latency; 1,000 sequential cross-account sessions with neighbour-isolation spot checks (`slow` marker); and single-session edit contention showing one version per commit with a contiguous event sequence (no lost or duplicated event). The lease, duplicate-candidate, budget-stop-race, and evaluator-cache clauses are optimization behavior owned by 4.4 and are **not** proven. Task stays open until they are.
 - [ ] 4.7 Complete a rendered chatbot authoring conversation through the live connector and capture full/diff inspection, file input/output, dry test, explicit publish, and post-fix clean-use evidence.
-  - _unbuilt-target_ — gated on 4.1-4.6 reaching the live surface. Cannot be satisfied by direct MCP calls or local scripts (AGENTS.md final chatbot-surface rule).
+  - _blocked: not deployed_ — the code above is on an unmerged branch, so the live connector at `https://tinyassets.io/mcp` does not serve these actions yet; a rendered conversation now would prove the *old* surface. Per AGENTS.md this cannot be satisfied by direct MCP calls or local scripts. Order of operations: merge → confirm the deployed sha via `get_status` → `--assert-handles` canary (the handle set must still be exactly seven) → rendered `ui-test` → post-fix clean-use watch item.
 
 ## 5. Real-World Handoffs And Outcomes
 
@@ -130,10 +131,11 @@ the error, not those two labels.
 ## 6. Foldback
 
 - [ ] 6.1 Re-run collision checks immediately before every implementation write-set expansion and before canonical sync.
-  - _recurring obligation; latest run 2026-07-24_ — `python scripts/claim_check.py --provider claude-o5-independent-targets --check-files "openspec/changes/complete-independent-full-platform-targets/"` returned `CLEAR: no overlap with another provider's claimed/in-flight Files`. This stays unchecked because it must re-run at each future expansion, not once.
+  - _recurring obligation; latest check 2026-07-25_ — the node-authoring lane expanded the write-set beyond the change directory to `tinyassets/authoring/**`, `tinyassets/api/extensions.py`, `tinyassets/auth/provider.py`, `prototype/full-platform-v0/migrations/012_authoring_sessions.sql`, and `tests/test_authoring_*.py`. Checked against every `claimed:*`/`in-flight` row's Files in `STATUS.md`: no overlap (the active lanes hold `providers/router.py`, `api/universe.py`, `universe_server.py`, `persona.py`, `universe_intelligence.py`, `api/status.py`, `reset.py`, `paid_market/`, and OpenSpec change dirs). `tinyassets/api/extensions.py` and `tinyassets/auth/provider.py` are held by no row. Migration numbers 010/011 are taken by parallel lanes, hence 012. Stays unchecked: it must re-run at each future expansion, not once.
 - [ ] 6.2 Strictly validate the full OpenSpec tree, run focused plus security/load suites, and obtain independent diff/code review.
   - _partially satisfied 2026-07-24_ — `openspec validate complete-independent-full-platform-targets --strict` passes, and the full-tree strict validation result is recorded in the lane report. Two independent cross-family reviews of this lane's premise verification and completion model both returned **adapt** (Codex, 2026-07-24). Round 1 confirmed the 4.4 and 5.4 corrections and the 5.1/5.2 storage owner, rejected any checking-off of runtime tasks by delegation or annotation, and required that 6.1-6.4 stay open. Round 2 reviewed the resulting commit and required two further folds, both verified against `origin/main` and applied above: **(a)** 5.1/5.2 were misfiled as `path-corrected` when the named `tinyassets/api/extensions.py` exists and the real defect was misattributed ownership — now `owner-corrected`, with 0.2 and the note vocabulary reworded; **(b)** the section-3 host gate was recorded as a section-wide blanket when only signed publication and 3.5's final acceptance proof are host-owned — now scoped, with 3.1/3.3 relabeled and the false "permanently red required check" claim replaced by the actual protection contexts. Round 2 also caught a miscount: 31 workflows on `origin/main`, not 32. The focused/security/load suites and code-to-requirement review of the capabilities themselves cannot be satisfied while sections 2-5 are unbuilt; this stays unchecked as the implementation foldback gate.
 - [ ] 6.3 Sync only capabilities whose implementation and acceptance evidence are complete; split any unfinished capability into a surviving active change.
-  - _disposition recorded 2026-07-24: sync nothing_ — zero of the four capabilities has any implementation on `origin/main`, so no delta may be synced and the change stays active. **The split obligation is now live for `moderation-and-abuse-response`:** its implementation is proceeding on external draft PRs #1662/#1667 while its delta spec is held here, which is exactly the partial-implementation drift design.md warns against. Before any moderation code merges, that delta, its section 2 tasks, and its acceptance evidence must move into an independently complete successor change. **This lane recorded that obligation but did not discharge it**, because the moderation write-set is fenced to PRs #1662/#1667; a split done from here would collide with them. Discharging it requires the full delegation shape — create the successor, physically transfer the `moderation-and-abuse-response` delta and its section 2 tasks out of this change, and assign implementation, acceptance, sync, and archive ownership — not a naming note. The remaining three capabilities have no implementation lane and stay here.
+  - _split discharged 2026-07-25; sync disposition still "sync nothing"_ — **the moderation split is done, not just recorded.** `openspec/changes/moderation-and-abuse-response/` now holds the delta spec (moved by `git mv`, so the diff is a rename and the 1.4 requirement review carries over), the five section-2 implementation tasks with their premise notes, the in-flight fence for PRs #1662/#1667, and named implementation / acceptance / sync / archive ownership. Verified collision-free before the move: `gh pr view 1662/1667 --json files` (2026-07-25) shows neither draft touches this change directory. Section 2 here is now a pointer.
+    **Sync still nothing.** `node-authoring-and-autoresearch` has landed implementation (4.1-4.3) but not its acceptance evidence (4.6 optimization half, 4.7 rendered proof), and `packaged-tray-installation` / `real-world-handoffs-and-outcomes` have no implementation at all — so no delta may be synced and this change stays active. This task stays unchecked as the recurring sync gate; it also becomes live again for `node-authoring-and-autoresearch` if that capability lands separately from the other two, which would require the same split shape as moderation.
 - [ ] 6.4 Archive the completed change in the implementation landing lane and retire the STATUS claim.
-  - _not applicable yet_ — archiving now would sync four target-only deltas into canonical specs as as-built truth. Blocked until 6.3's disposition is "everything complete", which it is not.
+  - _not applicable yet_ — archiving now would sync three target-only deltas (tray, handoffs, outcomes) plus an authoring delta whose acceptance evidence is incomplete into canonical specs as as-built truth. Blocked until 6.3's disposition is "everything complete", which it is not.
