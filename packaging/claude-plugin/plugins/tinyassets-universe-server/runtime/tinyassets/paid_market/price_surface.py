@@ -192,6 +192,7 @@ def join_paid_observation(
     known_roots = (
         buyer_principal_root is not None and seller_principal_root is not None
     )
+    same_principal = known_roots and buyer_principal_root == seller_principal_root
     return PaidObservation(
         binding=binding,
         accounting_transaction_id=accounting.transaction_id,
@@ -205,7 +206,9 @@ def join_paid_observation(
         buyer_principal_root=buyer_principal_root,
         seller_principal_root=seller_principal_root,
         linked_party=linked_party,
-        index_eligible=known_roots and not same_owner and not linked_party,
+        index_eligible=(
+            known_roots and not same_owner and not same_principal and not linked_party
+        ),
     )
 
 
@@ -376,26 +379,45 @@ def _raw_vwap_field(
 ) -> PriceField:
     if len(observations) < min_samples:
         return _empty_field()
-    volumes: dict[tuple[str, str], int] = {}
-    values: dict[tuple[str, str], int] = {}
+    pair_volumes: dict[tuple[str, str], int] = {}
+    buyer_volumes: dict[tuple[str, str], int] = {}
+    seller_volumes: dict[tuple[str, str], int] = {}
     for observation in observations:
-        root = observation.seller_principal_root
-        assert root is not None
-        key = (root, root)
-        volumes[key] = volumes.get(key, 0) + observation.quantity
-        values[key] = (
-            values.get(key, 0)
-            + observation.unit_price_micros * observation.quantity
+        pair = observation.principal_pair
+        buyer = observation.buyer_principal_root
+        seller = observation.seller_principal_root
+        assert pair is not None and buyer is not None and seller is not None
+        pair_volumes[pair] = pair_volumes.get(pair, 0) + observation.quantity
+        buyer_key = (buyer, buyer)
+        seller_key = (seller, seller)
+        buyer_volumes[buyer_key] = (
+            buyer_volumes.get(buyer_key, 0) + observation.quantity
         )
-    weights = capped_pair_weights(volumes, principal_share_cap_ppm)
+        seller_volumes[seller_key] = (
+            seller_volumes.get(seller_key, 0) + observation.quantity
+        )
+    pair_scales = _capped_scales(pair_volumes, principal_share_cap_ppm)
+    buyer_scales = _capped_scales(buyer_volumes, principal_share_cap_ppm)
+    seller_scales = _capped_scales(seller_volumes, principal_share_cap_ppm)
     numerator = Fraction(0)
     denominator = Fraction(0)
-    for key, weight in weights.items():
-        numerator += Fraction(values[key], volumes[key]) * weight
+    for observation in observations:
+        pair = observation.principal_pair
+        buyer = observation.buyer_principal_root
+        seller = observation.seller_principal_root
+        assert pair is not None and buyer is not None and seller is not None
+        # The strongest applicable dampening wins. Structurally infeasible
+        # overlaps retain capped_pair_weights' volume-invariant equal weighting.
+        weight = observation.quantity * min(
+            pair_scales[pair],
+            buyer_scales[(buyer, buyer)],
+            seller_scales[(seller, seller)],
+        )
+        numerator += observation.unit_price_micros * weight
         denominator += weight
     value = int(numerator / denominator)
     latest = max(observation.observed_at for observation in observations)
-    owner_count = len(volumes)
+    owner_count = min(len(buyer_volumes), len(seller_volumes))
     return PriceField(
         value_micros=value,
         observed_at=latest,
@@ -410,6 +432,13 @@ def _raw_vwap_field(
         stale=False,
         executable=False,
     )
+
+
+def _capped_scales(
+    volumes: dict[tuple[str, str], int], principal_share_cap_ppm: int
+) -> dict[tuple[str, str], Fraction]:
+    weights = capped_pair_weights(volumes, principal_share_cap_ppm)
+    return {key: weight / volumes[key] for key, weight in weights.items()}
 
 
 def _native_ask_field(

@@ -10,6 +10,8 @@ from tinyassets.paid_market.price_surface import (
     ChainReceipt,
     DomainAcceptanceReceipt,
     NativeAsk,
+    PaidObservation,
+    PriceSurface,
     PriceSurfaceError,
     ReferenceQuote,
     ReferenceRequest,
@@ -615,6 +617,115 @@ def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidenc
     )
     assert thin.raw_vwap.owner_count == 1
     assert thin.raw_vwap.confidence == "low"
+
+
+def test_principal_root_self_trade_cannot_move_trusted_vwap() -> None:
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            observed_at=140,
+            buyer_root=f"buyer:honest:{index}",
+            seller_root=f"seller:honest:{index}",
+            source=f"honest:{index}",
+        )
+        for index in range(3)
+    ]
+    self_trade = _observation(
+        price=1_000_000,
+        quantity=1_000_000,
+        observed_at=140,
+        buyer_root="principal:self-dealer",
+        seller_root="principal:self-dealer",
+        source="self-trade",
+        requester_id="account:self-dealer:buyer",
+        host_owner_id="account:self-dealer:seller",
+    )
+    references = collect_references(
+        [],
+        ReferenceRequest(
+            market_class_id="sha256:market",
+            currency="tiny",
+            region="us",
+            required_components=frozenset({"usage"}),
+            terms_digest="sha256:terms",
+        ),
+        now=150,
+    )
+
+    surface = aggregate_price_surface(
+        market_class_id="sha256:market",
+        public_scope=("region:us", "batch"),
+        now=150,
+        observations=[*honest, self_trade],
+        native_asks=[],
+        references=references,
+        min_samples=3,
+        settlement_ttl=60,
+        principal_share_cap_ppm=250_000,
+    )
+
+    assert self_trade.index_eligible is False
+    assert surface.raw_vwap.value_micros == 100
+    assert surface.raw_vwap.sample_count == 3
+
+
+def test_buyer_side_wash_volume_beyond_cap_cannot_move_trusted_vwap() -> None:
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            observed_at=140,
+            buyer_root=f"buyer:honest:{index}",
+            seller_root=f"seller:honest:{index}",
+            source=f"honest:{index}",
+        )
+        for index in range(3)
+    ]
+    wash = [
+        _observation(
+            price=1_000,
+            quantity=1_000,
+            observed_at=140,
+            buyer_root="buyer:wash-principal",
+            seller_root=f"seller:wash-counterparty:{index}",
+            source=f"wash:{index}",
+        )
+        for index in range(12)
+    ]
+    references = collect_references(
+        [],
+        ReferenceRequest(
+            market_class_id="sha256:market",
+            currency="tiny",
+            region="us",
+            required_components=frozenset({"usage"}),
+            terms_digest="sha256:terms",
+        ),
+        now=150,
+    )
+
+    def aggregate(observations: list[PaidObservation]) -> PriceSurface:
+        return aggregate_price_surface(
+            market_class_id="sha256:market",
+            public_scope=("region:us", "batch"),
+            now=150,
+            observations=observations,
+            native_asks=[],
+            references=references,
+            min_samples=3,
+            settlement_ttl=60,
+            principal_share_cap_ppm=250_000,
+        )
+
+    capped = aggregate([*honest, *wash])
+    amplified = aggregate(
+        [*honest, *(replace(observation, quantity=1_000_000) for observation in wash)]
+    )
+
+    assert capped.raw_vwap.value_micros == 325
+    assert amplified.raw_vwap.value_micros == capped.raw_vwap.value_micros
+    assert amplified.raw_vwap.owner_count == 4
 
 
 def test_reversed_principal_pair_has_one_direction_insensitive_key() -> None:

@@ -17,7 +17,7 @@ unchecked.
 | 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
 | 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
 | 3.4 | built | Two fake adapters cover complete, partial, malformed, stale, timeout, and independent-failure cases without live calls. |
-| 3.5 | stale-inverted → built | Same-owner volume stays excluded while every positive-gross settlement retains the canonical fee. Principal-root caps and composite-only clamping are covered. |
+| 3.5 | stale-inverted → built | Account- and principal-root self-trades stay excluded while every positive-gross settlement retains the canonical fee. Pair/buyer/seller-root dampening, infeasible-cap equal weighting, and composite-only clamping are covered. |
 | 4.1 | built | Explicit free/BYOC/paid mandate selection creates no provider or money effect. |
 | 4.2 | built | Pure eligibility/ranking returns evidence only and owns no reservation. |
 | 4.3 | blocked-tenant (standalone value built) | Immutable receipt, ACL, retention, replay, and projection policy is built; durable tenant storage remains gated. |
