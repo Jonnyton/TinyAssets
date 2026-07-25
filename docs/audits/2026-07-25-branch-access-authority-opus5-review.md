@@ -55,6 +55,29 @@ The canonical chatbot connector is the acceptance surface. Agent Village is defe
 35. Gate claims and conformance packs are independent evidence, not branch mutations. The initial blanket author-only attachment rule conflicted with the as-built authorized-writer model. Public branches remain claimable by independent authorized writers with server-bound claimant/pack identity; private branches require the author, and run-derived claims additionally require run-read authority.
 36. `_run_read_allowed` derives universe scope only from an `actor="universe:<uid>"` prefix and returns true for every other actor. Scheduler/subscriber runs use synthetic actors, and universe ACL alone does not protect a private parent branch inside a public universe. Run records therefore need server-bound universe context independent of actor provenance, and all later reads/writes must conjoin universe ACL with parent-branch authority.
 
+## Opus 5 draft-artifact verdict — 16:10 PDT
+
+The post-reset Claude Opus 5 read-only review completed successfully in 616.6 seconds and returned `VERDICT: adapt`. The complete raw verdict is retained locally in `.codex-branch-auth-opus5-reset.md`.
+
+The two Critical findings were accepted:
+
+- Cross-capability Goal/gate/run/background/evaluation requirements were removed from this change's graph delta. They are now explicit non-blocking successor handoffs, each required to file under its as-built owning capability.
+- The conflicting run/action-registry rules were removed from this ADDED graph delta. Run authority must arrive as a MODIFIED graph requirement in its successor; action classification remains a dependency on `retire-legacy-live-mcp-tools`.
+
+Every Important finding was applied before re-review:
+
+- missing and denied node/version reuse now require byte-identical typed envelopes;
+- `set_fork_from` and unreadable stored `fork_from` projection are explicit;
+- the core defines one readable-version-to-parent helper for successors;
+- public branch-action ledger attribution is request-subject-bound and tested;
+- related-wiki uses explicit blank root context and public-only controls;
+- `test-identity-and-reset`, the authenticated-subject fixture, and the environment-identity test inventory are explicit dependencies/tasks;
+- receipt inventory/re-authorization/go-dark risk moved to the background successor, with STATUS promotion required if operator action proves necessary;
+- sibling task bodies no longer gate this change's sync/archive;
+- the load registry entry includes all shared-protocol classification/reference fields;
+- the nonexistent exact-branch `search_nodes` claim was removed; and
+- universe-loop receipt atomicity is owned solely by the successor's `.runs.db` authority record, never `soul.md`.
+
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
 ## Required ownership boundary

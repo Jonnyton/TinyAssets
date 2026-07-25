@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Page visibility applies to related-page projections from every surface
-The system SHALL apply the existing page-listing visibility predicate to every related-page projection, including branch-originated `related_wiki_pages`, before title or body matching, scoring, sorting, cap application, count calculation, or response-item construction. Audience and discovery scope SHALL remain relevance controls and MUST NOT substitute for page or universe authority.
+The system SHALL apply the existing page-listing visibility predicate to every related-page projection, including branch-originated root-corpus `related_wiki_pages`, before title or body matching, scoring, sorting, cap application, count calculation, or response-item construction. The root-corpus projection SHALL pass the same blank universe context as the root wiki listing surface; it SHALL NOT derive a per-page universe or grant context. Audience and discovery scope SHALL remain relevance controls and MUST NOT substitute for page or universe authority.
 
 #### Scenario: Restricted related page is absent from branch output
 - **WHEN** a restricted page mentions a branch or node visible to the caller but the page-listing predicate denies that page
@@ -19,8 +19,8 @@ The system SHALL apply the existing page-listing visibility predicate to every r
 - **WHEN** the same caller and authority context inspect a fixed wiki corpus through wiki list and a branch related-page projection
 - **THEN** every related-page path is contained in the set of paths visible through the wiki listing boundary
 
-#### Scenario: Public and granted pages remain available
-- **WHEN** a matching page is public or the caller has the applicable universe read, write, or admin grant
+#### Scenario: Public pages remain available
+- **WHEN** a matching root-corpus page is public
 - **THEN** its existing related-page path, title, summary, and match metadata remain available
 
 #### Scenario: Audience classification does not grant visibility

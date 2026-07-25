@@ -23,7 +23,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 - Preserve branch visibility across lineage projections.
 - Require author authority for every mutation and deletion path.
 - Apply existing page-listing visibility before related-wiki matching, ranking, counting, and response construction.
-- Preserve public reads, author reads, granted wiki reads, stable response keys, and commit-conflict recovery.
+- Preserve public reads, author reads, root-public wiki reads, stable response keys, and commit-conflict recovery.
 
 **Non-Goals:**
 
@@ -33,7 +33,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 - Implementing branch-version/evaluation authority in `tinyassets/api/evaluation.py`; a sibling change consumes the read/author helpers and coordinates run-linked evidence with the run sibling.
 - Implementing branch-adjacent goal binding, global canonical/selector binding, gate/conformance attachment, leaderboard/gate projection, or dry-inspection authority in this write-set; a third sibling consumes the same helpers and coordinates version execution with the run sibling.
 - Implementing scheduled or universe-loop binding/execution authority in this write-set; a background-authority sibling coordinates the active universe owner, scheduler storage, and the run executor.
-- Defining generic gate-event attest/verify/dispute/retract authority; a separate outcome-gate change owns server-bound event actors and lifecycle permissions, while this change covers only cited-branch visibility.
+- Defining gate-event citation or attest/verify/dispute/retract authority; the branch-adjacent and outcome-event successors own those requirements in their as-built capabilities.
 - Changing the public MCP handle set or response schema.
 - Making filesystem scans constant-time or claiming timing-side-channel resistance.
 - Building or validating an Agent Village surface.
@@ -45,7 +45,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 
 One branch-authority helper consumes `tinyassets.api.permissions.current_request_actor_id()`, the as-built request-local subject established by validated credentials. It treats `anonymous` as absent authority, does not call an identity helper that can fall back to `UNIVERSE_SERVER_USER`, and does not accept an actor, author, owner, or force value from action arguments.
 
-Branch creation and composite build paths persist the authenticated subject as branch `author`. Newly authored node definitions, approvals, branch-version publishers, git attribution, and branch-authoring receipts use the same subject. A caller-supplied `author`, `approved_by`, publisher, or receipt actor cannot select or impersonate another principal. Authorized reuse preserves copied source provenance rather than relabeling the source as the copier. A creation or mutation that requires authorship fails closed when no authenticated subject is available.
+Branch creation and composite build paths persist the authenticated subject as branch `author`. Newly authored node definitions, approvals, branch-version publishers, git attribution, branch-authoring receipts, and `_append_global_ledger(actor=...)` rows use the same subject. A caller-supplied `author`, `approved_by`, publisher, receipt actor, or environment fallback cannot select or impersonate another principal. Authorized reuse preserves copied source provenance rather than relabeling the source as the copier. A creation or mutation that requires authorship fails closed before state or ledger persistence when no authenticated subject is available.
 
 Alternative: reuse `_current_actor()` everywhere. Rejected because its environment fallback is an open authority defect and copying the expression would entrench it across every handler.
 
@@ -53,7 +53,7 @@ Alternative: reuse `_current_actor()` everywhere. Rejected because its environme
 
 `list_branches` passes `_request_branch_actor()` as viewer. An absent subject sees public branches only, `scope=mine` returns the stable empty list/count, and environment identity cannot add a private row or affect the count. An authenticated author continues to see their own private branches. The global reusable-node search adds a `viewer` parameter to its storage helper and applies the same public-plus-own-private rule before deduplication, reuse counting, ranking, capping, or response construction; foreign private nodes affect neither cards nor counts.
 
-The helper consumes the original caller-supplied ID or name selector, resolves names only through visibility-aware enumeration using `current_request_actor_id()`, and returns either the readable canonical ID plus branch or the canonical JSON error `{"error": "Branch '<selector>' not found."}`. `get_branch`, `describe_branch`, `validate_branch`, and `fork_tree` use it before constructing any branch-derived output.
+The branch helper consumes the original caller-supplied ID or name selector, resolves names only through visibility-aware enumeration using `current_request_actor_id()`, and returns either the readable canonical ID plus branch or the canonical JSON error `{"error": "Branch '<selector>' not found."}`. A shared version helper resolves `branch_version_id` to its parent, fails closed when that parent is missing/unreadable, and returns `{"error": "Branch version '<selector>' not found."}` with the original version selector. `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, clone, and `set_fork_from` consume these helpers rather than re-deriving visibility.
 
 A missing branch and a foreign private branch have byte-identical serialized errors, key order, punctuation, and status behavior. A denied name selector never changes into or exposes the stored branch ID. No denial note, existence flag, author, visibility value, or different key set is emitted.
 
@@ -61,15 +61,15 @@ Alternative: return an explicit forbidden error. Rejected because caller-supplie
 
 ### 3. Cross-branch reuse is a read before it is a write
 
-`node_ref.source` and `fork_from` first authorize the source branch using the same read helper. Authorization completes before a node body, `node_defs`, source code, prompt, tool list, or approval provenance is copied into caller-owned state.
+`node_ref.source` and every clone or `set_fork_from` version first authorize the source through the shared branch/version helpers. Authorization completes before a node body, `node_defs`, source code, prompt, tool list, approval provenance, or lineage edge is copied or attached.
 
-Public sources and the authenticated author's private sources remain reusable. A foreign private source produces the same not-found envelope and no partial branch mutation.
+Public sources and the authenticated author's private sources remain reusable. Missing and foreign-private source selectors produce byte-identical type-appropriate not-found envelopes and no partial branch mutation or lineage.
 
 Alternative: gate only the destination write. Rejected because authority over a caller-owned destination does not grant read authority over the source.
 
 ### 4. Lineage is a projection of readable branches
 
-The root and each ancestor in `fork_tree` pass the read helper. Encountering an unreadable ancestor terminates traversal without a placeholder, count, or metadata row. Descendant enumerations pass the authenticated subject as `viewer`, so public descendants and the viewer's own private descendants appear while foreign private descendants do not.
+The root and each ancestor in `fork_tree` pass the branch/version helpers, and `set_fork_from` authorizes the proposed parent version before persistence. Encountering an unreadable ancestor terminates traversal without a placeholder, pointer, count, or metadata row; get/describe omit stored `fork_from` when its parent is unreadable. Descendant enumerations pass the authenticated subject as `viewer`, so public descendants and the viewer's own private descendants appear while foreign private descendants do not.
 
 Alternative: use `include_private=False`. Rejected because it prevents a legitimate owner from seeing their own private forks while still leaving root/ancestor exact-ID reads unguarded.
 
@@ -89,15 +89,15 @@ Alternative: rely on write/costly action classification alone. Rejected because 
 
 ### 6. Related wiki projection reuses the existing page-listing predicate
 
-`_related_wiki_pages` parses page frontmatter, calls `visibility.page_visible_in_listing` with the applicable universe context, and excludes denied pages before title/body matching, scoring, sorting, cap application, count calculation, or item construction. It adds no audience/scope filter.
+`_related_wiki_pages` parses page frontmatter, calls `visibility.page_visible_in_listing(page, universe_id="")` with the same blank context as the root wiki corpus, and excludes denied pages before title/body matching, scoring, sorting, cap application, count calculation, or item construction. It never derives a per-page universe/grant context and adds no audience/scope filter.
 
 `items` and `truncated_count` are calculated exclusively from visible matches. When all matching pages are denied, the existing keys remain `[]` and `0`, indistinguishable from no matches. No `filtered_count`, caveat, denial note, hidden path, title, summary, `matched_via`, or cap displacement is exposed.
 
-The allowed related-page paths for a caller must be a subset of the paths returned by the wiki listing boundary for the same corpus and authority context. Public pages and pages available to a granted reader remain unchanged.
+The allowed related-page paths for a caller must be a subset of the paths returned by the root wiki listing boundary for the same blank context. Public pages remain unchanged; blank-root grants are intentionally unavailable.
 
 Alternative: filter after scoring/capping. Rejected because hidden pages would still influence ordering, displace visible results, and leak through `truncated_count`.
 
-### 7. Stored versions and branch-adjacent actions preserve the parent branch boundary
+### 7. Successor handoff: stored versions and branch-adjacent actions (non-normative here)
 
 An immutable version does not become public merely because its identifier is guessed or stored on a Goal. Before direct version execution, global canonical/selector binding, version retrieval, or any branch-derived projection, the system resolves the version's `branch_def_id` and applies the parent branch boundary. A missing parent branch fails closed.
 
@@ -111,7 +111,7 @@ Remix recording authorizes the parent as readable and the child as author-owned 
 
 Alternative: treat publication or possession of a version ID as read authority. Rejected because published versions retain private branch code and provenance, and their IDs are enumerable capability-shaped strings without capability semantics.
 
-### 8. Zero-host background execution consumes persisted authenticated authority
+### 8. Successor handoff: zero-host background authority (non-normative here)
 
 Direct MCP branch/version runs authorize with the live credential-validated request subject. Scheduled runs, subscriptions, and universe loops have no live request at fire time, so their authority is established earlier: an authenticated subject binds an exact public branch/version or their own private branch/version to the schedule or universe, and the server atomically persists an immutable receipt with `schema_version`, `binding_kind`, `binding_id`, `universe_id`, `target_kind`, `target_id`, `authorized_by`, and `issued_at` in the server-owned `.runs.db`. The editable `soul.md` loop declaration is target intent, never authority. Caller-supplied `owner_actor`, environment identity, branch-authored inputs, and queue payload fields cannot create or alter a receipt. Changing a binding's universe or target invalidates the old receipt and requires a fresh authenticated authorization.
 
@@ -123,11 +123,13 @@ The existing epoch-1 in-node enqueue path remains public-only because its task r
 
 Alternative: require a live request subject for every run. Rejected because it breaks the project's zero-host-online contract. Alternative: trust the schedule's actor string or universe ID alone. Rejected because caller-controlled owner fields and universe collaboration do not prove private branch authority.
 
-### 9. Delivery is split by collision and module ownership
+### 9. Delivery is split by capability ownership
 
 Wave 1 implements request-subject listing/search, ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py` plus the narrow `daemon_server.search_nodes(viewer=...)` seam. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
 
-The sibling `harden-background-branch-execution-authority` owns universe-loop and scheduler/subscription binding receipts in `tinyassets/api/universe.py`, the scheduler seams in `tinyassets/api/runtime_ops.py`, and `tinyassets/scheduler.py`; it reads the loop declaration through `tinyassets/universe_soul.py` but never stores authority in `soul.md`. It coordinates with the active universe-creation owner and lands before the run executor consumes those receipts.
+The remaining paragraphs in this section are non-normative successor handoffs, not requirements or completion gates of this change. Each successor must file its behavior under the as-built owning capabilities named in `tasks.md`; it must not restate those requirements under `graph-execution-substrate`.
+
+The sibling `harden-background-branch-execution-authority` owns universe-loop and scheduler/subscription binding receipts in `tinyassets/api/universe.py`, the scheduler seams in `tinyassets/api/runtime_ops.py`, and `tinyassets/scheduler.py`; it reads the loop declaration through `tinyassets/universe_soul.py` but never stores authority in `soul.md`. Its own `daemon-runtime-and-dispatch` and `universe-lifecycle-and-soul` deltas must inventory bindings that would become `reauthorization_required`, define the connector re-authorization path, and promote a STATUS host action only if that inventory proves operator intervention is required.
 
 The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and the server-bound run authority context in `tinyassets/runs.py`: direct live-branch/version execution uses the request subject, trusted background execution consumes the server-owned binding receipt, and later run surfaces conjoin the stored universe ACL with parent-branch authority. `goals action=run_canonical` remains safe only by delegating to that guarded version path. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling.
 
@@ -146,6 +148,9 @@ Before either sibling implements a legacy action, it re-checks the action's curr
 
 - **[Risk] A two-actor concurrency test is mislabeled as §14 load proof.** → Register a required `branch-authority-isolation-v1` scenario with the shared production-load-evidence protocol, run it on the real canonical connector/storage substrate, and forbid shaped/mock evidence from passing.
 
+- **[Risk] Retiring environment identity breaks no-auth/dev and existing tests.** → Depend on `test-identity-and-reset`, provide an authenticated-subject fixture, inventory the 189 environment-user references and 54 branch-creating test files, and preserve a clean Tier-3 setup path without treating process identity as credential evidence.
+- **[Successor risk] Receipt migration can take background work dark.** → The background successor must inventory affected bindings, backfill only from independent credential provenance, define the chatbot re-authorization path, and make any required operator action explicit before rollout.
+
 ## Migration Plan
 
 1. Land this reviewed target OpenSpec active and unsynced.
@@ -153,11 +158,8 @@ Before either sibling implements a legacy action, it re-checks the action's curr
 3. Implement Wave 1 reads, wiki projections, and lineage with RED-first tests.
 4. Implement Wave 2 source reuse and clone gates with no-partial-copy tests.
 5. Coordinate action-scope migration, then implement Wave 3 mutation/deletion authority and force separation.
-6. Land the background binding-authority sibling after its active universe/scheduler owners release, then land the direct/background run start and persistent read/write authority gate.
-7. Land the separately claimed branch-evaluation/version sibling using the same helpers.
-8. Land the separately claimed branch-adjacent goals/gates/projection sibling using the same helpers and the guarded version-execution path.
-9. Run focused tests, surrounding suites, Ruff, mutation probes, the deterministic cross-actor concurrency proof, the required `branch-authority-isolation-v1` production-load scenario, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
-10. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
+6. Run focused tests, surrounding suites, Ruff, mutation probes, the deterministic core cross-actor proof, the required `branch-authority-isolation-v1` production-load scenario, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
+7. Sync and archive only this change's core graph and wiki requirements after all owned tasks and acceptance evidence pass; successors advance and archive independently.
 
 Rollback reverts the unactivated implementation commits. Once activated, rollback must not re-enable unauthorized reads, reuse, mutation, deletion, or execution; a forward fix or fail-closed disablement is required.
 
@@ -166,4 +168,4 @@ Rollback reverts the unactivated implementation commits. Once activated, rollbac
 - Branch authority consumes `tinyassets.api.permissions.current_request_actor_id()`; PR #1691 is provider-destination authority and is not a dependency of this change.
 - Every branch creation surface covered here rejects `anonymous`; legacy anonymous or environment-attributed creation is intentionally retired rather than grandfathered.
 - Root-wiki related-page projections pass the same blank `universe_id=""` context as the root wiki surfaces. Current main is already fail-closed because `list_universe_acl` returns `[]` for a blank universe ID before storage access; a 2026-07-25 raw-DML forge probe confirmed even an injected empty-ID ACL row cannot grant root-page visibility.
-- Cross-branch `search_nodes` retains readable/public discovery through visibility-aware enumeration. Supplying an exact branch ID uses the byte-identical private-or-missing read boundary.
+- Cross-branch `search_nodes` retains public plus authenticated-owner-private discovery through visibility-aware enumeration; it has no exact branch selector parameter.

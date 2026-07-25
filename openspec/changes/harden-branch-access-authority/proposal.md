@@ -17,6 +17,8 @@ Canonical connector branch actions do not share one authenticated-subject author
 - Track live branch-adjacent `goals`, `gates`, leaderboard, gate-event citation, remix/provenance, and dry-inspection paths as a separately claimed sibling change: branch/version binding, claim/conformance attachment and lifecycle reads, every private-derived projection, attribution edges, and structural previews must consume the same request-subject authority boundary.
 - Require a graph-owned `branch-authority-isolation-v1` scenario through the shared production-load-evidence protocol before completion; deterministic two-actor tests and shaped/mock load runs cannot substitute for real canonical connector/storage evidence.
 
+This change owns only the core branch boundary and root related-wiki projection. The background, run, evaluation, branch-adjacent, and outcome/event bullets are durable non-blocking successor handoffs, not requirements or completion tasks here. Each successor owns its own OpenSpec delta under the as-built capability named in `tasks.md`; successors MUST NOT duplicate those requirements under `graph-execution-substrate`.
+
 ## Capabilities
 
 ### New Capabilities
@@ -30,4 +32,4 @@ None.
 
 ## Impact
 
-The core implementation affects `tinyassets/api/branches.py`, the `search_nodes(viewer=...)` storage seam in `tinyassets/daemon_server.py`, and new focused branch-authority tests. Separately claimed siblings own `tinyassets/api/runs.py`, `tinyassets/api/evaluation.py`, and the branch-adjacent goals/gates/projection modules enumerated in the design and tasks. All consume the as-built no-environment-fallback actor resolver in `tinyassets/api/permissions.py`; the core lane reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them, and any predicate change remains owned by `universe-visibility`. The work depends on lockstep action-scope classification in `retire-legacy-live-mcp-tools`, release of broad `tests/` claims, and the shared production-load harness before final proof. This proposal changes no MCP schema, deployment, canonical as-built spec, or Agent Village surface.
+The core implementation affects `tinyassets/api/branches.py`, the `search_nodes(viewer=...)` storage seam in `tinyassets/daemon_server.py`, and new focused branch-authority tests. Separately claimed successors own their runtime files and capability deltas. All consume the as-built no-environment-fallback actor resolver in `tinyassets/api/permissions.py`; the core lane reuses `tinyassets/api/visibility.py` and `tinyassets/api/wiki.py` without modifying them, and any predicate change remains owned by `universe-visibility`. The work depends on `test-identity-and-reset`, lockstep action-scope classification in `retire-legacy-live-mcp-tools`, release of broad `tests/` claims, and the shared production-load harness before final proof. This proposal changes no MCP schema, deployment, canonical as-built spec, or Agent Village surface.
