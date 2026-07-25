@@ -1321,7 +1321,7 @@ jobs:
             echo "### Terminal release-state receipt"
             echo ""
             echo "- Container path: \`/data/release-state.json\`"
-            echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"outcome\"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
+            echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "${FORWARD_SUCCEEDED}" = "true" ]; then
             if ! python - "$RUNNER_TEMP/tinyassets-release-state.json" <<'PY'

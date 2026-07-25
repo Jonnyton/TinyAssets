@@ -1162,3 +1162,15 @@ Notes:
 - Review gate: focused red/green tests, strict OpenSpec, workflow checks, independent diff review, then live rerun
 - Memory/implications: PR #1718 review artifact; canonical hardening tasks remain separately open
 - Ship/abandon: ship through PR #1722; both owning deploy lanes and direct live probes now prove their part
+
+## 2026-07-24 - fix deploy receipt summary quoting
+
+- Provider: codex-gpt56-deploy-summary
+- Branch: fix/deploy-summary-quoting
+- Lane state: PR open; awaiting Opus 5 review and required checks
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-summary-quoting
+- STATUS/Issue/PR: production Deploy prod run 30141691915; PR #1725
+- Scope: fix the post-deploy receipt Summary literal-escape SyntaxError
+- Review gate: focused RED/GREEN test, workflow suite, actionlint, independent Opus 5 review
+- Memory/implications: receipt validation/publication succeeded; Summary rendering alone failed
+- Ship/abandon: publish reviewed PR to main; do not deploy from this lane
