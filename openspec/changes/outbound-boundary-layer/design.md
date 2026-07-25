@@ -44,11 +44,13 @@ If any item in a batch cannot be admitted, effected, or reconciled, the batch ho
 
 ### B5 — Connector definitions are commons primitives, not platform integrations
 
-Native MCP servers are discovered at connect time from `{server, auth, scopes}`. The non-MCP long tail is generated mechanically from OpenAPI into MCP-shaped scoped actions and reviewed as ordinary commons artifacts that can be remixed with attribution. This follows the host's enabling-primitives steer: the platform ships the generation, scoping, typing, cap-awareness, and credential-blindness machinery, and users compose the specific integrations. A new destination must never require a platform-side support ticket.
+Native MCP servers are discovered at connect time from `{server, auth, scopes}`. The non-MCP long tail is generated mechanically from OpenAPI into MCP-shaped scoped actions and reviewed as ordinary commons artifacts that can be remixed with attribution. This restates the released delta's own requirement that connecting to an API is a universe action rather than a platform integration ticket: the platform ships the generation, scoping, typing, cap-awareness, and credential-blindness machinery, and users compose the specific integrations.
 
 ### B6 — The boundary never becomes a second money path
 
-Value-moving boundary effects settle through the single authenticated transaction transport owned by `paid-market-track-e-wave-2-transport`, and any priced comparison reads through `paid-market-live-price-discovery`. The boundary layer contributes authority, caps, journaling, reconciliation, and receipts — never its own accounting. This is the umbrella's one-ledger invariant applied at the outbound edge.
+Value-moving boundary effects settle through the single authenticated transaction transport owned by `paid-market-track-e-wave-2-transport`, and any priced comparison reads through `paid-market-live-price-discovery`. The boundary layer contributes authority, caps, journaling, reconciliation, and receipts — never its own accounting. This applies the umbrella's approved decision D3 ("`paid-market-economy` owns one money transport before market expansion") at the outbound edge; real-fund wallet and chain effects stay with the separately reviewed §18.6 successor.
+
+Scope note: this decision is only about not forking a second accounting path. It makes no claim about platform custody — `credential-vault` is the canonical daemon-side credential custody owner and this change consumes it, and escrow custody belongs to `paid-market-economy`. The stronger "platform never holds custody" framing belongs to the host-gated open-production-commons reframe recorded in `.agents/handoffs/2026-07-19-distributed-execution-resume/RESUME-SPEC.md` §9, which is explicitly not authorized for implementation and is therefore not a requirement here.
 
 ### B7 — Grants are the only source of outbound authority
 

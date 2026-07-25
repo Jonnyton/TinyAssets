@@ -2,7 +2,8 @@
 
 - [ ] 0.1 Before any implementation write, re-verify against `origin/main` that `openspec/specs/external-effect-receipts/spec.md` still describes caller-supplied hint semantics and no batch guarantee; if a later change already landed system-derived identity, reclassify these tasks instead of building over them.
 - [ ] 0.2 Confirm `paid-market-track-e-wave-2-transport` has landed its single authenticated transaction transport before implementing any value-moving boundary effect; until then, implement only non-value-moving boundary behavior.
-- [ ] 0.3 Confirm the umbrella `build-forward-platform-capabilities` cross-slice invariants (one work-order primitive, one ledger, no platform custody, enabling primitives) still hold and record any divergence as a design change here, not as silent drift.
+- [ ] 0.3 Confirm the umbrella `build-forward-platform-capabilities` decisions D1–D8 still hold for this slice and record any divergence as a design change here, not as silent drift.
+- [ ] 0.4 Do not implement against the host-gated open-production-commons reframe (`.agents/handoffs/2026-07-19-distributed-execution-resume/RESUME-SPEC.md` §9). It is unapproved context, blocked on a host Q6 confirmation and PLAN.md foldback approval. Implement so the reframe stays possible — do not foreclose a later unified work-order/lineage model — but take no requirement from it.
 
 ## 1. Connection resource ledger and grants
 

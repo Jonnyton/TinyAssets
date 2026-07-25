@@ -55,7 +55,7 @@ Node inputs and outputs SHALL reference content-addressed artifacts carrying MIM
 - **THEN** graph compilation fails with the producer, consumer, and incompatible types named
 
 ### Requirement: Value-moving boundary effects settle through the single market transport
-The boundary layer SHALL NOT create, hold, or reconcile monetary balances of its own. A boundary effect that moves value SHALL bind its journaled intent and terminal receipt to the single authenticated transaction transport owned by `paid-market-economy`, and any priced comparison it needs SHALL be read from the price/quote owner rather than computed at the boundary. The platform SHALL NOT take custody of user funds or credentials in order to perform an outbound effect; the boundary contributes authority, caps, journaling, reconciliation, and receipts only.
+The boundary layer SHALL NOT create, hold, or reconcile monetary balances of its own. A boundary effect that moves value SHALL bind its journaled intent and terminal receipt to the single authenticated transaction transport owned by `paid-market-economy`, and any priced comparison it needs SHALL be read from the price/quote owner rather than computed at the boundary. The boundary contributes authority, caps, journaling, reconciliation, and receipts only. Real-fund wallet and chain effects remain owned by the separately reviewed §18.6 successor, which the boundary consumes and never re-implements.
 
 #### Scenario: a value-moving effect has no boundary-local ledger
 - **WHEN** an outbound effect transfers value
