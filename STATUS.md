@@ -44,6 +44,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
 
+| Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
+
 ## Live brain notes
 
 Provider capacity: Claude remains rate-limited until its Friday reset; use non-Claude capacity. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
