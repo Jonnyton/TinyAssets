@@ -904,6 +904,7 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
             continue
         for entry in entries:
             path = Path(entry.path)
+            normalized_name = entry.name.casefold()
             if entry.is_symlink() or _is_link_or_reparse(path):
                 blockers.append(
                     f"home contains link or reparse point: {path.relative_to(home)}"
@@ -914,19 +915,19 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home crosses a nested mount boundary: {path.relative_to(home)}"
                 )
                 continue
-            if entry.name in _CREDENTIAL_NAMES:
+            if normalized_name in _CREDENTIAL_NAMES:
                 blockers.append(
                     f"home contains credential artifact: {path.relative_to(home)}"
                 )
                 continue
-            if entry.name.startswith(_HOME_AUDIT_PREFIXES):
+            if normalized_name.startswith(_HOME_AUDIT_PREFIXES):
                 blockers.append(
                     f"home-local audit or receipt store requires archival: "
                     f"{path.relative_to(home)}"
                 )
                 continue
             if entry.is_dir(follow_symlinks=False):
-                if entry.name in _HOME_OPERATIONAL_DIRECTORIES:
+                if normalized_name in _HOME_OPERATIONAL_DIRECTORIES:
                     blockers.append(
                         "home operational directory has no scoped-reset "
                         f"adapter: {path.relative_to(home)}"
@@ -940,7 +941,7 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     continue
                 pending.append(path)
             else:
-                base_name = entry.name
+                base_name = normalized_name
                 for suffix in ("-journal", "-shm", "-wal"):
                     if base_name.endswith(suffix):
                         base_name = base_name.removesuffix(suffix)
@@ -960,6 +961,23 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                         f"{path.relative_to(home)}"
                     )
     return tuple(blockers)
+
+
+def _reset_state_digest(
+    database_actions: object,
+    filesystem_actions: object,
+) -> str:
+    state_payload = {
+        "database_actions": database_actions,
+        "filesystem_actions": filesystem_actions,
+    }
+    return "sha256:" + hashlib.sha256(
+        json.dumps(
+            state_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 def _matching_count(
@@ -1582,17 +1600,7 @@ def plan_test_identity_reset(
             ),
         })
 
-    state_payload = {
-        "database_actions": actions,
-        "filesystem_actions": filesystem_actions,
-    }
-    state_digest = "sha256:" + hashlib.sha256(
-        json.dumps(
-            state_payload,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    state_digest = _reset_state_digest(actions, filesystem_actions)
     plan_inputs = {
         "inventory_revision": INVENTORY_REVISION,
         "roster_revision": roster.revision,
@@ -1923,6 +1931,7 @@ def _write_journal(
     principal_fingerprint: str,
     source_path: Path | None,
     staging_path: Path | None,
+    home_filesystem_identity: object,
 ) -> None:
     payload = {
         "version": 1,
@@ -1933,6 +1942,7 @@ def _write_journal(
         "principal_fingerprint": principal_fingerprint,
         "source_path": str(source_path) if source_path else "",
         "staging_path": str(staging_path) if staging_path else "",
+        "home_filesystem_identity": home_filesystem_identity,
     }
     temporary = path.with_suffix(".tmp")
     with temporary.open("x", encoding="utf-8", newline="\n") as handle:
@@ -1984,6 +1994,7 @@ def _validated_journal(
     principal_fingerprint: str,
     source: Path | None,
     staging: Path | None,
+    home_filesystem_identity: object,
 ) -> dict[str, object]:
     if _is_link_or_reparse(path) or not path.is_file():
         raise ScopedResetRecoveryError(
@@ -1995,6 +2006,12 @@ def _validated_journal(
         raise ScopedResetRecoveryError(
             f"incomplete reset journal is invalid: {plan_id}"
         ) from exc
+    if (staging is None) != (home_filesystem_identity is None) or (
+        staging is not None and not isinstance(home_filesystem_identity, dict)
+    ):
+        raise ScopedResetRecoveryError(
+            f"incomplete reset journal filesystem identity is invalid: {plan_id}"
+        )
     expected = {
         "version": 1,
         "plan_id": plan_id,
@@ -2004,6 +2021,7 @@ def _validated_journal(
         "principal_fingerprint": principal_fingerprint,
         "source_path": str(source) if source else "",
         "staging_path": str(staging) if staging else "",
+        "home_filesystem_identity": home_filesystem_identity,
     }
     if payload != expected:
         raise ScopedResetRecoveryError(
@@ -2073,6 +2091,7 @@ def _prepare_operation(
     plan_json = json.dumps(
         {
             "database_actions": plan["database_actions"],
+            "filesystem_actions": plan["filesystem_actions"],
             "state_digest": plan["state_digest"],
         },
         sort_keys=True,
@@ -2195,7 +2214,32 @@ def _delete_planned_rows(
         conn.execute(f'DELETE FROM "{table}" WHERE {where}', values)
 
 
-def _safe_cleanup_staging(root: Path, staging: Path | None) -> None:
+def _assert_recovery_filesystem_identity(
+    path: Path,
+    planned_identity: object,
+) -> None:
+    if not isinstance(planned_identity, dict):
+        raise ScopedResetRecoveryError(
+            "reset recovery filesystem identity is missing from the reviewed plan"
+        )
+    try:
+        current_identity = _home_filesystem_identity(path)
+    except (OSError, ScopedResetBlocked) as exc:
+        raise ScopedResetRecoveryError(
+            "reset recovery filesystem identity cannot be verified"
+        ) from exc
+    if current_identity != planned_identity:
+        raise ScopedResetRecoveryError(
+            "reset recovery filesystem identity changed after review"
+        )
+
+
+def _safe_cleanup_staging(
+    root: Path,
+    staging: Path | None,
+    *,
+    planned_identity: object,
+) -> None:
     if staging is None or not staging.exists():
         return
     resolved = staging.resolve(strict=True)
@@ -2206,6 +2250,7 @@ def _safe_cleanup_staging(root: Path, staging: Path | None) -> None:
         or _is_link_or_reparse(resolved)
     ):
         raise ScopedResetRecoveryError("refusing unsafe reset staging cleanup")
+    _assert_recovery_filesystem_identity(resolved, planned_identity)
     shutil.rmtree(resolved)
     operation_dir = resolved.parent
     if operation_dir.is_dir() and not any(operation_dir.iterdir()):
@@ -2402,6 +2447,11 @@ def apply_test_identity_reset(
                 principal_fingerprint=principal_fingerprint,
                 source_path=source,
                 staging_path=staging,
+                home_filesystem_identity=(
+                    filesystem_action.get("home_filesystem_identity")
+                    if filesystem_action is not None
+                    else None
+                ),
             )
             _fault(fault_injector, "after_journal")
             _prepare_operation(
@@ -2466,7 +2516,15 @@ def apply_test_identity_reset(
                 raise
             _fault(fault_injector, "after_commit")
             _fault(fault_injector, "before_cleanup")
-            _safe_cleanup_staging(root, staging)
+            _safe_cleanup_staging(
+                root,
+                staging,
+                planned_identity=(
+                    filesystem_action.get("home_filesystem_identity")
+                    if filesystem_action is not None
+                    else None
+                ),
+            )
             _fault(fault_injector, "after_cleanup")
             _complete_operation(
                 conn,
@@ -2480,10 +2538,71 @@ def apply_test_identity_reset(
             conn.close()
 
 
+def _operation_plan_evidence(
+    operation: sqlite3.Row,
+) -> dict[str, object]:
+    try:
+        plan = json.loads(str(operation["plan_json"]))
+        database_actions = plan["database_actions"]
+        filesystem_actions = plan["filesystem_actions"]
+        state_digest = plan["state_digest"]
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise ScopedResetRecoveryError(
+            "incomplete reset has invalid content-free plan evidence"
+        ) from exc
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(database_actions, list)
+        or not isinstance(filesystem_actions, list)
+        or state_digest
+        != _reset_state_digest(database_actions, filesystem_actions)
+    ):
+        raise ScopedResetRecoveryError(
+            "incomplete reset has invalid content-free plan evidence"
+        )
+    return {str(key): value for key, value in plan.items()}
+
+
+def _operation_home_filesystem_identity(
+    operation: sqlite3.Row,
+    *,
+    source: Path | None,
+    staging: Path | None,
+) -> object:
+    plan = _operation_plan_evidence(operation)
+    filesystem_actions = plan["filesystem_actions"]
+    if staging is None:
+        if filesystem_actions:
+            raise ScopedResetRecoveryError(
+                "incomplete reset filesystem evidence disagrees with scope"
+            )
+        return None
+    if (
+        source is None
+        or len(filesystem_actions) != 1
+        or not isinstance(filesystem_actions[0], dict)
+    ):
+        raise ScopedResetRecoveryError(
+            "incomplete reset filesystem identity is invalid"
+        )
+    action = filesystem_actions[0]
+    if (
+        action.get("action") != "stage_then_remove_home"
+        or action.get("path") != str(source)
+        or action.get("owner_principal_fingerprint")
+        != str(operation["principal_fingerprint"])
+        or not isinstance(action.get("home_filesystem_identity"), dict)
+    ):
+        raise ScopedResetRecoveryError(
+            "incomplete reset filesystem identity is invalid"
+        )
+    return action["home_filesystem_identity"]
+
+
 def _operation_evidence_from_row(
     root: Path,
     row: sqlite3.Row,
-) -> tuple[Path | None, Path | None, Path]:
+) -> tuple[Path | None, Path | None, Path, object]:
     plan_id = str(row["plan_id"])
     home_id = str(row["home_id"]) if row["home_id"] else None
     source, staging, journal = _expected_operation_evidence(
@@ -2521,6 +2640,11 @@ def _operation_evidence_from_row(
                 raise ScopedResetRecoveryError(
                     f"incomplete reset path evidence crossed filesystems: {plan_id}"
                 )
+    planned_identity = _operation_home_filesystem_identity(
+        row,
+        source=source,
+        staging=staging,
+    )
     _validated_journal(
         journal,
         plan_id=plan_id,
@@ -2529,8 +2653,9 @@ def _operation_evidence_from_row(
         principal_fingerprint=str(row["principal_fingerprint"]),
         source=source,
         staging=staging,
+        home_filesystem_identity=planned_identity,
     )
-    return source, staging, journal
+    return source, staging, journal, planned_identity
 
 
 def _sweep_terminal_or_orphan_journals(
@@ -2609,6 +2734,7 @@ def _sweep_terminal_or_orphan_journals(
             principal_fingerprint=str(payload.get("principal_fingerprint", "")),
             source=source,
             staging=staging,
+            home_filesystem_identity=payload.get("home_filesystem_identity"),
         )
         if staging is not None and staging.exists():
             raise ScopedResetRecoveryError(
@@ -2632,10 +2758,17 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
     ).fetchall()
     for row in rows:
         plan_id = str(row["plan_id"])
-        source, staging, journal = _operation_evidence_from_row(root, row)
+        source, staging, journal, planned_identity = _operation_evidence_from_row(
+            root,
+            row,
+        )
         witness = bool(row["commit_witness"])
         if witness:
-            _safe_cleanup_staging(root, staging)
+            _safe_cleanup_staging(
+                root,
+                staging,
+                planned_identity=planned_identity,
+            )
             _complete_operation(
                 conn,
                 plan_id=plan_id,
@@ -2644,24 +2777,29 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
             _remove_journal(journal)
             continue
         _verify_precommit_database_state(conn, row)
-        if staging is not None and staging.exists():
+        if staging is not None:
             if source is None:
                 raise ScopedResetRecoveryError(
                     f"staged reset has no source path: {plan_id}"
                 )
-            if source.exists():
+            source_exists = source.exists()
+            staging_exists = staging.exists()
+            if source_exists == staging_exists:
                 raise ScopedResetRecoveryError(
-                    f"rollback would overwrite replacement state: {plan_id}"
+                    f"pre-commit reset filesystem state is ambiguous: {plan_id}"
                 )
-            try:
-                os.replace(staging, source)
-            except OSError as exc:
-                raise ScopedResetRecoveryError(
-                    f"rollback rename failed for plan {plan_id}"
-                ) from exc
-            _fsync_directory(root)
-            _fsync_directory(staging.parent)
-        if staging is not None:
+            if staging_exists:
+                _assert_recovery_filesystem_identity(staging, planned_identity)
+                try:
+                    os.replace(staging, source)
+                except OSError as exc:
+                    raise ScopedResetRecoveryError(
+                        f"rollback rename failed for plan {plan_id}"
+                    ) from exc
+                _fsync_directory(root)
+                _fsync_directory(staging.parent)
+            else:
+                _assert_recovery_filesystem_identity(source, planned_identity)
             operation_dir = staging.parent
             if operation_dir.is_dir() and not any(operation_dir.iterdir()):
                 operation_dir.rmdir()
@@ -2691,17 +2829,7 @@ def _verify_precommit_database_state(
     conn: sqlite3.Connection,
     operation: sqlite3.Row,
 ) -> None:
-    try:
-        plan = json.loads(str(operation["plan_json"]))
-        actions = plan["database_actions"]
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise ScopedResetRecoveryError(
-            "incomplete reset has invalid content-free plan evidence"
-        ) from exc
-    if not isinstance(actions, list):
-        raise ScopedResetRecoveryError(
-            "incomplete reset has invalid database action evidence"
-        )
+    actions = _operation_plan_evidence(operation)["database_actions"]
     for action in actions:
         if not isinstance(action, dict):
             raise ScopedResetRecoveryError(

@@ -13,6 +13,7 @@ import pytest
 
 import tinyassets.scoped_reset as scoped_reset
 from tinyassets.scoped_reset import (
+    ScopedResetBlocked,
     ScopedResetPlanChanged,
     ScopedResetRecoveryError,
     apply_test_identity_reset,
@@ -326,6 +327,25 @@ def test_recovery_rejects_journal_content_tampering(seeded: Path) -> None:
     assert not (seeded / _HOME_A).exists()
 
 
+def test_journal_persists_reviewed_filesystem_identity(seeded: Path) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_prepare"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_prepare"),
+        )
+
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    journal = seeded / ".scoped-reset-journal" / f"{operation_id}.json"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    planned_identity = plan["filesystem_actions"][0]["home_filesystem_identity"]
+
+    assert payload.get("home_filesystem_identity") == planned_identity
+
+
 def test_recovery_rejects_linked_staging_operation_ancestor(
     seeded: Path,
 ) -> None:
@@ -366,6 +386,148 @@ def test_recovery_rejects_linked_staging_operation_ancestor(
     with pytest.raises(ScopedResetRecoveryError, match="path evidence"):
         recover_scoped_resets(seeded)
     assert not (seeded / _HOME_A).exists()
+
+
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "reviewed_source",
+        "pre_rename",
+        "precommit_recovery",
+        "postcommit_cleanup",
+    ],
+)
+def test_foreign_directory_is_refused_at_every_filesystem_boundary(
+    seeded: Path,
+    boundary: str,
+) -> None:
+    plan = _plan(seeded)
+    bob_file = seeded / _HOME_B / "bobs_novel.md"
+    bob_file.write_text("belongs to bob\n", encoding="utf-8")
+    parked_alice = seeded.parent / f"parked-alice-{boundary}"
+
+    if boundary == "reviewed_source":
+        (seeded / _HOME_A).replace(parked_alice)
+        (seeded / _HOME_B).replace(seeded / _HOME_A)
+        with pytest.raises((ScopedResetBlocked, ScopedResetPlanChanged)):
+            apply_test_identity_reset(
+                seeded,
+                alias="alice",
+                roster=_roster(),
+                plan_id=plan["plan_id"],
+            )
+        foreign_location = seeded / _HOME_A
+    elif boundary == "pre_rename":
+        def replace_before_rename(point: str) -> None:
+            if point == "before_rename":
+                (seeded / _HOME_A).replace(parked_alice)
+                (seeded / _HOME_B).replace(seeded / _HOME_A)
+
+        with pytest.raises(ScopedResetPlanChanged, match="filesystem identity"):
+            apply_test_identity_reset(
+                seeded,
+                alias="alice",
+                roster=_roster(),
+                plan_id=plan["plan_id"],
+                fault_injector=replace_before_rename,
+            )
+        foreign_location = seeded / _HOME_A
+    else:
+        fault_point = (
+            "after_rename"
+            if boundary == "precommit_recovery"
+            else "after_commit"
+        )
+        with pytest.raises(RuntimeError, match=f"injected:{fault_point}"):
+            apply_test_identity_reset(
+                seeded,
+                alias="alice",
+                roster=_roster(),
+                plan_id=plan["plan_id"],
+                fault_injector=_fault_after(fault_point),
+            )
+        operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+        staging = seeded / ".scoped-reset-staging" / operation_id / "home"
+        staging.replace(parked_alice)
+        (seeded / _HOME_B).replace(staging)
+        with pytest.raises(ScopedResetRecoveryError, match="filesystem identity"):
+            recover_scoped_resets(seeded)
+        foreign_location = staging
+
+    assert (foreign_location / "bobs_novel.md").read_text(
+        encoding="utf-8"
+    ) == "belongs to bob\n"
+    assert (parked_alice / "soul.md").is_file()
+
+
+@pytest.mark.parametrize("replacement_state", ["neither", "foreign_source"])
+def test_precommit_recovery_refuses_unaccounted_home_state(
+    seeded: Path,
+    replacement_state: str,
+) -> None:
+    plan = _plan(seeded)
+    bob_file = seeded / _HOME_B / "bobs_novel.md"
+    bob_file.write_text("belongs to bob\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    staging = seeded / ".scoped-reset-staging" / operation_id / "home"
+    parked_alice = seeded.parent / f"parked-alice-{replacement_state}"
+    staging.replace(parked_alice)
+    if replacement_state == "foreign_source":
+        (seeded / _HOME_B).replace(seeded / _HOME_A)
+
+    with pytest.raises(ScopedResetRecoveryError):
+        recover_scoped_resets(seeded)
+
+    with _connect(seeded) as conn:
+        state = conn.execute(
+            "SELECT state FROM scoped_reset_operations WHERE plan_id = ?",
+            (plan["plan_id"],),
+        ).fetchone()
+    assert state is not None and state[0] == "staged"
+    assert (parked_alice / "soul.md").is_file()
+    if replacement_state == "foreign_source":
+        assert (seeded / _HOME_A / "bobs_novel.md").read_text(
+            encoding="utf-8"
+        ) == "belongs to bob\n"
+    else:
+        assert bob_file.read_text(encoding="utf-8") == "belongs to bob\n"
+
+
+def test_precommit_recovery_accepts_already_restored_owned_home(
+    seeded: Path,
+) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    staging = seeded / ".scoped-reset-staging" / operation_id / "home"
+    staging.replace(seeded / _HOME_A)
+
+    recover_scoped_resets(seeded)
+
+    with _connect(seeded) as conn:
+        state = conn.execute(
+            "SELECT state FROM scoped_reset_operations WHERE plan_id = ?",
+            (plan["plan_id"],),
+        ).fetchone()
+    assert state is not None and state[0] == "rolled_back"
+    assert (seeded / _HOME_A / "soul.md").is_file()
 
 
 def test_missing_commit_witness_never_restores_files_over_deleted_rows(

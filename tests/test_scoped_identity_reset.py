@@ -1336,6 +1336,105 @@ def test_apply_refuses_home_directory_identity_swap(
     assert (parked_alice / "soul.md").is_file()
 
 
+def test_recovery_refuses_preexisting_directory_at_staging_path(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import (
+        ScopedResetRecoveryError,
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+        recover_scoped_resets,
+    )
+
+    bob_file = seeded / _HOME_B / "bobs_novel.md"
+    bob_file.write_text("belongs to bob\n", encoding="utf-8")
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    def fail_after_commit(point: str) -> None:
+        if point == "after_commit":
+            raise RuntimeError("injected:after_commit")
+
+    with pytest.raises(RuntimeError, match="injected:after_commit"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=fail_after_commit,
+        )
+
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    staging = seeded / ".scoped-reset-staging" / operation_id / "home"
+    parked_alice = seeded.parent / "parked-alice-staging"
+    staging.replace(parked_alice)
+    (seeded / _HOME_B).replace(staging)
+
+    with pytest.raises(ScopedResetRecoveryError, match="filesystem identity"):
+        recover_scoped_resets(seeded)
+
+    assert (staging / "bobs_novel.md").read_text(
+        encoding="utf-8"
+    ) == "belongs to bob\n"
+    assert (parked_alice / "soul.md").is_file()
+
+
+@pytest.mark.parametrize(
+    ("store_name", "blocker_text", "is_directory"),
+    [
+        ("AUTH.JSON", "home contains credential artifact", False),
+        ("Auth.Json", "home contains credential artifact", False),
+        (".CREDENTIAL-VAULT.JSON", "home contains credential artifact", False),
+        ("BID_EXECUTION_LOG.JSON", "home-local audit or receipt store", False),
+        (
+            "CHECKPOINTS.DB",
+            "home operational store has no scoped-reset adapter",
+            False,
+        ),
+        (
+            "CHECKPOINTS",
+            "home operational directory has no scoped-reset adapter",
+            True,
+        ),
+    ],
+)
+def test_casefolded_protected_store_aborts_without_deletion(
+    seeded: Path,
+    store_name: str,
+    blocker_text: str,
+    is_directory: bool,
+) -> None:
+    from tinyassets.scoped_reset import (
+        ScopedResetBlocked,
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+    )
+
+    if sys.platform == "win32":
+        case_probe = seeded.parent / "CaseFoldProbe"
+        case_probe.mkdir()
+        assert (seeded.parent / "casefoldprobe").exists()
+
+    store = seeded / _HOME_A / store_name
+    if is_directory:
+        store.mkdir()
+        protected = store / "protected.bin"
+    else:
+        protected = store
+    protected.write_bytes(b"protected operational state")
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert any(blocker.startswith(blocker_text) for blocker in plan["blockers"])
+    with pytest.raises(ScopedResetBlocked):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+    assert protected.read_bytes() == b"protected operational state"
+    assert (seeded / _HOME_A / "soul.md").is_file()
+
+
 @pytest.mark.parametrize(
     "store_name",
     [
