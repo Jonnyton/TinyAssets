@@ -2,10 +2,10 @@
 
 **Change:** `openspec/changes/retire-legacy-live-mcp-tools` — evidence for tasks 2.1, 2.2, 2.3.
 **Date:** 2026-07-25. **Provider:** claude-code (Opus 5), branch `claude/o5-retire-inventory`.
-**Revision:** **v3** — v2 (`9bd88a07`) reworked v1 (`18379010`) after an opposite-provider review
-returned **reject**; a second opposite-provider review of v2 returned **adapt**, and v3 folds its
-three required corrections (B2 file count, 2.3-D/2.3-E blocker prose, and a new
-authorization-metadata class). See §10 for the full disposition of both rounds.
+**Revision:** **v4** — v2 (`9bd88a07`) reworked v1 (`18379010`) after an opposite-provider review
+returned **reject**; v3 folded a second review's **adapt** corrections; and v4 folds the third
+review's **adapt** correction to Finding 2.3-F's failure mode and canonical reachability. B2's
+17/5 result and Findings 2.3-D/2.3-E are unchanged. See §10 for the full disposition of all rounds.
 **Base:** analysis tree = `18379010`. Re-verified against `origin/main` on 2026-07-25; the
 intervening main commits are STATUS/coordination-only and touch no file cited here.
 **Method:** read-only static analysis over the working tree — Python AST (binding-aware),
@@ -370,9 +370,9 @@ is the one test that **must** be updated by task 4.1.
 >    equivalent" while listing only two names plus a vague "premise verbs." Enumerated exactly
 >    above: four unreachable, one reachable.
 
-### 4f. Class L — authorization / action-scope metadata (new in v3)
+### 4f. Class L — authorization / action-scope metadata (new in v3, corrected in v4)
 
-> ### 🔴 Finding 2.3-F (new in v3) — legacy tool names are load-bearing **security** state, not residue
+> ### 🔴 Finding 2.3-F (corrected in v4) — legacy tool names are load-bearing authorization and availability state, not residue
 >
 > `tinyassets/auth/provider.py:516-618` builds the runtime action-scope table by calling
 > `_extend_scope_rows(..., tool=<name>, ...)` five times, keyed on **five of the six legacy tool
@@ -381,28 +381,38 @@ is the one test that **must** be updated by task 4.1.
 > money-write set (`escrow_lock/release/refund/fund/set_wallet/withdraw`) that a prior review
 > flagged as silently read-classified.
 >
-> **These names stay live after retirement.** The api-layer dispatchers hardcode them as string
-> literals when enforcing scope, and — per Finding 2.3-A — the canonical handles delegate into
-> **those same api-layer impls**. So a call arriving via `read_graph`/`write_graph` still enforces
-> against the legacy-named scope rows:
+> **Five enforcement sites stay live through canonical routes after retirement; `gates` does not.** The
+> api-layer dispatchers hardcode legacy tool names as string literals when enforcing scope, and —
+> per Finding 2.3-A — canonical handles delegate into five of those api-layer implementations.
+> The `gates` enforcement site is reachable only through the hidden legacy dispatcher: §5 confirms
+> that all 20 gate actions have zero canonical routes.
 >
 > | Enforcement site | Tool name passed | Reached from canonical handles? |
 > |---|---|---|
 > | `api/universe.py:6235` → `_dispatch_scope_error("universe", …)` → `:6151` | `"universe"` | **Yes** — `_universe_impl` is the shared body |
 > | `api/wiki.py:2789` → `_dispatch_scope_error("wiki", …)` → `:2651` | `"wiki"` | **Yes** |
 > | `api/extensions.py:399` → `_dispatch_scope_error("extensions", …)` → `:248` | `"extensions"` | **Yes** |
-> | `api/market.py:3936` `_gates_scope_error` | `"gates"` (hardcoded) | **Yes** |
+> | `api/market.py:3936` `_gates_scope_error` | `"gates"` (hardcoded) | **No** — all 20 gate actions have zero canonical routes (§5) |
 > | `api/market.py:2595` | `"goals"` (hardcoded) | **Yes** |
 > | `api/first_contact.py:50` | `"universe"` (hardcoded) | **Yes** |
 >
-> **Consequence for task 4.2.** 4.2's contract is to "remove … the legacy-name set, and dead
-> registration-only state." This metadata **looks** like exactly that — five tables keyed by names
-> the change is retiring — but it is **not registration-only state**. Deleting or renaming it
-> without migrating every `require_action_scope` call site would strip write/admin/costly
-> classification from the canonical surface, silently failing **open** on money-write actions.
-> **Task 4.2 must explicitly preserve this table (or migrate it in lockstep with the call sites),
-> and must say which it did.** It is not a wire caller and does **not** change the 42-site count;
-> `community_change_context` has no scope row (it is a fixed single action).
+> **Consequence for tasks 4.2 and 4.4.** 4.2's contract is to "remove … the legacy-name set, and
+> dead registration-only state." This metadata **looks** like exactly that — five tables keyed by
+> names the change is retiring — but it is **not registration-only state**. A lookup miss is
+> fail-closed: `action_scope_for(tool, action) -> None` makes `require_action_scope` raise
+> `PermissionError("No action-scope metadata … refusing gated dispatch.")`, verified against the
+> production source SHA `0603aae1`. Removing or mismatching a row therefore denies the action; it
+> does not bypass authorization.
+>
+> The narrower fail-open risk is a **classification-only** removal: if an action remains in the
+> derived registry while its `write_actions` / `costly_actions` / `admin_actions` membership is
+> removed, it defaults to `read`; resolve-always mode then permits the read-effect path. The table
+> is consequently load-bearing for both authorization correctness and action availability.
+> **Tasks 4.2 and 4.4 must preserve it or migrate the registry, every `require_action_scope` call
+> site, and the packaged mirror in lockstep, and state which path they took.** A regression test
+> must prove both that missing metadata denies and that every mutating action remains non-read.
+> It is not a wire caller and does **not** change the 42-site count; `community_change_context` has
+> no scope row (it is a fixed single action).
 >
 > `get_action_scope_status` (`api/extensions.py:399`, returning `action_scope_audit()`) is the
 > read-back surface for this table and is itself canonically unreachable.
@@ -671,12 +681,27 @@ correct. It required three corrections, each **independently re-derived before f
 | 1 | B2's 17 non-call references occupy **5** files, not 4 | Re-ran the binding-aware AST pass: `test_api_market.py` 2, `test_api_universe.py` 1, `test_goals_discoverability.py` 2, `test_mcp_dispatch_docstring_parity.py` 11, `test_validate_ship_packet_action.py` 1 = **17 / 5 files**. Verdict's file list matches exactly. | **Accepted.** §4a row + inline note. Count 17 stands. |
 | 2 | 2.3-D: `stream_run` is **not** docstring-only | Confirmed `_action_stream_run` `api/runs.py:924`, `_RUN_ACTIONS` `:1891`, `api/extensions.py:737`, tests in `test_branch_runner.py` / `test_api_runs.py`. v2's claim was **false**. | **Accepted.** 2.3-D reframed to canonical *unreachability*; the same fix applied to every other "docstring-only" claim (`get_node_output` et al.) and §5's "orphaned" definition tightened. |
 | 3 | 2.3-E: `read_premise` not `get_premise`; **four** of five unreachable; breakage at **4.4** not 4.1 | `premise/SKILL.md:13` reads `action="read_premise"`; `get_premise` is a `tinyassets/mcp_server.py` tool, a different server. Unique actions = {`read_premise`, `set_premise`, `inspect`, `get_activity`, `give_direction`}; only `inspect` is canonically reachable ⇒ **4** unreachable. Mirror at `runtime/tinyassets/universe_server.py:1030` still carries its own `_DEPRECATED_TOOL_NAMES`, so the plugin keeps working until 4.4 regenerates it. | **Accepted.** All three corrected; 2.3-E retitled to task 4.4. |
-| 4 | Add a typed **authorization/action-scope metadata** class | Confirmed `auth/provider.py:516-618` builds scope rows for `universe`/`wiki`/`extensions`/`gates`/`goals`, and traced all six `require_action_scope` call sites to hardcoded legacy tool names on the **shared** api-layer bodies the canonical handles delegate into. | **Accepted.** New class **L** + **Finding 2.3-F**, plus precondition 10. Does **not** change the 42. |
+| 4 | Add a typed **authorization/action-scope metadata** class | Confirmed `auth/provider.py:516-618` builds scope rows for `universe`/`wiki`/`extensions`/`gates`/`goals`, and traced all six `require_action_scope` call sites to hardcoded legacy tool names. Five sites are on shared api-layer bodies reached canonically; `gates` is hidden-dispatch-only (corrected in v4). | **Accepted.** New class **L** + **Finding 2.3-F**, plus precondition 10. Does **not** change the 42. |
 
 The round-2 verdict also confirmed the 2.1/2.2 checkoffs may remain checked (fresh PR queries
 reproduced #1493/#1467/#1466/#1465 OPEN with matching head SHAs, and #1561 OPEN draft at
 `1a5d45af` with exactly 3 files), that 2.3 is correctly unchecked, and that
 `openspec validate retire-legacy-live-mcp-tools --strict` passes.
+
+### Round 3 → v4. Verdict: **adapt**
+
+Third opposite-provider review, of v3 at `6d71f3e9` (2026-07-25, focused static analysis plus a
+read-only production probe). It **confirmed without change** B2's 17 non-call references across
+5 files, Finding 2.3-D's implemented-but-canonically-unreachable framing, and Finding 2.3-E's
+`read_premise` / four-of-five / task-4.4 sequencing.
+
+It corrected Finding 2.3-F in two places. First, deletion or mismatch of an action-scope row does
+not fail open: `require_action_scope` raises `PermissionError` when `action_scope_for` returns
+`None`, reproduced against deployed source SHA `0603aae1`. The residual risk is narrower:
+removing only mutating classifications while leaving the actions in the registry defaults them to
+`read`, which can fail open in resolve-always mode. Second, the `gates` enforcement site is not
+canonically reached; §5's 20-of-20 orphan result was already correct. Both corrections are folded
+into §4f, §11, and tasks 2.3/3.5/4.2/4.4. Task 2.3 remains unchecked.
 
 ---
 
@@ -707,8 +732,11 @@ recommendations.
 8. **Fold the §5 orphan table into the task 1.5 host-approval packet.**
 9. **Keep task 1.3's predeclared telemetry window and installed-client migration gate open** —
    repository static analysis cannot substitute for it (§9).
-10. **Task 4.2 must explicitly preserve (or lockstep-migrate) the action-scope table at
-    `tinyassets/auth/provider.py:516-618`** and state which it did (Finding 2.3-F). It is keyed by
-    five legacy tool names and therefore *looks* like the "legacy-name set … dead registration-only
-    state" 4.2 is told to delete, but it is live authorization state that the canonical handles
-    still enforce against. Deleting it fails **open** on money-write actions.
+10. **Tasks 4.2 and 4.4 must explicitly preserve or lockstep-migrate the action-scope registry,
+    every `require_action_scope` call site, and the packaged mirror** and state which path they took
+    (Finding 2.3-F). The registry is keyed by five legacy tool names and therefore *looks* like the
+    "legacy-name set … dead registration-only state" 4.2 is told to delete, but it is load-bearing
+    authorization and availability state. A missing row fails closed with `PermissionError`; the
+    narrower fail-open risk is removing only write/costly/admin classifications while leaving
+    mutating actions to default to `read` in resolve-always mode. Gate the migration with a
+    regression test proving (a) missing metadata denies and (b) every mutating action is non-read.
