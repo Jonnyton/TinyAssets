@@ -9,4 +9,4 @@
 
 - [x] 2.1 Pin bulk replacement and empty clearing with boundary tests and docs
 - [x] 2.2 Verify canonical/package mirror parity and strict OpenSpec validation
-- [ ] 2.3 Run the complete credential-vault regression set and Ruff
+- [x] 2.3 Run the complete credential-vault regression set and Ruff
