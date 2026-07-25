@@ -4,7 +4,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
-- **[P1 filed:2026-07-24]** BYO deposit clobbers vault: `write_credential_vault` replaces whole payload; `set_engine` destroys stored tokens (Opus5 review, confirmed; failing-test lane dispatched).
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
