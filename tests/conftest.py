@@ -67,6 +67,16 @@ def _emulate_deployed_visibility_backfill(request, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _identity_fingerprint_key(monkeypatch):
+    """Give tests an explicit dedicated status-fingerprint key."""
+    monkeypatch.setenv(
+        "TINYASSETS_IDENTITY_FINGERPRINT_KEY",
+        "pytest-only-identity-fingerprint-key-32-bytes",
+    )
+    monkeypatch.setenv("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
+
+
+@pytest.fixture(autouse=True)
 def _reset_runtime():
     """Clear runtime singletons before AND after every test to prevent leakage.
 

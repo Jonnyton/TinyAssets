@@ -10,15 +10,23 @@ services:
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      # Auto-apply migrations on first container start.
-      # Files here run in filename order (001 → 002 → 003). Only runs
-      # if pgdata volume is empty — subsequent restarts preserve state.
-      - ./migrations:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U tinyassets -d tinyassets_v0"]
       interval: 2s
       timeout: 2s
       retries: 15
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TINYASSETS_V0_DSN: "postgresql://tinyassets:tinyassets_v0_dev@postgres:5432/tinyassets_v0"
+    command: ["python", "migrate.py"]
+    restart: "no"
 
   gateway:
     build:
@@ -26,8 +34,8 @@ services:
       dockerfile: Dockerfile
     container_name: tinyassets_v0_gateway
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       TINYASSETS_V0_DSN: "postgresql://tinyassets:tinyassets_v0_dev@postgres:5432/tinyassets_v0"
     # Run gateway in HTTP transport mode for in-container debugging.

@@ -1,4 +1,4 @@
--- 006 — Token-normalized settlement (Track E Wave 3a).
+-- 007 — Token-normalized settlement (Track E Wave 3a).
 -- CORRECTED vs the Track E doc: the doc says `ALTER TABLE public.request_inbox`,
 -- but 001_core_tables.sql deliberately split the sketch's request_inbox into
 -- public.requests (see 001 line ~104 comment). Altering request_inbox would

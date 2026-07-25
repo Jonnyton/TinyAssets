@@ -33,6 +33,8 @@ containerized deploys don't drift based on where the process was launched from.
 | `TINYASSETS_CODEX_AUTH_FRESH_S` | Freshness window (seconds) for `auth.json` `last_refresh` (fallback: file mtime) under which codex auth reads viable without any probe subprocess. Finite positive only. | `86400` (24h). |
 | `TINYASSETS_AUTH_PROBE_TTL_S` | Cache TTL (seconds) for live-probe verdicts per `CODEX_HOME` — the supervisor gates every loop tick; the probe must not run per tick. Finite positive only. | `1800`. |
 | `TINYASSETS_AUTH_PROBE_TIMEOUT_S` | Live-probe subprocess timeout (seconds); timeout reads inconclusive → "ok" (only a positive dead signature quarantines). Finite positive only. | `120`. |
+| `TINYASSETS_IDENTITY_FINGERPRINT_KEY` | Dedicated high-entropy HMAC key for self-only `get_status` / `read_graph target=status` principal fingerprints. Minimum 32 UTF-8 bytes; never reuse OAuth, provider, maintainer, roster, or bearer material. Missing, short, or invalid values leave the status surface available but set `principal_fingerprint` to `null` with an explicit `identity_evidence.status=unavailable` marker. Canonical local-vault key: `scripts/secrets_keys.txt`; production supplies it through `/etc/tinyassets/env`. | Unset; identity evidence is explicitly unavailable while operational status remains readable. |
+| `TINYASSETS_IDENTITY_FINGERPRINT_VERSION` | Safe version tag prefixed to deployment-scoped identity fingerprints. Allowed characters: letters, digits, `.`, `_`, `-`. Change when rotating the key so evidence cannot silently cross rotations. Invalid values leave identity evidence explicitly unavailable without weakening or failing the status surface. | `v1`. |
 
 ## Feature flags
 
