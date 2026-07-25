@@ -1,9 +1,10 @@
 ## Why
 
 The full-coverage audit found shipped credential alias, first-record selection,
-and vault replacement behavior that lacks canonical ownership. Its canonical
-file is actively owned by PR #1606, so this remainder is isolated from the
-dependency-cleared direct-owner foldback.
+and vault replacement behavior that lacks canonical ownership. This remainder
+was initially held behind draft PR #1606, but that draft proposes unlanded
+provider-routing behavior and does not own the already-shipped contract on
+`main`.
 
 ## What Changes
 
@@ -11,8 +12,8 @@ dependency-cleared direct-owner foldback.
   already shipped by the credential vault.
 - Specify the fixed temporary-file replacement boundary and its absent
   cross-process serialization guarantee.
-- Keep the delta active until PR #1606 settles, then rebase it onto the final
-  credential contract before canonical sync.
+- Verify the delta directly against the current `origin/main` runtime and
+  canonical spec before sync, independent of unlanded draft behavior.
 
 ## Capabilities
 
@@ -28,5 +29,6 @@ None.
 ## Impact
 
 This change owns specification only. Runtime and tests remain read-only
-evidence. PR #1606 retains write authority over the canonical credential spec
-until its provider-authorization change settles.
+evidence. Draft PR #1549 also edits the canonical credential spec, but only its
+separate provider-auth overlay requirement; this backfill appends disjoint
+as-built requirements.
