@@ -27,10 +27,12 @@ on:
     branches: [main]
     paths:
       - 'deploy/cloudflare-worker/**'
+      - '.github/workflows/deploy-worker.yml'
   pull_request:
     branches: [main]
     paths:
       - 'deploy/cloudflare-worker/**'
+      - '.github/workflows/deploy-worker.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -104,10 +106,6 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           echo "=== dry-run — validating wrangler config + worker bundle ==="
-          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
-            echo "Cloudflare deploy credentials are unavailable on this PR; unit tests already ran, skipping Wrangler dry-run."
-            exit 0
-          fi
           wrangler deploy --dry-run --outdir /tmp/wrangler-out
           echo "=== dry-run passed ==="
           ls -lh /tmp/wrangler-out/
@@ -140,7 +138,8 @@ jobs:
           # Allow up to 60s for edge propagation before probing.
           for i in $(seq 1 12); do
             if python scripts/mcp_public_canary.py \
-                 --url https://tinyassets.io/mcp --timeout 10 >/dev/null 2>&1; then
+                 --url https://tinyassets.io/mcp --timeout 10 \
+                 --assert-name TinyAssets >/dev/null 2>&1; then
               echo "canary green after ${i} poll(s)"
               break
             fi
@@ -150,6 +149,13 @@ jobs:
               exit 1
             fi
           done
+
+      - name: Prove retired routes are ordinary 404s
+        if: >
+          github.event_name == 'push' ||
+          (github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')
+        run: |
+          python scripts/probe_retired_mcp_routes.py
 
       - name: Summary
         if: always()
