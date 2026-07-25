@@ -5,8 +5,8 @@
 - [ ] 1.3 Obtain PR #1736 owner acceptance to adapt its `OAuthConfig`, RFC 8707 resource handling, `OriginClient`, and onboarding state for challenge/signature/principal ID+generation while this lane does not claim desktop files or account-token custody.
 - [ ] 1.4 Obtain identity/auth and daemon-host-pool owner acceptance for a route-local exact-audience validator, interactive-`auth_time` and personal/org scope provisioning, verified-subject ownership, stable storage, private inventory, and session-generation linkage.
 - [ ] 1.5 Obtain draft PR #1746 owner acceptance that custody separately checks host-principal and provider-assignment generations while retaining all provider-secret/reference lifecycle.
-- [ ] 1.6 Obtain Opus 5 current-main exact-artifact approval after resolving every ADAPT.
-- [ ] 1.7 Obtain independent latest-Codex security/domain/diff approval of the same exact artifact.
+- [x] 1.6 Obtain Opus 5 current-main exact-artifact approval after resolving every ADAPT.
+- [x] 1.7 Obtain independent latest-Codex security/domain/diff approval of the same exact artifact.
 - [ ] 1.8 Re-run claim collision checks and claim exact runtime/migration/test files only after tasks 1.3-1.7; until then runtime, canonical sync/archive, deployment, and rollout are unauthorized.
 
 ## 2. RED Contract and Security Proofs

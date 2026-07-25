@@ -112,7 +112,17 @@ lifecycle, a normative wire/scope matrix, atomic recovery, separate nonce
 limits, reproducible load traffic, exact `auth_time`, sole-audience rejection,
 rollback, restoration of the unrelated `workflow-voice` concern, and
 preservation of host Capacity/context steering. Those corrections are folded
-into the candidate artifact; exact rereview remains required before push.
+into the candidate artifact.
+
+Final exact review returned **APPROVE — spec/review-only** from Claude Opus 5
+and three independent Codex reviewers at substantive artifact head
+`5905cc41` over current reviewed base `6cde7ef0`. Evidence was clean range
+`git diff --check`, strict target validity, all-item strict OpenSpec 42/42,
+canonical host-pool `updated_at` liveness, exact 60-line STATUS, and no runtime
+or canonical-spec files. Main then advanced by `92d730bc`, a STATUS-only
+coordination commit; it was merged without changing the approved OpenSpec or
+audit content. Approval does not authorize runtime, sync/archive, deployment,
+or rollout.
 
 Runtime remains blocked until PR #1736, identity/auth, daemon/host-pool, and
 draft #1746 owners accept the split; Opus 5 and latest Codex approve the same
