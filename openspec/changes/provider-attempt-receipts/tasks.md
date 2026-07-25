@@ -3,7 +3,7 @@
 - [ ] 1.1 Stop before runtime work until #1606 / R2-1a has landed or an explicitly named successor has settled fail-closed universe credential isolation, selected-engine `allowed_providers`, and call-local credential/authority evidence.
   - Premise verification (2026-07-24): **LIVE — BLOCKED.** #1606 is still an open, dirty draft and says R2-1b receipts remain blocked. Its named planning successor #1691 is also open and explicitly excludes result-local receipt implementation.
 - [ ] 1.2 Rebase on current `origin/main`, reread the canonical `provider-routing` and `credential-vault` specs plus owning source, and update this change before implementation if the blocker altered any receipt semantics.
-  - Premise verification (2026-07-24): **LIVE — BLOCKED.** This branch is exactly at current `origin/main` (`2a26a115`), and the canonical specs plus owning source were reread. The check must be repeated after the unresolved authority blocker lands; no blocker semantics have landed on `main` to reconcile yet.
+  - Premise verification (2026-07-24): **LIVE — BLOCKED.** This branch is rebased on current `origin/main` (`898b9edc`), and the canonical specs plus owning source were reread. The check must be repeated after the unresolved authority blocker lands; no blocker semantics have landed on `main` to reconcile yet.
 - [ ] 1.3 Broaden the STATUS Files boundary through `claim_check.py --check-files` before touching runtime or tests; do not treat this spec-only lane as implementation ownership.
   - Premise verification (2026-07-24): **LIVE — BLOCKED BY LANE INSTRUCTION.** The user explicitly prohibited `claim_check.py` and every session-start/orientation ritual. Runtime and tests were therefore not edited.
 
