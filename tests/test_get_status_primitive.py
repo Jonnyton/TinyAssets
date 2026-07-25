@@ -538,10 +538,10 @@ def test_llm_endpoint_bound_empty_xai_key_falls_through(monkeypatch) -> None:
 
 
 def test_get_status_schema_version_is_present() -> None:
-    """schema_version must be present and equal to 1 (first versioned contract)."""
+    """The token-safe request-identity contract is status schema version 2."""
     payload = json.loads(get_status())
     assert "schema_version" in payload
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
 
 
 def test_get_status_schema_contract() -> None:

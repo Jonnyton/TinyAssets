@@ -34,6 +34,8 @@ from tinyassets.api.helpers import (
 )
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
+_STATUS_SCHEMA_VERSION = 2
+
 
 def _policy_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 of sorted-JSON policy payload.
@@ -926,7 +928,7 @@ def get_status(universe_id: str = "") -> str:
     request_identity = _request_identity_evidence()
     if request_identity["principal_fingerprint"] is None:
         return json.dumps({
-            "schema_version": 1,
+            "schema_version": _STATUS_SCHEMA_VERSION,
             "error": "identity_fingerprint_unavailable",
             "request_identity": request_identity,
         })
@@ -951,7 +953,7 @@ def get_status(universe_id: str = "") -> str:
                 "Start a conversation with your universe to meet it in its own voice."
             ),
             "request_identity": request_identity,
-            "schema_version": 1,
+            "schema_version": _STATUS_SCHEMA_VERSION,
         })
     # Per-universe read gate: never expose a private universe's status / activity
     # tail to an anonymous or non-granted caller. Public universes (public_read
@@ -1356,7 +1358,7 @@ def get_status(universe_id: str = "") -> str:
     release_state = _load_release_state()
 
     response = {
-        "schema_version": 1,
+        "schema_version": _STATUS_SCHEMA_VERSION,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
         "evidence": {

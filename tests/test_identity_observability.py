@@ -189,7 +189,7 @@ def test_missing_fingerprint_key_fails_closed(
     payload = json.loads(get_status())
 
     assert payload == {
-        "schema_version": 1,
+        "schema_version": 2,
         "error": "identity_fingerprint_unavailable",
         "request_identity": {
             "bearer_present": True,
