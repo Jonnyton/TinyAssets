@@ -81,10 +81,11 @@ It does not own:
   scope; exact nonce replay always fails.
 - A closed route/DTO/scope matrix separates enrollment challenges,
   post-enrollment nonces, inventory, lifecycle, and host-session operations.
-  Rotation carries role-bound current/new signatures; every mutation has exact
-  idempotency/results; authenticated session deregistration is exact and
-  retry-safe. Atomic recovery cannot revoke the old host without committing
-  the proven replacement.
+  Rotation carries role-bound current/new signatures; every durable mutation
+  has exact idempotency/results; authenticated session deregistration is exact
+  and retry-safe. Heartbeat is the sole naturally monotonic liveness-only
+  exemption. Atomic recovery cannot revoke the old host without committing the
+  proven replacement.
 - Principals expire after 90 days and renew only in the final 30 days.
   Rotation proves old and new keys; lost-key recovery is step-up revoke plus
   new enrollment. Terminal IDs/keys never reactivate.

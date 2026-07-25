@@ -207,7 +207,7 @@ completion. The exact matrix is:
 | `enroll` | `POST /v1/host-principals` | `host:enroll`, auth age <=5m | new key |
 | `inventory` | `GET /v1/host-principals` | `host:manage`, auth age <=5m | none; no challenge |
 | `read` | `POST /v1/host-principals/{id}:read` | `host:manage` | current key/generation |
-| `revoke` | `POST /v1/host-principals/{id}:revoke` | `host:manage`; or step-up `host:recover` | current key; none on recovery grant |
+| `revoke` | `POST /v1/host-principals/{id}:revoke` | `host:manage` uses proof submission; step-up `host:recover` uses direct account intent | current key; none on recovery grant |
 | `rotate` | `POST /v1/host-principals/{id}:rotate` | `host:manage` | current and new keys |
 | `renew` | `POST /v1/host-principals/{id}:renew` | `host:manage` | current key/generation |
 | `recover` | `POST /v1/host-principals/{id}:recover` | `host:recover`, auth age <=5m | new key |
@@ -229,6 +229,9 @@ The closed intent variants are:
   idempotency_key_b64u}`;
 - `RecoverIntentV1 {host_principal_id, expected_generation,
   idempotency_key_b64u, new_public_jwk, device_label?}`;
+- `AccountRevokeIntentV1 {schema_version: "host-binding-v1",
+  host_principal_id, expected_generation, idempotency_key_b64u, reason_code?}`
+  for the direct recent-`host:recover` path;
 - `SessionRegisterIntentV1 {host_principal_id, expected_generation, provider,
   capability_id, visibility, price_floor, max_concurrent, always_active,
   idempotency_key_b64u}` with
@@ -261,6 +264,13 @@ status: "active"}`; deregistration returns
 `AccountRevokeIntentV1` with the same 32-byte idempotency key and exact
 generation under recent `host:recover`; it does not issue or accept a device
 proof. All mutation idempotency scopes use the crash/retry rules below.
+
+Heartbeat is the sole mutation intentionally exempt from durable idempotency.
+After a fresh nonce/current-generation proof it sets only the exact session's
+`last_seen_at = max(stored_last_seen_at, database_transaction_time)`. A
+response-loss retry obtains a fresh nonce and may advance only that timestamp.
+It cannot create/resurrect a session or change principal expiry/generation,
+capability, visibility, price, concurrency, assignment, or other authority.
 
 ### 4. Idempotency and multi-machine behavior are explicit
 
@@ -404,15 +414,17 @@ Activation requires deterministic concurrency proofs in a separate Supabase
 test project with at least three server processes and 500 concurrent clients
 owned by 500 test subjects across 50 simulated source-network partitions.
 An untimed setup phase enrolls one baseline principal per subject. It selects
-125 disjoint subjects to enroll a second device, pre-issues 200 of the 250
-fresh enrollment challenges needed for the 125 first completions plus their
-125 response-loss retries, and pre-issues 150 of the 400 post-enrollment nonces
+125 disjoint subjects to enroll a second device, pre-issues only the 125 fresh
+enrollment challenges needed for their first completions, and pre-issues 225
+of the 400 post-enrollment nonces
 needed by proof-bearing timed operations, never exceeding five live items per
 principal. Pre-issued items are created during the final 30 seconds before the
-timer and consumed during the first 60 seconds, leaving at least four minutes
-of TTL margin; remaining completions consume challenges/nonces issued during
+timer and consumed during the first 60 seconds, leaving at least 210 seconds
+of TTL margin. After each simulated lost initial-enrollment response, the retry
+obtains its required fresh challenge during the timed phase. Remaining
+completions consume challenges/nonces issued during
 the timed phase. The timed phase sends exactly 1,000 HTTP requests in five minutes:
-300 challenge/nonce issuances (50 enrollment, 250 post-enrollment), 250
+300 challenge/nonce issuances (125 enrollment retries, 175 post-enrollment), 250
 enrollment/idempotent-retry completions (125 each), 150 reads (100 exact, 50
 inventory), 150 host-session operations (50 register, 50 heartbeat, 50 exact
 deregister), and 150

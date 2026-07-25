@@ -143,7 +143,10 @@ token. The closed operation policy SHALL be:
   `POST /v1/host-principals/{id}:{operation}` routes: `host:manage` and current
   generation proof, with rotation additionally proving the new key;
 - lost-key revoke/recover at the same exact-ID routes: recent `host:recover`,
-  with recovery proving the new key and not requiring `host:enroll`;
+  with direct revoke using
+  `AccountRevokeIntentV1 {schema_version: "host-binding-v1",
+  host_principal_id, expected_generation, idempotency_key_b64u, reason_code?}`
+  and recovery proving the new key without requiring `host:enroll`;
 - session registration at `POST /v1/host-sessions` and heartbeat at
   `POST /v1/host-sessions/{id}:heartbeat`: `host:manage` and current
   generation proof;
@@ -170,8 +173,8 @@ bounded device label per item. Exact read SHALL return
 `HostPrincipalDetailV1` with exactly that allowlist plus RFC 7638 thumbprint;
 recovery SHALL return typed revoked/replacement principal results; session
 register/heartbeat/deregister SHALL return only exact session ID, accepted
-principal generation where applicable, and active/deleted status. A no-device lost-key revoke SHALL accept a direct typed
-account intent with idempotency key and expected generation only under recent
+principal generation where applicable, and active/deleted status. A no-device
+lost-key revoke SHALL accept that exact direct account intent only under recent
 `host:recover`; it SHALL NOT accept or infer device proof.
 
 #### Scenario: Client and server share one testable signing contract
@@ -186,9 +189,9 @@ account intent with idempotency key and expected generation only under recent
 - **THEN** the operation fails before nonce consumption or domain mutation
 - **AND** no stronger operation inherits authority from a weaker one
 
-### Requirement: Mutating retries converge without challenge replay
+### Requirement: Durable mutating retries converge without challenge replay
 
-Every mutating intent SHALL carry exactly 32 CSPRNG idempotency bytes as
+Every durable mutating intent except heartbeat SHALL carry exactly 32 CSPRNG idempotency bytes as
 canonical unpadded base64url. The server SHALL store only a domain-separated
 keyed hash bound to subject, policy, operation, literal route, and canonical
 intent digest; enrollment/rotation/recovery SHALL additionally bind the exact
@@ -205,6 +208,14 @@ fixed order in one transaction before response. A pre-commit crash SHALL leave n
 principal or consumed durable authority; a post-commit crash SHALL recover via
 fresh-challenge retry. Idempotency results SHALL expire within 24 hours and
 SHALL never serve as subject or device authority.
+
+Heartbeat SHALL be the sole mutation exempt from durable idempotency. With a
+fresh nonce and current-generation proof it SHALL set only the exact session's
+`last_seen_at` to the maximum of its stored value and database transaction
+time. Response-loss retry SHALL obtain a fresh nonce and MAY advance only that
+timestamp. It SHALL NOT create or resurrect a session or change principal
+expiry/generation, capability, visibility, price, concurrency, assignment, or
+any other authority.
 
 A device key SHALL bind to at most one WorkOS subject. Reuse across subjects
 SHALL fail non-enumeratingly, while distinct per-account keys for one subject
