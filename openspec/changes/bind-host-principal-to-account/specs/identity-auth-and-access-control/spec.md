@@ -211,7 +211,7 @@ SHALL never serve as subject or device authority.
 
 Heartbeat SHALL be the sole mutation exempt from durable idempotency. With a
 fresh nonce and current-generation proof it SHALL set only the exact session's
-`last_seen_at` to the maximum of its stored value and database transaction
+`updated_at` to the maximum of its stored value and database transaction
 time. Response-loss retry SHALL obtain a fresh nonce and MAY advance only that
 timestamp. It SHALL NOT create or resurrect a session or change principal
 expiry/generation, capability, visibility, price, concurrency, assignment, or

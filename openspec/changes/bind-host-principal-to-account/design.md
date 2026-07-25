@@ -147,9 +147,10 @@ Registration is a two-step authenticated protocol:
    subject/key uniqueness, and inserts or returns the principal. Invalid proof
    never consumes the challenge.
 
-Post-enrollment read, inventory-sensitive detail, revoke, rotate,
-session-register, and heartbeat operations use a fresh server nonce and the
-same `HostProofV1` canonicalization. The envelope binds verified issuer and
+Post-enrollment exact read, revoke, rotate, renew, session register/heartbeat/
+deregister, and the new-key leg of recovery use a fresh server nonce and the
+same `HostProofV1` canonicalization. Private self-inventory instead uses the
+step-up account path defined below. The proof envelope binds verified issuer and
 subject, `host_principal_id`, expected `host_principal_generation`, dedicated
 audience, method, canonical external path, canonical body digest, nonce/JTI,
 issued-at, expiry, and policy version. Proof lifetime is at most five minutes.
@@ -267,7 +268,7 @@ proof. All mutation idempotency scopes use the crash/retry rules below.
 
 Heartbeat is the sole mutation intentionally exempt from durable idempotency.
 After a fresh nonce/current-generation proof it sets only the exact session's
-`last_seen_at = max(stored_last_seen_at, database_transaction_time)`. A
+`updated_at = max(stored_updated_at, database_transaction_time)`. A
 response-loss retry obtains a fresh nonce and may advance only that timestamp.
 It cannot create/resurrect a session or change principal expiry/generation,
 capability, visibility, price, concurrency, assignment, or other authority.
