@@ -1031,6 +1031,15 @@ def converse(message: str = "", graph_id: str = "") -> str:
             tier=turn.interlocutor.tier,
         )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
+        # P0 #1582: a universe with no engine credential of its own cannot
+        # speak at all, and "All providers exhausted" is a dead end for the
+        # founder reading it. Exhaustion on a CREDENTIALED universe is a real
+        # outage and still surfaces verbatim.
+        from tinyassets.api.universe import engine_setup_required_payload
+
+        held = engine_setup_required_payload(uid, exc)
+        if held is not None:
+            return json.dumps(held)
         return json.dumps({
             "error": f"Your universe couldn't be reached right now: {exc}",
         })

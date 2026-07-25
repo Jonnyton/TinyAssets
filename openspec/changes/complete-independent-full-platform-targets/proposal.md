@@ -18,9 +18,11 @@ standalone RPC families that conflict with the current minimal-handle surface.
 
 ## What Changes
 
-- Add a target-only `moderation-and-abuse-response` capability covering
-  community flagging, soft-hide, independent review, appeals, moderator
-  integrity, rate limits, and scale proof.
+- ~~Add a target-only `moderation-and-abuse-response` capability~~ — **split out
+  2026-07-25** to `openspec/changes/moderation-and-abuse-response/` (task 6.3
+  discharge), because its implementation started on external draft PRs
+  #1662/#1667 and it must be able to land, sync, and archive independently.
+  Task 5.5 here still *depends* on that change's moderation service.
 - Add a target-only `packaged-tray-installation` capability covering native
   Windows/macOS/Linux artifacts, first-run account binding, safe autostart and
   updates, offline behavior, privacy, and clean-machine acceptance.
@@ -40,7 +42,6 @@ standalone RPC families that conflict with the current minimal-handle surface.
 
 ### New Capabilities
 
-- `moderation-and-abuse-response`
 - `packaged-tray-installation`
 - `node-authoring-and-autoresearch`
 - `real-world-handoffs-and-outcomes`
@@ -54,9 +55,10 @@ standalone RPC families that conflict with the current minimal-handle surface.
 
 ## Impact
 
-The implementation will add moderation, desktop packaging, authoring/
-optimization, and handoff services plus evolve the existing extensions outcome
-registry through focused storage migrations, API-router actions, CI, security
-tests, scale tests, and rendered user-surface acceptance. The exact
+The implementation will add desktop packaging, authoring/optimization, and
+handoff services plus evolve the existing extensions outcome registry through
+focused storage migrations, API-router actions, CI, security tests, scale tests,
+and rendered user-surface acceptance. Moderation moved to its own change
+(2026-07-25) and is now a dependency, not part of this scope. The exact
 implementation files are bounded in `tasks.md`. No runtime or canonical spec is
 changed by this proposal.
