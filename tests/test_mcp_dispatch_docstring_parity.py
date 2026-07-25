@@ -46,6 +46,7 @@ from tinyassets.api import market as market_mod
 from tinyassets.api import runs as runs_mod
 from tinyassets.api import runtime_ops as runtime_ops_mod
 from tinyassets.api import universe as universe_mod  # noqa: F401
+from tinyassets.api import wiki as wiki_mod
 
 # ---------------------------------------------------------------------------
 # KNOWN_DEBT — pre-existing undocumented dispatch keys.
@@ -127,20 +128,15 @@ def _universe_dispatch_keys() -> set[str]:
 
 
 def _wiki_dispatch_keys() -> set[str]:
-    """Mirror of the local `dispatch = {...}` literal inside `wiki()`."""
-    return {
-        "read", "search", "list", "lint",
-        "write", "consolidate", "promote", "ingest", "supersede",
-        "sync_projects",
-        "file_bug", "cosign_bug",
-    }
+    """Derived from the real dispatch table in tinyassets.api.wiki."""
+    return set(wiki_mod.WIKI_ACTIONS)
 
 
 def _extensions_dispatch_keys() -> set[str]:
     """Union of every dispatch table the `extensions` tool routes."""
     inline = {
         "register", "list", "inspect",
-        "approve", "disable", "enable", "remove",
+        "approve", "disable", "enable", "remove", "get_action_scope_status",
     }
     return (
         inline

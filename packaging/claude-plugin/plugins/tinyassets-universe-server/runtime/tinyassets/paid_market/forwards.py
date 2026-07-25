@@ -17,8 +17,8 @@ guarantees are the ones a persistence layer must not be able to break:
   4. **Monotone state machine.** Transitions only along declared edges.
 
 All money is integer micros. All division is explicit floor division
-with the remainder assigned deliberately (fees floor in the seller's
-favor; refunds absorb rounding dust so conservation is exact).
+with the remainder assigned deliberately (positive-gross settlements pay at
+least one fee micro; refunds absorb rounding dust so conservation is exact).
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ __all__ = [
     "MAX_COLLATERAL_PCT",
     "contract_total_micros",
     "collateral_micros",
+    "canonical_fee_micros",
     "Settlement",
     "settle_forward",
 ]
@@ -63,6 +64,25 @@ class ForwardState:
     SETTLED = "settled"  # terminal, includes pro-rata default settlements
     EXPIRED = "expired"  # terminal, unsold at bucket start
     ALL = (OPEN, SOLD, DELIVERING, SETTLED, EXPIRED)
+
+
+def canonical_fee_micros(gross_micros: int, fee_ppm: int = FEE_PPM) -> int:
+    """Return the canonical fee for every positive-gross settlement."""
+    if (
+        not isinstance(gross_micros, int)
+        or isinstance(gross_micros, bool)
+        or gross_micros < 0
+    ):
+        raise ForwardError("gross_micros must be a non-negative int")
+    if (
+        not isinstance(fee_ppm, int)
+        or isinstance(fee_ppm, bool)
+        or not 0 < fee_ppm < PPM
+    ):
+        raise ForwardError("fee_ppm must be an int in (0, PPM)")
+    if gross_micros == 0:
+        return 0
+    return max(1, (gross_micros * fee_ppm) // PPM)
 
 
 VALID_TRANSITIONS: dict[str, tuple[str, ...]] = {
@@ -202,7 +222,7 @@ def settle_forward(
 
     Rounding policy (deliberate, tested):
       * seller_gross floors → dust stays with the buyer via refund
-      * treasury_fee floors → dust stays with the seller
+      * positive-gross treasury_fee has a one-micro minimum
       * slash floors        → dust stays with the seller via release
     Conservation is exact by construction (subtraction, never a second
     division).
@@ -221,7 +241,7 @@ def settle_forward(
     unserved = demand - served
 
     seller_gross = (total * (size_tokens - unserved)) // size_tokens
-    treasury_fee = (seller_gross * fee_ppm) // PPM
+    treasury_fee = canonical_fee_micros(seller_gross, fee_ppm)
     seller_net = seller_gross - treasury_fee
     buyer_refund = total - seller_gross  # exact, absorbs rounding dust
 
