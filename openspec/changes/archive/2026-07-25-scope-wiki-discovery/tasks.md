@@ -36,7 +36,7 @@
 
 ## 5. Foldback and Public Proof
 
-- [ ] 5.1 Sync the accepted delta into canonical `openspec/specs/wiki-commons/spec.md` and archive the change in the same landing lane.
+- [x] 5.1 Sync the accepted delta into canonical `openspec/specs/wiki-commons/spec.md` and archive the change in the same landing lane.
 - [ ] 5.2 Publish the reviewed PR and land it through required GitHub checks.
 - [ ] 5.3 Prove the deployed source SHA and exact-seven `https://tinyassets.io/mcp` surface.
 - [ ] 5.4 Rerun the dated changed-since and four onboarding-query contamination probes against live and record the before/after result mix.
