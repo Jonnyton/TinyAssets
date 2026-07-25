@@ -67,6 +67,7 @@ IN_FLIGHT_WINDOW_SECONDS = 600.0  # 10 min
 # Resolution-source labels surfaced in the response so the caller can
 # render "why this version was picked". Stable; treat as enum-like.
 SOURCE_CANONICAL_STORED = "canonical_stored"
+SOURCE_ACTOR_CANONICAL = "actor_canonical"
 SOURCE_LEADERBOARD_REFRESHED = "leaderboard_refreshed"
 SOURCE_LEADERBOARD_NO_CHANGE = "leaderboard_no_change"
 SOURCE_LEADERBOARD_SKIPPED_INSUFFICIENT_RUNS = (
@@ -129,7 +130,11 @@ def resolve_canonical_for_run(
     if now is None:
         now = time.time()
 
-    from tinyassets.daemon_server import get_goal
+    from tinyassets.daemon_server import (
+        get_goal,
+        get_goal_canonical,
+        resolve_goal_canonical,
+    )
 
     try:
         goal = get_goal(base_path, goal_id=goal_id)
@@ -151,7 +156,44 @@ def resolve_canonical_for_run(
             "goal": None,
         }
 
-    stored_canonical = (goal.get("canonical_branch_version_id") or "") or None
+    scope_actor = viewer.strip()
+    if scope_actor and scope_actor != "anonymous":
+        try:
+            actor_canonical = get_goal_canonical(
+                base_path,
+                goal_id=goal_id,
+                scope_actor=scope_actor,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.exception("resolve_canonical_for_run | actor lookup failed")
+            return {
+                "ok": False,
+                "error": (
+                    f"failed to load actor canonical for Goal "
+                    f"'{goal_id}': {exc}"
+                ),
+                "error_kind": "goal_load_failed",
+                "goal_id": goal_id,
+                "goal": goal,
+            }
+        if actor_canonical is not None:
+            actor_bvid = str(actor_canonical["branch_version_id"])
+            _version_id, branch_def_id = _split_version_id(actor_bvid)
+            return {
+                "ok": True,
+                "branch_version_id": actor_bvid,
+                "branch_def_id": branch_def_id,
+                "scope_actor": scope_actor,
+                "source": SOURCE_ACTOR_CANONICAL,
+                "goal": goal,
+                "refresh_attempted": False,
+                "displaced_canonical_branch_version_id": None,
+            }
+
+    stored_canonical = resolve_goal_canonical(
+        base_path,
+        goal_id=goal_id,
+    )
     auto_flag = bool(goal.get("auto_canonical_via_leaderboard"))
     min_runs = int(goal.get("min_completed_runs_for_canonical") or 5)
 
@@ -176,6 +218,7 @@ def resolve_canonical_for_run(
             "branch_version_id": stored_canonical,
             "branch_def_id": bdid,
             "source": SOURCE_CANONICAL_STORED,
+            "scope_actor": "",
             "goal": goal,
             "refresh_attempted": False,
             "displaced_canonical_branch_version_id": None,

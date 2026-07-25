@@ -1,18 +1,23 @@
+> **Partial release, 2026-07-25 (umbrella task 4.1).** Two requirements were
+> **physically moved** out of this delta into `openspec/changes/demand-side-signals/`,
+> the successor that now owns the non-monetary half: *Standing goals are durable
+> demand independent of chat sessions* and *Onboarding terminates in a useful
+> running goal* (the latter restated there as *Onboarding terminates in a running
+> standing goal built from remixable commons archetypes*). Its leading-metric
+> clause — standing goals per active universe, ahead of the weekly gate-claims
+> north star — moved with it but now lives in that change's separate metrics
+> requirement, where the visibility scoping it needs belongs. They were moved
+> rather than copied so each requirement keeps exactly one active owner — the
+> granularity the ownership convention in `proposal.md` was restated at on the
+> same date, since this is the umbrella's first partial release and the earlier
+> per-delta wording did not cover it. It otherwise follows the release pattern of
+> umbrella tasks 1.1, 1.2, and 2.1. The three requirements below stay with the
+> umbrella pending tasks 4.2 (bounties, escrow, claims, refunds) and 4.3 (the
+> measured direct-service gate), so the `demand-side` capability has two active
+> owners split disjointly **by requirement** — never two owners of one
+> requirement.
+
 ## ADDED Requirements
-
-### Requirement: Standing goals are durable demand independent of chat sessions
-A standing goal SHALL persist desired outcome, owner, universe, explicit IANA-timezone cron-class schedule or event trigger, budget posture, success gates, and pause state independently of any open chatbot session. Its schedule SHALL be part of the goal spec and visible in the commons archetype, and the proactivity heartbeat SHALL execute due work. Eligible goals SHALL continue to forecast and request work while their owners are absent, within explicit authority and spend limits.
-
-#### Scenario: demand scales with active goals rather than sessions
-- **WHEN** users close their chatbot clients while authorized standing goals remain active
-- **THEN** forecast demand and due work remain derived from those goals without requiring a live client connection
-
-### Requirement: Onboarding terminates in a useful running goal
-Each commons launch archetype SHALL ship with two or three standing goals pre-attached. The first SHALL be designed to produce a felt, gate-claimed win inside week one. Onboarding SHALL terminate in a running standing goal rather than an empty universe, and the leading demand metric SHALL be standing goals per active universe, ahead of the north-star weekly gate-claims metric.
-
-#### Scenario: onboarding ends with operational state
-- **WHEN** a new founder completes an archetype path
-- **THEN** the product shows the pre-attached running goal, its next scheduled action, and the first week-one gate-claimed outcome rather than an empty universe
 
 ### Requirement: Goal bounties transfer demand through exact escrowed claims
 A goal owner SHALL be able to post a machine-verifiable goal bounty that any authenticated principal or universe satisfying the published eligibility rules can discover, claim, satisfy, and settle without an invitation-only list. This preserves the target's open “ANYONE may claim” market while explicitly refusing anonymous money movement. The bounty SHALL bind immutable goal/gate/version identity and SHALL not transfer control of the owner's universe or credentials.

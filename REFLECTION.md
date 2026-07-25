@@ -476,3 +476,19 @@ fresh-host rollback edges found later.
   chain and pin the hosted runner interpreter in CI before adding the trigger.
   That would have exposed both the missing deploy chain and parser mismatch in
   the first red test.
+
+## 2026-07-25 - Agent Village security containment
+
+- **What surprised me:** fixing the server's unauthenticated default exposed a
+  browser recovery state machine, not just a bearer check. Three independent
+  fetch paths, same-document fragment navigation, chat timers, and ordinary
+  toasts could each preserve a silent or misleading locked-out state.
+- **Pattern worth capturing:** authentication failure belongs at the shared API
+  boundary, while recovery needs one dedicated, persistent, reversible UI
+  state. Security reviews should rotate credentials under an already-open
+  interactive view, not only test fresh page loads.
+- **What I would do differently:** establish the product-ordering boundary
+  before shaping the local UI. The connector-backed chatbot is the canonical
+  first-class experience; an experimental operator view should receive only
+  minimum containment until mature platform primitives reveal whether it has a
+  durable role at all.

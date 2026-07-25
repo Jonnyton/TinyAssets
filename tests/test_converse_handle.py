@@ -45,8 +45,15 @@ def test_converse_founder_relays_intelligence_reply(monkeypatch):
         permissions, "universe_access_allows", lambda uid, write=False: True
     )
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-1")
+    # Tier binding (relay task 6.6) reads the request subject directly, so the
+    # fake auth layer has to supply it too — not just is_authenticated_request.
     monkeypatch.setattr(
-        ui, "converse", lambda uid, msg, *, actor_id="": f"I hear you: {msg}"
+        permissions, "current_request_actor_id", lambda: "founder-1"
+    )
+    monkeypatch.setattr(
+        ui,
+        "converse",
+        lambda uid, msg, *, actor_id="", tier=None: f"I hear you: {msg}",
     )
 
     out = json.loads(us.converse(message="hello", graph_id="u-x"))
@@ -63,8 +70,11 @@ def test_converse_surfaces_engine_failure_honestly(monkeypatch):
         permissions, "universe_access_allows", lambda uid, write=False: True
     )
     monkeypatch.setattr(permissions, "current_actor_id", lambda: "founder-1")
+    monkeypatch.setattr(
+        permissions, "current_request_actor_id", lambda: "founder-1"
+    )
 
-    def _boom(uid, msg, *, actor_id=""):
+    def _boom(uid, msg, *, actor_id="", tier=None):
         raise RuntimeError("provider exhausted")
 
     monkeypatch.setattr(ui, "converse", _boom)
