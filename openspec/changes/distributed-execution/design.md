@@ -60,6 +60,10 @@ This design changes delivery order only. It does not shrink the destination.
   platform worker, or owner-daemon execution.
 - No deployment, feature flag, production trust root, real key custody, or live
   signing key.
+- No defense against a malicious process running as the test harness's own OS
+  principal rewriting the fake root's temporary SQLite namespace. D0 requires
+  an exclusively owned test temp directory; a non-test persistent authority
+  store requires OS custody or a proven descriptor-relative SQLite VFS.
 - No GitHub effect, approval, merge, repository mutation, or token vending.
 - No market selection, live enrollment, live acceptance, or user-surface claim.
 
@@ -252,6 +256,11 @@ The blob index is operation-local: reload, validate, mutate, and atomically
 persist under the root lock. Evidence-table schema/trigger/index contracts are
 validated exactly and never auto-repaired.
 
+D0 narrows its fake candidate sink to exactly one result blob, so
+`result_digest` must equal that freshly M2-proven object's digest. The
+final-shaped carrier retains a blob tuple for later manifests/artifacts, but
+multi-blob result designation is not invented by the fake root.
+
 ### 9. Receipts, scheduling leases, provider attempts, and B2 grants never promote
 
 The following are separate domains with no promotion rule:
@@ -375,6 +384,11 @@ surface.
 - **Risk: physical blob identity is not portable on every filesystem.** ->
   Support only proven identity strategies and fail closed otherwise; never
   fall back to path-string locking.
+- **Risk: D0 SQLite hardening is mistaken for hostile-host custody.** -> The
+  fake root rejects aliases and owns its connection, but does not claim safety
+  from same-principal path replacement or direct database mutation. Keep every
+  production root absent until OS custody or a proven custom VFS closes that
+  boundary.
 - **Risk: strict replay lets junk accumulate.** -> Ignore unverifiable junk for
   positive authority but report/quarantine it separately; reject conflicting
   valid facts.
