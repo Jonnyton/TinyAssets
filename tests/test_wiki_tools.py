@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 
 import pytest
@@ -16,6 +17,7 @@ from tinyassets.api.wiki import (
 )
 from tinyassets.universe_server import (
     mcp,
+    read_page,
     wiki,
 )
 
@@ -259,6 +261,29 @@ class TestWikiSearch:
     def test_search_missing_query(self, wiki_dir):
         result = json.loads(wiki("search"))
         assert "error" in result
+
+    def test_public_read_page_uses_default_discovery_without_advertising_scope(
+        self, wiki_dir
+    ):
+        for category, audience in (("workflows", "discovery"), ("notes", "coordination")):
+            parent = wiki_dir / "pages" / category
+            parent.mkdir(parents=True, exist_ok=True)
+            (parent / f"wrapper-{audience}.md").write_text(
+                f"---\ntitle: Wrapper {audience}\naudience: {audience}\n"
+                "---\n\npublic-wrapper-scope canary\n",
+                encoding="utf-8",
+            )
+
+        result = json.loads(read_page(query="public-wrapper-scope"))
+        tools = asyncio.run(mcp.list_tools(run_middleware=False))
+        read_page_tool = next(tool for tool in tools if tool.name == "read_page")
+
+        assert result["scope"] == "discovery"
+        assert {item["path"] for item in result["results"]} == {
+            "pages/workflows/wrapper-discovery.md"
+        }
+        assert "scope" not in inspect.signature(read_page).parameters
+        assert "scope" not in read_page_tool.parameters["properties"]
 
 
 class TestWikiWrite:
