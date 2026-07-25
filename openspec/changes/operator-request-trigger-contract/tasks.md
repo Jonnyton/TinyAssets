@@ -47,7 +47,7 @@
 - [x] 5.5 Prove v1 code can drain v1 but cannot open or mutate epoch 2 even when given a v2 task ID; prove v2 workers can drain both epochs.
 - [x] 5.6 Preserve directed assignments as `owner_queued`; retain bounded boost only with priority authority and test the chosen additive ordering against operator/user/host rows.
 - [ ] 5.7 Update request materialization in `tinyassets/work_targets.py` and restart registration in `fantasy_daemon/branch_registrations.py` to consume canonical v2 Request/task state without mutating or executing a v1 JSON projection.
-- [ ] 5.8 Update graph-cycle claim integration and lifecycle observers to route v2 tasks through the v2 adapter while retaining v1 historical behavior; treat that claim as scheduling reservation only and require the active `distributed-execution` B2 signed owner/daemon/job/capsule/lease/fence grant before external execution.
+- [ ] 5.8 Update graph-cycle claim integration and lifecycle observers to route v2 tasks through the v2 adapter while retaining v1 historical behavior; install the production expired/dead-peer lease-recovery owner before enabling `EPOCH2_QUEUE_CONSUMER_READY`; treat that claim as scheduling reservation only and require the active `distributed-execution` B2 signed owner/daemon/job/capsule/lease/fence grant before external execution.
 - [ ] 5.9 Add integration tests proving a won epoch-2 scheduling claim without valid B2 signed authority cannot create an external lease, execute, or submit a result, and that queue/admission/heartbeat rows only narrow or reject B2 authority.
 
 ## 6. Worker Protocol Evidence and Operational Surfaces

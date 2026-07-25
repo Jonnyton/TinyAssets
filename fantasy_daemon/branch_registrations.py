@@ -37,6 +37,7 @@ from tinyassets.domain_registry import (
 
 logger = logging.getLogger(__name__)
 
+
 _BOUNDARY_FIELDS = (
     "universe_id",
     "universe_path",

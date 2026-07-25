@@ -1369,6 +1369,7 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
         "diagnostics_truncated": False,
         "compatible_worker_count": None,
         "capacity_evidence_available": False,
+        "consumer_ready": False,
     }
 
 
