@@ -94,17 +94,19 @@ def configure(
         Optional threading.Thread running the daemon.
     """
     global _base_path, _api_key, _daemon, _daemon_thread, _writer_barrier
-    if _writer_barrier is not None:
-        _writer_barrier.release()
-        _writer_barrier = None
+    replacement_barrier = None
     if base_path:
         from tinyassets.scoped_reset import prepare_service_writer_barrier
 
-        _writer_barrier = prepare_service_writer_barrier(Path(base_path))
+        replacement_barrier = prepare_service_writer_barrier(Path(base_path))
+    previous_barrier = _writer_barrier
+    _writer_barrier = replacement_barrier
     _base_path = base_path
     _api_key = api_key
     _daemon = daemon
     _daemon_thread = daemon_thread
+    if previous_barrier is not None:
+        previous_barrier.release()
 
     if base_path:
         from tinyassets import daemon_server as author_server

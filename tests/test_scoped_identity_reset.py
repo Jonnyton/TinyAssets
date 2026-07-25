@@ -1296,3 +1296,243 @@ def test_apply_refuses_credential_and_home_local_audit_stores(
             roster=_roster(),
             plan_id=plan["plan_id"],
         )
+
+
+def test_apply_refuses_home_directory_identity_swap(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import (
+        ScopedResetBlocked,
+        ScopedResetPlanChanged,
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+    )
+
+    bob_file = seeded / _HOME_B / "bobs_novel.md"
+    bob_file.write_text("belongs to bob\n", encoding="utf-8")
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    parked_alice = seeded / "parked-alice-home"
+    (seeded / _HOME_A).replace(parked_alice)
+    (seeded / _HOME_B).replace(seeded / _HOME_A)
+
+    with pytest.raises((ScopedResetBlocked, ScopedResetPlanChanged)):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+
+    current = plan_test_identity_reset(
+        seeded,
+        alias="alice",
+        roster=_roster(),
+    )
+    assert current["plan_id"] != plan["plan_id"]
+    assert (seeded / _HOME_A / "bobs_novel.md").read_text(
+        encoding="utf-8"
+    ) == "belongs to bob\n"
+    assert (parked_alice / "soul.md").is_file()
+
+
+@pytest.mark.parametrize(
+    "store_name",
+    [
+        "future_queue.sqlite3",
+        "future_events.jsonl",
+        "future_vectors.parquet",
+        "future_queue",
+    ],
+)
+def test_unclassified_home_store_aborts_without_deletion(
+    seeded: Path,
+    store_name: str,
+) -> None:
+    from tinyassets.scoped_reset import (
+        ScopedResetBlocked,
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+    )
+
+    store = seeded / _HOME_A / store_name
+    store.write_bytes(b"future operational state")
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert any(
+        "unclassified home operational store" in blocker
+        for blocker in plan["blockers"]
+    )
+    with pytest.raises(ScopedResetBlocked):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+    assert store.read_bytes() == b"future operational state"
+    assert (seeded / _HOME_A / "soul.md").is_file()
+
+
+def test_unclassified_root_store_and_runs_table_abort_reset(
+    seeded: Path,
+) -> None:
+    from tinyassets.runs import initialize_runs_db
+    from tinyassets.scoped_reset import (
+        ScopedResetBlocked,
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+    )
+
+    root_store = seeded / "future_queue.sqlite3"
+    root_store.write_bytes(b"future root state")
+    runs_path = initialize_runs_db(seeded)
+    with sqlite3.connect(str(runs_path)) as conn:
+        conn.execute("PRAGMA journal_mode = DELETE")
+        conn.execute(
+            "CREATE TABLE pending_jobs ("
+            "job_id TEXT PRIMARY KEY, owner TEXT, status TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO pending_jobs VALUES ('job-a', ?, 'running')",
+            (_SUBJECT_A,),
+        )
+
+    plan = plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert any(
+        "unclassified root operational store" in blocker
+        for blocker in plan["blockers"]
+    )
+    assert any(
+        "unclassified root run-history table" in blocker
+        for blocker in plan["blockers"]
+    )
+    with pytest.raises(ScopedResetBlocked):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+    assert root_store.read_bytes() == b"future root state"
+    assert (seeded / _HOME_A / "soul.md").is_file()
+
+
+def _recursive_file_snapshot(base: Path) -> dict[str, tuple[int, int, str]]:
+    import hashlib
+
+    snapshot: dict[str, tuple[int, int, str]] = {}
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        payload = path.read_bytes()
+        file_stat = path.stat()
+        snapshot[path.relative_to(base).as_posix()] = (
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            hashlib.sha256(payload).hexdigest(),
+        )
+    return snapshot
+
+
+def test_plan_does_not_create_sqlite_sidecars(seeded: Path) -> None:
+    from tinyassets.scoped_reset import plan_test_identity_reset
+
+    before = _recursive_file_snapshot(seeded)
+    plan_test_identity_reset(seeded, alias="alice", roster=_roster())
+
+    assert _recursive_file_snapshot(seeded) == before
+
+
+def test_legacy_api_reconfigure_keeps_previous_writer_fence_on_failure(
+    tmp_path: Path,
+) -> None:
+    import fantasy_daemon.api as legacy_api
+    from tinyassets.scoped_reset import (
+        ScopedResetLeaseBusy,
+        acquire_maintenance_barrier,
+    )
+
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_a.mkdir()
+    root_b.mkdir()
+    blocker = None
+    probe = None
+    try:
+        legacy_api.configure(str(root_a))
+        blocker = acquire_maintenance_barrier(
+            root_b,
+            exclusive=True,
+            timeout=0.2,
+        )
+
+        with pytest.raises(ScopedResetLeaseBusy):
+            legacy_api.configure(str(root_b))
+
+        assert legacy_api._base_path == str(root_a)
+        try:
+            probe = acquire_maintenance_barrier(
+                root_a,
+                exclusive=True,
+                timeout=0.05,
+            )
+        except ScopedResetLeaseBusy:
+            pass
+        else:
+            pytest.fail("legacy API still serves root A without its writer fence")
+    finally:
+        if probe is not None:
+            probe.release()
+        if blocker is not None:
+            blocker.release()
+        if legacy_api._writer_barrier is not None:
+            legacy_api._writer_barrier.release()
+            legacy_api._writer_barrier = None
+        legacy_api._base_path = ""
+
+
+def test_legacy_api_swaps_root_and_fence_before_releasing_previous(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fantasy_daemon.api as legacy_api
+    import tinyassets.scoped_reset as scoped_reset
+
+    root_b = tmp_path / "b"
+    root_b.mkdir()
+    replacement_released = False
+
+    class ReplacementBarrier:
+        def release(self) -> None:
+            nonlocal replacement_released
+            replacement_released = True
+
+    replacement = ReplacementBarrier()
+
+    class PreviousBarrier:
+        released = False
+
+        def release(self) -> None:
+            assert legacy_api._base_path == str(root_b)
+            assert legacy_api._writer_barrier is replacement
+            self.released = True
+
+    previous = PreviousBarrier()
+    monkeypatch.setattr(
+        scoped_reset,
+        "prepare_service_writer_barrier",
+        lambda _path: replacement,
+    )
+    legacy_api._base_path = str(tmp_path / "a")
+    legacy_api._writer_barrier = previous
+    try:
+        legacy_api.configure(str(root_b))
+        assert previous.released
+    finally:
+        if legacy_api._writer_barrier is replacement:
+            replacement.release()
+        legacy_api._writer_barrier = None
+        legacy_api._base_path = ""
+    assert replacement_released

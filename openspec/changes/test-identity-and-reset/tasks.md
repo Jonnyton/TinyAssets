@@ -18,13 +18,14 @@
   symlinks/junctions/reparse points, concurrent writers, and every pre/post-rename/commit/cleanup
   fault point.
   - **Completed (2026-07-25).** The inventory classifies current and Epoch-2
-    stores, blocks every unknown or unadapted operational store, freezes exact
-    resettable columns/keys/foreign-key authority with hidden-column and
-    trigger/view rejection, and blocks foreign actors plus preserved cascade
-    dependencies. Root, database, sidecar, home, barrier, journal, and staging
-    paths reject links, reparse points, hardlinks, and mount crossings. A
-    process-shared reader-slot/all-slot writer barrier supports concurrent
-    services while excluding reset.
+    stores, default-denies unclassified home/root store formats and unknown
+    root-run tables, freezes exact resettable columns/keys/foreign-key
+    authority with hidden-column and trigger/view rejection, and blocks foreign
+    actors plus preserved cascade dependencies. Root, database, sidecar, home,
+    barrier, journal, and staging paths reject links, reparse points,
+    hardlinks, and mount crossings. A process-shared reader-slot/all-slot
+    writer barrier supports concurrent services while excluding reset; the
+    legacy API acquires a replacement barrier before releasing its live one.
 - [x] 1.2 Implement the read-only operator plan for one allowlisted external test principal and make
   unknown/repetition semantics explicit: unknown alias or non-allowlisted subject fails closed; an
   allowlisted subject with no state is a no-op; replay of a completed plan returns its receipt and
@@ -33,32 +34,37 @@
     explicit private roster (POSIX mode or Windows owner/DACL verified),
     resolves only allowlisted aliases, never emits raw subjects, and produces
     a stable content-free plan over inventory/roster revisions, principal
-    digest, exact row versions, resolved paths, blockers, and preservation
-    scope. No-state plan/apply is a stable mutation-free no-op, including a
-    root with no database. Completed replay returns its old receipt before
-    inspecting or touching replacement state.
+    digest, exact row versions, resolved paths, the home directory filesystem
+    ID plus entry/content digest, blockers, and preservation scope. Read-only
+    SQLite inspection creates no WAL/SHM sidecars. No-state plan/apply is a
+    stable mutation-free no-op, including a root with no database. Completed
+    replay returns its old receipt before inspecting or touching replacement
+    state.
 - [x] 1.3 Only after 1.1-1.2 pass, implement apply with exact founder-home rather than ACL-derived
   ownership, lease/fencing, path containment, explicit cross-store actions, and deterministic crash
   recovery; prove every other principal and all preserved commons, history, audit/market, daemon, and
   credential state remain unchanged; expose no MCP or API route.
-  - **Completed (2026-07-25).** Apply revalidates the exact founder-home plan
-    under the exclusive barrier and durable principal/home fence, writes the
-    content-free journal before the operation witness, stages by
+  - **Completed (2026-07-25).** Apply revalidates the exact founder-home plan,
+    roster-principal binding, filesystem object identity, and entry/content
+    digest under the exclusive barrier and again immediately before rename. It
+    writes the content-free journal before the operation witness, stages by
     same-filesystem rename, and commits exact reviewed deletes with the SQLite
     witness. Recovery re-derives all paths, compares journal/SQLite evidence,
     restores pre-commit state or completes post-commit cleanup, and durably
     flushes every rename/cleanup parent. All supported writer entrypoints join
-    a clean shared barrier before traffic. The global reset is unchanged and
-    no MCP/API route or action was added.
+    a clean shared barrier before traffic. The global reset is unchanged and no
+    MCP/API route or action was added.
 - [x] 1.4 Add a CI-executable mutation/fault-injection proof that goes red when principal filtering is
   removed or widened and when either side of the filesystem/SQLite recovery boundary is broken.
-  - **Completed (2026-07-25).** The CI proof mutates the real selection
-    predicate and exact delete keys, corrupts the commit witness and
-    journal/path evidence, injects partial journal publication and rollback
-    rename failures, covers pre/post journal, rename, commit, cleanup, and
-    completion windows, verifies durable reverse-rename flushes, and rejects a
-    linked staging ancestor. Each widened filter or broken recovery guard makes
-    the proof red.
+  - **Completed (2026-07-25).** The 13-case CI proof mutates both
+    `founder_home` and `universe_acl` selection predicates plus exact delete
+    keys, corrupts the commit witness and journal/path evidence, injects
+    partial journal publication and rollback rename failures, covers pre/post
+    journal, rename, commit, cleanup, and completion windows, verifies durable
+    reverse-rename flushes, and rejects a linked staging ancestor. Separate
+    mutation challenges prove that path-only home binding, permissive future
+    store classification, and release-before-acquire legacy fencing each turn
+    their reviewer regression red.
 
 ## 2. Real multiple test identities
 

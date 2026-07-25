@@ -177,6 +177,54 @@ def test_real_planner_predicate_widening_changes_the_reviewed_plan(
     assert (seeded / _HOME_B / "soul.md").is_file()
 
 
+def test_founder_home_predicate_widening_is_rejected(
+    seeded: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _connect(seeded) as conn:
+        conn.execute(
+            "UPDATE founder_home SET universe_id = ? WHERE founder_sub = ?",
+            (_HOME_A, _SUBJECT_B),
+        )
+
+    original = scoped_reset._select_rows
+
+    def widen_founder_home_selection(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        where: str,
+        params: tuple[object, ...],
+    ) -> list[sqlite3.Row]:
+        if table == "founder_home":
+            return list(
+                conn.execute(
+                    'SELECT * FROM "founder_home" WHERE universe_id = ? '
+                    "ORDER BY rowid",
+                    (_HOME_A,),
+                )
+            )
+        return original(conn, table=table, where=where, params=params)
+
+    monkeypatch.setattr(
+        scoped_reset,
+        "_select_rows",
+        widen_founder_home_selection,
+    )
+
+    with _connect(seeded) as conn:
+        with pytest.raises(
+            scoped_reset.ScopedResetPlanChanged,
+            match="founder-home selection escaped",
+        ):
+            scoped_reset._database_actions(
+                conn,
+                principal=_SUBJECT_A,
+                alias="alice",
+                home_id=_HOME_A,
+            )
+
+
 @pytest.mark.parametrize(
     "fault_point",
     ["after_journal", "after_prepare", "after_complete"],

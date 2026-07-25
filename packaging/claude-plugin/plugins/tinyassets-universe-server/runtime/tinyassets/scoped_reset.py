@@ -27,7 +27,7 @@ from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
 
-INVENTORY_REVISION = "scoped-reset-inventory-v2-2026-07-25"
+INVENTORY_REVISION = "scoped-reset-inventory-v3-2026-07-25"
 
 # Classification is location-specific: these are the only reviewed tables
 # allowed in the root .tinyassets.db.  A migration adding any other table must
@@ -144,10 +144,47 @@ _HOME_OPERATIONAL_NAMES = frozenset({
     "story.db",
 })
 _HOME_OPERATIONAL_DIRECTORIES = frozenset({
+    ".git",
     ".credentials",
     ".lance",
     "checkpoints",
     "lance",
+})
+_HOME_RESETTABLE_CONTENT_SUFFIXES = frozenset({
+    ".bat",
+    ".bmp",
+    ".css",
+    ".csv",
+    ".docx",
+    ".gif",
+    ".html",
+    ".jpeg",
+    ".jpg",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".mov",
+    ".mp3",
+    ".mp4",
+    ".pdf",
+    ".png",
+    ".ps1",
+    ".py",
+    ".rst",
+    ".sh",
+    ".svg",
+    ".toml",
+    ".ts",
+    ".tsv",
+    ".tsx",
+    ".txt",
+    ".wav",
+    ".webp",
+    ".xlsx",
+    ".yaml",
+    ".yml",
+    ".zip",
 })
 _KNOWN_ROOT_DATABASES = frozenset({
     ".auth.db",
@@ -163,6 +200,34 @@ _KNOWN_ROOT_DATABASES = frozenset({
     "knowledge.db",
     "story.db",
     "wiki_trigger_attempts.db",
+})
+_KNOWN_ROOT_NON_DATABASE_FILES = frozenset({
+    ".active_universe",
+    ".node_registry.json",
+    ".scoped-reset.barrier",
+    "ledger.json",
+})
+_KNOWN_ROOT_RUN_TABLES = frozenset({
+    "attribution_credit",
+    "attribution_edge",
+    "branch_schedules",
+    "branch_subscriptions",
+    "branch_versions",
+    "conformance_pack",
+    "contribution_events",
+    "gate_event",
+    "gate_event_cite",
+    "node_edit_audit",
+    "outcome_event",
+    "run_cancels",
+    "run_child_attachments",
+    "run_events",
+    "run_judgments",
+    "run_lineage",
+    "run_receipts",
+    "runs",
+    "scheduler_delivered_events",
+    "teammate_messages",
 })
 _ROOT_OPERATIONAL_BLOCKERS = frozenset({
     ".external_write_receipts.db",
@@ -729,6 +794,103 @@ def _validated_main_database(root: Path) -> Path:
     return db_file
 
 
+def _connect_read_only(db_file: Path) -> sqlite3.Connection:
+    """Open a stable SQLite snapshot without creating WAL/SHM sidecars."""
+
+    journal = Path(f"{db_file}-journal")
+    if journal.is_file() and journal.stat().st_size:
+        raise ScopedResetBlocked(
+            f"database has a hot SQLite sidecar: {journal.name}"
+        )
+    uri = db_file.resolve(strict=True).as_uri()
+    wal = Path(f"{db_file}-wal")
+    if wal.is_file() and wal.stat().st_size:
+        shm = Path(f"{db_file}-shm")
+        if not shm.is_file():
+            raise ScopedResetBlocked(
+                f"database WAL has no readable shared-memory index: {wal.name}"
+            )
+        return sqlite3.connect(f"{uri}?mode=ro", uri=True)
+    return sqlite3.connect(f"{uri}?mode=ro&immutable=1", uri=True)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _home_filesystem_identity(home: Path) -> dict[str, object]:
+    """Bind a reviewed home to its directory object and exact entry tree."""
+
+    if _is_link_or_reparse(home):
+        raise ScopedResetBlocked("founder-home path is a link or reparse point")
+    root_stat = home.stat()
+    entries: list[dict[str, object]] = []
+    pending = [home]
+    while pending:
+        current = pending.pop()
+        for entry in sorted(os.scandir(current), key=lambda item: item.name):
+            path = Path(entry.path)
+            relative = path.relative_to(home).as_posix()
+            if entry.is_symlink() or _is_link_or_reparse(path):
+                raise ScopedResetBlocked(
+                    f"home contains link or reparse point: {relative}"
+                )
+            entry_stat = path.stat(follow_symlinks=False)
+            if entry_stat.st_dev != root_stat.st_dev:
+                raise ScopedResetBlocked(
+                    f"home crosses a nested mount boundary: {relative}"
+                )
+            common = {
+                "path": relative,
+                "device": int(entry_stat.st_dev),
+                "inode": int(entry_stat.st_ino),
+            }
+            if entry.is_dir(follow_symlinks=False):
+                entries.append({**common, "kind": "directory"})
+                pending.append(path)
+            elif entry.is_file(follow_symlinks=False):
+                entries.append({
+                    **common,
+                    "kind": "file",
+                    "bytes": int(entry_stat.st_size),
+                    "content_sha256": _sha256_file(path),
+                })
+            else:
+                raise ScopedResetBlocked(
+                    f"home contains unsupported filesystem entry: {relative}"
+                )
+    entry_digest = hashlib.sha256(
+        json.dumps(
+            entries,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    return {
+        "device": int(root_stat.st_dev),
+        "inode": int(root_stat.st_ino),
+        "entry_digest": f"sha256:{entry_digest}",
+    }
+
+
+def _assert_home_filesystem_identity(
+    home: Path,
+    planned_identity: object,
+) -> None:
+    if not isinstance(planned_identity, dict):
+        raise ScopedResetPlanChanged(
+            "reviewed home filesystem identity is missing"
+        )
+    if _home_filesystem_identity(home) != planned_identity:
+        raise ScopedResetPlanChanged(
+            "candidate home filesystem identity changed after review"
+        )
+
+
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
@@ -770,6 +932,12 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                         f"adapter: {path.relative_to(home)}"
                     )
                     continue
+                if entry.name.startswith("."):
+                    blockers.append(
+                        "unclassified home operational directory: "
+                        f"{path.relative_to(home)}"
+                    )
+                    continue
                 pending.append(path)
             else:
                 base_name = entry.name
@@ -778,14 +946,19 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                         base_name = base_name.removesuffix(suffix)
                         break
                 if (
-                    base_name not in _HOME_OPERATIONAL_NAMES
-                    and not base_name.endswith(".db")
+                    base_name in _HOME_OPERATIONAL_NAMES
+                    or base_name.endswith(".db")
                 ):
+                    blockers.append(
+                        "home operational store has no scoped-reset adapter: "
+                        f"{path.relative_to(home)}"
+                    )
                     continue
-                blockers.append(
-                    "home operational store has no scoped-reset adapter: "
-                    f"{path.relative_to(home)}"
-                )
+                if path.suffix.casefold() not in _HOME_RESETTABLE_CONTENT_SUFFIXES:
+                    blockers.append(
+                        "unclassified home operational store: "
+                        f"{path.relative_to(home)}"
+                    )
     return tuple(blockers)
 
 
@@ -1001,9 +1174,15 @@ def _inspect_root_runs(
     if _is_link_or_reparse(runs_path) or runs_path.stat().st_nlink != 1:
         return ("root run history is linked and cannot be classified",)
     try:
-        conn = sqlite3.connect(f"file:{runs_path}?mode=ro", uri=True)
+        conn = _connect_read_only(runs_path)
         tables = _table_names(conn)
         blockers: list[str] = []
+        unknown_tables = sorted(tables - _KNOWN_ROOT_RUN_TABLES)
+        if unknown_tables:
+            blockers.append(
+                "unclassified root run-history table: "
+                + ", ".join(unknown_tables)
+            )
         if "runs" in tables and _matching_count(
             conn,
             "SELECT COUNT(*) FROM runs "
@@ -1057,9 +1236,8 @@ def _inspect_root_operational_files(root: Path) -> tuple[str, ...]:
             )
             continue
         if (
-            name == ".scoped-reset.barrier"
+            name in _KNOWN_ROOT_NON_DATABASE_FILES
             or base_name in _KNOWN_ROOT_DATABASES
-            or not (base_name.startswith(".") or base_name.endswith(".db"))
         ):
             continue
         blockers.append(f"unclassified root operational store: {name}")
@@ -1084,7 +1262,7 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
             blockers=(),
         )
 
-    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    conn = _connect_read_only(db_file)
     try:
         conn.row_factory = sqlite3.Row
         tables = _table_names(conn)
@@ -1253,12 +1431,21 @@ def _database_actions(
 ) -> list[dict[str, object]]:
     actions: list[dict[str, object]] = []
     if home_id is not None:
-        for row in _select_rows(
+        founder_rows = _select_rows(
             conn,
             table="founder_home",
             where="founder_sub = ? AND universe_id = ?",
             params=(principal, home_id),
+        )
+        if any(
+            str(row["founder_sub"]) != principal
+            or str(row["universe_id"]) != home_id
+            for row in founder_rows
         ):
+            raise ScopedResetPlanChanged(
+                "founder-home selection escaped the exact reviewed identity"
+            )
+        for row in founder_rows:
             actions.append(
                 _row_action(
                     conn,
@@ -1370,7 +1557,7 @@ def plan_test_identity_reset(
     db_file = _validated_main_database(root)
     actions: list[dict[str, object]] = []
     if db_file.is_file():
-        conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        conn = _connect_read_only(db_file)
         try:
             conn.row_factory = sqlite3.Row
             actions = _database_actions(
@@ -1382,11 +1569,17 @@ def plan_test_identity_reset(
         finally:
             conn.close()
 
-    filesystem_actions: list[dict[str, str]] = []
+    filesystem_actions: list[dict[str, object]] = []
     if scope.home_path is not None:
         filesystem_actions.append({
             "action": "stage_then_remove_home",
             "path": str(scope.home_path.resolve(strict=False)),
+            "owner_principal_fingerprint": _principal_digest(principal),
+            "home_filesystem_identity": (
+                _home_filesystem_identity(scope.home_path)
+                if not scope.blockers
+                else None
+            ),
         })
 
     state_payload = {
@@ -1545,7 +1738,7 @@ def read_completed_plan_receipt(
     db_file = _validated_main_database(root)
     if not db_file.is_file():
         return None
-    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    conn = _connect_read_only(db_file)
     try:
         if "scoped_reset_operations" not in _table_names(conn):
             return None
@@ -2072,7 +2265,7 @@ def apply_test_identity_reset(
     root = _validated_root(data_dir)
     db_file = _validated_main_database(root)
     if db_file.is_file():
-        receipt_conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        receipt_conn = _connect_read_only(db_file)
         try:
             receipt_conn.row_factory = sqlite3.Row
             if "scoped_reset_operations" in _table_names(receipt_conn):
@@ -2167,15 +2360,34 @@ def apply_test_identity_reset(
                 raise ScopedResetPlanChanged(
                     "current state does not match the reviewed plan"
                 )
+            filesystem_actions = plan["filesystem_actions"]
+            filesystem_action = (
+                filesystem_actions[0]
+                if filesystem_actions
+                else None
+            )
+            if (
+                filesystem_action is not None
+                and filesystem_action.get("owner_principal_fingerprint")
+                != principal_fingerprint
+            ):
+                raise ScopedResetPlanChanged(
+                    "reviewed home is not bound to the roster principal"
+                )
             source, staging, journal = _safe_operation_paths(
                 root,
                 plan_id=plan_id,
                 home_path=(
-                    Path(str(plan["filesystem_actions"][0]["path"]))
-                    if plan["filesystem_actions"]
+                    Path(str(filesystem_action["path"]))
+                    if filesystem_action is not None
                     else None
                 ),
             )
+            if source is not None and filesystem_action is not None:
+                _assert_home_filesystem_identity(
+                    source,
+                    filesystem_action.get("home_filesystem_identity"),
+                )
             fence = _acquire_durable_fence(
                 conn,
                 plan_id=plan_id,
@@ -2203,6 +2415,10 @@ def apply_test_identity_reset(
             _fault(fault_injector, "after_prepare")
             _fault(fault_injector, "before_rename")
             if source is not None and staging is not None:
+                _assert_home_filesystem_identity(
+                    source,
+                    filesystem_action.get("home_filesystem_identity"),
+                )
                 os.replace(source, staging)
                 _fsync_directory(root)
                 _fsync_directory(staging.parent)
@@ -2531,7 +2747,7 @@ def _assert_recovery_state_is_clean(root: Path) -> None:
     db_file = _validated_main_database(root)
     if not db_file.is_file():
         return
-    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    conn = _connect_read_only(db_file)
     try:
         if "scoped_reset_operations" not in _table_names(conn):
             return
