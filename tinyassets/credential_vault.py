@@ -165,7 +165,10 @@ def _merge_single_record(
     merged = list(existing)
     for index, record in enumerate(merged):
         if _credentials_match(record, incoming):
-            merged[index] = incoming
+            if incoming["credential_type"] == "llm_subscription":
+                merged[index] = {**record, **incoming}
+            else:
+                merged[index] = incoming
             return merged
     merged.append(incoming)
     return merged
