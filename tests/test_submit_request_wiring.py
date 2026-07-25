@@ -355,6 +355,8 @@ def test_epoch2_target_selection_tracks_exact_current_live_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from fantasy_daemon.branch_registrations import _restartable_work_exists
+
     universe_dir = tmp_path / "test-universe"
     universe_dir.mkdir()
     initialize_author_server(tmp_path)
@@ -396,6 +398,7 @@ def test_epoch2_target_selection_tracks_exact_current_live_claim(
         universe_dir,
         candidate_override=created,
     ) == []
+    assert _restartable_work_exists(universe_dir) is False
 
     assert adapter.recover_expired()
     _claim_epoch2_request(
@@ -438,6 +441,52 @@ def test_epoch2_materialization_rejects_same_basename_outside_data_root(
 
     assert materialize_pending_requests(outside_universe) == []
     assert not (outside_universe / "work_targets.json").exists()
+
+
+def test_epoch2_materialization_uses_bounded_operational_scan_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    observed: dict[str, object] = {}
+
+    class _Adapter:
+        def __init__(self, base: Path) -> None:
+            observed["base"] = base
+
+        def list_live_claimed_requests(
+            self,
+            *,
+            universe_id: str,
+            worker_id: str,
+            limit: int,
+        ) -> list:
+            observed.update(
+                universe_id=universe_id,
+                worker_id=worker_id,
+                limit=limit,
+            )
+            return []
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter",
+        _Adapter,
+    )
+
+    assert materialize_pending_requests(universe_dir) == []
+    assert observed == {
+        "base": tmp_path.resolve(),
+        "universe_id": universe_dir.name,
+        "worker_id": "worker-a",
+        "limit": 1000,
+    }
 
 
 @pytest.mark.parametrize(
@@ -484,7 +533,7 @@ def test_epoch2_pickup_signal_requires_positive_authorized_priority(
     target = materialize_pending_requests(universe_dir)[0]
 
     assert target.metadata["accepted_priority_weight"] == priority_weight
-    assert target.metadata["pickup_incentive"] == "request my daemon"
+    assert target.metadata["pickup_incentive_text"] == "request my daemon"
     directed = target.metadata["requester_directed_daemon"]
     assert directed["daemon_id"] == daemon["daemon_id"]
     assert directed["instruction"] == "Draft only."

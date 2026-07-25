@@ -57,6 +57,7 @@ SYNTHESIS_RETRY_LIMIT = 3
 PATCH_REQUEST_PICKUP_SIGNAL_TAG = "pickup-incentive"
 REQUESTER_DIRECTED_DAEMON_TAG = "requester-directed-daemon"
 PATCH_REQUEST_PICKUP_SIGNAL_CAP = 5.0
+EPOCH2_MATERIALIZATION_SCAN_LIMIT = 1000
 
 EXECUTION_KIND_NOTES = "notes"
 # Phase C.2: BOOK/CHAPTER/SCENE moved to
@@ -432,12 +433,20 @@ def _list_live_epoch2_requests(
     ):
         return []
     try:
-        return branch_tasks_v2.Epoch2BranchTaskAdapter(
+        records = branch_tasks_v2.Epoch2BranchTaskAdapter(
             canonical_root,
         ).list_live_claimed_requests(
             universe_id=universe_id,
             worker_id=worker_id,
+            limit=EPOCH2_MATERIALIZATION_SCAN_LIMIT,
         )
+        if len(records) == EPOCH2_MATERIALIZATION_SCAN_LIMIT:
+            logger.warning(
+                "epoch-2 live-claim read reached the %s-row scan cap for %s",
+                EPOCH2_MATERIALIZATION_SCAN_LIMIT,
+                resolved_universe_path,
+            )
+        return records
     except Exception:  # noqa: BLE001
         logger.warning(
             "epoch-2 live-claim read failed for %s",
@@ -621,7 +630,7 @@ def _materialize_live_epoch2_requests(
             "claimed_at": request.claimed_at,
         }
         if request.pickup_incentive:
-            metadata["pickup_incentive"] = request.pickup_incentive
+            metadata["pickup_incentive_text"] = request.pickup_incentive
         if request.directed_daemon_id:
             metadata["requester_directed_daemon"] = {
                 "daemon_id": request.directed_daemon_id,

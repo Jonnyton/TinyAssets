@@ -184,6 +184,7 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             return True
         if any(
             target.lifecycle == LIFECYCLE_ACTIVE
+            and target.metadata.get("queue_epoch") != 2
             for target in load_work_targets(universe_path)
         ):
             return True
@@ -207,7 +208,6 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             "restartable-work check failed for %s", universe_path,
             exc_info=True,
         )
-        return False
     try:
         if _live_epoch2_claim_exists(universe_path):
             return True

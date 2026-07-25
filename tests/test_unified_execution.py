@@ -560,6 +560,27 @@ def test_epoch2_probe_failure_does_not_mask_pending_legacy_request(
     assert repaired["health"]["stopped"] is False
 
 
+def test_legacy_probe_failure_does_not_mask_live_epoch2_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fantasy_daemon.branch_registrations as br
+
+    monkeypatch.setattr(
+        "tinyassets.work_targets.sync_source_synthesis_priorities",
+        lambda _universe_path: (_ for _ in ()).throw(
+            OSError("legacy registry unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        br,
+        "_live_epoch2_claim_exists",
+        lambda _universe_path: True,
+    )
+
+    assert br._restartable_work_exists(tmp_path) is True
+
+
 def test_epoch2_restart_probe_rejects_same_basename_outside_data_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
