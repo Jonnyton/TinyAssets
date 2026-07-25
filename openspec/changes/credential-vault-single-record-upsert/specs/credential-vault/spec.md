@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Credential vault replacement is process-local and unversioned
-The system SHALL treat a validated one-record payload written to an existing vault as a logical-slot upsert and SHALL treat an empty or two-or-more-record payload as an exact ordered replacement. Every successful write SHALL pass through the fixed sibling path `.credential-vault.json.tmp` and replace `.credential-vault.json` directly from that path. This boundary SHALL NOT claim cross-process locking, a unique temporary filename, compare-and-swap, or version conflict detection.
+The system SHALL treat a validated one-record payload written to an existing vault as a logical-slot upsert and SHALL treat an empty or two-or-more-record payload as an exact ordered replacement. Every successful write SHALL pass through the fixed sibling path `.credential-vault.json.tmp` and replace `.credential-vault.json` directly from that path. Its non-secret summary SHALL report the number of redundant matching records collapsed and descriptors for any VCS purpose slots removed by a narrowing upsert. This boundary SHALL NOT claim cross-process locking, a unique temporary filename, compare-and-swap, or version conflict detection.
 
 #### Scenario: Single record upserts into an existing vault
 - **WHEN** a valid one-record payload is written while `.credential-vault.json` exists and is valid
@@ -15,13 +15,21 @@ The system SHALL treat a validated one-record payload written to an existing vau
 - **WHEN** an existing VCS record and an incoming VCS record have the same service and destination and their selectors share at least one purpose, including a stored `purposes` list that contains the incoming singular `purpose`
 - **THEN** the records match one logical slot, the incoming whole record replaces all overlapping matches, and a first stored token cannot shadow the deposited rotation
 
+#### Scenario: VCS narrowing reports removed purpose slots
+- **WHEN** a one-record VCS upsert replaces an overlapping record whose normalized purpose set contains selectors absent from the incoming record
+- **THEN** the write summary identifies the removed purposes with credential type, normalized service, exact destination, and sorted purpose names without including any secret value
+
 #### Scenario: Subscription partial writes preserve sibling fields
 - **WHEN** one `llm_subscription` record is upserted into one or more matching subscription records
 - **THEN** stored fields are combined with first-record precedence, stored members of any Claude or Codex resolver-equivalent alias family named by the incoming record are removed, incoming fields are applied, unrelated sibling fields survive, and all matching records collapse to the combined record
 
+#### Scenario: Codex auth rotation updates a preserved materialization home
+- **WHEN** a partial Codex subscription upsert changes `auth_json_b64` while preserving a configured home whose `auth.json` contains different bytes
+- **THEN** the next vault-backed Codex materialization atomically replaces `auth.json` with the decoded incoming blob instead of retaining the stale file
+
 #### Scenario: Single upsert cleans duplicate resolver slots
 - **WHEN** exact bulk replacement has stored multiple matching BYO-key or Claude-subscription records whose first record shadows later records
-- **THEN** their existing first-record resolution semantics remain in effect until a one-record upsert for that logical slot collapses every match to one record
+- **THEN** their existing first-record resolution semantics remain in effect until a one-record upsert for that logical slot collapses every match to one record and reports the number of redundant records removed
 
 #### Scenario: Bulk write replaces the vault exactly
 - **WHEN** a valid payload contains two or more credential records

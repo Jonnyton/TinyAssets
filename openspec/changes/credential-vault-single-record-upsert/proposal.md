@@ -13,7 +13,10 @@ same-slot duplicates.
 - Make overlapping VCS purpose selectors rotate one slot instead of appending a
   shadowed token.
 - Preserve sibling fields when merging `llm_subscription` records.
+- Re-materialize changed Codex auth blobs after a partial subscription rotation.
 - Collapse every matching duplicate during one-record upserts.
+- Report collapsed records and intentionally dropped VCS purpose slots in the
+  non-secret write summary.
 - Retain exact bulk replacement, empty clearing, fail-loud malformed-vault
   handling, and the existing cross-process race disclaimer.
 
@@ -32,4 +35,5 @@ same-slot duplicates.
 
 The canonical and packaged runtime copies of `tinyassets/credential_vault.py`,
 credential-vault regression tests, and the existing `credential-vault`
-capability spec are affected. No API signature or dependency changes.
+capability spec are affected. The write summary gains non-secret collapse/loss
+fields; no function signature or dependency changes.

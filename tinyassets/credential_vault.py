@@ -253,14 +253,39 @@ def write_credential_vault(
     first position. Subscription fields merge; other credential types replace
     the whole slot. Two-or-more records replace the stored list exactly, and an
     empty payload clears it. A malformed existing vault blocks a single upsert.
-    Returns a non-secret summary suitable for logs/status surfaces.
+    Returns a non-secret summary suitable for logs/status surfaces, including
+    redundant matches collapsed and VCS purpose slots dropped by an upsert.
     """
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
     records = _records_from_payload(credentials)
     path = credential_vault_path(universe)
+    collapsed_credential_count = 0
+    dropped_credential_slots: list[dict[str, Any]] = []
     if len(records) == 1 and path.is_file():
-        records = _merge_single_record(load_credential_vault(universe), records[0])
+        incoming = records[0]
+        existing = load_credential_vault(universe)
+        matching = [
+            record
+            for record in existing
+            if _credentials_match(record, incoming)
+        ]
+        collapsed_credential_count = max(0, len(matching) - 1)
+        if incoming["credential_type"] == "vcs":
+            dropped_purposes = (
+                frozenset().union(*(_vcs_purposes(record) for record in matching))
+                - _vcs_purposes(incoming)
+            )
+            if dropped_purposes:
+                dropped_credential_slots.append({
+                    "credential_type": "vcs",
+                    "service": _service(incoming),
+                    "destination": str(
+                        incoming.get("destination") or ""
+                    ).strip(),
+                    "purposes": sorted(dropped_purposes),
+                })
+        records = _merge_single_record(existing, incoming)
     tmp = path.with_name(f"{path.name}.tmp")
     payload = {"schema_version": 1, "credentials": records}
     tmp.write_text(
@@ -283,6 +308,8 @@ def write_credential_vault(
         "credential_count": len(records),
         "credential_types": credential_types,
         "services": services,
+        "collapsed_credential_count": collapsed_credential_count,
+        "dropped_credential_slots": dropped_credential_slots,
     }
 
 
@@ -378,12 +405,14 @@ def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None
         _chmod_best_effort(home, 0o700)
         auth_b64 = record.get("auth_json_b64")
         auth_file = home / "auth.json"
-        if isinstance(auth_b64, str) and auth_b64.strip() and not auth_file.exists():
-            tmp = auth_file.with_name("auth.json.tmp")
-            tmp.write_bytes(base64.b64decode(auth_b64.strip()))
-            _chmod_best_effort(tmp, 0o600)
-            tmp.replace(auth_file)
-            _chmod_best_effort(auth_file, 0o600)
+        if isinstance(auth_b64, str) and auth_b64.strip():
+            auth_bytes = base64.b64decode(auth_b64.strip())
+            if not auth_file.exists() or auth_file.read_bytes() != auth_bytes:
+                tmp = auth_file.with_name("auth.json.tmp")
+                tmp.write_bytes(auth_bytes)
+                _chmod_best_effort(tmp, 0o600)
+                tmp.replace(auth_file)
+                _chmod_best_effort(auth_file, 0o600)
         config_file = home / "config.toml"
         if auth_file.exists() and not config_file.exists():
             config_file.write_text(
