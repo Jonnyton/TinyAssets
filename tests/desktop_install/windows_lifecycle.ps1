@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $installerPath = (Resolve-Path -LiteralPath $Installer).Path
 $installRoot = Join-Path $env:LOCALAPPDATA "Programs\TinyAssets"
-$dataRoot = Join-Path $env:LOCALAPPDATA "TinyAssets"
+$dataRoot = Join-Path $env:APPDATA "TinyAssets"
 $tray = Join-Path $installRoot "TinyAssets.exe"
 $uninstaller = Join-Path $installRoot "unins000.exe"
 $startup = Join-Path $env:APPDATA `

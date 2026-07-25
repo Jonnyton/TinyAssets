@@ -145,8 +145,10 @@ def test_windows_installer_preserves_user_content_on_uninstall() -> None:
         encoding="utf-8"
     )
 
-    assert "{userappdata}\\TinyAssets" not in installer
-    assert "uninsdelete" not in installer.lower()
+    assert installer.count("{userappdata}\\TinyAssets") == 2
+    assert '{userappdata}\\TinyAssets\\updates"' in installer
+    assert "[UninstallDelete]" in installer
+    assert "CompareText(" in installer
 
 
 def test_metadata_json_round_trips_without_absolute_build_paths(
