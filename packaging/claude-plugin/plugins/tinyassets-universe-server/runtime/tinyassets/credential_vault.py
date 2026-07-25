@@ -110,12 +110,15 @@ def _decode_codex_auth_json(value: Any) -> bytes:
         raise ValueError(
             "credential auth_json_b64 must be a non-empty base64 string"
         )
+    normalized = value.translate(str.maketrans("", "", " \t\r\n"))
     try:
-        decoded = base64.b64decode(value.strip(), validate=True)
+        decoded = base64.b64decode(normalized, validate=True)
     except ValueError as exc:
         raise ValueError("credential auth_json_b64 base64 decode failed") from exc
     if not decoded:
         raise ValueError("credential auth_json_b64 decoded content is empty")
+    if decoded.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("credential auth_json_b64 decoded content has a UTF-8 BOM")
     try:
         json.loads(decoded)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
