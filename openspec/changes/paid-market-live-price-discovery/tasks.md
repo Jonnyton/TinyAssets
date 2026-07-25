@@ -7,32 +7,32 @@ unchecked.
 
 | Task | Classification | Evidence / boundary |
 |---|---|---|
-| 1.3 | live → completed audit | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
+| 1.3 | built | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
 | 2.1 | blocked-domain-owner | Draft PR #1679 owns the amended descriptor grammar and requires opposite-provider re-review before 2.1/2.2. |
 | 2.2 | blocked-domain-owner | Same #1679 gate; do not implement its moving descriptor/market-class contract here. |
-| 2.3 | live | Pure quote/canonical-authority tests can use opaque descriptor identities and an injected verifier. |
-| 2.4 | live | Pure exact landed-total and quote validation needs no transport. |
-| 2.5 | blocked-domain-owner (partial live) | Quote-field mutation coverage is standalone; facet/substitutability coverage waits for #1679. |
-| 3.1 | live | Pure fail-closed observation-join and field-fresh tests use fixture receipts only. |
-| 3.2 | live (partial landed) | `index.py` is landed, but field freshness, principal roots, and complete-ceiling semantics are absent. |
-| 3.3 | live | A credential-blind read-only protocol is standalone; no live adapter or outbound effect is authorized. |
-| 3.4 | live | Fake adapters and fault fixtures need no credential, quota, boundary call, or paid API. |
-| 3.5 | stale-inverted → live | `self_hosted_zero_fee` contradicts Wave 2; same-owner volume stays excluded but every positive-gross settlement pays the fee. |
-| 4.1 | live | Pure mandate selection can prove no paid/provider side effect exists. |
-| 4.2 | live | Pure eligibility/ranking returns evidence only and owns no reservation. |
-| 4.3 | live (pure value only) | Immutable receipt/ACL/projection policy is standalone; durable tenant storage remains gated. |
-| 4.4 | live | Pure boundary/mutation tests can prove the result grants no execution or money authority. |
+| 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
+| 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
+| 2.5 | blocked-domain-owner (standalone subset built) | Quote-field mutation coverage is built; facet/substitutability coverage waits for #1679. |
+| 3.1 | built | Fail-closed observation joins and independently fresh price fields use fixture receipts only. |
+| 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
+| 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
+| 3.4 | built | Two fake adapters cover complete, partial, malformed, stale, timeout, and independent-failure cases without live calls. |
+| 3.5 | stale-inverted → built | Same-owner volume stays excluded while every positive-gross settlement retains the canonical fee. Principal-root caps and composite-only clamping are covered. |
+| 4.1 | built | Explicit free/BYOC/paid mandate selection creates no provider or money effect. |
+| 4.2 | built | Pure eligibility/ranking returns evidence only and owns no reservation. |
+| 4.3 | blocked-tenant (standalone value built) | Immutable receipt, ACL, retention, replay, and projection policy is built; durable tenant storage remains gated. |
+| 4.4 | built | Boundary/mutation tests prove the result grants no execution, credential, capacity, or money authority. |
 | 5.1 | blocked-transport-landing | Requires Wave 2 workflow/CAS plus tenant, domain capacity, and S14/B36 owners. |
 | 5.2 | blocked-transport-landing | Also blocked on wallet/chain receipts, domain acceptance, tenant authority, and host cutover. |
-| 5.3 | live (partial landed) | Buckets, settlement, and matching are landed; a pure dark order-policy value remains standalone. |
-| 5.4 | live | A pure allow/refuse policy can keep unsupported instruments dark without registration. |
-| 5.5 | blocked-host/legal (partial live) | No current specialist artifact exists; missing/stale-review dark-gate tests are standalone. |
+| 5.3 | built | Pure dark order policy composes the landed bucket and settlement oracles; no durable lock or transport was added. |
+| 5.4 | built | Pure allow/refuse policy keeps unsupported instruments dark without registration. |
+| 5.5 | blocked-host/legal (standalone gate built) | Missing, stale, mismatched, automated, or incomplete review stays dark; no current specialist artifact exists. |
 | 6.1 | blocked-boundary | Public reads require tenant/privacy, boundary, load/security, canary, chatbot, and host activation gates. |
 | 6.2 | blocked-tenant | Full handoff proof also needs R2-1, Wave 2, domain capacity, and boundary owners. |
 | 6.3 | blocked-S14/B36 | Requires landed transport/public surfaces, tenant owner, and a reviewed capacity harness; draft PR #1695 is planning-only. |
 | 6.4 | blocked-S14/B36 | Depends on 6.3 environment evidence and independent security/concurrency review. |
 | 6.5 | blocked-host | No advertisement, live rollout, canary, chatbot proof, or organic-use evidence is authorized. |
-| 7.1 | live | Pure refusal/default-dark definitions and deployment non-registration are standalone. |
+| 7.1 | built | Refusal/default-dark definitions are explicit and no workflow, deployment registration, migration, or feature enablement was added. |
 | 7.2 | blocked-transport-landing | Sync/archive would falsely claim the blocked public, executable, load, legal, and rollout work is complete. |
 
 ## 1. Contract ownership and review gates
@@ -46,31 +46,31 @@ unchecked.
 
 - [ ] 2.1 Add failing unit/property tests for stable versioned capability descriptors, canonical digest stability, exact lane facets, unsupported versions, demand-specific values staying in `DemandIntent`, range/set compatibility, resolved-term binding, and hard substitutability mismatches.
 - [ ] 2.2 Implement pure immutable descriptor and quote values outside provider/domain execution code; keep domain facet validators injected and keep private payloads/credentials absent.
-- [ ] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
-- [ ] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
+- [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
+- [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
 - [ ] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
 
 ## 3. Price surfaces and reference adapters
 
-- [ ] 3.1 Add failing tests for per-descriptor raw-VWAP/native-ask/external-ceiling/composite-index fields, independent timestamps/TTLs/sample counts/owner counts, null versus zero, valid all-in ceiling clamp-and-flag, incomplete/stale never-clamp behavior, confidence flags, and fail-closed paid-observation joins across tenant/universe identity, fence-bound accepted-result identity, parties, currency/token/chain, gross/net/fee amounts, and the finality/reorg status defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6.
-- [ ] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
-- [ ] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
-- [ ] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
-- [ ] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, exact same-owner ingestion exclusion without a settlement-fee waiver, recorded canonical fees for every positive-gross settlement including linked-party trades, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
+- [x] 3.1 Add failing tests for per-descriptor raw-VWAP/native-ask/external-ceiling/composite-index fields, independent timestamps/TTLs/sample counts/owner counts, null versus zero, valid all-in ceiling clamp-and-flag, incomplete/stale never-clamp behavior, confidence flags, and fail-closed paid-observation joins across tenant/universe identity, fence-bound accepted-result identity, parties, currency/token/chain, gross/net/fee amounts, and the finality/reorg status defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6.
+- [x] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
+- [x] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
+- [x] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
+- [x] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, exact same-owner ingestion exclusion without a settlement-fee waiver, recorded canonical fees for every positive-gross settlement including linked-party trades, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
 
 ## 4. Deterministic economic routing
 
-- [ ] 4.1 Add failing tests proving the requester chooses free, BYOC, or paid fulfillment and that unavailable free/BYOC work never creates a paid lock or maintainer/provider call.
-- [ ] 4.2 Implement pure verified-eligibility/hard-constraint filtering and versioned landed-monetary ranking with stable tie-breaks, explicit service-attribute handling, single-currency/FX rules, complete rejection reasons, cap/fee-version enforcement, and no capacity or money reservation side effect.
+- [x] 4.1 Add failing tests proving the requester chooses free, BYOC, or paid fulfillment and that unavailable free/BYOC work never creates a paid lock or maintainer/provider call.
+- [x] 4.2 Implement pure verified-eligibility/hard-constraint filtering and versioned landed-monetary ranking with stable tie-breaks, explicit service-attribute handling, single-currency/FX rules, complete rejection reasons, cap/fee-version enforcement, and no capacity or money reservation side effect.
 - [ ] 4.3 Add tenant-private reproducible evaluation receipts with opaque tenant-keyed commitments, owner/admin/auditor ACLs, non-enumerable ids, candidate versions/freshness, reason codes, monetary/service breakdown, retention/hold/deletion/export policy, and aggregate-only public projection.
-- [ ] 4.4 Mutation-test that quote ranking cannot authorize provider credentials, alter provider fallback chains, skip domain-native execution fences, or treat ranking as reservation/acceptance/invoice/settlement.
+- [x] 4.4 Mutation-test that quote ranking cannot authorize provider credentials, alter provider fallback chains, skip domain-native execution fences, or treat ranking as reservation/acceptance/invoice/settlement.
 
 ## 5. Native firm capacity and forwards
 
 - [ ] 5.1 After prerequisites land, add failing integration tests for signed short-lived native firm quotes, domain-created tenant/demand/quote/descriptor/quantity/expiry/fence capacity grants, one atomic consumption winner, partial-consumption conservation, offer-version CAS, expiry/cancellation, and no double-sell under response loss.
 - [ ] 5.2 Implement native firm-quote publication and the default-off selection handoff only: the domain owner creates/fences capacity, `paid-market-economy` records logical budget reservation/accounting intent, and the successor defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 owns wallet/chain effects; discovery evaluates and revalidates but creates none of those authorities. Require that successor's matching verified receipt before a paid settlement becomes a price observation. Add no external-provider execution.
-- [ ] 5.3 Add failing forward tests for exact 8-hour/day/week buckets, ≤28-day horizon, 1M/10M/100M sizes, batch-only initial class, immutable id, authenticated monotone lifecycle, collateral-before-executable, spot collateral-free, deterministic best ask, exact pro-rata demand-relative settlement, threshold-only slashing, buyer compensation, and no-show behavior.
-- [ ] 5.4 Implement only physically delivered native spot/forward instruments; reject cash settlement, secondary transfer, leverage/netting, proprietary-model resale, and F3 swarm execution.
+- [x] 5.3 Add failing forward tests for exact 8-hour/day/week buckets, ≤28-day horizon, 1M/10M/100M sizes, batch-only initial class, immutable id, authenticated monotone lifecycle, collateral-before-executable, spot collateral-free, deterministic best ask, exact pro-rata demand-relative settlement, threshold-only slashing, buyer compensation, and no-show behavior.
+- [x] 5.4 Implement only physically delivered native spot/forward instruments; reject cash settlement, secondary transfer, leverage/netting, proprietary-model resale, and F3 swarm execution.
 - [ ] 5.5 Before any forward, training, or hardware route is advertised or enabled in a jurisdiction, obtain and bind a current specialist legal-review artifact covering the CFTC facts-and-circumstances forward-contract-exclusion test, applicable commodities/derivatives/securities/consumer/money-transmission rules, and the narrower knowledge-based BIS/export-control triggers; add `tests/test_paid_market_jurisdiction_gates.py` proving missing/stale review keeps the route dark and no automated label is presented as legal approval.
 
 ## 6. Public, security, concurrency, and uptime proof
@@ -83,5 +83,5 @@ unchecked.
 
 ## 7. Foldback
 
-- [ ] 7.1 Keep external execution/BYOK resale, proprietary instruments, F3 swarm, cash/secondary instruments, and automatic paid fallback explicitly dark in code, docs, and deployment configuration.
+- [x] 7.1 Keep external execution/BYOK resale, proprietary instruments, F3 swarm, cash/secondary instruments, and automatic paid fallback explicitly dark in code, docs, and deployment configuration.
 - [ ] 7.2 Sync the implemented requirements into canonical `paid-market-price-index-and-forwards`, validate idempotently, archive the change, and retire its STATUS row in the landing commit.
