@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import secrets
@@ -22,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.storage import db_path
+
+logger = logging.getLogger(__name__)
 
 PRIORITY_WEIGHT_CAP = 100
 QUEUE_EPOCH = 2
@@ -742,6 +745,20 @@ class RequestAdmissionStore:
                     })
                     if len(records) >= requested:
                         break
+        if (
+            scanned >= MAX_OPERATIONAL_SCAN_ROWS
+            and len(records) < requested
+        ):
+            logger.warning(
+                "epoch-2 live-claim integrity scan reached the %s-row "
+                "operational bound for universe=%s worker=%s with %s/%s "
+                "valid results",
+                MAX_OPERATIONAL_SCAN_ROWS,
+                clean_universe_id,
+                clean_worker_id,
+                len(records),
+                requested,
+            )
         return records
 
     def has_active_v2_claim(

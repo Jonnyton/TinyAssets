@@ -161,6 +161,11 @@ only narrow/reject that authority and SHALL NEVER substitute for it.
 - **THEN** no external execution lease or result authority is created
 - **AND** the task remains subject to the distributed-execution refusal and fence contract
 
+#### Scenario: expired claim artifacts are inert on reader surfaces
+- **WHEN** an epoch-2 scheduling claim expires, is recovered, or is reassigned after local WorkTarget materialization
+- **THEN** the old claim artifact is not selectable, restartable, or resolvable for execution
+- **AND** status `has_work` and inspect `active_targets` omit the artifact and its request text unless the exact current worker still owns a live matching claim
+
 ### Requirement: Invalid epoch-2 rows quarantine independently of pure selection
 Schema constraints and the trusted insert path SHALL prevent normal
 construction of invalid operator work. A separate transactional maintenance

@@ -110,6 +110,7 @@ def _commit_epoch2_request(
     directed_daemon_id: str = "",
     directed_daemon_instruction: str = "",
     directed_daemon_soul_hash: str = "",
+    idempotency_key: str = "materialization-key",
 ) -> dict:
     body = rfc8785.dumps({
         "branch_id": "",
@@ -128,7 +129,7 @@ def _commit_epoch2_request(
         universe_id=universe_id,
         idempotency_key_hash=(
             "hmac-sha256:"
-            + hashlib.sha256(b"materialization-key").hexdigest()
+            + hashlib.sha256(idempotency_key.encode()).hexdigest()
         ),
         body_digest="sha256:" + hashlib.sha256(body).hexdigest(),
         body_digest_version="rfc8785-v1",
@@ -491,6 +492,56 @@ def test_epoch2_materialization_uses_bounded_result_limit(
         "limit": 512,
     }
     assert "reached the 512-row result cap" in caplog.text
+
+
+def test_epoch2_materialization_fills_cap_after_invalid_real_store_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import tinyassets.storage.request_admissions as request_admissions
+    import tinyassets.work_targets as work_targets
+
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    committed = [
+        _commit_epoch2_request(
+            tmp_path,
+            universe_dir.name,
+            idempotency_key=f"materialization-cap-{index}",
+        )
+        for index in range(4)
+    ]
+    for request in committed:
+        _claim_epoch2_request(tmp_path, request)
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE user_requests SET text = ? WHERE request_id = ?",
+            ("tampered after claim", committed[0]["request_id"]),
+        )
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    assert work_targets.EPOCH2_MATERIALIZATION_RESULT_LIMIT < (
+        request_admissions.MAX_OPERATIONAL_SCAN_ROWS
+    )
+    monkeypatch.setattr(
+        work_targets,
+        "EPOCH2_MATERIALIZATION_RESULT_LIMIT",
+        3,
+    )
+
+    created = materialize_pending_requests(universe_dir)
+
+    assert [target.metadata["request_id"] for target in created] == [
+        request["request_id"] for request in committed[1:]
+    ]
+    assert "reached the 3-row result cap" in caplog.text
+    assert not requests_path(universe_dir).exists()
 
 
 @pytest.mark.parametrize(

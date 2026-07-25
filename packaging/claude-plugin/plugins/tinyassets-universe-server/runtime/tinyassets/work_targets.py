@@ -641,8 +641,7 @@ def _materialize_live_epoch2_requests(
 
         tags = ["user-request", request.request_type]
         if _bounded_pickup_signal(metadata) > 0:
-            if request.directed_daemon_id:
-                tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
+            tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
         title_stub = (
             request.text.splitlines()[0][:70]
             if request.text

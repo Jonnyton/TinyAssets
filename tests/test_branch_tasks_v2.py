@@ -267,7 +267,11 @@ def test_live_claimed_request_read_model_is_worker_bound_and_lease_bound(
 
 def test_invalid_live_claim_does_not_block_later_valid_claim_at_limit_one(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    import tinyassets.storage.request_admissions as request_admissions
+
     initialize_author_server(tmp_path)
     first = _commit(
         tmp_path,
@@ -303,6 +307,20 @@ def test_invalid_live_claim_does_not_block_later_valid_claim_at_limit_one(
     assert [record.branch_task_id for record in records] == [
         second["branch_task_id"]
     ]
+
+    monkeypatch.setattr(
+        request_admissions,
+        "MAX_OPERATIONAL_SCAN_ROWS",
+        1,
+    )
+    caplog.clear()
+
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+        limit=1,
+    ) == []
+    assert "integrity scan reached the 1-row operational bound" in caplog.text
 
 
 def test_cancel_requested_claim_is_not_materializable(
