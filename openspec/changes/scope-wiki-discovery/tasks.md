@@ -7,16 +7,16 @@
 
 ## 2. RED Tests
 
-- [ ] 2.1 Rewrite the three existing positive search/since/ambient tests with explicit discovery or coordination intent and paired exclusion assertions; do not delete, relax, or xfail them.
-- [ ] 2.2 Add failing default search/since/discovery-ambient tests that each assert a non-empty discovery result alongside coordination exclusion.
-- [ ] 2.3 Add failing explicit discovery/coordination/all/invalid/empty/whitespace-only-scope tests with applied-scope and non-noisy scope-note evidence.
-- [ ] 2.4 Add failing audience tests for overrides, blank/unset fallback, trimmed case-insensitive values, untagged fallback categories including `feature-requests`, custom/category-less discovery, invalid-audience coordination fallback, invalid-source coordination ambient scope, and no warning-log amplification.
-- [ ] 2.5 Add failing category tests for search/since/ambient across pages and drafts, custom and absent categories, exact-read nested empty-normalized rejection with unchanged body, and filtering after audience.
-- [ ] 2.6 Add failing structural tests for exact coordination/discovery reads, source-derived ambient scope, unchanged list behavior, and applied-scope evidence only on search/since/exact-read ambient responses.
-- [ ] 2.7 Add parameterized failing visibility tests proving restricted search, since, and ambient candidates expose no path/title/excerpt/body under discovery, coordination, or all, with granted-reader positive controls.
-- [ ] 2.8 Add a failing public-wrapper coupling test invoking `tinyassets.universe_server.read_page`: omitted public scope inherits discovery results while the public function/schema advertises no `scope` parameter.
-- [ ] 2.9 Add a named failing 256-call dispatcher-level concurrency proof with non-empty byte-identical reference results, bounded response evidence, and no ContextVar/root-vacuity.
-- [ ] 2.10 Capture the expected current-main RED evidence before implementation.
+- [x] 2.1 Rewrite the three existing positive search/since/ambient tests with explicit discovery or coordination intent and paired exclusion assertions; do not delete, relax, or xfail them.
+- [x] 2.2 Add failing default search/since/discovery-ambient tests that each assert a non-empty discovery result alongside coordination exclusion.
+- [x] 2.3 Add failing explicit discovery/coordination/all/invalid/empty/whitespace-only-scope tests with applied-scope and non-noisy scope-note evidence.
+- [x] 2.4 Add failing audience tests for overrides, blank/unset fallback, trimmed case-insensitive values, untagged fallback categories including `feature-requests`, custom/category-less discovery, invalid-audience coordination fallback, invalid-source coordination ambient scope, and no warning-log amplification.
+- [x] 2.5 Add failing category tests for search/since/ambient across pages and drafts, custom and absent categories, exact-read nested empty-normalized rejection with unchanged body, and filtering after audience.
+- [x] 2.6 Add failing structural tests for exact coordination/discovery reads, source-derived ambient scope, unchanged list behavior, and applied-scope evidence only on search/since/exact-read ambient responses.
+- [x] 2.7 Add parameterized failing visibility tests proving restricted search, since, and ambient candidates expose no path/title/excerpt/body under discovery, coordination, or all, with granted-reader positive controls.
+- [x] 2.8 Add a failing public-wrapper coupling test invoking `tinyassets.universe_server.read_page`: omitted public scope inherits discovery results while the public function/schema advertises no `scope` parameter.
+- [x] 2.9 Add a named failing 256-call dispatcher-level concurrency proof with non-empty byte-identical reference results, bounded response evidence, and no ContextVar/root-vacuity.
+- [x] 2.10 Capture the expected current-main RED evidence before implementation.
 
 ## 3. Core Implementation
 
