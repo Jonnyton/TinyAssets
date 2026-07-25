@@ -169,6 +169,30 @@ def test_single_record_write_normalizes_vcs_purpose_selector(tmp_path):
     }]
 
 
+def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purposes": ["write", "read"],
+        "token": "ghs-OLD",
+    }])
+
+    summary = write_credential_vault(tmp_path, [{
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "ghs-NEW-ROTATED",
+    }])
+
+    assert resolve_github_token(
+        tmp_path, "Jonnyton/TinyAssets", purpose="write"
+    ) == "ghs-NEW-ROTATED"
+    assert summary["credential_count"] == 1
+    assert "ghs-OLD" not in str(load_credential_vault(tmp_path))
+
+
 def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
     write_credential_vault(
         tmp_path,
