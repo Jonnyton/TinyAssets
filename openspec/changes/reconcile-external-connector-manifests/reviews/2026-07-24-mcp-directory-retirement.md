@@ -1,7 +1,7 @@
 # `/mcp-directory*` Retirement Review
 
-Date: 2026-07-24  
-Lane: `codex/retire-mcp-directory`  
+Date: 2026-07-24
+Lane: `codex/retire-mcp-directory`
 Scope: OpenSpec tasks 6.1–6.4 and the removal-related portion of 7.1–7.4
 
 ## Authority
