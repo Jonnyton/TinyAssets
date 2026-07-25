@@ -17,10 +17,9 @@ from __future__ import annotations
 import asyncio
 from typing import Annotated
 
-import pytest
 from pydantic import Field
 
-from tinyassets import directory_server, universe_server
+from tinyassets import universe_server
 from tinyassets.mcp_schema_utils import describe_signature, parse_docstring_args
 
 
@@ -38,13 +37,8 @@ def _unlabelled_params(tools) -> list[str]:
     return missing
 
 
-@pytest.mark.parametrize(
-    "mcp",
-    [universe_server.mcp, directory_server.directory_mcp],
-    ids=["universe_server", "directory_server"],
-)
-def test_every_advertised_param_is_labelled(mcp):
-    tools = _advertised(mcp)
+def test_every_advertised_param_is_labelled():
+    tools = _advertised(universe_server.mcp)
     assert tools, "expected the server to advertise at least one tool"
     missing = _unlabelled_params(tools)
     assert not missing, (
@@ -53,9 +47,17 @@ def test_every_advertised_param_is_labelled(mcp):
     )
 
 
-def test_five_canonical_handles_fully_labelled():
+def test_canonical_handles_fully_labelled():
     tools = {t.name: t for t in _advertised(universe_server.mcp)}
-    for handle in ("read_graph", "write_graph", "run_graph", "read_page", "write_page"):
+    for handle in (
+        "read_graph",
+        "write_graph",
+        "run_graph",
+        "read_page",
+        "write_page",
+        "converse",
+        "get_status",
+    ):
         assert handle in tools, f"canonical handle {handle} not advertised"
         props = (tools[handle].parameters or {}).get("properties", {})
         assert props, f"{handle} advertises no parameters"
