@@ -222,6 +222,48 @@ def test_single_subscription_write_preserves_sibling_fields(tmp_path):
     assert resolve_claude_oauth_token(tmp_path) == "tok-ROTATED"
 
 
+def test_single_record_write_collapses_all_matching_duplicates(tmp_path):
+    github_credential = {
+        "credential_type": "vcs",
+        "service": "github",
+        "destination": "Jonnyton/TinyAssets",
+        "purpose": "write",
+        "token": "ghs-existing",
+    }
+    write_credential_vault(
+        tmp_path,
+        [
+            {
+                "credential_type": "llm_api_key",
+                "service": "claude",
+                "api_key": "sk-old-first",
+            },
+            github_credential,
+            {
+                "credential_type": "llm_api_key",
+                "service": "anthropic",
+                "api_key": "sk-old-second",
+            },
+        ],
+    )
+
+    summary = write_credential_vault(tmp_path, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "api_key": "sk-new",
+    }])
+
+    assert load_credential_vault(tmp_path) == [
+        {
+            "credential_type": "llm_api_key",
+            "service": "anthropic",
+            "api_key": "sk-new",
+        },
+        github_credential,
+    ]
+    assert summary["credential_count"] == 2
+
+
 def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
     write_credential_vault(
         tmp_path,
