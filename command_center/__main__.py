@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--token",
         default=None,
-        help="shared API token (minimum 16 ASCII characters; default generates one)",
+        help="shared API token (minimum 16 printable ASCII characters; default generates one)",
     )
     parser.add_argument(
         "--dispatch",

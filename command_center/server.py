@@ -58,8 +58,10 @@ def prepare_auth(
             raise ValueError(
                 f"Agent Village token must contain at least {MIN_TOKEN_CHARS} characters"
             )
-        if not cfg.token.isascii():
-            raise ValueError("Agent Village token must contain only ASCII characters")
+        if not cfg.token.isascii() or not cfg.token.isprintable():
+            raise ValueError(
+                "Agent Village token must contain only printable ASCII characters"
+            )
         return cfg.token
     cfg.token = token_factory(32)
     return cfg.token
@@ -124,8 +126,10 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
             return bool(
                 cfg.token
                 and cfg.token.isascii()
+                and cfg.token.isprintable()
                 and supplied
                 and supplied.isascii()
+                and supplied.isprintable()
                 and secrets.compare_digest(supplied, cfg.token)
             )
 

@@ -270,10 +270,12 @@ def test_auth_preparation_generates_strong_token_and_rejects_weak_explicit(
     )
     with pytest.raises(ValueError, match="at least 16"):
         prepare_auth(collector.Config(root=tmp_path, token="s3cret"))
-    with pytest.raises(ValueError, match="ASCII"):
+    with pytest.raises(ValueError, match="printable ASCII"):
         prepare_auth(
             collector.Config(root=tmp_path, token="contraseña-muy-larga-2026")
         )
+    with pytest.raises(ValueError, match="printable ASCII"):
+        prepare_auth(collector.Config(root=tmp_path, token="\t" * 16))
 
 
 def test_cli_and_config_default_to_loopback() -> None:
@@ -294,10 +296,24 @@ def test_browser_uses_fragment_session_and_header_without_query_bearer() -> None
     assert "history.replaceState" in source
     assert "X-Village-Token" in source
     assert "error.status = r.status" in source
-    assert "showAuthError" in source
-    assert "if (error.status === 401)" in source
-    assert "authBlocked" in source
     assert "shareUrl.hash = new URLSearchParams({ token: TOKEN }).toString()" in source
     assert 'params.get("token")' not in source
     assert "localStorage" not in source
     assert 'sep + "token="' not in source
+
+
+def test_browser_auth_error_is_persistent_and_recovers_from_fragment() -> None:
+    web = Path(__file__).resolve().parents[2] / "command_center" / "web"
+    source = (web / "app.js").read_text(encoding="utf-8")
+    html = (web / "index.html").read_text(encoding="utf-8")
+    css = (web / "app.css").read_text(encoding="utf-8")
+
+    assert 'if (r.status === 401) showAuthError()' in source
+    assert 'const authError = $("auth-error")' in source
+    assert "authError.hidden = false" in source
+    assert "clearInterval(chatTimer)" in source
+    assert 'window.addEventListener("hashchange", recoverAuthFromFragment)' in source
+    assert "sessionStorage.setItem(\"village-token\", nextToken)" in source
+    assert "location.reload()" in source
+    assert '<div id="auth-error" role="alert" hidden>' in html
+    assert "#auth-error" in css

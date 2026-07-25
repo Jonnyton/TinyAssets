@@ -8,6 +8,7 @@ const fragment = new URLSearchParams(location.hash.slice(1));
 const TOKEN = fragment.get("token") || sessionStorage.getItem("village-token") || "";
 if (TOKEN) sessionStorage.setItem("village-token", TOKEN);
 if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+window.addEventListener("hashchange", recoverAuthFromFragment);
 if (params.get("present") === "1") document.body.classList.add("present");
 
 const PROVIDERS = {
@@ -43,6 +44,7 @@ function api(path, opts) {
     .then(async (r) => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) {
+        if (r.status === 401) showAuthError();
         const error = new Error(data.error || `${r.status}`);
         error.status = r.status;
         throw error;
@@ -129,9 +131,19 @@ const historyBuf = [];           // snapshots for time travel
 let replaying = false;
 let authBlocked = false;
 
+function recoverAuthFromFragment() {
+  const nextToken = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (!nextToken) return;
+  sessionStorage.setItem("village-token", nextToken);
+  location.reload();
+}
+
 function showAuthError() {
   authBlocked = true;
-  toast("Access required — reopen the #token=… URL printed by Agent Village.", 0);
+  clearInterval(chatTimer);
+  chatTimer = null;
+  const authError = $("auth-error");
+  authError.hidden = false;
 }
 
 function pushHistory(state) {
@@ -153,9 +165,7 @@ function poll() {
       const u = (state.universes || []).find((x) => x.id === pendingSheet);
       if (u) { openUniverseSheet(u); pendingSheet = null; }
     }
-  }).catch((error) => {
-    if (error.status === 401) showAuthError();
-  });
+  }).catch(() => { /* keep last frame; server may be restarting */ });
   schedule();
 }
 let pendingSheet = params.get("universe");
@@ -622,9 +632,7 @@ function boot() {
   // repo name in header
   api("/api/state").then((s) => {
     if (s.repo) $("brand-sub").textContent = s.repo;
-  }).catch((error) => {
-    if (error.status === 401) showAuthError();
-  });
+  }).catch(() => {});
   if (params.get("zoom") === "world") setZoom(true);
   poll();
 }
