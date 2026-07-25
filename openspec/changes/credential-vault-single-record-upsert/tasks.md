@@ -17,3 +17,9 @@
 - [x] 3.1 Reproduce and fix preserved-home Codex auth blob rotation
 - [x] 3.2 Report collapsed records and dropped VCS purpose slots without secrets
 - [x] 3.3 Re-run the full credential-vault set, Ruff, mirror parity, and strict validation
+
+## 4. Final Review Folds
+
+- [x] 4.1 Reject malformed Codex auth blobs before vault or auth-file replacement
+- [x] 4.2 Modify the summary and subscription-materialization requirement owners
+- [x] 4.3 Re-run the full vault set, Ruff, mirror parity, and strict validation
