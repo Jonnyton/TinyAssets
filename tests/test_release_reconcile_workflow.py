@@ -360,8 +360,14 @@ def test_python_312_release_reconcile_regression_runs_in_ci() -> None:
         for step in steps
         if str(step.get("uses", "")).startswith("actions/setup-python@")
     )
+    install = next(
+        step
+        for step in steps
+        if step.get("name") == "Install focused test dependencies"
+    )
 
     assert setup_python["with"]["python-version"] == "3.12"
+    assert "-e ." in _compact(str(install["run"]))
     assert any(
         "tests/test_release_reconcile_workflow.py" in _compact(str(step.get("run", "")))
         for step in steps
