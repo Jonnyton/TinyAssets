@@ -131,7 +131,7 @@ The system SHALL keep every branch mutation and deletion action classified as no
 - **THEN** object-level author authority still denies mutation or deletion
 
 ### Requirement: Stored versions and branch-adjacent actions preserve branch authority
-The system SHALL resolve every stored branch version to its parent `branch_def_id` and apply the parent branch read boundary before direct version execution, version-derived inspection, or personal canonical use. Goal-wide canonical and selector bindings SHALL accept only versions whose parent branch is public because other users can execute those bindings. A missing parent definition SHALL fail closed. `goals action=bind`, `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` SHALL require branch author authority before branch/run material is read or state is attached. Gate and quality-leaderboard private filtering SHALL derive its viewer only from the credential-validated request subject. Dry branch inspection SHALL use the same private-or-missing read envelope as other branch reads.
+The system SHALL resolve every stored branch version to its parent `branch_def_id` and apply the parent branch read boundary before direct version execution, version-derived inspection, or personal canonical use. Goal-wide canonical and selector bindings and globally readable Goal protocol steps SHALL accept only public-parent branches/versions because other users can execute or enumerate them. A missing parent definition SHALL fail closed. Goal list/search/get/protocol output SHALL omit unreadable legacy canonical, selector, and protocol pointers and SHALL recompute branch and gate-summary counts from readable branches; personal canonical resolution SHALL use the credential-validated request subject. `goals action=bind`, `gates action=claim`, `claim_from_branch_run`, and branch-scoped `record_conformance_pack` SHALL require branch author authority before branch/run material is read or state is attached. Claim retraction/bonus lifecycle, exact/listed conformance packs, gate claims, Goal metric/common-node/archive projections, gate/quality leaderboards and recommendations, and gate-event citations SHALL derive branch visibility only from the credential-validated request subject before returning records, IDs, actors, counts, ranks, cap influence, or selector inputs. New globally readable gate events SHALL cite only public-parent branch versions, and legacy unreadable citations SHALL be filtered from event get/list/leaderboard output. Remix recording SHALL require readable-parent plus author-owned-child authority and server-bound attribution; provenance traversal SHALL expose only readable roots/ancestors/edges. Scheduler/subscription creation SHALL require target-branch author authority, persist the request subject as owner, and list/mutate only that subject's rows without trusting an owner argument. Dry branch inspection SHALL use the same private-or-missing read envelope as other branch reads.
 
 #### Scenario: Foreign private version is executed directly
 - **WHEN** a caller supplies a version whose parent is another author's private branch to `run_branch_version`
@@ -140,6 +140,14 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 #### Scenario: Global canonical or selector targets a private parent
 - **WHEN** a Goal owner attempts to bind an active version whose parent branch is private
 - **THEN** the bind is denied before canonical/selector history or Goal state changes, even when the Goal owner authored that private branch
+
+#### Scenario: Global Goal protocol targets a private branch
+- **WHEN** a Goal owner attempts to define a globally readable protocol step whose branch is private
+- **THEN** the definition is denied before Goal or protocol state changes, even when the Goal owner authored that private branch
+
+#### Scenario: Legacy Goal pointers reference unreadable branches
+- **WHEN** Goal list, search, get, or get-protocol encounters a private or missing canonical, selector, or protocol branch that the request subject cannot read
+- **THEN** output omits the pointer/step and every derived branch/gate count while preserving the Goal's non-branch public fields
 
 #### Scenario: Personal canonical targets the caller's private parent
 - **WHEN** an authenticated subject binds or runs a personal canonical whose parent is their own private branch
@@ -154,8 +162,36 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 - **THEN** the operation is denied before run output is disclosed or claim/conformance state is persisted
 
 #### Scenario: Environment identity affects a private projection
-- **WHEN** a request without an authenticated subject lists gate claims or a quality leaderboard while process identity names a private branch author
-- **THEN** the private branch contributes no row, rank, count, recommendation, or selector input
+- **WHEN** a request without an authenticated subject lists gate claims, conformance packs, Goal metrics/common nodes/archive candidates, gate or quality leaderboards/recommendations, or gate-event citations while process identity names a private branch author
+- **THEN** the private branch contributes no record, ID, row, rank, count, cap displacement, recommendation, or selector input
+
+#### Scenario: Exact gate lifecycle request targets a foreign private branch
+- **WHEN** a caller retracts or performs a bonus lifecycle action on a claim, or gets/lists a conformance pack attached to another author's private branch
+- **THEN** the response matches the corresponding missing branch/record envelope and exposes no claimant, Goal owner, host actor, evidence, stake, pack, or lifecycle metadata
+
+#### Scenario: Globally readable gate event cites a private branch version
+- **WHEN** a caller attempts to attest an event with a private-parent version citation
+- **THEN** the citation is denied before event persistence, even when the caller owns the private branch
+
+#### Scenario: Legacy gate event contains an unreadable citation
+- **WHEN** an existing gate event or gate-event leaderboard contains a foreign-private or missing-parent version citation
+- **THEN** get/list/leaderboard output omits that citation and all citation-derived counts/ranks without revealing the parent branch ID
+
+#### Scenario: Caller records a remix over foreign branches
+- **WHEN** a caller names an unreadable parent or non-owned child branch while supplying arbitrary attribution actors
+- **THEN** the operation returns the corresponding not-found/author denial before edge or credit persistence and any accepted attribution actor is the request subject
+
+#### Scenario: Provenance chain crosses an unreadable branch
+- **WHEN** provenance traversal reaches a foreign-private or missing root, ancestor, or edge endpoint
+- **THEN** traversal returns no placeholder, actor, credit, ID, edge, or derived count beyond the last readable boundary
+
+#### Scenario: Caller schedules another author's branch
+- **WHEN** a caller schedules or subscribes another author's branch while supplying that author's `owner_actor`
+- **THEN** the request is denied before schedule/subscription persistence and the caller-supplied actor grants no authority
+
+#### Scenario: Caller enumerates or mutates another actor's schedule
+- **WHEN** a caller supplies another actor's owner or an exact foreign schedule/subscription ID to list, pause, unpause, unschedule, or unsubscribe
+- **THEN** the server uses only the request subject and returns the same empty/not-found envelope as an unknown row without exposing target metadata
 
 #### Scenario: Caller dry-inspects a foreign private branch
 - **WHEN** a caller requests `dry_inspect_node` or `dry_inspect_patch` for another author's private branch

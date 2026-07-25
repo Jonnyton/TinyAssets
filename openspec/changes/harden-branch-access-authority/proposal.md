@@ -13,7 +13,7 @@ Canonical connector branch actions do not share one authenticated-subject author
 - Preserve public behavior, owner access (including owner-private reusable-node search), granted-reader access, and stable empty response keys while eliminating hidden paths, titles, summaries, match metadata, and counts.
 - Track canonical `run_graph` execution of a foreign private branch as a separately claimed sibling change that consumes the shared helper.
 - Track branch-version and node-evaluation reads/mutations in `tinyassets/api/evaluation.py` as a separately claimed sibling change that consumes the same read/author helpers.
-- Track live branch-adjacent `goals`, `gates`, leaderboard, and dry-inspection paths as a separately claimed sibling change: branch/version binding, claims and conformance attachments, private-filtered projections, and structural previews must consume the same request-subject authority boundary.
+- Track live branch-adjacent `goals`, `gates`, leaderboard, gate-event citation, remix/provenance, scheduler/subscription, and dry-inspection paths as a separately claimed sibling change: branch/version binding, claim/conformance attachment and lifecycle reads, every private-derived projection, attribution edges, scheduled execution, and structural previews must consume the same request-subject authority boundary.
 
 ## Capabilities
 
