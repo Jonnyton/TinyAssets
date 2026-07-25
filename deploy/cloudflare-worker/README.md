@@ -1,8 +1,9 @@
 # Cloudflare Worker — `tinyassets.io/mcp` path router
 
-**Status:** Shipped after the 2026-04-20 single-entry cutover. This is the real
-fix for the 2026-04-19 P0 URL-mismatch outage: route `tinyassets.io/mcp*`
-to the tunnel origin at `mcp.tinyassets.io`, while leaving the GitHub Pages
+**Status:** The canonical proxy shipped after the 2026-04-20 single-entry
+cutover. This repository revision also retires `/mcp-directory*` at the edge;
+that newer behavior is not production truth until deploy and post-deploy proof
+complete. The Worker routes `tinyassets.io/mcp*` while leaving the GitHub Pages
 landing intact for all other paths.
 
 **After deploy:** the canonical public MCP URL returns to
@@ -21,13 +22,15 @@ Before the Worker:
 - `tinyassets.io/mcp` has no route rule → falls through to the landing origin's 404
   → Claude.ai reports "Session terminated." This was the 2026-04-19 P0.
 
-After the Worker deploys:
+With this Worker revision deployed:
 
 - Same DNS (tinyassets.io still Cloudflare-fronted).
 - Same GitHub Pages origin for apex paths (landing unchanged).
-- NEW: the Worker runs on route `tinyassets.io/mcp*`. Any `/mcp*`
-  request gets proxied to `mcp.tinyassets.io` (tunnel origin) as a
-  streaming pass-through. Apex `/` + non-`/mcp` paths still hit GitHub Pages.
+- NEW: the Worker runs on route `tinyassets.io/mcp*`. Canonical `/mcp`
+  requests get proxied to `mcp.tinyassets.io` (tunnel origin) as a
+  streaming pass-through. Retired `/mcp-directory*` requests terminate at
+  the edge with an ordinary 404. Apex `/` + non-`/mcp` paths still hit
+  GitHub Pages.
 
 ---
 
@@ -37,7 +40,7 @@ After the Worker deploys:
 |---|---|
 | `worker.js` | The Worker script itself — pure Fetch API proxy. |
 | `wrangler.toml` | Cloudflare Worker deploy config (name, route, compat date). |
-| `worker.test.js` | 30 unit tests via `node --test` — exercise header preservation, streaming pass-through, 5xx→502 translation, etc. |
+| `worker.test.js` | Unit tests via `node --test` cover the canonical allowlist, retired-route 404s, header preservation, streaming pass-through, and 5xx-to-502 translation. |
 | `README.md` | This file. |
 
 ---
@@ -110,11 +113,12 @@ count.
 
 ## Canonical URL reference
 
-Post-deploy:
+This revision's routing contract (production proof pending):
 
 | URL | Purpose |
 |---|---|
 | `https://tinyassets.io/mcp` | **Canonical — installed TinyAssets chatbot connectors.** Worker routes to tunnel. |
+| `https://tinyassets.io/mcp-directory*` | **Retired — ordinary edge 404; never redirected or proxied.** |
 | `https://mcp.tinyassets.io/mcp` | Direct-tunnel origin — Access-gated, not user-facing. Use only for internal Access/service-token debugging. |
 | `https://tinyassets.io/` | GitHub Pages landing (unchanged). |
 

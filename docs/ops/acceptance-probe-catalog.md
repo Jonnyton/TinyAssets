@@ -12,6 +12,14 @@ Each entry records the exact prompt, what it exercises, and the evidence of
 its validation. Use these as reference probes for cutover acceptance, regression
 checks, and new-connector verification.
 
+> **Public-status safety hold (2026-07-24).** Canonical `/mcp` currently
+> returns unredacted operator status. PROBE-002, PROBE-006, and PROBE-008 are
+> retained as historical/internal probe designs but are suspended for public
+> use. Do not run their `get_status`, `activity_log_tail`, or
+> `llm_endpoint_bound` calls through a public or anonymous connector. They may
+> resume only after the `public-status-v1` projection lands, or after an
+> authenticated operator-only replacement is specified and implemented.
+
 ---
 
 ## PROBE-001 — Full-stack smoke (cutover acceptance)
@@ -89,6 +97,9 @@ paper on deep space population — can you walk me through it?
 ---
 
 ## PROBE-002 — Layer-2 liveness (minimal)
+
+**Current disposition:** SUSPENDED for public/anonymous use as of 2026-07-24;
+the prompt below is historical and MUST NOT be executed against public `/mcp`.
 
 **Validated:** code-fix landed 2026-04-28 (`_real_browser_probe` reimplemented as `claude_chat ask` subprocess + trace-block parser); still awaits host `--once` smoke + Task Scheduler `TinyAssets-Canary-L2` activation for live status. Freshness check 2026-05-01: `Get-ScheduledTask -TaskName TinyAssets-Canary-L2` returned no task. Original implementation (`lead_browser.navigate` + `claude_chat.send_and_wait`) referenced symbols that never existed — see `docs/design-notes/2026-04-19-layer2-canary-scope.md §Wiring runbook` for the recovery + API contract.
 **Source script:** `scripts/uptime_canary_layer2.py` (canary) + `scripts/claude_chat.py` (subprocess driver — `cmd_ask` is the canonical entry point).
@@ -187,13 +198,13 @@ BUG-028 demonstrated that a slug-normalization bug could silently break bug fili
 **Validated:** mcp_tool_canary script live since 2026-04-22; closes the gap flagged in canary task #6.
 **Source script:** `scripts/mcp_tool_canary.py`
 **Persona:** `mcp-tool-canary` (automated; client name `mcp-tool-canary/1.0`)
-**Connector URLs under test:** `https://tinyassets.io/mcp` and `https://tinyassets.io/mcp-directory`
+**Connector URL under test:** `https://tinyassets.io/mcp`
 
 ### Invocation
 
 ```
 python scripts/mcp_tool_canary.py
-python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp-directory
+python scripts/mcp_tool_canary.py --url https://tinyassets.io/mcp
 python scripts/mcp_tool_canary.py --url http://127.0.0.1:8001/mcp
 python scripts/mcp_tool_canary.py --verbose --timeout 20
 ```
@@ -205,7 +216,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 | System | `initialize` handshake (same as PROBE-002). |
 | System | `notifications/initialized` (MCP-protocol mandatory before tool calls). |
 | System | `tools/list` returns a non-empty tools array. |
-| System | `tools/call` for the strongest advertised read-only probe returns valid JSON: legacy `universe action=inspect` requires `universe_id`; directory `get_workflow_status` requires `schema_version`. |
+| System | `tools/call` for the strongest advertised read-only probe returns valid JSON: canonical `read_graph target=status` requires `schema_version`. |
 
 ### Green criteria
 
@@ -225,7 +236,7 @@ python scripts/mcp_tool_canary.py --verbose --timeout 20
 ### When to use
 
 - After any code change to `universe_server.py` tool registration or handler bodies.
-- After any deploy that adds/renames/removes MCP tools on either `/mcp` or `/mcp-directory`.
+- After any deploy that adds, renames, or removes MCP tools on canonical `/mcp`.
 - As a continuous Layer-1.5 canary between handshake-only and full chatbot probes.
 
 ---
@@ -280,6 +291,10 @@ PROBE-001/002 prove the daemon answers MCP. PROBE-004 proves a tool handler runs
 ---
 
 ## PROBE-006 — Revert-loop detection (busy-broken pathology)
+
+**Current disposition:** SUSPENDED against public `/mcp` as of 2026-07-24.
+The invocation below is historical/internal evidence only; restore it only
+through an authenticated operator surface or after safe status projection.
 
 **Validated:** registration 2026-04-26 — script live since revert-loop spec landed; spec at `docs/design-notes/2026-04-23-revert-loop-canary-spec.md`. Scheduled in CI as the `revert_loop_probe` step in `.github/workflows/uptime-canary.yml`, runs every 5 min on the GHA cron after handshake + tool canaries pass.
 **Source script:** `scripts/revert_loop_canary.py`
@@ -374,6 +389,10 @@ The 2026-04-19 P0 outage-postmortem (`docs/audits/2026-04-20-public-mcp-outage-p
 ---
 
 ## PROBE-008 — LLM binding freshness canary
+
+**Current disposition:** SUSPENDED against public `/mcp` as of 2026-07-24.
+The workflow description below records historical/internal behavior and is not
+authorization to retrieve operator evidence through an anonymous connector.
 
 **Validated:** registration 2026-04-27 — workflow live since `.github/workflows/llm-binding-canary.yml` landed; runs every 6h from GitHub Actions.
 **Source script:** `scripts/verify_llm_binding.py` (invoked from GHA workflow).

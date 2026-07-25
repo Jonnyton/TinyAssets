@@ -12,8 +12,8 @@ Canary flow
    before tool calls, even if the server is lenient).
 3. POST ``tools/list`` → confirm the returned tools array is non-empty.
 4. POST ``tools/call`` for the strongest advertised read-only probe:
-   ``universe`` with ``action=inspect`` on the legacy endpoint, or
-   ``read_graph`` with ``target=status`` on the directory endpoint.
+   canonical ``read_graph`` with ``target=status``. The ``universe`` fallback
+   remains only for explicitly supplied older development endpoints.
 
 Exit codes (task #6 spec)
 -------------------------

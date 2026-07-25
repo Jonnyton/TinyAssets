@@ -22,11 +22,21 @@ A completed fabrication alone SHALL NOT mint a sellable hardware capability. Sig
 - **THEN** the system mints an immutable capability record referencing the design and evidence hashes
 
 ### Requirement: Physical fabrication composes artifacts, gates, shipping, and exact settlement
-Physical-fabrication requests SHALL reference STL/STEP build outputs plus profiles under the commons license registry, declare a physical capability such as `fdm-print:0.4mm:PETG`, and bind photo/measurement QA gates. They SHALL obtain explicit total-first integer quotes so splitting quantity cannot earn a rounding advantage, use geography-aware deterministic seller ranking over haversine distance and declared shipping bands, and settle goods pro-rata to accepted units while paying shipping if any unit is accepted and refunding it only on total rejection. A seller outside every declared shipping band SHALL be ineligible rather than extrapolated.
+Physical-fabrication requests SHALL reference STL/STEP build outputs plus profiles under the commons license registry, declare a physical capability such as `fdm-print:0.4mm:PETG`, bind photo/measurement QA gates, and validate their own fabrication descriptor facets — process and material families, tolerance and size capability, inspection or certification class, and declared service-region and shipping bands. Acceptance, inspection, delivery, cure, and rejection semantics are owned here, including the disposition policy the settlement oracle applies: goods settle pro-rata to accepted units, shipping is paid if any unit is accepted, and shipping is refunded only on total rejection.
+
+This capability SHALL NOT re-implement the arithmetic or the published quote. Exact total-first integer quotation, distance as a pure numeric helper, exclusion of offers matching no declared shipping band, deterministic seller ranking, and conserved settlement across accepted units, rejected units, shipping disposition, treasury fee, seller net, and buyer refund are already canonical pure oracles in `paid-market-economy` and SHALL be called or differential-tested against, never duplicated. Executable landed totals, indicative-versus-firm quote provenance, freshness, public quote reads, and economic routing belong to `paid-market-live-price-discovery`. Hardware supplies the domain facts and the acceptance outcome; the oracle computes; the discovery surface publishes.
 
 #### Scenario: uncovered shipping is rejected before purchase
 - **WHEN** no seller offer covers the buyer's destination band
 - **THEN** the request returns no executable offer and locks no payment
+
+#### Scenario: fabrication arithmetic comes from the canonical oracle
+- **WHEN** a fabrication request needs a quote, a ranking, or a settlement split
+- **THEN** it calls the canonical `paid-market-economy` helpers, or proves equality against them by differential test, rather than computing its own totals
+
+#### Scenario: partial acceptance pays shipping once
+- **WHEN** some units are accepted and others rejected
+- **THEN** goods settle pro-rata to the accepted units and shipping is paid, and shipping is refunded only when every unit is rejected
 
 ### Requirement: Mechanical deliverables are reproducible parametric programs
 For mechanical and code-CAD workflows, the canonical deliverable SHALL be OpenSCAD/CadQuery-class versioned source plus pinned toolchain/build instructions and generated STL/STEP hashes. A mesh or rendered preview alone SHALL not satisfy a source-artifact requirement. Before fabrication admission, the exact build SHALL pass declared printer-class gates for watertight/manifold geometry, minimum wall thickness, overhang/support, and clearance/tolerance; remix attribution SHALL follow source-code lineage.
@@ -36,11 +46,15 @@ For mechanical and code-CAD workflows, the canonical deliverable SHALL be OpenSC
 - **THEN** admission fails with the missing source and build contract named
 
 ### Requirement: Pricing-as-query keeps estimate stages distinct
-Hardware price reads SHALL return three stages without conflation: commodity-module unit price, prototype shuttle-seat share from the allocation contract, and production mask-set NRE plus at-volume unit cost, each with source timestamps and `estimate: true`. Break-even SHALL use the canonical ceiling-rounded helper, and every public surface SHALL render the same versioned inputs and result.
+Hardware SHALL define three domain stages that a price read must never conflate: commodity-module unit price, prototype shuttle-seat share from the allocation contract, and production mask-set NRE plus at-volume unit cost. For each stage it SHALL supply the domain inputs and the evidence that justifies them. Break-even SHALL come from the canonical ceiling-rounded `paid-market-economy` helper, which returns no break-even when per-unit margin is non-positive. Publication of those stages — source timestamps, `estimate: true` provenance separating indicative references from executable firm offers, freshness bounds, and identical rendering across every public surface — is owned by `paid-market-live-price-discovery`; hardware SHALL consume that contract rather than defining a parallel one.
 
 #### Scenario: all surfaces agree on break-even
 - **WHEN** the same price snapshot is read through MCP, HTTP, and website surfaces
 - **THEN** each reports identical stage values, source timestamps, estimate flags, and break-even units
+
+#### Scenario: a hardware estimate is never published as a firm offer
+- **WHEN** a hardware stage value is derived from indicative inputs rather than an executable offer
+- **THEN** the discovery surface marks it indicative under its quote-provenance rules and no purchase path treats it as executable
 
 ### Requirement: Garage-fabrication copy is capability-honest
 Garage lithography and similar roughly 1–10µm, hundreds-to-thousands-of-transistor processes SHALL be listed as analog, sensor-front-end, MEMS-class, photodetector, educational, or prototype-device capabilities supported by their evidence. Copy SHALL state that modern accelerators remain roughly seven orders of magnitude away behind physics and capital constraints, and SHALL route compute-class silicon through the pooled-shuttle then production-mask path rather than marketing garage processes as compute.
