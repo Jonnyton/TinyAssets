@@ -372,6 +372,13 @@ body.sunset #village { filter: brightness(.82) sepia(.18); }
   border-radius: 12px; padding: 9px 16px; font-size: 13px; z-index: 80;
   box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
+#auth-error {
+  position: fixed; left: 50%; bottom: 86px; transform: translateX(-50%);
+  width: min(520px, calc(100vw - 32px)); box-sizing: border-box;
+  background: #3b2030; border: 1px solid #ff8b9d; color: #fff4f6;
+  border-radius: 12px; padding: 11px 16px; font-size: 13px; z-index: 90;
+  box-shadow: 0 8px 24px rgba(0,0,0,.55); text-align: center;
+}
 
 /* world zoom view */
 #worldmap { padding: 18px 14px 60px; display: none; }

@@ -4,8 +4,11 @@
 // ------------------------------------------------------------ config + utils
 const POLL_MS = 3000;
 const params = new URLSearchParams(location.search);
-const TOKEN = params.get("token") || localStorage.getItem("village-token") || "";
-if (TOKEN) localStorage.setItem("village-token", TOKEN);
+const fragment = new URLSearchParams(location.hash.slice(1));
+const TOKEN = fragment.get("token") || sessionStorage.getItem("village-token") || "";
+if (TOKEN) sessionStorage.setItem("village-token", TOKEN);
+if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+window.addEventListener("hashchange", recoverAuthFromFragment);
 if (params.get("present") === "1") document.body.classList.add("present");
 
 const PROVIDERS = {
@@ -35,17 +38,25 @@ function ago(ts) {
   return `${Math.floor(d / 86400)}d`;
 }
 function api(path, opts) {
-  const sep = path.includes("?") ? "&" : "?";
-  return fetch(path + (TOKEN ? sep + "token=" + encodeURIComponent(TOKEN) : ""), opts)
+  const headers = new Headers(opts?.headers || {});
+  if (TOKEN) headers.set("X-Village-Token", TOKEN);
+  return fetch(path, { ...opts, headers })
     .then(async (r) => {
       const data = await r.json().catch(() => ({}));
-      if (!r.ok) throw new Error(data.error || `${r.status}`);
+      if (!r.ok) {
+        if (r.status === 401) showAuthError();
+        const error = new Error(data.error || `${r.status}`);
+        error.status = r.status;
+        throw error;
+      }
       return data;
     });
 }
 function toast(text, ms = 2600) {
   const el = $("toast"); el.textContent = text; el.hidden = false;
-  clearTimeout(toast._t); toast._t = setTimeout(() => { el.hidden = true; }, ms);
+  el.setAttribute("role", "alert");
+  clearTimeout(toast._t);
+  if (ms > 0) toast._t = setTimeout(() => { el.hidden = true; }, ms);
 }
 
 // ------------------------------------------------------------ sound
@@ -118,6 +129,22 @@ function fireworks(x, y) {
 let latest = null;
 const historyBuf = [];           // snapshots for time travel
 let replaying = false;
+let authBlocked = false;
+
+function recoverAuthFromFragment() {
+  const nextToken = new URLSearchParams(location.hash.slice(1)).get("token");
+  if (!nextToken) return;
+  sessionStorage.setItem("village-token", nextToken);
+  location.reload();
+}
+
+function showAuthError() {
+  authBlocked = true;
+  clearInterval(chatTimer);
+  chatTimer = null;
+  const authError = $("auth-error");
+  authError.hidden = false;
+}
 
 function pushHistory(state) {
   historyBuf.push(state);
@@ -128,6 +155,7 @@ function pushHistory(state) {
 }
 
 function poll() {
+  if (authBlocked) return;
   if (replaying) { schedule(); return; }
   api("/api/state").then((state) => {
     const prevEventId = latest ? topEventId(latest) : -1;
@@ -571,9 +599,13 @@ function boot() {
   // hud buttons
   $("btn-sound").addEventListener("click", () => sound.toggle());
   $("btn-share").addEventListener("click", () => {
-    navigator.clipboard?.writeText(location.href).then(
+    const shareUrl = new URL(location.href);
+    if (TOKEN) {
+      shareUrl.hash = new URLSearchParams({ token: TOKEN }).toString();
+    }
+    navigator.clipboard?.writeText(shareUrl.href).then(
       () => toast("link copied — open it on any device on this network"),
-      () => toast(location.href));
+      () => toast(shareUrl.href));
   });
   // replay
   $("btn-replay").addEventListener("click", () => { $("replay-bar").hidden = !$("replay-bar").hidden; });
@@ -598,7 +630,9 @@ function boot() {
   $("chat-form").addEventListener("submit", sendChat);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeSheet(); });
   // repo name in header
-  api("/api/state").then((s) => { if (s.repo) $("brand-sub").textContent = s.repo; }).catch(() => {});
+  api("/api/state").then((s) => {
+    if (s.repo) $("brand-sub").textContent = s.repo;
+  }).catch(() => {});
   if (params.get("zoom") === "world") setZoom(true);
   poll();
 }
