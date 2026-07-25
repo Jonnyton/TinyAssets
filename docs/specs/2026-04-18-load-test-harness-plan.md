@@ -1,14 +1,17 @@
 ---
-status: active
+status: superseded
+superseded_by: openspec/changes/harden-production-load-evidence/
 ---
 
 # Load-Test Harness Plan — Track J (Uptime Scale Proof)
 
 **Date:** 2026-04-18
 **Author:** dev (task #26 pre-draft; unblocks track J when dispatched)
-**Status:** Pre-draft spec. No code yet. Executable on dispatch without design re-research.
+**Status:** Superseded pre-draft. No code was implemented from this artifact.
 **Source of truth:** `docs/design-notes/2026-04-18-full-platform-architecture.md` §14 (scale audit), §10 (track J row).
 **Schema context:** `docs/specs/2026-04-18-full-platform-schema-sketch.md` — table shapes + RPC signatures.
+
+> **Superseded 2026-07-25.** `openspec/changes/harden-production-load-evidence/` is the current target contract for shared §14 evidence. This document remains historical scenario research only: its S1–S8 ownership, thresholds, stack choice, CI wiring, cost estimates, and "executable on dispatch" claim are not implementation authority. Capability owners retain their current scenario definitions and thresholds.
 
 > **Track label note.** The dispatching task (#26) references "track K" in its subject, but the design note §10 labels the load-test harness **track J** (track K is discovery+remix). This spec uses **track J** to match the design-note source of truth. Raise if the dispatch intended the discovery work instead — different scope, different spec.
 
