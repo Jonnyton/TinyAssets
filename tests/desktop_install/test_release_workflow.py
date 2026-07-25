@@ -71,6 +71,17 @@ def test_signed_outputs_are_attested_after_signing() -> None:
     signing = workflow.split("sign-and-verify:", 1)[1]
     assert "actions/attest-build-provenance@v2" in signing
     assert "subject-path:" in signing
+    assert "packaging/dist/${{ matrix.platform }}/*.json" in signing
+    assert '--sbom "$sbom" --metadata "${artifact}.metadata.json"' in signing
+    signed_metadata = signing.split(
+        "- name: Emit signed metadata, manifests, and rollback evidence", 1
+    )[1]
+    assert signed_metadata.index("desktop_metadata.py sbom") < signed_metadata.index(
+        "desktop_metadata.py metadata"
+    )
+    assert signed_metadata.index("desktop_metadata.py metadata") < signed_metadata.index(
+        "desktop_metadata.py sign-update-manifest"
+    )
 
 
 def test_macos_certificate_is_imported_into_temporary_keychain() -> None:

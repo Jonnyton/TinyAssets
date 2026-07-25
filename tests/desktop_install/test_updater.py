@@ -22,22 +22,35 @@ def _canonical(payload: dict[str, object]) -> bytes:
 
 def _signed_manifest(
     private_key: Ed25519PrivateKey,
-    artifact: bytes,
+    artifact: Path,
     **overrides: object,
 ) -> bytes:
+    artifact_bytes = artifact.read_bytes()
+    sbom = artifact.with_name(f"{artifact.name}.spdx.json")
+    metadata = artifact.with_name(f"{artifact.name}.metadata.json")
+    if not sbom.exists():
+        sbom.write_bytes(b'{"spdxVersion":"SPDX-2.3"}\n')
+    if not metadata.exists():
+        metadata.write_bytes(b'{"product":"TinyAssets"}\n')
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "product": "TinyAssets",
         "version": "1.1.0",
         "channel": "stable",
         "platform": "win32",
         "architecture": "x86_64",
         "artifact_name": "TinyAssetsSetup.exe",
-        "sha256": hashlib.sha256(artifact).hexdigest(),
-        "artifact_signature": base64.b64encode(private_key.sign(artifact)).decode(),
+        "sha256": hashlib.sha256(artifact_bytes).hexdigest(),
+        "artifact_signature": base64.b64encode(
+            private_key.sign(artifact_bytes)
+        ).decode(),
         "source_commit": "a" * 40,
         "build_workflow": "desktop-release.yml",
         "rollout_percent": 100,
+        "sbom_name": sbom.name,
+        "sbom_sha256": hashlib.sha256(sbom.read_bytes()).hexdigest(),
+        "metadata_name": metadata.name,
+        "metadata_sha256": hashlib.sha256(metadata.read_bytes()).hexdigest(),
     }
     payload.update(overrides)
     envelope = {
@@ -90,7 +103,7 @@ def test_signed_update_activates_after_health_check(updater, tmp_path: Path) -> 
     module, service, key, installer = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"new release")
-    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
 
     result = service.apply_staged(staged, health_check=lambda path: path.exists())
 
@@ -106,7 +119,7 @@ def test_tampered_artifact_is_rejected_before_activation(updater, tmp_path: Path
     module, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"expected release")
-    manifest = _signed_manifest(key, artifact.read_bytes())
+    manifest = _signed_manifest(key, artifact)
     artifact.write_bytes(b"tampered release")
 
     with pytest.raises(module.UpdateVerificationError, match="checksum"):
@@ -119,11 +132,93 @@ def test_staged_artifact_is_reverified_at_activation(updater, tmp_path: Path) ->
     module, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"expected release")
-    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
     staged.artifact.write_bytes(b"tampered after staging")
 
     with pytest.raises(module.UpdateVerificationError, match="checksum"):
         service.apply_staged(staged, health_check=lambda _: True)
+
+    assert service.current_version() == "1.0.0"
+
+
+@pytest.mark.parametrize(
+    "current_document",
+    [
+        None,
+        "{",
+        json.dumps({"artifact": "releases/1.0.0/TinyAssets-1.0.0.exe"}),
+        json.dumps({"version": "not-semver", "artifact": "release.exe"}),
+    ],
+)
+def test_signed_downgrade_is_rejected_without_a_usable_current_version(
+    updater, tmp_path: Path, current_document: str | None
+) -> None:
+    module, service, key, _ = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"signed older release")
+    current_path = service.install_root / "current.json"
+    if current_document is None:
+        current_path.unlink()
+    else:
+        current_path.write_text(current_document, encoding="utf-8")
+
+    with pytest.raises(module.UpdateVerificationError):
+        service.stage_update(
+            _signed_manifest(key, artifact, version="0.9.0"),
+            artifact,
+        )
+
+
+def test_staged_update_is_rejected_if_it_becomes_a_downgrade_before_apply(
+    updater, tmp_path: Path
+) -> None:
+    module, service, key, installer = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"candidate release")
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
+    newer_artifact = tmp_path / "TinyAssets-2.0.0.exe"
+    newer_artifact.write_bytes(b"newer installed release")
+    service.initialize_current(version="2.0.0", artifact=newer_artifact)
+
+    with pytest.raises(module.UpdateVerificationError, match="newer"):
+        service.apply_staged(staged, health_check=lambda _: True)
+
+    assert service.current_version() == "2.0.0"
+    assert installer.installed == []
+
+
+@pytest.mark.parametrize(
+    ("tampered_name", "message"),
+    [
+        ("TinyAssetsSetup.exe.spdx.json", "SBOM"),
+        ("TinyAssetsSetup.exe.metadata.json", "metadata"),
+    ],
+)
+def test_tampered_provenance_is_rejected_before_staging(
+    updater,
+    tmp_path: Path,
+    tampered_name: str,
+    message: str,
+) -> None:
+    module, service, key, _ = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"signed release")
+    sbom = tmp_path / "TinyAssetsSetup.exe.spdx.json"
+    metadata = tmp_path / "TinyAssetsSetup.exe.metadata.json"
+    sbom.write_bytes(b'{"spdxVersion":"SPDX-2.3"}\n')
+    metadata.write_bytes(b'{"product":"TinyAssets"}\n')
+    manifest = _signed_manifest(
+        key,
+        artifact,
+        sbom_name=sbom.name,
+        sbom_sha256=hashlib.sha256(sbom.read_bytes()).hexdigest(),
+        metadata_name=metadata.name,
+        metadata_sha256=hashlib.sha256(metadata.read_bytes()).hexdigest(),
+    )
+    (tmp_path / tampered_name).write_bytes(b'{"tampered":true}\n')
+
+    with pytest.raises(module.UpdateVerificationError, match=message):
+        service.stage_update(manifest, artifact)
 
     assert service.current_version() == "1.0.0"
 
@@ -134,7 +229,7 @@ def test_failed_health_check_rolls_back_and_records_evidence(
     _, service, key, installer = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"bad release")
-    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
 
     result = service.apply_staged(staged, health_check=lambda _: False)
 
@@ -154,7 +249,7 @@ def test_crash_after_activation_is_recovered_on_next_start(
     _, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"crashing release")
-    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
 
     class SimulatedProcessCrash(BaseException):
         pass
@@ -178,7 +273,7 @@ def test_prepared_transaction_rolls_back_conservatively(
     _, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"candidate release")
-    staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
+    staged = service.stage_update(_signed_manifest(key, artifact), artifact)
     current_path = service.install_root / "current.json"
     previous = json.loads(current_path.read_text())
     current_path.write_text(
@@ -226,7 +321,7 @@ def test_incompatible_or_downgrade_manifest_is_rejected(
 
     with pytest.raises(module.UpdateVerificationError, match=message):
         service.stage_update(
-            _signed_manifest(key, artifact.read_bytes(), **override),
+            _signed_manifest(key, artifact, **override),
             artifact,
         )
 
@@ -246,7 +341,7 @@ def test_semver_prerelease_identifiers_compare_numerically(
         service.stage_update(
             _signed_manifest(
                 key,
-                artifact.read_bytes(),
+                artifact,
                 version="1.1.0-beta.2",
                 channel="stable",
             ),
@@ -261,7 +356,7 @@ def test_rollout_cohort_is_enforced_before_staging(updater, tmp_path: Path) -> N
 
     with pytest.raises(module.UpdateVerificationError, match="rollout"):
         service.stage_update(
-            _signed_manifest(key, artifact.read_bytes(), rollout_percent=0),
+            _signed_manifest(key, artifact, rollout_percent=0),
             artifact,
         )
 

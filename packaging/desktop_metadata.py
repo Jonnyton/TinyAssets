@@ -148,6 +148,8 @@ def build_spdx_sbom(
 def sign_update_manifest(
     *,
     artifact: Path,
+    sbom: Path,
+    metadata: Path,
     private_key_pem: bytes,
     product_version: str,
     source_commit: str,
@@ -157,10 +159,13 @@ def sign_update_manifest(
     channel: str,
     rollout_percent: int,
 ) -> dict[str, object]:
-    """Sign the updater's manifest and artifact with a provisioned Ed25519 key."""
+    """Sign the updater's artifact and provenance manifest."""
     artifact = Path(artifact)
-    if not artifact.is_file():
-        raise FileNotFoundError(artifact)
+    sbom = Path(sbom)
+    metadata = Path(metadata)
+    for path in (artifact, sbom, metadata):
+        if not path.is_file():
+            raise FileNotFoundError(path)
     if not _COMMIT.fullmatch(source_commit):
         raise ValueError("source commit must be a full lowercase SHA")
     if channel not in _CHANNELS:
@@ -172,7 +177,7 @@ def sign_update_manifest(
         raise ValueError("desktop update signing identity must be Ed25519")
     artifact_bytes = artifact.read_bytes()
     signed: dict[str, object] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "product": "TinyAssets",
         "version": product_version,
         "channel": channel,
@@ -184,6 +189,10 @@ def sign_update_manifest(
         "source_commit": source_commit,
         "build_workflow": build_workflow,
         "rollout_percent": rollout_percent,
+        "sbom_name": sbom.name,
+        "sbom_sha256": _sha256(sbom),
+        "metadata_name": metadata.name,
+        "metadata_sha256": _sha256(metadata),
     }
     signature = base64.b64encode(key.sign(_canonical_json(signed))).decode()
     return {"signed": signed, "signature": signature}
@@ -228,6 +237,8 @@ def _parser() -> argparse.ArgumentParser:
     metadata.add_argument("--rollout-percent", type=int, required=True)
     manifest = subparsers.add_parser("sign-update-manifest")
     manifest.add_argument("--artifact", type=Path, required=True)
+    manifest.add_argument("--sbom", type=Path, required=True)
+    manifest.add_argument("--metadata", type=Path, required=True)
     manifest.add_argument("--output", type=Path, required=True)
     manifest.add_argument("--version", required=True)
     manifest.add_argument("--source-commit", required=True)
@@ -269,6 +280,8 @@ def main() -> int:
             args.output,
             sign_update_manifest(
                 artifact=args.artifact,
+                sbom=args.sbom,
+                metadata=args.metadata,
                 private_key_pem=private_key_pem,
                 product_version=args.version,
                 source_commit=args.source_commit,

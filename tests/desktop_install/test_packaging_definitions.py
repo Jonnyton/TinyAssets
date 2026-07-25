@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -182,7 +183,11 @@ def test_metadata_json_round_trips_without_absolute_build_paths(
 def test_update_manifest_uses_provisioned_ed25519_identity(tmp_path: Path) -> None:
     metadata = _load_metadata_module()
     artifact = tmp_path / "TinyAssetsSetup.exe"
+    sbom = tmp_path / "TinyAssetsSetup.exe.spdx.json"
+    provenance = tmp_path / "TinyAssetsSetup.exe.metadata.json"
     artifact.write_bytes(b"signed installer")
+    sbom.write_bytes(b'{"spdxVersion":"SPDX-2.3"}\n')
+    provenance.write_bytes(b'{"product":"TinyAssets"}\n')
     private_key = Ed25519PrivateKey.generate()
     private_pem = private_key.private_bytes(
         Encoding.PEM,
@@ -192,6 +197,8 @@ def test_update_manifest_uses_provisioned_ed25519_identity(tmp_path: Path) -> No
 
     envelope = metadata.sign_update_manifest(
         artifact=artifact,
+        sbom=sbom,
+        metadata=provenance,
         private_key_pem=private_pem,
         product_version="1.2.3",
         source_commit="d" * 40,
@@ -206,9 +213,15 @@ def test_update_manifest_uses_provisioned_ed25519_identity(tmp_path: Path) -> No
         Encoding.PEM,
         PublicFormat.SubjectPublicKeyInfo,
     )
-    verified = ManifestVerifier(public_pem).verify_manifest(
+    verifier = ManifestVerifier(public_pem)
+    verified = verifier.verify_manifest(
         json.dumps(envelope, sort_keys=True, separators=(",", ":")).encode()
     )
-    ManifestVerifier(public_pem).verify_artifact(verified, artifact.read_bytes())
+    verifier.verify_artifact(verified, artifact.read_bytes())
+    verifier.verify_provenance(verified, tmp_path)
     assert verified.version == "1.2.3"
     assert verified.rollout_percent == 25
+    assert verified.sbom_sha256 == hashlib.sha256(sbom.read_bytes()).hexdigest()
+    assert verified.metadata_sha256 == hashlib.sha256(
+        provenance.read_bytes()
+    ).hexdigest()

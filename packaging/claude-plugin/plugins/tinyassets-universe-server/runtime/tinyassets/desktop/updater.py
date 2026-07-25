@@ -98,6 +98,10 @@ class UpdateManifest:
     source_commit: str
     build_workflow: str
     rollout_percent: int
+    sbom_name: str
+    sbom_sha256: str
+    metadata_name: str
+    metadata_sha256: str
 
 
 @dataclass(frozen=True)
@@ -219,6 +223,24 @@ class ManifestVerifier:
             raise UpdateVerificationError("artifact signature verification failed") from exc
 
     @staticmethod
+    def verify_provenance(manifest: UpdateManifest, directory: Path) -> None:
+        for label, name, expected_sha256 in (
+            ("SBOM", manifest.sbom_name, manifest.sbom_sha256),
+            ("metadata", manifest.metadata_name, manifest.metadata_sha256),
+        ):
+            path = Path(directory) / name
+            try:
+                content = path.read_bytes()
+            except OSError as exc:
+                raise UpdateVerificationError(
+                    f"signed {label} document is unavailable"
+                ) from exc
+            if hashlib.sha256(content).hexdigest() != expected_sha256:
+                raise UpdateVerificationError(
+                    f"signed {label} checksum verification failed"
+                )
+
+    @staticmethod
     def _parse_manifest(payload: dict[str, object]) -> UpdateManifest:
         required = set(UpdateManifest.__dataclass_fields__)
         missing = required - set(payload)
@@ -240,10 +262,14 @@ class ManifestVerifier:
                 source_commit=str(payload["source_commit"]),
                 build_workflow=str(payload["build_workflow"]),
                 rollout_percent=int(payload["rollout_percent"]),
+                sbom_name=str(payload["sbom_name"]),
+                sbom_sha256=str(payload["sbom_sha256"]),
+                metadata_name=str(payload["metadata_name"]),
+                metadata_sha256=str(payload["metadata_sha256"]),
             )
         except (TypeError, ValueError) as exc:
             raise UpdateVerificationError("signed update manifest field type is invalid") from exc
-        if manifest.schema_version != 1:
+        if manifest.schema_version != 2:
             raise UpdateVerificationError("unsupported update manifest schema version")
         _version_key(manifest.version)
         if manifest.channel not in _CHANNELS:
@@ -252,13 +278,19 @@ class ManifestVerifier:
             raise UpdateVerificationError("rollout percentage must be between 0 and 100")
         if not _SHA256.fullmatch(manifest.sha256):
             raise UpdateVerificationError("artifact checksum must be lowercase SHA-256")
+        if not _SHA256.fullmatch(manifest.sbom_sha256):
+            raise UpdateVerificationError("SBOM checksum must be lowercase SHA-256")
+        if not _SHA256.fullmatch(manifest.metadata_sha256):
+            raise UpdateVerificationError("metadata checksum must be lowercase SHA-256")
         if not _COMMIT.fullmatch(manifest.source_commit):
             raise UpdateVerificationError("source commit must be a full lowercase SHA")
-        if (
-            not manifest.artifact_name
-            or Path(manifest.artifact_name).name != manifest.artifact_name
+        for label, name in (
+            ("artifact", manifest.artifact_name),
+            ("SBOM", manifest.sbom_name),
+            ("metadata", manifest.metadata_name),
         ):
-            raise UpdateVerificationError("artifact name must not contain a path")
+            if not name or Path(name).name != name:
+                raise UpdateVerificationError(f"{label} name must not contain a path")
         return manifest
 
 
@@ -323,6 +355,7 @@ class UpdateService:
         source = Path(artifact)
         if source.name != manifest.artifact_name or not source.is_file():
             raise UpdateVerificationError("artifact does not match the manifest name")
+        self._verifier.verify_provenance(manifest, source.parent)
         artifact_bytes = source.read_bytes()
         self._verifier.verify_artifact(manifest, artifact_bytes)
         destination = (
@@ -347,6 +380,7 @@ class UpdateService:
         if not lock.acquired:
             raise UpdateInProgress("another desktop update is already in progress")
         try:
+            self._verify_compatibility(staged.manifest)
             if staged.artifact.name != staged.manifest.artifact_name:
                 raise UpdateVerificationError("staged artifact name does not match")
             self._verifier.verify_artifact(
@@ -425,9 +459,19 @@ class UpdateService:
             raise UpdateVerificationError("update architecture does not match")
         if manifest.channel != self._channel:
             raise UpdateVerificationError("update channel does not match")
-        current = self.current_version()
-        if current is not None and _version_key(manifest.version) <= _version_key(current):
+        current = self._require_current_version()
+        if _version_key(manifest.version) <= _version_key(current):
             raise UpdateVerificationError("update version must be newer than current")
+
+    def _require_current_version(self) -> str:
+        if not self._current_path.is_file():
+            raise UpdateVerificationError("current version record is missing")
+        current = _read_json(self._current_path)
+        value = current.get("version")
+        if not isinstance(value, str):
+            raise UpdateVerificationError("current version record has no usable version")
+        _version_key(value)
+        return value
 
     def _verify_rollout(self, manifest: UpdateManifest) -> None:
         if manifest.rollout_percent == 100:

@@ -497,6 +497,8 @@ jobs:
             [[ -f "$artifact" ]] || continue
             count=$((count + 1))
             sbom="${artifact}.spdx.json"
+            python packaging/desktop_metadata.py sbom \
+              --artifact-name "$(basename "$artifact")" --output "$sbom"
             python packaging/desktop_metadata.py metadata \
               --artifact "$artifact" --output "${artifact}.metadata.json" \
               --version "$VERSION" --source-commit "${{ github.sha }}" \
@@ -506,6 +508,7 @@ jobs:
               --sbom "$sbom" --channel "$CHANNEL" --rollout-percent "$ROLLOUT"
             python packaging/desktop_metadata.py sign-update-manifest \
               --artifact "$artifact" --output "${artifact}.update-manifest.json" \
+              --sbom "$sbom" --metadata "${artifact}.metadata.json" \
               --version "$VERSION" --source-commit "${{ github.sha }}" \
               --workflow desktop-release.yml \
               --platform "${{ matrix.update_platform }}" \
@@ -548,6 +551,7 @@ jobs:
             packaging/dist/${{ matrix.platform }}/*.dmg
             packaging/dist/${{ matrix.platform }}/*.deb
             packaging/dist/${{ matrix.platform }}/*.tar.gz
+            packaging/dist/${{ matrix.platform }}/*.json
 
       - name: Upload signed and verified artifacts
         if: needs.plan.outputs.publication_requested == 'true'
