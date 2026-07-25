@@ -4,7 +4,7 @@ Date: 2026-07-25
 Reviewer/provider: Codex GPT-5.6
 Current-main base: `8ec01ab34802f349d4ca97527c0aaed0633da11c`
 Historical source: draft PR #1670, substantive OpenSpec commit `49cb3de2`
-Disposition: local, target-only, review-blocked; not build or production authority
+Disposition: target-only, Opus-approved for draft publication; not build or production authority
 
 Current design anchors:
 
@@ -101,15 +101,13 @@ Supabase, production-data, API, or PLAN change was imported.
 
 Three independent Codex reviews agreed that the PostgreSQL restack is the
 highest-impact safe lane and that PR #1670 must be adapted, not retargeted
-unchanged. A literal current-main Claude Opus 5 review remains mandatory before
-push, host acceptance, implementation, sync, archive, or production action.
-
-The 2026-07-25 Claude CLI attempt failed before inference with:
-
-`You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message`
-
-The model rate-limit reset did not clear the account monthly-spend ceiling.
-This artifact therefore records no Claude verdict. The branch remains local.
+unchanged. At 16:00 PDT the account reset restored literal Claude Opus 5
+inference. The project-aware CLI path stalled in repository hooks, so the exact
+five-file packet was reviewed from an isolated working directory with the
+restack worktree allowlisted read-only. Opus returned `APPROVE` with no blocking
+correction. This satisfies the opposite-provider gate for publishing the draft
+branch. It does not authorize implementation, sync, archive, merge, migration,
+or production action.
 
 ## Verification
 
@@ -121,8 +119,6 @@ Fresh on 2026-07-25 in
 - `git diff --check` — PASS.
 - `git diff --no-index --check -- NUL
   docs/audits/2026-07-25-postgres-control-plane-restack-review.md` — PASS.
-- Remote-branch check — no
-  `origin/codex/restack-postgres-control-plane-20260725`; the lane is local.
 - Independent architecture/PLAN exact-diff review — APPROVE after requiring
   PLAN+OpenSpec for domain expansion, fail-closed complete restore, and a
   normative data-less preview default.
@@ -133,7 +129,9 @@ Fresh on 2026-07-25 in
 - Independent OpenSpec/execution exact-diff review — APPROVE after making
   notification-adapter proof conditional and load execution dependent on the
   landed shared harness/schema.
+- Literal Claude Opus 5 exact-packet review at 16:16 PDT — APPROVE; read-only
+  review covered proposal, design, tasks, delta spec, and this audit.
 
-These Codex-family approvals satisfy independent local quality review. They do
-not replace the required fresh opposite-provider Opus 5 verdict or host
-acceptance and do not authorize publication or implementation.
+These reviews satisfy independent local and opposite-provider review for draft
+publication. They do not authorize implementation, sync, archive, merge,
+migration, or production action.

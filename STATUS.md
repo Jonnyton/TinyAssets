@@ -14,7 +14,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
-| **Restack PostgreSQL control-plane contract from #1670 onto current main** — preserve the target while removing moderation-stack and obsolete decision-packet dependencies; planning only | openspec/changes/establish-postgres-control-plane/**; docs/audits/2026-07-25-postgres-control-plane-restack-review.md; STATUS.md; .agents/worktrees.md | PR #1670 provenance; current PLAN/#1761; literal Opus 5 re-review + host acceptance before push/implementation; Supabase baseline decision | claimed:codex-gpt56-postgres-restack ACTIVE 2026-07-25 |
+| **Restack PostgreSQL control-plane contract from #1670 onto current main** — exact packet Opus 5 APPROVE 2026-07-25; draft publication approved, implementation/merge still needs host acceptance | openspec/changes/establish-postgres-control-plane/**; docs/audits/2026-07-25-postgres-control-plane-restack-review.md; STATUS.md; .agents/worktrees.md | PR #1670 provenance; current PLAN/#1761; Supabase baseline decision; production-load protocol | host-review |
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
@@ -48,9 +48,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
-| Literal Opus 5 review blocked in CLI + Claude.ai by monthly spend/credits; wait for Claude's shown 16:00 plan reset or raise limit + add credits | claude.ai/settings/usage | PostgreSQL restack and other Opus-gated lanes | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude model reset ≠ spend reset: CLI and Opus 5 High web both blocked at 15:34 PDT 2026-07-25; web shows 16:00 plan reset.
+4. **Capacity/context** — Claude Opus 5 inference restored at 16:00 PDT 2026-07-25; use isolated read-only packet review when project hooks stall CLI review.

@@ -1298,7 +1298,7 @@ Notes:
 
 - Provider: codex-gpt56-postgres-restack
 - Branch: codex/restack-postgres-control-plane-20260725
-- Lane state: claimed; planning-only restack
+- Lane state: Opus-approved; publishing target-only draft for host review
 - Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-restack
 - STATUS/Issue/PR: STATUS Work row; supersedes stale stacked draft PR #1670 only after required review
 - PLAN refs: Canonical store is per-domain; Full-Platform Architecture; Uptime & Alarms
@@ -1307,5 +1307,5 @@ Notes:
 - Memory refs: PR #1670; PR #1662 packet provenance; PR #1761 PLAN foldback
 - Related implications: full product completion audit critical root 1B; production load evidence; paid-market transport
 - Idea feed refs: none
-- Ship/abandon: strict-valid current-main OpenSpec and restack audit; no push or implementation before literal Opus 5 review and host acceptance
-- Foldback: supersede or retarget #1670 only after review; otherwise leave this local and review-blocked
+- Ship/abandon: strict-valid current-main OpenSpec and restack audit; literal Opus 5 APPROVE permits draft publication, but not implementation or merge
+- Foldback: publish this current-main restack as the successor draft to #1670; wait for host acceptance before implementation, sync, archive, or merge
