@@ -1230,3 +1230,4 @@ Notes:
 - Memory refs: archived `2026-07-25-scope-wiki-discovery`; PR #1745
 - Review gate: ui-test through real chatbot + independent evidence review
 - Ship/abandon: publish proof/task foldback only; no runtime changes
+- Foldback: proof complete and independently approved; PR #1747 open
