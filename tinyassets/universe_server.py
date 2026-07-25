@@ -53,8 +53,13 @@ from tinyassets.api.universe import (
     _universe_impl,
     admit_request_v2,
 )
+from tinyassets.api.wiki import _write_reserved_wiki_canary
 from tinyassets.api.wiki import wiki as _wiki_impl
 from tinyassets.auth.middleware import write_gate_rejection
+from tinyassets.auth.wiki_canary import (
+    current_wiki_canary_authority,
+    is_exact_wiki_canary_arguments,
+)
 from tinyassets.mcp_schema_utils import describe_signature
 
 logger = logging.getLogger("universe_server")
@@ -829,10 +834,40 @@ def write_page(
     is_patch_preview = (
         not normalized_kind and bool(old_text or new_text) and dry_run
     )
+    is_canary_write = (
+        current_wiki_canary_authority()
+        and not any((
+            page,
+            log_entry,
+            old_text,
+            new_text,
+            expected_sha256,
+            title,
+            normalized_kind,
+            component,
+            severity,
+            repro,
+            observed,
+            expected,
+            workaround,
+            tags,
+            reporter_context,
+            universe_id,
+        ))
+        and force_new is False
+        and is_exact_wiki_canary_arguments({
+            "category": category,
+            "filename": filename,
+            "content": content,
+            "dry_run": dry_run,
+        })
+    )
     if not is_patch_preview:
         rejection = write_gate_rejection("write_page")
-        if rejection:
+        if rejection and not is_canary_write:
             return rejection
+    if is_canary_write:
+        return _write_reserved_wiki_canary(content)
     if normalized_kind:
         # Issue filings (bug/patch_request/feature/design) are shared-commons
         # coordination, not private canon — they stay on the global commons.
