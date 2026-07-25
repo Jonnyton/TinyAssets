@@ -68,6 +68,6 @@ This review approves drafting a target-only change, not implementation. The comp
 
 ## Draft-artifact review state
 
-Two Opus 5 artifact-review attempts on 2026-07-25 exited after seven seconds with no stderr and no verdict. The Claude CLI itself remained available (`claude --version` returned `2.1.220`), while the local fleet floor state recorded three blocks. This is provider/harness unavailability, not approval or rejection.
+Three Opus 5 artifact-review attempts on 2026-07-25 exited after seven seconds with no stderr and no verdict. The Claude CLI itself remained available (`claude --version` returned `2.1.220`), while the local fleet floor state accumulated provider blocks. The third identical failure triggered the project retry-loop stop rule. This is provider/harness unavailability, not approval or rejection.
 
-The drafted change passes strict OpenSpec validation, but task 1.3 remains open. The branch may be published only as review-blocked planning state; it must not merge, authorize implementation, sync specs, or archive until a real opposite-provider artifact verdict is recorded and every Critical/Important finding is resolved.
+The drafted change passes strict OpenSpec validation and is published as draft PR #1778, but task 1.3 remains open. The branch is review-blocked planning state; it must not become ready, merge, authorize implementation, sync specs, or archive until a real opposite-provider artifact verdict is recorded and every Critical/Important finding is resolved.
