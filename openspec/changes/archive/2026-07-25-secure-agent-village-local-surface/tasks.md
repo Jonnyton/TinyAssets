@@ -24,14 +24,14 @@
 
 - [x] 3.1 Run focused/full command-center pytest and Ruff gates, strict
   OpenSpec validation, and mutation probes for auth and body-boundary guards.
-- [ ] 3.2 Request an independent Claude Opus 5 security review of the immutable
+- [x] 3.2 Request an independent Claude Opus 5 security review of the immutable
   implementation and resolve every blocking finding.
 - [x] 3.3 Start the real CLI against a temporary repo and verify unauthenticated
   curl reads/writes fail while an authenticated state read and talk succeed.
 
 ## 4. Foldback and Shipping
 
-- [ ] 4.1 Update `REFLECTION.md`, sync the development-coordination-runtime
+- [x] 4.1 Update `REFLECTION.md`, sync the development-coordination-runtime
   delta, archive the change, and validate all specs strictly.
 - [ ] 4.2 Run required pre-merge gates, publish and merge the PR only when
   green, then remove the landed STATUS work row.
