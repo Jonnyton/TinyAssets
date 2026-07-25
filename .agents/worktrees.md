@@ -1155,10 +1155,10 @@ Notes:
 
 - Provider: codex-gpt56-mcp-proof-fix
 - Branch: codex/fix-mcp-retirement-proof
-- Lane state: PR open
+- Lane state: PR open; independently approved; production contract green
 - Worktree: C:\Users\Jonathan\Projects\wf-fix-mcp-retirement-proof
 - STATUS/Issue/PR: PR #1722; Opus 5 final reject follow-up to merged PR #1718
 - Scope: Cloudflare-safe retirement probe, correct deploy ownership, exact-seven canary, as-built spec truth, stale operator guidance
 - Review gate: focused red/green tests, strict OpenSpec, workflow checks, independent diff review, then live rerun
 - Memory/implications: PR #1718 review artifact; canonical hardening tasks remain separately open
-- Ship/abandon: ship immediately; no green production claim until both owning deploy lanes prove their part
+- Ship/abandon: ship through PR #1722; both owning deploy lanes and direct live probes now prove their part
