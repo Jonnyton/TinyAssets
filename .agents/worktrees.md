@@ -1240,7 +1240,7 @@ Notes:
 - Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
 - STATUS/Issue/PR: Bind authenticated host principal to account
 - PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
-- Purpose: specify the missing authenticated server-side account-to-stable-host binding behind PR #1736's existing client protocol
+- Purpose: specify the missing server account-to-stable-host binding; PR #1736 retains desktop ownership but must adapt its client protocol
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
 - Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
 - Review gate: Opus 5 exact-artifact review plus independent Codex verification
