@@ -51,7 +51,8 @@ verdict is
   existing canonical behavior and owners.
 - Claiming the local custody race proof satisfies the broader §14 Track J load
   suite.
-- Runtime edits while #1691, #1736, universe-creation, #1484, and
+- Runtime edits while #1691, `bind-host-principal-to-account`, #1736's
+  client/native-store seam, universe-creation, #1484, and
   distributed-execution owners still hold their seams.
 
 ## Decisions
@@ -59,9 +60,12 @@ verdict is
 ### 1. Provider custody is a separate capability
 
 `credential-vault` describes the shipped per-universe file store;
-`desktop-host-runtime` describes the source tray; #1736's target-only tray spec
-owns account refresh tokens. None owns requester-supplied API-key lifecycle across
-principal, host, universe, provider, assignment generation, and execution.
+`desktop-host-runtime` describes the source tray; PR #1736's runtime branch
+owns account refresh tokens, native-backend allowlisting, and the client-side
+onboarding protocol. It explicitly leaves the production server-side
+principal-to-host route unfinished. None owns requester-supplied API-key
+lifecycle across principal, host, universe, provider, assignment generation,
+and execution.
 
 This change therefore introduces `provider-credential-custody` and modifies
 only the shipped capabilities whose current truth conflicts with it.
@@ -113,8 +117,9 @@ to another host or principal.
 
 Enrollment is a two-store commit-token protocol, not a cross-store CAS:
 
-1. the local host writes a random `native_secret_ref`, enrollment id, and
-   one-use commit token as `pending`;
+1. the local host atomically records a random `native_secret_ref`, enrollment
+   id, and one-use commit token as `pending` in a bounded local pending index,
+   then writes the exact secret under that native reference;
 2. the control plane compare-and-swaps a pending binding carrying that
    enrollment id and commit-token digest into draft PR #1691's expected
    assignment generation;
@@ -129,6 +134,13 @@ Enrollment is a two-store commit-token protocol, not a cross-store CAS:
 6. the split-brain path never restores the deleted local secret and requires a
    fresh enrollment.
 
+Native keyrings expose exact-reference set/get/delete, not portable
+enumeration. The bounded local pending index is therefore the only
+enumeration source for reconciliation. A native reference absent from that
+index is unreachable, not discoverable by scanning the keyring. The index
+contains no secret material and is updated atomically with the local lifecycle
+state.
+
 ### 4. The owning authority path depends on fulfillment class
 
 Draft PR #1691 (`constrain-set-engine-provider-authority`) owns requester-owned
@@ -142,6 +154,10 @@ contract. The shipped `runner/v1`
 provider, host, and assignment-generation fields, and `ExecutionGrantV1` does
 not contain a credential reference. `SandboxRunner` therefore cannot validate
 the full custody tuple and this change does not pretend that it can.
+
+Consuming D0's landed `Verified[T]` and execution-record types is type reuse,
+not a D0 authority grant. It does not create a production D0 route, make D0
+live-acceptable, or upgrade an opaque locator into provider authority.
 
 For requester-owned local execution, the implementable seam is a typed #1691
 local-launch adapter that receives the frozen `ProviderInvocation` and exact
@@ -165,6 +181,10 @@ memory/environment. Accepted-market remote execution SHALL use its separately
 accepted B2 authority and SHALL NOT receive a requester-local secret merely
 because `runner/v1` carries a locator. The secret is never placed in argv,
 persisted child config, logs, or server state.
+
+For requester-owned local launch, `ProviderInvocation` carries only the opaque
+binding reference plus credential/auth provenance. It never carries resolved
+secret material. Only executor-local `start()` may resolve the native secret.
 
 Background, resumed, retried, and scheduled launches derive the credential
 owner from that persisted verified authority. They never use an ambient HTTP
@@ -293,10 +313,16 @@ credential dereference.
    (`constrain-set-engine-provider-authority`) for requester-owned local launch
    and from the distributed-execution/B2 owners for accepted-market production
    authority; keep D0 fake-only/production-denied and the runner opaque.
-2. Land/extend draft PR #1736 with production principal-to-host binding, a
-   disjoint provider-secret namespace, pending/committed local state,
-   commit-token acknowledgement, split-brain compare-clear, tombstones, and
-   safe rotation.
+2. Preserve PR #1736's account-token lifecycle, native-backend allowlist, and
+   client-side `OriginClient` protocol unchanged. Land
+   `bind-host-principal-to-account` as the authenticated server-side route
+   that derives the account principal from verified identity, issues a stable
+   server-attested host principal distinct from per-session host-pool rows,
+   supports idempotent re-registration/revocation, and exposes the
+   authenticated binding read needed by reconciliation. Keep the disjoint
+   provider-secret namespace, pending index, commit-token protocol,
+   split-brain compare-clear, tombstones, deletion, and rotation in this
+   change.
 3. Have `openspec/changes/universe-creation/`,
    `openspec/changes/retire-legacy-live-mcp-tools/`, and the live-interface
    owner accept and land a canonical non-secret setup successor—preferably the

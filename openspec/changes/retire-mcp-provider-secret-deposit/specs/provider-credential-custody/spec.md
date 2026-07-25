@@ -4,8 +4,10 @@
 Requester-supplied provider API keys SHALL be accepted only by an
 authenticated requester-controlled executor and SHALL be stored only in its
 native OS secret store under a random versioned provider-secret reference.
-Approved backends SHALL be Windows Credential Manager, macOS Keychain, and
-Linux Secret Service/libsecret when available. An unsupported platform,
+The implementation SHALL consume PR #1736's existing `NativeCredentialStore`
+backend allowlist and fail-closed policy rather than define a parallel native
+store abstraction. Approved backends SHALL be Windows Credential Manager,
+macOS Keychain, and Linux Secret Service/libsecret when available. An unsupported platform,
 headless session without its native backend, locked backend, or backend error
 SHALL fail closed with the existing typed `setup_required` hold and without a
 plaintext file, environment, argv, host-home, server, maintainer/founder, or
@@ -69,7 +71,9 @@ binding or generation state.
 
 ### Requirement: Local binding enrollment is a crash-safe two-store commit-token protocol
 The selected host SHALL create a random `native_secret_ref`, enrollment id, and
-one-use commit token in local state `pending`. The control plane SHALL
+one-use commit token in an atomically updated, secret-free bounded local
+pending index before writing the exact native secret and entering state
+`pending`. The control plane SHALL
 compare-and-swap a binding carrying that enrollment id and commit-token digest
 into draft PR #1691's expected assignment generation. The host SHALL read and
 verify that exact committed binding and record a local acknowledgement before
@@ -85,6 +89,17 @@ assignment generation. It SHALL NOT restore the deleted local secret,
 reactivate the tombstoned identifier, or treat either side as usable; a fresh
 enrollment is required.
 
+Native OS secret stores SHALL be treated as exact-reference set/get/delete
+stores, not portable enumeration sources. The local pending index SHALL be the
+only enumeration source for reconciliation. A native reference absent from
+that index is unreachable rather than discoverable through a backend scan.
+
+The host identity used by this protocol SHALL be a stable server-attested host
+principal bound to the verified account principal by
+`bind-host-principal-to-account`. A caller-supplied owner field, a per-session
+host-pool row, or an unattested client-generated identifier SHALL NOT satisfy
+that binding.
+
 #### Scenario: local write succeeds before control-plane commit fails
 - **WHEN** native storage succeeds but the expected assignment-generation CAS fails
 - **THEN** the local reference remains pending and cannot satisfy provider launch
@@ -94,6 +109,16 @@ enrollment is required.
 - **WHEN** the control-plane assignment carries the expected enrollment id and token digest but the host has not recorded its local acknowledgement
 - **THEN** the binding remains unusable and provider launch is held
 - **AND** neither control-plane presence nor local secret presence alone is treated as committed
+
+#### Scenario: reconciliation enumerates only the secret-free pending index
+- **WHEN** reconciliation searches for timed-out or split-brain local enrollments
+- **THEN** it enumerates only the bounded secret-free local pending index
+- **AND** it does not scan, list, or infer entries from the native OS secret backend
+
+#### Scenario: self-asserted or per-session host identity is refused
+- **WHEN** enrollment presents a caller-supplied account owner, an insert-always host-pool row, or an unattested client-generated host identifier
+- **THEN** binding fails before native-secret or assignment mutation
+- **AND** only an authenticated stable server-attested host principal may enter the commit-token protocol
 
 #### Scenario: late binding after local tombstone is compare-cleared
 - **WHEN** a delayed control-plane binding appears after the local pending reference was tombstoned

@@ -18,9 +18,10 @@ deputy for another principal's provider authority.
   secret store; keep only an opaque, non-derivable, host/principal/universe/
   provider/generation-bound reference in control-plane state.
 - Dereference the secret exactly at requester-owned local provider launch
-  inside draft PR #1691's frozen
-  `ProviderInvocation -> ProviderLaunchHandle` barrier, with no file,
-  environment, host-home, or maintainer/founder fallback.
+  behind PR #1691's frozen `ProviderInvocation -> ProviderLaunchHandle`
+  barrier. `ProviderInvocation` carries a reference and provenance, never
+  secret material; there is no file, environment, host-home, or
+  maintainer/founder fallback.
 - Retire legacy `llm_api_key` records through a metadata-only,
   owner-initiated, rotation/revocation-first, compare-and-delete saga that never
   decodes, exports, or silently migrates plaintext.
@@ -34,11 +35,17 @@ deputy for another principal's provider authority.
   B2/distributed-execution authority contract. The current D0
   fake-only/production-denied seam is not ordinary requester-provider
   authority; add no parallel authority system.
-- Keep #1691 as the sole owner of provider destination ceilings,
-  `setup_required`, engine assignment, and no-maintainer-route behavior. This
-  change writes no competing `provider-routing` delta.
-- Keep #1736 as the owner of account refresh-token custody/host registration;
-  provider-secret references use a disjoint namespace and lifecycle.
+- Keep #1691 as the sole owner of generic provider-destination ceilings,
+  `setup_required`/held assignment state, assignment CAS/generation, and the
+  frozen launch barrier. This change owns the `llm_api_key`-typed ingress
+  refusal and writes no competing `provider-routing` delta. The general
+  no-maintainer-route invariant remains owned by landed Slice A0/provider-auth
+  isolation.
+- Keep PR #1736's shipped branch as the owner of account refresh-token custody,
+  its stable account-token namespace, native-backend allowlisting, and its
+  client-side onboarding protocol. Provider-secret references and lifecycle
+  stay in this change; the missing authenticated production principal-to-host
+  binding belongs to a separate `bind-host-principal-to-account` successor.
 - Record structured `write_graph(target=universe)` mutation as the preferred
   successor candidate, not existing behavior. The universe/interface owners
   must accept, specify, and land its typed operation, authorization,
@@ -76,8 +83,10 @@ deputy for another principal's provider authority.
   canonical/plugin mirrors.
 - Exact dependency anchors: draft PR #1691
   (`constrain-set-engine-provider-authority`) for assignment,
-  `ProviderInvocation`, and `setup_required/held`; draft PR #1736 for native
-  account-token storage and production principal-to-host binding;
+  reference-only `ProviderInvocation`, and generic `setup_required/held`; PR
+  #1736 for native account-token storage/backend policy and its existing
+  `OriginClient` protocol; proposed `bind-host-principal-to-account` for the
+  authenticated server-side production principal-to-host route;
   `openspec/changes/universe-creation/` plus #1484 for the birth/configuration
   seam; `openspec/specs/distributed-execution/spec.md` plus its B2 production-
   authority owner for accepted-market composition;

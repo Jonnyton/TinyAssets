@@ -421,3 +421,46 @@ This approval permits committing, pushing, and reviewing this OpenSpec change
 as a blocked specification lane. It does **not** authorize runtime edits,
 canonical-spec sync/archive, deployment, or rollout. Tasks 1.3-1.9 and all
 runtime/owner gates remain open.
+
+## 2026-07-25 owner-resolution ADAPT
+
+After the Claude Opus rate reset, Opus 5 performed a fresh read-only
+owner-resolution review against draft PR #1746 at `4e5e7529`, current
+`origin/main` at `3f933caf`, PR #1691 at `2954e4cb`, and PR #1736's runtime
+branch. An independent Codex explorer mapped the same ownership seams in
+parallel. Both returned **ADAPT**; neither authorized runtime work.
+
+The converged corrections are:
+
+- #1691 owns generic `setup_required`/held assignment state,
+  provider-destination ceilings, assignment CAS/generation, and the frozen
+  launch barrier. This change owns the `llm_api_key`-typed ingress refusal;
+  landed Slice A0/provider-auth isolation owns the general no-maintainer-route
+  invariant.
+- #1691's current `ProviderInvocation` wording is internally ambiguous between
+  credential material and a material reference. Requester-owned local launch
+  must carry only the opaque reference/provenance; executor-local `start()` is
+  the sole native-secret resolution boundary. Acceptance must bind to an exact
+  #1691 SHA after review #1727 is folded and the branch is rebased.
+- PR #1736 is not a target-only draft. It contains runtime for account
+  refresh-token custody, exact native-backend allowlisting, and a client-side
+  `OriginClient` protocol, while explicitly leaving the production
+  server-side account-to-host binding unfinished. Those shipped seams must be
+  consumed rather than duplicated.
+- No current lane owns an authenticated, stable, server-attested host
+  principal. A separate `bind-host-principal-to-account` successor must derive
+  the account principal from verified identity, keep it distinct from
+  insert-always host-pool rows and unattested client identifiers, implement
+  the server side behind #1736's protocol, and expose the authenticated
+  binding read required by custody reconciliation.
+- Portable native keyrings expose exact-reference set/get/delete, not
+  enumeration. Custody therefore needs an atomic secret-free bounded local
+  pending index as the sole reconciliation enumeration source.
+- Consuming landed D0 record types is type reuse, not a D0 authority grant;
+  D0 remains fake-only/production-denied.
+
+The proposal, design, custody delta, and tasks were adapted to this split.
+Because those edits postdate the earlier exact-artifact approval, task 1.2 is
+open again until Opus 5 confirms the exact new head. Tasks 1.3a/1.3b and
+1.5a/1.5c also remain open for counterparty/owner acceptance. Runtime,
+canonical-spec sync/archive, deployment, and rollout remain unauthorized.
