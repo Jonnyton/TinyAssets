@@ -3,26 +3,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import sys
 import urllib.request
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-from tinyassets.connector_catalog import directory_mcp_remote_url  # noqa: E402
 
 SCHEMA_URL = (
     "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json"
 )
 REGISTRY_NAME = "io.github.Jonnyton/tinyassets-universe-server"
+REGISTRY_VERSION = "0.2.0"
 TITLE = "TinyAssets"
 DESCRIPTION = (
     "Create, browse, remix, collaborate on, and run durable AI workflow nodes from MCP hosts."
 )
 REPOSITORY_URL = "https://github.com/Jonnyton/TinyAssets"
 WEBSITE_URL = "https://tinyassets.io/connect"
-REMOTE_URL = directory_mcp_remote_url()
+REMOTE_URL = "https://tinyassets.io/mcp"
 ICON_URL = "https://raw.githubusercontent.com/Jonnyton/TinyAssets/main/assets/icon.png"
 
 MCPB_MANIFEST_PATH = REPO_ROOT / "packaging" / "mcpb" / "manifest.json"
@@ -30,7 +27,7 @@ BUNDLE_PATH = REPO_ROOT / "packaging" / "dist" / "tinyassets-universe-server.mcp
 OUTPUT_PATH = REPO_ROOT / "packaging" / "registry" / "server.json"
 
 
-def _read_version() -> str:
+def _read_mcpb_version() -> str:
     manifest = json.loads(MCPB_MANIFEST_PATH.read_text(encoding="utf-8"))
     version = manifest.get("version", "").strip()
     if not version:
@@ -55,13 +52,12 @@ def _release_url(version: str) -> str:
 
 
 def _build_document(*, include_package: bool = False) -> dict[str, object]:
-    version = _read_version()
     document: dict[str, object] = {
         "$schema": SCHEMA_URL,
         "name": REGISTRY_NAME,
         "title": TITLE,
         "description": DESCRIPTION,
-        "version": version,
+        "version": REGISTRY_VERSION,
         "repository": {
             "url": REPOSITORY_URL,
             "source": "github",
@@ -83,6 +79,7 @@ def _build_document(*, include_package: bool = False) -> dict[str, object]:
     }
 
     if include_package:
+        package_version = _read_mcpb_version()
         if not BUNDLE_PATH.is_file():
             raise FileNotFoundError(
                 f"Built MCPB bundle not found: {BUNDLE_PATH}. Run the MCPB pack step first."
@@ -90,8 +87,8 @@ def _build_document(*, include_package: bool = False) -> dict[str, object]:
         document["packages"] = [
             {
                 "registryType": "mcpb",
-                "identifier": _release_url(version),
-                "version": version,
+                "identifier": _release_url(package_version),
+                "version": package_version,
                 "fileSha256": _sha256(BUNDLE_PATH),
                 "transport": {
                     "type": "stdio",
