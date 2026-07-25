@@ -41,14 +41,17 @@
 
 ## 5. Lifecycle Residuals
 
-- [ ] 5.1 Add tests proving public `POST /v1/universes` cannot create a universe, then remove or reject the route.
-  - PREMISE STALE (verified 2026-07-24): no `POST /v1/universes` HTTP route
-    exists in the tree. The only public creation surfaces are the MCP
-    `universe action=create_universe` and `write_graph target=universe` tools;
-    `create_streamable_http_app()` registers only MCP transport + discovery
-    routes (`universe_server.py:2231`). No REST route to remove. The
-    public-birth boundary is now enforced at the shared MCP dispatch chokepoint
-    (task 5.2). Kept open pending a chosen regression test for the absence.
+- [x] 5.1 Add tests proving public `POST /v1/universes` cannot create a universe, then remove or reject the route.
+  - PREMISE STALE + REGRESSION-LOCKED (2026-07-24): no `POST /v1/universes`
+    HTTP route exists in the tree — nothing to remove. The only public
+    creation surfaces are the MCP `universe action=create_universe` and
+    `write_graph target=universe` tools; `create_streamable_http_app()`
+    (`universe_server.py:2231`) registers only MCP transport + discovery
+    routes. Added `test_http_app_exposes_no_universe_creation_route`
+    (`tests/test_universe_server_directory_app.py`) asserting the app mounts no
+    universe-creation route — fails loudly if one is ever added. The
+    public-birth boundary itself is enforced at the shared dispatch chokepoint
+    (task 5.2).
 - [x] 5.2 Add tests proving every public birth path generates its own serial and rejects caller-selected ids, then enforce the boundary without breaking internal migration tooling.
   - DONE (2026-07-24): `_universe_impl` now rejects a caller-selected
     `universe_id` on `create_universe` with `reason: caller_selected_id_rejected`
@@ -61,7 +64,20 @@
     `tests/test_first_contact.py` (rejects chosen id via both entry points;
     self-serializes without id; internal named-id accepted; first-contact
     still serial).
-- [ ] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
+- [x] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
+  - DONE (2026-07-24): the `universes` index is keyed by the immutable
+    `universe_id` (PK / `ON CONFLICT(universe_id)`), and creation registers one
+    unnamed serial row (`ensure_universe_registered` is called without a
+    display name, so `display_name` defaults to the serial) — that half was
+    already landed. NEW: learned-name projection. Added
+    `daemon_server.set_universe_display_name` (updates ONLY the `display_name`
+    column for the row keyed by the immutable id; no-op when no row exists) and
+    wired `_action_soul_edit` to project the accepted `identity.md` self-name
+    onto that same row after a governed learning event (best-effort; never
+    fails the persisted learning). The immutable key and runtime operation id
+    are untouched. Tests: `tests/test_universe_soul.py`
+    (`test_creation_adds_unnamed_serial_index_row`,
+    `test_learned_name_projects_onto_immutable_index_row`).
 - [ ] 5.4 Inventory descriptive-id roots and live references, then implement an atomic, rollback-safe migration to generated serial roots.
 - [ ] 5.5 Verify migrated bindings and read/write/run/status references resolve only the serial id after migration.
 - [ ] 5.6 Remove duplicate `self/`, `soul/`, and brain-archive directories plus empty starter notes/logs from existing roots while preserving non-empty historical runtime data.

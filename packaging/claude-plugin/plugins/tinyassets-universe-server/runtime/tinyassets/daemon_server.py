@@ -660,6 +660,31 @@ def ensure_universe_registered(
     return get_universe(base_path, universe_id=universe_id)
 
 
+def set_universe_display_name(
+    base_path: str | Path,
+    *,
+    universe_id: str,
+    display_name: str,
+) -> None:
+    """Project a learned self-name onto the universe index row's display name.
+
+    universe-creation task 5.3: the root universe index is keyed by the
+    immutable ``universe_id``. An accepted learned-name change in the
+    universe's ``identity.md`` updates ONLY the ``display_name`` projection for
+    that same row — the key, ``created_at``, ``host_path``, and runtime
+    operation id are untouched. A no-op when no index row exists for the id.
+    """
+    name = (display_name or "").strip()
+    if not name:
+        return
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        conn.execute(
+            "UPDATE universes SET display_name = ? WHERE universe_id = ?",
+            (name, universe_id),
+        )
+
+
 def sync_universes_from_filesystem(base_path: str | Path) -> None:
     initialize_author_server(base_path)
     root = Path(base_path)

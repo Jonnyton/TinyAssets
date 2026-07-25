@@ -5970,6 +5970,23 @@ def _action_soul_edit(
         return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
 
     model = read_self_model(udir)
+    # universe-creation task 5.3: when a governed learning event accepts a new
+    # self-name in identity.md, project it onto the universe index row keyed by
+    # this immutable id. The projection updates only the display name — never
+    # the key or runtime operation id — and is best-effort so a registry hiccup
+    # never fails the learning event that already persisted to the brain.
+    learned_name = str(model.get("name") or "").strip()
+    if learned_name and "identity.md" in result["updated_files"]:
+        try:
+            from tinyassets.daemon_server import set_universe_display_name
+
+            set_universe_display_name(
+                _base_path(), universe_id=uid, display_name=learned_name
+            )
+        except Exception:  # noqa: BLE001 - index projection is best-effort
+            logger.warning(
+                "learned-name index projection failed for %s", uid, exc_info=True
+            )
     return json.dumps({
         "universe_id": uid,
         "status": "learned",
