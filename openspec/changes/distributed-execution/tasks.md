@@ -19,44 +19,44 @@ V1-V8, S0-S16, and B01-B44 destination remains below.
 
 ## 1. D0 - immediate dark authority contract spine
 
-- [ ] 1.1 Add failing tests for direct construction, subclassing, copy, pickle,
+- [x] 1.1 Add failing tests for direct construction, subclassing, copy, pickle,
   and token-free minting of `Verified[T]`, plus a positive mechanism-adapter
   mint after real test verification.
-- [ ] 1.2 Implement the sealed verifier-neutral `Verified[T]` carrier and
+- [x] 1.2 Implement the sealed verifier-neutral `Verified[T]` carrier and
   package-private mint seam; keep M1, M2, and M3 adapters separate.
-- [ ] 1.3 Add canonicalization/domain-vector tests for capsule, grant,
+- [x] 1.3 Add canonicalization/domain-vector tests for capsule, grant,
   candidate, and terminal records, including unknown domain/version/field,
   JSON type confusion, integer bounds, and cross-domain signature reuse.
-- [ ] 1.4 Implement immutable per-domain field contracts and final-shaped
+- [x] 1.4 Implement immutable per-domain field contracts and final-shaped
   canonical carrier/verification code; provide no caller-controlled
   `unbound_fields`, binder, issuer, or verify key.
-- [ ] 1.5 Add a failing generation-restore test proving a correctly signed
+- [x] 1.5 Add a failing generation-restore test proving a correctly signed
   superseded record cannot pass after mutable state is restored.
-- [ ] 1.6 Implement monotonic generation/fence allocation and a durable
+- [x] 1.6 Implement monotonic generation/fence allocation and a durable
   evidence-ledger rejection floor.
-- [ ] 1.7 Add replacement/UPSERT mutations for both append-only evidence tables
+- [x] 1.7 Add replacement/UPSERT mutations for both append-only evidence tables
   and exact schema/trigger/index/namespace mismatch tests.
-- [ ] 1.8 Implement replacement-resistant append-only guards and exact
+- [x] 1.8 Implement replacement-resistant append-only guards and exact
   fail-closed evidence-table validation with no auto-repair.
-- [ ] 1.9 Add replay tests for junk plus one valid attestation, duplicate
+- [x] 1.9 Add replay tests for junk plus one valid attestation, duplicate
   identical valid attestations, two distinct valid attestations, mutable
   terminal reset, and changed-content idempotency reuse.
-- [ ] 1.10 Implement verify-first, content-deduplicated replay and stable
+- [x] 1.10 Implement verify-first, content-deduplicated replay and stable
   idempotent receipts derived from verified terminal facts.
-- [ ] 1.11 Add blob mutations and forced interleavings for wrong bytes,
+- [x] 1.11 Add blob mutations and forced interleavings for wrong bytes,
   stale per-instance index, physical-root aliases, and both scheduler orders.
-- [ ] 1.12 Implement decision-point M2 blob proof, physical-root coordination,
+- [x] 1.12 Implement decision-point M2 blob proof, physical-root coordination,
   operation-local index mutation, and one blob-root-then-SQLite lock order.
-- [ ] 1.13 Add the explicit `TestAuthorityRoot` and fake composition root using
+- [x] 1.13 Add the explicit `TestAuthorityRoot` and fake composition root using
   test-owned keys and temporary state through the same mechanism adapters.
-- [ ] 1.14 Add production-denial tests for production/unknown mode, non-test
+- [x] 1.14 Add production-denial tests for production/unknown mode, non-test
   storage, route registration, caller keys/verifiers, production-module import
   or call-site use, and provider, credential, queue, graph, GitHub, market, or
   money adapters.
-- [ ] 1.15 Prove D0 end-to-end in focused tests:
+- [x] 1.15 Prove D0 end-to-end in focused tests:
   capsule -> grant -> candidate + verified blobs -> fenced terminal -> restart
   replay, with every production/external adapter absent.
-- [ ] 1.16 Independently review the exact D0 diff and show at least one real
+- [x] 1.16 Independently review the exact D0 diff and show at least one real
   authority mutation red before the fix and green after it.
 
 ## 2. Current-main extraction manifest
