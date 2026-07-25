@@ -147,12 +147,58 @@ self-serialization was incomplete at the first-contact seam.
   files) **100 passed**; ruff clean on `first_contact.py` + test file; plugin
   mirror rebuilt; `openspec validate universe-creation --strict` valid.
 
+## ADAPT fold — Codex review round 2 (2026-07-24): format != provenance
+
+Verdict round 2: the descriptive-binding hole closed, but `is_universe_serial`
+proves FORMAT not GENERATION — a hostile `u-00000000000000000000000000`
+satisfies the regex yet was never platform-generated, and the reviewer
+reproduced it materializing. I agree; format shape cannot prove generation.
+
+- **Sole-writer check (route 1):** `founder_home` has TWO writers —
+  `claim_founder_home` (generates its own candidate) and the general
+  `set_founder_home` (writes caller-influenceable ids). Sole-writer is NOT
+  provable, so route 1 is out; route 2 (explicit provenance marker) applies.
+- **Structural fix (route 2):** new `founder_home.platform_generated` column
+  (schema + `ALTER TABLE` migration; existing rows default 0 → fail closed
+  until a host-run backfill; complete homes early-return before the gate, so
+  live founders are undisturbed). `claim_founder_home` stamps 1 for a freshly
+  reserved serial (its contract). `set_founder_home` gained a
+  `platform_generated` param; `_action_create_universe` passes `True` only when
+  IT generated the id (public births self-serialize → True; caller/dev-supplied
+  → False). New `founder_home_is_platform_generated()` reads the marker matching
+  BOTH founder_sub and universe_id. First-contact now trusts a winner only when
+  the marker is set AND it is serial-shaped (defense-in-depth), replacing the
+  format-only check.
+- **Why both writers stamp (not claim-only):** stamping only `claim_founder_home`
+  would fail-close the legitimate interrupted-birth repair of a genuine
+  platform serial bound via `set_founder_home` (existing
+  `test_bound_incomplete_dir_repairs`). Truthful stamping on both writers keeps
+  that repair while failing closed on any caller-influenced/unproven binding.
+- **Tests:** `test_serial_shaped_unproven_value_fails_closed` (the exact
+  reviewer repro — can-fail: a gate-bypass mutation materializes `u-000…` and
+  the test fails, verified 2026-07-24); `test_legitimate_reserved_serial_binding
+  _materializes` (proven marker → materializes); `test_claim_founder_home_stamps
+  _generation_provenance` (claim stamps vs unproven `set_founder_home`);
+  interrupted-birth repair updated to record true provenance. Also adapted two
+  `test_universe_server_isolation.py` create tests to self-serialization (a
+  round-1 boundary regression that wasn't in the earlier focused set).
+- **Evidence:** focused set (10 files incl. isolation/reset/author-server) **204
+  passed**; ruff clean on touched files; mirror rebuilt; `openspec validate
+  --strict` valid.
+- **Pre-existing red (NOT this diff; confirmed my commits `2a26a115..HEAD` touch
+  none of these files):** `test_pr180_founder_see_edit::test_five_handles_
+  unchanged_after_new_targets` (`converse` advertisement) + 5
+  `test_mcp_dispatch_docstring_parity` cases (gates/wiki/goals/extensions). They
+  are baseline debt on the branch base, from origin/main's mid-transition
+  /mcp-directory retirement — left for their own lane.
+
 ## Commits pushed
 
 - `05775a74` feat(universe): public birth self-serializes; reject caller-selected id
 - `81ab0c58` feat(universe): project learned identity.md name onto immutable index row
 - `20661dd5` docs(universe-creation): classify blocked/operational tasks; lane report
-- `4704b95f` fix(universe): fail-closed provenance gate on first-contact home materialization (ADAPT fold)
+- `4704b95f` fix(universe): fail-closed provenance gate on first-contact home materialization (ADAPT fold 1)
+- `7d0ccbb1` fix(universe): structural generation-provenance marker for first-contact birth (ADAPT fold 2)
 
-Branch pushed to `origin/claude/osx-universe-creation` (head `4704b95f`). No PR
+Branch pushed to `origin/claude/osx-universe-creation` (head `7d0ccbb1`). No PR
 opened — cross-family review happens before any PR.
