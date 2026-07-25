@@ -246,6 +246,13 @@ def test_live_claimed_request_read_model_is_worker_bound_and_lease_bound(
     assert record.claimed_by == "worker-a"
     assert record.claimed_at == "2026-07-24T08:01:00+00:00"
     assert record.lease_expires_at == "2026-07-24T08:02:30+00:00"
+    assert not {
+        "receipt",
+        "tenant_id",
+        "idempotency_key_hash",
+        "body_digest",
+        "grant_generation",
+    } & record.__dict__.keys()
     assert adapter.list_live_claimed_requests(
         universe_id="universe-a",
         worker_id="worker-b",
