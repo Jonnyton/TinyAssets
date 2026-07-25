@@ -1,5 +1,4 @@
 # Status
-
 Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
 
 ## Concerns
@@ -7,18 +6,13 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P1 filed:2026-07-24]** Branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages`; visibility bypass.
-- **[P1 filed:2026-07-25]** Self-approvable full-builtins exec: approve_source_code lacks host-role/author check (api/branches.py:514-531; graph_compiler.py:1805 denylist-only). GAP-8, 0xCodez audit.
+- **[P2 filed:2026-07-25]** Scheduler trusts client-supplied owner_actor, no caller binding or branch-authority check (runtime_ops.py:350-392, legacy-reachable); server-bind before any canonical exposure.
 - **[P0 filed:2026-07-22 verified:2026-07-25]** Newborn contact has no BYOC/market authority path; never use maintainer quota. Host 2026-07-25: no authority until BYOC + friendly onboarding reply; fix lane in flight. See #1582.
-- **[P0 filed:2026-07-21 verified:2026-07-21]** #1489: unauth LAN leaks sessions and permits CSRF writes/paid hires. Codex: ADAPT; do not LAN-run.
 - **[P1 filed:2026-07-02 verified:2026-07-22]** No OS engine sandbox. Live `converse` is in-process-confined only (WebFetch-only, cwd-pin, rot-prone denylist); #1485 is a fail-closed seam.
-- [filed:2026-07-02 verified:2026-07-22] Reshape residuals: WebFetch SSRF guard, `write_page` scope=commons, legacy `mcp_server.py` doors.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
-- [filed:2026-07-02 verified:2026-07-22] Dogfood open: persona payload rework + OKF reserved-file frontmatter. Founder-seed-at-create closed by #1462.
 - [filed:2026-04-17 verified:2026-07-22] Privacy Q6.3 still platform: gemini/groq/grok remain in the fallback chains (`providers/router.py:89`).
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
-- [filed:2026-07-13 verified:2026-07-15] `workflow-voice` (dormant) has 3 stale `pending` queue rows — review before ever activating it.
 - [filed:2026-07-24] PLAN still says one file-locked claimer; epoch-2 OpenSpec is transactional. Reconcile before claim integration/rollout.
-
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
@@ -60,7 +54,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
 ## Next
-
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
