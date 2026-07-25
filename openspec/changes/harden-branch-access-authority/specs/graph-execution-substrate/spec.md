@@ -216,3 +216,14 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 #### Scenario: Caller dry-inspects a foreign private branch
 - **WHEN** a caller requests `dry_inspect_node` or `dry_inspect_patch` for another author's private branch
 - **THEN** the response matches the missing-branch envelope and exposes no graph, node, validation, or patch-preview material
+
+### Requirement: Branch authority remains isolated under connector load
+The graph-execution capability SHALL own a required `branch-authority-isolation-v1` scenario in the shared production-load-evidence registry. The scenario SHALL exercise at least 1,000 concurrent canonical `/mcp` sessions representing at least 100 credential-distinct subjects and at least 10,000 admitted mixed operations over subject-private and shared-public branches, including list/search/read, denied foreign-private access, own mutation, direct run, background bind, and background fire. On a `real` canonical connector and storage substrate, authorization-bound request acceptance/denial SHALL have p99 latency below 3 seconds and no unexplained 5xx response; every admitted authorized effect SHALL reconcile exactly once within 60 seconds; and unauthorized disclosures, mutations, runs, or background bindings SHALL be zero. Raw evidence and verdicts SHALL conform to the production-load-evidence manifest and oracle contracts. A shaped or mock run MUST NOT satisfy this release gate.
+
+#### Scenario: Concurrent connector authority load passes
+- **WHEN** `branch-authority-isolation-v1` runs on the declared real connector/storage substrate with its full population and workload
+- **THEN** all latency, reconciliation, and zero-unauthorized-effect invariants pass from independently recomputable evidence
+
+#### Scenario: Shaped authority test appears green
+- **WHEN** a reduced, mocked, or otherwise non-equivalent run observes no authorization violation
+- **THEN** its verdict is `not_run`, never `passed`, and branch-authority release remains blocked

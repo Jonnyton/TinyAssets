@@ -140,6 +140,8 @@ Before either sibling implements a legacy action, it re-checks the action's curr
 - **[Risk] Parallel visibility owners diverge.** → Consume existing predicates without editing their module; use explicit dependency rows for any predicate change.
 - **[Risk] A gate exists but tests cannot turn it red.** → Mutation-probe every read, reuse, lineage, mutation, deletion, and projection gate before acceptance.
 
+- **[Risk] A two-actor concurrency test is mislabeled as §14 load proof.** → Register a required `branch-authority-isolation-v1` scenario with the shared production-load-evidence protocol, run it on the real canonical connector/storage substrate, and forbid shaped/mock evidence from passing.
+
 ## Migration Plan
 
 1. Land this reviewed target OpenSpec active and unsynced.
@@ -150,7 +152,7 @@ Before either sibling implements a legacy action, it re-checks the action's curr
 6. Land the background binding-authority sibling after its active universe/scheduler owners release, then land the direct/background run executor gate.
 7. Land the separately claimed branch-evaluation/version sibling using the same helpers.
 8. Land the separately claimed branch-adjacent goals/gates/projection sibling using the same helpers and the guarded version-execution path.
-9. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
+9. Run focused tests, surrounding suites, Ruff, mutation probes, the deterministic cross-actor concurrency proof, the required `branch-authority-isolation-v1` production-load scenario, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
 10. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
 
 Rollback reverts the unactivated implementation commits. Once activated, rollback must not re-enable unauthorized reads, reuse, mutation, deletion, or execution; a forward fix or fail-closed disablement is required.
