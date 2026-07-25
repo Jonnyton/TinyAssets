@@ -2159,6 +2159,13 @@ def create_streamable_http_app() -> Starlette:
 
     @asynccontextmanager
     async def lifespan(app: Starlette):  # type: ignore[no-untyped-def]
+        # Enforceable visibility preflight: declare every universe from its
+        # public_read bit and refuse readiness if any stays undeclared, so a
+        # strict-code deploy never silently serves legacy universes as CLOSED.
+        # Raises loudly (fail-fast boot) on an undeclared remainder.
+        from tinyassets.api.visibility import run_visibility_startup_gate
+
+        run_visibility_startup_gate()
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
                 canonical_app.router.lifespan_context(canonical_app),
@@ -2204,6 +2211,13 @@ def main(
         "Starting TinyAssets Server on %s:%d (transport=%s)",
         host, port, transport,
     )
+
+    # Enforceable visibility preflight (also fires in the HTTP app's lifespan;
+    # idempotent). For sse/stdio transports there is no Starlette lifespan, so
+    # run it here too — a strict-code boot must not serve undeclared universes.
+    from tinyassets.api.visibility import run_visibility_startup_gate
+
+    run_visibility_startup_gate()
 
     if transport == "streamable-http":
         app = create_streamable_http_app()

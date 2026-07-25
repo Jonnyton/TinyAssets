@@ -43,22 +43,39 @@ def hidden_only_base(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _declare_public(base, uid, udir):
+    """Declare a universe explicitly public.
+
+    Under the universe-visibility contract an undeclared universe is withheld
+    from enumeration/status (fail closed); these observability tests assert
+    public-universe listing behavior, so they must declare intent.
+    """
+    from tinyassets.api.visibility import set_universe_visibility
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_universe_visibility(uid, "public")
+
+
 @pytest.fixture
 def populated_base(tmp_path, monkeypatch):
     """Base dir contains one legitimate universe."""
     udir = tmp_path / "alpha"
     udir.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _declare_public(tmp_path, "alpha", udir)
     return tmp_path
 
 
 @pytest.fixture
 def operational_dirs_base(tmp_path, monkeypatch):
     """Base dir contains storage subsystem directories beside universes."""
-    (tmp_path / "alpha").mkdir()
+    udir = tmp_path / "alpha"
+    udir.mkdir()
     for name in ("wiki", "runs", "lance", "output"):
         (tmp_path / name).mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    _declare_public(tmp_path, "alpha", udir)
     return tmp_path
 
 

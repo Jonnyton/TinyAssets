@@ -990,17 +990,35 @@ def get_status(universe_id: str = "") -> str:
             "request_identity": request_identity,
             "schema_version": _STATUS_SCHEMA_VERSION,
         })
-    # Per-universe read gate: never expose a private universe's status / activity
-    # tail to an anonymous or non-granted caller. Public universes (public_read
-    # default) stay readable; a founder reads their own universe via their grant.
-    from tinyassets.api import permissions
-
-    if not permissions.universe_access_allows(uid, write=False):
-        return json.dumps(permissions.universe_access_error(
-            universe_id=uid, write=False, action="get_status", surface="universe",
-        ))
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
+
+    # Per-universe metadata gate: never expose an EXISTING universe's status /
+    # activity tail (name, word count, activity dates, phase) to a reader the
+    # declared visibility level does not grant `read_metadata`. Metadata is a
+    # separately-granted capability: a content-only (`unlisted`) universe is
+    # discoverable by direct id yet withholds this describe surface. A founder
+    # reads their own universe via their grant regardless of level. A universe
+    # that does NOT exist has no metadata to protect, so the not-found diagnostic
+    # is left ungated (it reveals nothing about any real universe).
+    from tinyassets.api import permissions, visibility
+
+    if universe_exists and not visibility.visibility_permits(uid, "read_metadata"):
+        # When the caller supplied no universe_id, the server RESOLVED one for
+        # them. Echoing that resolved name in a denial would leak the identity
+        # of a hidden universe (existence is privileged), so blank it out for
+        # an omitted-scope request. An explicit-id request echoes the id.
+        requested_blank = not (universe_id or "").strip()
+        denial = permissions.universe_access_error(
+            universe_id="" if requested_blank else uid,
+            write=False, action="get_status", surface="universe",
+        )
+        # Identity evidence is request-scoped (the caller's own principal), not
+        # universe-scoped: the visibility filter withholds this universe's
+        # metadata but must not suppress the caller's identity evidence.
+        denial["identity_evidence"] = identity_evidence
+        denial["request_identity"] = request_identity
+        return json.dumps(denial)
     host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
 
     # Load the dispatcher config for the universe.
