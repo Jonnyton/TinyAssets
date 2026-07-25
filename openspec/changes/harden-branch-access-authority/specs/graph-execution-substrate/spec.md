@@ -1,11 +1,15 @@
 ## ADDED Requirements
 
 ### Requirement: Branch authorship and authority derive from the authenticated subject
-The system SHALL derive branch authorship and every branch authority decision from the request-local, credential-validated subject. It MUST NOT use an environment-derived fallback or caller-supplied `actor`, `author`, `owner`, or `force` value as authority. Branch creation and composite build surfaces SHALL persist the authenticated subject as author and SHALL fail closed when a required authenticated subject is absent.
+The system SHALL derive new branch/node authorship, approval/publisher/receipt provenance, and every branch authority decision from the request-local, credential-validated subject. It MUST NOT use an environment-derived fallback or caller-supplied `actor`, `author`, `approved_by`, publisher, `owner`, or `force` value as authority or newly persisted provenance. Branch creation, composite build, node authoring, source approval, version publication, git attribution, and authoring receipts SHALL persist the authenticated subject and SHALL fail closed when that subject is required but absent. Authorized cross-branch reuse SHALL preserve already-authorized copied source provenance rather than relabeling it as caller-authored.
 
 #### Scenario: Caller attempts to choose another author
-- **WHEN** an authenticated caller creates or builds a branch while supplying a different `author`
-- **THEN** the stored author is server-bound to the authenticated subject rather than the caller-supplied identity
+- **WHEN** an authenticated caller creates a branch or node, builds a branch, approves source, or publishes/receipts a branch operation while supplying another identity
+- **THEN** every newly persisted actor/provenance field is server-bound to the authenticated subject rather than the caller-supplied identity
+
+#### Scenario: Authorized reuse preserves source provenance
+- **WHEN** an authenticated caller reuses an authorized public or owner-private source node
+- **THEN** copied original authorship and approval provenance remains attributable to its source and is not relabeled as caller-created
 
 #### Scenario: Environment identity exists without an authenticated subject
 - **WHEN** a private-branch read or branch mutation has no credential-validated subject but the process environment names the branch author
@@ -15,15 +19,27 @@ The system SHALL derive branch authorship and every branch authority decision fr
 - **WHEN** the credential-validated subject equals the stored branch author
 - **THEN** author-only reads and writes remain available subject to their other existing gates
 
+#### Scenario: Environment identity cannot become a listing viewer
+- **WHEN** a request has no authenticated subject while process environment identity names a private branch author
+- **THEN** `list_branches` exposes no private row or private-derived count, and `scope=mine` returns the stable empty list/count
+
+#### Scenario: Authenticated author lists their private branch
+- **WHEN** an authenticated subject lists branches they authored
+- **THEN** their own private branches remain visible without exposing another subject's private rows
+
+#### Scenario: Reusable-node search uses the authenticated viewer
+- **WHEN** a caller searches reusable nodes
+- **THEN** candidates, reuse counts, ranking, and result counts derive only from public branches plus that authenticated subject's private branches, with no environment-inherited or foreign-private contribution
+
 ### Requirement: Branch-selector reads preserve not-found equivalence
-The system SHALL apply one shared selector-resolution and branch-read authority helper to `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search before constructing branch-derived output. Name resolution MUST use the credential-validated request subject rather than environment identity. A foreign private branch and a nonexistent branch MUST return the byte-identical JSON envelope `{"error": "Branch '<selector>' not found."}` using the original caller-supplied ID or name, with no resolved canonical ID, existence, author, visibility, structure, validation, lineage, or projection metadata.
+The system SHALL apply one shared selector-resolution and branch-read authority helper to `get_branch`, `describe_branch`, `validate_branch`, and `fork_tree` before constructing branch-derived output. Name resolution MUST use the credential-validated request subject rather than environment identity. A foreign private branch and a nonexistent branch MUST return the byte-identical JSON envelope `{"error": "Branch '<selector>' not found."}` using the original caller-supplied ID or name, with no resolved canonical ID, existence, author, visibility, structure, validation, lineage, or projection metadata.
 
 #### Scenario: Non-owner describes a private branch by exact ID
 - **WHEN** an authenticated subject requests `describe_branch` for another author's private branch
 - **THEN** the response is byte-identical to describing a nonexistent branch with that requested ID
 
 #### Scenario: Non-owner validates a private branch by exact ID
-- **WHEN** an authenticated subject requests validation or exact-branch node search for another author's private branch
+- **WHEN** an authenticated subject requests validation for another author's private branch
 - **THEN** the response contains only the canonical not-found envelope
 
 #### Scenario: Guessed private name does not reveal the canonical ID

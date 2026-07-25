@@ -1,8 +1,8 @@
 ## Context
 
-TinyAssets exposes branch authoring and execution through the canonical chatbot connector. Branch visibility currently exists as a storage/listing concept, but branch-selector handlers in `tinyassets/api/branches.py` apply it inconsistently. `get_branch` contains a local owner check, while `describe_branch`, `validate_branch`, lineage reads, cross-branch node reuse, branch cloning, most mutations, and deletion do not share that boundary. `_resolve_branch_id` also performs name lookup with the environment-fallback actor and can translate a guessed private name into its canonical ID before a later denial changes the not-found envelope. `patch_branch` has an author check that a caller can bypass with `force=true`.
+TinyAssets exposes branch authoring and execution through the canonical chatbot connector. Branch visibility currently exists as a storage/listing concept, but listing and branch-selector handlers in `tinyassets/api/branches.py` apply it inconsistently. `list_branches` passes the environment-fallback actor as viewer, so an unauthenticated request can inherit the daemon user and enumerate that user's private branch summaries and counts. `get_branch` contains a local owner check, while `describe_branch`, `validate_branch`, lineage reads, cross-branch node reuse, branch cloning, most mutations, and deletion do not share that boundary. `_resolve_branch_id` also performs name lookup with the environment-fallback actor and can translate a guessed private name into its canonical ID before a later denial changes the not-found envelope. `patch_branch` has an author check that a caller can bypass with `force=true`.
 
-The result is not only metadata exposure. A canonical `write_graph` request can copy `source_code`, prompts, tools, and approval provenance from another actor's private branch through `node_ref.source`. The canonical `run_graph` surface can execute a foreign private branch in `tinyassets/api/runs.py`; that runtime is tracked as a separately claimed sibling because this change must not silently broaden its write-set.
+The result is not only metadata exposure. A canonical `write_graph` request can copy `source_code`, prompts, tools, and approval provenance from another actor's private branch through `node_ref.source`. The canonical `run_graph` surface can execute a foreign private branch in `tinyassets/api/runs.py`. `tinyassets/api/evaluation.py` can publish a foreign private branch with caller-selected publisher provenance, return/list its immutable versions, read node suggestion/history material, and roll back a foreign node. Run and evaluation/version hardening are tracked as separately claimed siblings because this change must not silently broaden its write-set.
 
 Branch-originated `related_wiki_pages` is also a wiki enumeration surface, but it bypasses the existing page-listing visibility predicate used by wiki search, changed-since, ambient feeds, and list. Restricted pages currently contribute paths, titles, summaries, match labels, ordering, cap displacement, and hidden counts.
 
@@ -12,7 +12,8 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 
 **Goals:**
 
-- Establish one request-local, credential-validated subject as branch authorship and authority truth.
+- Establish one request-local, credential-validated subject as new branch/node authorship, approval/publisher/receipt provenance, and authority truth.
+- Make branch listing use only that subject as viewer, with no environment-inherited private rows or counts.
 - Make ID/name selector reads of a foreign private branch indistinguishable from a missing branch without exposing a resolved canonical ID.
 - Gate cross-branch content reuse before executable content is copied.
 - Preserve branch visibility across lineage projections.
@@ -25,6 +26,7 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 - Modifying universe/page visibility predicates or audience classification.
 - Using audience or discovery scope as authority.
 - Implementing `run_branch` authority in this write-set; a sibling change consumes the helper.
+- Implementing branch-version/evaluation authority in `tinyassets/api/evaluation.py`; a sibling change consumes the read/author helpers and coordinates run-linked evidence with the run sibling.
 - Changing the public MCP handle set or response schema.
 - Making filesystem scans constant-time or claiming timing-side-channel resistance.
 - Building or validating an Agent Village surface.
@@ -36,13 +38,15 @@ The active `universe-visibility` owner retains `tinyassets/api/visibility.py`, `
 
 One branch-authority helper consumes `tinyassets.api.permissions.current_request_actor_id()`, the as-built request-local subject established by validated credentials. It treats `anonymous` as absent authority, does not call an identity helper that can fall back to `UNIVERSE_SERVER_USER`, and does not accept an actor, author, owner, or force value from action arguments.
 
-Branch creation and composite build paths persist the authenticated subject as `author`. A caller-supplied `author` cannot select or impersonate another owner. A creation or mutation that requires authorship fails closed when no authenticated subject is available.
+Branch creation and composite build paths persist the authenticated subject as branch `author`. Newly authored node definitions, approvals, branch-version publishers, git attribution, and branch-authoring receipts use the same subject. A caller-supplied `author`, `approved_by`, publisher, or receipt actor cannot select or impersonate another principal. Authorized reuse preserves copied source provenance rather than relabeling the source as the copier. A creation or mutation that requires authorship fails closed when no authenticated subject is available.
 
 Alternative: reuse `_current_actor()` everywhere. Rejected because its environment fallback is an open authority defect and copying the expression would entrench it across every handler.
 
 ### 2. Selector resolution and read authorization return one not-found envelope
 
-The helper consumes the original caller-supplied ID or name selector, resolves names only through visibility-aware enumeration using `current_request_actor_id()`, and returns either the readable canonical ID plus branch or the canonical JSON error `{"error": "Branch '<selector>' not found."}`. `get_branch`, `describe_branch`, `validate_branch`, `fork_tree`, and exact-branch node search use it before constructing any branch-derived output.
+`list_branches` passes `_request_branch_actor()` as viewer. An absent subject sees public branches only, `scope=mine` returns the stable empty list/count, and environment identity cannot add a private row or affect the count. An authenticated author continues to see their own private branches. The global reusable-node search adds a `viewer` parameter to its storage helper and applies the same public-plus-own-private rule before deduplication, reuse counting, ranking, capping, or response construction; foreign private nodes affect neither cards nor counts.
+
+The helper consumes the original caller-supplied ID or name selector, resolves names only through visibility-aware enumeration using `current_request_actor_id()`, and returns either the readable canonical ID plus branch or the canonical JSON error `{"error": "Branch '<selector>' not found."}`. `get_branch`, `describe_branch`, `validate_branch`, and `fork_tree` use it before constructing any branch-derived output.
 
 A missing branch and a foreign private branch have byte-identical serialized errors, key order, punctuation, and status behavior. A denied name selector never changes into or exposes the stored branch ID. No denial note, existence flag, author, visibility value, or different key set is emitted.
 
@@ -88,9 +92,9 @@ Alternative: filter after scoring/capping. Rejected because hidden pages would s
 
 ### 7. Delivery is split by collision and module ownership
 
-Wave 1 implements ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py`. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
+Wave 1 implements request-subject listing/search, ID/name selector resolution and reads, related-wiki filtering, and lineage in `branches.py` plus the narrow `daemon_server.search_nodes(viewer=...)` seam. Wave 2 gates cross-branch node/clone reuse. Wave 3 gates mutation and deletion, removes the force authority bypass, and removes mutation-response existence/author oracles. Each wave gets new focused RED-first tests after broad `tests/` claims release.
 
-The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and imports the shared read helper for canonical `run_graph`. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
+The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/runs.py` and imports the shared read helper for canonical `run_graph`. The sibling `harden-branch-evaluation-access-authority` owns `tinyassets/api/evaluation.py`: publish/get/list branch versions, suggest/list/rollback node paths, publisher provenance, and any run-linked conjunction with the run sibling. Any required change to a universe/page visibility predicate is filed against the active `universe-visibility` owner.
 
 ## Risks / Trade-offs
 
@@ -108,7 +112,7 @@ The sibling `harden-run-branch-access-authority` change owns `tinyassets/api/run
 3. Implement Wave 1 reads, wiki projections, and lineage with RED-first tests.
 4. Implement Wave 2 source reuse and clone gates with no-partial-copy tests.
 5. Coordinate action-scope migration, then implement Wave 3 mutation/deletion authority and force separation.
-6. Land the separately claimed `run_branch` sibling using the same helper.
+6. Land the separately claimed `run_branch` and branch-evaluation/version siblings using the same helpers.
 7. Run focused tests, surrounding suites, Ruff, mutation probes, concurrent cross-actor §14 proof, canonical MCP canary, rendered two-actor chatbot acceptance, and post-fix clean-use observation.
 8. Sync and archive only after all owned tasks and applicable acceptance evidence pass.
 

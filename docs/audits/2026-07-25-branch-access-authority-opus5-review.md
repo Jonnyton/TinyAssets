@@ -30,6 +30,10 @@ The canonical chatbot connector is the acceptance surface. Agent Village is defe
 10. Existing direct author checks use `_current_actor()`, whose environment fallback is an open authority defect and must not be propagated.
 11. `_resolve_branch_id` performs name lookup with `_current_actor()`. When environment identity names a private branch author, a guessed private name can resolve to the stored ID before a later denial emits that canonical ID instead of the original selector.
 12. `patch_branch`'s non-author response is itself an oracle: it returns the canonical branch ID, stored author, caller identity, and explicit `force=true` bypass guidance instead of preserving private-or-missing equivalence or a generic readable-object denial.
+13. `list_branches` passes `_current_actor()` as `viewer`; an unauthenticated request can therefore inherit `UNIVERSE_SERVER_USER` and enumerate that actor's private branch summaries and counts, including `scope=mine`.
+14. New node definitions accept caller-supplied `author`, while approval, authoring-receipt, git, and version-publisher attribution use `_current_actor()`; durable provenance can therefore be caller-selected or environment-attributed instead of request-subject-bound.
+15. Global `search_nodes` is public-only because its storage helper omits `viewer`; this does not leak private nodes, but it hides an authenticated author's own private reuse candidates and makes their private nodes contribute to neither cards nor reuse counts.
+16. `evaluation.py` publishes any branch with caller-supplied `publisher`, returns/lists immutable versions without branch read authority, and reads node suggestion/history or rolls a foreign node back without shared branch authority.
 
 The drafted change additionally records that branch create/build paths accept caller-supplied author values. Server-bound authorship is required because a stored author selected by the caller would undermine every later author check.
 
@@ -38,6 +42,8 @@ The drafted change additionally records that branch create/build paths accept ca
 `harden-branch-access-authority` owns:
 
 - authenticated-subject authorship and the shared branch read/author helper;
+- authenticated-subject-only branch listing and counts;
+- public-plus-own-private reusable-node search with visibility-safe aggregation;
 - ID/name selector not-found equivalence without canonical-ID resolution leaks;
 - cross-branch source reuse;
 - lineage filtering;
@@ -50,6 +56,7 @@ It does not own:
 - universe/page visibility predicate implementation;
 - audience or discovery scope;
 - `run_branch` implementation in `tinyassets/api/runs.py`;
+- branch evaluation/version implementation in `tinyassets/api/evaluation.py`;
 - legacy action-registry migration;
 - Agent Village.
 
