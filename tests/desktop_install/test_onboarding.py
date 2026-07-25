@@ -90,6 +90,16 @@ def _service(onboarding, tmp_path: Path, *, register_offline: bool = False):
     return service, origin, secrets
 
 
+def _read_state(tmp_path: Path) -> dict[str, object]:
+    return json.loads((tmp_path / "onboarding.json").read_text(encoding="utf-8"))
+
+
+def _make_retry_due(tmp_path: Path) -> None:
+    state = _read_state(tmp_path)
+    state["next_retry_at"] = datetime(2000, 1, 1, tzinfo=UTC).isoformat()
+    (tmp_path / "onboarding.json").write_text(json.dumps(state), encoding="utf-8")
+
+
 def test_first_run_binds_existing_account_with_self_visibility(tmp_path: Path) -> None:
     onboarding = _onboarding_module()
     service, origin, secrets = _service(onboarding, tmp_path)
@@ -133,6 +143,18 @@ def test_callback_state_mismatch_creates_no_registration(tmp_path: Path) -> None
     assert secrets.values == {}
 
 
+def test_first_run_opens_system_browser_authorization(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    service, _, _ = _service(onboarding, tmp_path)
+    opened: list[str] = []
+    service._browser_open = lambda url: opened.append(url) or True
+
+    attempt = service.begin_browser_authorization()
+
+    assert opened == [attempt.authorization_url]
+    assert "code_challenge_method=S256" in attempt.authorization_url
+
+
 def test_offline_registration_recovers_once_without_reinstall(tmp_path: Path) -> None:
     onboarding = _onboarding_module()
     service, origin, _ = _service(onboarding, tmp_path, register_offline=True)
@@ -149,10 +171,33 @@ def test_offline_registration_recovers_once_without_reinstall(tmp_path: Path) ->
     assert pending.advertise_online is False
 
     origin.register_offline = False
+    _make_retry_due(tmp_path)
     recovered = service.recover_pending_registration()
 
     assert recovered.status == "online"
     assert len(origin.registrations) == 1
+
+
+def test_retry_deadline_is_honored_without_hitting_origin(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    now = [datetime(2026, 7, 24, tzinfo=UTC)]
+    service, origin, _ = _service(onboarding, tmp_path, register_offline=True)
+    service._clock = lambda: now[0]
+    attempt = service.begin_authorization()
+    origin.expected_nonce = attempt.nonce
+    pending = service.complete_authorization(
+        state=attempt.state,
+        code="authorization-code",
+        redirect_uri="http://127.0.0.1:43119/callback",
+    )
+    retries = pending.retry_count
+    origin.register_offline = False
+
+    unchanged = service.recover_pending_registration()
+
+    assert unchanged.retry_count == retries
+    assert origin.registrations == []
+    now[0] += timedelta(seconds=3)
     assert service.recover_pending_registration().status == "online"
     assert len(origin.registrations) == 1
 
@@ -172,6 +217,7 @@ def test_expired_or_rejected_refresh_stops_online_advertising(tmp_path: Path) ->
         raise onboarding.AuthorizationRejected("refresh expired")
 
     origin.refresh = reject_refresh
+    _make_retry_due(tmp_path)
     result = service.recover_pending_registration()
 
     assert result.status == "authorization_required"
@@ -194,10 +240,92 @@ def test_recovery_persists_a_rotated_refresh_token(tmp_path: Path) -> None:
 
     origin.register_offline = False
     origin.refreshed_token = "rotated-refresh-secret"
+    _make_retry_due(tmp_path)
     result = service.recover_pending_registration()
 
     assert result.status == "online"
     assert list(secrets.values.values()) == ["rotated-refresh-secret"]
+
+
+def test_expired_online_authorization_pauses_and_refreshes(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    service, origin, _ = _service(onboarding, tmp_path)
+    service._clock = lambda: now
+    attempt = service.begin_authorization()
+    origin.expected_nonce = attempt.nonce
+    service.complete_authorization(
+        state=attempt.state,
+        code="authorization-code",
+        redirect_uri="http://127.0.0.1:43119/callback",
+    )
+    state = _read_state(tmp_path)
+    state["access_expires_at"] = (now - timedelta(seconds=1)).isoformat()
+    (tmp_path / "onboarding.json").write_text(json.dumps(state), encoding="utf-8")
+
+    result = service.recover_pending_registration()
+
+    assert result.status == "online"
+    assert _read_state(tmp_path)["access_expires_at"] > now.isoformat()
+
+
+def test_packaged_authority_gate_requires_online_unexpired_native_secret(
+    tmp_path: Path,
+) -> None:
+    onboarding = _onboarding_module()
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    secrets = MemorySecrets()
+    manager = DesktopCredentialManager(secrets)
+    reference = manager.save_refresh_token(
+        account_id="acct-1",
+        host_id="host-1",
+        refresh_token="refresh-secret",
+    )
+    (tmp_path / "onboarding.json").write_text(
+        json.dumps(
+            {
+                "status": "online",
+                "host_id": "host-1",
+                "account_id": "acct-1",
+                "credential_reference": reference,
+                "access_expires_at": (now + timedelta(minutes=10)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = onboarding.require_packaged_authority(
+        tmp_path,
+        credentials=manager,
+        clock=lambda: now,
+    )
+
+    assert result.host_id == "host-1"
+    assert result.advertise_online is True
+
+
+def test_packaged_authority_gate_rejects_expired_binding(tmp_path: Path) -> None:
+    onboarding = _onboarding_module()
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    (tmp_path / "onboarding.json").write_text(
+        json.dumps(
+            {
+                "status": "online",
+                "host_id": "host-1",
+                "account_id": "acct-1",
+                "credential_reference": "tinyassets-desktop:acct-1:host-1",
+                "access_expires_at": (now - timedelta(seconds=1)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(onboarding.PackagedAuthorityUnavailable, match="expired"):
+        onboarding.require_packaged_authority(
+            tmp_path,
+            credentials=DesktopCredentialManager(MemorySecrets()),
+            clock=lambda: now,
+        )
 
 
 def test_each_clean_machine_gets_a_distinct_host_identity(tmp_path: Path) -> None:

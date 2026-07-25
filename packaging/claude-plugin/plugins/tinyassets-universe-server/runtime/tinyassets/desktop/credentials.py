@@ -13,6 +13,11 @@ from typing import Any, Protocol
 _SERVICE = "io.tinyassets.desktop"
 _REFERENCE_PREFIX = "tinyassets-desktop"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]+$")
+_NATIVE_BACKENDS = {
+    ("keyring.backends.Windows", "WinVaultKeyring"),
+    ("keyring.backends.macOS", "Keyring"),
+    ("keyring.backends.SecretService", "Keyring"),
+}
 
 
 class SecretStoreUnavailable(RuntimeError):
@@ -43,14 +48,16 @@ class NativeCredentialStore:
 
     def _require_backend(self) -> None:
         try:
-            priority = float(self._keyring.get_keyring().priority)
+            backend = self._keyring.get_keyring()
+            priority = float(backend.priority)
         except Exception as exc:
             raise SecretStoreUnavailable(
                 "native operating-system secret store is unavailable; "
                 "configure Windows Credential Manager, macOS Keychain, or "
                 "Linux Secret Service before enabling persistent hosting"
             ) from exc
-        if priority <= 0:
+        identity = (type(backend).__module__, type(backend).__name__)
+        if priority <= 0 or identity not in _NATIVE_BACKENDS:
             raise SecretStoreUnavailable(
                 "native operating-system secret store is unavailable; "
                 "configure Windows Credential Manager, macOS Keychain, or "
@@ -59,16 +66,31 @@ class NativeCredentialStore:
 
     def set(self, reference: str, secret: str) -> None:
         self._require_backend()
-        self._keyring.set_password(_SERVICE, reference, secret)
+        try:
+            self._keyring.set_password(_SERVICE, reference, secret)
+        except Exception as exc:
+            raise SecretStoreUnavailable(
+                "native operating-system secret store is unavailable"
+            ) from exc
 
     def get(self, reference: str) -> str | None:
         self._require_backend()
-        return self._keyring.get_password(_SERVICE, reference)
+        try:
+            return self._keyring.get_password(_SERVICE, reference)
+        except Exception as exc:
+            raise SecretStoreUnavailable(
+                "native operating-system secret store is unavailable"
+            ) from exc
 
     def delete(self, reference: str) -> None:
         self._require_backend()
-        if self._keyring.get_password(_SERVICE, reference) is not None:
-            self._keyring.delete_password(_SERVICE, reference)
+        try:
+            if self._keyring.get_password(_SERVICE, reference) is not None:
+                self._keyring.delete_password(_SERVICE, reference)
+        except Exception as exc:
+            raise SecretStoreUnavailable(
+                "native operating-system secret store is unavailable"
+            ) from exc
 
 
 def _checked_identifier(value: str, label: str) -> str:

@@ -8,10 +8,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -34,6 +35,53 @@ class UpdateVerificationError(ValueError):
 
 class UpdateInProgress(RuntimeError):
     """Another updater owns the installation's update lock."""
+
+
+class Installer(Protocol):
+    """Platform installer used for both activation and last-known-good restore."""
+
+    def install(self, artifact: Path) -> None: ...
+
+    def restore(self, artifact: Path) -> None: ...
+
+
+class WindowsInstaller:
+    """Execute verified Inno Setup artifacts in unattended repair-safe mode."""
+
+    def __init__(self, *, runner=subprocess.run) -> None:
+        self._runner = runner
+
+    def install(self, artifact: Path) -> None:
+        if artifact.suffix.lower() != ".exe":
+            raise UpdateVerificationError("Windows update artifact must be an installer")
+        self._runner(
+            [
+                str(artifact),
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+            ],
+            check=True,
+        )
+
+    def restore(self, artifact: Path) -> None:
+        self.install(artifact)
+
+
+class UnsupportedPlatformInstaller:
+    """Explicit fail-closed gate for native update adapters not built yet."""
+
+    def __init__(self, platform_name: str) -> None:
+        self._platform = platform_name
+
+    def install(self, artifact: Path) -> None:
+        del artifact
+        raise UpdateVerificationError(
+            f"native updater is not implemented yet for {self._platform}"
+        )
+
+    def restore(self, artifact: Path) -> None:
+        self.install(artifact)
 
 
 @dataclass(frozen=True)
@@ -105,17 +153,25 @@ def _read_json(path: Path) -> dict[str, object]:
     return payload
 
 
-def _version_key(version: str) -> tuple[int, int, int, int, str]:
+def _version_key(
+    version: str,
+) -> tuple[int, int, int, int, tuple[tuple[int, int | str], ...]]:
     match = _SEMVER.fullmatch(version)
     if match is None:
         raise UpdateVerificationError(f"version is not supported SemVer: {version!r}")
     suffix = match.group("suffix")
+    prerelease: tuple[tuple[int, int | str], ...] = ()
+    if suffix:
+        prerelease = tuple(
+            (0, int(part)) if part.isdigit() else (1, part)
+            for part in suffix[1:].split(".")
+        )
     return (
         int(match.group("major")),
         int(match.group("minor")),
         int(match.group("patch")),
         0 if suffix else 1,
-        suffix or "",
+        prerelease,
     )
 
 
@@ -218,6 +274,8 @@ class UpdateService:
         platform_name: str,
         architecture: str,
         channel: str,
+        cohort_id: str | None = None,
+        installer: Installer | None = None,
     ) -> None:
         if channel not in _CHANNELS:
             raise ValueError(f"unsupported update channel: {channel!r}")
@@ -227,6 +285,8 @@ class UpdateService:
         self._platform = platform_name
         self._architecture = architecture
         self._channel = channel
+        self._cohort_id = cohort_id
+        self._installer = installer or UnsupportedPlatformInstaller(platform_name)
         self._current_path = self.install_root / "current.json"
         self._transaction_path = self.install_root / "update-transaction.json"
         self._evidence_path = self.install_root / "rollback-evidence.json"
@@ -259,6 +319,7 @@ class UpdateService:
     def stage_update(self, manifest_document: bytes, artifact: Path) -> StagedUpdate:
         manifest = self._verifier.verify_manifest(manifest_document)
         self._verify_compatibility(manifest)
+        self._verify_rollout(manifest)
         source = Path(artifact)
         if source.name != manifest.artifact_name or not source.is_file():
             raise UpdateVerificationError("artifact does not match the manifest name")
@@ -307,6 +368,13 @@ class UpdateService:
                 "previous": previous,
             }
             _atomic_json(self._transaction_path, transaction)
+            try:
+                self._installer.install(release_artifact)
+            except Exception as exc:
+                return self._rollback(
+                    transaction,
+                    reason=f"native installer failed: {exc}",
+                )
             _atomic_json(
                 self._current_path,
                 {
@@ -361,6 +429,20 @@ class UpdateService:
         if current is not None and _version_key(manifest.version) <= _version_key(current):
             raise UpdateVerificationError("update version must be newer than current")
 
+    def _verify_rollout(self, manifest: UpdateManifest) -> None:
+        if manifest.rollout_percent == 100:
+            return
+        if not self._cohort_id:
+            raise UpdateVerificationError(
+                "update rollout cannot be enforced without a stable host cohort"
+            )
+        bucket = int.from_bytes(
+            hashlib.sha256(self._cohort_id.encode("utf-8")).digest()[:8],
+            "big",
+        ) % 100
+        if bucket >= manifest.rollout_percent:
+            raise UpdateVerificationError("host is not included in this update rollout")
+
     def _rollback(
         self, transaction: dict[str, object], *, reason: str
     ) -> UpdateResult:
@@ -369,6 +451,20 @@ class UpdateService:
             raise UpdateVerificationError(
                 "update failed and no last known-good release is available"
             )
+        previous_artifact = self.install_root / str(previous.get("artifact", ""))
+        if (
+            not previous_artifact.is_file()
+            or self.install_root not in previous_artifact.resolve().parents
+        ):
+            raise UpdateVerificationError(
+                "last known-good installer is unavailable for rollback"
+            )
+        try:
+            self._installer.restore(previous_artifact)
+        except Exception as exc:
+            raise UpdateVerificationError(
+                f"last known-good installer restore failed: {exc}"
+            ) from exc
         _atomic_json(self._current_path, previous)
         failed_version = str(transaction["candidate_version"])
         restored_version = str(previous["version"])
@@ -393,10 +489,13 @@ class UpdateService:
 
 __all__ = [
     "ManifestVerifier",
+    "Installer",
     "StagedUpdate",
     "UpdateInProgress",
     "UpdateManifest",
     "UpdateResult",
     "UpdateService",
     "UpdateVerificationError",
+    "UnsupportedPlatformInstaller",
+    "WindowsInstaller",
 ]

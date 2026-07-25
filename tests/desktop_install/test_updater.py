@@ -55,6 +55,18 @@ def updater(tmp_path: Path):
 
     key = Ed25519PrivateKey.generate()
     public_key = key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
+    class Installer:
+        def __init__(self) -> None:
+            self.installed: list[Path] = []
+            self.restored: list[Path] = []
+
+        def install(self, artifact: Path) -> None:
+            self.installed.append(artifact)
+
+        def restore(self, artifact: Path) -> None:
+            self.restored.append(artifact)
+
+    installer = Installer()
     service = updater.UpdateService(
         install_root=tmp_path / "install",
         public_key_pem=public_key,
@@ -62,11 +74,12 @@ def updater(tmp_path: Path):
         platform_name="win32",
         architecture="x86_64",
         channel="stable",
+        installer=installer,
     )
     old_artifact = tmp_path / "TinyAssets-1.0.0.exe"
     old_artifact.write_bytes(b"old release")
     service.initialize_current(version="1.0.0", artifact=old_artifact)
-    return updater, service, key
+    return updater, service, key, installer
 
 
 def test_updater_module_exists() -> None:
@@ -74,7 +87,7 @@ def test_updater_module_exists() -> None:
 
 
 def test_signed_update_activates_after_health_check(updater, tmp_path: Path) -> None:
-    module, service, key = updater
+    module, service, key, installer = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"new release")
     staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
@@ -84,10 +97,13 @@ def test_signed_update_activates_after_health_check(updater, tmp_path: Path) -> 
     assert result.status == "activated"
     assert service.current_version() == "1.1.0"
     assert result.previous_version == "1.0.0"
+    assert installer.installed == [
+        service.install_root / "releases" / "1.1.0" / "TinyAssetsSetup.exe"
+    ]
 
 
 def test_tampered_artifact_is_rejected_before_activation(updater, tmp_path: Path) -> None:
-    module, service, key = updater
+    module, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"expected release")
     manifest = _signed_manifest(key, artifact.read_bytes())
@@ -100,7 +116,7 @@ def test_tampered_artifact_is_rejected_before_activation(updater, tmp_path: Path
 
 
 def test_staged_artifact_is_reverified_at_activation(updater, tmp_path: Path) -> None:
-    module, service, key = updater
+    module, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"expected release")
     staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
@@ -115,7 +131,7 @@ def test_staged_artifact_is_reverified_at_activation(updater, tmp_path: Path) ->
 def test_failed_health_check_rolls_back_and_records_evidence(
     updater, tmp_path: Path
 ) -> None:
-    _, service, key = updater
+    _, service, key, installer = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"bad release")
     staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
@@ -127,12 +143,15 @@ def test_failed_health_check_rolls_back_and_records_evidence(
     evidence = json.loads((service.install_root / "rollback-evidence.json").read_text())
     assert evidence["failed_version"] == "1.1.0"
     assert evidence["restored_version"] == "1.0.0"
+    assert installer.restored == [
+        service.install_root / "releases" / "1.0.0" / "TinyAssets-1.0.0.exe"
+    ]
 
 
 def test_crash_after_activation_is_recovered_on_next_start(
     updater, tmp_path: Path
 ) -> None:
-    _, service, key = updater
+    _, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"crashing release")
     staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
@@ -156,7 +175,7 @@ def test_crash_after_activation_is_recovered_on_next_start(
 def test_prepared_transaction_rolls_back_conservatively(
     updater, tmp_path: Path
 ) -> None:
-    _, service, key = updater
+    _, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"candidate release")
     staged = service.stage_update(_signed_manifest(key, artifact.read_bytes()), artifact)
@@ -201,7 +220,7 @@ def test_incompatible_or_downgrade_manifest_is_rejected(
     override: dict[str, object],
     message: str,
 ) -> None:
-    module, service, key = updater
+    module, service, key, _ = updater
     artifact = tmp_path / "TinyAssetsSetup.exe"
     artifact.write_bytes(b"new release")
 
@@ -210,3 +229,65 @@ def test_incompatible_or_downgrade_manifest_is_rejected(
             _signed_manifest(key, artifact.read_bytes(), **override),
             artifact,
         )
+
+
+def test_semver_prerelease_identifiers_compare_numerically(
+    updater, tmp_path: Path
+) -> None:
+    module, service, key, _ = updater
+    service.initialize_current(
+        version="1.1.0-beta.10",
+        artifact=tmp_path / "TinyAssets-1.0.0.exe",
+    )
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"older prerelease")
+
+    with pytest.raises(module.UpdateVerificationError, match="newer"):
+        service.stage_update(
+            _signed_manifest(
+                key,
+                artifact.read_bytes(),
+                version="1.1.0-beta.2",
+                channel="stable",
+            ),
+            artifact,
+        )
+
+
+def test_rollout_cohort_is_enforced_before_staging(updater, tmp_path: Path) -> None:
+    module, service, key, _ = updater
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"limited release")
+
+    with pytest.raises(module.UpdateVerificationError, match="rollout"):
+        service.stage_update(
+            _signed_manifest(key, artifact.read_bytes(), rollout_percent=0),
+            artifact,
+        )
+
+
+def test_windows_installer_executes_verified_artifact_in_silent_mode(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.desktop.updater import WindowsInstaller
+
+    calls: list[tuple[list[str], bool]] = []
+    artifact = tmp_path / "TinyAssetsSetup.exe"
+    artifact.write_bytes(b"signed installer")
+    installer = WindowsInstaller(
+        runner=lambda command, check: calls.append((command, check))
+    )
+
+    installer.install(artifact)
+
+    assert calls == [
+        (
+            [
+                str(artifact),
+                "/VERYSILENT",
+                "/SUPPRESSMSGBOXES",
+                "/NORESTART",
+            ],
+            True,
+        )
+    ]

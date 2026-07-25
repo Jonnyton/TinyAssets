@@ -15,17 +15,31 @@ def _credentials_module():
 
 
 class FakeKeyring:
-    def __init__(self, *, priority: float = 1) -> None:
+    def __init__(
+        self,
+        *,
+        priority: float = 1,
+        backend_module: str = "keyring.backends.Windows",
+        backend_name: str = "WinVaultKeyring",
+        fail_operations: bool = False,
+    ) -> None:
         self._values: dict[tuple[str, str], str] = {}
-        self._backend = type("Backend", (), {"priority": priority})()
+        backend_type = type(backend_name, (), {"priority": priority})
+        backend_type.__module__ = backend_module
+        self._backend = backend_type()
+        self._fail_operations = fail_operations
 
     def get_keyring(self):
         return self._backend
 
     def set_password(self, service: str, username: str, secret: str) -> None:
+        if self._fail_operations:
+            raise RuntimeError("backend locked")
         self._values[(service, username)] = secret
 
     def get_password(self, service: str, username: str) -> str | None:
+        if self._fail_operations:
+            raise RuntimeError("backend locked")
         return self._values.get((service, username))
 
     def delete_password(self, service: str, username: str) -> None:
@@ -58,6 +72,29 @@ def test_unavailable_native_backend_fails_closed() -> None:
         match="native operating-system secret store is unavailable",
     ):
         store.set("account", "secret")
+
+
+def test_positive_priority_plaintext_backend_fails_closed() -> None:
+    credentials = _credentials_module()
+    store = credentials.NativeCredentialStore(
+        keyring_module=FakeKeyring(
+            backend_module="keyrings.alt.file",
+            backend_name="PlaintextKeyring",
+        )
+    )
+
+    with pytest.raises(credentials.SecretStoreUnavailable, match="native operating-system"):
+        store.set("account", "secret")
+
+
+def test_native_backend_operational_failure_is_fail_closed() -> None:
+    credentials = _credentials_module()
+    store = credentials.NativeCredentialStore(
+        keyring_module=FakeKeyring(fail_operations=True)
+    )
+
+    with pytest.raises(credentials.SecretStoreUnavailable, match="native operating-system"):
+        store.get("account")
 
 
 def test_refresh_token_is_never_accepted_as_empty() -> None:

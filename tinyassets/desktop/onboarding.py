@@ -19,13 +19,17 @@ import subprocess
 import sys
 import tempfile
 import uuid
+import webbrowser
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlencode
 
-from tinyassets.desktop.credentials import DesktopCredentialManager
+from tinyassets.desktop.credentials import (
+    DesktopCredentialManager,
+    SecretStoreUnavailable,
+)
 
 
 class OriginUnavailable(RuntimeError):
@@ -38,6 +42,10 @@ class AuthorizationRejected(RuntimeError):
 
 class AuthorizationValidationError(ValueError):
     """An OAuth callback or token response failed local validation."""
+
+
+class PackagedAuthorityUnavailable(RuntimeError):
+    """The packaged host is not currently authorized to advertise or work."""
 
 
 @dataclass(frozen=True)
@@ -136,6 +144,7 @@ class OnboardingService:
         origin: OriginClient,
         credentials: DesktopCredentialManager | None = None,
         clock=_utc_now,
+        browser_open=webbrowser.open,
     ) -> None:
         self._state_dir = Path(state_dir)
         self._state_path = self._state_dir / "onboarding.json"
@@ -144,6 +153,7 @@ class OnboardingService:
         self._origin = origin
         self._credentials = credentials or DesktopCredentialManager()
         self._clock = clock
+        self._browser_open = browser_open
         self._attempts: dict[str, _AttemptSecret] = {}
 
     def begin_authorization(self) -> AuthorizationAttempt:
@@ -187,6 +197,13 @@ class OnboardingService:
             host_id=host_id,
         )
 
+    def begin_browser_authorization(self) -> AuthorizationAttempt:
+        """Start first-run authorization in the user's supported browser."""
+        attempt = self.begin_authorization()
+        if not self._browser_open(attempt.authorization_url):
+            raise OriginUnavailable("the system browser could not open authorization")
+        return attempt
+
     def complete_authorization(
         self,
         *,
@@ -229,8 +246,14 @@ class OnboardingService:
             )
         status = str(state["status"])
         if status == "online":
+            expiry = self._parse_time(state.get("access_expires_at"))
+            if expiry is not None and expiry > self._clock():
+                return self._result_from_state(state)
+            state["status"] = "pending_refresh"
+        if status not in {"online", "pending_registration", "pending_refresh"}:
             return self._result_from_state(state)
-        if status != "pending_registration":
+        retry_at = self._parse_time(state.get("next_retry_at"))
+        if retry_at is not None and retry_at > self._clock():
             return self._result_from_state(state)
         reference = str(state["credential_reference"])
         refresh_token = self._credentials.load_refresh_token(reference)
@@ -260,6 +283,18 @@ class OnboardingService:
                 host_id=str(state["host_id"]),
                 refresh_token=tokens.refresh_token,
             )
+        if state["status"] == "pending_refresh":
+            self._write_state(
+                **(
+                    state
+                    | {
+                        "status": "online",
+                        "access_expires_at": tokens.expires_at.isoformat(),
+                        "next_retry_at": None,
+                    }
+                )
+            )
+            return self._result_from_state(self._read_state())
         return self._register_or_defer(
             tokens=tokens,
             host_id=str(state["host_id"]),
@@ -283,6 +318,7 @@ class OnboardingService:
             "credential_reference": credential_reference,
             "retry_count": retry_count,
             "next_retry_at": None,
+            "access_expires_at": tokens.expires_at.isoformat(),
         }
         try:
             self._origin.register_host(
@@ -303,7 +339,7 @@ class OnboardingService:
             **(
                 state
                 | {
-                    "status": "pending_registration",
+                    "status": str(state.get("status", "pending_registration")),
                     "retry_count": retry_count,
                     "next_retry_at": next_retry,
                 }
@@ -356,6 +392,7 @@ class OnboardingService:
             "next_retry_at",
             "retry_count",
             "status",
+            "access_expires_at",
         }
         unknown = set(state) - allowed
         if unknown:
@@ -378,6 +415,58 @@ class OnboardingService:
                 else None
             ),
         )
+
+    @staticmethod
+    def _parse_time(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else None
+
+
+def require_packaged_authority(
+    state_dir: Path,
+    *,
+    credentials: DesktopCredentialManager | None = None,
+    clock=_utc_now,
+) -> OnboardingResult:
+    """Fail closed unless a packaged host has a valid bound-account lease."""
+    state_path = Path(state_dir) / "onboarding.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PackagedAuthorityUnavailable(
+            "account binding required before persistent hosting can start"
+        ) from exc
+    if not isinstance(state, dict) or state.get("status") != "online":
+        raise PackagedAuthorityUnavailable(
+            "account binding is pending; authority-requiring hosting remains paused"
+        )
+    expiry = OnboardingService._parse_time(state.get("access_expires_at"))
+    if expiry is None or expiry <= clock():
+        raise PackagedAuthorityUnavailable(
+            "account authorization expired; sign in again before hosting resumes"
+        )
+    reference = state.get("credential_reference")
+    if not isinstance(reference, str):
+        raise PackagedAuthorityUnavailable(
+            "native credential reference is missing; sign in again"
+        )
+    manager = credentials or DesktopCredentialManager()
+    try:
+        refresh_token = manager.load_refresh_token(reference)
+    except (SecretStoreUnavailable, ValueError) as exc:
+        raise PackagedAuthorityUnavailable(
+            "native credential store is unavailable; persistent hosting remains paused"
+        ) from exc
+    if not refresh_token:
+        raise PackagedAuthorityUnavailable(
+            "native credential is unavailable; persistent hosting remains paused"
+        )
+    return OnboardingService._result_from_state(state)
 
 
 def _atomic_bytes(path: Path, content: bytes) -> None:
