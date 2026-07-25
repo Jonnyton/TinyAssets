@@ -65,5 +65,26 @@ Each mutation broke the intended guard.
 - The decision helper appends to one output file; current two-execution proof
   remains correct, but a future third call should isolate output per run.
 
-Post-land acceptance still requires observing the first real Docker-smoke wake
-on `main` and retaining a watch for the first real repair failure.
+## Post-land evidence
+
+Fresh production evidence on 2026-07-25:
+
+- `Release reconcile regression` run
+  [30152318306](https://github.com/Jonnyton/TinyAssets/actions/runs/30152318306)
+  completed successfully on `main` under the pinned Python 3.12 job.
+- Manually dispatched main-branch `Docker build smoke` run
+  [30152319997](https://github.com/Jonnyton/TinyAssets/actions/runs/30152319997)
+  completed successfully, including image build, container start, and MCP
+  initialize smoke.
+- Its completion created `Release reconcile` run
+  [30152436780](https://github.com/Jonnyton/TinyAssets/actions/runs/30152436780)
+  with event `workflow_run`. That run completed successfully and reported
+  `in sync — deploy fdfde5f1 contains fdfde5f1`.
+- The reconcile run was created at 09:13 UTC but waited behind the fixed
+  concurrency group before executing around 10:02 UTC. This confirms event
+  delivery and safe coalescing while reinforcing the documented absence of a
+  dispatch-latency guarantee.
+
+No real drift repair or failed explicit retry has occurred since landing. The
+first production exercise of that path remains a STATUS monitoring item rather
+than being claimed as proven clean use.

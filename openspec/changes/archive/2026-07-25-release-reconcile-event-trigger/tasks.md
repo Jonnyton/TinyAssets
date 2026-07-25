@@ -49,5 +49,5 @@
 
 - [x] 5.1 Update `REFLECTION.md`, sync the uptime-and-alarms delta into the main
   spec, archive the change, and rerun strict OpenSpec validation.
-- [ ] 5.2 Run the repository's required pre-merge gates, publish the PR, merge
+- [x] 5.2 Run the repository's required pre-merge gates, publish the PR, merge
   only after required checks are green, then remove the landed STATUS work row.
