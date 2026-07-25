@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 import pytest
@@ -448,7 +449,10 @@ def test_codex_subscription_auth_rotation_replaces_materialized_auth(tmp_path):
     )
 
 
-@pytest.mark.parametrize("malformed_auth_b64", ["!!!!", "e30=!!!!", ""])
+@pytest.mark.parametrize(
+    "malformed_auth_b64",
+    ["!!!!", "e30=!!!!", "e30=\u00a0", ""],
+)
 def test_codex_materialization_rejects_malformed_blob_and_preserves_auth(
     tmp_path,
     malformed_auth_b64,
@@ -497,6 +501,44 @@ def test_codex_auth_write_rejects_non_json_blob_and_preserves_vault(tmp_path):
 
     assert load_credential_vault(tmp_path) == [existing]
     assert (configured / "auth.json").read_bytes() == working_auth
+
+
+def test_codex_auth_write_rejects_utf8_bom_and_preserves_vault(tmp_path):
+    configured = tmp_path / "codex-home"
+    existing = {
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "codex_home": "codex-home",
+        "auth_json_b64": "eyJ0b2tlbiI6IldPUktJTkMifQ==",
+    }
+    write_credential_vault(tmp_path, [existing])
+    assert ensure_codex_home_from_vault(tmp_path) == configured
+    working_auth = (configured / "auth.json").read_bytes()
+    bom_auth_b64 = base64.b64encode(
+        b'\xef\xbb\xbf{"token":"REJECTED"}'
+    ).decode("ascii")
+
+    with pytest.raises(ValueError, match="UTF-8 BOM"):
+        write_credential_vault(tmp_path, [{
+            "credential_type": "llm_subscription",
+            "service": "codex",
+            "auth_json_b64": bom_auth_b64,
+        }])
+
+    assert load_credential_vault(tmp_path) == [existing]
+    assert (configured / "auth.json").read_bytes() == working_auth
+
+
+def test_codex_auth_accepts_line_wrapped_base64(tmp_path):
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "codex",
+        "auth_json_b64": "eyJ0b2tlbiI6\nIldSQVBQRUQifQ==",
+    }])
+
+    codex_home = ensure_codex_home_from_vault(tmp_path)
+
+    assert (codex_home / "auth.json").read_bytes() == b'{"token":"WRAPPED"}'
 
 
 def test_codex_home_path_from_vault_is_resolved_without_env(tmp_path):
