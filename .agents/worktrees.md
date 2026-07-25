@@ -1247,3 +1247,18 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
 - Foldback: OpenSpec archived; Opus 5 approved; #1750 repaired post-merge CI; main smoke #30152319997 woke successful workflow_run reconcile #30152436780
+
+## 2026-07-25 - repurpose secure-agent-village
+
+- Provider: codex-gpt5-desktop-village-security
+- Branch: codex/secure-agent-village
+- Lane state: Active P0 security lane
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: Secure Agent Village local surface; shipped surface #1489
+- PLAN refs: Scoping Rules §3/§5; platform-owned enforcement boundaries
+- Purpose: remove unauthenticated LAN/session reads, query-token leakage, and CSRF-capable talk/hire while preserving intentional phone access.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: PR #1489 recovery and clean-checkout proof
+- Related implications: local-app capability axis; host-private coordination state; explicit write actions
+- Idea feed refs: none
+- Ship/abandon: strict OpenSpec change, exact HTTP/browser contract tests, security review, and short-lived PR; abandon only if current main already enforces equivalent authentication
