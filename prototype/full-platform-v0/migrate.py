@@ -14,7 +14,7 @@ from typing import NamedTuple
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_(?P<name>[a-z0-9_]+)\.sql$")
 _LOCK_KEY = 7_293_461_550_848_602_031
 _FIXTURE_SCHEMA_SHA256 = (
-    "e5bd4ae09e4a198fc051fcce72c9724ba31bbf36707bc3b5c435193cf9af7400"
+    "60d7c2eefdb40d13dc29038a8ee58409464c5063b754872b1478a4723db36f87"
 )
 
 

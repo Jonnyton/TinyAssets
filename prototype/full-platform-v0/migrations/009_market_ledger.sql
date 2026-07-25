@@ -122,8 +122,8 @@ BEGIN
      FOR UPDATE OF b
   LOOP
     IF v_rec.balance_micros + v_rec.delta < 0 THEN
-      RAISE EXCEPTION 'overdraft on % (balance %, delta %) [%]',
-        v_rec.account, v_rec.balance_micros, v_rec.delta, p_memo;
+      RAISE EXCEPTION 'overdraft on % (balance %, delta %)',
+        v_rec.account, v_rec.balance_micros, v_rec.delta;
     END IF;
   END LOOP;
 
