@@ -1150,3 +1150,15 @@ Notes:
 - Review gate: red-first app/edge tests, provider-free canonical health, strict OpenSpec, independent architecture/security/diff review
 - Memory/implications: PR #1688; PR #1522 provenance; source-derived canonical hardening remains separately opposite-provider-gated
 - Ship/abandon: landed; retain the worktree only until the coordination closeout and production probes are recorded
+
+## 2026-07-24 - fix MCP retirement proof
+
+- Provider: codex-gpt56-mcp-proof-fix
+- Branch: codex/fix-mcp-retirement-proof
+- Lane state: active
+- Worktree: C:\Users\Jonathan\Projects\wf-fix-mcp-retirement-proof
+- STATUS/Issue/PR: Opus 5 final reject follow-up to merged PR #1718
+- Scope: Cloudflare-safe retirement probe, correct deploy ownership, exact-seven canary, as-built spec truth, stale operator guidance
+- Review gate: focused red/green tests, strict OpenSpec, workflow checks, independent diff review, then live rerun
+- Memory/implications: PR #1718 review artifact; canonical hardening tasks remain separately open
+- Ship/abandon: ship immediately; no green production claim until both owning deploy lanes prove their part
