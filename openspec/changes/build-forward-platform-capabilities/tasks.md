@@ -4,7 +4,7 @@
 > "Implement …" is really a **successor-outcome tracker** — it is completed by its
 > successor change landing, not by writing runtime code in this lane. Each such
 > task now names its owner (or records that it has none yet) and its blocker.
-> Cross-family review: Codex, 2026-07-24, `VERDICT adapt`, five findings applied.
+> Cross-family review: Codex, 2026-07-24, `VERDICT adapt`, seven findings applied.
 
 ## 0. Hard prerequisite
 
