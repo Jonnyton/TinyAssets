@@ -38,3 +38,26 @@ Name: "{userstartup}\TinyAssets"; Filename: "{app}\TinyAssets.exe"; Tasks: autos
 
 [Run]
 Filename: "{app}\TinyAssets.exe"; Description: "Launch TinyAssets"; Flags: nowait postinstall skipifsilent
+
+[Code]
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  UpdateRoot: String;
+  ReleaseRoot: String;
+  InstallerName: String;
+  CurrentState: String;
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+  UpdateRoot := ExpandConstant('{localappdata}\TinyAssets\updates');
+  InstallerName := 'TinyAssetsSetup-{#AppVersion}-{#Architecture}.exe';
+  ReleaseRoot := UpdateRoot + '\releases\{#AppVersion}';
+  ForceDirectories(ReleaseRoot);
+  if not FileCopy(ExpandConstant('{srcexe}'), ReleaseRoot + '\' + InstallerName, False) then
+    RaiseException('Could not retain the signed installer for rollback');
+  CurrentState :=
+    '{"artifact":"releases/{#AppVersion}/' + InstallerName +
+    '","version":"{#AppVersion}"}' + #13#10;
+  if not SaveStringToFile(UpdateRoot + '\current.json', CurrentState, False) then
+    RaiseException('Could not initialize the desktop updater state');
+end;

@@ -107,6 +107,59 @@ def test_packaged_health_probe_creates_clean_user_data_root(
     assert (data_root / "logs").is_dir()
 
 
+def test_windows_runtime_does_not_duplicate_installer_owned_autostart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.desktop import packaged_entrypoint
+
+    monkeypatch.setattr(
+        packaged_entrypoint,
+        "AutostartManager",
+        lambda **_: (_ for _ in ()).throw(AssertionError("duplicate autostart")),
+    )
+
+    packaged_entrypoint._ensure_autostart(platform_name="win32")
+
+
+def test_packaged_update_role_invokes_runtime_update_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tinyassets.desktop import packaged_entrypoint
+
+    invoked: list[list[str]] = []
+    monkeypatch.setattr(
+        packaged_entrypoint,
+        "_apply_update",
+        lambda arguments: invoked.append(arguments),
+    )
+
+    result = packaged_entrypoint.dispatch(
+        ["--packaged-role", "apply-update", "manifest.json", "setup.exe"]
+    )
+
+    assert result == 0
+    assert invoked == [["manifest.json", "setup.exe"]]
+
+
+def test_update_without_pinned_public_key_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from tinyassets.desktop import packaged_entrypoint
+
+    monkeypatch.setattr(
+        packaged_entrypoint,
+        "_UPDATE_PUBLIC_KEY",
+        tmp_path / "missing-update-public-key.pem",
+    )
+
+    with pytest.raises(
+        packaged_entrypoint.PackagedRuntimeUnavailable,
+        match="verification identity not provisioned",
+    ):
+        packaged_entrypoint._apply_update(["manifest.json", "setup.exe"])
+
+
 def test_clean_first_start_creates_nested_log_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
