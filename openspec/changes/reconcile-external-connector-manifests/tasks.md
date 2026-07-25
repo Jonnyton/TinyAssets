@@ -14,8 +14,8 @@
 - [x] 2.3 Isolate the subprocess probe and fail packaging on import/enumeration errors.
 - [x] 2.4 Declare exactly the seven canonical handles in the MCPB manifest.
 - [x] 2.5 Keep the semantic parity regression and official schema validator green.
-- [ ] 2.6 Prove launcher/config behavior for required data directory, optional default universe, stdio transport, and observed local auth posture.
-- [ ] 2.7 Keep package/parity/acceptance tests provider-free and record actor-dependent limitations honestly.
+- [x] 2.6 Prove launcher/config behavior for required data directory, optional default universe, stdio transport, and observed local auth posture.
+- [x] 2.7 Keep package/parity/acceptance tests provider-free and record actor-dependent limitations honestly.
 
 ## 3. Make Canonical `/mcp` Review-Safe
 
