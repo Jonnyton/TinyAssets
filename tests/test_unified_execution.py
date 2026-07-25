@@ -523,6 +523,69 @@ def test_worldbuild_soft_stop_clears_when_branch_task_queue_has_work(tmp_path):
     assert repaired["health"]["worldbuild_noop_streak"] == 0
 
 
+def test_epoch2_probe_failure_does_not_mask_pending_legacy_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import json
+    import sqlite3
+
+    import fantasy_daemon.branch_registrations as br
+
+    (tmp_path / "requests.json").write_text(
+        json.dumps([{"status": "pending"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        br,
+        "_live_epoch2_claim_exists",
+        lambda _universe_path: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database locked")
+        ),
+    )
+
+    repaired = br.clear_restartable_soft_stop(
+        {
+            "universe_id": "u1",
+            "universe_path": str(tmp_path),
+            "health": {
+                "stopped": True,
+                "idle_reason": "worldbuild_stuck",
+                "worldbuild_noop_streak": 3,
+                "cycle_noop_streak": 0,
+            },
+        }
+    )
+
+    assert repaired["health"]["stopped"] is False
+
+
+def test_epoch2_restart_probe_rejects_same_basename_outside_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import fantasy_daemon.branch_registrations as br
+
+    data_root = tmp_path / "data"
+    outside_universe = tmp_path / "outside" / "test-universe"
+    data_root.mkdir()
+    outside_universe.mkdir(parents=True)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.Epoch2BranchTaskAdapter",
+        lambda _base: (_ for _ in ()).throw(
+            AssertionError("outside-root lookup reached canonical adapter")
+        ),
+    )
+
+    assert br._live_epoch2_claim_exists(outside_universe) is False
+
+
 def test_soft_stop_observes_only_this_workers_live_canonical_epoch2_claim(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

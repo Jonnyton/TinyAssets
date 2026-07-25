@@ -305,7 +305,7 @@ def list_selectable_targets(
         if target.lifecycle != LIFECYCLE_ACTIVE:
             continue
         filtered.append(target)
-    return filtered
+    return _filter_live_epoch2_targets(universe_path, filtered)
 
 
 def get_target(
@@ -412,6 +412,71 @@ def requests_path(universe_path: str | Path) -> Path:
     return Path(universe_path) / REQUESTS_FILENAME
 
 
+def _list_live_epoch2_requests(
+    universe_path: str | Path,
+) -> list[Any]:
+    """Read this worker's live v2 requests, bound to the canonical root."""
+    from tinyassets import branch_tasks_v2
+    from tinyassets.storage import data_dir
+
+    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
+        return []
+    worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+    resolved_universe_path = Path(universe_path).resolve(strict=False)
+    canonical_root = data_dir().resolve(strict=False)
+    universe_id = resolved_universe_path.name.strip()
+    if (
+        not worker_id
+        or not universe_id
+        or resolved_universe_path.parent != canonical_root
+    ):
+        return []
+    try:
+        return branch_tasks_v2.Epoch2BranchTaskAdapter(
+            canonical_root,
+        ).list_live_claimed_requests(
+            universe_id=universe_id,
+            worker_id=worker_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "epoch-2 live-claim read failed for %s",
+            resolved_universe_path,
+            exc_info=True,
+        )
+        return []
+
+
+def _filter_live_epoch2_targets(
+    universe_path: str | Path,
+    targets: list[WorkTarget],
+) -> list[WorkTarget]:
+    """Fail closed for v2 targets whose claim is not live for this worker."""
+    if not any(target.metadata.get("queue_epoch") == 2 for target in targets):
+        return targets
+    live_claims = {
+        (
+            request.branch_task_id,
+            request.claimed_by,
+            request.claimed_at,
+        )
+        for request in _list_live_epoch2_requests(universe_path)
+    }
+    filtered: list[WorkTarget] = []
+    for target in targets:
+        if target.metadata.get("queue_epoch") != 2:
+            filtered.append(target)
+            continue
+        claim_identity = (
+            str(target.metadata.get("branch_task_id") or ""),
+            str(target.metadata.get("claimed_by") or ""),
+            str(target.metadata.get("claimed_at") or ""),
+        )
+        if claim_identity in live_claims:
+            filtered.append(target)
+    return filtered
+
+
 def materialize_pending_requests(
     universe_path: str | Path,
 ) -> list[WorkTarget]:
@@ -512,23 +577,7 @@ def _materialize_live_epoch2_requests(
     universe_path: str | Path,
 ) -> list[WorkTarget]:
     """Upsert this worker's live claimed v2 Request without queue mutation."""
-    from tinyassets import branch_tasks_v2
-
-    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
-        return []
-    worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
-    universe_id = Path(universe_path).name.strip()
-    if not worker_id or not universe_id:
-        return []
-
-    from tinyassets.storage import data_dir
-
-    records = branch_tasks_v2.Epoch2BranchTaskAdapter(
-        data_dir(),
-    ).list_live_claimed_requests(
-        universe_id=universe_id,
-        worker_id=worker_id,
-    )
+    records = _list_live_epoch2_requests(universe_path)
     if not records:
         return []
 
@@ -570,7 +619,6 @@ def _materialize_live_epoch2_requests(
             ),
             "claimed_by": request.claimed_by,
             "claimed_at": request.claimed_at,
-            "lease_expires_at": request.lease_expires_at,
         }
         if request.pickup_incentive:
             metadata["pickup_incentive"] = request.pickup_incentive
@@ -578,14 +626,16 @@ def _materialize_live_epoch2_requests(
             metadata["requester_directed_daemon"] = {
                 "daemon_id": request.directed_daemon_id,
                 "instruction": request.directed_daemon_instruction,
-                "effect": "applied",
             }
+            if request.accepted_priority_weight > 0:
+                metadata["requester_directed_daemon"]["effect"] = "applied"
 
         tags = ["user-request", request.request_type]
-        if request.pickup_incentive:
-            tags.append(PATCH_REQUEST_PICKUP_SIGNAL_TAG)
-        if request.directed_daemon_id:
-            tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
+        if _bounded_pickup_signal(metadata) > 0:
+            if request.pickup_incentive:
+                tags.append(PATCH_REQUEST_PICKUP_SIGNAL_TAG)
+            if request.directed_daemon_id:
+                tags.append(REQUESTER_DIRECTED_DAEMON_TAG)
         title_stub = (
             request.text.splitlines()[0][:70]
             if request.text
@@ -1067,7 +1117,10 @@ def choose_authorial_targets(
         # Producer path has already run seed + list_selectable_targets;
         # just score the merged set. Empty means the daemon should idle,
         # not resurrect completed or paused targets.
-        candidates = list(candidate_override)
+        candidates = _filter_live_epoch2_targets(
+            universe_path,
+            list(candidate_override),
+        )
 
     def score(target: WorkTarget) -> tuple[int, float, int, float]:
         role_score = 2 if target.role == ROLE_PUBLISHABLE else 1

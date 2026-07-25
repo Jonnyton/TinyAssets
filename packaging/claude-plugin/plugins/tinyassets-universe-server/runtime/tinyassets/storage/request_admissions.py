@@ -674,53 +674,74 @@ class RequestAdmissionStore:
         limit: int = 10,
         integrity_check: Callable[[Mapping[str, Any]], bool],
     ) -> list[dict[str, Any]]:
-        """Return bounded canonical Request/task views for this live claim.
+        """Return bounded canonical Request/task views for live running claims.
 
         This is a read model only.  It cannot claim, renew, transition, or
-        project epoch-2 work into the legacy JSON queue.
+        project epoch-2 work into the legacy JSON queue.  A
+        ``cancel_requested`` task is intentionally excluded so cancellation
+        cannot start new materialized work; lifecycle finalization belongs to
+        the queue owner.
         """
         clean_universe_id = _required(universe_id, "universe_id")
         clean_worker_id = _required(worker_id, "worker_id")
-        requested = max(1, int(limit))
+        requested = min(
+            max(1, int(limit)),
+            MAX_OPERATIONAL_SCAN_ROWS,
+        )
+        records: list[dict[str, Any]] = []
+        scanned = 0
         with self.connection() as conn:
-            rows = self._v2_integrity_cursor(
+            cursor = self._v2_integrity_cursor(
                 conn,
                 universe_id=clean_universe_id,
                 pending_only=False,
                 live_claimed_by=clean_worker_id,
                 live_claim_at=_clock_iso(self._clock),
                 include_linked_universe_scope=True,
-                limit=requested,
-            ).fetchall()
-
-        records: list[dict[str, Any]] = []
-        for row in rows:
-            raw = dict(row)
-            if not integrity_check(raw):
-                continue
-            inputs = json.loads(str(raw["inputs_json"]))
-            records.append({
-                "request_id": raw["request_id"],
-                "admission_id": raw["admission_id"],
-                "branch_task_id": raw["branch_task_id"],
-                "universe_id": raw["universe_id"],
-                "branch_def_id": raw["branch_def_id"],
-                "request_type": raw["linked_request_type"],
-                "text": raw["linked_request_text"],
-                "branch_id": raw["linked_request_branch_id"] or "",
-                "actor_id": raw["linked_admission_actor_id"],
-                "trigger_source": raw["trigger_source"],
-                "accepted_priority_weight": raw["priority_weight"],
-                "directed_daemon_id": raw["directed_daemon_id"] or "",
-                "pickup_incentive": inputs.get("pickup_incentive") or "",
-                "directed_daemon_instruction": (
-                    inputs.get("directed_daemon_instruction") or ""
-                ),
-                "claimed_by": raw["claimed_by"],
-                "claimed_at": raw["claimed_at"],
-                "lease_expires_at": raw["lease_expires_at"],
-                "queued_at": raw["queued_at"],
-            })
+            )
+            while (
+                len(records) < requested
+                and scanned < MAX_OPERATIONAL_SCAN_ROWS
+            ):
+                rows = cursor.fetchmany(
+                    min(128, MAX_OPERATIONAL_SCAN_ROWS - scanned)
+                )
+                if not rows:
+                    break
+                scanned += len(rows)
+                for row in rows:
+                    raw = dict(row)
+                    if not integrity_check(raw):
+                        continue
+                    inputs = json.loads(str(raw["inputs_json"]))
+                    records.append({
+                        "request_id": raw["request_id"],
+                        "admission_id": raw["admission_id"],
+                        "branch_task_id": raw["branch_task_id"],
+                        "universe_id": raw["universe_id"],
+                        "branch_def_id": raw["branch_def_id"],
+                        "request_type": raw["linked_request_type"],
+                        "text": raw["linked_request_text"],
+                        "branch_id": raw["linked_request_branch_id"] or "",
+                        "actor_id": raw["linked_admission_actor_id"],
+                        "trigger_source": raw["trigger_source"],
+                        "accepted_priority_weight": raw["priority_weight"],
+                        "directed_daemon_id": (
+                            raw["directed_daemon_id"] or ""
+                        ),
+                        "pickup_incentive": (
+                            inputs.get("pickup_incentive") or ""
+                        ),
+                        "directed_daemon_instruction": (
+                            inputs.get("directed_daemon_instruction") or ""
+                        ),
+                        "claimed_by": raw["claimed_by"],
+                        "claimed_at": raw["claimed_at"],
+                        "lease_expires_at": raw["lease_expires_at"],
+                        "queued_at": raw["queued_at"],
+                    })
+                    if len(records) >= requested:
+                        break
         return records
 
     def has_active_v2_claim(

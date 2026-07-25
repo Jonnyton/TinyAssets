@@ -33,6 +33,7 @@ from tinyassets.branch_tasks_v2 import (
     Epoch2BranchTaskAdapter,
     WorkerClaimDescriptor,
 )
+from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import (
     grant_universe_access,
     initialize_author_server,
@@ -41,6 +42,8 @@ from tinyassets.storage import db_path
 from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.work_targets import (
     ROLE_NOTES,
+    choose_authorial_targets,
+    list_selectable_targets,
     load_work_targets,
     materialize_pending_requests,
     requests_path,
@@ -98,13 +101,22 @@ def _declare_legacy_loop(universe_dir):
     )
 
 
-def _commit_epoch2_request(base: Path, universe_id: str) -> dict:
+def _commit_epoch2_request(
+    base: Path,
+    universe_id: str,
+    *,
+    priority_weight: float = 25.0,
+    pickup_incentive: str = "",
+    directed_daemon_id: str = "",
+    directed_daemon_instruction: str = "",
+    directed_daemon_soul_hash: str = "",
+) -> dict:
     body = rfc8785.dumps({
         "branch_id": "",
-        "directed_daemon_id": "",
-        "directed_daemon_instruction": "",
-        "pickup_incentive": "",
-        "priority_weight": 25.0,
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": directed_daemon_instruction,
+        "pickup_incentive": pickup_incentive,
+        "priority_weight": priority_weight,
         "request_type": "scene_direction",
         "schema_version": "request-admission-v2",
         "text": "Make the market scene quieter.",
@@ -125,43 +137,60 @@ def _commit_epoch2_request(base: Path, universe_id: str) -> dict:
         branch_id="",
         branch_def_id="fantasy_author:universe_cycle_wrapper",
         trigger_source="operator_request",
-        accepted_priority_weight=25.0,
+        accepted_priority_weight=priority_weight,
         policy_version="operator-priority-v1",
         grant_generation=1,
         receipt={
             "authority": "request-local",
             "grant_generation": 1,
             "priority_policy_version": "operator-priority-v1",
-            "directed_assignment": {},
+            "directed_assignment": (
+                {
+                    "daemon_id": directed_daemon_id,
+                    "daemon_soul_hash": directed_daemon_soul_hash,
+                    "authority_scope": "owner",
+                }
+                if directed_daemon_id
+                else {}
+            ),
         },
-        directed_daemon_id="",
+        directed_daemon_id=directed_daemon_id,
+        pickup_incentive=pickup_incentive,
+        directed_daemon_instruction=directed_daemon_instruction,
         created_at="2026-07-24T10:00:00+00:00",
     )
 
 
-def _claim_epoch2_request(base: Path, committed: dict) -> None:
+def _claim_epoch2_request(
+    base: Path,
+    committed: dict,
+    *,
+    worker_id: str = "worker-a",
+) -> Epoch2BranchTaskAdapter:
     now = datetime.now(timezone.utc)
     descriptor = WorkerClaimDescriptor(
         queue_protocol_version=2,
         capabilities=frozenset({"operator_request_v1"}),
-        worker_id="worker-a",
-        runtime_instance_id="runtime-a",
-        boot_id="boot-a",
+        worker_id=worker_id,
+        runtime_instance_id=f"runtime-{worker_id}",
+        boot_id=f"boot-{worker_id}",
         build_sha="a" * 40,
         config_hash="b" * 64,
         universe_id="test-universe",
         expires_at=(now + timedelta(seconds=60)).isoformat(),
     )
-    claimed = Epoch2BranchTaskAdapter(
+    adapter = Epoch2BranchTaskAdapter(
         base,
         clock=lambda: now,
-    ).claim(
+    )
+    claimed = adapter.claim(
         committed["branch_task_id"],
         descriptor=descriptor,
         descriptor_reader=lambda _conn, _worker_id: descriptor,
         lease_seconds=90,
     )
     assert claimed is not None
+    return adapter
 
 
 def _epoch2_snapshot(base: Path) -> dict[str, list[tuple]]:
@@ -286,7 +315,6 @@ def test_materialize_consumes_only_this_workers_live_epoch2_claim(
         "accepted_priority_weight": 25.0,
         "claimed_by": "worker-a",
         "claimed_at": target.metadata["claimed_at"],
-        "lease_expires_at": target.metadata["lease_expires_at"],
     }
     assert not requests_path(universe_dir).exists()
     assert _epoch2_snapshot(tmp_path) == before
@@ -321,6 +349,150 @@ def test_materialize_leaves_unclaimed_or_not_ready_epoch2_work_inert(
 
 
 # ─── authorial_priority_review integration ─────────────────────────────
+
+
+def test_epoch2_target_selection_tracks_exact_current_live_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    committed = _commit_epoch2_request(tmp_path, universe_dir.name)
+    adapter = _claim_epoch2_request(tmp_path, committed)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+
+    created = materialize_pending_requests(universe_dir)
+    assert len(created) == 1
+    target_id = created[0].target_id
+    assert [
+        target.target_id for target in list_selectable_targets(universe_dir)
+    ] == [target_id]
+
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    assert list_selectable_targets(universe_dir) == []
+    assert choose_authorial_targets(
+        universe_dir,
+        candidate_override=created,
+    ) == []
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET lease_expires_at = ?
+            WHERE branch_task_id = ?
+            """,
+            ("2000-01-01T00:00:00+00:00", committed["branch_task_id"]),
+        )
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    assert list_selectable_targets(universe_dir) == []
+    assert choose_authorial_targets(
+        universe_dir,
+        candidate_override=created,
+    ) == []
+
+    assert adapter.recover_expired()
+    _claim_epoch2_request(
+        tmp_path,
+        committed,
+        worker_id="worker-b",
+    )
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-b")
+    rematerialized = materialize_pending_requests(universe_dir)
+
+    assert len(rematerialized) == 1
+    assert rematerialized[0].metadata["claimed_by"] == "worker-b"
+    assert [
+        target.target_id for target in list_selectable_targets(universe_dir)
+    ] == [target_id]
+    assert choose_authorial_targets(
+        universe_dir,
+        candidate_override=rematerialized,
+    )[0].target_id == target_id
+
+
+def test_epoch2_materialization_rejects_same_basename_outside_data_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    data_root = tmp_path / "data"
+    universe_dir = data_root / "test-universe"
+    outside_universe = tmp_path / "outside" / "test-universe"
+    universe_dir.mkdir(parents=True)
+    outside_universe.mkdir(parents=True)
+    initialize_author_server(data_root)
+    committed = _commit_epoch2_request(data_root, universe_dir.name)
+    _claim_epoch2_request(data_root, committed)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+
+    assert materialize_pending_requests(outside_universe) == []
+    assert not (outside_universe / "work_targets.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("priority_weight", "expected_effect", "expect_signal_tags"),
+    [
+        (0.0, None, False),
+        (25.0, "applied", True),
+    ],
+)
+def test_epoch2_pickup_signal_requires_positive_authorized_priority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    priority_weight: float,
+    expected_effect: str | None,
+    expect_signal_tags: bool,
+) -> None:
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    daemon = create_daemon(
+        tmp_path,
+        display_name="Directed Test Daemon",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="A stable directed test soul.",
+    )
+    committed = _commit_epoch2_request(
+        tmp_path,
+        universe_dir.name,
+        priority_weight=priority_weight,
+        pickup_incentive="request my daemon",
+        directed_daemon_id=daemon["daemon_id"],
+        directed_daemon_instruction="Draft only.",
+        directed_daemon_soul_hash=daemon["soul_hash"],
+    )
+    _claim_epoch2_request(tmp_path, committed)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+
+    target = materialize_pending_requests(universe_dir)[0]
+
+    assert target.metadata["accepted_priority_weight"] == priority_weight
+    assert target.metadata["pickup_incentive"] == "request my daemon"
+    directed = target.metadata["requester_directed_daemon"]
+    assert directed["daemon_id"] == daemon["daemon_id"]
+    assert directed["instruction"] == "Draft only."
+    assert directed.get("effect") == expected_effect
+    assert ("pickup-incentive" in target.tags) is expect_signal_tags
+    assert (
+        "requester-directed-daemon" in target.tags
+    ) is expect_signal_tags
 
 
 def test_authorial_review_surfaces_pending_request_within_one_cycle(

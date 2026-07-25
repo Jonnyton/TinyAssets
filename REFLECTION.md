@@ -447,3 +447,17 @@ fresh-host rollback edges found later.
   daemon identity, plugin-isolated imports, real-data-dir leakage, partial
   schemas, and cross-epoch selector identity on the first pass. Those
   adversarial cases would have exposed the unsafe sequencing immediately.
+
+## 2026-07-24 - epoch-2 claim-bound request materialization
+
+- **What surprised me:** a correctly gated materialization write was not
+  enough. The durable target could outlive its lease and re-enter selection
+  through the producer override, while an SQL `LIMIT` ahead of integrity
+  filtering let one corrupt row hide valid work.
+- **Pattern worth capturing:** lease-gated artifacts need a fail-closed check
+  at the final selection boundary using the complete claim identity. Bounded
+  readers cap rows scanned, not rows fetched before validation, and optional
+  epoch readers must never mask legacy work when they fail.
+- **What I would do differently:** lead with corrupt-first pagination,
+  cross-worker selection, lease expiry/reclaim, same-basename root aliasing,
+  and optional-reader failure tests before implementing the happy path.

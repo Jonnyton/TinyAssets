@@ -265,6 +265,65 @@ def test_live_claimed_request_read_model_is_worker_bound_and_lease_bound(
     ) == []
 
 
+def test_invalid_live_claim_does_not_block_later_valid_claim_at_limit_one(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    first = _commit(
+        tmp_path,
+        key="first-live-claim",
+        created_at="2026-07-24T08:00:00+00:00",
+    )
+    second = _commit(
+        tmp_path,
+        key="second-live-claim",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    clock = _MutableClock("2026-07-24T08:01:00+00:00")
+    adapter = Epoch2BranchTaskAdapter(tmp_path, clock=clock)
+    descriptor = _descriptor()
+    for committed in (first, second):
+        assert adapter.claim(
+            committed["branch_task_id"],
+            descriptor=descriptor,
+            descriptor_reader=lambda _conn, _worker_id: descriptor,
+        ) is not None
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            "UPDATE user_requests SET text = ? WHERE request_id = ?",
+            ("tampered after claim", first["request_id"]),
+        )
+
+    records = adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+        limit=1,
+    )
+
+    assert [record.branch_task_id for record in records] == [
+        second["branch_task_id"]
+    ]
+
+
+def test_cancel_requested_claim_is_not_materializable(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, _clock = epoch2
+    assert adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+    ) is not None
+
+    cancelled = adapter.request_cancel(committed["branch_task_id"])
+
+    assert cancelled.status == "cancel_requested"
+    assert adapter.list_live_claimed_requests(
+        universe_id="universe-a",
+        worker_id="worker-a",
+    ) == []
+
+
 @pytest.mark.parametrize(
     "universe_id",
     ["fantasy", "default-universe", "patch-loop-live"],

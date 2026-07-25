@@ -194,8 +194,6 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             config=load_dispatcher_config(universe_path),
         ):
             return True
-        if _live_epoch2_claim_exists(universe_path):
-            return True
         requests_path = universe_path / REQUESTS_FILENAME
         if requests_path.exists():
             requests = json.loads(requests_path.read_text(encoding="utf-8"))
@@ -207,6 +205,16 @@ def _restartable_work_exists(universe_path: Path) -> bool:
     except Exception:  # noqa: BLE001
         logger.warning(
             "restartable-work check failed for %s", universe_path,
+            exc_info=True,
+        )
+        return False
+    try:
+        if _live_epoch2_claim_exists(universe_path):
+            return True
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "epoch-2 restartable-work check failed for %s",
+            universe_path,
             exc_info=True,
         )
     return False
@@ -223,11 +231,15 @@ def _live_epoch2_claim_exists(universe_path: Path) -> bool:
         return False
     from tinyassets.storage import data_dir
 
+    canonical_root = data_dir().resolve(strict=False)
+    resolved_universe_path = universe_path.resolve(strict=False)
+    if resolved_universe_path.parent != canonical_root:
+        return False
     return bool(
         branch_tasks_v2.Epoch2BranchTaskAdapter(
-            data_dir(),
+            canonical_root,
         ).list_live_claimed_requests(
-            universe_id=universe_path.name,
+            universe_id=resolved_universe_path.name,
             worker_id=worker_id,
             limit=1,
         )
