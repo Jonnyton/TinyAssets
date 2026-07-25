@@ -4,6 +4,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 
 ## Concerns
 
+- **[P1 filed:2026-07-24]** BYO deposit clobbers vault: `write_credential_vault` replaces whole payload; `set_engine` destroys stored tokens (Opus5 review, confirmed; failing-test lane dispatched).
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy terminal truth: repository repair approved; live pre-image/post-image failure exercises remain.
 - **[P1 filed:2026-07-23]** Watch #1645: no post-fix real P0 repair-failure event yet; structural/CI proof only.
 - **[P0 filed:2026-07-22 verified:2026-07-22]** Newborn contact has no BYOC/market authority path; never use maintainer quota. See #1582.
@@ -24,10 +25,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 |------|-------|---------|--------|
 | **Fail closed universe provider auth overlay** — partial overlay or swallowed helper error can retain inherited host subscription credentials | openspec/changes/fail-closed-provider-auth-overlay/; openspec/specs/credential-vault/spec.md; tinyassets/providers/base.py; tests/test_credential_fail_closed.py | #1607 | claimed:codex-gpt56-desktop ACTIVE 2026-07-22 |
 | **Harden canonical absolute guarantees** — money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/; tinyassets/{payments/identifiers.py,bid/node_bid.py,bid/settlements.py,api/market.py,api/universe.py,universe_intelligence.py,wiki/trigger_receipts.py}; focused tests | full-coverage audit; Resolve seven canonical OpenSpec drift findings; active paid/universe/relay lanes | pending |
-| **Backfill remaining credential-vault shipped contracts** — canonical owner landed via #1607; alias/first-record selection remains; re-check fixed-temp truth after #1606 disposition | openspec/changes/backfill-credential-vault-shipped-contracts/ | fail-closed provider overlay releases `openspec/specs/credential-vault/spec.md`; #1606 or declared successor settles replacement semantics/disposition | claimed:fable-fleet-codex ACTIVE 2026-07-24 |
 | **Promote runtime-fiction memory graph into OpenSpec** | openspec/changes/runtime-fiction-memory-graph/ | brain-okf-canonical-store | pending |
 | **Promote future hyperparameter science node/fixtures** — target-only sweep schema, methods, warnings, and artifacts; do not conflate with the shipped evaluator | openspec/changes/hyperparameter-importance-science-domain/ | science-domain owner/design review | pending |
-| **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
+| **Resolve target-spec PLAN conflicts** — store, private data, primitives, privacy guidance; store call gates `brain-okf-canonical-store` 2.1/4.1 (else unbuildable) | PLAN.md | full-coverage audit; host selects coherent positions | host-decision |
 | **Specify PLAN-gated full-platform targets** — catalog/collaboration, discovery/remix, presence, portability/deletion/succession/feedback | openspec/changes/complete-plan-gated-platform-targets/ | PLAN store/private-data/primitive/privacy decisions; build-forward-platform-capabilities | pending |
 | **Release reconcile event trigger** — retain cron backstop; also reconcile after proven-under-load `Docker build smoke` completions; stable concurrency coalesces stampedes | .github/workflows/release-reconcile.yml, openspec/changes/release-reconcile-event-trigger/ | live runs 1892, 1883 | claimed:codex-gpt5-desktop ACTIVE 2026-07-22 |
 | **R2-1a set_engine must constrain allowed_providers** — remaining half gated by #1691 partitions; live action is `_action_set_engine` in tinyassets/api/universe.py (api/engine.py does not exist — stale Files corrected 2026-07-24) | tinyassets/providers/router.py, tinyassets/api/universe.py (set_engine seam), tests/ | #1691 prereqs: #1484, #1660, #1617, provider-authority-propagation, overlay seam release | pending |
@@ -43,7 +43,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | **Complete independent-full-platform-targets change (minus moderation)** — moderation fenced to in-flight #1662/#1667 | openspec/changes/complete-independent-full-platform-targets/ (tray/node-authoring/handoff scopes) | #1684 direction packet | claimed:fable-fleet-opus5 ACTIVE 2026-07-24 |
 | **Implement paid-market workflow + live-price targets** — durable inbox/bid/match/claim/delivery plus quote authority and manipulation controls | tinyassets/paid_market/; prototype/full-platform-v0/migrations/; tests/test_paid_market_core.py; tests/test_api_market.py | active `paid-market-track-e-wave-2-transport` and `paid-market-live-price-discovery`; Harden canonical absolute guarantees; #1440; R2-1; S14/B36; boundary/tenant/domain owners | pending |
 | **Observe post-fix in-node enqueue use** — #1672 merged; no production-clean user evidence yet | production traces/logs; STATUS.md | deploy #1672, then inspect organic enqueue use | monitoring |
-| Canonical `/mcp` acceptance — needs clean supported-chatbot proof + first-user evidence after route retirement | docs/ops/mcp-* | `/mcp-directory*` ordinary-404 retirement | host-action |
+| Canonical `/mcp` acceptance — live 2026-07-24: exact `TinyAssets`, exact seven, and retired-route matrix green; rendered-chatbot + first-user evidence remain | docs/ops/mcp-*, output/user_sim_session.md, production traces/logs | ChatGPT connector registration | monitoring |
 | OpenAI app submission hardening — `chatgpt-app-submission.json` on disk; submission docs/proof pending | chatgpt-app-submission.json, docs/ops/openai-app-submission-*.md | clean ChatGPT proof | dev-ready |
 | Land #1484 — `_repo_root()` conflated `TINYASSETS_REPO_ROOT` (storage) with the bundled-source root, emptying deployed review context. The env is load-bearing; do NOT drop it | tinyassets/api/universe.py, deploy/compose.yml | - | host-review |
 | Restore authenticated wiki write-roundtrip canary coverage — lost to the #1441 anon-write gate by design; needs a canary service credential | docs/ops/acceptance-probe-catalog.md, scripts/uptime_canary.py | - | host-decision |
@@ -51,13 +51,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki action=promote` a draft over it? | wiki | - | host-decision |
 | Register the `TinyAssets` ChatGPT connector at `https://tinyassets.io/mcp` as workspace admin | OpenAI workspace admin | canonical `/mcp` live and `/mcp-directory*` absent | host-action |
 
-## Live brain notes
-
-Provider capacity: Claude remains rate-limited until its Friday reset; use non-Claude capacity. Brain sweep: `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; in flight PR-129/131/139; universes Meridian Ashes / Etsy Printify v2 / Markovic.
-
 ## Next
 
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Spec-driven development is the standard (host 2026-07-19)** — every substantive change starts as an OpenSpec change; as-built specs in `openspec/specs/`.
+4. **Capacity/context** — Claude Opus 5 reset 2026-07-24; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.

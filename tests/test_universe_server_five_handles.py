@@ -1,7 +1,6 @@
-"""PR-178: the live /mcp surface advertises exactly the five canonical handles.
+"""The live /mcp surface advertises exactly the seven canonical public tools.
 
-Forward-ported from the /mcp-directory surface onto tinyassets.universe_server
-(the process behind https://tinyassets.io/mcp). The legacy fat tools stay
+The legacy fat tools stay
 registered + callable for one migration release but are hidden from tools/list
 and logged on call by the _DeprecatedToolVisibility middleware.
 """
@@ -18,17 +17,15 @@ from tinyassets.universe_server import (
     write_graph,
 )
 
-CANONICAL_HANDLES = {
+CANONICAL_PUBLIC_TOOLS = {
     "read_graph",
     "write_graph",
     "run_graph",
     "read_page",
     "write_page",
     "converse",  # 2026-07-02 relay reshape: chatbot -> universe intelligence
+    "get_status",
 }
-
-# The advertised user surface is the canonical handles plus the get_status read.
-ADVERTISED = CANONICAL_HANDLES | {"get_status"}
 
 EXPECTED_ANNOTATIONS = {
     "read_graph": {"readOnlyHint": True, "idempotentHint": True},
@@ -37,6 +34,7 @@ EXPECTED_ANNOTATIONS = {
     "read_page": {"readOnlyHint": True, "idempotentHint": True},
     "write_page": {"readOnlyHint": False, "openWorldHint": True},
     "converse": {"readOnlyHint": False, "openWorldHint": False},
+    "get_status": {"readOnlyHint": True, "idempotentHint": True},
 }
 
 
@@ -50,9 +48,9 @@ def _registered_tools():
     return asyncio.run(mcp.list_tools(run_middleware=False))
 
 
-def test_live_surface_advertises_exactly_canonical_handles_plus_status() -> None:
+def test_live_surface_advertises_exactly_canonical_public_tools() -> None:
     advertised = {tool.name for tool in _advertised_tools()}
-    assert advertised == ADVERTISED
+    assert advertised == CANONICAL_PUBLIC_TOOLS
     assert "converse" in advertised  # the relay handle is user-facing
     # No enumerated legacy fat tool leaks onto the advertised surface.
     assert _DEPRECATED_TOOL_NAMES.isdisjoint(advertised)
@@ -75,12 +73,9 @@ def test_handle_annotations_match_contract() -> None:
             assert getattr(ann, key) == value, f"{name}.{key}"
 
 
-def test_read_graph_status_is_full_not_directory_redacted() -> None:
-    """The live operator surface keeps the full get_status (unredacted)."""
+def test_read_graph_status_returns_operator_status() -> None:
     payload = json.loads(read_graph(target="status"))
     assert "schema_version" in payload
-    # The directory redactor injects this marker; the live surface must not.
-    assert "directory_privacy_note" not in payload
 
 
 def test_unknown_target_is_reported() -> None:
@@ -92,7 +87,7 @@ def test_unknown_target_is_reported() -> None:
 def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
     """write_graph(goal) routes to the same handler read_graph(goals) reads."""
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "five-handle-test")
+    monkeypatch.setenv("UNIVERSE_SERVER_USER", "canonical-handle-test")
 
     from tinyassets.catalog import invalidate_backend_cache
 
@@ -101,14 +96,16 @@ def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:
         proposed = json.loads(
             write_graph(
                 target="goal",
-                name="Five handle smoke goal",
+                name="Canonical handle smoke goal",
                 tags="pr178,smoke",
                 visibility="public",
             )
         )
         assert proposed["status"] == "proposed"
 
-        searched = json.loads(read_graph(target="goals", query="Five handle smoke"))
+        searched = json.loads(
+            read_graph(target="goals", query="Canonical handle smoke")
+        )
         assert searched["count"] >= 1
         assert any(
             goal["goal_id"] == proposed["goal"]["goal_id"]

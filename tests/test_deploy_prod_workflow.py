@@ -15,6 +15,10 @@ Covers:
 
 from __future__ import annotations
 
+import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -609,6 +613,15 @@ def test_rollback_and_terminal_receipt_are_ordered_under_always():
     )
 
 
+def test_daemon_deploy_owns_exact_public_server_name_assertion():
+    wf = _load()
+    canary_step = _step_named(wf, "Post-deploy canary — canonical URL only")
+    run_script = canary_step.get("run", "") or ""
+
+    assert "scripts/mcp_public_canary.py" in run_script
+    assert "--assert-name TinyAssets" in run_script
+
+
 def test_terminal_receipt_keys_to_production_marker():
     wf = _load()
     scrub_step = _step_named(wf, "Scrub stale cloud env overrides")
@@ -735,6 +748,29 @@ def test_terminal_receipt_never_mutates_the_deployed_image_after_publication():
             "the installed terminal receipt must describe the final production "
             f"state; found a later image mutation token: {forbidden}"
         )
+
+
+def test_terminal_receipt_summary_python_is_executable(tmp_path):
+    wf = _load()
+    terminal_step = _step_with_run_token(wf, "terminal_receipt_result=")
+    run_script = terminal_step.get("run", "") or ""
+    match = re.search(
+        r"python -c '([^']+)' \"\$RUNNER_TEMP/tinyassets-release-state\.json\"",
+        run_script,
+    )
+    assert match is not None, "terminal receipt outcome summary command is missing"
+
+    receipt_path = tmp_path / "release-state.json"
+    receipt_path.write_text(json.dumps({"outcome": "deployed"}), encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-c", match.group(1), str(receipt_path)],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "deployed"
 
 
 def test_terminal_receipt_does_not_assign_manual_image_source_from_github_sha():

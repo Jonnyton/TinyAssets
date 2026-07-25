@@ -1,5 +1,10 @@
 # Codex CLI MCP Registration Proof
 
+> **SUPERSEDED / HISTORICAL — DO NOT REUSE THIS CONFIGURATION.** This proof
+> records the retired `/mcp-directory` product. New Codex registration must
+> use exact name `TinyAssets` at `https://tinyassets.io/mcp` and requires fresh
+> proof.
+
 Date: 2026-05-02
 Host: Codex CLI 0.104.0 on Windows x64
 Endpoint: `https://tinyassets.io/mcp-directory`

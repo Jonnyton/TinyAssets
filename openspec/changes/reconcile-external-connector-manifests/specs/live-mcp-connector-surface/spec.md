@@ -222,7 +222,7 @@ as user-facing.
 #### Scenario: Worker proxies canonical MCP only
 - **WHEN** a client request arrives at `tinyassets.io/mcp`
 - **THEN** the Worker rewrites `Host` to `mcp.tinyassets.io`, adds its service-token headers, and forwards method, body stream, and non-hop-by-hop headers
-- **AND** the same Worker has no route or translation for `/mcp-directory*`
+- **AND** the broad Worker binding terminates `/mcp-directory*` as an ordinary edge 404 without proxy, redirect, alias, or translation
 
 #### Scenario: SSE bodies stream without buffering
 - **WHEN** the tunnel origin returns a `text/event-stream` response
@@ -241,8 +241,8 @@ metadata. The generator SHALL run directly from a clean repository checkout,
 and each externally published metadata change SHALL advance the manifest
 version.
 
-#### Scenario: Canonical catalog change makes stale metadata fail
-- **WHEN** canonical endpoint or exact-seven runtime metadata changes without regenerating `packaging/registry/server.json`
+#### Scenario: Canonical registry metadata change makes stale metadata fail
+- **WHEN** the canonical Registry endpoint or manifest version changes without regenerating `packaging/registry/server.json`
 - **THEN** focused artifact-equality and packaging checks fail
 
 #### Scenario: Published registry remote is canonical and reachable
