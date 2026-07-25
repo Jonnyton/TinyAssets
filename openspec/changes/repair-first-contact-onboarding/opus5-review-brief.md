@@ -2,6 +2,8 @@
 
 Work read-only in `C:\Users\Jonathan\Projects\wf-first-contact-onboarding`.
 
+Review committed `HEAD` exactly and use `git diff origin/main...HEAD`; working-tree-only `.claude/.fleet_*` files are active harness state owned by another session and are not part of this packet.
+
 Review the exact current working-tree artifacts:
 
 - `openspec/changes/repair-first-contact-onboarding/proposal.md`
