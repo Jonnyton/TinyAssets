@@ -1,5 +1,11 @@
 # OpenAI App Submission Prep - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** This is the preserved
+> 2026-05-02 preparation state. The sole remote endpoint is
+> `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an ordinary 404.
+> Current preparation belongs to the active
+> `reconcile-external-connector-manifests` OpenSpec change.
+
 ## Current Decision Boundary
 
 OpenAI app draft: `TinyAssets`.

@@ -120,6 +120,199 @@ def _backup_diagnostic_script() -> str:
     return body.split(terminator, 1)[0]
 
 
+def _backup_remote_install_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Ensure off-host backup configuration"
+    )
+    run = backup_step["run"]
+    marker = "<<'BACKUP_REMOTE'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nBACKUP_REMOTE\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _backup_exercise_script() -> str:
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    backup_step = next(
+        step
+        for step in workflow["jobs"]["install"]["steps"]
+        if step.get("name") == "Exercise and verify two-tier backup"
+    )
+    run = backup_step["run"]
+    marker = "<<'BACKUP_EXERCISE'\n"
+    assert marker in run
+    body = run.split(marker, 1)[1]
+    terminator = "\nBACKUP_EXERCISE\n"
+    assert terminator in body
+    return body.split(terminator, 1)[0]
+
+
+def _run_backup_exercise(
+    tmp_path: Path,
+    *,
+    emit_warning: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sudo = fake_bin / "sudo"
+    harness = tmp_path / "backup-exercise.sh"
+    rclone_calls = tmp_path / "rclone-calls"
+    journal_query = tmp_path / "journal-query"
+    invocation_id = "0123456789abcdef0123456789abcdef"
+    fake_sudo.write_text(
+        f"""#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  rclone)
+    count="$(cat "${{RCLONE_CALLS}}" 2>/dev/null || printf '0')"
+    count=$((count + 1))
+    printf '%s' "${{count}}" > "${{RCLONE_CALLS}}"
+    if [[ "${{count}}" -le 2 ]]; then
+      printf '%s\\n' \
+        tinyassets-brain-2026-07-22T00-00-00Z.tar.gz \
+        tinyassets-data-2026-07-22T00-00-00Z.tar.gz
+    else
+      printf '%s\\n' \
+        tinyassets-brain-2026-07-24T00-00-00Z.tar.gz \
+        tinyassets-data-2026-07-24T00-00-00Z.tar.gz
+    fi
+    ;;
+  systemctl)
+    if [[ "$*" == *"--property=Result"* ]]; then
+      printf 'success\\n'
+    elif [[ "$*" == *"--property=InvocationID"* ]]; then
+      printf '{invocation_id}\\n'
+    fi
+    ;;
+  journalctl)
+    printf '%s\\n' "$*" > "${{JOURNAL_QUERY}}"
+    [[ "$2" == "_SYSTEMD_INVOCATION_ID={invocation_id}" ]]
+    if [[ "${{EMIT_WARNING:-0}}" == "1" ]]; then
+      printf '%s\\n' 'WARN: retention failed'
+    fi
+    printf '%s\\n' \
+      '  brain upload OK' \
+      '  upload OK' \
+      '  gh-ship: [backup-ship] uploaded: brain-asset' \
+      '  gh-ship: [backup-ship] uploaded: full-asset' \
+      'backup complete.'
+    ;;
+  *)
+    exit 99
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    harness.write_text(
+        _backup_exercise_script(),
+        encoding="utf-8",
+        newline="\n",
+    )
+    command = " ".join(
+        (
+            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
+            f"RCLONE_CALLS={shlex.quote(_bash_path(rclone_calls))}",
+            f"JOURNAL_QUERY={shlex.quote(_bash_path(journal_query))}",
+            f"EMIT_WARNING={int(emit_warning)}",
+            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
+            "bash",
+            shlex.quote(_bash_path(harness)),
+        )
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
+def _run_backup_remote_install(
+    tmp_path: Path,
+    *,
+    succeed_on_probe: int,
+) -> subprocess.CompletedProcess[str]:
+    if not _BASH:
+        pytest.skip("bash unavailable")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_sudo = fake_bin / "sudo"
+    harness = tmp_path / "backup-remote.sh"
+    remote_stage = tmp_path / "remote-stage"
+    remote_stage.mkdir()
+    (remote_stage / "rclone.conf").write_text(
+        "[spaces]\ntype = s3\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    counter = tmp_path / "probe-count"
+    delays = tmp_path / "probe-delays"
+    fake_sudo.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  install)
+    exit 0
+    ;;
+  bash)
+    cat >/dev/null
+    exit 0
+    ;;
+  rclone)
+    count="$(cat "${PROBE_COUNTER}" 2>/dev/null || printf '0')"
+    count=$((count + 1))
+    printf '%s' "${count}" > "${PROBE_COUNTER}"
+    [[ "${count}" -ge "${SUCCEED_ON_PROBE}" ]]
+    ;;
+  *)
+    exit 99
+    ;;
+esac
+""",
+        encoding="utf-8",
+        newline="\n",
+    )
+    harness.write_text(
+        (
+            'sleep() { printf \'%s\\n\' "$1" >> "${PROBE_DELAYS}"; }\n'
+            + _backup_remote_install_script()
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    destination = "spaces:workflow-backups-jonnyton-sfo3/workflow-backups"
+    command = " ".join(
+        (
+            f"chmod +x {shlex.quote(_bash_path(fake_sudo))} &&",
+            f"PROBE_COUNTER={shlex.quote(_bash_path(counter))}",
+            f"PROBE_DELAYS={shlex.quote(_bash_path(delays))}",
+            f"SUCCEED_ON_PROBE={succeed_on_probe}",
+            f"PATH={shlex.quote(_bash_path(fake_bin))}:/usr/local/bin:/usr/bin:/bin",
+            "bash",
+            shlex.quote(_bash_path(harness)),
+            shlex.quote(_bash_path(remote_stage)),
+            shlex.quote(destination),
+        )
+    )
+    return subprocess.run(
+        [_BASH, "-lc", command],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+
 def _run_backup_diagnostic(
     tmp_path: Path,
     response: str,
@@ -278,7 +471,7 @@ def _run_backup_state(
             expected_identity = f"{owner_group} 600"
 
     args = (
-        "spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups",
+        "spaces:workflow-backups-jonnyton-sfo3/workflow-backups",
         _bash_path(env_file),
         _bash_path(config),
         _bash_path(fake_rclone),
@@ -1006,7 +1199,8 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert "/v2/spaces/keys" in run
     assert "--max-filesize 4096" in run
     assert '"permission":"readwrite"' in run
-    assert 'bucket="tinyassets-backups-jonnyton-sfo3"' in run
+    assert 'bucket="workflow-backups-jonnyton-sfo3"' in run
+    assert "tinyassets-backups-jonnyton-sfo3" not in run
     assert '"bucket":"%s"' in run
     assert "fullaccess" not in run
     assert "::add-mask::" in run
@@ -1015,7 +1209,14 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert '-H @"${api_header_file}"' in run
     assert "/root/.config/rclone/rclone.conf" in run
     assert 'install-tinyassets-env.sh" set BACKUP_DEST' in run
-    assert "rclone lsf" in run
+    assert 'rclone mkdir "${destination}"' not in run
+    assert "for delay in 0 5 10 20 30" in run
+    assert 'sleep "${delay}"' in run
+    assert (
+        'timeout --kill-after=1s 5s sudo rclone lsf "${destination}" --max-depth 1 '
+        "--retries 1 --low-level-retries 1"
+    ) in run
+    assert "Spaces key did not become usable within the propagation window" in run
     assert "configured_ready" in run
     assert "completely_absent" in run
     assert "partial_or_invalid" in run
@@ -1037,28 +1238,51 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
     assert "GITHUB_OUTPUT" not in run
 
 
+def test_backup_remote_install_retries_same_key_until_probe_propagates(tmp_path):
+    result = _run_backup_remote_install(tmp_path, succeed_on_probe=3)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    assert (tmp_path / "probe-count").read_text(encoding="utf-8") == "3"
+    assert (tmp_path / "probe-delays").read_text(encoding="utf-8").splitlines() == [
+        "5",
+        "10",
+    ]
+
+
+def test_backup_remote_install_rolls_back_after_bounded_probe_window(tmp_path):
+    result = _run_backup_remote_install(tmp_path, succeed_on_probe=99)
+    assert result.returncode == 1
+    assert (tmp_path / "probe-count").read_text(encoding="utf-8") == "5"
+    assert (tmp_path / "probe-delays").read_text(encoding="utf-8").splitlines() == [
+        "5",
+        "10",
+        "20",
+        "30",
+    ]
+    assert "did not become usable within the propagation window" in result.stderr
+
+
 @pytest.mark.parametrize(
     ("env_text", "config_kind", "config_mode", "rclone_rc", "expected"),
     (
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             0,
             "configured_ready",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "644",
             0,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "symlink",
             "600",
             0,
@@ -1066,26 +1290,26 @@ def test_host_service_workflow_converges_backup_before_installing_timers():
         ),
         (None, "absent", "600", 0, "completely_absent"),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "absent",
             "600",
             0,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             1,
             "partial_or_invalid",
         ),
         (
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n"
-            "BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/"
-            "tinyassets-backups\n",
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n"
+            "BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/"
+            "workflow-backups\n",
             "regular",
             "600",
             0,
@@ -1205,3 +1429,58 @@ def test_host_service_workflow_requires_backup_provisioning_authority():
     assert verify_step["env"]["DO_API_TOKEN"] == "${{ secrets.DO_API_TOKEN }}"
     assert '[ -z "$DO_API_TOKEN" ]' in run
     assert 'missing+=("DO_API_TOKEN")' in run
+
+
+def test_host_service_workflow_exercises_backup_only_on_explicit_dispatch():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+    triggers = workflow.get("on") or workflow.get(True) or {}
+    dispatch = triggers.get("workflow_dispatch") or {}
+    run_backup = (dispatch.get("inputs") or {}).get("run_backup") or {}
+    assert run_backup.get("type") == "boolean"
+    assert run_backup.get("required") is False
+    assert run_backup.get("default") is False
+
+    job = workflow["jobs"]["install"]
+    assert job["timeout-minutes"] == 40
+    step = next(
+        item
+        for item in job["steps"]
+        if item.get("name") == "Exercise and verify two-tier backup"
+    )
+    assert step["if"] == (
+        "github.event_name == 'workflow_dispatch' && inputs.run_backup"
+    )
+    run = step["run"]
+    assert "sudo systemctl start tinyassets-backup.service" in run
+    assert "systemctl show tinyassets-backup.service --property=Result" in run
+    assert "systemctl show tinyassets-backup.service --property=InvocationID" in run
+    assert '_SYSTEMD_INVOCATION_ID=${invocation_id}' in run
+    assert "--since" not in run
+    assert "tinyassets-brain-" in run
+    assert "tinyassets-data-" in run
+    assert '"${after_brain}" != "${before_brain}"' in run
+    assert '"${after_full}" != "${before_full}"' in run
+    assert "gh-ship: [backup-ship] uploaded:" in run
+    assert '"${gh_upload_count}" -eq 2' in run
+    assert "backup complete." in run
+    assert "grep -Eq 'WARN:|ERROR:'" in run
+    assert "Backup invocation emitted a warning or error." in run
+
+
+def test_backup_exercise_scopes_evidence_to_new_systemd_invocation(tmp_path):
+    result = _run_backup_exercise(tmp_path)
+    assert result.returncode == 0, f"{result.stdout}\n{result.stderr}"
+    query = (tmp_path / "journal-query").read_text(encoding="utf-8").strip()
+    assert query == (
+        "journalctl "
+        "_SYSTEMD_INVOCATION_ID=0123456789abcdef0123456789abcdef "
+        "--no-pager --output=cat"
+    )
+    assert "Verified fresh backup:" in result.stdout
+    assert "github_assets=2" in result.stdout
+
+
+def test_backup_exercise_rejects_invocation_warning(tmp_path):
+    result = _run_backup_exercise(tmp_path, emit_warning=True)
+    assert result.returncode != 0
+    assert "Verified fresh backup:" not in result.stdout

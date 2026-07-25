@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -86,10 +87,18 @@ def test_workflow_path_filter_covers_worker_dir():
     triggers = _triggers(wf)
     push_paths = (triggers.get("push") or {}).get("paths", [])
     pr_paths = (triggers.get("pull_request") or {}).get("paths", [])
-    assert any("cloudflare-worker" in p for p in push_paths), \
+    assert "deploy/cloudflare-worker/**" in push_paths, \
         "push trigger must path-filter on deploy/cloudflare-worker/**"
-    assert any("cloudflare-worker" in p for p in pr_paths), \
+    assert "deploy/cloudflare-worker/**" in pr_paths, \
         "pull_request trigger must path-filter on deploy/cloudflare-worker/**"
+
+
+def test_workflow_path_filter_covers_workflow_itself():
+    wf = _load_workflow()
+    triggers = _triggers(wf)
+    expected = ".github/workflows/deploy-worker.yml"
+    assert expected in (triggers.get("push") or {}).get("paths", [])
+    assert expected in (triggers.get("pull_request") or {}).get("paths", [])
 
 
 def test_workflow_has_workflow_dispatch():
@@ -136,6 +145,20 @@ def test_wrangler_toml_no_stale_name():
     text = _load_wrangler_text()
     assert STALE_WORKER_NAME not in text, \
         f"Stale Worker name {STALE_WORKER_NAME!r} still in wrangler.toml"
+
+
+def test_wrangler_toml_keeps_load_bearing_broad_route_and_runtime_settings():
+    config = tomllib.loads(_load_wrangler_text())
+    assert config["main"] == "worker.js"
+    assert config["routes"] == [
+        {"pattern": "tinyassets.io/mcp*", "zone_name": "tinyassets.io"}
+    ]
+    assert config["compatibility_date"] == "2025-10-01"
+    assert config["compatibility_flags"] == []
+    assert config["observability"] == {
+        "enabled": True,
+        "head_sampling_rate": 1.0,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +209,8 @@ def test_dry_run_does_not_fire_on_push():
     assert "event_name == 'push'" not in cond
 
 
-def test_pull_requests_do_not_require_cloudflare_secrets():
-    """PR validation must not fail before Worker unit tests when deploy secrets are absent."""
+def test_pull_requests_run_secretless_wrangler_dry_run():
+    """PR validation must bundle the Worker without requiring deploy credentials."""
     wf = _load_workflow()
     steps = wf["jobs"]["deploy-worker"]["steps"]
 
@@ -197,7 +220,9 @@ def test_pull_requests_do_not_require_cloudflare_secrets():
 
     dry_run = _get_step(steps, "dry-run")
     assert dry_run is not None
-    assert "skipping Wrangler dry-run" in dry_run.get("run", "")
+    script = dry_run.get("run", "")
+    assert "skipping Wrangler dry-run" not in script
+    assert "wrangler deploy --dry-run" in script
 
 
 def test_live_deploy_resolves_account_id_from_zone_when_secret_missing():
@@ -206,6 +231,46 @@ def test_live_deploy_resolves_account_id_from_zone_when_secret_missing():
     assert "zones?name=tinyassets.io" in text
     assert "CLOUDFLARE_ACCOUNT_ID=${account_id}" in text
     assert "CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}" not in text
+
+
+def test_live_deploy_proves_retired_route_matrix_is_ordinary_404():
+    wf = _load_workflow()
+    steps = wf["jobs"]["deploy-worker"]["steps"]
+    probe = _get_step(steps, "Prove retired routes are ordinary 404s")
+
+    assert probe is not None
+    live_condition = (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')\n"
+    )
+    assert probe.get("if") == live_condition
+    script = probe.get("run", "")
+    assert script.strip() == "python scripts/probe_retired_mcp_routes.py"
+
+
+def test_live_deploy_probes_run_in_safety_order_under_the_same_condition():
+    wf = _load_workflow()
+    steps = wf["jobs"]["deploy-worker"]["steps"]
+    live_condition = (
+        "github.event_name == 'push' || "
+        "(github.event_name == 'workflow_dispatch' && inputs.dry_run != 'true')\n"
+    )
+    names = [step.get("name") for step in steps]
+    ordered_names = (
+        "Wrangler live deploy (push to main)",
+        "Post-deploy canary",
+        "Probe canonical URL after deploy",
+        "Prove retired routes are ordinary 404s",
+    )
+    assert [names.index(name) for name in ordered_names] == sorted(
+        names.index(name) for name in ordered_names
+    )
+    for name in ordered_names:
+        assert steps[names.index(name)].get("if") == live_condition
+
+    canonical_probe = steps[names.index("Probe canonical URL after deploy")]
+    assert "--url https://tinyassets.io/mcp" in canonical_probe.get("run", "")
+    assert "--assert-name" not in canonical_probe.get("run", "")
 
 
 # ---------------------------------------------------------------------------

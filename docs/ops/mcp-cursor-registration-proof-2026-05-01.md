@@ -1,5 +1,10 @@
 # Cursor MCP Registration Proof
 
+> **SUPERSEDED / HISTORICAL — DO NOT REUSE THIS CONFIGURATION.** This proof
+> records the retired `/mcp-directory` product. New Cursor registration must
+> use exact name `TinyAssets` at `https://tinyassets.io/mcp` and requires fresh
+> proof.
+
 Date: 2026-05-01
 Host: Cursor 3.2.16 on Windows x64
 Endpoint: `https://tinyassets.io/mcp-directory`

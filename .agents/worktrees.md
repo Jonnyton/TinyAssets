@@ -1104,18 +1104,146 @@ Notes:
 - Verification: GitHub policy, package/import probe, and build-smoke passed; auto-merge completed
 - Ship/abandon: observe production use after deployment; do not infer clean use from repository proof
 
-## 2026-07-23 - create market-capability-descriptors
+## 2026-07-24 - created distributed-execution-current-main-design
 
-- Provider: codex-gpt5-desktop-market-descriptors
-- Branch: codex/market-capability-descriptors
-- Lane state: Active pure capability identity/digest/compatibility slice
-- Worktree: C:\Users\Jonathan\Projects\wf-market-capability-descriptors
-- STATUS/Issue/PR: `Build pure market capability descriptors`; PR pending
-- PLAN refs: Module Providers; Reference Full-Platform Architecture; paid-market economy target
-- Purpose: give inference, training, task, and fabrication supply one deterministic substitutability identity without enabling execution
-- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-market-capability-descriptors\_PURPOSE.md
-- Related implications: paid-market live-price discovery; Track E Wave 2; compute-market frontier research; BYOC-only execution authority
-- Review update: adversarial descriptor review returned ADAPT on v1 canonical grammar, lane completeness, correlated facets, range direction, and digest privacy/domain separation
-- Review update: amended contract separates exact supply identity, normalized public market class, and quote-bound landed scope; two final Codex blocker reviews APPROVE
-- Publish: draft PR #1679; opposite-provider Claude review remains the readiness/implementation gate
-- Ship/abandon: amend OpenSpec first and obtain opposite-provider confirmation; only then land pure I/O-free logic and proof, with no SQL, credentials, routing, pricing, or execution
+- Provider: codex-gpt5-desktop
+- Branch: codex/distributed-execution-current-main-design
+- Lane state: landed via PR #1699 (`978649fe`)
+- Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-current-main
+- STATUS/Issue/PR: merged; coordination row retired
+- Scope: complete distributed-execution design and publish a current-main extraction manifest; no runtime or live authority activation
+- Review gate: independent security/design review now; opposite-provider review before live apply/deploy
+- Memory/implications: PR #1475 handoff; PRs #1472/#1477/#1479/#1481/#1487/#1491; `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`
+- Ship/abandon: ship when OpenSpec is strict-valid and current-main staged authority boundaries are independently approved; abandon only for a newer explicit successor
+
+## 2026-07-24 - created distributed-execution-d0
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/distributed-execution-d0
+- Lane state: landed via PR #1701 (`aa328495`)
+- Worktree: C:\Users\Jonathan\Projects\wf-distributed-execution-d0
+- STATUS/Issue/PR: merged; coordination retirement follows on current main
+- Scope: implement the dark fake/test-only signed-authority spine from `distributed-execution` tasks 1.1-1.16; no production wiring
+- Review gate: focused TDD plus independent security/diff review; opposite-provider review remains required before any real-provider path
+- Memory/implications: PR #1699; #1697 non-promotion invariant; stale PR extraction sources named in the OpenSpec design
+- Ship/abandon: ship only with the D0 focused path, mutation proof, full strict OpenSpec validation, and zero production imports/routes/adapters
+
+## 2026-07-24 - retire distributed-execution-d0
+
+- Provider: codex-gpt5-desktop
+- Branch: codex/retire-distributed-execution-d0
+- Lane state: current-main coordination follow-up
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-distributed-execution-d0
+- STATUS/Issue/PR: retire merged #1701 row and mark D0 tasks landed
+- Scope: coordination/docs only; no runtime behavior
+- Review gate: strict OpenSpec validation and exact coordination diff
+- Ship/abandon: land immediately after current-main checks; no deployment
+
+## 2026-07-24 - created retire-mcp-directory
+
+- Provider: codex-gpt56-mcp-retirement
+- Branch: codex/retire-mcp-directory
+- Lane state: merged; production proof moved to the canonical `/mcp` STATUS watch
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-mcp-directory
+- STATUS/Issue/PR: PR #1718 merged as `60f7f9f1`, based on merged PR #1688
+- Scope: remove `/mcp-directory*` runtime/catalog/discovery/edge routing, generated mirrors, maintained registrations/guidance, and prove ordinary 404
+- Review gate: red-first app/edge tests, provider-free canonical health, strict OpenSpec, independent architecture/security/diff review
+- Memory/implications: PR #1688; PR #1522 provenance; source-derived canonical hardening remains separately opposite-provider-gated
+- Ship/abandon: landed; retain the worktree only until the coordination closeout and production probes are recorded
+
+## 2026-07-24 - fix MCP retirement proof
+
+- Provider: codex-gpt56-mcp-proof-fix
+- Branch: codex/fix-mcp-retirement-proof
+- Lane state: PR open; independently approved; production contract green
+- Worktree: C:\Users\Jonathan\Projects\wf-fix-mcp-retirement-proof
+- STATUS/Issue/PR: PR #1722; Opus 5 final reject follow-up to merged PR #1718
+- Scope: Cloudflare-safe retirement probe, correct deploy ownership, exact-seven canary, as-built spec truth, stale operator guidance
+- Review gate: focused red/green tests, strict OpenSpec, workflow checks, independent diff review, then live rerun
+- Memory/implications: PR #1718 review artifact; canonical hardening tasks remain separately open
+- Ship/abandon: ship through PR #1722; both owning deploy lanes and direct live probes now prove their part
+
+## 2026-07-24 - fix deploy receipt summary quoting
+
+- Provider: codex-gpt56-deploy-summary
+- Branch: fix/deploy-summary-quoting
+- Lane state: PR open; awaiting Opus 5 review and required checks
+- Worktree: C:\Users\Jonathan\Projects\wf-deploy-summary-quoting
+- STATUS/Issue/PR: production Deploy prod run 30141691915; PR #1725
+- Scope: fix the post-deploy receipt Summary literal-escape SyntaxError
+- Review gate: focused RED/GREEN test, workflow suite, actionlint, independent Opus 5 review
+- Memory/implications: receipt validation/publication succeeded; Summary rendering alone failed
+- Ship/abandon: publish reviewed PR to main; do not deploy from this lane
+
+## 2026-07-24 - epoch-2 claimed-request materialization
+
+- Provider: codex-gpt5-desktop-operator
+- Branch: codex/operator-epoch2-consumer
+- Lane state: active implementation
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: STATUS 5.7 row; no PR yet
+- Scope: live-claim-only canonical v2 Request materialization and restart observation; no v2 claim activation or v1 projection
+- Review gate: focused red/green tests, adjoining suite, strict OpenSpec, mirror/import checks, independent Opus 5 exact-head review
+- Memory/implications: 5.8 remains blocked by PLAN's file-lock versus transactional-claim conflict
+- Ship/abandon: publish reviewed prerequisite PR; keep EPOCH2_QUEUE_CONSUMER_READY false
+
+## 2026-07-24 23:10 - create wiki-discovery-scope
+
+- Provider: codex-gpt56-wiki-scope
+- Branch: codex/wiki-discovery-scope
+- Lane state: Merged as PR #1745 at `fdfde5f1bd74ff74bd808e02bf453721db38a1fb`; proof moved to `wf-wiki-discovery-proof`
+- Worktree: C:\Users\Jonathan\Projects\wf-wiki-discovery-scope
+- STATUS/Issue/PR: R2-4a wiki discovery scoping; #1550 closed source-only
+- PLAN refs: Module API & MCP Interface; composable primitive and visibility principles
+- Purpose: default user discovery excludes coordination history without resurrecting the retired directory server.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-wiki-discovery-scope\_PURPOSE.md
+- Memory refs: docs/audits/2026-07-21-wiki-discovery-contamination.md; PR #1550
+- Related implications: universe-visibility; canonical /mcp acceptance; universe-creation owns the public read_page seam
+- Idea feed refs: none
+- Ship/abandon: ship current-main OpenSpec/TDD successor through a reviewed PR; abandon if the behavior is already satisfied
+
+## 2026-07-24 23:10 - create secret-custody-spec
+
+- Provider: codex-gpt56-secret-custody
+- Branch: codex/secret-custody-spec
+- Lane state: Active review/spec-only lane
+- Worktree: C:\Users\Jonathan\Projects\wf-secret-custody-spec
+- STATUS/Issue/PR: Retire MCP provider-secret deposit
+- PLAN refs: Module Providers; Module API & MCP Interface; full-platform control-plane/BYOC boundaries
+- Purpose: replace raw MCP provider-secret deposit with requester-controlled OS custody and opaque authority references.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-secret-custody-spec\_PURPOSE.md
+- Memory refs: docs/audits/2026-07-24-first-contact-authority-opus5-verdict.md; PRs #1592, #1691, #1736
+- Related implications: Slice A0; provider-attempt receipts; universe-creation; complete-independent-full-platform-targets
+- Idea feed refs: #1469 remains optional source-only encrypted server custody unless separately approved
+- Ship/abandon: Opus APPROVE/ADAPT gates a strict spec PR; runtime remains blocked on listed owners
+
+## 2026-07-25 - verify deployed wiki discovery
+
+- Provider: codex-gpt56-wiki-proof with Claude Opus 5 browser peer
+- Branch: codex/wiki-discovery-proof
+- Lane state: Active post-merge proof
+- Worktree: C:\Users\Jonathan\Projects\wf-wiki-discovery-proof
+- STATUS/Issue/PR: Verify deployed wiki discovery; PR #1745 merged
+- PLAN refs: Module API & MCP Interface; canonical `/mcp`; visibility principles
+- Purpose: prove deployed source, exact-seven surface, rendered connector behavior, and organic use/watch
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-wiki-discovery-proof\_PURPOSE.md
+- Memory refs: archived `2026-07-25-scope-wiki-discovery`; PR #1745
+- Review gate: ui-test through real chatbot + independent evidence review
+- Ship/abandon: publish proof/task foldback only; no runtime changes
+- Foldback: proof complete and independently approved; PR #1747 merged
+
+## 2026-07-24 23:15 - repurpose release-reconcile-event
+
+- Provider: codex-gpt5-desktop-release-reconcile
+- Branch: codex/release-reconcile-event
+- Lane state: PRs #1749/#1750 landed; live foldback complete
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: #1749 implementation + #1750 CI cleanup merged; drift/failure-cap monitoring remains
+- PLAN refs: Uptime & Alarms; release/deploy reconciliation
+- Purpose: trigger release reconciliation after successful Docker smoke completion while retaining the cron backstop and non-cancelling concurrency.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: wf-openspec-uptime-backfill; release terminal truth and deploy rollback receipts
+- Related implications: Docker build smoke; build-image/deploy-prod chain; release-state honesty
+- Idea feed refs: none
+- Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
+- Foldback: OpenSpec archived; Opus 5 approved; #1750 repaired post-merge CI; main smoke #30152319997 woke successful workflow_run reconcile #30152436780

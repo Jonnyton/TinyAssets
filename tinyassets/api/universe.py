@@ -49,6 +49,7 @@ to ``tinyassets.api.engine_helpers``.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -88,7 +89,6 @@ from tinyassets.universe_soul import (
 logger = logging.getLogger("universe_server.universe")
 
 ENV_CAPABILITIES_VAR = "UNIVERSE_SERVER_CAPABILITIES"
-ACTION_SUBMIT_PRIORITY_REQUEST = "submit_priority_request"
 ACTION_CANCEL_BRANCH_TASK = "cancel_branch_task"
 ACTION_POST_PRIORITY_GOAL_POOL = "post_priority_goal_pool"
 LEGACY_FANTASY_LOOP_BRANCH_DEF_ID = "fantasy_author:universe_cycle_wrapper"
@@ -709,7 +709,9 @@ def _ledger_target_dir(
     if action == "create_universe":
         created = str((result or {}).get("universe_id") or "") or kwargs.get("universe_id", "")
         return _base_path() / (created or _request_universe(""))
-    uid = _request_universe(kwargs.get("universe_id", ""))
+    uid = _request_universe(
+        kwargs.get("universe_id", "") or kwargs.get("graph_id", "")
+    )
     return _universe_dir(uid)
 
 
@@ -755,6 +757,8 @@ def _dispatch_with_ledger(
     action: str,
     handler: Any,
     kwargs: dict[str, Any],
+    *,
+    scope_response: bool = True,
 ) -> str:
     """Enforce: every WRITE action lands in the public ledger before returning.
 
@@ -772,27 +776,33 @@ def _dispatch_with_ledger(
     reordering (#15).
     """
     from tinyassets.api.engine_helpers import _append_ledger
+
+    def finish(value: str) -> str:
+        return _scope_universe_response(value) if scope_response else value
+
     result_str = handler(**kwargs)
 
     spec = WRITE_ACTIONS.get(action)
     if spec is None:
-        return _scope_universe_response(result_str)
+        return finish(result_str)
 
     extractor, write_gate = spec
 
     try:
         result = json.loads(result_str)
     except (json.JSONDecodeError, TypeError):
-        return _scope_universe_response(result_str)
+        return finish(result_str)
 
     if not isinstance(result, dict) or "error" in result:
-        return _scope_universe_response(result_str)
+        return finish(result_str)
+    if result.get("idempotent_replay") is True:
+        return finish(result_str)
 
     # control_daemon branch — only append if actually a write
     if write_gate is not None:
         daemon_action = (kwargs.get("text") or "").strip().lower()
         if daemon_action not in write_gate:
-            return _scope_universe_response(result_str)
+            return finish(result_str)
 
     try:
         target, summary, payload = extractor(kwargs, result)
@@ -803,7 +813,7 @@ def _dispatch_with_ledger(
     except Exception as exc:
         logger.warning("Ledger extraction failed for %s: %s", action, exc)
 
-    return _scope_universe_response(result_str)
+    return finish(result_str)
 
 
 # ---------------------------------------------------------------------------
@@ -1078,6 +1088,15 @@ def _daemon_liveness(udir: Path, status: dict[str, Any] | None) -> dict[str, Any
 _WORKER_SUPERVISOR_FILENAME = ".worker_supervisor.json"
 _WORKER_SUPERVISOR_PREFIX = ".worker_supervisor."
 _WORKER_SUPERVISOR_SUFFIX = ".json"
+_WORKER_QUEUE_DESCRIPTOR_FIELDS = (
+    "queue_protocol_version",
+    "capabilities",
+    "boot_id",
+    "build_sha",
+    "config_hash",
+    "universe_id",
+    "expires_at",
+)
 
 
 def _worker_id_from_heartbeat_path(path: Path) -> str:
@@ -1092,7 +1111,11 @@ def _worker_id_from_heartbeat_path(path: Path) -> str:
     return ""
 
 
-def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
+def _read_worker_liveness_entry(
+    beat_path: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     worker_id = _worker_id_from_heartbeat_path(beat_path)
     try:
         beat = json.loads(beat_path.read_text(encoding="utf-8"))
@@ -1117,10 +1140,16 @@ def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
             "worker_id": worker_id,
             "runtime_instance_id": runtime_instance_id,
         }
-    age_s = max(0.0, (datetime.now(timezone.utc) - ts).total_seconds())
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age_s = max(
+        0.0,
+        (observed_at.astimezone(timezone.utc) - ts).total_seconds(),
+    )
     planned_sleep = float(beat.get("planned_sleep_s") or 0.0)
     allowed = max(300.0, planned_sleep + 120.0)
-    return {
+    result = {
         "present": True,
         "alive": age_s <= allowed,
         "beat_age_s": round(age_s, 1),
@@ -1132,9 +1161,17 @@ def _read_worker_liveness_entry(beat_path: Path) -> dict[str, Any]:
         "worker_id": worker_id,
         "runtime_instance_id": runtime_instance_id,
     }
+    for field in _WORKER_QUEUE_DESCRIPTOR_FIELDS:
+        if field in beat:
+            result[field] = beat[field]
+    return result
 
 
-def _worker_liveness(udir: Path) -> dict[str, Any]:
+def _worker_liveness(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """Supervisor-heartbeat liveness, distinct from content activity.
 
     ``last_activity_at`` answers "when did the daemon last DO something"
@@ -1157,9 +1194,12 @@ def _worker_liveness(udir: Path) -> dict[str, Any]:
     if not worker_paths:
         return {"present": False}
 
-    workers = [_read_worker_liveness_entry(path) for path in worker_paths]
+    workers = [
+        _read_worker_liveness_entry(path, now=now)
+        for path in worker_paths
+    ]
     if legacy_path.exists():
-        summary = _read_worker_liveness_entry(legacy_path)
+        summary = _read_worker_liveness_entry(legacy_path, now=now)
     else:
         summary = min(
             workers,
@@ -1174,6 +1214,266 @@ def _worker_liveness(udir: Path) -> dict[str, Any]:
         if worker.get("runtime_instance_id")
     })
     return out
+
+
+def _compatible_epoch2_workers(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
+) -> list[dict[str, str]]:
+    """Return workers with live, complete, universe-bound v2 evidence."""
+    from tinyassets.branch_tasks_v2 import (
+        WorkerClaimDescriptor,
+        _descriptor_is_live,
+    )
+
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    observed_at = observed_at.astimezone(timezone.utc)
+    runtime_by_id: dict[str, dict[str, Any]] = {}
+    if trusted_descriptors is None:
+        from tinyassets.daemon_registry import list_runtime_instances
+
+        runtimes = list_runtime_instances(
+            udir.parent,
+            universe_id=udir.name,
+        )
+        runtime_by_id = {
+            str(runtime.get("runtime_instance_id") or ""): runtime
+            for runtime in runtimes
+            if runtime.get("status") == "provisioned"
+        }
+        trusted_descriptors = {
+            runtime_id: (
+                runtime.get("metadata", {}).get(
+                    "queue_protocol_descriptor"
+                )
+            )
+            for runtime_id, runtime in runtime_by_id.items()
+        }
+    else:
+        runtime_by_id = {
+            runtime_id: {
+                "runtime_instance_id": runtime_id,
+                "daemon_id": "",
+                "provider_name": "",
+                "model_name": "",
+            }
+            for runtime_id in trusted_descriptors
+        }
+    workers = _worker_liveness(udir, now=observed_at).get("workers", [])
+    compatible: list[dict[str, str]] = []
+    for worker in workers:
+        capabilities = worker.get("capabilities")
+        if (
+            not worker.get("alive")
+            or not worker.get("subprocess_alive")
+            or not isinstance(capabilities, (list, tuple, set, frozenset))
+        ):
+            continue
+        try:
+            descriptor = WorkerClaimDescriptor(
+                queue_protocol_version=int(
+                    worker.get("queue_protocol_version")
+                ),
+                capabilities=frozenset(str(item) for item in capabilities),
+                worker_id=str(worker.get("worker_id") or ""),
+                runtime_instance_id=str(
+                    worker.get("runtime_instance_id") or ""
+                ),
+                boot_id=str(worker.get("boot_id") or ""),
+                build_sha=str(worker.get("build_sha") or ""),
+                config_hash=str(worker.get("config_hash") or ""),
+                universe_id=str(worker.get("universe_id") or ""),
+                expires_at=str(worker.get("expires_at") or ""),
+            )
+        except (TypeError, ValueError):
+            continue
+        heartbeat_descriptor = {
+            "queue_protocol_version": descriptor.queue_protocol_version,
+            "capabilities": sorted(descriptor.capabilities),
+            "worker_id": descriptor.worker_id,
+            "runtime_instance_id": descriptor.runtime_instance_id,
+            "boot_id": descriptor.boot_id,
+            "build_sha": descriptor.build_sha,
+            "config_hash": descriptor.config_hash,
+            "universe_id": descriptor.universe_id,
+            "expires_at": descriptor.expires_at,
+        }
+        trusted = trusted_descriptors.get(descriptor.runtime_instance_id)
+        runtime = runtime_by_id.get(descriptor.runtime_instance_id)
+        if (
+            descriptor.universe_id == udir.name
+            and runtime is not None
+            and trusted == heartbeat_descriptor
+            and _descriptor_is_live(
+                descriptor,
+                transaction_at=observed_at.isoformat(),
+            )
+        ):
+            compatible.append({
+                "worker_id": descriptor.worker_id,
+                "runtime_instance_id": descriptor.runtime_instance_id,
+                "daemon_id": str(runtime.get("daemon_id") or ""),
+                "provider_name": str(runtime.get("provider_name") or ""),
+                "model_name": str(runtime.get("model_name") or ""),
+            })
+    return sorted(
+        compatible,
+        key=lambda worker: (
+            worker["worker_id"],
+            worker["runtime_instance_id"],
+        ),
+    )
+
+
+def _compatible_epoch2_worker_ids(
+    udir: Path,
+    *,
+    now: datetime | None = None,
+    trusted_descriptors: dict[str, dict[str, Any] | None] | None = None,
+) -> list[str]:
+    """Compatibility helper for liveness tests and concise status callers."""
+    try:
+        workers = _compatible_epoch2_workers(
+            udir,
+            now=now,
+            trusted_descriptors=trusted_descriptors,
+        )
+    except Exception:  # noqa: BLE001 — missing trust means no capacity
+        return []
+    return sorted({worker["worker_id"] for worker in workers})
+
+
+def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
+    return {
+        "available": False,
+        "queue_epoch": 2,
+        "error": error,
+        "depth": None,
+        "lifecycle_counts": None,
+        "lifecycle_oldest_age_s": None,
+        "unknown_lifecycle_status_counts": None,
+        "operational_state_counts": None,
+        "operational_oldest_age_s": None,
+        "operational_reason_counts": None,
+        "valid_pending_count": None,
+        "eligible_pending_count": None,
+        "operational_counts_authoritative": False,
+        "integrity_scope_complete": None,
+        "unclassified_active_count": None,
+        "active_scan_limit": None,
+        "diagnostics": [],
+        "diagnostics_truncated": False,
+        "compatible_worker_count": None,
+        "capacity_evidence_available": False,
+        "consumer_ready": False,
+    }
+
+
+def _may_view_unscoped_epoch2_integrity(udir: Path) -> bool:
+    """Restrict exact unscoped corruption counts to universe admins."""
+    actor_id = permissions.current_actor_id()
+    if actor_id == "anonymous":
+        return False
+    try:
+        from tinyassets.daemon_server import universe_access_permission
+
+        return universe_access_permission(
+            udir.parent,
+            universe_id=udir.name,
+            actor_id=actor_id,
+        ) == "admin"
+    except Exception:  # noqa: BLE001 - observability auth fails closed
+        return False
+
+
+def _epoch2_operational_read(
+    udir: Path,
+    *,
+    dispatcher_config: Any | None = None,
+):
+    """Read counts and safe candidates from one bounded SQLite snapshot."""
+    from tinyassets.branch_tasks_v2 import (
+        EPOCH2_QUEUE_CONSUMER_READY,
+        Epoch2BranchTaskAdapter,
+        Epoch2OperationalRead,
+    )
+    from tinyassets.dispatcher import (
+        load_dispatcher_config,
+        prefers_request_type,
+    )
+    from tinyassets.storage import DB_FILENAME
+
+    base_path = udir.parent
+    database = base_path / DB_FILENAME
+    if not database.is_file():
+        return Epoch2OperationalRead(
+            summary=_unavailable_epoch2_summary(
+                "epoch2_store_unavailable"
+            ),
+            candidates=(),
+        )
+    cfg = dispatcher_config or load_dispatcher_config(udir)
+    capacity_error = ""
+    consumer_ready = EPOCH2_QUEUE_CONSUMER_READY is True
+    if not consumer_ready:
+        workers = []
+        capacity_error = "epoch2_consumer_not_ready"
+    else:
+        try:
+            workers = _compatible_epoch2_workers(udir)
+        except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+            workers = []
+            capacity_error = str(exc)
+
+    def capacity_matches(task) -> bool:
+        if (
+            task.required_llm_type
+            and cfg.served_llm_type
+            and task.required_llm_type != cfg.served_llm_type
+        ):
+            return False
+        if not prefers_request_type(task.request_type):
+            return False
+        if task.directed_daemon_id:
+            return any(
+                worker["daemon_id"] == task.directed_daemon_id
+                for worker in workers
+            )
+        return bool(workers)
+
+    try:
+        result = Epoch2BranchTaskAdapter(
+            base_path,
+        ).operational_read(
+            universe_id=udir.name,
+            capacity_matcher=capacity_matches,
+            policy_matcher=lambda task: cfg.tier_enabled(
+                task.trigger_source
+            ),
+            include_unscoped_invalid=(
+                _may_view_unscoped_epoch2_integrity(udir)
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — preserve epoch-1 reads
+        return Epoch2OperationalRead(
+            summary=_unavailable_epoch2_summary(str(exc)),
+            candidates=(),
+        )
+    result.summary["compatible_worker_count"] = len(workers)
+    result.summary["consumer_ready"] = consumer_ready
+    result.summary["capacity_evidence_available"] = not capacity_error
+    if capacity_error:
+        result.summary["operational_counts_authoritative"] = False
+        result.summary["capacity_evidence_error"] = capacity_error
+    return result
+
+
+def _epoch2_operational_snapshot(udir: Path) -> dict[str, Any]:
+    return _epoch2_operational_read(udir).summary
 
 
 _TOP_LEVEL_OPERATIONAL_DATA_DIRS = frozenset({
@@ -1210,16 +1510,24 @@ def _action_list_universes(**_kwargs: Any) -> str:
             "note": f"Base directory unreadable ({base}): {exc}",
         })
 
+    from tinyassets.api import visibility
+
     universes = []
+    hidden_by_visibility = 0
     for child in sorted(all_entries):
         if not _is_listable_universe_dir(child):
             continue
-        if not permissions.universe_access_allows(child.name):
+        # Existence is a privileged, separately-granted capability: a universe
+        # whose declared level withholds discovery (e.g. `unlisted`) is not
+        # enumerated even though its content may be readable by direct id.
+        if not visibility.visibility_permits(child.name, "discover_existence"):
+            hidden_by_visibility += 1
             continue
         status = _read_json(child / "status.json")
         liveness = _daemon_liveness(child, status if isinstance(status, dict) else None)
         info: dict[str, Any] = {
             "id": child.name,
+            "visibility": visibility.declared_level_name(child.name),
             "has_premise": liveness["has_premise"],
             "has_soul": liveness["has_soul"],
             "word_count": liveness["word_count"],
@@ -1233,7 +1541,12 @@ def _action_list_universes(**_kwargs: Any) -> str:
 
     result: dict[str, Any] = {"universes": universes, "count": len(universes)}
     if not universes:
-        if not all_entries:
+        if hidden_by_visibility:
+            # Some universes exist but none are visible to this caller. Do NOT
+            # leak the hidden count or the base path — that is aggregate
+            # disclosure about withheld universes (existence is privileged).
+            result["note"] = "No universes are visible to you."
+        elif not all_entries:
             result["note"] = f"Base directory is empty: {base}"
         else:
             result["note"] = (
@@ -1257,7 +1570,24 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
             ] if _base_path().is_dir() else [],
         })
 
+    # Metadata gate: inspect returns describe-surface metadata (premise, daemon
+    # phase/counts, notes, targets, file listings), so an EXISTING universe must
+    # be gated on the `read_metadata` capability — not merely the legacy read
+    # gate. A content-only (`unlisted`) universe sets public_read=True to keep
+    # content readable, which the legacy preflight allows; without this gate an
+    # anonymous caller would read its metadata even though the level withholds it.
+    from tinyassets.api import permissions, visibility
+
+    if not visibility.visibility_permits(uid, "read_metadata"):
+        return json.dumps(permissions.universe_access_error(
+            universe_id=uid, write=False, action="inspect", surface="universe",
+        ))
+
     result: dict[str, Any] = {"universe_id": uid}
+
+    # Declared visibility is observable to a permitted reader (spec Req 4): the
+    # boundary is stated, not inferred from its absence.
+    result["visibility"] = visibility.declared_level_name(uid)
 
     # Daemon liveness block — always present, so downstream readers (humans
     # and chat clients) can always tell whether the daemon is alive, why
@@ -1420,6 +1750,292 @@ def _action_read_output(universe_id: str = "", path: str = "", **_kwargs: Any) -
     })
 
 
+def _lookup_operator_request_replay(
+    store: Any,
+    *,
+    universe_id: str,
+    idempotency_key_hash: str,
+    body_digest: str,
+    body_digest_version: str,
+) -> dict[str, Any] | None:
+    """Reauthorize ordinary access before consulting idempotency state."""
+
+    verdict = permissions.operator_request_replay_verdict(universe_id)
+    if not verdict.allowed:
+        # Reveal no stored identifier, digest, receipt, replay status, or
+        # key-existence evidence.
+        return {"error": "universe_access_denied"}
+    access_check, _priority_check = (
+        permissions.operator_request_transaction_checks(verdict)
+    )
+    return store.lookup_replay(
+        tenant_id=verdict.tenant_id,
+        actor_id=verdict.actor_id,
+        universe_id=verdict.universe_id,
+        idempotency_key_hash=idempotency_key_hash,
+        body_digest=body_digest,
+        body_digest_version=body_digest_version,
+        access_check=access_check,
+    )
+
+
+_REQUEST_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9._:-]{16,128}$")
+_REQUEST_BODY_DIGEST_VERSION = "rfc8785-v1"
+_REQUEST_BODY_SCHEMA_VERSION = "request-admission-v2"
+_REQUEST_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+_REQUEST_TYPES = frozenset({
+    "scene_direction",
+    "revision",
+    "canon_change",
+    "branch_proposal",
+    "general",
+})
+
+
+def _request_validation_error() -> str:
+    return json.dumps({"error": "request_validation_error"})
+
+
+def _request_idempotency_key_hash(raw_key: str) -> str:
+    secret = os.environ.get(_REQUEST_HMAC_ENV, "").encode("utf-8")
+    if len(secret) < 32:
+        raise RuntimeError("request admission HMAC key is not configured")
+    digest = hmac.new(secret, raw_key.encode("ascii"), hashlib.sha256)
+    return f"hmac-sha256:{digest.hexdigest()}"
+
+
+def _request_body_digest(
+    *,
+    universe_id: str,
+    text: str,
+    request_type: str,
+    branch_id: str,
+    pickup_incentive: str,
+    directed_daemon_id: str,
+    directed_daemon_instruction: str,
+    priority_weight: int | float,
+) -> str:
+    import rfc8785
+
+    canonical = rfc8785.dumps({
+        "branch_id": branch_id,
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": directed_daemon_instruction,
+        "pickup_incentive": pickup_incentive,
+        "priority_weight": priority_weight,
+        "request_type": request_type,
+        "schema_version": _REQUEST_BODY_SCHEMA_VERSION,
+        "text": text,
+        "universe_id": universe_id,
+    })
+    return f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+
+
+def _action_admit_request_v2(
+    *,
+    idempotency_key: str,
+    graph_id: str = "",
+    text: str = "",
+    request_type: str = "general",
+    branch_id: str = "",
+    pickup_incentive: str = "",
+    directed_daemon_id: str = "",
+    directed_daemon_instruction: str = "",
+    priority_weight: int | float = 0.0,
+) -> str:
+    """Validate and atomically admit one canonical protocol-v2 request."""
+
+    string_fields = (
+        idempotency_key,
+        graph_id,
+        text,
+        request_type,
+        branch_id,
+        pickup_incentive,
+        directed_daemon_id,
+        directed_daemon_instruction,
+    )
+    if (
+        not all(isinstance(value, str) for value in string_fields)
+        or _REQUEST_IDEMPOTENCY_KEY_RE.fullmatch(idempotency_key) is None
+        or isinstance(priority_weight, bool)
+        or not isinstance(priority_weight, (int, float))
+        or not 0 <= priority_weight <= 100
+        or request_type not in _REQUEST_TYPES
+    ):
+        return _request_validation_error()
+    try:
+        encoded_fields = tuple(value.encode("utf-8") for value in string_fields)
+    except UnicodeEncodeError:
+        return _request_validation_error()
+    if len(encoded_fields[2]) > _SUBMIT_REQUEST_MAX_BYTES:
+        return _request_validation_error()
+
+    uid = _request_universe(graph_id)
+    try:
+        idempotency_key_hash = _request_idempotency_key_hash(
+            idempotency_key
+        )
+    except RuntimeError:
+        logger.error("request admission HMAC key is not configured")
+        return json.dumps({"error": "request_admission_unavailable"})
+    body_digest = _request_body_digest(
+        universe_id=uid,
+        text=text,
+        request_type=request_type,
+        branch_id=branch_id,
+        pickup_incentive=pickup_incentive,
+        directed_daemon_id=directed_daemon_id,
+        directed_daemon_instruction=directed_daemon_instruction,
+        priority_weight=priority_weight,
+    )
+
+    from tinyassets.storage.request_admissions import (
+        IdempotencyKeyBodyConflict,
+        RequestAdmissionStore,
+    )
+
+    store = RequestAdmissionStore(_base_path())
+    try:
+        replay = _lookup_operator_request_replay(
+            store,
+            universe_id=uid,
+            idempotency_key_hash=idempotency_key_hash,
+            body_digest=body_digest,
+            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
+        )
+    except IdempotencyKeyBodyConflict:
+        return json.dumps({"error": "idempotency_key_body_conflict"})
+    except PermissionError:
+        return json.dumps({"error": "universe_access_denied"})
+    if replay is not None:
+        return json.dumps(replay, default=str)
+
+    udir = _universe_dir(uid)
+    if not udir.is_dir():
+        return json.dumps({"error": "universe_not_found"})
+    loop_branch_def_id, _loop_dispatch = _universe_loop_dispatch(udir)
+    if not loop_branch_def_id:
+        return json.dumps({
+            "error": "universe_loop_not_declared",
+            "universe_id": uid,
+        })
+
+    verdict = permissions.operator_request_admission_verdict(
+        uid,
+        requested_priority_weight=float(priority_weight),
+        directed=bool(directed_daemon_id),
+    )
+    if not verdict.allowed:
+        return json.dumps({"error": verdict.error_code})
+
+    directed_receipt: dict[str, Any] = {}
+    if directed_daemon_id:
+        from tinyassets.daemon_registry import (
+            build_requester_directed_daemon_assignment,
+        )
+
+        assignment = build_requester_directed_daemon_assignment(
+            _base_path(),
+            daemon_id=directed_daemon_id,
+            requester_id=verdict.actor_id,
+            patch_request_id="pending-request-admission",
+            instruction=directed_daemon_instruction,
+        )
+        if assignment.get("effect") == "refused":
+            return json.dumps({"error": "directed_daemon_not_authorized"})
+        directed_receipt = {
+            "daemon_id": str(assignment.get("daemon_id") or ""),
+            "daemon_soul_hash": str(
+                assignment.get("daemon_soul_hash") or ""
+            ),
+            "authority_scope": str(
+                assignment.get("authority_scope") or ""
+            ),
+        }
+
+    access_check, priority_check = (
+        permissions.operator_request_transaction_checks(verdict)
+    )
+    receipt = {
+        "authority": "request-local",
+        "grant_generation": int(verdict.grant_generation or 0),
+        "priority_policy_version": verdict.priority_policy_version,
+        "directed_assignment": directed_receipt,
+    }
+    try:
+        result = store.commit_admission(
+            tenant_id=verdict.tenant_id,
+            actor_id=verdict.actor_id,
+            universe_id=uid,
+            idempotency_key_hash=idempotency_key_hash,
+            body_digest=body_digest,
+            body_digest_version=_REQUEST_BODY_DIGEST_VERSION,
+            request_type=request_type,
+            text=text,
+            branch_id=branch_id,
+            branch_def_id=loop_branch_def_id,
+            trigger_source=verdict.trigger_source,
+            accepted_priority_weight=verdict.accepted_priority_weight,
+            policy_version=verdict.priority_policy_version,
+            grant_generation=int(verdict.grant_generation or 0),
+            receipt=receipt,
+            directed_daemon_id=directed_daemon_id,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            pickup_incentive=pickup_incentive,
+            directed_daemon_instruction=directed_daemon_instruction,
+            access_check=access_check,
+            authority_check=priority_check,
+        )
+    except IdempotencyKeyBodyConflict:
+        return json.dumps({"error": "idempotency_key_body_conflict"})
+    except PermissionError:
+        return json.dumps({"error": "universe_access_denied"})
+    except Exception as exc:
+        from tinyassets.storage.accounts import (
+            CapabilityGrantAuthorizationError,
+        )
+
+        if isinstance(exc, CapabilityGrantAuthorizationError):
+            return json.dumps({"error": "priority_authorization_required"})
+        logger.exception("request admission transaction failed")
+        return json.dumps({"error": "request_admission_failed"})
+    return json.dumps(result, default=str)
+
+
+def admit_request_v2(
+    *,
+    idempotency_key: str,
+    graph_id: str = "",
+    text: str = "",
+    request_type: str = "general",
+    branch_id: str = "",
+    pickup_incentive: str = "",
+    directed_daemon_id: str = "",
+    directed_daemon_instruction: str = "",
+    priority_weight: int | float = 0.0,
+) -> str:
+    """Public request writer with one mutation-ledger entry per commit."""
+
+    kwargs = {
+        "idempotency_key": idempotency_key,
+        "graph_id": graph_id,
+        "text": text,
+        "request_type": request_type,
+        "branch_id": branch_id,
+        "pickup_incentive": pickup_incentive,
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": directed_daemon_instruction,
+        "priority_weight": priority_weight,
+    }
+    return _dispatch_with_ledger(
+        "submit_request",
+        _action_admit_request_v2,
+        kwargs,
+        scope_response=False,
+    )
+
+
 _SUBMIT_REQUEST_MAX_BYTES = 8192
 
 
@@ -1476,8 +2092,10 @@ def _action_submit_request(
     if request_type not in valid_types:
         request_type = "general"
 
-    # Invariant 9: priority_weight cap. Negative values reject for all
-    # actors. Non-host clamped to 0 silently (preflight §4.3 #9).
+    # The canonical public surface adds exact JSON-number and [0, 100]
+    # validation in its own lane. This legacy writer still rejects negatives,
+    # then delegates all identity/ACL/elevation decisions to one request-local
+    # verdict. It must never silently demote positive priority.
     try:
         pw = float(priority_weight)
     except (TypeError, ValueError):
@@ -1486,13 +2104,25 @@ def _action_submit_request(
         return json.dumps({
             "error": "priority_weight must be >= 0.",
         })
-    source = os.environ.get("UNIVERSE_SERVER_USER", "anonymous")
-    can_prioritize = _env_actor_can(
-        ACTION_SUBMIT_PRIORITY_REQUEST,
-        universe_id=uid,
+    admission_verdict = permissions.operator_request_admission_verdict(
+        uid,
+        requested_priority_weight=pw,
+        directed=bool(directed_daemon_id.strip()),
     )
-    if not can_prioritize:
-        pw = 0.0
+    if not admission_verdict.allowed:
+        return json.dumps({
+            "error": admission_verdict.error_code,
+            "universe_id": uid,
+        })
+    if pw > 0:
+        # Positive priority is valid only through the not-yet-enabled epoch-2
+        # transactional writer. The legacy split writer cannot safely persist
+        # it, so fail without mutation instead of stranding or demoting work.
+        return json.dumps({
+            "error": "operator_priority_unavailable",
+            "universe_id": uid,
+        })
+    source = admission_verdict.actor_id
 
     request_id = f"req_{int(time.time())}_{os.urandom(4).hex()}"
     incentive = normalize_patch_request_incentive(
@@ -1522,7 +2152,7 @@ def _action_submit_request(
         text=text,
         request_type=request_type,
         requester_id=source,
-        priority_authorized=can_prioritize,
+        priority_authorized=False,
         directed_daemon=requester_directed_daemon is not None,
     )
     request_obj = {
@@ -1581,9 +2211,9 @@ def _action_submit_request(
             trigger_source=(
                 "owner_queued"
                 if requester_directed_daemon is not None
-                else "operator_request" if can_prioritize else "user_request"
+                else admission_verdict.trigger_source
             ),
-            priority_weight=pw,
+            priority_weight=admission_verdict.accepted_priority_weight,
             pickup_signal_weight=float(incentive.get("pickup_signal_weight") or 0.0),
             directed_daemon_id=(
                 str(requester_directed_daemon.get("daemon_id", ""))
@@ -1628,6 +2258,27 @@ def _action_submit_request(
     })
 
 
+def _safe_epoch2_queue_row(
+    task: Any,
+    *,
+    score: float,
+    tier_enabled: bool,
+) -> dict[str, Any]:
+    """Serialize only non-private operational identity and state."""
+    return {
+        "branch_task_id": task.branch_task_id,
+        "admission_id": task.admission_id,
+        "request_id": task.request_id,
+        "status": task.status,
+        "queue_epoch": task.queue_epoch,
+        "protocol_version": task.protocol_version,
+        "trigger_source": task.trigger_source,
+        "queued_at": task.queued_at,
+        "score": score,
+        "tier_enabled": tier_enabled,
+    }
+
+
 def _action_queue_list(
     universe_id: str = "",
     **_kwargs: Any,
@@ -1646,22 +2297,34 @@ def _action_queue_list(
     if not udir.is_dir():
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
+    v1_error = ""
     try:
         queue = read_queue(udir)
     except Exception as exc:  # noqa: BLE001
-        return json.dumps({
-            "universe_id": uid,
-            "error": f"Failed to read queue: {exc}",
-        })
+        queue = []
+        v1_error = str(exc)
 
     cfg = load_dispatcher_config(udir)
     now_iso = datetime.now(timezone.utc).isoformat()
     rows: list[dict[str, Any]] = []
+    epoch2_read = _epoch2_operational_read(
+        udir,
+        dispatcher_config=cfg,
+    )
+    epoch2 = epoch2_read.summary
     for task in queue:
         row = task.to_dict()
+        row.setdefault("queue_epoch", 1)
         row["score"] = score_task(task, now_iso=now_iso, config=cfg)
         row["tier_enabled"] = cfg.tier_enabled(task.trigger_source)
         rows.append(row)
+    for task in epoch2_read.candidates:
+        score = score_task(task, now_iso=now_iso, config=cfg)
+        rows.append(_safe_epoch2_queue_row(
+            task,
+            score=score,
+            tier_enabled=cfg.tier_enabled(task.trigger_source),
+        ))
     # Primary: status pending first, then score desc. Non-pending
     # sorted by queued_at desc.
     rows.sort(
@@ -1672,12 +2335,116 @@ def _action_queue_list(
         ),
     )
 
+    epoch1_lifecycle = {
+        "depth": len(queue),
+        "lifecycle": {
+            status: sum(
+                1 for task in queue if task.status == status
+            )
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "cancelled",
+                "succeeded",
+                "failed",
+            )
+        },
+    }
+    epoch_counts: dict[str, Any] = {
+        "1": (
+            {"available": False, "error": v1_error}
+            if v1_error
+            else {"available": True, **epoch1_lifecycle}
+        ),
+        "2": (
+            {
+                "available": True,
+                "depth": epoch2["depth"],
+                "lifecycle": epoch2["lifecycle_counts"],
+                "operational": epoch2["operational_state_counts"],
+            }
+            if epoch2["available"]
+            else {
+                "available": False,
+                "error": epoch2["error"],
+            }
+        ),
+    }
+    v1_pending = epoch1_lifecycle["lifecycle"]["pending"]
+    v1_running = epoch1_lifecycle["lifecycle"]["running"]
+    v2_lifecycle = epoch2.get("lifecycle_counts") or {}
+    operational_counts_authoritative = bool(
+        epoch2.get("operational_counts_authoritative", False)
+    )
     return json.dumps({
         "universe_id": uid,
         "queue": rows,
-        "pending_count": sum(1 for r in rows if r.get("status") == "pending"),
-        "running_count": sum(1 for r in rows if r.get("status") == "running"),
+        "pending_count": v1_pending + int(v2_lifecycle.get("pending", 0)),
+        "running_count": v1_running + int(v2_lifecycle.get("running", 0)),
+        "counts_complete": (
+            not v1_error
+            and epoch2["available"]
+            and operational_counts_authoritative
+        ),
+        "epoch_counts": epoch_counts,
+        "epoch_health": {
+            epoch: {
+                "available": data["available"],
+                **(
+                    {"error": data["error"]}
+                    if not data["available"]
+                    else {}
+                ),
+            }
+            for epoch, data in epoch_counts.items()
+        },
+        "operational_state_counts": epoch2.get(
+            "operational_state_counts"
+        ),
+        "operational_state_oldest_age_s": epoch2.get(
+            "operational_oldest_age_s"
+        ),
+        "operational_reason_counts": epoch2.get(
+            "operational_reason_counts"
+        ),
+        "operational_diagnostics": epoch2["diagnostics"],
+        "operational_diagnostics_truncated": epoch2[
+            "diagnostics_truncated"
+        ],
+        "operational_counts_authoritative": (
+            operational_counts_authoritative
+        ),
+        "integrity_scope_complete": epoch2.get(
+            "integrity_scope_complete"
+        ),
+        "unknown_epoch2_lifecycle_status_counts": epoch2.get(
+            "unknown_lifecycle_status_counts"
+        ),
+        "unclassified_epoch2_active_count": epoch2.get(
+            "unclassified_active_count"
+        ),
+        "epoch2_active_scan_limit": epoch2.get("active_scan_limit"),
+        "capacity_evidence_available": epoch2.get(
+            "capacity_evidence_available"
+        ),
+        "capacity_evidence_error": epoch2.get("capacity_evidence_error"),
+        "consumer_ready": epoch2.get("consumer_ready"),
+        "valid_epoch2_pending_count": epoch2.get("valid_pending_count"),
+        "eligible_epoch2_pending_count": epoch2.get(
+            "eligible_pending_count"
+        ),
+        "compatible_worker_count": epoch2.get("compatible_worker_count"),
         "tier_status": cfg.tier_status_map(),
+        **(
+            {
+                "unscoped_invalid_count": int(
+                    epoch2["unscoped_invalid_count"]
+                ),
+            }
+            if "unscoped_invalid_count" in epoch2
+            else {}
+        ),
     })
 
 
@@ -2759,7 +3526,8 @@ def _action_daemon_overview(
 
     Composes queue + subscriptions + bids + settlements + gates +
     activity tail + run state into one response. 1s TTL cache keyed
-    on (universe_id, limit) keeps hot-path cost bounded (R1).
+    on (universe_id, limit, integrity-visibility class) keeps hot-path
+    cost bounded without replaying admin-only diagnostics to readers.
 
     Read-only: no mutations. Absent features gracefully degrade
     (empty lists / zero counts) rather than error.
@@ -2775,7 +3543,12 @@ def _action_daemon_overview(
         "full" if isinstance(limit, str)
         and limit.strip().lower() == "full" else str(limit)
     )
-    cache_key = f"{uid}::{limit_key}"
+    integrity_visibility = (
+        "admin"
+        if _may_view_unscoped_epoch2_integrity(udir)
+        else "reader"
+    )
+    cache_key = f"{uid}::{limit_key}::{integrity_visibility}"
     now_s = _time.time()
     cached = _OVERVIEW_CACHE.get(cache_key)
     if cached and (now_s - cached[0]) < _OVERVIEW_TTL_SECONDS:
@@ -2805,31 +3578,62 @@ def _action_daemon_overview(
 
     # Queue top-N.
     try:
-        from tinyassets.branch_tasks import read_queue
-        from tinyassets.dispatcher import score_task
-        queue = read_queue(udir)
-        q_cfg = load_dispatcher_config(udir)
-        now_iso = datetime.now(timezone.utc).isoformat()
-        scored: list[tuple[float, dict]] = []
-        pending = 0
-        for task in queue:
-            if task.status == "pending":
-                pending += 1
-                row = task.to_dict()
-                row["score"] = score_task(
-                    task, now_iso=now_iso, config=q_cfg,
-                )
-                scored.append((row["score"], row))
-        scored.sort(key=lambda p: -p[0])
+        queue_read = json.loads(_action_queue_list(universe_id=uid))
+        pending_rows = [
+            row
+            for row in queue_read["queue"]
+            if row.get("status") == "pending"
+        ]
         response["queue"] = {
-            "pending_count": pending,
-            "top": [row for _, row in scored[: limits["queue_top"]]],
+            "pending_count": queue_read["pending_count"],
+            "top": pending_rows[: limits["queue_top"]],
             "archived_recent_count": 0,
+            **{
+                key: queue_read[key]
+                for key in (
+                    "counts_complete",
+                    "epoch_counts",
+                    "epoch_health",
+                    "operational_state_counts",
+                    "operational_state_oldest_age_s",
+                    "operational_reason_counts",
+                    "operational_diagnostics",
+                    "operational_diagnostics_truncated",
+                    "operational_counts_authoritative",
+                    "integrity_scope_complete",
+                    "unknown_epoch2_lifecycle_status_counts",
+                    "unclassified_epoch2_active_count",
+                    "epoch2_active_scan_limit",
+                    "capacity_evidence_available",
+                    "capacity_evidence_error",
+                    "valid_epoch2_pending_count",
+                    "eligible_epoch2_pending_count",
+                    "compatible_worker_count",
+                )
+            },
+            **(
+                {
+                    "unscoped_invalid_count": queue_read[
+                        "unscoped_invalid_count"
+                    ],
+                }
+                if "unscoped_invalid_count" in queue_read
+                else {}
+            ),
         }
     except Exception as exc:  # noqa: BLE001
         logger.warning("daemon_overview: queue read failed: %s", exc)
-        response["queue"] = {"pending_count": 0, "top": [],
-                             "archived_recent_count": 0}
+        response["queue"] = {
+            "pending_count": None,
+            "top": [],
+            "archived_recent_count": 0,
+            "counts_complete": False,
+            "epoch_health": {
+                "1": {"available": False, "error": str(exc)},
+                "2": {"available": False, "error": str(exc)},
+            },
+            "error": str(exc),
+        }
 
     # Subscriptions + drift.
     try:
@@ -4698,13 +5502,36 @@ def _action_create_universe(
     universe_id: str = "",
     text: str = "",
     branch_def_id: str = "",
+    visibility: str = "",
     **_kwargs: Any,
 ) -> str:
     base = _base_path()
+    # Creation-time visibility declaration: a new universe must be born with an
+    # explicit level so undeclared rows stop being produced (undeclared fails
+    # closed). The creator may choose a level; default is the host-knob
+    # `DEFAULT_CREATE_VISIBILITY`. Validate up front so a bad value fails the
+    # create loudly rather than silently leaving the universe undeclared.
+    from tinyassets.api import visibility as _visibility
+
+    create_level = (visibility or "").strip() or _visibility.DEFAULT_CREATE_VISIBILITY
+    if _visibility.parse_level(create_level) is None:
+        return json.dumps({
+            "error": (
+                f"Invalid visibility {create_level!r}; expected one of "
+                f"{sorted(_visibility.LEVELS)}."
+            ),
+        })
     # universe-creation D2: universe_id is optional. When absent, generate one
     # opaque immutable serial (u- + lowercase ULID). Provided ids are still
     # accepted (dev / existing-universe operations).
-    uid = (universe_id or "").strip() or new_universe_id()
+    supplied_id = (universe_id or "").strip()
+    # Provenance (universe-creation 5.2): the id is platform-generated iff this
+    # function generated it (no caller value). The public MCP boundary rejects a
+    # caller-selected id upstream, so public births always land here with an
+    # empty ``universe_id`` and are generated=True; a supplied id is a dev /
+    # migration / already-reserved value whose provenance is the caller's.
+    id_is_platform_generated = not supplied_id
+    uid = supplied_id or new_universe_id()
     udir = base / uid
 
     # Sanitize
@@ -4764,19 +5591,25 @@ def _action_create_universe(
 
         # D0a founder-grant-on-create: the authenticated founder OWNS the
         # universe they create (admin grant) — the mechanism that makes the
-        # per-universe write boundary real. Ownership is orthogonal to
-        # visibility: we do NOT touch public_read, so the universe stays
-        # publicly readable by default. A dev/no-auth (anonymous) create
-        # seeds no grant, so local dev-mode creates keep working.
-        # Register in the universes index so a founder universe has a
-        # universes + universe_rules row (not just an ACL grant) — home
-        # resolution + reset rely on a consistent registry.
+        # per-universe write boundary real. Ownership (ACL grant) stays
+        # orthogonal to visibility (the declared level). Register in the
+        # universes index so a founder universe has a universes + universe_rules
+        # row (not just an ACL grant) — home resolution + reset rely on a
+        # consistent registry.
         try:
             from tinyassets.daemon_server import ensure_universe_registered
 
             ensure_universe_registered(base, universe_id=uid, universe_path=udir)
         except Exception:  # noqa: BLE001 - registry is best-effort at create
             logger.warning("ensure_universe_registered failed for %s", uid, exc_info=True)
+
+        # Declare the universe's visibility explicitly at birth (both the explicit
+        # `create_universe` action and the converse/first-contact auto-birth route
+        # through here), so no universe is ever produced undeclared. This is on
+        # the critical path: a failure rolls the partial create back via the
+        # outer except, keeping create atomic.
+        _visibility.set_universe_visibility(uid, create_level)
+        result["visibility"] = create_level
 
         founder = permissions.current_actor_id()
         if permissions.is_authenticated_request():
@@ -4799,7 +5632,12 @@ def _action_create_universe(
 
             _home = get_founder_home(base, founder)
             if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
+                set_founder_home(
+                    base,
+                    founder_sub=founder,
+                    universe_id=uid,
+                    platform_generated=id_is_platform_generated,
+                )
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
@@ -5206,6 +6044,23 @@ def _action_soul_edit(
         return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
 
     model = read_self_model(udir)
+    # universe-creation task 5.3: when a governed learning event accepts a new
+    # self-name in identity.md, project it onto the universe index row keyed by
+    # this immutable id. The projection updates only the display name — never
+    # the key or runtime operation id — and is best-effort so a registry hiccup
+    # never fails the learning event that already persisted to the brain.
+    learned_name = str(model.get("name") or "").strip()
+    if learned_name and "identity.md" in result["updated_files"]:
+        try:
+            from tinyassets.daemon_server import set_universe_display_name
+
+            set_universe_display_name(
+                _base_path(), universe_id=uid, display_name=learned_name
+            )
+        except Exception:  # noqa: BLE001 - index projection is best-effort
+            logger.warning(
+                "learned-name index projection failed for %s", uid, exc_info=True
+            )
     return json.dumps({
         "universe_id": uid,
         "status": "learned",
@@ -5338,10 +6193,17 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    *,
+    allow_named_universe_id: bool = False,
 ) -> str:
     """Pattern A2 body — see ``tinyassets.universe_server.universe`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
+
+    ``allow_named_universe_id`` is a keyword-only, internal-trust flag. The
+    public MCP surface (``universe`` and ``write_graph`` tools) never sets it,
+    so a public caller cannot choose a universe's id — see the public-birth
+    boundary below.
     """
     dispatch = UNIVERSE_ACTIONS
     handler = dispatch.get(action)
@@ -5349,6 +6211,26 @@ def _universe_impl(
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
+        })
+    # universe-lifecycle-and-soul: every public universe-birth entry point
+    # self-serializes. A public caller-selected id is rejected here at the
+    # shared dispatch boundary — the service assigns an opaque ``u-``+ULID
+    # serial (see ``tinyassets.ids.new_universe_id``). Only trusted internal
+    # callers (first-contact home materialization, migration/dev tooling) may
+    # supply a pre-generated serial via ``allow_named_universe_id``. Direct
+    # ``_action_create_universe`` callers bypass this boundary and keep
+    # accepting explicit ids for dev/test/migration use.
+    if (
+        action == "create_universe"
+        and not allow_named_universe_id
+        and universe_id.strip()
+    ):
+        return json.dumps({
+            "error": (
+                "Universe birth assigns its own opaque serial id; a "
+                "caller-selected universe_id is not accepted."
+            ),
+            "reason": "caller_selected_id_rejected",
         })
     scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
     if scope_error is not None:

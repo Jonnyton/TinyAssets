@@ -867,14 +867,13 @@ jobs:
         run: |
           # Since CF Access Option-1 cutover, the direct URL (mcp.tinyassets.io)
           # correctly returns 403. Only the canonical URL is a valid health signal.
-          python scripts/mcp_public_canary.py --url "${CANARY_URL}" --verbose
+          python scripts/mcp_public_canary.py \
+            --url "${CANARY_URL}" --assert-name TinyAssets --verbose
 
-      - name: Post-deploy 5-handle surface assertion (PR-178)
+      - name: Post-deploy exact-seven surface assertion
         run: |
-          # Drift guard: the live /mcp must advertise exactly the five
-          # canonical handles (read/write/run.graph + read/write.page, plus
-          # optional get_status). Fails the deploy if the user surface
-          # regresses to the legacy fat tools.
+          # Drift guard: live /mcp must advertise the exact seven canonical
+          # handles. Fails the deploy on a missing handle or legacy-tool leak.
           python scripts/mcp_public_canary.py --url "${CANARY_URL}" --assert-handles --verbose
 
       - name: Verify subscription LLM binding after synced Codex auth
@@ -1322,7 +1321,7 @@ jobs:
             echo "### Terminal release-state receipt"
             echo ""
             echo "- Container path: \`/data/release-state.json\`"
-            echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))[\"outcome\"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
+            echo "- Outcome: \`$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' "$RUNNER_TEMP/tinyassets-release-state.json")\`"
           } >> "$GITHUB_STEP_SUMMARY"
           if [ "${FORWARD_SUCCEEDED}" = "true" ]; then
             if ! python - "$RUNNER_TEMP/tinyassets-release-state.json" <<'PY'

@@ -1,8 +1,22 @@
-# MCP Directory Submission Packet
+# MCP Directory Submission Packet — SUPERSEDED HISTORICAL SNAPSHOT
 
 Date: 2026-05-01
-Status: MCP Registry published; Claude/ChatGPT directory submission packet
+Status: **SUPERSEDED / HISTORICAL — DO NOT EXECUTE**
 Owner: lead + codex-gpt5-desktop
+
+> This file preserves the 2026-05-01 submission packet and evidence as
+> historical context. It is not a current endpoint, manifest, submission, or
+> rollout source. `/mcp-directory*` is retired and must be an ordinary 404
+> without redirect, alias, or compatibility behavior. Current work uses the
+> exact public name `TinyAssets`, the sole remote endpoint
+> `https://tinyassets.io/mcp`, and the exact canonical tool/auth contract in
+> `openspec/changes/reconcile-external-connector-manifests/`.
+>
+> Do not execute, refresh, or submit any checklist or payload below. Rebuild
+> current external connector manifests and submission answers from the
+> OpenSpec change instead.
+
+The remainder of this document is the preserved 2026-05-01 snapshot.
 
 This packet is for app-directory and registry reviewers. It separates the full
 custom connector endpoint from the narrower review/listing endpoint:

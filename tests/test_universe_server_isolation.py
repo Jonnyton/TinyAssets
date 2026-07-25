@@ -23,9 +23,7 @@ from tinyassets.auth.middleware import auth_middleware, set_provider
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 from tinyassets.daemon_server import (
     ensure_universe_registered,
-    ensure_universe_rules,
     grant_universe_access,
-    update_universe_rules,
 )
 
 
@@ -97,19 +95,30 @@ def _authenticate(user_id: str, scopes: list[str] | None = None) -> None:
 def _make_universe(base: Path, uid: str) -> Path:
     udir = base / uid
     udir.mkdir(parents=True)
+    # Under the universe-visibility contract an undeclared universe fails closed
+    # (withheld from list/status/wiki). Declare public explicitly so these tests
+    # exercise public-universe behavior.
+    from tinyassets.api.visibility import set_universe_visibility
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=udir)
+    set_universe_visibility(uid, "public")
     return udir
 
 
 def _make_private_universe(base: Path, uid: str) -> Path:
-    """Create a universe made *private* the ratified way — via the
-    ``public_read`` visibility rule, NOT by seeding an ACL row. In the D0c
-    model ownership (ACL grants) and visibility (public_read) are orthogonal:
-    an admin grant alone does not hide a universe.
+    """Create a universe made *private* the ratified way — via the declared
+    visibility level, NOT by seeding an ACL row. In the D0c model ownership
+    (ACL grants) and visibility are orthogonal: an admin grant alone does not
+    hide a universe.
     """
-    udir = _make_universe(base, uid)
+    from tinyassets.api.visibility import set_universe_visibility
+
+    udir = base / uid
+    udir.mkdir(parents=True)
     ensure_universe_registered(base, universe_id=uid, universe_path=udir)
-    ensure_universe_rules(base, universe_id=uid)
-    update_universe_rules(base, universe_id=uid, updates={"public_read": False})
+    # `private` sets public_read=False AND declares the explicit level, so the
+    # legacy gate and the visibility layer agree (no inconsistent row).
+    set_universe_visibility(uid, "private")
     return udir
 
 
@@ -275,21 +284,23 @@ class TestUniverseAclEnforcement:
             ["tinyassets.universe.costly", "tinyassets.universe.write"],
         )
 
+        # universe-creation 5.2: public create self-serializes — a caller id is
+        # rejected — so capture the generated serial for the follow-up write.
         created = json.loads(us._universe_impl(
             action="create_universe",
-            universe_id="mine",
             text="A seed.",
         ))
+        uid = created["universe_id"]
         updated = json.loads(us._universe_impl(
             action="set_premise",
-            universe_id="mine",
+            universe_id=uid,
             text="Founder-owned update.",
         ))
 
         assert created["status"] == "created"
         assert created["founder_id"] == "alice"
         assert updated["status"] == "updated"
-        assert (universe_base / "mine" / "PROGRAM.md").read_text(
+        assert (universe_base / uid / "PROGRAM.md").read_text(
             encoding="utf-8",
         ) == "Founder-owned update."
 
@@ -300,17 +311,18 @@ class TestUniverseAclEnforcement:
             "alice",
             ["tinyassets.universe.costly", "tinyassets.universe.write"],
         )
+        # universe-creation 5.2: public create self-serializes; use the serial.
         created = json.loads(us._universe_impl(
             action="create_universe",
-            universe_id="alice-world",
             text="Alice's seed.",
         ))
         assert created["founder_id"] == "alice"
+        alice_world = created["universe_id"]
 
         _authenticate("bob", ["tinyassets.universe.write"])
         out = json.loads(us._universe_impl(
             action="set_premise",
-            universe_id="alice-world",
+            universe_id=alice_world,
             text="Hostile cross-founder overwrite.",
         ))
 

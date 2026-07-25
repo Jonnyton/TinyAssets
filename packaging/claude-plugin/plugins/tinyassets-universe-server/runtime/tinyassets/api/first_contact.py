@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import threading
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 _HOME_MATERIALIZE_LOCK = threading.Lock()
 
@@ -31,7 +34,11 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     The create scope is checked before reserving an id, and concurrent callers
     converge on one binding and one ledgered creation.
     """
-    from tinyassets.daemon_server import claim_founder_home, get_founder_home
+    from tinyassets.daemon_server import (
+        claim_founder_home,
+        founder_home_is_platform_generated,
+        get_founder_home,
+    )
 
     home = get_founder_home(base, founder)
     if home_is_complete(base, home):
@@ -44,10 +51,38 @@ def ensure_founder_home(base: Path, founder: str) -> str:
     except PermissionError:
         return ""
 
-    from tinyassets.ids import new_universe_id
+    from tinyassets.ids import is_universe_serial, new_universe_id
 
     winner = claim_founder_home(base, founder, new_universe_id())
     if not winner:
+        return ""
+    # Provenance gate (universe-creation 5.2): the internal-trust flag may only
+    # materialize a value proven to be PLATFORM-GENERATED — not merely one that
+    # matches the serial FORMAT. ``claim_founder_home`` runs INSERT ... ON
+    # CONFLICT DO NOTHING, so ``winner`` may be a pre-existing binding returned
+    # verbatim; and ``founder_home`` has two writers (``claim_founder_home`` and
+    # the general ``set_founder_home``), so sole-writer provenance cannot be
+    # assumed. A hostile or legacy caller could persist a value that satisfies
+    # ``is_universe_serial`` (e.g. ``u-000...``) without the platform ever
+    # generating it. We therefore require the row's structural provenance marker
+    # (stamped only when the platform generated the id), with the format check
+    # kept as defense-in-depth. Anything else fails closed and LOUDLY — never
+    # rebind/migrate a stale binding to a serial here; backfilling legitimate
+    # existing serial rows is host-run migration (universe-creation 5.4).
+    proven = founder_home_is_platform_generated(
+        base, founder_sub=founder, universe_id=winner
+    )
+    if not (proven and is_universe_serial(winner)):
+        logger.warning(
+            "first-contact refused to materialize founder %s home: bound "
+            "universe_id %r is not a proven platform-generated serial "
+            "(marker=%s, serial_shape=%s). Failing closed; a host-run serial "
+            "migration must repair the binding before this founder births.",
+            founder,
+            winner,
+            proven,
+            is_universe_serial(winner),
+        )
         return ""
     universe_dir = _home_dir(base, winner)
     if universe_dir is None:
@@ -66,7 +101,15 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             except OSError:
                 pass
         try:
-            _universe_impl(action="create_universe", universe_id=winner)
+            # ``winner`` passed the provenance gate above: its founder_home row
+            # carries the platform-generated marker AND it is serial-shaped. Only
+            # such a proven-generated serial may cross the trusted internal path
+            # so the public-birth boundary accepts our own id.
+            _universe_impl(
+                action="create_universe",
+                universe_id=winner,
+                allow_named_universe_id=True,
+            )
         except Exception:  # noqa: BLE001 - failed birth degrades honestly
             pass
         if not home_is_complete(base, winner):

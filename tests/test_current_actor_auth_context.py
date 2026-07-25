@@ -82,7 +82,7 @@ def test_current_actor_falls_back_to_env_without_request_identity(
     assert _current_actor() == "env-actor"
 
 
-def test_get_status_account_user_uses_authenticated_subject(
+def test_get_status_exposes_fingerprint_not_authenticated_subject(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -104,9 +104,15 @@ def test_get_status_account_user_uses_authenticated_subject(
 
     auth_middleware("valid")
 
-    payload = json.loads(get_status())
+    payload = json.loads(get_status("status-uni"))
 
-    assert payload["session_boundary"]["account_user"] == "oauth-status-subject"
+    assert payload["request_identity"]["bearer_present"] is True
+    assert payload["session_boundary"]["principal_fingerprint"] == (
+        payload["request_identity"]["principal_fingerprint"]
+    )
+    encoded = json.dumps(payload, sort_keys=True)
+    assert "oauth-status-subject" not in encoded
+    assert "env-actor" not in encoded
 
 
 @pytest.mark.asyncio

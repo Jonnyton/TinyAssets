@@ -357,7 +357,7 @@ The system SHALL expose unauthenticated CDN-cacheable public aggregate reads equ
 - **AND** critical authority facts are not hidden only in structured content
 
 ### Requirement: Manipulation controls aggregate by authenticated economic principal
-The live index SHALL use dispute-cleared settlements and verified native asks and aggregate volume by a canonical economic-principal root backed by verified payout/funding, legal-entity, or common operator linkage rather than account identity alone. It SHALL apply a configurable per-principal influence cap, retain direction-insensitive pair analysis, conservatively exclude or downweight volume when linkage is unknown, and publish root-based distinct-owner and concentration/confidence facts. One principal SHALL NOT evade controls by splitting volume across offers, counterparties, workforce/OAuth accounts, seller accounts, or reversed pair direction. Discovery SHALL consume, not decide, the transaction owner's self-host classification: an accepted observation whose verified requester and host owner are identical SHALL carry `self_hosted_zero_fee` and remain excluded from paid-market volume, executable public ranking, and trusted VWAP. Broader linked-party paid-market volume SHALL be excluded or downweighted from trusted VWAP and SHALL retain its recorded ordinary canonical fee unless the transaction owner applied that exact same-owner exemption. External references SHALL remain separate and may bound only the named canonical composite-index field under its complete/current/valid all-in-ceiling rule; they SHALL NOT clamp raw native VWAP or enter native executable ranking.
+The live index SHALL use dispute-cleared settlements and verified native asks and aggregate volume by a canonical economic-principal root backed by verified payout/funding, legal-entity, or common operator linkage rather than account identity alone. It SHALL apply a configurable per-principal influence cap, retain direction-insensitive pair analysis, conservatively exclude or downweight volume when linkage is unknown, and publish root-based distinct-owner and concentration/confidence facts. One principal SHALL NOT evade controls by splitting volume across offers, counterparties, workforce/OAuth accounts, seller accounts, or reversed pair direction. Discovery SHALL consume, not decide, the transaction owner's verified requester/host identities: an accepted observation whose verified requester and host owner are identical SHALL remain excluded from paid-market volume, executable public ranking, and trusted VWAP, while its positive-gross TinyAssets settlement SHALL still retain the ordinary canonical fee evidence. Broader linked-party paid-market volume SHALL be excluded or downweighted from trusted VWAP and SHALL retain its recorded ordinary canonical fee. Same-owner, linked-party, connected, and external supply SHALL NOT create a settlement-fee exemption. External references SHALL remain separate and may bound only the named canonical composite-index field under its complete/current/valid all-in-ceiling rule; they SHALL NOT clamp raw native VWAP or enter native executable ranking.
 
 #### Scenario: split-counterparty wash volume cannot dominate
 - **WHEN** one authenticated principal trades through multiple counterparties or offer identities inside the index window
@@ -366,8 +366,13 @@ The live index SHALL use dispute-cleared settlements and verified native asks an
 
 #### Scenario: self-hosted work is not market volume
 - **WHEN** the index receives an accepted observation whose verified requester identity equals verified host-owner identity
-- **THEN** the observation must carry the transaction owner's `self_hosted_zero_fee` classification or ingestion fails loud
-- **AND** a valid self-hosted observation creates no paid-market price, breadth, or executable-ranking evidence
+- **THEN** the observation is excluded from paid-market price, breadth, and executable-ranking evidence
+- **AND** any positive-gross TinyAssets settlement still carries the transaction owner's ordinary canonical fee
+
+#### Scenario: actor relationship cannot waive the fee
+- **WHEN** requester and host are identical, linked operators, organization members, connected suppliers, or external suppliers
+- **THEN** any positive-gross TinyAssets settlement retains the canonical fee evidence required by the transaction owner
+- **AND** discovery may change index eligibility but cannot create a fee exemption
 
 #### Scenario: unknown linkage lowers confidence
 - **WHEN** accounts cannot be linked to a verified economic-principal root with sufficient evidence

@@ -19,6 +19,7 @@ coverage.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -27,8 +28,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 from tinyassets import branch_tasks as bt_mod
+from tinyassets.auth.provider import Identity
 from tinyassets.branch_tasks import (
     ARCHIVE_FILENAME,
     QUEUE_FILENAME,
@@ -43,6 +46,11 @@ from tinyassets.branch_tasks import (
     read_queue,
     recover_claimed_tasks,
 )
+from tinyassets.branch_tasks_v2 import (
+    Epoch2BranchTaskAdapter,
+    WorkerClaimDescriptor,
+)
+from tinyassets.daemon_server import initialize_author_server
 from tinyassets.dispatcher import (
     DispatcherConfig,
     dispatcher_enabled,
@@ -51,6 +59,7 @@ from tinyassets.dispatcher import (
     select_next_task,
     soul_guided_dispatch_read,
 )
+from tinyassets.storage.request_admissions import RequestAdmissionStore
 
 # ───────────────────────────────────────────────────────────────────────
 # Fixtures
@@ -85,6 +94,69 @@ def _make_task(
         queued_at=queued_at or datetime.now(timezone.utc).isoformat(),
         status=status,
         claimed_by=extra.get("claimed_by", ""),
+    )
+
+
+def _commit_epoch2(
+    base_path: Path,
+    *,
+    key_suffix: str,
+    text: str,
+    created_at: str,
+    priority_weight: float = 5,
+    universe_id: str = "universe-a",
+    directed_daemon_instruction: str = "",
+    directed_daemon_id: str = "",
+    directed_soul_hash: str = "",
+) -> dict:
+    canonical_body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": directed_daemon_id,
+        "directed_daemon_instruction": directed_daemon_instruction,
+        "pickup_incentive": "",
+        "priority_weight": priority_weight,
+        "request_type": "general",
+        "schema_version": "request-admission-v2",
+        "text": text,
+        "universe_id": universe_id,
+    })
+    return RequestAdmissionStore(base_path).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id=universe_id,
+        idempotency_key_hash=(
+            "hmac-sha256:"
+            + hashlib.sha256(key_suffix.encode()).hexdigest()
+        ),
+        body_digest=(
+            "sha256:" + hashlib.sha256(canonical_body).hexdigest()
+        ),
+        body_digest_version="rfc8785-v1",
+        request_type="general",
+        text=text,
+        branch_id="",
+        branch_def_id="loop-branch",
+        trigger_source="operator_request",
+        accepted_priority_weight=priority_weight,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 1,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": (
+                {
+                    "daemon_id": directed_daemon_id,
+                    "daemon_soul_hash": directed_soul_hash,
+                    "authority_scope": "owner",
+                }
+                if directed_daemon_id
+                else {}
+            ),
+        },
+        directed_daemon_id=directed_daemon_id,
+        directed_daemon_instruction=directed_daemon_instruction,
+        created_at=created_at,
     )
 
 
@@ -258,6 +330,220 @@ def test_select_next_empty_queue_returns_none(universe_dir):
     assert select_next_task(universe_dir, config=cfg) is None
 
 
+def test_legacy_queue_cannot_select_forged_operator_tier(universe_dir):
+    with pytest.raises(ValueError, match="Invalid trigger_source"):
+        append_task(
+            universe_dir,
+            _make_task(trigger_source="operator_request"),
+        )
+
+    assert select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+    ) is None
+
+
+def test_v2_selector_merges_epochs_without_mutating_either(tmp_path):
+    universe_dir = tmp_path / "universe-a"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    v1 = _make_task(
+        trigger_source="host_request",
+        priority_weight=0,
+        queued_at="2026-07-24T08:00:00+00:00",
+        branch_task_id="v1-host",
+    )
+    append_task(universe_dir, v1)
+    committed = _commit_epoch2(
+        tmp_path,
+        key_suffix="selector-merge",
+        text="operator work",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+
+    legacy_selected = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+    )
+    v2_selected = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+        epoch2_adapter=adapter,
+    )
+    epoch2_only = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:02+00:00",
+        epoch2_adapter=adapter,
+        queue_epochs=frozenset({2}),
+    )
+
+    assert legacy_selected is not None
+    assert legacy_selected.branch_task_id == "v1-host"
+    assert v2_selected is not None
+    assert v2_selected.branch_task_id == committed["branch_task_id"]
+    assert getattr(v2_selected, "queue_epoch") == 2
+    assert epoch2_only is not None
+    assert epoch2_only.branch_task_id == committed["branch_task_id"]
+    assert read_queue(universe_dir)[0].status == "pending"
+    assert adapter.get(committed["branch_task_id"]).status == "pending"
+
+
+def test_mixed_invalid_epoch2_rows_never_execute_or_block_valid_epochs(
+    tmp_path: Path,
+) -> None:
+    universe_dir = tmp_path / "universe-a"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    append_task(
+        universe_dir,
+        _make_task(
+            trigger_source="host_request",
+            queued_at="2026-07-24T08:00:00+00:00",
+            branch_task_id="valid-v1",
+            universe_id="universe-a",
+        ),
+    )
+    valid_v2 = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-valid",
+        text="valid operator work",
+        created_at="2026-07-24T08:00:01+00:00",
+    )
+    forged = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-forged",
+        text="forged operator work",
+        created_at="2026-07-24T08:00:02+00:00",
+    )
+    missing_receipt = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-missing-receipt",
+        text="missing receipt work",
+        created_at="2026-07-24T08:00:03+00:00",
+    )
+    unsupported = _commit_epoch2(
+        tmp_path,
+        key_suffix="mixed-unsupported",
+        text="unsupported protocol work",
+        created_at="2026-07-24T08:00:04+00:00",
+    )
+    store = RequestAdmissionStore(tmp_path)
+    with store.connection() as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET branch_def_id = 'forged-branch'
+            WHERE branch_task_id = ?
+            """,
+            (forged["branch_task_id"],),
+        )
+        conn.execute(
+            """
+            UPDATE request_admissions SET receipt_json = '{}'
+            WHERE branch_task_id = ?
+            """,
+            (missing_receipt["branch_task_id"],),
+        )
+        conn.execute("PRAGMA ignore_check_constraints = ON")
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2 SET protocol_version = 99
+            WHERE branch_task_id = ?
+            """,
+            (unsupported["branch_task_id"],),
+        )
+    transaction_at = datetime.fromisoformat(
+        "2026-07-24T08:00:30+00:00"
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: transaction_at,
+    )
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-v2",
+        runtime_instance_id="runtime-v2",
+        boot_id="boot-v2",
+        build_sha="a" * 40,
+        config_hash="b" * 64,
+        universe_id="universe-a",
+        expires_at="2026-07-24T08:01:30+00:00",
+    )
+    invalid = (forged, missing_receipt, unsupported)
+
+    selected_v2 = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:30+00:00",
+        epoch2_adapter=adapter,
+    )
+
+    assert selected_v2 is not None
+    assert selected_v2.branch_task_id == valid_v2["branch_task_id"]
+    with store.connection() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM branch_tasks_v2_quarantine"
+        ).fetchone()[0] == 0
+    for row in invalid:
+        assert adapter.claim(
+            row["branch_task_id"],
+            descriptor=descriptor,
+            descriptor_reader=lambda _conn, _worker_id: descriptor,
+        ) is None
+    claimed_v2 = adapter.claim(
+        valid_v2["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed_v2 is not None
+    assert claimed_v2.status == "running"
+
+    selected_v1 = select_next_task(
+        universe_dir,
+        config=DispatcherConfig(),
+        now_iso="2026-07-24T08:00:31+00:00",
+        epoch2_adapter=adapter,
+    )
+    assert selected_v1 is not None
+    assert selected_v1.branch_task_id == "valid-v1"
+    claimed_v1 = claim_task(universe_dir, "valid-v1", "worker-v2")
+    assert claimed_v1 is not None
+    assert claimed_v1.status == "running"
+
+    maintenance = adapter.maintain_quarantine()
+
+    assert maintenance.health == "green"
+    assert maintenance.quarantined == 3
+    reasons = {
+        receipt.branch_task_id: receipt.reason
+        for receipt in maintenance.receipts
+    }
+    assert reasons == {
+        forged["branch_task_id"]: "invalid_operator_admission",
+        missing_receipt["branch_task_id"]: "invalid_operator_admission",
+        unsupported["branch_task_id"]: "unsupported_protocol",
+    }
+    with store.connection() as conn:
+        rows = {
+            row["branch_task_id"]: (row["status"], row["disabled"])
+            for row in conn.execute(
+                """
+                SELECT branch_task_id, status, disabled
+                FROM branch_tasks_v2
+                """
+            )
+        }
+    assert rows[valid_v2["branch_task_id"]] == ("running", 0)
+    assert all(
+        rows[row["branch_task_id"]] == ("pending", 1)
+        for row in invalid
+    )
+
+
 def test_select_next_skips_tasks_directed_to_other_daemon(tmp_path):
     from tinyassets import daemon_registry
 
@@ -383,9 +669,32 @@ def server_base(tmp_path: Path, monkeypatch):
     base = tmp_path / "output"
     base.mkdir()
     uid = "test-uni"
-    (base / uid).mkdir()
+    udir = base / uid
+    udir.mkdir()
+    (udir / "PROGRAM.md").write_text(
+        "Legacy fixture with an explicit compatibility Loop.",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", uid)
+    identity = Identity(
+        user_id="authenticated-requester",
+        username="authenticated-requester",
+        capabilities=["write"],
+    )
+    monkeypatch.setattr(
+        "tinyassets.auth.middleware.current_identity",
+        lambda: identity,
+    )
+    from tinyassets.daemon_server import grant_universe_access
+
+    grant_universe_access(
+        base,
+        universe_id=uid,
+        actor_id=identity.user_id,
+        permission="write",
+        granted_by=identity.user_id,
+    )
     return base, uid
 
 
@@ -395,7 +704,7 @@ def _call_submit(**kwargs):
     return json.loads(_action_submit_request(**kwargs))
 
 
-def test_submit_request_as_host_queues_host_request_branch_task(
+def test_submit_host_without_grant_queues_user_request(
     server_base, monkeypatch,
 ):
     _, uid = server_base
@@ -405,7 +714,7 @@ def test_submit_request_as_host_queues_host_request_branch_task(
     assert "branch_task_id" in resp and resp["branch_task_id"]
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
     assert len(q) == 1
-    assert q[0].trigger_source == "host_request"
+    assert q[0].trigger_source == "user_request"
 
 
 def test_submit_request_as_non_host_queues_user_request(
@@ -441,23 +750,30 @@ def test_submit_8kib_cap_still_enforced(server_base, monkeypatch):
     assert "error" in resp
 
 
-def test_submit_host_priority_weight_persists(server_base, monkeypatch):
+def test_submit_host_without_grant_priority_weight_is_rejected(
+    server_base, monkeypatch,
+):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
-    _call_submit(universe_id=uid, text="boosted", priority_weight=50.0)
+    response = _call_submit(
+        universe_id=uid,
+        text="boosted",
+        priority_weight=50.0,
+    )
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 50.0
+    assert response["error"] == "priority_authorization_required"
+    assert q == []
 
 
-def test_submit_non_host_priority_weight_clamped(server_base, monkeypatch):
+def test_submit_non_host_priority_weight_is_rejected(server_base, monkeypatch):
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
     resp = _call_submit(universe_id=uid, text="sneaky", priority_weight=50.0)
-    assert "error" not in resp
+    assert resp["error"] == "priority_authorization_required"
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 0.0
+    assert q == []
 
 
 def test_submit_negative_priority_weight_rejected(server_base, monkeypatch):
@@ -865,17 +1181,21 @@ def test_invariant_3_producer_boundary_each_called_exactly_once(
         prod_mod._REGISTRY.extend(saved)
 
 
-def test_invariant_9_priority_weight_clamp_at_submission(
+def test_invariant_9_positive_priority_never_silently_demotes(
     server_base, monkeypatch,
 ):
-    """Redundant with submission-integration tests above, but stated
-    here as its own invariant assertion."""
+    """Unauthorized positive priority fails without an ordinary queue row."""
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
-    _call_submit(universe_id=uid, text="anyone", priority_weight=999.0)
+    response = _call_submit(
+        universe_id=uid,
+        text="anyone",
+        priority_weight=999.0,
+    )
     q = read_queue(Path(os.environ["TINYASSETS_DATA_DIR"]) / uid)
-    assert q[0].priority_weight == 0.0
+    assert response["error"] == "priority_authorization_required"
+    assert q == []
 
 
 # ───────────────────────────────────────────────────────────────────────
@@ -896,8 +1216,10 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     resp = json.loads(_action_queue_list(universe_id=uid))
     assert "queue" in resp
     assert len(resp["queue"]) == 2
-    # host_request should be first (higher tier weight)
-    assert resp["queue"][0]["trigger_source"] == "host_request"
+    # Host identity alone grants no tier elevation; both remain ordinary work.
+    assert {
+        row["trigger_source"] for row in resp["queue"]
+    } == {"user_request"}
     # scores present
     assert "score" in resp["queue"][0]
     # tier_status map present
@@ -906,22 +1228,408 @@ def test_queue_list_returns_sorted_scored_queue(server_base, monkeypatch):
     assert "stubbed" in resp["tier_status"]["goal_pool"]
 
 
-def test_queue_cancel_on_running_task_as_host_requests_cancel(
+def test_queue_list_merges_epoch2_without_exposing_request_text(
+    server_base,
+    monkeypatch,
+):
+    import tinyassets.branch_tasks_v2 as branch_tasks_v2
+
+    monkeypatch.setattr(
+        branch_tasks_v2,
+        "EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    from tinyassets.api.universe import _action_queue_list
+
+    base, uid = server_base
+    initialize_author_server(base)
+    committed = _commit_epoch2(
+        base,
+        key_suffix="queue-list-v2",
+        text="private operator request text",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+        directed_daemon_instruction="PRIVATE-INSTRUCTION-SENTINEL",
+    )
+    (base / uid / "branch_tasks.json").write_text(
+        "{corrupt-v1",
+        encoding="utf-8",
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["pending_count"] == 1
+    assert response["counts_complete"] is False
+    assert response["epoch_counts"]["1"]["available"] is False
+    assert response["epoch_health"]["2"]["available"] is True
+    assert response["epoch_counts"]["2"]["depth"] == 1
+    assert response["operational_state_counts"][
+        "awaiting_compatible_capacity"
+    ] == 1
+    assert len(response["queue"]) == 1
+    assert response["queue"][0]["branch_task_id"] == (
+        committed["branch_task_id"]
+    )
+    assert response["queue"][0]["queue_epoch"] == 2
+    assert "inputs" not in response["queue"][0]
+    assert "private operator request text" not in json.dumps(response)
+    assert "PRIVATE-INSTRUCTION-SENTINEL" not in json.dumps(response)
+    assert "request-local" not in json.dumps(response)
+
+    from tinyassets.daemon_registry import (
+        control_runtime_instance,
+        create_daemon,
+        ensure_daemon_runtime,
+        set_worker_queue_descriptor,
+    )
+
+    daemon = create_daemon(
+        base,
+        display_name="Queue status worker",
+        created_by="test",
+        soul_text="Serve the queue status integration fixture.",
+    )
+    runtime = ensure_daemon_runtime(
+        base,
+        daemon_id=daemon["daemon_id"],
+        universe_id=uid,
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="test",
+        worker_id="worker-a",
+    )
+    now = datetime.now(timezone.utc)
+    heartbeat = {
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "phase": "polling",
+        "subprocess_alive": True,
+        "worker_id": "worker-a",
+        "runtime_instance_id": runtime["runtime_instance_id"],
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "boot_id": "boot-a",
+        "build_sha": "a" * 40,
+        "config_hash": "sha256:" + "b" * 64,
+        "universe_id": uid,
+        "expires_at": (
+            now + timedelta(seconds=60)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    set_worker_queue_descriptor(
+        base,
+        runtime_instance_id=runtime["runtime_instance_id"],
+        descriptor=heartbeat,
+        expected_worker_id="worker-a",
+    )
+    (base / uid / ".worker_supervisor.worker-a.json").write_text(
+        json.dumps(heartbeat),
+        encoding="utf-8",
+    )
+    with_capacity = json.loads(_action_queue_list(universe_id=uid))
+    assert with_capacity["compatible_worker_count"] == 1
+    assert with_capacity["eligible_epoch2_pending_count"] == 1
+    assert with_capacity["operational_state_counts"][
+        "awaiting_compatible_capacity"
+    ] == 0
+
+    control_runtime_instance(
+        base,
+        runtime_instance_id=runtime["runtime_instance_id"],
+        action="pause",
+        actor_id="test",
+    )
+    paused = json.loads(_action_queue_list(universe_id=uid))
+    assert paused["compatible_worker_count"] == 0
+    assert paused["eligible_epoch2_pending_count"] == 0
+    assert paused["operational_state_counts"][
+        "awaiting_compatible_capacity"
+    ] == 1
+
+
+def test_queue_list_discloses_staged_epoch2_consumer_not_ready(server_base):
+    from tinyassets.api.universe import _action_queue_list
+
+    base, uid = server_base
+    initialize_author_server(base)
+    _commit_epoch2(
+        base,
+        key_suffix="consumer-not-ready",
+        text="staged work",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["consumer_ready"] is False
+    assert response["capacity_evidence_available"] is False
+    assert (
+        response["capacity_evidence_error"]
+        == "epoch2_consumer_not_ready"
+    )
+    assert response["counts_complete"] is False
+    assert response["eligible_epoch2_pending_count"] == 0
+
+
+def test_queue_list_preserves_v1_when_epoch2_read_fails(
+    server_base,
+    monkeypatch,
+):
+    from tinyassets.api.universe import _action_queue_list
+    from tinyassets.branch_tasks_v2 import Epoch2OperationalRead
+
+    base, uid = server_base
+    append_task(
+        base / uid,
+        _make_task(universe_id=uid),
+    )
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_read",
+        lambda *_args, **_kwargs: Epoch2OperationalRead(
+            summary={
+                "available": False,
+                "error": "injected_epoch2_failure",
+                "diagnostics": [],
+                "diagnostics_truncated": False,
+                "compatible_worker_count": None,
+            },
+            candidates=(),
+        ),
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["pending_count"] == 1
+    assert response["counts_complete"] is False
+    assert response["epoch_health"]["1"]["available"] is True
+    assert response["epoch_health"]["2"] == {
+        "available": False,
+        "error": "injected_epoch2_failure",
+    }
+    assert [row["branch_task_id"] for row in response["queue"]] != []
+
+
+def test_queue_list_marks_bounded_operational_counts_incomplete(
+    server_base,
+    monkeypatch,
+):
+    from tinyassets.api.universe import _action_queue_list
+    from tinyassets.branch_tasks_v2 import Epoch2OperationalRead
+
+    _, uid = server_base
+    monkeypatch.setattr(
+        "tinyassets.api.universe._epoch2_operational_read",
+        lambda *_args, **_kwargs: Epoch2OperationalRead(
+            summary={
+                "available": True,
+                "depth": 1001,
+                "lifecycle_counts": {
+                    "pending": 1001,
+                    "running": 0,
+                    "cancel_requested": 0,
+                    "cancelled": 0,
+                    "succeeded": 0,
+                    "failed": 0,
+                },
+                "operational_state_counts": {
+                    "awaiting_compatible_capacity": 1000,
+                    "invalid_operator_admission": 0,
+                    "quarantined": 0,
+                    "policy_parked": 0,
+                },
+                "operational_oldest_age_s": {},
+                "operational_reason_counts": {},
+                "diagnostics": [],
+                "diagnostics_truncated": True,
+                "valid_pending_count": 1000,
+                "eligible_pending_count": 0,
+                "compatible_worker_count": 0,
+                "capacity_evidence_available": True,
+                "operational_counts_authoritative": False,
+                "unclassified_active_count": 1,
+                "active_scan_limit": 1000,
+            },
+            candidates=(),
+        ),
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["counts_complete"] is False
+    assert response["operational_counts_authoritative"] is False
+    assert response["unclassified_epoch2_active_count"] == 1
+    assert response["epoch2_active_scan_limit"] == 1000
+
+
+def test_queue_list_restricts_exact_unscoped_integrity_count_to_admin(
+    server_base,
+    monkeypatch,
+):
+    import sqlite3
+
+    from tinyassets.api.universe import _action_queue_list
+    from tinyassets.storage import db_path
+
+    base, uid = server_base
+    initialize_author_server(base)
+    committed = _commit_epoch2(
+        base,
+        key_suffix="unscoped-integrity",
+        text="private unscoped fixture",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+    )
+    with sqlite3.connect(db_path(base)) as conn:
+        conn.execute(
+            "DELETE FROM request_admissions WHERE admission_id = ?",
+            (committed["admission_id"],),
+        )
+        conn.execute(
+            "DELETE FROM user_requests WHERE request_id = ?",
+            (committed["request_id"],),
+        )
+
+    monkeypatch.setattr(
+        "tinyassets.api.universe._may_view_unscoped_epoch2_integrity",
+        lambda _udir: False,
+    )
+    public_response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert public_response["counts_complete"] is False
+    assert public_response["integrity_scope_complete"] is False
+    assert "unscoped_invalid_count" not in public_response
+
+    monkeypatch.setattr(
+        "tinyassets.api.universe._may_view_unscoped_epoch2_integrity",
+        lambda _udir: True,
+    )
+    admin_response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert admin_response["counts_complete"] is False
+    assert admin_response["unscoped_invalid_count"] == 1
+
+
+def test_queue_list_capacity_is_specific_to_directed_daemon(
+    server_base,
+    monkeypatch,
+):
+    import tinyassets.branch_tasks_v2 as branch_tasks_v2
+
+    monkeypatch.setattr(
+        branch_tasks_v2,
+        "EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    from tinyassets.api.universe import _action_queue_list
+    from tinyassets.daemon_registry import (
+        create_daemon,
+        ensure_daemon_runtime,
+        set_worker_queue_descriptor,
+    )
+
+    base, uid = server_base
+    initialize_author_server(base)
+    worker_daemon = create_daemon(
+        base,
+        display_name="Available worker daemon",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="Serve ordinary work.",
+    )
+    directed_daemon = create_daemon(
+        base,
+        display_name="Unavailable directed daemon",
+        created_by="actor-a",
+        soul_mode="soul",
+        soul_text="Receive directed work.",
+    )
+    _commit_epoch2(
+        base,
+        key_suffix="ordinary-capacity",
+        text="ordinary",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+    )
+    directed = _commit_epoch2(
+        base,
+        key_suffix="directed-capacity",
+        text="directed",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+        directed_daemon_id=directed_daemon["daemon_id"],
+        directed_soul_hash=directed_daemon["soul_hash"],
+    )
+    runtime = ensure_daemon_runtime(
+        base,
+        daemon_id=worker_daemon["daemon_id"],
+        universe_id=uid,
+        provider_name="codex",
+        model_name="gpt-5",
+        created_by="actor-a",
+        worker_id="worker-a",
+    )
+    now = datetime.now(timezone.utc)
+    heartbeat = {
+        "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "phase": "polling",
+        "subprocess_alive": True,
+        "worker_id": "worker-a",
+        "runtime_instance_id": runtime["runtime_instance_id"],
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "boot_id": "boot-a",
+        "build_sha": "a" * 40,
+        "config_hash": "sha256:" + "b" * 64,
+        "universe_id": uid,
+        "expires_at": (
+            now + timedelta(seconds=60)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    set_worker_queue_descriptor(
+        base,
+        runtime_instance_id=runtime["runtime_instance_id"],
+        descriptor=heartbeat,
+        expected_worker_id="worker-a",
+    )
+    (base / uid / ".worker_supervisor.worker-a.json").write_text(
+        json.dumps(heartbeat),
+        encoding="utf-8",
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["epoch_counts"]["2"]["lifecycle"]["pending"] == 2
+    assert response["valid_epoch2_pending_count"] == 2
+    assert response["eligible_epoch2_pending_count"] == 1
+    assert response["operational_state_counts"][
+        "awaiting_compatible_capacity"
+    ] == 1
+    awaiting_ids = {
+        item["branch_task_id"]
+        for item in response["operational_diagnostics"]
+        if item["operational_state"] == "awaiting_compatible_capacity"
+    }
+    assert awaiting_ids == {directed["branch_task_id"]}
+
+
+def test_queue_cancel_on_running_task_with_explicit_grant_requests_cancel(
     server_base, monkeypatch,
 ):
-    """Task #21: host cancelling a running task triggers cooperative
-    cancel (sets cancel_requested) rather than rejecting.
+    """Task #21: an explicitly authorized actor gets cooperative cancel.
 
-    Prior contract ``running_tasks_require_host_override`` retired;
-    host identity is now one of two authorized actors (the other is
-    the claiming daemon). See test_queue_cancel_on_running_task_unauthorized
-    for the rejection path."""
+    Host identity alone is not authority. The other authorized path is the
+    claiming daemon. See test_queue_cancel_on_running_task_unauthorized for
+    the rejection path."""
     from tinyassets.api.universe import _action_queue_cancel
     from tinyassets.branch_tasks import is_task_cancel_requested
 
     _, uid = server_base
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "host")
     monkeypatch.setenv("UNIVERSE_SERVER_HOST_USER", "host")
+    monkeypatch.setenv(
+        "UNIVERSE_SERVER_CAPABILITIES",
+        "cancel_branch_task",
+    )
     _call_submit(universe_id=uid, text="A")
     udir = Path(os.environ["TINYASSETS_DATA_DIR"]) / uid
     q = read_queue(udir)
@@ -1000,6 +1708,8 @@ def test_tier_status_map_reflects_stubbed_vs_live():
     cfg = DispatcherConfig()
     tm = cfg.tier_status_map()
     assert tm["host_request"] == "live"
+    assert tm["operator_request"] == "live"
+    assert cfg.tier_weights["operator_request"] == 100.0
     assert tm["owner_queued"] == "live"
     assert tm["user_request"] == "live"  # default accept_external=True
     assert "stubbed" in tm["goal_pool"]
@@ -1039,6 +1749,33 @@ def test_load_dispatcher_config_reads_yaml_overrides(universe_dir):
     assert cfg.accept_external_requests is False
     assert cfg.accept_goal_pool is True
     assert cfg.tier_weights["host_request"] == 200.0
+    assert cfg.tier_weights["operator_request"] == 100.0
+
+
+def test_directed_owner_boost_is_additive_without_tier_relabel():
+    cfg = DispatcherConfig()
+    now = "2026-07-24T08:00:00+00:00"
+    directed = _make_task(
+        trigger_source="owner_queued",
+        priority_weight=25,
+        queued_at=now,
+    )
+    directed.directed_daemon_id = "daemon-a"
+    operator = _make_task(
+        trigger_source="operator_request",
+        priority_weight=0,
+        queued_at=now,
+    )
+    ordinary = _make_task(
+        trigger_source="user_request",
+        priority_weight=0,
+        queued_at=now,
+    )
+
+    assert directed.trigger_source == "owner_queued"
+    assert score_task(directed, now_iso=now, config=cfg) == 115.0
+    assert score_task(operator, now_iso=now, config=cfg) == 110.0
+    assert score_task(ordinary, now_iso=now, config=cfg) == 70.0
 
 
 def test_archive_after_days_override(universe_dir):

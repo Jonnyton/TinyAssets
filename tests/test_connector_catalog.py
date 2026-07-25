@@ -7,16 +7,10 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from tinyassets.connector_catalog import (
-    DIRECTORY_MCP_PATH,
-    DIRECTORY_TOOL_CATALOG_VERSION,
-    VERSIONED_DIRECTORY_MCP_PATH,
-    directory_mcp_remote_url,
-)
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GENERATOR_PATH = REPO_ROOT / "packaging" / "registry" / "generate_server_json.py"
 SERVER_JSON_PATH = REPO_ROOT / "packaging" / "registry" / "server.json"
+CANONICAL_REMOTE_URL = "https://tinyassets.io/mcp"
 
 
 def _load_generate_server_json() -> ModuleType:
@@ -30,21 +24,26 @@ def _load_generate_server_json() -> ModuleType:
     return module
 
 
-def test_directory_catalog_path_is_versioned_for_host_cache_invalidation() -> None:
-    assert DIRECTORY_MCP_PATH == "/mcp-directory"
-    assert DIRECTORY_TOOL_CATALOG_VERSION in VERSIONED_DIRECTORY_MCP_PATH
-    assert VERSIONED_DIRECTORY_MCP_PATH.startswith("/mcp-directory/catalog/")
-
-
-def test_registry_advertises_versioned_directory_catalog_url() -> None:
+def test_registry_advertises_only_canonical_mcp() -> None:
     document = _load_generate_server_json()._build_document()
 
+    assert document["title"] == "TinyAssets"
     assert document["remotes"] == [
         {
             "type": "streamable-http",
-            "url": directory_mcp_remote_url(),
+            "url": CANONICAL_REMOTE_URL,
         }
     ]
+    assert "mcp-directory" not in json.dumps(document)
+
+
+def test_remote_registry_version_is_independent_from_local_mcpb_version() -> None:
+    generator = _load_generate_server_json()
+    document = generator._build_document()
+
+    assert document["version"] == generator.REGISTRY_VERSION
+    assert generator.REGISTRY_VERSION == "0.2.0"
+    assert generator._read_mcpb_version() == "0.1.0"
 
 
 def test_committed_registry_manifest_matches_generated_document() -> None:

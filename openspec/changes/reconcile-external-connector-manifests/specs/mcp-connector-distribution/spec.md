@@ -1,167 +1,172 @@
 ## ADDED Requirements
 
-### Requirement: Distribution preserves three connector product contracts
+### Requirement: Distribution Preserves Two Connector Product Contracts
 TinyAssets connector metadata and maintained integration guidance SHALL model
-three products separately: the remote live `/mcp` connector, the local MCPB
-package, and the remote directory-review surface. Equality between handle
-names or schemas SHALL NOT imply equivalent transport, authentication, actor
-resolution, configuration, storage, deployment, authority, or acceptance.
+two products separately: canonical remote `/mcp` and the local MCPB package.
+Equality between handle names SHALL NOT imply equivalent transport,
+authentication, actor resolution, configuration, storage, deployment,
+authority, or acceptance.
 
-#### Scenario: Remote live connector is identified
-- **WHEN** metadata or guidance describes the live connector
+#### Scenario: Canonical remote product is identified
+- **WHEN** metadata or guidance describes hosted TinyAssets
 - **THEN** it identifies `tinyassets.universe_server` over Streamable HTTP at `https://tinyassets.io/mcp`
 - **AND** its advertised set is exactly `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`
-- **AND** it describes the deployed WorkOS/OAuth resource-server boundary, anonymous reads, and identity-gated write/costly/admin calls
-- **AND** it identifies `write_graph`, `run_graph`, `write_page`, and `converse` as the registered pre-dispatch anonymous-write challenges
+- **AND** it describes the deployed WorkOS/OAuth boundary, permitted anonymous reads, and identity-gated mutation/cost/private operations
 
-#### Scenario: Local MCPB package is identified
+#### Scenario: Local MCPB product is identified
 - **WHEN** metadata or guidance describes the MCPB package
 - **THEN** it identifies the staged `tinyassets.universe_server` launched by `packaging/mcpb/server.py` over local stdio
-- **AND** its advertised set is the same seven names as the remote live connector without claiming other product equivalence
-- **AND** it states the package's local configuration and current dev/no-auth posture
+- **AND** its advertised set is the same seven names without claiming other product equivalence
+- **AND** it states the package's required local configuration and observed local auth posture
 
-#### Scenario: Remote directory-review surface is identified
-- **WHEN** metadata or guidance describes a Registry or ChatGPT directory artifact
-- **THEN** it identifies `tinyassets.directory_server` over Streamable HTTP at the mounted `/mcp-directory` surface or current versioned `/mcp-directory/catalog/<version>` URL
-- **AND** its advertised set is exactly `{read_graph, write_graph, run_graph, read_page, write_page}`
-- **AND** `converse`, `get_status`, hidden legacy fat tools, and catch-all `action` inputs are absent
-- **AND** status is served through `read_graph(target=status)` with directory-safe redaction
-- **AND** its auth behavior is documented from observed per-handle behavior rather than inferred from either seven-handle product
+#### Scenario: No third remote product is advertised
+- **WHEN** current Registry, hosted-chatbot, website, or integration metadata is generated
+- **THEN** it does not advertise `/mcp-directory`, a versioned descendant, or `tinyassets.directory_server`
+- **AND** review-safe behavior is provided by canonical `/mcp`
 
-### Requirement: Local MCPB metadata matches the staged runtime it delivers
+### Requirement: Local MCPB Metadata Matches The Staged Runtime
 The MCPB artifact SHALL declare the middleware-applied advertised catalog of
 the staged runtime it launches over stdio. Packaging validation SHALL stage the
-normal artifact, enumerate that staged runtime, and fail when the catalogs
-differ; schema validity alone SHALL NOT count as catalog-parity proof.
+normal artifact, enumerate that staged runtime, and fail when catalogs differ;
+schema validity alone SHALL NOT count as catalog-parity proof.
 
 #### Scenario: MCPB metadata matches its bundled universe server
 - **WHEN** the MCPB bundle is staged for validation
-- **THEN** the manifest tool-name set equals the result of enumerating the staged `tinyassets.universe_server` with middleware applied
-- **AND** both sets equal `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`
-- **AND** hidden legacy fat tools are absent from the declared and advertised sets
+- **THEN** its declared set equals the middleware-applied staged runtime set
+- **AND** both equal the canonical seven handle names
+- **AND** hidden legacy fat tools are absent
 
 #### Scenario: Runtime catalog drift fails packaging validation
-- **WHEN** a handle is added to or removed from the bundled runtime without the same catalog change in the staged MCPB manifest
-- **THEN** the semantic parity check fails with the missing and extra tool-name sets
-- **AND** a schema-only manifest validation cannot make the packaging gate green
+- **WHEN** a handle changes in the bundled runtime without the same staged manifest change
+- **THEN** semantic parity validation fails with missing and extra sets
+- **AND** schema-only validation cannot make the packaging gate green
 
-### Requirement: The MCPB is a local stdio product with explicit configuration and auth posture
-The MCPB SHALL launch the staged `tinyassets.universe_server` through
-`packaging/mcpb/server.py` over stdio. Its manifest SHALL require a
-user-selected `tinyassets_data_dir` mapped to `TINYASSETS_DATA_DIR` and MAY
-accept `default_universe` mapped to `UNIVERSE_SERVER_DEFAULT_UNIVERSE`. The
-current manifest SHALL NOT be described as WorkOS/OAuth-backed: it neither
-exposes nor sets `UNIVERSE_SERVER_AUTH`, so the runtime's unset default selects
-`DevAuthProvider` and relies on the local host/process boundary. Changing that
-posture requires a separate reviewed auth/package change.
+### Requirement: MCPB Is A Local Stdio Product With Explicit Configuration
+The MCPB SHALL launch the staged server over stdio, require a user-selected
+`tinyassets_data_dir` mapped to `TINYASSETS_DATA_DIR`, and MAY accept
+`default_universe` mapped to `UNIVERSE_SERVER_DEFAULT_UNIVERSE`. It SHALL NOT
+be described as WorkOS/OAuth-backed unless a separate reviewed package change
+implements that boundary.
 
-#### Scenario: Configured local package launches over stdio
-- **WHEN** an MCPB-compatible host installs the package with an existing isolated data directory and optionally supplies a default universe
-- **THEN** the host launches `uv run --project ${__dirname} ${__dirname}/server.py`
-- **AND** the wrapper validates and exports the selected data directory, preserves optional default-universe configuration, and invokes `universe_server.main(transport="stdio")`
-- **AND** the client enumerates exactly the seven declared handles
+#### Scenario: Configured package launches locally
+- **WHEN** a compatible host installs the package with an isolated existing data directory
+- **THEN** the wrapper validates and exports configuration before starting stdio
+- **AND** the client enumerates the seven declared handles
 
-#### Scenario: Missing required data directory fails closed
-- **WHEN** the local MCPB launcher receives an empty, missing, or non-directory `TINYASSETS_DATA_DIR`
-- **THEN** it fails before starting the MCP transport with an actionable configuration error
-- **AND** it does not silently fall back to a maintainer or platform data directory
+#### Scenario: Missing data directory fails closed
+- **WHEN** the configured data directory is empty, missing, or not a directory
+- **THEN** launch fails with an actionable error before MCP transport starts
+- **AND** no maintainer or platform directory is selected
 
-#### Scenario: Catalog presence does not claim functional identity parity
-- **WHEN** the current MCPB starts with its manifest-provided configuration and no independently supplied auth mode
-- **THEN** the runtime selects `DevAuthProvider`
-- **AND** a `converse` call without a resolved actor returns `auth_required`
-- **AND** package metadata does not promise WorkOS sign-in, remote OAuth challenges, remote user isolation, or functional parity merely because `converse` is listed
+#### Scenario: Catalog presence does not claim identity parity
+- **WHEN** MCPB advertises the same names as hosted `/mcp`
+- **THEN** metadata does not promise remote OAuth, hosted isolation, or functional identity parity
+- **AND** observed actor-dependent limitations remain explicit
 
-### Requirement: Directory artifacts remain bound to the remote directory-review surface
-The MCP Registry remote and ChatGPT submission packet SHALL describe
-`tinyassets.directory_server` and remain bound to exactly the five reviewed
-directory handles unless a separate reviewed change modifies that product.
+### Requirement: Remote Distribution Binds To Canonical MCP
+The platform MUST bind MCP Registry metadata, ChatGPT and Claude submission
+artifacts, maintained remote client packs, and current integration guidance to
+`https://tinyassets.io/mcp` and its exact seven-handle runtime contract. The
+user-facing product, connector, app, and Registry display name SHALL be exactly
+`TinyAssets`; environment labels such as `DEV`, `development`, or `staging`
+SHALL NOT appear in the public product name.
 
-#### Scenario: Registry metadata resolves to the versioned directory catalog
-- **WHEN** the MCP Registry manifest is generated or checked
-- **THEN** its remote URL is the current versioned `/mcp-directory/catalog/<version>` URL produced by `directory_mcp_remote_url()`
-- **AND** MCPB reconciliation does not retarget it to `/mcp` or a local package
+#### Scenario: Public registrations use one durable name
+- **WHEN** any current or generated remote registration artifact is validated
+- **THEN** its user-facing name is exactly `TinyAssets`
+- **AND** no public name contains `DEV`, `development`, `staging`, or another lifecycle qualifier
 
-#### Scenario: ChatGPT packet stays equal to the directory runtime
-- **WHEN** the ChatGPT submission packet is validated
-- **THEN** its tool-name set and annotations equal the middleware-applied directory runtime catalog
-- **AND** `converse`, `get_status`, and every hidden legacy fat tool are absent
+#### Scenario: Registry metadata resolves to canonical MCP
+- **WHEN** the Registry manifest is generated for the migration release
+- **THEN** its remote URL is `https://tinyassets.io/mcp`
+- **AND** the manifest version is advanced so clients can observe the change
+- **AND** Registry API proof confirms the published current version resolves to that URL
 
-#### Scenario: Directory auth is not generalized from the live connector
-- **WHEN** directory authentication behavior is documented or accepted
-- **THEN** the evidence records that the directory surface inherits the remote app's configured bearer-resolution/write-gate middleware
-- **AND** it records that missing-token directory calls are excluded from the live connector's registered pre-dispatch OAuth-challenge path
-- **AND** it does not promise `/mcp`-equivalent OAuth UX without rendered evidence
+#### Scenario: Hosted-chatbot packets match canonical runtime
+- **WHEN** ChatGPT or Claude metadata is validated
+- **THEN** its tool names, schemas, security schemes, annotations, and descriptions match middleware-applied canonical `/mcp`
+- **AND** all seven handles are represented
+- **AND** submission tests and reviewer instructions exercise the observed OAuth and privacy contract
 
-### Requirement: Product acceptance evidence is non-substitutable
-Each connector product SHALL be accepted through its own transport, host, auth,
-configuration, and user path. Evidence from one product SHALL NOT satisfy an
-acceptance gate for another.
+#### Scenario: Historical evidence is preserved
+- **WHEN** maintainers update current guidance from `/mcp-directory` to `/mcp`
+- **THEN** dated proofs, audits, archived changes, and historical worktree records retain the endpoint they actually tested
+- **AND** a new superseding current artifact or note carries the migrated truth
 
-#### Scenario: Remote live connector acceptance
-- **WHEN** the remote `/mcp` product is accepted
-- **THEN** evidence includes a Streamable-HTTP handshake, exact-seven enumeration, anonymous read, OAuth challenge plus signed-in write or `converse`, and applicable rendered chatbot proof
-- **AND** post-change clean-use evidence is recorded or explicitly left unproven as a watch item
+### Requirement: Product Acceptance Evidence Is Non-Substitutable
+Each product SHALL be accepted through its own transport, host, auth,
+configuration, and user path. Evidence from one product SHALL NOT satisfy
+another product's gate.
+
+#### Scenario: Canonical remote acceptance
+- **WHEN** hosted `/mcp` is accepted
+- **THEN** evidence includes Streamable-HTTP handshake, exact-seven enumeration, safe status projection, neutral instructions, metadata/runtime OAuth agreement, anonymous read, and authenticated mutation
+- **AND** at least one rendered supported-chatbot conversation, Registry resolution, supported-client dispositions, and concurrency evidence are recorded
+- **AND** unavailable OpenAI or Claude surfaces are recorded independently rather than blocking acceptance or restoring a retired route
+- **AND** post-change clean use is recorded or retained as an explicit watch item without being misrepresented as proven
 
 #### Scenario: Local MCPB acceptance
 - **WHEN** the local package is accepted
-- **THEN** an MCPB-compatible host installs and launches the changed artifact over stdio with an isolated temporary data directory
-- **AND** evidence covers official schema validation, exact-seven enumeration, required and optional configuration wiring, observed auth posture, and safe usable local operations
-- **AND** catalog listing alone does not conceal an unusable canonical operation such as actorless `converse`
-- **AND** no remote canary is treated as installed-package proof
+- **THEN** a compatible host installs and launches the changed artifact over stdio with an isolated data directory
+- **AND** evidence covers schema, exact-seven enumeration, configuration wiring, observed auth posture, and provider-free usable operations
+- **AND** remote canaries or OAuth proof do not substitute
 
-#### Scenario: Remote directory acceptance
-- **WHEN** the directory product is accepted
-- **THEN** evidence covers deterministic Registry generation, ChatGPT packet/runtime name-and-annotation parity, directory status redaction, the versioned endpoint, and applicable rendered directory-host behavior under observed auth
-- **AND** no MCPB or `/mcp` proof is substituted for that evidence
+### Requirement: Directory Route Retirement Does Not Wait For Migration Proof
+`/mcp-directory` and every versioned descendant SHALL be removed as the first
+focused runtime slice after provider-free canonical `/mcp` initialize and tool
+enumeration health is confirmed. Directory runtime code, mounts, catalog
+constants, discovery metadata, Worker routing, and current operational
+guidance SHALL be removed together. Vendor review, Registry publication,
+rendered-client breadth, telemetry, canonical hardening, and post-change clean
+use SHALL NOT gate retirement.
 
-### Requirement: Connector acceptance never consumes maintainer compute
-The package, metadata, and acceptance suite SHALL NOT provide or consume a
-maintainer/platform model, provider account, credential, quota, or compute for
-user workloads. Catalog, launch, configuration, read, and auth-failure proofs
-SHALL make zero provider calls. Any future acceptance that executes model work
-SHALL use a complete requester-owned BYOC authority bundle or an accepted-market
-compute/model grant; absent that authority it SHALL return held/setup-required
-with zero provider invocation.
+#### Scenario: Maintained registrations do not preserve the route
+- **WHEN** route retirement lands
+- **THEN** each maintained old registration points to canonical `/mcp` or is withdrawn
+- **AND** a pending, unavailable, rejected, or unsupported vendor surface is recorded as a post-removal disposition or watch item
+- **AND** no external acceptance or telemetry state authorizes retaining `/mcp-directory*`
 
-#### Scenario: Local converse limitation is tested without maintainer resources
-- **WHEN** the current actorless MCPB `converse` behavior is verified
-- **THEN** the call returns `auth_required` before provider selection or invocation
-- **AND** no maintainer credential, personal Claude/OpenAI quota, or platform-funded compute is used
+#### Scenario: Removed route is not a shim
+- **WHEN** retirement lands
+- **THEN** `/mcp-directory*` has no mounted MCP server or catalog
+- **AND** requests receive the ordinary absent-route 404
+- **AND** the edge and application do not emit a `Location` header, redirect, proxy, alias, silently translate to `/mcp`, return 410, or produce a compatibility body
 
-### Requirement: External integration guidance identifies the selected connector product
-The maintained Polsia handoff SHALL contain a source-linked three-row product
-matrix before prescribing an endpoint, transport, tool set, authentication,
-configuration, or acceptance flow. It SHALL describe the current underscore
-handle cutover and SHALL NOT instruct integrators to call hidden legacy fat
-tools.
+### Requirement: Connector Acceptance Never Consumes Maintainer Compute
+Package, metadata, and acceptance work SHALL NOT provide or consume a
+maintainer/platform model, provider credential, quota, or compute for user
+workloads. Model execution requires requester BYOC or an accepted-market grant;
+without it the operation remains held/setup-required with zero provider calls.
 
-#### Scenario: Handoff is refreshed after manifest reconciliation
-- **WHEN** an integrator reads the TinyAssets Polsia handoff after this change lands
-- **THEN** it contains distinct rows for remote `/mcp`, local MCPB, and the remote versioned directory surface
-- **AND** each row states its transport/location, exact advertised catalog, authentication/configuration posture, and product-specific acceptance evidence
-- **AND** stale pre-cutover, pre-WorkOS, and legacy-action instructions are absent
+#### Scenario: Auth and catalog proof is provider-free
+- **WHEN** catalogs, redaction, auth challenges, launch, or migration are tested
+- **THEN** no provider is selected or invoked
+- **AND** no maintainer credential or personal Claude/OpenAI limit is used
 
-#### Scenario: Naming-only rename does not satisfy the refresh
-- **WHEN** a proposed handoff edit changes `Workflow` identifiers to `TinyAssets` but preserves stale technical instructions
-- **THEN** the handoff refresh gate fails
-- **AND** the edit is not accepted as completion of this change
+### Requirement: External Guidance Identifies The Selected Product
+Maintained integration guidance SHALL contain a source-linked two-row product
+matrix before prescribing endpoint, transport, tool set, authentication,
+configuration, or acceptance. It SHALL not instruct integrators to call hidden
+legacy tools or the retired directory route.
 
-#### Scenario: Shared handle names do not collapse remote and local products
-- **WHEN** guidance calls the MCPB OAuth-backed, uses a remote canary as MCPB proof, or combines remote `/mcp` and MCPB because both advertise seven names
-- **THEN** the handoff refresh gate fails
-- **AND** the guidance must be corrected to the observed contract of each product
+#### Scenario: Handoff is refreshed
+- **WHEN** an integrator reads the current TinyAssets handoff
+- **THEN** it contains distinct rows for remote `/mcp` and local MCPB
+- **AND** each row states transport, catalog, auth/configuration, and acceptance
+- **AND** stale pre-cutover, pre-WorkOS, `/mcp-directory`, and legacy-action instructions are absent
 
-### Requirement: Legacy live-tool retirement waits for distribution readiness
-Removal of hidden legacy registrations from `tinyassets.universe_server` SHALL
-remain blocked until this distribution change lands, installed MCPB acceptance
-exists, supported local-host migration evidence is recorded, and the MCPB
-identity/authority limitation is either resolved or deliberately redesigned
-and scoped. Remote telemetry proves only remote caller migration and SHALL NOT
-stand in for local package evidence.
+#### Scenario: Naming-only edit does not satisfy refresh
+- **WHEN** a change renames Workflow to TinyAssets but preserves stale technical instructions
+- **THEN** the guidance gate fails
+
+### Requirement: Legacy Live-Tool Retirement Waits For Distribution Readiness
+Removal of hidden legacy registrations SHALL remain blocked until this
+distribution change lands, installed MCPB acceptance exists, supported local
+host migration evidence is recorded, and local identity limitations are
+resolved or deliberately redesigned. Remote telemetry SHALL NOT substitute for
+local package evidence.
 
 #### Scenario: Shared runtime retirement affects the next local bundle
-- **WHEN** a later change proposes removing legacy registrations from `tinyassets.universe_server`
-- **THEN** review records that the same source is staged into the MCPB package
-- **AND** the retirement rebuilds and tests the staged bundle rather than referring to a nonexistent checked-in runtime mirror
-- **AND** retirement remains blocked while required local product evidence or authority design is absent
+- **WHEN** a later change removes hidden registrations from `universe_server`
+- **THEN** it rebuilds and tests the staged MCPB
+- **AND** retirement remains blocked while required local evidence is absent

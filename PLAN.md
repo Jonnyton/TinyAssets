@@ -183,7 +183,7 @@ The codebase target shape, with each PLAN.md module mapped to its primary code p
 | Evolution & Evaluation | `tinyassets/evaluation/`, `tinyassets/learning/`, autoresearch surface |
 | Providers | `tinyassets/providers/` |
 | API & MCP Interface | `tinyassets/api/` (mounted submodules per cluster), `tinyassets/servers/` |
-| Distribution & Discoverability | `packaging/`, `tinyassets/directory_server.py`, MCP registry |
+| Distribution & Discoverability | `packaging/`, `packaging/registry/`, `packaging/claude-plugin/`, maintained connector submission artifacts |
 | Harness & Coordination | `AGENTS.md`, `STATUS.md`, `scripts/claim_check.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `.agents/`, `.claude/agents/` |
 | Uptime & Alarms | `deploy/`, `.github/workflows/uptime-canary.yml`, `.github/workflows/p0-outage-triage.yml`, `scripts/uptime_canary.py` |
 | Constraints | `tinyassets/constraints/`, `data/world_rules.lp` |
@@ -401,22 +401,23 @@ _Last audited: 2026-05-28_
 
 **Purpose:** Installable and discoverable across standard MCP surfaces, Anthropic packaging, and future packaging without changing the portable core.
 
-**In scope:** MCPB packages, Claude Code / Cowork plugins, registry metadata, ChatGPT app submission, MCP-directory tooling, the per-host customer matrix, install-readiness invariants, software-surface authorization (declarative + multi-layer).
+**In scope:** MCPB packages, Claude Code / Cowork plugins, canonical remote MCP registration metadata, ChatGPT app submission, the per-host customer matrix, install-readiness invariants, software-surface authorization (declarative + multi-layer).
 
 **Out of scope:** What the daemon does once installed (other modules); auth at the MCP edge (API & MCP Interface).
 
 **Principles:**
 - *Keep the core portable; add platform wrappers around it.* MCPB packages, Claude Code plugins, registry metadata, and future `.cnw.zip` packaging are distribution layers over the same daemon and tool surface, not replacement architectures.
+- *One remote product identity.* Every maintained remote registration uses exact name `TinyAssets` and `https://tinyassets.io/mcp`. Retired route families are ordinary absent routes, never aliases, redirects, translation layers, or compatibility products.
 - *MCP host coverage is matrix-driven.* Claude and ChatGPT are P0 launch gates, but every MCP-capable host is a possible customer surface. Caveats + acceptance proofs live in `docs/design-notes/2026-05-01-mcp-host-customer-matrix.md`.
 - *Install-readiness is continuous.* Main is a downloadable release at all times. Every change preserves flawless first-install — packaging auto-builds via CI (import probe + plugin drift check), user-facing copy is branded and unambiguous, broken install is a production bug.
 - *Discovery via entry points, not filesystem scan.* Domain discovery uses `importlib.metadata.entry_points(group="tinyassets.domains")`. Filesystem scan of `domains/*/skill.py` is a dev-mode fallback for editable worktrees only. Old-name aliases stay out of discovery and are not part of the domain registry contract.
 - *Software surface is declarative and multi-layer-authorized.* Nodes declare `required_capabilities`. Per-host capability registry resolves what's installed. Missing software auto-installs (host-policy gated). Daemons can invoke arbitrary local software via a dedicated `external_tool_node` type that bypasses the Python sandbox but layers security: bundled handler signatures, binary signature verification, universe-level allow-list, per-software host approval, subprocess isolation. Any single layer fails, the others hold. Cross-host software donation supported; cross-host node-execution hopping is not.
 
-**Substrate:** `packaging/`, `tinyassets/directory_server.py`, MCP Registry surface, ChatGPT app submission packet, no-login deployment packs for Open WebUI / LibreChat.
+**Substrate:** `packaging/`, `packaging/registry/`, `packaging/claude-plugin/`, MCP Registry surface, maintained connector submission artifacts, and no-login deployment packs for Open WebUI / LibreChat.
 
 **Open evolution:** First-user evidence after no-dev-mode acceptance proofs land. ChatGPT-mobile proof.
 
-_Last audited: 2026-05-19_
+_Last audited: 2026-07-24_
 
 ---
 

@@ -1,8 +1,20 @@
-# MCP Directory Rollout Action Queue
+# MCP Directory Rollout Action Queue — SUPERSEDED HISTORICAL SNAPSHOT
 
 Date: 2026-05-01
-Status: active queue after `/mcp-directory` live proof
+Status: **SUPERSEDED / HISTORICAL — DO NOT EXECUTE**
 Owner: lead + available providers
+
+> This file preserves the 2026-05-01 rollout queue and evidence as historical
+> context. It is not an active queue. `/mcp-directory*` is retired and must be
+> an ordinary 404 without redirect, alias, or compatibility behavior. Current
+> work uses the exact public name `TinyAssets`, the sole remote endpoint
+> `https://tinyassets.io/mcp`, and
+> `openspec/changes/reconcile-external-connector-manifests/`.
+>
+> Do not execute or reopen any task below. Promote any still-relevant external
+> host work through the OpenSpec change and current `STATUS.md` coordination.
+
+The remainder of this document is the preserved 2026-05-01 snapshot.
 
 This queue starts after the implementation slice shipped. The live state is:
 

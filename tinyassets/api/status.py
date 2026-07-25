@@ -19,8 +19,10 @@ storage.rotation) follow the pattern that was already in place pre-extraction.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,8 @@ from tinyassets.api.helpers import (
 )
 from tinyassets.providers.base import API_KEY_PROVIDER_ENV_VARS, api_key_providers_enabled
 
+_STATUS_SCHEMA_VERSION = 2
+
 
 def _policy_hash(payload: dict[str, Any]) -> str:
     """Deterministic sha256 of sorted-JSON policy payload.
@@ -42,6 +46,59 @@ def _policy_hash(payload: dict[str, Any]) -> str:
     """
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _request_identity_evidence() -> tuple[dict[str, object], dict[str, str]]:
+    """Return token-free, self-only identity evidence for this request."""
+    from tinyassets.auth.middleware import current_bearer_present, current_identity
+
+    bearer_present = current_bearer_present()
+    unavailable_identity = {
+        "bearer_present": bearer_present,
+        "principal_fingerprint": None,
+    }
+    raw_key = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_KEY", "")
+    if not isinstance(raw_key, str):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_invalid_type",
+        }
+    if not raw_key:
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_not_provisioned",
+        }
+    key = raw_key.encode()
+    if len(key) < 32:
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "key_too_short",
+        }
+
+    raw_version = os.environ.get("TINYASSETS_IDENTITY_FINGERPRINT_VERSION", "v1")
+    if not isinstance(raw_version, str):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "version_invalid",
+        }
+    version = raw_version.strip()
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", version):
+        return unavailable_identity, {
+            "status": "unavailable",
+            "reason": "version_invalid",
+        }
+
+    subject = current_identity().user_id.strip() or "anonymous"
+    message = f"tinyassets:request-identity:{version}\0{subject}".encode()
+    digest = hmac.new(key, message, hashlib.sha256).hexdigest()
+    prefix = f"{version}:anonymous:" if subject == "anonymous" else f"{version}:"
+    return (
+        {
+            "bearer_present": bearer_present,
+            "principal_fingerprint": f"{prefix}{digest}",
+        },
+        {"status": "available"},
+    )
 
 
 # Heartbeat refresh interval observed in fantasy_daemon's BUG-011 Phase A
@@ -381,7 +438,12 @@ def _provider_auth_snapshot() -> dict[str, Any]:
         # never block on the codex live-probe subprocess (up to 120s).
         # Fast paths + cached verdicts only; the worker gate owns probing.
         health = subscription_auth_health(name, allow_probe=False)
-        writers[name] = {"status": health["status"], "detail": health["detail"]}
+        status = health["status"]
+        detail = {
+            "ok": "subscription auth available",
+            "not_logged_in": "subscription auth unavailable; reauthentication required",
+        }.get(status, "subscription auth state inconclusive")
+        writers[name] = {"status": status, "detail": detail}
         if health["status"] in ("ok", "not_logged_in"):
             known_states.append(health["status"])
     all_down = bool(known_states) and all(
@@ -418,15 +480,29 @@ def _compute_supervisor_liveness(
             "depth": 0,
             "pending": 0,
             "running": 0,
+            "cancel_requested": 0,
             "succeeded": 0,
             "failed": 0,
             "cancelled": 0,
+            "unknown": 0,
             "policy_parked_pending": 0,
+            "policy_parked": 0,
+            "awaiting_compatible_capacity": 0,
+            "invalid_operator_admission": 0,
+            "quarantined": 0,
             "stuck_pending_max_age_s": 0,
             "policy_parked_pending_max_age_s": 0,
+            "awaiting_compatible_capacity_max_age_s": 0,
+            "invalid_operator_admission_max_age_s": 0,
+            "quarantined_max_age_s": 0,
+            "policy_parked_max_age_s": 0,
             "stuck_running_max_age_s": 0,
             "recent_succeeded_count": 0,
+            "epoch_counts": {},
         },
+        "epoch2_operational": {},
+        "epoch_health": {},
+        "counts_complete": True,
         "running_tasks_lease": [],
         "stale_running_tasks": [],
         "warnings": [],
@@ -463,22 +539,22 @@ def _compute_supervisor_liveness(
             "loop-wedge signature.)"
         )
 
+    v1_error = ""
     try:
         from tinyassets.branch_tasks import read_queue
         queue = read_queue(udir)
     except Exception as exc:  # noqa: BLE001 — best-effort observability
+        queue = []
+        v1_error = str(exc)
         out["warnings"].append(f"queue_read_failed: {exc}")
-        return out
 
     out["queue_state"]["depth"] = len(queue)
-    if not queue:
-        return out
 
+    dispatcher_config = None
     try:
         from tinyassets.dispatcher import load_dispatcher_config
         dispatcher_config = load_dispatcher_config(Path(udir))
-    except Exception as exc:  # noqa: BLE001 — status must remain best-effort
-        dispatcher_config = None
+    except Exception as exc:  # noqa: BLE001 — best-effort status
         out["warnings"].append(f"dispatcher_config_read_failed: {exc}")
 
     any_lease_field_seen = False
@@ -608,8 +684,171 @@ def _compute_supervisor_liveness(
             stale["stale_reasons"] = stale_reasons
             out["stale_running_tasks"].append(stale)
 
+    v1_lifecycle = {
+        "depth": len(queue),
+        "lifecycle": {
+            status: int(out["queue_state"][status])
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "succeeded",
+                "failed",
+                "cancelled",
+            )
+        },
+        "operational": {
+            "policy_parked": int(
+            out["queue_state"]["policy_parked_pending"]
+            ),
+        },
+    }
+    if v1_error:
+        out["queue_state"]["epoch_counts"]["1"] = {
+            "available": False,
+            "error": v1_error,
+        }
+        out["epoch_health"]["1"] = {
+            "available": False,
+            "error": v1_error,
+        }
+        out["counts_complete"] = False
+    else:
+        out["queue_state"]["epoch_counts"]["1"] = {
+            "available": True,
+            **v1_lifecycle,
+        }
+        out["epoch_health"]["1"] = {"available": True}
+    try:
+        from tinyassets.api.universe import _epoch2_operational_snapshot
+
+        epoch2 = _epoch2_operational_snapshot(Path(udir))
+        out["epoch2_operational"] = epoch2
+        if not epoch2["available"]:
+            out["queue_state"]["epoch_counts"]["2"] = {
+                "available": False,
+                "error": epoch2["error"],
+            }
+            out["epoch_health"]["2"] = {
+                "available": False,
+                "error": epoch2["error"],
+            }
+            out["counts_complete"] = False
+            out["warnings"].append(
+                "epoch2_operational_read_failed: " + epoch2["error"]
+            )
+        else:
+            epoch2_lifecycle = epoch2["lifecycle_counts"]
+            epoch2_states = epoch2["operational_state_counts"]
+            out["queue_state"]["depth"] += int(epoch2["depth"])
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "succeeded",
+                "failed",
+                "cancelled",
+                "unknown",
+            ):
+                out["queue_state"][status] += int(
+                    epoch2_lifecycle.get(status, 0)
+                )
+            for state in (
+                "awaiting_compatible_capacity",
+                "invalid_operator_admission",
+                "quarantined",
+                "policy_parked",
+            ):
+                out["queue_state"][state] = int(
+                    epoch2_states.get(state, 0)
+                )
+                out["queue_state"][f"{state}_max_age_s"] = int(
+                    epoch2["operational_oldest_age_s"].get(state, 0)
+                )
+            out["queue_state"]["policy_parked"] += int(
+                out["queue_state"]["policy_parked_pending"]
+            )
+            out["queue_state"]["epoch_counts"]["2"] = {
+                "available": True,
+                "depth": int(epoch2["depth"]),
+                "lifecycle": epoch2_lifecycle,
+                "operational": epoch2_states,
+            }
+            out["epoch_health"]["2"] = {"available": True}
+            if epoch2_states.get("invalid_operator_admission"):
+                out["warnings"].append(
+                    "invalid_operator_admission: epoch-2 contains inert "
+                    "rows that failed admission integrity; run quarantine "
+                    "maintenance and inspect bounded diagnostics."
+                )
+            if epoch2_states.get("quarantined"):
+                out["warnings"].append(
+                    "quarantined: epoch-2 contains disabled rows with durable "
+                    "quarantine receipts; inspect bounded diagnostics."
+                )
+            if not epoch2["operational_counts_authoritative"]:
+                out["counts_complete"] = False
+                if epoch2.get("unclassified_active_count"):
+                    out["warnings"].append(
+                        "epoch2_operational_scan_overflow: active rows exceed "
+                        f"bounded scan limit {epoch2['active_scan_limit']}."
+                    )
+                if not epoch2.get("capacity_evidence_available", True):
+                    if (
+                        epoch2.get("capacity_evidence_error")
+                        == "epoch2_consumer_not_ready"
+                    ):
+                        out["warnings"].append(
+                            "epoch2_consumer_not_ready: descriptor "
+                            "publication and wakeup are intentionally staged "
+                            "off until daemon claim/lifecycle integration "
+                            "lands; pending work remains awaiting compatible "
+                            "capacity."
+                        )
+                    else:
+                        out["warnings"].append(
+                            "epoch2_capacity_evidence_unavailable: worker "
+                            "compatibility could not be established; pending "
+                            "work remains conservatively classified as "
+                            "awaiting compatible capacity."
+                        )
+                if not epoch2.get("integrity_scope_complete", True):
+                    count = epoch2.get("unscoped_invalid_count")
+                    count_text = (
+                        f" ({count} row(s))"
+                        if count is not None
+                        else ""
+                    )
+                    out["warnings"].append(
+                        "epoch2_unscoped_integrity_rows"
+                        + count_text
+                        + ": corrupt rows without an authoritative "
+                        "admission/request universe exist; exact counts are "
+                        "restricted to universe admins."
+                    )
+                if epoch2.get("unknown_lifecycle_status_counts"):
+                    out["warnings"].append(
+                        "epoch2_unknown_lifecycle_status: corrupt rows use "
+                        "unsupported lifecycle states; inspect bounded "
+                        "integrity diagnostics."
+                    )
+    except Exception as exc:  # noqa: BLE001 — status remains best-effort
+        out["queue_state"]["epoch_counts"]["2"] = {
+            "available": False,
+            "error": str(exc),
+        }
+        out["epoch_health"]["2"] = {
+            "available": False,
+            "error": str(exc),
+        }
+        out["counts_complete"] = False
+        out["warnings"].append(f"epoch2_operational_read_failed: {exc}")
+
     if pending_ages:
-        out["queue_state"]["stuck_pending_max_age_s"] = int(max(pending_ages))
+        out["queue_state"]["stuck_pending_max_age_s"] = max(
+            out["queue_state"]["stuck_pending_max_age_s"],
+            int(max(pending_ages)),
+        )
     if policy_parked_pending_ages:
         out["queue_state"]["policy_parked_pending_max_age_s"] = int(
             max(policy_parked_pending_ages)
@@ -645,21 +884,25 @@ def _compute_supervisor_liveness(
     if (
         recent_succeeded_count == 0
         and any_terminal_at_seen
-        and out["queue_state"]["pending"] > 0
+        and v1_lifecycle["lifecycle"]["pending"] > 0
         and out["queue_state"]["stuck_pending_max_age_s"] > _LOOP_STALL_WINDOW_S
     ):
         out["warnings"].append(
             f"loop_stalled: 0 successful completions in the last "
             f"{_LOOP_STALL_WINDOW_S}s despite "
-            f"{out['queue_state']['pending']} pending "
+            f"{v1_lifecycle['lifecycle']['pending']} pending "
             f"(oldest {out['queue_state']['stuck_pending_max_age_s']}s) and "
-            f"{out['queue_state']['failed']} failed total. The loop is claiming "
+            f"{v1_lifecycle['lifecycle']['failed']} failed total. "
+            "The loop is claiming "
             "but not succeeding — provider auth, double-claim, or finalize crash "
             "(2026-06-25 loop-wedge signature). Check worker logs for provider "
             "'exhausted' / 'Invalid transition'."
         )
 
-    if out["queue_state"]["running"] > 0 and not any_lease_field_seen:
+    if (
+        v1_lifecycle["lifecycle"]["running"] > 0
+        and not any_lease_field_seen
+    ):
         out["lease_data_available"] = False
         out["warnings"].append(
             "lease_data_unavailable: running tasks present but no lease "
@@ -722,6 +965,8 @@ def get_status(universe_id: str = "") -> str:
     This function is observational and idempotent. It never creates or repairs
     a universe, home binding, or soul bundle.
     """
+    request_identity, identity_evidence = _request_identity_evidence()
+
     uid, needs_birth = _resolve_entry_universe(universe_id)
     if needs_birth:
         _about = (
@@ -741,19 +986,39 @@ def get_status(universe_id: str = "") -> str:
             "next_step_for_user": (
                 "Start a conversation with your universe to meet it in its own voice."
             ),
-            "schema_version": 1,
+            "identity_evidence": identity_evidence,
+            "request_identity": request_identity,
+            "schema_version": _STATUS_SCHEMA_VERSION,
         })
-    # Per-universe read gate: never expose a private universe's status / activity
-    # tail to an anonymous or non-granted caller. Public universes (public_read
-    # default) stay readable; a founder reads their own universe via their grant.
-    from tinyassets.api import permissions
-
-    if not permissions.universe_access_allows(uid, write=False):
-        return json.dumps(permissions.universe_access_error(
-            universe_id=uid, write=False, action="get_status", surface="universe",
-        ))
     udir = _universe_dir(uid)
     universe_exists = udir.is_dir()
+
+    # Per-universe metadata gate: never expose an EXISTING universe's status /
+    # activity tail (name, word count, activity dates, phase) to a reader the
+    # declared visibility level does not grant `read_metadata`. Metadata is a
+    # separately-granted capability: a content-only (`unlisted`) universe is
+    # discoverable by direct id yet withholds this describe surface. A founder
+    # reads their own universe via their grant regardless of level. A universe
+    # that does NOT exist has no metadata to protect, so the not-found diagnostic
+    # is left ungated (it reveals nothing about any real universe).
+    from tinyassets.api import permissions, visibility
+
+    if universe_exists and not visibility.visibility_permits(uid, "read_metadata"):
+        # When the caller supplied no universe_id, the server RESOLVED one for
+        # them. Echoing that resolved name in a denial would leak the identity
+        # of a hidden universe (existence is privileged), so blank it out for
+        # an omitted-scope request. An explicit-id request echoes the id.
+        requested_blank = not (universe_id or "").strip()
+        denial = permissions.universe_access_error(
+            universe_id="" if requested_blank else uid,
+            write=False, action="get_status", surface="universe",
+        )
+        # Identity evidence is request-scoped (the caller's own principal), not
+        # universe-scoped: the visibility filter withholds this universe's
+        # metadata but must not suppress the caller's identity evidence.
+        denial["identity_evidence"] = identity_evidence
+        denial["request_identity"] = request_identity
+        return json.dumps(denial)
     host_id = os.environ.get("UNIVERSE_SERVER_HOST_USER", "host")
 
     # Load the dispatcher config for the universe.
@@ -770,6 +1035,8 @@ def get_status(universe_id: str = "") -> str:
             "detail": str(exc),
             "universe_id": uid,
             "universe_exists": universe_exists,
+            "identity_evidence": identity_evidence,
+            "request_identity": request_identity,
         })
 
     served_llm_type = (cfg.served_llm_type or "").strip()
@@ -865,6 +1132,11 @@ def get_status(universe_id: str = "") -> str:
     # Per-field caveats — chatbot cites only the degenerate keys instead
     # of wrapping every claim in the global caveat list.
     evidence_caveats: dict[str, list[str]] = {}
+    if identity_evidence["status"] == "unavailable":
+        evidence_caveats["request_identity"] = [
+            "identity_fingerprint_unavailable:"
+            f"{identity_evidence['reason']}"
+        ]
     if last_completed_llm == "unknown":
         evidence_caveats["last_completed_request_llm_used"] = [
             "Heuristic found no llm=/provider=/model= token in recent "
@@ -1012,9 +1284,9 @@ def get_status(universe_id: str = "") -> str:
     # Scans the activity.log for any entry within the last 30 days that
     # can be attributed to the current account user. Best-effort; never
     # raises so a log-read error doesn't break the status probe.
-    from tinyassets.api.engine_helpers import _current_actor
+    from tinyassets.auth.middleware import current_identity
 
-    account_user = _current_actor()
+    account_user = current_identity().user_id.strip()
     prior_session_ts: str | None = None
     try:
         if activity_tail:
@@ -1028,25 +1300,38 @@ def get_status(universe_id: str = "") -> str:
     except Exception:  # noqa: BLE001
         pass
 
+    if account_user and account_user != "anonymous":
+        activity_tail = [
+            line.replace(account_user, "[request-principal]")
+            for line in activity_tail
+        ]
+        last_n_calls = [
+            {
+                key: (
+                    value.replace(account_user, "[request-principal]")
+                    if isinstance(value, str)
+                    else value
+                )
+                for key, value in call.items()
+            }
+            for call in last_n_calls
+        ]
+
     if prior_session_ts:
         session_boundary = {
             "prior_session_context_available": True,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": prior_session_ts,
-            "note": (
-                f"Activity log contains entries for account '{account_user}'. "
-                "Prior session context may be available in the log."
-            ),
+            "note": "Activity log contains entries for this request principal.",
         }
     else:
         session_boundary = {
             "prior_session_context_available": False,
-            "account_user": account_user,
+            "principal_fingerprint": request_identity["principal_fingerprint"],
             "last_session_ts": None,
             "note": (
-                f"No activity log entries found for account '{account_user}' "
-                "in this universe's log. Chatbot has no prior session record "
-                "to reference — do not assert prior session context."
+                "No activity log entries found for this request principal. "
+                "Do not assert prior session context."
             ),
         }
 
@@ -1132,7 +1417,7 @@ def get_status(universe_id: str = "") -> str:
     release_state = _load_release_state()
 
     response = {
-        "schema_version": 1,
+        "schema_version": _STATUS_SCHEMA_VERSION,
         "active_host": policy_payload["active_host"],
         "tier_routing_policy": tier_routing_policy,
         "evidence": {
@@ -1145,6 +1430,8 @@ def get_status(universe_id: str = "") -> str:
         "evidence_caveats": evidence_caveats,
         "caveats": caveats,
         "actionable_next_steps": actionable_next_steps,
+        "identity_evidence": identity_evidence,
+        "request_identity": request_identity,
         "session_boundary": session_boundary,
         "storage_utilization": storage_utilization,
         "per_provider_cooldown_remaining": per_provider_cooldown_remaining,

@@ -20,7 +20,8 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY gateway.py ./
+COPY gateway.py migrate.py ./
+COPY migrations ./migrations
 
 # Default DSN — compose overrides via env for container-to-container
 # routing (postgres hostname resolves inside the compose network).

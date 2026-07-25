@@ -35,6 +35,8 @@ dependencies = [
 
     # Robust JSON parsing for LLM output
     "json-repair>=0.30",
+    # RFC 8785/JCS body binding for durable request idempotency.
+    "rfc8785>=0.1.4,<0.2",
 
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",

@@ -47,7 +47,7 @@ Until 2026-06-10 the droplet had `BACKUP_DEST=/var/backups/workflow` — a
 local directory on the same disk as the data — and GitHub releases were the
 only true offsite copy. On 2026-06-10, DO Spaces was provisioned as the primary:
 
-- `BACKUP_DEST=spaces:tinyassets-backups-jonnyton-sfo3/tinyassets-backups`
+- `BACKUP_DEST=spaces:workflow-backups-jonnyton-sfo3/workflow-backups`
 - A dedicated Spaces access key.
 - rclone config at `/root/.config/rclone/rclone.conf` (the systemd unit runs
   as root and does not override `HOME`).
@@ -59,7 +59,60 @@ root's rclone file. Releases after the preservation repair keep
 `BACKUP_DEST`; the exact-source host-service workflow treats a working
 destination as a no-op, transactionally creates a bucket-scoped `readwrite`
 key when both configuration halves are absent, and fails closed on partial or
-invalid existing configuration.
+invalid existing configuration. Newly created credentials receive a bounded
+95-second worst-case data-plane propagation window before transactional
+rollback. That bound includes 65 seconds of backoff plus five probes hard-capped
+at five seconds with one second of kill grace each.
+
+The Space is an external resource created before the product rename. Its
+provider identity remains `workflow-backups-jonnyton-sfo3`; Spaces buckets
+cannot be renamed. A mechanical repository rename temporarily documented the
+nonexistent `tinyassets-backups-jonnyton-sfo3` name. Read-only provider probes
+on 2026-07-23 returned HTTP 403 for the private pre-rename bucket and HTTP 404
+for the nonexistent renamed bucket. Do not rename external resource
+identifiers during product terminology migrations.
+
+Exact-merge installer run `30070438676` on 2026-07-23 proved the corrected
+bucket accepts scoped key creation. Its immediate object-list probe returned
+HTTP 403, after which the workflow removed the temporary host configuration and
+deleted the new key. This is treated as provider credential propagation unless
+the bounded retry window also expires; it is not authority to use a full-access
+key.
+
+Exact-merge run `30071110351` then exposed an ordering bug: S3 has no empty
+directories, but the pre-probe `rclone mkdir` still made a data-plane request
+and received HTTP 403 before the bounded retry loop. Rollback again removed the
+host configuration and new key. The installer no longer calls `mkdir`; its
+bounded non-mutating list probe is the only data-plane gate.
+
+Exact-merge installer run `30071496671` completed successfully on 2026-07-23:
+the scoped key passed the bounded data-plane gate and the five uptime timers
+were converged from merge `37698cadd7c3ec7072120fe466e85436aec80386`.
+
+To collect fresh backup evidence without making every deploy run a backup,
+dispatch `install-host-services.yml` at an exact merge ref with
+`run_backup=true`. The default is false. The exercise requires a successful
+oneshot result, new brain/full archive names at the Spaces destination, exactly
+two GitHub release upload markers, and `backup complete.` All journal markers
+must carry the new service run's exact systemd invocation ID; time-window
+queries are insufficient because they can mix adjacent runs. The exercise never
+prints the environment file or rclone credentials.
+
+Final exact-merge proof on 2026-07-24 used merge
+`a18751dc3b8544d048a745304b1823dfdd9fbb11`:
+
+- Backup run `30075565479` reused the verified configuration, converged five
+  timers, produced fresh `2026-07-24T07-28-29Z` brain/full archives at both
+  tiers, and emitted no invocation warning/error.
+- The private release repository converged to 30 recognized backup releases
+  plus one permanent audit release.
+- Both downloaded assets matched GitHub's SHA-256 digests, passed tar/path
+  validation, and the full archive extracted outside production. All 14
+  SQLite databases passed read-only `PRAGMA integrity_check`; `ledger.json`
+  parsed.
+- Deploy run `30076034679` passed health and public canaries. Its automatic
+  host-service run `30076156783` then reported the off-host configuration
+  already verified and reconverged all five timers.
 
 The intended offsite topology remains: **DO Spaces (primary) + GitHub releases
 (secondary)**.
@@ -330,8 +383,16 @@ curl -sL -H "Authorization: Bearer $GH_TOKEN" \
 # Then curl -L <url> > /tmp/backup.tar.gz
 ```
 
-**Retention:** 30 releases kept by default (`BACKUP_GH_RETAIN`). Oldest pruned
-on each successful upload.
+**Retention:** 30 recognized backup releases are kept by default
+(`BACKUP_GH_RETAIN`). Retention waits boundedly until GitHub's list endpoint
+contains the just-created release; an already-deleted victim in a stale view
+forces another bounded reconciliation pass. Each API request has a 15-second
+transport timeout, and one shared wall-clock budget across listing, release
+deletion, best-effort tag cleanup, and retry sleeps caps the complete
+reconciliation at two minutes. The oldest recognized backup releases are then
+pruned after each successful upload. Unrecognized parked/audit releases are
+permanent and do not count toward this limit, so the repository's total
+release count can be higher.
 
 **Setup:** create `Jonnyton/tinyassets-backups` as a private repo once (or let
 `backup_ship_gh.py` create it automatically on first run).  Add `GH_TOKEN` to

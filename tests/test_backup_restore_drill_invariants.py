@@ -160,7 +160,7 @@ def test_drill_start_compose_scopes_to_daemon_service():
     secrets, causing the step to abort before the probe ever runs.
     """
     run = _start_compose_step()["run"]
-    assert "compose -f /opt/tinyassets/deploy/compose.yml up -d daemon" in run, (
+    assert "-f /opt/tinyassets/deploy/compose.yml up -d daemon" in run, (
         "drill's compose-up must scope to `daemon` service only; a bare "
         "`up -d` would also try to start cloudflared + vector and fail"
     )
