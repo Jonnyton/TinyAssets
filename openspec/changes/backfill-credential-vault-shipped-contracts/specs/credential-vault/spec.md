@@ -1,15 +1,19 @@
 ## ADDED Requirements
 
 ### Requirement: Credential alias selection and first-record secret extraction are exact
-The system SHALL map an `llm_api_key` record's effective service, defined as non-empty `service` falling back to non-empty `provider`, to an environment variable as follows: `anthropic`, `claude`, and `claude-code` map to `ANTHROPIC_API_KEY`; `openai` and `codex` map to `OPENAI_API_KEY`; `gemini` and `google` map to `GEMINI_API_KEY`; `groq` maps to `GROQ_API_KEY`; and `xai` and `grok` map to `XAI_API_KEY`. A BYO-key lookup SHALL scan only `llm_api_key` records whose effective service maps to the requested environment variable and SHALL return the first matching record's first non-empty `api_key`, `key`, or `token`, otherwise its decoded `token_b64` or `secret_b64`; if that first matching record has no supported secret, resolution SHALL return empty without scanning later matching records. Claude OAuth resolution SHALL inspect only the first `llm_subscription` record whose effective service is exactly `claude`, returning that record's first non-empty `oauth_token` or `claude_code_oauth_token`, otherwise its decoded `token_b64` or `secret_b64`, and returning empty without scanning later matching records when the first record has no secret. For either resolver, a selected non-empty base64 field that cannot be decoded as base64 and UTF-8 SHALL raise `ValueError` rather than returning empty or scanning a later record.
+The system SHALL derive a credential record's effective service by taking non-empty `service` before non-empty `provider`, then trimming and lowercasing its string form. For `llm_api_key` records, `anthropic`, `claude`, and `claude-code` map to `ANTHROPIC_API_KEY`; `openai` and `codex` map to `OPENAI_API_KEY`; `gemini` and `google` map to `GEMINI_API_KEY`; `groq` maps to `GROQ_API_KEY`; and `xai` and `grok` map to `XAI_API_KEY`. A BYO-key lookup SHALL scan records in stored order and return from the first `llm_api_key` record whose normalized effective service maps to the requested environment variable. From that record it SHALL return the first non-empty string `api_key`, `key`, or `token`, otherwise the decoded string from a truthy `token_b64` before `secret_b64`; if the selected value is not a non-empty string or decodes empty, resolution SHALL return empty without scanning later matching records. Claude OAuth resolution SHALL likewise inspect only the first `llm_subscription` record whose normalized effective service is `claude`, returning its first non-empty string `oauth_token` or `claude_code_oauth_token`, otherwise its selected base64 field, and returning empty without scanning later matching records. Base64 resolution SHALL use the runtime's permissive standard decoder followed by UTF-8 decoding and whitespace trimming: ignored non-alphabet characters are not independently rejected, while an actual base64 or UTF-8 decoding exception SHALL be surfaced as `ValueError`.
 
-#### Scenario: Exact BYO aliases select their environment variable
-- **WHEN** an `llm_api_key` record uses one of the ten supported effective-service aliases
+#### Scenario: Normalized BYO aliases select their environment variable
+- **WHEN** an `llm_api_key` record uses one of the ten supported effective-service aliases with any letter case or surrounding whitespace
 - **THEN** it is eligible only for the environment variable named by the exact alias table
 
 #### Scenario: Provider supplies the effective service when service is absent
 - **WHEN** an `llm_api_key` record omits or empties `service` and names a supported alias in `provider`
 - **THEN** BYO-key lookup uses that `provider` value as the effective service
+
+#### Scenario: Empty first BYO match shadows later records
+- **WHEN** the first `llm_api_key` record mapped to the requested environment variable has no supported string secret and a later mapped record does
+- **THEN** BYO-key resolution returns empty without inspecting the later record
 
 #### Scenario: First Claude subscription yields a direct or base64 secret
 - **WHEN** the first effective-service `claude` subscription contains a direct OAuth field or a decodable `token_b64` or `secret_b64`
@@ -19,12 +23,12 @@ The system SHALL map an `llm_api_key` record's effective service, defined as non
 - **WHEN** the first effective-service `claude` subscription has no supported secret and a later matching subscription does
 - **THEN** Claude OAuth resolution returns empty without inspecting the later record
 
-#### Scenario: Malformed selected base64 fails loudly
-- **WHEN** a selected BYO-key or first matching Claude subscription record has no supported direct secret and its selected `token_b64` or `secret_b64` cannot be decoded as base64 and UTF-8
+#### Scenario: Selected base64 decoding exceptions fail loudly
+- **WHEN** a selected BYO-key or first matching Claude subscription record has no supported direct secret and standard base64 or UTF-8 decoding of its selected `token_b64` or `secret_b64` raises
 - **THEN** resolution raises `ValueError` without returning empty or scanning a later record
 
 #### Scenario: Unknown effective service does not resolve
-- **WHEN** an `llm_api_key` record's effective service is absent or not in the exact alias table
+- **WHEN** an `llm_api_key` record's normalized effective service is absent or not in the exact alias table
 - **THEN** that record does not satisfy any provider environment lookup
 
 ### Requirement: Credential vault replacement is process-local and unversioned

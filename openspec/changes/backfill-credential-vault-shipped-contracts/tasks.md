@@ -7,10 +7,10 @@
 
 - [x] 2.1 Wait for PR #1606 or its declared successor to settle — skipped as inverted: #1606 is an open draft for unlanded behavior, not the owner of shipped `main`
 - [x] 2.2 Rebase against the resulting credential runtime and canonical spec — skipped as stale: `HEAD` already equaled `origin/main` at `2a26a115`; current runtime and canonical spec were reviewed directly
-- [ ] 2.3 Remove duplicate or superseded clauses and rerun focused evidence
+- [x] 2.3 Remove duplicate or superseded clauses and rerun focused evidence — no canonical duplicate existed; normalized-service and permissive-base64 wording corrected; 20 focused tests passed
 
 ## 3. Fold Back Canonical Truth
 
 - [x] 3.1 Broaden the STATUS write boundary to `openspec/specs/credential-vault/spec.md`
-- [ ] 3.2 Sync the reviewed delta and prove untouched requirements are preserved
-- [ ] 3.3 Strictly validate, independently review, archive, land, and retire the claim
+- [x] 3.2 Sync the reviewed delta and prove untouched requirements are preserved — canonical baseline remains an exact prefix and the reviewed delta is its exact suffix
+- [ ] 3.3 Strictly validate, independently review, archive, land, and retire the claim — strict change/spec validation passed; blocked on the required cross-family review before archive/PR/land
