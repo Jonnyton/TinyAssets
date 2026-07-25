@@ -127,25 +127,35 @@ def _credential_key(record: dict[str, Any]) -> tuple[Any, ...]:
             if account:
                 break
         return credential_type, service, account
-    if credential_type != "vcs":
-        return credential_type, service
+    if credential_type == "vcs":
+        destination = str(record.get("destination") or "").strip()
+        return credential_type, service, destination
+    return credential_type, service
 
+
+def _vcs_purposes(record: dict[str, Any]) -> frozenset[str]:
     purpose = record.get("purpose")
     if isinstance(purpose, str) and purpose.strip():
-        purpose_key = (purpose.strip(),)
-    else:
-        purposes = record.get("purposes")
-        purpose_key = (
-            tuple(sorted({
-                str(item).strip()
-                for item in purposes
-                if str(item).strip()
-            }))
-            if isinstance(purposes, list)
-            else ("write",)
+        return frozenset({purpose.strip()})
+    purposes = record.get("purposes")
+    if isinstance(purposes, list):
+        return frozenset(
+            str(item).strip()
+            for item in purposes
+            if str(item).strip()
         )
-    destination = str(record.get("destination") or "").strip()
-    return credential_type, service, destination, purpose_key
+    return frozenset({"write"})
+
+
+def _credentials_match(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> bool:
+    if _credential_key(existing) != _credential_key(incoming):
+        return False
+    if incoming["credential_type"] != "vcs":
+        return True
+    return bool(_vcs_purposes(existing) & _vcs_purposes(incoming))
 
 
 def _merge_single_record(
@@ -153,9 +163,8 @@ def _merge_single_record(
     incoming: dict[str, Any],
 ) -> list[dict[str, Any]]:
     merged = list(existing)
-    incoming_key = _credential_key(incoming)
     for index, record in enumerate(merged):
-        if _credential_key(record) == incoming_key:
+        if _credentials_match(record, incoming):
             merged[index] = incoming
             return merged
     merged.append(incoming)
@@ -220,14 +229,7 @@ def write_credential_vault(
 
 
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
-    expected = purpose.strip()
-    record_purpose = record.get("purpose")
-    if isinstance(record_purpose, str) and record_purpose.strip():
-        return record_purpose.strip() == expected
-    purposes = record.get("purposes")
-    if isinstance(purposes, list):
-        return expected in [str(item).strip() for item in purposes]
-    return expected == "write"
+    return purpose.strip() in _vcs_purposes(record)
 
 
 def _secret_value(record: dict[str, Any], *keys: str) -> str:
