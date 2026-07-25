@@ -42,7 +42,25 @@
 ## 5. Lifecycle Residuals
 
 - [ ] 5.1 Add tests proving public `POST /v1/universes` cannot create a universe, then remove or reject the route.
-- [ ] 5.2 Add tests proving every public birth path generates its own serial and rejects caller-selected ids, then enforce the boundary without breaking internal migration tooling.
+  - PREMISE STALE (verified 2026-07-24): no `POST /v1/universes` HTTP route
+    exists in the tree. The only public creation surfaces are the MCP
+    `universe action=create_universe` and `write_graph target=universe` tools;
+    `create_streamable_http_app()` registers only MCP transport + discovery
+    routes (`universe_server.py:2231`). No REST route to remove. The
+    public-birth boundary is now enforced at the shared MCP dispatch chokepoint
+    (task 5.2). Kept open pending a chosen regression test for the absence.
+- [x] 5.2 Add tests proving every public birth path generates its own serial and rejects caller-selected ids, then enforce the boundary without breaking internal migration tooling.
+  - DONE (2026-07-24): `_universe_impl` now rejects a caller-selected
+    `universe_id` on `create_universe` with `reason: caller_selected_id_rejected`
+    at the shared dispatch boundary, so both public birth entry points
+    (`universe action=create_universe`, `write_graph target=universe`) refuse a
+    chosen id and self-serialize an opaque `u-`+ULID. Internal callers pass a
+    keyword-only `allow_named_universe_id=True` (first-contact home
+    materialization threaded; migration/dev tooling that calls
+    `_action_create_universe` directly bypasses the boundary unchanged). Tests:
+    `tests/test_first_contact.py` (rejects chosen id via both entry points;
+    self-serializes without id; internal named-id accepted; first-contact
+    still serial).
 - [ ] 5.3 Add tests and implementation for the root universe index keyed by immutable id with learned-name projection from `identity.md`.
 - [ ] 5.4 Inventory descriptive-id roots and live references, then implement an atomic, rollback-safe migration to generated serial roots.
 - [ ] 5.5 Verify migrated bindings and read/write/run/status references resolve only the serial id after migration.

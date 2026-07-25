@@ -66,7 +66,15 @@ def ensure_founder_home(base: Path, founder: str) -> str:
             except OSError:
                 pass
         try:
-            _universe_impl(action="create_universe", universe_id=winner)
+            # ``winner`` is the serial this founder-home binding already
+            # reserved via ``claim_founder_home``; pass it through the trusted
+            # internal path so the public-birth boundary does not reject our own
+            # generated id.
+            _universe_impl(
+                action="create_universe",
+                universe_id=winner,
+                allow_named_universe_id=True,
+            )
         except Exception:  # noqa: BLE001 - failed birth degrades honestly
             pass
         if not home_is_complete(base, winner):

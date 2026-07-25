@@ -677,3 +677,81 @@ def test_write_graph_unknown_target_lists_universe(data_dir):
     out = json.loads(write_graph(target="nope"))
     assert out["error"] == "unknown_target"
     assert "universe" in out["allowed_targets"]
+
+
+# ---------------------------------------------------------------------------
+# universe-lifecycle-and-soul task 5.2: public universe birth self-serializes.
+# Every public birth entry point generates its own opaque ``u-``+ULID serial
+# and rejects a caller-selected id. Internal migration/dev tooling is exempt.
+# ---------------------------------------------------------------------------
+
+
+def test_public_create_universe_rejects_caller_selected_id(data_dir, monkeypatch):
+    """`_universe_impl` (the public dispatch boundary) refuses a chosen id."""
+    from tinyassets.api import universe as universe_api
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    out = json.loads(
+        universe_api._universe_impl(
+            action="create_universe", universe_id="my-cool-name"
+        )
+    )
+    assert out["reason"] == "caller_selected_id_rejected"
+    assert "opaque serial" in out["error"]
+    # No root, serial or descriptive, may be materialized by a rejected birth.
+    assert _universe_dirs(data_dir) == []
+
+
+def test_public_create_universe_without_id_self_serializes(data_dir, monkeypatch):
+    """The public path with no id assigns exactly one opaque serial root."""
+    from tinyassets.api import universe as universe_api
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    out = json.loads(universe_api._universe_impl(action="create_universe"))
+    assert out.get("error") is None, out
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert _serial_dirs(data_dir) == [data_dir / uid]
+
+
+def test_write_graph_universe_rejects_caller_selected_graph_id(data_dir, monkeypatch):
+    """The write_graph target=universe birth path also refuses a chosen id."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.universe_server import write_graph
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-1")
+    out = json.loads(write_graph(target="universe", graph_id="chosen-name"))
+    assert out["reason"] == "caller_selected_id_rejected"
+    assert _universe_dirs(data_dir) == []
+
+
+def test_internal_named_id_is_accepted(data_dir, monkeypatch):
+    """The internal-trust flag lets migration/first-contact supply a serial."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.ids import new_universe_id
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    reserved = new_universe_id()
+    out = json.loads(
+        universe_api._universe_impl(
+            action="create_universe",
+            universe_id=reserved,
+            allow_named_universe_id=True,
+        )
+    )
+    assert out.get("error") is None, out
+    assert out["universe_id"] == reserved
+    assert (data_dir / reserved / "soul.md").is_file()
+
+
+def test_first_contact_birth_still_self_serializes(data_dir, monkeypatch):
+    """`ensure_founder_home` births a serial home through the trusted path."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-1")
+    home = ensure_founder_home(data_dir, "founder-1")
+    assert is_universe_serial(home)
+    assert (data_dir / home / "soul.md").is_file()

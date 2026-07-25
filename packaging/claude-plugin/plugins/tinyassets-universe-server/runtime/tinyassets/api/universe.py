@@ -6102,10 +6102,17 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    *,
+    allow_named_universe_id: bool = False,
 ) -> str:
     """Pattern A2 body — see ``tinyassets.universe_server.universe`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
+
+    ``allow_named_universe_id`` is a keyword-only, internal-trust flag. The
+    public MCP surface (``universe`` and ``write_graph`` tools) never sets it,
+    so a public caller cannot choose a universe's id — see the public-birth
+    boundary below.
     """
     dispatch = UNIVERSE_ACTIONS
     handler = dispatch.get(action)
@@ -6113,6 +6120,26 @@ def _universe_impl(
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
+        })
+    # universe-lifecycle-and-soul: every public universe-birth entry point
+    # self-serializes. A public caller-selected id is rejected here at the
+    # shared dispatch boundary — the service assigns an opaque ``u-``+ULID
+    # serial (see ``tinyassets.ids.new_universe_id``). Only trusted internal
+    # callers (first-contact home materialization, migration/dev tooling) may
+    # supply a pre-generated serial via ``allow_named_universe_id``. Direct
+    # ``_action_create_universe`` callers bypass this boundary and keep
+    # accepting explicit ids for dev/test/migration use.
+    if (
+        action == "create_universe"
+        and not allow_named_universe_id
+        and universe_id.strip()
+    ):
+        return json.dumps({
+            "error": (
+                "Universe birth assigns its own opaque serial id; a "
+                "caller-selected universe_id is not accepted."
+            ),
+            "reason": "caller_selected_id_rejected",
         })
     scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
     if scope_error is not None:
