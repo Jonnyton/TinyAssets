@@ -596,7 +596,7 @@ def _register_branch_task_producers_from_env() -> None:
 
 
 def _queue_has_running_branch_task(universe: Path) -> bool:
-    """Recover expired v2 leases, then protect claims a restart may abandon."""
+    """Protect live v1/v2 claims that a subprocess restart may abandon."""
     try:
         from tinyassets.branch_tasks import read_queue
 

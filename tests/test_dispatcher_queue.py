@@ -1346,6 +1346,31 @@ def test_queue_list_merges_epoch2_without_exposing_request_text(
     ] == 1
 
 
+def test_queue_list_discloses_staged_epoch2_consumer_not_ready(server_base):
+    from tinyassets.api.universe import _action_queue_list
+
+    base, uid = server_base
+    initialize_author_server(base)
+    _commit_epoch2(
+        base,
+        key_suffix="consumer-not-ready",
+        text="staged work",
+        created_at=datetime.now(timezone.utc).isoformat(),
+        universe_id=uid,
+    )
+
+    response = json.loads(_action_queue_list(universe_id=uid))
+
+    assert response["consumer_ready"] is False
+    assert response["capacity_evidence_available"] is False
+    assert (
+        response["capacity_evidence_error"]
+        == "epoch2_consumer_not_ready"
+    )
+    assert response["counts_complete"] is False
+    assert response["eligible_epoch2_pending_count"] == 0
+
+
 def test_queue_list_preserves_v1_when_epoch2_read_fails(
     server_base,
     monkeypatch,

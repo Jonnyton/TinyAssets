@@ -1404,9 +1404,9 @@ def _epoch2_operational_read(
         load_dispatcher_config,
         prefers_request_type,
     )
-    from tinyassets.storage import DB_FILENAME, data_dir
+    from tinyassets.storage import DB_FILENAME
 
-    base_path = data_dir()
+    base_path = udir.parent
     database = base_path / DB_FILENAME
     if not database.is_file():
         return Epoch2OperationalRead(
@@ -2398,6 +2398,7 @@ def _action_queue_list(
             "capacity_evidence_available"
         ),
         "capacity_evidence_error": epoch2.get("capacity_evidence_error"),
+        "consumer_ready": epoch2.get("consumer_ready"),
         "valid_epoch2_pending_count": epoch2.get("valid_pending_count"),
         "eligible_epoch2_pending_count": epoch2.get(
             "eligible_pending_count"

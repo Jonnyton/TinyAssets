@@ -83,6 +83,38 @@ def _active_claim_schema_ready(conn: sqlite3.Connection) -> bool:
     return _ACTIVE_CLAIM_COLUMNS <= columns
 
 
+_RECOVERY_COLUMNS = _ACTIVE_CLAIM_COLUMNS | frozenset({
+    "admission_id",
+    "branch_task_id",
+    "claimed_at",
+    "heartbeat_at",
+    "queued_at",
+    "request_id",
+    "terminal_at",
+})
+
+
+def _recovery_schema_ready(conn: sqlite3.Connection) -> bool:
+    if not _table_exists(conn, "branch_tasks_v2"):
+        return False
+    if any(
+        not _table_exists(conn, table_name)
+        for table_name in (
+            "request_admissions",
+            "request_admission_events",
+            "user_requests",
+        )
+    ):
+        return False
+    columns = {
+        str(row["name"])
+        for row in conn.execute(
+            "PRAGMA table_info(branch_tasks_v2)"
+        ).fetchall()
+    }
+    return _RECOVERY_COLUMNS <= columns
+
+
 # Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
     "access_checked",
@@ -1159,8 +1191,31 @@ class RequestAdmissionStore:
         with self.connection() as conn:
             if not _table_exists(conn, "branch_tasks_v2"):
                 return []
+            if not _recovery_schema_ready(conn):
+                raise sqlite3.OperationalError(
+                    "branch_tasks_v2 recovery schema incomplete"
+                )
+            now = _clock_iso(self._clock)
+            expired = conn.execute(
+                """
+                SELECT 1
+                FROM branch_tasks_v2
+                WHERE status IN ('running', 'cancel_requested')
+                  AND disabled = 0
+                  AND lease_expires_at IS NOT NULL
+                  AND julianday(lease_expires_at) <= julianday(?)
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if expired is None:
+                return []
             conn.execute("BEGIN IMMEDIATE")
             try:
+                if not _recovery_schema_ready(conn):
+                    raise sqlite3.OperationalError(
+                        "branch_tasks_v2 recovery schema incomplete"
+                    )
                 now = _clock_iso(self._clock)
                 rows = conn.execute(
                     """

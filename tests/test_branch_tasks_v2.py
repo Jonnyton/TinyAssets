@@ -508,6 +508,48 @@ def test_heartbeat_cancel_terminal_and_expired_recovery(
     ) == "pending"
 
 
+def test_recovery_poll_without_expired_claim_stays_read_only(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+    monkeypatch,
+) -> None:
+    adapter, _committed, _clock = epoch2
+    statements: list[str] = []
+    real_connection = adapter._store.connection
+
+    @contextmanager
+    def traced_connection():
+        with real_connection() as conn:
+            conn.set_trace_callback(statements.append)
+            yield conn
+
+    monkeypatch.setattr(
+        adapter._store,
+        "connection",
+        traced_connection,
+    )
+
+    assert adapter.recover_expired() == []
+    assert not any(
+        "BEGIN IMMEDIATE" in statement.upper()
+        for statement in statements
+    )
+
+
+def test_recovery_fails_closed_for_partial_epoch2_schema(tmp_path) -> None:
+    adapter = Epoch2BranchTaskAdapter(tmp_path)
+    with adapter._store.connection() as conn:
+        conn.execute(
+            "CREATE TABLE branch_tasks_v2 (branch_task_id TEXT PRIMARY KEY)"
+        )
+        conn.commit()
+
+    with pytest.raises(
+        sqlite3.OperationalError,
+        match="branch_tasks_v2 recovery schema incomplete",
+    ):
+        adapter.recover_expired()
+
+
 def test_pending_cancel_is_terminal_without_claim(
     epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:
