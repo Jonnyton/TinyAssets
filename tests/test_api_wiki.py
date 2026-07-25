@@ -536,8 +536,12 @@ def test_wiki_category_filters_search_since_and_ambient_without_widening(wiki_en
         }
         absent = json.loads(wiki(**{**kwargs, "category": "not-yet-created"}))
         assert "error" not in absent and absent["results"] == []
-        invalid = json.loads(wiki(**{**kwargs, "category": "///"}))
-        assert "category" in invalid["error"].lower() and invalid.get("results") == []
+        for invalid_category in ("///", "   "):
+            invalid = json.loads(
+                wiki(**{**kwargs, "category": invalid_category})
+            )
+            assert "category" in invalid["error"].lower()
+            assert invalid.get("results") == []
 
     source_body = "exact source body stays unchanged"
     _write_page(
@@ -566,12 +570,17 @@ def test_wiki_category_filters_search_since_and_ambient_without_widening(wiki_en
              scope="discovery")
     )
     assert _result_paths(ordered) == {"pages/magic-systems/discovery.md"}
-    nested = json.loads(
-        wiki(action="read", page="pages/workflows/source.md", category="!!!")
-    )
-    assert source_body in nested["content"] and "error" not in nested
-    assert nested["ambient_relevance_feed"]["items"] == []
-    assert "category" in nested["ambient_relevance_feed"]["error"].lower()
+    for invalid_category in ("!!!", "   "):
+        nested = json.loads(
+            wiki(
+                action="read",
+                page="pages/workflows/source.md",
+                category=invalid_category,
+            )
+        )
+        assert source_body in nested["content"] and "error" not in nested
+        assert nested["ambient_relevance_feed"]["items"] == []
+        assert "category" in nested["ambient_relevance_feed"]["error"].lower()
 
 
 def test_wiki_exact_read_source_scope_and_list_structure_stay_distinct(wiki_env):

@@ -20,18 +20,19 @@
 
 ## 3. Core Implementation
 
-- [ ] 3.1 Add pure request-local scope, source-audience, candidate-audience, and open-taxonomy category helpers in canonical `tinyassets/api/wiki.py`.
-- [ ] 3.2 Thread `universe_id` into ambient retrieval and apply visibility before audience/category and before scoring or response construction on every retrieval surface.
-- [ ] 3.3 Forward core `scope`, return applied scope plus a non-fatal default-filter note, and preserve exact body reads and list behavior.
-- [ ] 3.4 Run `python packaging/claude-plugin/build_plugin.py`, prove canonical/plugin `api/wiki.py` byte parity, and reject any unintended generated diff.
+- [x] 3.1 Add pure request-local scope, source-audience, candidate-audience, and open-taxonomy category helpers in canonical `tinyassets/api/wiki.py`.
+- [x] 3.2 Thread `universe_id` into ambient retrieval and apply visibility before audience/category and before scoring or response construction on every retrieval surface.
+- [x] 3.3 Forward core `scope`, return applied scope plus a non-fatal default-filter note, and preserve exact body reads and list behavior.
+- [x] 3.4 Run `python packaging/claude-plugin/build_plugin.py`, prove canonical/plugin `api/wiki.py` byte parity, and reject any unintended generated diff.
 
 ## 4. Verification
 
-- [ ] 4.1 Pass `pytest tests/test_api_wiki.py tests/test_wiki_tools.py -q`.
-- [ ] 4.2 Pass the surrounding wiki and universe-visibility suites, Ruff on changed Python files, compile/import checks, and `git diff --check`.
-- [ ] 4.3 Pass the named 256-call single-process request-local determinism proof and document its environment/date without claiming the separate §14 Track J load suite.
-- [ ] 4.4 Pass `openspec validate scope-wiki-discovery --strict` and `openspec validate --all --strict`.
-- [ ] 4.5 Obtain independent exact-head correctness/security/diff review and resolve every required finding.
+- [x] 4.1 Pass `pytest tests/test_api_wiki.py tests/test_wiki_tools.py -q`.
+- [x] 4.2 Pass the surrounding wiki and universe-visibility suites, Ruff on changed Python files, compile/import checks, and `git diff --check`.
+- [x] 4.3 Pass the named 256-call single-process request-local determinism proof and document its environment/date without claiming the separate §14 Track J load suite.
+  - Evidence: 2026-07-25, Windows/Python 3.14, 256/256 byte-identical dispatcher results in 0.97s; this is not the separate §14 Track J load suite.
+- [x] 4.4 Pass `openspec validate scope-wiki-discovery --strict` and `openspec validate --all --strict`.
+- [x] 4.5 Obtain independent exact-head correctness/security/diff review and resolve every required finding.
 
 ## 5. Foldback and Public Proof
 
