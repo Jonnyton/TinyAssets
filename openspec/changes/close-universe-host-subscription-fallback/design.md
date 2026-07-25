@@ -12,6 +12,7 @@ The function also serves host-local daemon and development calls. Those calls mu
 - Construct universe provider children from an explicit safe-runtime allowlist, never from a copied host environment.
 - Replace home/profile/XDG/temp discovery roots with private universe-owned roots and pin empty CLI auth homes away from host defaults and credential-artifact probes.
 - Admit only validated CA bundle files and recognized selected-provider vault keys; omit ambient proxy authority.
+- Reject linked, multi-link, non-file, or physically outside vault sources before any public vault resolver reads them.
 - Physically contain every runtime and credential path before any directory creation, materialization, or helper side effect.
 - Fail explicitly if universe credential resolution cannot complete.
 - Preserve host-local behavior and keep the canonical runtime and packaged mirror identical.
@@ -42,9 +43,11 @@ Alternative considered: expand the known-variable denylist. Rejected because a f
 
 ### Admit only recognized selected-provider vault output
 
-Before invoking the credential helper, the builder calls the selected provider's public read-only vault resolver and preflights both its configured/existing auth path and the provider's default `.credentials/<service>` materialization target against the canonical universe root. This rejects an outside target before the helper can create a directory or materialize an auth bundle.
+Before invoking any public vault resolver or helper, the builder checks `<universe>/.credential-vault.json` with `lstat` semantics. Missing remains the canonical empty-vault case. A present source must be a physically contained, non-symlink regular file with one link; linked, multi-link, non-file, or outside sources fail before runtime or credential artifacts are created. The builder then calls the selected provider's public read-only vault resolver and preflights both its configured/existing auth path and the provider's default `.credentials/<service>` materialization target against the canonical universe root. This rejects an outside target before the helper can create a directory or materialize an auth bundle.
 
-The credential helper receives an empty overlay dictionary, not the child environment. Claude may return only `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY`; Codex may return only `CODEX_HOME` and `OPENAI_API_KEY`. The builder rejects unknown keys, non-string outputs, and auth paths whose resolved physical location is outside the universe, then updates the safe child environment. This post-helper validation preserves a selected universe's legitimate overlay without allowing a helper regression to reintroduce ambient authority.
+The credential helper receives an empty overlay dictionary, not the child environment. Claude may return only `CLAUDE_CONFIG_DIR`, `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY`; Codex may return only `CODEX_HOME` and `OPENAI_API_KEY`. The builder rejects unknown keys, non-string outputs, and auth paths whose resolved physical location is outside the universe, then updates the safe child environment. This post-helper validation detects a helper regression and refuses provider launch, but it cannot undo a hypothetical helper side effect that occurred before the helper returned. The preflight covers every currently reachable helper path before invocation.
+
+This slice validates selected auth-directory locations, not every pre-existing leaf below a physically contained selected directory. Existing contents under such a directory are trusted credential material governed by the universe owner and the same-host filesystem/OS-sandbox boundary. Recursive leaf-symlink scanning is not a substitute for that boundary and is outside this process-environment slice.
 
 ### Convert unexpected universe credential failures into an explicit provider failure
 
@@ -56,10 +59,11 @@ Alternative considered: swallow failures after removing host auth. Rejected beca
 
 - **Previously working but unauthorized calls will fail** — This is the intended breaking security correction; operators must configure universe-owned authority. Market authority remains separate and unbuilt in this slice.
 - **Outside-universe credential paths now fail** — Existing records that point Claude or Codex auth outside the universe, directly or through a symlink/junction/reparse component, must move that material under the universe. There is no compatibility exception because it would restore cross-universe authority.
+- **Linked vault sources now fail** — A symlinked, junction/reparse-linked, hardlinked/multi-link, non-file, or physically outside `.credential-vault.json` is refused. Operators must write a private single-link regular vault file directly beneath the universe.
 - **Ambient universe bindings scope host tools** — Host tooling that inherits `TINYASSETS_UNIVERSE` receives universe isolation. Host-local tooling must run without that binding.
 - **Enterprise proxies are not inherited** — This is intentional. A later explicit network-capability/sidecar contract may admit validated routing without ambient host credentials.
 - **Environment isolation is not a network sandbox** — Cloud-route activation and ambient credential files are removed, and AWS EC2 metadata lookup is disabled, but this slice does not claim to block every managed-identity metadata endpoint. Network egress isolation remains separate.
-- **Local path preflight has a TOCTOU residual** — A same-host actor able to rewrite universe filesystem links between validation and directory creation could race the check. Removing that residual requires an OS-backed directory-handle/sandbox boundary and is not claimed by this process-environment slice.
+- **Local path preflight has a TOCTOU residual** — The stated path guarantees assume no concurrent same-host link mutation between validation and runtime-directory creation, helper directory/auth-material writes, or later provider filesystem use. A same-host actor with that mutation authority can race path-based checks. OS-backed directory handles and a real process/filesystem sandbox are the full fix; this process-environment slice does not claim them.
 - **A vault helper regression can stop universe inference** — Scope is established without the helper, and focused tests cover explicit and environment-bound universe calls.
 - **Runtime and packaged plugin can drift** — Make the same minimal edit in both files and run byte-parity checks.
 

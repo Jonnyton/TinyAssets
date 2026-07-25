@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import abc
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -252,6 +253,26 @@ def _preflight_provider_auth_paths(
         _resolved_universe_child(universe_root, configured_auth_path)
 
 
+def _preflight_vault_source(universe_root: Path, vault_path: Path) -> None:
+    try:
+        source_stat = os.lstat(vault_path)
+    except FileNotFoundError:
+        return
+    is_reparse_point = bool(
+        getattr(source_stat, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    )
+    if (
+        not stat.S_ISREG(source_stat.st_mode)
+        or is_reparse_point
+        or source_stat.st_nlink != 1
+    ):
+        raise ValueError("credential vault source is not a private regular file")
+    resolved = vault_path.resolve(strict=True)
+    if not resolved.is_relative_to(universe_root):
+        raise ValueError("credential vault source escapes universe")
+
+
 def _provider_child_runtime_env(
     provider_name: str, universe_dir: Path,
 ) -> dict[str, str]:
@@ -348,10 +369,14 @@ def subprocess_env_for_provider(
         universe_root = resolved_universe.expanduser().resolve(strict=False)
         from tinyassets.credential_vault import (
             apply_provider_auth_env,
+            credential_vault_path,
             resolve_claude_config_dir,
             resolve_codex_home,
         )
 
+        _preflight_vault_source(
+            universe_root, credential_vault_path(universe_root),
+        )
         configured_auth_path = (
             resolve_claude_config_dir(universe_root)
             if provider_name == "claude-code"

@@ -4,9 +4,13 @@
 
 For a host-local call with no explicit or environment-resolved universe, the system SHALL preserve the ordinary host subprocess environment and SHALL NOT invoke a universe vault helper. For a universe-scoped CLI call, `subprocess_env_for_provider` SHALL accept only the exact canonical provider names `claude-code` and `codex`, SHALL classify any non-empty explicit `universe_dir` or `TINYASSETS_UNIVERSE` binding as universe scope before credential work, and SHALL construct the child environment from an empty dictionary rather than a copied host environment. An explicit universe SHALL override an environment-bound universe.
 
+For a host-local call the system SHALL continue to apply the subscription-only API-key policy: when API-key providers are not explicitly enabled, `subprocess_env_without_api_keys` MUST remove `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, and `XAI_API_KEY`.
+
 The universe child MAY inherit only required execution basics: `PATH`; Windows process bootstrap variables `SYSTEMROOT`, `WINDIR`, `COMSPEC`, `PATHEXT`, and `SYSTEMDRIVE`; locale, timezone, and terminal variables `LANG`, `LANGUAGE`, `LC_ALL`, `LC_COLLATE`, `LC_CTYPE`, `LC_MESSAGES`, `LC_MONETARY`, `LC_NUMERIC`, `LC_TIME`, `LC_ADDRESS`, `LC_IDENTIFICATION`, `LC_MEASUREMENT`, `LC_NAME`, `LC_PAPER`, `LC_TELEPHONE`, `TZ`, `TERM`, `COLORTERM`, `NO_COLOR`, `PYTHONUTF8`, and `PYTHONIOENCODING`; and CA bundle variables `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `NODE_EXTRA_CA_CERTS`, and `CODEX_CA_CERTIFICATE` only when their values identify absolute existing regular files. Environment names SHALL be matched case-insensitively on Windows and emitted with canonical names. Ambient proxy variables, `SSL_CERT_DIR`, `NODE_OPTIONS`, known provider/cloud credentials, cloud-route activation, any other `LC_*` name, and unknown future variables SHALL NOT enter the universe child. The child SHALL force `AWS_EC2_METADATA_DISABLED=true`.
 
-The builder SHALL normalize a relative universe binding to an absolute canonical universe root. Before any provider-child directory creation or credential-helper side effect, it SHALL resolve every planned runtime target, the selected provider's existing/configured auth path returned by the public read-only vault resolver, and the selected provider's default `.credentials/<service>` materialization target. It SHALL refuse provider launch if any target physically resolves outside the canonical universe root, including through an existing symlink, junction, or reparse component.
+The builder SHALL normalize a relative universe binding to an absolute canonical universe root. Before any public vault resolver or helper reads the selected source, it SHALL inspect `<universe>/.credential-vault.json` without following its final component. A missing source SHALL mean an empty vault. A present source SHALL be a physically contained, non-symlink regular file with exactly one hard link; a symlink, junction/reparse link, hardlinked or multi-link file, non-file, or physically outside source SHALL refuse provider launch before runtime or credential artifacts are created.
+
+Before any provider-child directory creation or credential-helper side effect, the builder SHALL resolve every planned runtime target, the selected provider's existing/configured auth path returned by the public read-only vault resolver, and the selected provider's default `.credentials/<service>` materialization target. It SHALL refuse provider launch if any target physically resolves outside the canonical universe root, including through an existing symlink, junction, or reparse component.
 
 After the complete preflight succeeds, the builder SHALL create private universe-owned home, profile, XDG, temporary, and runtime-only empty-auth roots beneath `<universe>/.runtime/provider-child/<provider>/`, with best-effort `0700` modes, and SHALL set `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, `XDG_RUNTIME_DIR`, `TMPDIR`, `TMP`, and `TEMP` to absolute paths under those roots. It SHALL derive `HOMEDRIVE` and `HOMEPATH` only for a normal Windows drive path. Before credential overlay, it SHALL pin default `CLAUDE_CONFIG_DIR` and `CODEX_HOME` beneath the provider child's distinct `auth-empty` runtime root and SHALL NOT create `.credentials/*` for a universe with no credential record.
 
@@ -57,6 +61,12 @@ This process-environment requirement does not claim network sandboxing or univer
 - **WHEN** a universe-scoped provider child is assembled
 - **THEN** provider launch is refused before the credential helper creates or materializes anything at that outside path
 
+#### Scenario: Linked vault source is rejected before credential work
+- **GIVEN** `<universe>/.credential-vault.json` is a symlink, junction/reparse link, hardlink, or other multi-link source for credential data outside the universe's private vault file
+- **WHEN** a universe-scoped provider child is assembled
+- **THEN** provider launch is refused with a sanitized credential-resolution error before any public vault resolver reads that source
+- **AND** no provider-child runtime or credential artifact is created
+
 #### Scenario: Outside helper overlay path is rejected
 - **WHEN** a provider helper returns a recognized auth-home key whose path physically resolves outside the canonical universe
 - **THEN** provider launch is refused with a sanitized credential-resolution error
@@ -81,6 +91,11 @@ This process-environment requirement does not claim network sandboxing or univer
 - **WHEN** a provider subprocess call has no explicit or environment-resolved universe
 - **THEN** the environment builder returns the ordinary host environment under its normal API-key opt-in policy
 - **AND** it does not invoke a universe vault helper
+
+#### Scenario: Host-local API-key variables remain opt-in
+- **GIVEN** the host carries `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `GEMINI_API_KEY`, `GROQ_API_KEY`, and `XAI_API_KEY`
+- **WHEN** a host-local subprocess environment is built without explicit API-key-provider opt-in
+- **THEN** all six variables are absent while host subscription authority remains available
 
 #### Scenario: Noncanonical universe provider is rejected before credential work
 - **WHEN** a universe-scoped caller requests `future-cli`, `gemini`, `CODEX`, or any provider name other than exact `claude-code` or `codex`

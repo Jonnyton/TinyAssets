@@ -29,6 +29,7 @@ from tinyassets.providers.base import (
     API_KEY_PROVIDER_ENV_VARS,
     HOST_SUBSCRIPTION_ENV_VARS,
     subprocess_env_for_provider,
+    subprocess_env_without_api_keys,
 )
 
 AMBIENT_CLOUD_AUTH_VARS = (
@@ -84,6 +85,26 @@ def _make_directory_link(link: Path, target: Path) -> None:
         )
 
 
+def _make_file_link(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"file symlinks unavailable: {exc}")
+
+
+def _write_outside_vault(path: Path, token: str) -> None:
+    path.write_text(
+        (
+            '{"schema_version": 1, "credentials": [{'
+            '"credential_type": "llm_api_key", '
+            '"service": "claude-code", '
+            f'"api_key": "{token}"'
+            "}]}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture
 def host_auth(monkeypatch):
     """Simulate the prod container: host subscription auth present in the env."""
@@ -126,6 +147,19 @@ def test_host_local_daemon_keeps_its_own_auth(host_auth):
             f"{name} was stripped for a host-local call with no universe in "
             "play; that breaks the daemon and dev loop"
         )
+
+
+def test_host_local_api_key_policy_strips_all_six_variables(host_auth, monkeypatch):
+    """The MODIFIED spec must preserve the canonical host-local key policy."""
+    for name in API_KEY_PROVIDER_ENV_VARS:
+        monkeypatch.setenv(name, f"host-value-for-{name}")
+
+    env = subprocess_env_without_api_keys()
+
+    assert env is not None
+    assert set(API_KEY_PROVIDER_ENV_VARS).isdisjoint(env)
+    for name in HOST_SUBSCRIPTION_ENV_VARS:
+        assert env.get(name) == f"host-value-for-{name}"
 
 
 def test_api_keys_are_still_stripped_when_not_opted_in(host_auth, tmp_path):
@@ -570,26 +604,80 @@ def test_default_vault_materialization_target_escape_is_rejected_before_helper(
     assert not (universe / ".runtime").exists()
 
 
+def test_vault_source_symlink_is_rejected_before_any_helper_side_effect(
+    tmp_path,
+):
+    universe = tmp_path / "u-linked-vault"
+    universe.mkdir()
+    outside_token = "outside-token-must-never-be-admitted"
+    outside_vault = tmp_path / "outside-vault.json"
+    _write_outside_vault(outside_vault, outside_token)
+    _make_file_link(credential_vault_path(universe), outside_vault)
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert outside_token not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert not (universe / ".runtime").exists()
+    assert not (universe / ".credentials").exists()
+
+
+def test_vault_source_hardlink_is_rejected_before_any_helper_side_effect(
+    tmp_path,
+):
+    universe = tmp_path / "u-hardlinked-vault"
+    universe.mkdir()
+    outside_token = "hardlinked-token-must-never-be-admitted"
+    outside_vault = tmp_path / "outside-hardlinked-vault.json"
+    _write_outside_vault(outside_vault, outside_token)
+    try:
+        os.link(outside_vault, credential_vault_path(universe))
+    except OSError as exc:
+        pytest.skip(f"hard links unavailable: {exc}")
+
+    with pytest.raises(ProviderUnavailableError, match="credential resolution") as exc:
+        subprocess_env_for_provider("claude-code", universe_dir=universe)
+
+    assert outside_token not in str(exc.value)
+    assert exc.value.__cause__ is None
+    assert exc.value.__context__ is None
+    assert not (universe / ".runtime").exists()
+    assert not (universe / ".credentials").exists()
+
+
 @pytest.mark.parametrize("provider_name", ["future-cli", "gemini", "CODEX"])
 def test_universe_child_rejects_noncanonical_provider_before_vault_helper(
     provider_name, tmp_path, monkeypatch
 ):
     universe = tmp_path / "u-provider-name"
-    helper_called = False
+    called_helpers: list[str] = []
 
     def tracking_apply(env, provider_name, *, universe_dir=None):
-        nonlocal helper_called
-        helper_called = True
+        called_helpers.append("apply_provider_auth_env")
         return env
+
+    def tracking_resolver(universe_dir):
+        called_helpers.append("vault_resolver")
+        return None
 
     monkeypatch.setattr(
         "tinyassets.credential_vault.apply_provider_auth_env", tracking_apply
+    )
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.resolve_claude_config_dir",
+        tracking_resolver,
+    )
+    monkeypatch.setattr(
+        "tinyassets.credential_vault.resolve_codex_home",
+        tracking_resolver,
     )
 
     with pytest.raises(ProviderUnavailableError, match="credential resolution"):
         subprocess_env_for_provider(provider_name, universe_dir=universe)
 
-    assert helper_called is False
+    assert called_helpers == []
     assert not universe.exists()
 
 

@@ -36,5 +36,6 @@
 - [x] 5.5 Apply byte-identical behavior to the packaged runtime mirror
 - [x] 5.6 Run focused and surrounding GREEN, Ruff, mirror parity, strict full-tree OpenSpec validation, and diff checks
 - [x] 5.6a Address Opus ADAPT findings with RED/GREEN proof for runtime-only auth homes, physical path containment, exact providers, explicit locales, real malformed/outside vaults, and explicit-universe precedence
+- [x] 5.6b Reject linked vault sources before public resolver/helper reads, preserve the canonical host-local six-variable stripping contract, and broaden the documented TOCTOU boundary
 - [ ] 5.7 Obtain required Opus 5 security/diff re-review with no critical or required findings
 - [ ] 5.8 After the canonical vault-clobber lane releases the spec, sync/archive and retire the STATUS row in the merge lane
