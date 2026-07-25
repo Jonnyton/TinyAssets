@@ -1,0 +1,46 @@
+## 0. Prerequisites and premise verification
+
+- [ ] 0.1 Before any implementation write, re-verify against `origin/main` that `openspec/specs/external-effect-receipts/spec.md` still describes caller-supplied hint semantics and no batch guarantee; if a later change already landed system-derived identity, reclassify these tasks instead of building over them.
+- [ ] 0.2 Confirm `paid-market-track-e-wave-2-transport` has landed its single authenticated transaction transport before implementing any value-moving boundary effect; until then, implement only non-value-moving boundary behavior.
+- [ ] 0.3 Confirm the umbrella `build-forward-platform-capabilities` cross-slice invariants (one work-order primitive, one ledger, no platform custody, enabling primitives) still hold and record any divergence as a design change here, not as silent drift.
+
+## 1. Connection resource ledger and grants
+
+- [ ] 1.1 Add connection-class and grant persistence with owning user, scope, provider, destination, per-universe binding, and revocation state, plus the next numbered storage migration.
+- [ ] 1.2 Resolve a scoped proxy for a node's declared connection class from the ledger, failing closed on absent, revoked, or ambiguous grants with no ambient or maintainer-credential fallback.
+- [ ] 1.3 Keep raw credential material out of graph state, artifacts, run snapshots, and error text; add an adversarial test that an adapter cannot recover a secret from state, environment, request metadata, or proxy errors.
+- [ ] 1.4 Make connector definitions and their MCP client configuration commons artifacts that carry attribution through remix.
+
+## 2. Action caps and held effects
+
+- [ ] 2.1 Add a machine-readable unprompted-action cap evaluated independently of tool authorization and of any spend cap.
+- [ ] 2.2 Execute below-cap authorized actions automatically; hold above-cap actions with a receipt naming the cap, consuming no funds or quota, until an authorized confirmation is recorded.
+- [ ] 2.3 Surface held effects with actionable remediation rather than silence, and test that the same action at or below the cap executes without a hold.
+
+## 3. Replay safety, reconciliation, and batches
+
+- [ ] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
+- [ ] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
+- [ ] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results.
+- [ ] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
+
+## 4. Inboxes and typed artifacts
+
+- [ ] 4.1 Give each goal and universe a durable addressable webhook URL and email address, with source approval, receipt, typing, and eligibility cutoff owned here and scheduled execution left to `demand-side`.
+- [ ] 4.2 Admit an eligible item into exactly one scheduled batch and record the inbox receipt and cutoff used.
+- [ ] 4.3 Make node inputs and outputs reference content-addressed artifacts carrying MIME type and optional validated schema, with decoders and encoders as ordinary commons capability-class nodes.
+- [ ] 4.4 Fail graph compilation on an incompatible edge or unknown required type before run start or token spend, naming producer, consumer, and incompatible types; never silently map an unknown declared type to `Any`. Ship report-only first, then enforce.
+
+## 5. Non-MCP long tail
+
+- [ ] 5.1 Discover native MCP servers at connect time from `{server, auth, scopes}` grants.
+- [ ] 5.2 Generate scoped, typed, cap-aware, credential-blind MCP-shaped actions mechanically from an OpenAPI description, run them as workflows, and require review before a universe can bind them.
+- [ ] 5.3 Prove a new destination can be connected without a platform-side code change or support ticket.
+
+## 6. Verification and foldback
+
+- [ ] 6.1 Run focused unit/integration/security tests for grants, caps, credential blindness, replay identity, reconciliation, batch hold, inbox admission, and compile-time typing.
+- [ ] 6.2 Run the §14 concurrency/load matrix: concurrent replays of one effect key, crash between effect and finalization, batch failure under contention, duplicate inbox delivery, and grant revocation racing an in-flight effect.
+- [ ] 6.3 In the same lane that syncs this change, modify the superseded `Receipt guarantees are per effect and caller-supplied, not batch atomicity` requirement in `openspec/specs/external-effect-receipts/spec.md`. A synced `boundary-layer` beside an unmodified as-built limitation is spec drift.
+- [ ] 6.4 For any public surface exposed here, run the live connector canary with `--assert-handles`, complete a rendered chatbot conversation, and record freshness-stamped post-fix clean-use evidence before claiming acceptance.
+- [ ] 6.5 Obtain independent opposite-family review of the implementation diff, then sync and archive.

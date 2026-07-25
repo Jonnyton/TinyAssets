@@ -53,3 +53,25 @@ Node inputs and outputs SHALL reference content-addressed artifacts carrying MIM
 #### Scenario: an incompatible artifact edge is rejected
 - **WHEN** a producer output cannot satisfy the consumer's declared MIME/schema contract
 - **THEN** graph compilation fails with the producer, consumer, and incompatible types named
+
+### Requirement: Value-moving boundary effects settle through the single market transport
+The boundary layer SHALL NOT create, hold, or reconcile monetary balances of its own. A boundary effect that moves value SHALL bind its journaled intent and terminal receipt to the single authenticated transaction transport owned by `paid-market-economy`, and any priced comparison it needs SHALL be read from the price/quote owner rather than computed at the boundary. The platform SHALL NOT take custody of user funds or credentials in order to perform an outbound effect; the boundary contributes authority, caps, journaling, reconciliation, and receipts only.
+
+#### Scenario: a value-moving effect has no boundary-local ledger
+- **WHEN** an outbound effect transfers value
+- **THEN** the accounting transition is recorded by the single market transaction transport and the boundary persists only its authority decision, journal entry, and terminal receipt
+
+#### Scenario: the boundary does not compute its own price
+- **WHEN** an outbound effect requires a priced comparison or an executable total
+- **THEN** it consumes the quote owner's result and does not derive a competing price at the boundary
+
+### Requirement: Outbound authority comes only from a current user grant
+Every outbound effect SHALL execute under a current, unrevoked, per-universe grant bound to the authenticated owning user. An absent, revoked, expired, or ambiguous grant SHALL fail closed with an auditable denial. The boundary SHALL NOT fall back to host, maintainer, or ambient credentials, and SHALL NOT treat a retired or unresolved connection as permission to proceed.
+
+#### Scenario: a revoked grant stops an in-flight retry
+- **WHEN** a grant is revoked between an effect's journaled intent and its retry
+- **THEN** the retry is denied and recorded rather than completing under the prior authority
+
+#### Scenario: a missing grant never escalates to ambient credentials
+- **WHEN** no grant resolves for the requested connection class
+- **THEN** the effect fails closed and no host or maintainer credential is used
