@@ -16,6 +16,9 @@ yaml = pytest.importorskip("yaml")
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "release-reconcile.yml"
 _BUILD_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "build-image.yml"
+_REGRESSION_WORKFLOW = (
+    _REPO_ROOT / ".github" / "workflows" / "release-reconcile-regression.yml"
+)
 _WINDOWS_GIT_BASH = Path("C:/Program Files/Git/bin/bash.exe")
 _BASH = (
     str(_WINDOWS_GIT_BASH)
@@ -91,10 +94,17 @@ git() {
   if [ "$1" = "log" ] && [ "${GIT_LOG_STATUS:-0}" != "0" ]; then
     return "${GIT_LOG_STATUS}"
   fi
+  if [ "$1" = "rev-parse" ] && [ "${GIT_REV_PARSE_STATUS:-0}" != "0" ]; then
+    return "${GIT_REV_PARSE_STATUS}"
+  fi
   command git "$@"
 }
 gh() {
   case "$*" in
+    *"deploy-prod.yml/runs?branch=main&per_page=100"*)
+      if [ "${RETRY_API_FAIL:-0}" = "1" ]; then return 1; fi
+      printf '%s\n' "${RETRY_RUNS_JSON:-}"
+      ;;
     *"actions/workflows/deploy-prod.yml/runs"*)
       if [ "${DEPLOY_API_FAIL:-0}" = "1" ]; then return 1; fi
       printf '%s\n' "${DEPLOYED_SHAS:-}"
@@ -115,21 +125,26 @@ gh() {
 def _run_decision(
     repo: Path,
     *,
-    active_runs: list[dict[str, str]] | None = None,
+    active_runs: list[dict[str, object]] | None = None,
+    retry_runs: list[dict[str, object]] | None = None,
     deployed_shas: str = "",
     active_api_fail: bool = False,
     deploy_api_fail: bool = False,
+    retry_api_fail: bool = False,
     git_log_status: int = 0,
+    git_rev_parse_status: int = 0,
 ) -> dict[str, str]:
     if not _BASH:
         pytest.skip("bash is required to execute the exact reconciliation script")
     output = repo / ".github-output"
     decision_script = _step_script("Compare main against the last successful deploy")
+    shell_script = f"{_GH_DECISION_HARNESS}\n{decision_script}"
     result = subprocess.run(
-        [_BASH, "-c", f"{_GH_DECISION_HARNESS}\n{decision_script}"],
+        [_BASH, "-s"],
         cwd=repo,
         check=False,
         capture_output=True,
+        input=shell_script,
         text=True,
         encoding="utf-8",
         env={
@@ -142,8 +157,13 @@ def _run_decision(
             "DEPLOY_API_FAIL": "1" if deploy_api_fail else "0",
             "GITHUB_OUTPUT": ".github-output",
             "GIT_LOG_STATUS": str(git_log_status),
+            "GIT_REV_PARSE_STATUS": str(git_rev_parse_status),
             "PYTHON_BIN": Path(sys.executable).as_posix(),
             "REPO": "owner/repo",
+            "RETRY_API_FAIL": "1" if retry_api_fail else "0",
+            "RETRY_RUNS_JSON": json.dumps(
+                {"workflow_runs": retry_runs or []}
+            ),
         },
     )
     assert result.returncode == 0, result.stderr
@@ -208,10 +228,11 @@ def _run_converge(
     if deploy_runs is None:
         deploy_runs = []
     result = subprocess.run(
-        [_BASH, "-c", f"{_GH_CONVERGE_HARNESS}\n{_step_script('Converge')}"],
+        [_BASH, "-s"],
         cwd=repo,
         check=False,
         capture_output=True,
+        input=f"{_GH_CONVERGE_HARNESS}\n{_step_script('Converge')}",
         text=True,
         encoding="utf-8",
         env={
@@ -239,8 +260,18 @@ def _active_run(
     *,
     status: str = "in_progress",
     path: str = ".github/workflows/build-image.yml",
-) -> dict[str, str]:
-    return {"head_sha": sha, "status": status, "path": path}
+    event: str = "push",
+    conclusion: str | None = None,
+    run_id: int = 123,
+) -> dict[str, object]:
+    return {
+        "conclusion": conclusion,
+        "event": event,
+        "head_sha": sha,
+        "id": run_id,
+        "path": path,
+        "status": status,
+    }
 
 
 def _one_running_one_replaceable_pending(arrivals: list[int]) -> list[int]:
@@ -303,13 +334,38 @@ def test_permissions_checkout_and_reconcile_concurrency_remain_narrow() -> None:
 
 def test_operator_summary_distinguishes_deferred_from_in_sync() -> None:
     steps = _load()["jobs"]["reconcile"]["steps"]
+    converge = next(step for step in steps if step.get("name") == "Converge")
     deferred = next(step for step in steps if step.get("name") == "Deferred")
     in_sync = next(step for step in steps if step.get("name") == "In sync")
 
+    assert converge["if"] == "steps.check.outputs.action == 'dispatch'"
     assert deferred["if"] == "steps.check.outputs.action == 'defer'"
     assert in_sync["if"] == "steps.check.outputs.action == 'none'"
     assert "No release decision" in deferred["run"]
     assert "Production is current" in in_sync["run"]
+
+
+def test_converge_embedded_python_is_valid_on_production_python_312() -> None:
+    script = _step_script("Converge")
+
+    assert script.count("python3 -c '\n") == 2
+    assert script.count("python3 -c '\nimport ") == 2
+
+
+def test_python_312_release_reconcile_regression_runs_in_ci() -> None:
+    workflow = _load(_REGRESSION_WORKFLOW)
+    steps = workflow["jobs"]["test"]["steps"]
+    setup_python = next(
+        step
+        for step in steps
+        if str(step.get("uses", "")).startswith("actions/setup-python@")
+    )
+
+    assert setup_python["with"]["python-version"] == "3.12"
+    assert any(
+        "tests/test_release_reconcile_workflow.py" in _compact(str(step.get("run", "")))
+        for step in steps
+    )
 
 
 def test_build_image_concurrency_declares_push_only_cancellation() -> None:
@@ -341,6 +397,66 @@ def test_exact_decision_stale_active_does_not_suppress(tmp_path: Path) -> None:
     }
 
 
+def test_exact_decision_caps_failed_manual_deploy_retry_before_rebuilding(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    result = _run_decision(
+        repo,
+        retry_runs=[
+            _active_run(
+                relevant_sha,
+                status="completed",
+                path=".github/workflows/deploy-prod.yml",
+                event="workflow_dispatch",
+                conclusion="failure",
+                run_id=67890,
+            )
+        ],
+    )
+
+    assert result["action"] == "defer"
+    assert result["detail"] == (
+        "automatic deploy retry 67890 already failed for "
+        f"{relevant_sha[:8]} — awaiting newer main"
+    )
+
+
+def test_exact_decision_success_overrides_older_failed_manual_retry(
+    tmp_path: Path,
+) -> None:
+    repo, _, relevant_sha = _release_repo(tmp_path)
+
+    result = _run_decision(
+        repo,
+        retry_runs=[
+            _active_run(
+                relevant_sha,
+                status="completed",
+                path=".github/workflows/deploy-prod.yml",
+                event="workflow_dispatch",
+                conclusion="failure",
+                run_id=67890,
+            ),
+            _active_run(
+                relevant_sha,
+                status="completed",
+                path=".github/workflows/deploy-prod.yml",
+                event="workflow_dispatch",
+                conclusion="success",
+                run_id=67891,
+            ),
+        ],
+        deployed_shas=relevant_sha,
+    )
+
+    assert result["action"] == "none"
+    assert result["detail"] == (
+        f"deploy {relevant_sha[:8]} contains {relevant_sha[:8]}"
+    )
+
+
 def test_completed_and_unrelated_runs_do_not_suppress_recovery(
     tmp_path: Path,
 ) -> None:
@@ -360,7 +476,7 @@ def test_completed_and_unrelated_runs_do_not_suppress_recovery(
     assert result["action"] == "dispatch"
 
 
-@pytest.mark.parametrize("failed_query", ["active", "deploy"])
+@pytest.mark.parametrize("failed_query", ["active", "retry", "deploy"])
 def test_exact_decision_api_failure_fails_closed(
     tmp_path: Path, failed_query: str
 ) -> None:
@@ -370,6 +486,7 @@ def test_exact_decision_api_failure_fails_closed(
         repo,
         active_api_fail=failed_query == "active",
         deploy_api_fail=failed_query == "deploy",
+        retry_api_fail=failed_query == "retry",
     )
 
     assert result["action"] == "defer"
@@ -385,6 +502,38 @@ def test_exact_decision_git_history_failure_defers_with_warning_state(
 
     assert result["action"] == "defer"
     assert result["detail"] == "release-history query failed — no decision made"
+
+
+def test_exact_decision_rev_parse_failure_defers_when_path_list_is_unreadable(
+    tmp_path: Path,
+) -> None:
+    repo, _, _ = _release_repo(tmp_path)
+    (repo / ".github" / "workflows" / "build-image.yml").unlink()
+
+    result = _run_decision(repo, git_rev_parse_status=56)
+
+    assert result["action"] == "defer"
+    assert result["detail"] == "release-history query failed — no decision made"
+
+
+def test_exact_decision_empty_release_history_is_not_reported_in_sync(
+    tmp_path: Path,
+) -> None:
+    repo, _, _ = _release_repo(tmp_path)
+    (repo / ".github" / "workflows" / "build-image.yml").write_text(
+        """name: Build and publish image
+on:
+  push:
+    paths:
+      - 'never-created/**'
+""",
+        encoding="utf-8",
+    )
+
+    result = _run_decision(repo)
+
+    assert result["action"] == "defer"
+    assert result["detail"] == "no release-relevant history — no decision made"
 
 
 def test_exact_decision_successful_deploy_ancestry_is_in_sync(
@@ -501,14 +650,16 @@ def test_exact_converge_does_not_duplicate_active_deploy(
 
 
 @pytest.mark.parametrize(
-    ("status", "conclusion", "expect_dispatch"),
+    ("event", "status", "conclusion", "expect_dispatch"),
     [
-        ("completed", "failure", True),
-        ("completed", "success", False),
+        ("workflow_run", "completed", "failure", True),
+        ("workflow_dispatch", "completed", "failure", False),
+        ("workflow_run", "completed", "success", False),
     ],
 )
 def test_exact_converge_completed_deploy_state_controls_retry(
     tmp_path: Path,
+    event: str,
     status: str,
     conclusion: str,
     expect_dispatch: bool,
@@ -521,10 +672,11 @@ def test_exact_converge_completed_deploy_state_controls_retry(
         deploy_runs=[
             {
                 "id": 67890,
+                "event": event,
                 "head_sha": relevant_sha,
                 "status": status,
                 "conclusion": conclusion,
-            }
+            },
         ],
     )
 

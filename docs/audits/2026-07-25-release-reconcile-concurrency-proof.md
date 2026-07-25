@@ -12,7 +12,7 @@
 python -m pytest tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `23 passed in 15.78s`.
+Result: `31 passed in 18.70s`.
 
 Surrounding release/uptime regression command:
 
@@ -20,7 +20,19 @@ Surrounding release/uptime regression command:
 python -m pytest tests/test_build_image_workflow.py tests/test_deploy_prod_workflow.py tests/test_uptime_canary_workflow.py tests/test_uptime_canary_concurrency.py tests/test_release_reconcile_workflow.py -q
 ```
 
-Result: `104 passed in 18.11s`.
+Result: `112 passed in 20.80s`.
+
+Production-interpreter contract:
+
+```text
+uv run --python 3.12 --with pytest --with pyyaml pytest tests/test_build_image_workflow.py tests/test_release_reconcile_workflow.py -q
+```
+
+Result: `34 passed in 20.82s` on CPython `3.12.13`. Before dedenting the two
+`Converge` `python3 -c` bodies, the focused module reproduced `9 failed, 14
+passed` on the same interpreter while passing on Python 3.14. The dedicated
+`release-reconcile-regression.yml` CI job now pins Python 3.12 so this runner
+mismatch cannot regress silently.
 
 Environment:
 
@@ -66,6 +78,7 @@ Proved outcomes:
 - a stale active SHA does not suppress current-main recovery;
 - active-run, successful-deploy, and release-history query failures produce a
   distinct deferred result and no corrective action or false in-sync summary;
+- deploy-retry query failures also defer fail closed;
 - completed and unrelated workflow runs are excluded by the production JSON
   selector and do not suppress recovery;
 - successful deploy ancestry produces no action;
@@ -78,8 +91,10 @@ Proved outcomes:
   by the production run selector;
 - a cancelled/superseded image build defers without red failure, while a failed
   image build remains a visible non-zero failure.
-- a completed failed same-SHA deploy does not suppress retry, while a completed
-  successful deploy does.
+- a failed normal workflow-run deploy permits one explicit retry, while a
+  failed same-SHA workflow-dispatch retry suppresses later image builds and
+  deploys until newer main work arrives;
+- a completed successful same-SHA deploy suppresses duplicate dispatch.
 
 ## Scheduler-model limitation
 

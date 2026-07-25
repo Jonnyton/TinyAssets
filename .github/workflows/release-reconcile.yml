@@ -151,8 +151,9 @@ jobs:
           fi
 
           if [ -z "$RELEVANT" ]; then
-            echo "action=none" >> "$GITHUB_OUTPUT"
-            echo "detail=no release-relevant history" >> "$GITHUB_OUTPUT"
+            echo "::warning::no release-relevant history; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=no release-relevant history — no decision made" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -204,6 +205,58 @@ jobs:
               exit 0
             fi
           done
+
+          # One reconcile-initiated deploy retry is allowed after the normal
+          # workflow_run deploy fails. If that explicit workflow_dispatch
+          # retry also fails, stop rebuilding/redeploying the same SHA on every
+          # wake-up. deploy-prod already raises the durable failure alarm.
+          if ! RETRY_RUNS_JSON="$(gh api \
+                "repos/${REPO}/actions/workflows/deploy-prod.yml/runs?branch=main&per_page=100")"; then
+            echo "::warning::deploy-retry query failed; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=deploy-retry query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! FAILED_RETRIES="$(
+            printf '%s' "$RETRY_RUNS_JSON" | python3 -c '
+          import json
+          import sys
+
+          runs = json.load(sys.stdin).get("workflow_runs", [])
+          successful_shas = {
+              run.get("head_sha")
+              for run in runs
+              if run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+          }
+          for run in runs:
+              if (
+                  run.get("status") == "completed"
+                  and run.get("event") == "workflow_dispatch"
+                  and run.get("conclusion") != "success"
+                  and run.get("head_sha")
+                  and run.get("head_sha") not in successful_shas
+              ):
+                  sha = run["head_sha"]
+                  run_id = run.get("id", "")
+                  print(f"{sha}|{run_id}")
+          '
+          )"; then
+            echo "::warning::deploy-retry response was unreadable; deferring"
+            echo "action=defer" >> "$GITHUB_OUTPUT"
+            echo "detail=deploy-retry query failed — no decision made" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          while IFS='|' read -r sha run_id; do
+            [ -n "$sha" ] || continue
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || continue
+            if git merge-base --is-ancestor "$RELEVANT" "$sha" 2>/dev/null; then
+              echo "::warning::automatic deploy retry ${run_id} already failed for ${sha:0:8}; awaiting newer main"
+              echo "action=defer" >> "$GITHUB_OUTPUT"
+              echo "detail=automatic deploy retry ${run_id} already failed for ${sha:0:8} — awaiting newer main" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done <<< "$FAILED_RETRIES"
 
           # Successful DEPLOY runs on main — not builds. A deploy only reaches
           # success after its post-deploy canary passes, so this is the closest
@@ -277,21 +330,21 @@ jobs:
             if ! BUILD_RUN_ID="$(
               printf '%s' "$BUILD_RUNS_JSON" |
                 TARGET_SHA="$TARGET_SHA" DISPATCHED_AT="$DISPATCHED_AT" python3 -c '
-              import json
-              import os
-              import sys
+          import json
+          import os
+          import sys
 
-              target = os.environ["TARGET_SHA"]
-              dispatched_at = os.environ["DISPATCHED_AT"]
-              matches = [
-                  run
-                  for run in json.load(sys.stdin)
-                  if run.get("headSha") == target
-                  and run.get("createdAt", "") >= dispatched_at
-              ]
-              if matches:
-                  print(max(matches, key=lambda run: run["createdAt"])["databaseId"])
-              '
+          target = os.environ["TARGET_SHA"]
+          dispatched_at = os.environ["DISPATCHED_AT"]
+          matches = [
+              run
+              for run in json.load(sys.stdin)
+              if run.get("headSha") == target
+              and run.get("createdAt", "") >= dispatched_at
+          ]
+          if matches:
+              print(max(matches, key=lambda run: run["createdAt"])["databaseId"])
+          '
             )"; then
               echo "::error::image-build run response was unreadable"
               exit 1
@@ -352,24 +405,32 @@ jobs:
           if ! EXISTING_DEPLOY_ID="$(
             printf '%s' "$DEPLOY_RUNS_JSON" |
               TARGET_SHA="$TARGET_SHA" python3 -c '
-            import json
-            import os
-            import sys
+          import json
+          import os
+          import sys
 
-            target = os.environ["TARGET_SHA"]
-            for run in json.load(sys.stdin).get("workflow_runs", []):
-                if run.get("head_sha") != target:
-                    continue
-                if run.get("status") != "completed" or run.get("conclusion") == "success":
-                    print(run["id"])
-                    break
-            '
+          target = os.environ["TARGET_SHA"]
+          for run in json.load(sys.stdin).get("workflow_runs", []):
+              if run.get("head_sha") != target:
+                  continue
+              run_id = run["id"]
+              if run.get("status") != "completed" or run.get("conclusion") == "success":
+                  print(f"covered:{run_id}")
+                  break
+              if run.get("event") == "workflow_dispatch":
+                  print(f"retry-failed:{run_id}")
+                  break
+          '
           )"; then
             echo "::warning::existing deploy response was unreadable; deferring"
             exit 0
           fi
           if [ -n "$EXISTING_DEPLOY_ID" ]; then
-            echo "::notice::deploy run ${EXISTING_DEPLOY_ID} already covers ${TARGET_SHA:0:8}; not dispatching a duplicate"
+            if [[ "$EXISTING_DEPLOY_ID" == retry-failed:* ]]; then
+              echo "::warning::automatic deploy retry ${EXISTING_DEPLOY_ID#*:} already failed for ${TARGET_SHA:0:8}; not dispatching repeatedly"
+            else
+              echo "::notice::deploy run ${EXISTING_DEPLOY_ID#*:} already covers ${TARGET_SHA:0:8}; not dispatching a duplicate"
+            fi
             exit 0
           fi
 

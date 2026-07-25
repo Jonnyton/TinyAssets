@@ -83,7 +83,8 @@ is already converging and does not dispatch. A stale active run does not
 suppress a newer relevant commit. Failure to query either active or successful
 run state, or to read release history, yields an explicit deferred result with
 no corrective action. Deferred results have a distinct operator summary and
-never claim production is current.
+never claim production is current. Empty release-path history is also
+indeterminate rather than evidence that production is current.
 
 The main-build workflow keeps one group but makes cancellation conditional on
 the new run being a push. New pushes may still supersede older work; a manual
@@ -98,8 +99,13 @@ succeed. It then re-reads the repository's current `main` SHA. If `main`
 advanced or that check fails, it does not deploy the older image. Otherwise it
 checks for an active or successful same-SHA deploy and skips duplicate work
 when one exists; only then does it dispatch `deploy-prod.yml` explicitly with
-the built commit's 12-character immutable image tag. This uses the reconciler's
-existing `actions: write` permission and adds no grant to the image builder.
+the built commit's 12-character immutable image tag. A failed normal
+`workflow_run` deploy permits one explicit reconciliation retry. If a
+same-SHA `workflow_dispatch` deploy has already failed, later wake-ups defer
+before rebuilding, capping automated production mutation at one reconcile
+retry per SHA while the deploy workflow's existing failure issue remains the
+durable alarm. This uses the reconciler's existing `actions: write` permission
+and adds no grant to the image builder.
 
 ### Keep the existing fixed reconcile concurrency group
 
@@ -123,7 +129,10 @@ not mutate release state, and deferred output cannot render as in sync.
 The converge-script harness proves one image dispatch, one wait, and one
 explicit deploy for unchanged main, while advanced main suppresses deploy. A
 durable artifact records command, environment, date, result, and the
-scheduler-model limitation.
+scheduler-model limitation. The exact scripts also run in a dedicated CI job
+pinned to Python 3.12, matching the system interpreter used by the production
+Ubuntu runner and preventing newer local parser behavior from hiding invalid
+embedded programs.
 
 ## Risks / Trade-offs
 
@@ -143,6 +152,10 @@ scheduler-model limitation.
 - **Main advances while a reconcile build is dispatched, discovered, or runs**
   → Run discovery and the post-build main-SHA check treat the newer main as
   benign deferral and never deploy the older image.
+- **A deploy repeatedly fails for the same SHA** — The normal chained attempt
+  may receive one explicit reconcile retry. A failed workflow-dispatch attempt
+  then defers all later same-SHA wake-ups before another build or deploy;
+  deploy-prod's failure issue is the alarm and newer main resets the cap.
 - **A newer push cancels the reconcile-initiated image build** → Cancellation
   is benign supersession and defers; non-cancellation build failures remain
   visible as errors.

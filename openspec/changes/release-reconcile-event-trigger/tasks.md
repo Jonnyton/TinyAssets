@@ -39,7 +39,10 @@
   no active-build cancellation, and no stale-run over-suppression.
 - [x] 4.2 Record the command, environment, date, result, and scheduler-model
   limitation in `docs/audits/2026-07-25-release-reconcile-concurrency-proof.md`.
-- [ ] 4.3 Request a fresh Opus 5 review of the complete immutable diff, resolve
+- [x] 4.3 Reproduce Opus 5's production-Python and repeated-deploy findings,
+  make the exact scripts pass on Python 3.12, add a pinned CI contract, and cap
+  failed same-SHA explicit retries before another build or deploy.
+- [ ] 4.4 Request a fresh Opus 5 review of the complete immutable diff, resolve
   every blocking finding, and rerun affected checks.
 
 ## 5. Verification and Foldback
