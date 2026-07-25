@@ -46,3 +46,10 @@ Three independent read-only reviewers returned `ADAPT` again. The accepted follo
 - Current universe and `control_station` owner truth must be reconciled now rather than deferred to implementation.
 
 The packet was amended accordingly. This second Codex pass is still not opposite-provider approval.
+
+## Final Codex preflight result
+
+- Exact spec head `d959274c` received `APPROVE` for synchronous snapshot/Goal/namespace/transaction semantics and `APPROVE` for rollback/reconciliation/driver/Files readiness.
+- The ownership reviewer returned one STATUS-only `ADAPT`: `control_station` was already pushed and its collision boundary omitted committed files. Head `4dd21710` corrected that row, reclassified the two remote-gone universe lanes as pending salvage/reassignment, and then received literal `APPROVE`.
+- `openspec validate --all --strict` remains 47 passed, 0 failed; no runtime files changed.
+- A fresh Claude frontier probe after these approvals still failed before inference with the account's monthly-spend-limit message. Therefore no Opus round-5 verdict exists, and push/draft-PR gates remain closed.
