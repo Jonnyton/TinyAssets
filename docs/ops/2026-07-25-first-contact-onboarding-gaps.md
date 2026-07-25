@@ -39,7 +39,7 @@ Canonical sources and packaged plugin mirrors were byte-identical when inspected
 - `tinyassets/api/branches.py:2080-2329`: internal full-definition build validates then saves atomically at the branch level, but accepts caller-influenceable author fields, defaults public visibility, lacks body-bound idempotency, and can echo attempted definitions on error.
 - `tinyassets/api/branches.py:2687,2702`, `tinyassets/api/evaluation.py:863`, and `tinyassets/api/selector_dispatch.py:331` write branch versions; ordinary patch snapshots can appear published because the store has no deliberate catalog-publication bit.
 - The hidden `publish_version` action is the only deliberate user publication path, while `set_published` changes only the non-authoritative definition boolean. Replacement must precede retirement.
-- The legacy publication seam derives `publisher` from `UNIVERSE_SERVER_USER`; V1 catalog publication must instead require the verified branch owner. Service publication needs a later scoped-capability review.
+- The legacy publication action accepts caller-supplied `publisher`, checks write scope but not branch ownership, and can mint an operational version for another actor's branch under a spoofed label. V1 catalog publication must require the verified branch owner and must never treat `branch_versions.publisher` as authorship or catalog authority. Service publication needs a later scoped-capability review.
 - A private `fork_from` version can be loaded before a safe source-visibility decision in the legacy build seam. V1 rejects fork/remix input instead of publishing that unsafe behavior.
 - Exact branch reads currently derive `related_wiki_pages`; the open STATUS concern records restricted path/title/summary leakage. The new catalog must not reuse that projection.
 - Existing branch patch batches are transactional across their operations, but the public router exposes no expected hash/version. They are not compare-and-swap and must not be described as CAS.
@@ -96,7 +96,7 @@ The current wiki patch owner conflicts on SHA mismatch or when `old_text` does n
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
 - Explicit accept/adapt from the active universe-creation, universe-visibility, and `control_station` prompt-truth owners, while preserving newborn-BYOC behavior landed in #1759. Retire-legacy caller inventory v4 landed in #1772; this packet adds the missing `publish_version` plus `approve_source_code` replacement-first gates as retire tasks 2.3a/4.0 and in STATUS, which any future retirement owner must accept before implementation. There is no current `broad-test` lane.
 - Rotation-catalogued `TINYASSETS_BRANCH_CRYPTO_KEYRING` provisioned with no ephemeral/default-key fallback.
-- V1 remains public-commons-only; private authoring needs a separate PLAN-approved user-controlled-storage contract.
+- V1 remains public-commons-only and selects no private-data custody mode; private authoring needs a separate PLAN-approved change naming its chosen custody mode, trust boundaries, storage, and routing.
 - Failing tests precede implementation.
 - Exact-seven canary, 500-client load proof, packaged mirror parity, and real browser-rendered chatbot acceptance are required.
 - No founder/maintainer provider quota or compute is used by created/published branches; guidance requires requester BYOC/market authority before any run.

@@ -57,7 +57,7 @@ The system SHALL maintain an exact-path, lower-bound planning manifest for known
 - **THEN** the guarded write returns a conflict and no page content is overwritten
 
 ### Requirement: Legacy branch-tool retirement is replacement-first
-Any retirement of a hidden branch catalog/build/publication/approval action SHALL wait until its canonical equivalent is deployed where required, registered prompt consumers are migrated, and the affected rendered chatbot journey has passed. The legacy `publish_version` action MUST remain available to its existing authorized callers until canonical publish mode is deployed and its migration proof passes. The legacy source-code approval action MUST remain available until a canonical approval route exists or source-code patching has been separately removed. When this delta and the legacy-retirement delta are implemented, their concurrent modifications to `Canonical Advertised Handle Set` SHALL be reconciled and synchronized together without dropping either change's surviving requirements.
+Any retirement of a hidden branch catalog/build/publication/approval action SHALL wait until its canonical equivalent is deployed where required, registered prompt consumers are migrated, and the affected rendered chatbot journey has passed. The legacy `publish_version` action MUST remain available only as a known-risk, time-bounded migration path for its inventoried existing write-scoped callers until canonical owner-authorized publish mode is deployed and its migration proof passes; no new caller SHALL be taught to use it, and its caller-supplied operational publisher label is never catalog authority. The legacy source-code approval action MUST remain available until a canonical approval route exists or source-code patching has been separately removed. When this delta and the legacy-retirement delta are implemented, their concurrent modifications to `Canonical Advertised Handle Set` SHALL be reconciled and synchronized together without dropping either change's surviving requirements.
 
 #### Scenario: Retirement cannot strand branch authors
 - **WHEN** canonical prompt-template catalog/create/publish is ready but source-code patch approval has no canonical route
@@ -86,17 +86,23 @@ The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`
 
 - **WHEN** a client reads `tools/list` from the running server with middleware applied
 - **THEN** the advertised set equals `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}` and nothing else
-- **AND** `converse` is present as a user-facing handle
+- **AND** `converse` is present as a user-facing handle (verified by `tests/test_universe_server_five_handles.py`)
 
 #### Scenario: A canonical handle routes through the shared hardened owner
 
 - **WHEN** a client calls a canonical branch target that shares staging or projection with an internal/legacy alias
 - **THEN** both paths apply the same protected-field, verified-authority, visibility, and bounded-result invariants
 
-#### Scenario: A canonical handle routes to its existing API owner
+#### Scenario: A canonical handle routes to its existing API handler
 
 - **WHEN** a client calls `write_graph(target="goal", ...)` and later `read_graph(target="goals", ...)`
-- **THEN** the write routes to the same goals owner the read queries, so the proposed goal is returned by the read
+- **THEN** the write routes to the same goals handler the read queries, so the goal proposed by the write is returned by the read
+
+#### Scenario: Branch onboarding extends targets and parameters, not handles
+
+- **WHEN** branch catalog, create, and publish modes are enabled
+- **THEN** the middleware-applied and raw registered tool sets remain exactly the canonical seven
+- **AND** no standalone branch-list, branch-build, or branch-publish tool is registered
 
 #### Scenario: An unknown router target is reported, not silently accepted
 

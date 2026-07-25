@@ -22,7 +22,7 @@ Runtime files are owned by the active universe-creation, universe-visibility, an
 - No eighth MCP tool, hidden compatibility registration, magic default branch, or parallel authoring substrate.
 - No runtime edit, canonical-spec sync/archive, deployment, live wiki write, or rollout in this lane.
 - This lane does not itself repair the existing exact-branch related-wiki projection leak. New catalog/create/publish runtime, deployment, prompts, and rendered inspection remain hard-blocked until the universe-visibility owner lands or accepts safe canonical/internal exact-branch projections and their shared helper.
-- No private-branch authoring or catalog proxy in V1. A later private route requires a PLAN-approved user-controlled host/storage contract; this packet adds no platform private row or `is_private` substitute.
+- No private-branch authoring or catalog proxy in V1. This packet selects no private-data custody mode and rules none in or out; a later private route requires a PLAN-approved change naming its chosen custody mode, trust boundaries, storage, and routing. This packet adds no platform private row or `is_private` substitute.
 - No compute, provider, execution, purchasing, or market authority follows from listing or creating a branch.
 
 ## Decisions
@@ -49,7 +49,7 @@ The same protection applies at the shared staging/helper layer used by canonical
 
 ### 4. Catalog scope is `published` or `mine`
 
-The default `published` scope returns commons branches whose branch version and separate `BranchCatalogPublication` record are both active. Authenticated `mine` returns platform-commons branches authored by the verified actor and never indexes or proxies user-controlled private content. Until PLAN approves a replacement, the catalog consumes the pre-existing `branch_definitions.visibility='public'` column only as a fail-closed commons predicate; explicit publish re-checks that stored row rather than trusting the mode sentinel. There is no public `all`, `visible`, `include_private`, or universe-membership shortcut.
+The default `published` scope returns commons branches whose branch version and separate `BranchCatalogPublication` record are both active. Authenticated `mine` matches an internal verified-principal-derived `author_subject`, never the legacy free-text author column, and never indexes or proxies private content under any custody mode. Until PLAN approves a replacement, the catalog consumes the pre-existing `branch_definitions.visibility='public'` column only as a fail-closed commons predicate; explicit publish re-checks that stored row rather than trusting the mode sentinel. There is no public `all`, `visible`, `include_private`, or universe-membership shortcut.
 
 Results preserve the handle's existing unset/default limit of 30 and cap explicit limits at 100. A canonical-database catalog projection gives bounded filtering and non-starving keyset ordering `(created_at DESC, branch_def_id ASC)`, so unrelated mutations do not invalidate a walk. The ten-minute AES-256-GCM cursor has a closed envelope, a durable per-key unique 32-bit issuer-prefix lease plus 64-bit counter nonce, full 128-bit tag, immutable last-examined tuple, and actor/filter digest. `TINYASSETS_BRANCH_CRYPTO_KEYRING` supplies versioned root keys; HKDF separates cursor encryption from idempotency HMAC, rotation retains prior keys for the configured record lifetime (minimum 24 hours), and absent/malformed configuration fails catalog/create/publish closed. A `published` result verifies active version/publication records and the current monotonic publication revision; compare-and-advance outbox consumption prevents delayed events from regressing the pointer. Periodic maintenance reconciles drift without mutating state from the read-only handle. The response exposes no hidden total count. Summaries use exact bounded fields, split ordinary and conditional edge counts, and report structural validation rather than ambiguous execution readiness. They are deliberately smaller than exact branch reads and never carry node bodies, prompts, source, wiki metadata, gate/custody data, or execution authority.
 
@@ -63,7 +63,7 @@ Alternative rejected: deduplicate on branch name. Branch names are intentionally
 
 ### 6. V1 creation is commons-only
 
-Public creation can land in the platform commons. V1 rejects any non-public visibility before persistence and does not query, proxy, or index a private user store. This avoids resolving the open PLAN private-data decision locally. A later private-authoring change must name the user-controlled storage/routing contract and receive the required design approval.
+Public creation can land in the platform commons. V1 rejects any non-public visibility before persistence and does not query, proxy, or index private content under any custody mode. This avoids resolving the open PLAN private-data decision locally. A later private-authoring change must name its selected custody mode, trust boundaries, storage, and routing and receive the required design approval.
 
 The existing `visibility` column is Phase-6.2.2 drift relative to PLAN's private-data model. V1 consumes only `visibility='public'` as a temporary fail-closed commons predicate and does not create or legitimize platform private rows.
 
@@ -75,7 +75,7 @@ Live wiki corrections are enumerated separately with exact paths, pre-image hash
 
 ### 8. Acceptance includes concurrency and a rendered user journey
 
-Before runtime landing, a deterministic fixture exercises 500 logical clients and 1,000 mixed operations (750 catalog reads, 200 creates, 50 publishes) under the production SQLite journaling/busy-timeout configuration, including tied immutable timestamps, 100 concurrent identical retries, unsupported-private requests, deliberate-versus-snapshot publication, mutation-during-pagination completion, nonce uniqueness/tampering, and cross-actor cursor replay. It must show no 5xx, restricted metadata leak, duplicate/partial create/publication, silent pagination duplicate/skip or starvation, or extra advertised handle, with p99 under three seconds on declared hardware.
+Before runtime landing, a deterministic fixture exercises 500 logical clients and 1,000 mixed operations (750 catalog reads, 200 creates, 50 publishes) under the production SQLite journaling/busy-timeout configuration, including tied immutable timestamps, 100 concurrent identical retries, unsupported-private requests, deliberate-versus-snapshot publication, mutation-during-pagination completion, nonce uniqueness/tampering, and cross-actor cursor replay. It must show no 5xx, restricted metadata leak, duplicate/partial create/publication, silent pagination duplicate/skip or starvation, or extra advertised handle, with p99 under three seconds on declared hardware and topology. A forced full 400-candidate window records no more than 400 version plus 400 publication-row verifications and discloses version-store query count/batching so fan-out is falsifiable.
 
 Final acceptance then uses a real browser-rendered chatbot through `https://tinyassets.io/mcp`: discover a branch without an ID, create a new complete public branch, inspect it, explicitly publish it, and rediscover it while preserving the exact seven-tool listing. Any run uses requester-owned BYOC/market authority. None of the new catalog/create/publish modes can deploy while canonical `read_graph(target="branch")`, internal/legacy `get_branch`, `describe_branch`, or their shared related-wiki helper can reveal restricted page metadata. Post-fix organic use is checked separately or left as a STATUS watch.
 
@@ -84,7 +84,7 @@ Final acceptance then uses a real browser-rendered chatbot through `https://tiny
 - **[Risk] The internal build seam accepts unsafe ownership/provenance fields.** → Validate positive nested V1 DTOs, preserve inherited provenance, and mutation-test every excluded authority field.
 - **[Risk] Pagination can skip, duplicate, starve, reuse a GCM nonce, or accept forged context.** → Use immutable two-column ordering, capped last-examined scanning, closed AEAD, key-issuance limits, and actor/filter binding.
 - **[Risk] Validation responses disclose prompts/source.** → Return bounded field paths and codes only; never echo `definition_json`.
-- **[Risk] Private creation conflicts with commons-first PLAN.** → Keep V1 commons-only; any private route remains a separately approved user-controlled-storage design.
+- **[Risk] Private creation conflicts with commons-first PLAN or settles open custody research.** → Keep V1 commons-only, choose no custody mode, and require any private route to name its mode and boundaries in a separately approved design.
 - **[Risk] Catalog/create/publish IDs amplify the existing exact-get wiki leak.** → Hard-block all three new modes, deployment, prompts, and rendered inspection until every exact branch path and shared helper provides a visibility-safe projection.
 - **[Risk] Patch snapshots silently appear published.** → Add explicit publish mode and catalog eligibility, route all writers through `publish_branch_version`, and keep operational snapshots non-catalog.
 - **[Risk] Missing or misrotated cryptographic keys weaken anonymous catalog/create idempotency.** → Catalog the keyring and fail closed with no ephemeral defaults.
@@ -103,6 +103,6 @@ Final acceptance then uses a real browser-rendered chatbot through `https://tiny
 
 ## Open Questions
 
-- Which concrete user-controlled host/storage route is the first supported private branch target? It is intentionally outside V1 and does not block commons creation.
+- Which private-data custody mode and trust boundaries should a future private branch route select? Host-machine, private-brain, vault, and platform-held modes remain open research; none is ruled in or out by V1.
 - The active universe-visibility lane must either supply a reusable visibility-safe related-wiki projection or explicitly accept a separate prerequisite fix; catalog rollout does not proceed without one.
 - The load contract is frozen at p99 below three seconds for the declared 500-client/1,000-operation fixture; the implementation evidence must name hardware and topology rather than weakening the threshold.
