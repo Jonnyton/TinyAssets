@@ -32,6 +32,7 @@ from tinyassets.paid_market.forwards import (  # noqa: F401
     ForwardState,
     Settlement,
     assert_transition,
+    canonical_fee_micros,
     collateral_micros,
     contract_total_micros,
     settle_forward,

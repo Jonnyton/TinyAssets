@@ -171,7 +171,6 @@ DECLARE
   v_amount_micros bigint;
   v_escrow_delta bigint;
   v_seller_delta bigint;
-  v_expected_fee bigint;
   v_bad_account boolean;
   v_fee bigint;
 BEGIN
@@ -192,7 +191,7 @@ BEGIN
       RAISE EXCEPTION 'canonical body is not valid UTF-8 JSON';
   END;
   IF jsonb_typeof(v_body) <> 'object'
-     OR v_body->>'schema_version' <> '1' THEN
+     OR v_body->>'schema_version' IS DISTINCT FROM '1' THEN
     RAISE EXCEPTION 'unsupported canonical body';
   END IF;
 
@@ -215,7 +214,7 @@ BEGIN
   IF octet_length(v_memo) > 512 THEN
     RAISE EXCEPTION 'memo exceeds 512 bytes';
   END IF;
-  IF v_action <> 'settle' THEN
+  IF v_action IS DISTINCT FROM 'settle' THEN
     RAISE EXCEPTION 'unsupported settlement action';
   END IF;
   IF v_business_reference IS NULL OR v_business_reference = ''
@@ -230,9 +229,9 @@ BEGIN
   IF v_host_owner_user_id IS NULL OR v_host_owner_user_id = '' THEN
     RAISE EXCEPTION 'host owner authority is required';
   END IF;
-  IF jsonb_typeof(v_body->'expected_state_version') <> 'number'
+  IF jsonb_typeof(v_body->'expected_state_version') IS DISTINCT FROM 'number'
      OR (v_body->>'expected_state_version') !~ '^[0-9]+$'
-     OR jsonb_typeof(v_body->'amount_micros') <> 'number'
+     OR jsonb_typeof(v_body->'amount_micros') IS DISTINCT FROM 'number'
      OR (v_body->>'amount_micros') !~ '^[1-9][0-9]*$' THEN
     RAISE EXCEPTION 'state version and amount must be bounded integers';
   END IF;
@@ -243,7 +242,7 @@ BEGIN
     WHEN numeric_value_out_of_range THEN
       RAISE EXCEPTION 'state version or amount exceeds bigint';
   END;
-  IF jsonb_typeof(v_postings) <> 'array'
+  IF jsonb_typeof(v_postings) IS DISTINCT FROM 'array'
      OR jsonb_array_length(v_postings) < 2
      OR jsonb_array_length(v_postings) > 16 THEN
     RAISE EXCEPTION 'postings must contain between 2 and 16 entries';
@@ -257,7 +256,7 @@ BEGIN
                entry->>'account' = 'treasury'
                OR entry->>'account' ~ '^(user|escrow|collateral):[^\s]+$'
              )
-             OR jsonb_typeof(entry->'delta_micros') <> 'number'
+             OR jsonb_typeof(entry->'delta_micros') IS DISTINCT FROM 'number'
              OR (entry->>'delta_micros') !~ '^-?[0-9]+$'
            )
       INTO v_bad_account
@@ -281,13 +280,9 @@ BEGIN
     INTO v_seller_delta
     FROM jsonb_array_elements(v_postings) AS entry
    WHERE entry->>'account' = 'user:' || v_host_owner_user_id;
-  v_expected_fee := greatest(
-    1,
-    floor((v_amount_micros::numeric * 10000) / 1000000)::bigint
-  );
-  IF v_fee <> v_expected_fee
+  IF v_fee <= 0
      OR v_escrow_delta <> -v_amount_micros
-     OR v_seller_delta <> v_amount_micros - v_expected_fee
+     OR v_seller_delta <> v_amount_micros - v_fee
      OR EXISTS (
        SELECT 1
          FROM jsonb_array_elements(v_postings) AS entry

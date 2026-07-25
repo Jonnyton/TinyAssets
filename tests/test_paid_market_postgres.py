@@ -214,6 +214,38 @@ def test_canonical_hash_replay_conflict_and_bounds(market_database):
                 ("treasury", 1),
             ]), "0" * 64)
 
+        required_body = json.loads(
+            _body(
+                "required-fields",
+                [
+                    ("escrow:1", -100),
+                    ("user:seller", 99),
+                    ("treasury", 1),
+                ],
+            )
+        )
+        for missing in (
+            "action",
+            "amount_micros",
+            "expected_state_version",
+            "schema_version",
+        ):
+            changed = dict(required_body)
+            changed.pop(missing)
+            rejected = json.dumps(
+                changed, sort_keys=True, separators=(",", ":")
+            ).encode()
+            with pytest.raises(psycopg.errors.RaiseException):
+                _apply(connection, rejected)
+        changed = dict(required_body)
+        changed["postings"] = [dict(item) for item in required_body["postings"]]
+        changed["postings"][0].pop("delta_micros")
+        rejected = json.dumps(
+            changed, sort_keys=True, separators=(",", ":")
+        ).encode()
+        with pytest.raises(psycopg.errors.RaiseException):
+            _apply(connection, rejected)
+
         invalid = (
             _body("x" * 129, [("escrow:1", -1), ("treasury", 1)]),
             _body(

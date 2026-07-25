@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tinyassets.paid_market.fabrication import PhysicalSettlement
-from tinyassets.paid_market.forwards import FEE_PPM, PPM, Settlement
+from tinyassets.paid_market.forwards import Settlement, canonical_fee_micros
 from tinyassets.paid_market.pool import PoolAccounting
 from tinyassets.paid_market.training import TrainingSettlement
 
@@ -135,7 +135,7 @@ def spot_settlement_entries(
         raise LedgerError("gross_micros must be int")
     if gross_micros <= 0:
         raise LedgerError("gross_micros must be > 0")
-    treasury_fee = max(1, (gross_micros * FEE_PPM) // PPM)
+    treasury_fee = canonical_fee_micros(gross_micros)
     return [
         (escrow_account, -gross_micros),
         (seller_account, gross_micros - treasury_fee),
