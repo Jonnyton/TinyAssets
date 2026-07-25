@@ -994,10 +994,29 @@ def converse(message: str = "", graph_id: str = "") -> str:
             "auth_scope_required": True,
         })
 
+    # Bind the interlocutor to a tier BEFORE the universe answers (relay task
+    # 6.6). This boundary is where the authenticated request state actually
+    # lives, so it resolves the tier rather than letting the in-process default
+    # stand in for it. Tighten-only: `authorize_conversation_turn` composes with
+    # the founder-only gate above and can only add refusals, never open one.
+    from tinyassets.api import interlocutor
+
+    turn = interlocutor.authorize_conversation_turn(uid)
+    if not turn.permitted:
+        return json.dumps({
+            "error": "Only this universe's founder can talk with it.",
+            "auth_scope_required": True,
+        })
+
     from tinyassets.universe_intelligence import converse as _converse_impl
 
     try:
-        reply = _converse_impl(uid, message, actor_id=current_actor_id())
+        reply = _converse_impl(
+            uid,
+            message,
+            actor_id=current_actor_id(),
+            tier=turn.interlocutor.tier,
+        )
     except Exception as exc:  # noqa: BLE001 - surface honestly, never fake a reply
         return json.dumps({
             "error": f"Your universe couldn't be reached right now: {exc}",

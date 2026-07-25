@@ -22,6 +22,15 @@ def _seed(tmp_path: Path) -> Path:
     return udir
 
 
+def _declare(base: Path, uid: str) -> None:
+    """Register + declare a universe so disclosure can be evaluated for it."""
+    import tinyassets.api.visibility as vis
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
+    vis.set_universe_visibility(uid, "public")
+
+
 def _fm(path: Path, key: str) -> str:
     import yaml
 
@@ -30,13 +39,18 @@ def _fm(path: Path, key: str) -> str:
     return str(meta.get(key, ""))
 
 
-def test_system_prompt_is_first_person_and_grounded(tmp_path):
+def test_system_prompt_is_first_person_and_grounded(tmp_path, monkeypatch):
+    # The universe must be registered + visibility-declared: assembly now runs
+    # the founder's grounding through the tier ∩ visibility disclosure filter
+    # (relay task 6.6), so a bare directory is no longer enough context.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = _seed(tmp_path)
     (udir / "founder.md").write_text(
         "# Founder\nMy founder is Jonathan, a builder of small tools.",
         encoding="utf-8",
     )
-    prompt = ui._build_persona_system_prompt(udir)
+    _declare(tmp_path, "u-test")
+    prompt = ui._build_persona_system_prompt(udir, universe_id="u-test")
 
     assert "first person" in prompt.lower()
     # never a neutral assistant
@@ -84,11 +98,13 @@ def test_converse_missing_universe_raises(tmp_path, monkeypatch):
         ui.converse("u-nope", "hello")
 
 
-def test_unnamed_newborn_prompt_is_honest(tmp_path):
+def test_unnamed_newborn_prompt_is_honest(tmp_path, monkeypatch):
     # A freshly-seeded universe has no learned name yet — the prompt must say so
     # rather than invent one.
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     udir = _seed(tmp_path)
-    prompt = ui._build_persona_system_prompt(udir)
+    _declare(tmp_path, "u-test")
+    prompt = ui._build_persona_system_prompt(udir, universe_id="u-test")
     assert "name yet" in prompt.lower() or "newly born" in prompt.lower()
 
 

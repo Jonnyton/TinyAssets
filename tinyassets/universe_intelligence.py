@@ -18,6 +18,7 @@ import logging
 import re
 from pathlib import Path
 
+from tinyassets.api import interlocutor
 from tinyassets.api.helpers import _request_universe, _universe_dir
 from tinyassets.config import load_universe_config
 from tinyassets.persona import resolve_persona
@@ -120,7 +121,12 @@ def _read_bundle_body(universe_dir: Path, filename: str) -> str:
         return ""
 
 
-def _build_persona_system_prompt(universe_dir: Path) -> str:
+def _build_persona_system_prompt(
+    universe_dir: Path,
+    *,
+    tier: str = interlocutor.FOUNDER,
+    universe_id: str = "",
+) -> str:
     """Assemble the first-party, first-person system prompt for one turn.
 
     First-party path: the persona goes DIRECTLY in the system prompt — none of
@@ -128,7 +134,29 @@ def _build_persona_system_prompt(universe_dir: Path) -> str:
     rules mirror the ``control_station`` "Universe's Voice": speak as "me", stay
     curious about open questions, never invent, honesty/safety floor overrides
     embodiment.
+
+    ``tier`` is the bound :mod:`~tinyassets.api.interlocutor` tier of the party
+    being answered. It defaults to ``FOUNDER`` because that is the landed
+    in-process contract — the only production caller of :func:`converse` is the
+    founder-gated `converse` MCP handle.
+
+    ``universe_id`` is REQUIRED for every tier. Disclosure is the intersection of
+    the tier and the universe's declared visibility, so without the universe the
+    filter has nothing to evaluate — and silently treating that as "closed" would
+    strip the founder's own grounding, while silently treating it as "open" would
+    be a disclosure bypass. Both are silent fallbacks, so this raises instead.
+
+    Disclosure narrowing happens HERE, during assembly (task 6.6 / the
+    "Authorization precedes voice" requirement): unauthorized grounding is never
+    placed in the prompt, rather than being accompanied by an instruction to
+    withhold it — prompt-instructed withholding is not a boundary.
     """
+    if not (universe_id or "").strip():
+        raise ValueError(
+            f"universe_id is required to assemble a {tier} persona prompt: "
+            "disclosure is the intersection of tier and the universe's declared "
+            "visibility, and cannot be evaluated without the universe"
+        )
     try:
         persona = resolve_persona(
             read_universe_soul(universe_dir), read_self_model(universe_dir)
@@ -151,9 +179,16 @@ def _build_persona_system_prompt(universe_dir: Path) -> str:
     why = str(soul_ctx.get("why") or "").strip()
     hard_lines = [str(h) for h in (soul_ctx.get("hard_lines") or [])]
 
+    # Authorization precedes voice: the disclosable set is decided BEFORE any
+    # file is read into the prompt. For the founder this is the full set; for a
+    # non-founder tier it is `tier ∩ declared visibility`, minus the founder's
+    # own person-dossier grounding.
+    grounding_files = interlocutor.permitted_grounding_files(
+        universe_id, _GROUNDING_FILES, tier=tier
+    )
     grounding_parts = [
         f"## {fname}\n{body}"
-        for fname in _GROUNDING_FILES
+        for fname in grounding_files
         if (body := _read_bundle_body(universe_dir, fname))
     ]
     grounding = "\n\n".join(grounding_parts) or "(nothing learned yet — I am new.)"
@@ -406,7 +441,11 @@ def commit_learning(
 
 
 def converse(
-    universe_id: str, founder_message: str, *, actor_id: str = ""
+    universe_id: str,
+    founder_message: str,
+    *,
+    actor_id: str = "",
+    tier: str | None = None,
 ) -> str:
     """Run one first-person turn as the universe, on its ASSIGNED engine.
 
@@ -421,14 +460,23 @@ def converse(
     a SECOND, separate step it persists what the founder EXPLICITLY taught it this
     turn into its governed soul. Persistence never breaks the reply — a failure is
     logged and the founder still gets their answer. Returns the reply text.
+
+    ``tier`` is the bound interlocutor tier of the party being answered. ``None``
+    means "the landed in-process founder contract" — this function's only
+    production caller is the founder-gated `converse` MCP handle, which resolves
+    the tier from authenticated request state and passes it explicitly, so the
+    live path never relies on that default.
     """
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
     if not udir.is_dir():
         raise ValueError(f"Universe {uid!r} not found")
 
+    bound_tier = interlocutor.FOUNDER if tier is None else tier
     ctx = UniverseContext(universe_dir=udir, config=load_universe_config(udir))
-    system = _build_persona_system_prompt(udir)
+    system = _build_persona_system_prompt(
+        udir, tier=bound_tier, universe_id=uid
+    )
     reply = call_provider(
         founder_message,
         system=system,
