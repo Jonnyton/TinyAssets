@@ -1236,9 +1236,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-release-reconcile
 - Branch: codex/release-reconcile-event
-- Lane state: PR #1749 landed; immediate CI cleanup in progress
+- Lane state: PRs #1749/#1750 landed; live foldback complete
 - Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
-- STATUS/Issue/PR: #1749 merged; live wake/retry monitoring remains
+- STATUS/Issue/PR: #1749 implementation + #1750 CI cleanup merged; drift/failure-cap monitoring remains
 - PLAN refs: Uptime & Alarms; release/deploy reconciliation
 - Purpose: trigger release reconciliation after successful Docker smoke completion while retaining the cron backstop and non-cancelling concurrency.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
@@ -1246,4 +1246,4 @@ Notes:
 - Related implications: Docker build smoke; build-image/deploy-prod chain; release-state honesty
 - Idea feed refs: none
 - Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
-- Foldback: OpenSpec archived and Opus 5 approved; cleanup fixes the post-merge CI dependency/ShellCheck failures before lane retirement
+- Foldback: OpenSpec archived; Opus 5 approved; #1750 repaired post-merge CI; main smoke #30152319997 woke successful workflow_run reconcile #30152436780
