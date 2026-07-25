@@ -16,16 +16,29 @@ Covers:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 from domains.fantasy_daemon.phases.authorial_priority_review import (
     authorial_priority_review,
 )
 from tinyassets.auth.provider import Identity
-from tinyassets.daemon_server import grant_universe_access
+from tinyassets.branch_tasks_v2 import (
+    Epoch2BranchTaskAdapter,
+    WorkerClaimDescriptor,
+)
+from tinyassets.daemon_server import (
+    grant_universe_access,
+    initialize_author_server,
+)
+from tinyassets.storage import db_path
+from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.work_targets import (
     ROLE_NOTES,
     load_work_targets,
@@ -83,6 +96,87 @@ def _declare_legacy_loop(universe_dir):
         "Legacy fixture with an explicit compatibility Loop.",
         encoding="utf-8",
     )
+
+
+def _commit_epoch2_request(base: Path, universe_id: str) -> dict:
+    body = rfc8785.dumps({
+        "branch_id": "",
+        "directed_daemon_id": "",
+        "directed_daemon_instruction": "",
+        "pickup_incentive": "",
+        "priority_weight": 25.0,
+        "request_type": "scene_direction",
+        "schema_version": "request-admission-v2",
+        "text": "Make the market scene quieter.",
+        "universe_id": universe_id,
+    })
+    return RequestAdmissionStore(base).commit_admission(
+        tenant_id="tenant-a",
+        actor_id="actor-a",
+        universe_id=universe_id,
+        idempotency_key_hash=(
+            "hmac-sha256:"
+            + hashlib.sha256(b"materialization-key").hexdigest()
+        ),
+        body_digest="sha256:" + hashlib.sha256(body).hexdigest(),
+        body_digest_version="rfc8785-v1",
+        request_type="scene_direction",
+        text="Make the market scene quieter.",
+        branch_id="",
+        branch_def_id="fantasy_author:universe_cycle_wrapper",
+        trigger_source="operator_request",
+        accepted_priority_weight=25.0,
+        policy_version="operator-priority-v1",
+        grant_generation=1,
+        receipt={
+            "authority": "request-local",
+            "grant_generation": 1,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": {},
+        },
+        directed_daemon_id="",
+        created_at="2026-07-24T10:00:00+00:00",
+    )
+
+
+def _claim_epoch2_request(base: Path, committed: dict) -> None:
+    now = datetime.now(timezone.utc)
+    descriptor = WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker-a",
+        runtime_instance_id="runtime-a",
+        boot_id="boot-a",
+        build_sha="a" * 40,
+        config_hash="b" * 64,
+        universe_id="test-universe",
+        expires_at=(now + timedelta(seconds=60)).isoformat(),
+    )
+    claimed = Epoch2BranchTaskAdapter(
+        base,
+        clock=lambda: now,
+    ).claim(
+        committed["branch_task_id"],
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+        lease_seconds=90,
+    )
+    assert claimed is not None
+
+
+def _epoch2_snapshot(base: Path) -> dict[str, list[tuple]]:
+    with sqlite3.connect(db_path(base)) as conn:
+        return {
+            table: conn.execute(
+                f"SELECT * FROM {table} ORDER BY rowid"  # noqa: S608
+            ).fetchall()
+            for table in (
+                "user_requests",
+                "request_admissions",
+                "branch_tasks_v2",
+                "request_admission_events",
+            )
+        }
 
 
 # ─── materialize_pending_requests ──────────────────────────────────────
@@ -155,6 +249,75 @@ def test_materialize_skips_malformed_entries(universe_dir):
 def test_materialize_missing_file_is_noop(universe_dir):
     # No requests.json on disk; should return [] without crashing.
     assert materialize_pending_requests(universe_dir) == []
+
+
+def test_materialize_consumes_only_this_workers_live_epoch2_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    committed = _commit_epoch2_request(tmp_path, universe_dir.name)
+    _claim_epoch2_request(tmp_path, committed)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+    before = _epoch2_snapshot(tmp_path)
+
+    created = materialize_pending_requests(universe_dir)
+
+    assert len(created) == 1
+    target = created[0]
+    assert target.current_intent == "Make the market scene quieter."
+    assert target.metadata == {
+        "request_id": committed["request_id"],
+        "request_type": "scene_direction",
+        "request_source": "actor-a",
+        "request_timestamp": "2026-07-24T10:00:00+00:00",
+        "branch_id": "",
+        "queue_epoch": 2,
+        "admission_id": committed["admission_id"],
+        "branch_task_id": committed["branch_task_id"],
+        "trigger_source": "operator_request",
+        "accepted_priority_weight": 25.0,
+        "claimed_by": "worker-a",
+        "claimed_at": target.metadata["claimed_at"],
+        "lease_expires_at": target.metadata["lease_expires_at"],
+    }
+    assert not requests_path(universe_dir).exists()
+    assert _epoch2_snapshot(tmp_path) == before
+    assert materialize_pending_requests(universe_dir) == []
+    assert _epoch2_snapshot(tmp_path) == before
+
+
+def test_materialize_leaves_unclaimed_or_not_ready_epoch2_work_inert(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    universe_dir = tmp_path / "test-universe"
+    universe_dir.mkdir()
+    initialize_author_server(tmp_path)
+    committed = _commit_epoch2_request(tmp_path, universe_dir.name)
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WORKER_ID", "worker-a")
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        True,
+    )
+
+    assert materialize_pending_requests(universe_dir) == []
+
+    _claim_epoch2_request(tmp_path, committed)
+    monkeypatch.setattr(
+        "tinyassets.branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY",
+        False,
+    )
+    assert materialize_pending_requests(universe_dir) == []
+    assert not requests_path(universe_dir).exists()
 
 
 # ─── authorial_priority_review integration ─────────────────────────────
