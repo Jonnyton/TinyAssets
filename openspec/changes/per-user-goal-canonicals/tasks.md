@@ -32,4 +32,4 @@
 - [x] 5.2 Run Ruff on every touched Python file
 - [x] 5.3 Rebuild the plugin runtime mirror and pass its import probe
 - [x] 5.4 Review the diff for correctness, authorization, migration safety, and unnecessary complexity
-- [ ] 5.5 Write the uncommitted lane report, commit the implementation, and push `codex/osx-goal-canonicals`
+- [x] 5.5 Write the uncommitted lane report, commit the implementation, and push `codex/osx-goal-canonicals`
