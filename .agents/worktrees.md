@@ -1309,3 +1309,17 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: strict-valid current-main OpenSpec and restack audit; no push or implementation before literal Opus 5 review and host acceptance
 - Foldback: supersede or retarget #1670 only after review; otherwise leave this local and review-blocked
+
+### 2026-07-25 — implement-production-load-harness
+- Branch: codex/implement-production-load-harness-20260725
+- Lane state: claimed; target-only OpenSpec planning
+- Worktree: C:\Users\Jonathan\Projects\wf-implement-production-load-harness
+- STATUS/Issue/PR: STATUS Work row; no PR until current Opus 5 review
+- PLAN refs: Forever Rule; Uptime & Alarms; full product completion audit
+- Purpose: specify the shared production-load evidence protocol implementation without claiming capability-local workloads, thresholds, adapters, or runtime files.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-implement-production-load-harness\_PURPOSE.md
+- Memory refs: openspec/changes/harden-production-load-evidence/ tasks 2.1-2.5
+- Related implications: PostgreSQL restack load dependency; user-growth/concurrency audit; canonical connector baseline
+- Idea feed refs: reviewed §14 harness entry already retired by parent change
+- Ship/abandon: strict-valid dependent OpenSpec and scope review; no runtime expansion or public load run in this lane
+- Foldback: rebase the dependent change onto current main after the PostgreSQL restack lane leaves STATUS; retain separate commit ancestry
