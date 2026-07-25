@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from tinyassets.paid_market.fabrication import PhysicalSettlement
-from tinyassets.paid_market.forwards import Settlement
+from tinyassets.paid_market.forwards import FEE_PPM, PPM, Settlement
 from tinyassets.paid_market.pool import PoolAccounting
 from tinyassets.paid_market.training import TrainingSettlement
 
@@ -42,6 +42,7 @@ __all__ = [
     "LedgerError",
     "Ledger",
     "escrow_lock_entries",
+    "spot_settlement_entries",
     "forward_sale_entries",
     "forward_settlement_entries",
     "training_settlement_entries",
@@ -120,6 +121,26 @@ def escrow_lock_entries(
     if amount_micros <= 0:
         raise LedgerError("amount_micros must be > 0")
     return [(payer_account, -amount_micros), (escrow_account, amount_micros)]
+
+
+def spot_settlement_entries(
+    *,
+    escrow_account: str,
+    seller_account: str,
+    gross_micros: int,
+    treasury_account: str = "treasury",
+) -> list[Entry]:
+    """Drain one accepted spot settlement with the canonical fee."""
+    if not isinstance(gross_micros, int) or isinstance(gross_micros, bool):
+        raise LedgerError("gross_micros must be int")
+    if gross_micros <= 0:
+        raise LedgerError("gross_micros must be > 0")
+    treasury_fee = (gross_micros * FEE_PPM) // PPM
+    return [
+        (escrow_account, -gross_micros),
+        (seller_account, gross_micros - treasury_fee),
+        (treasury_account, treasury_fee),
+    ]
 
 
 def forward_sale_entries(

@@ -62,6 +62,7 @@ from tinyassets.paid_market.ledger import (  # noqa: F401
     forward_settlement_entries,
     physical_settlement_entries,
     pool_close_entries,
+    spot_settlement_entries,
     training_settlement_entries,
 )
 from tinyassets.paid_market.license_terms import (  # noqa: F401

@@ -1326,11 +1326,47 @@ from tinyassets.paid_market.ledger import (  # noqa: E402
     forward_settlement_entries,
     physical_settlement_entries,
     pool_close_entries,
+    spot_settlement_entries,
     training_settlement_entries,
 )
 
 
 class TestLedger:
+    def test_spot_settlement_charges_standard_fee_and_conserves(self):
+        entries = spot_settlement_entries(
+            escrow_account="escrow:spot-1",
+            seller_account="user:host",
+            gross_micros=10_000,
+        )
+        assert entries == [
+            ("escrow:spot-1", -10_000),
+            ("user:host", 9_900),
+            ("treasury", 100),
+        ]
+        assert sum(delta for _, delta in entries) == 0
+
+    @pytest.mark.parametrize("bad", [True, 1.5, "100", 0, -1])
+    def test_spot_settlement_requires_positive_integer_gross(self, bad):
+        with pytest.raises(LedgerError):
+            spot_settlement_entries(
+                escrow_account="escrow:spot-1",
+                seller_account="user:host",
+                gross_micros=bad,
+            )
+
+    def test_assert_drained_fails_before_and_passes_after_spot_settlement(self):
+        ledger = Ledger({"escrow:spot-1": 10_000})
+        with pytest.raises(LedgerError, match="not drained"):
+            ledger.assert_drained("escrow:spot-1")
+        ledger.apply(
+            spot_settlement_entries(
+                escrow_account="escrow:spot-1",
+                seller_account="user:host",
+                gross_micros=10_000,
+            )
+        )
+        ledger.assert_drained("escrow:spot-1")
+
     def test_zero_sum_enforced(self):
         led = Ledger({"user:a": 100})
         with pytest.raises(LedgerError):
