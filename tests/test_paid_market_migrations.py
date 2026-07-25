@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import os
+import shutil
+import threading
+import uuid
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+PROTOTYPE = ROOT / "prototype" / "full-platform-v0"
+RUNNER_PATH = PROTOTYPE / "migrate.py"
+MIGRATIONS = PROTOTYPE / "migrations"
+
+
+def _load_runner():
+    assert RUNNER_PATH.exists(), "fixture migration runner is missing"
+    spec = importlib.util.spec_from_file_location("tinyassets_v0_migrate", RUNNER_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_fixture_migration_ids_are_unique_gap_free_and_dependency_ordered():
+    runner = _load_runner()
+    migrations = runner.discover_migrations(MIGRATIONS)
+    assert [migration.filename for migration in migrations] == [
+        "001_core_tables.sql",
+        "002_flags.sql",
+        "003_rls.sql",
+        "004_indexes.sql",
+        "005_seed.sql",
+        "006_discover_nodes.sql",
+        "007_token_normalization.sql",
+        "008_forwards.sql",
+        "009_market_ledger.sql",
+    ]
+    assert [migration.version for migration in migrations] == list(range(1, 10))
+
+
+def test_fixture_checksum_uses_exact_file_bytes(tmp_path):
+    runner = _load_runner()
+    path = tmp_path / "001_first.sql"
+    path.write_bytes(b"SELECT 1;\r\n")
+    first = runner.discover_migrations(tmp_path)[0]
+    assert first.sha256 == hashlib.sha256(b"SELECT 1;\r\n").hexdigest()
+
+    path.write_bytes(b"SELECT 1;\n")
+    second = runner.discover_migrations(tmp_path)[0]
+    assert second.sha256 == hashlib.sha256(b"SELECT 1;\n").hexdigest()
+    assert second.sha256 != first.sha256
+
+
+@pytest.mark.parametrize(
+    "filenames, message",
+    [
+        (["001_first.sql", "001_duplicate.sql"], "duplicate migration version 001"),
+        (["001_first.sql", "003_gap.sql"], "migration versions must be gap-free"),
+        (["001_first.sql", "readme.sql"], "invalid migration filename"),
+    ],
+)
+def test_fixture_discovery_fails_closed_on_ambiguous_history(
+    tmp_path, filenames, message
+):
+    runner = _load_runner()
+    for filename in filenames:
+        (tmp_path / filename).write_text("SELECT 1;\n", encoding="utf-8")
+    with pytest.raises(runner.MigrationError, match=message):
+        runner.discover_migrations(tmp_path)
+
+
+@pytest.fixture
+def migrated_database():
+    dsn = os.environ.get("TINYASSETS_TEST_POSTGRES_DSN")
+    if not dsn:
+        pytest.skip("TINYASSETS_TEST_POSTGRES_DSN is required for PostgreSQL proof")
+    psycopg = pytest.importorskip("psycopg")
+    database = f"wave2_migrate_{uuid.uuid4().hex}"
+    with psycopg.connect(dsn, autocommit=True) as admin:
+        admin.execute(psycopg.sql.SQL("CREATE DATABASE {}").format(
+            psycopg.sql.Identifier(database)
+        ))
+    database_dsn = psycopg.conninfo.make_conninfo(dsn, dbname=database)
+    try:
+        yield psycopg, database_dsn
+    finally:
+        with psycopg.connect(dsn, autocommit=True) as admin:
+            admin.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s",
+                (database,),
+            )
+            admin.execute(psycopg.sql.SQL("DROP DATABASE {}").format(
+                psycopg.sql.Identifier(database)
+            ))
+
+
+def test_fresh_apply_replay_history_privileges_and_populated_baseline(
+    migrated_database,
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        runner.run_migrations(connection, MIGRATIONS)
+        runner.run_migrations(connection, MIGRATIONS)
+        rows = connection.execute(
+            "SELECT version, name, length(sha256) "
+            "FROM public.schema_migrations ORDER BY version"
+        ).fetchall()
+        assert rows == [
+            (version, name, 64)
+            for version, name in enumerate(
+                [
+                    "core_tables",
+                    "flags",
+                    "rls",
+                    "indexes",
+                    "seed",
+                    "discover_nodes",
+                    "token_normalization",
+                    "forwards",
+                    "market_ledger",
+                ],
+                start=1,
+            )
+        ]
+        assert connection.execute(
+            "SELECT is_nullable = 'NO' FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'forwards' "
+            "AND column_name = 'version'"
+        ).fetchone() == (True,)
+
+        user_id = uuid.uuid4()
+        connection.execute(
+            "INSERT INTO public.users (user_id, display_name) VALUES (%s, 'kept')",
+            (user_id,),
+        )
+        connection.execute("DROP TABLE public.schema_migrations")
+        runner.run_migrations(connection, MIGRATIONS, baseline_existing=True)
+        assert connection.execute(
+            "SELECT display_name FROM public.users WHERE user_id = %s", (user_id,)
+        ).fetchone() == ("kept",)
+
+        connection.execute(
+            "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles "
+            "WHERE rolname = 'tinyassets_fixture_app') THEN "
+            "CREATE ROLE tinyassets_fixture_app NOLOGIN; END IF; END $$"
+        )
+        connection.execute("SET ROLE tinyassets_fixture_app")
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            connection.execute(
+                "INSERT INTO public.schema_migrations "
+                "(version, name, sha256) VALUES (99, 'forged', %s)",
+                ("0" * 64,),
+            )
+        connection.rollback()
+        connection.execute("RESET ROLE")
+
+
+def test_failed_migration_rolls_back_and_resume_applies_once(
+    migrated_database, tmp_path
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    for migration in MIGRATIONS.glob("*.sql"):
+        shutil.copy2(migration, tmp_path / migration.name)
+    failing = tmp_path / "010_failure_probe.sql"
+    failing.write_text(
+        "CREATE TABLE public.failure_probe (id integer);\nSELECT 1 / 0;\n",
+        encoding="utf-8",
+    )
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        with pytest.raises(psycopg.errors.DivisionByZero):
+            runner.run_migrations(connection, tmp_path)
+        assert connection.execute(
+            "SELECT to_regclass('public.failure_probe')"
+        ).fetchone() == (None,)
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations WHERE version = 10"
+        ).fetchone() == (0,)
+
+        failing.write_text(
+            "CREATE TABLE public.failure_probe (id integer PRIMARY KEY);\n",
+            encoding="utf-8",
+        )
+        runner.run_migrations(connection, tmp_path)
+        runner.run_migrations(connection, tmp_path)
+        assert connection.execute(
+            "SELECT count(*) FROM public.schema_migrations WHERE version = 10"
+        ).fetchone() == (1,)
+
+
+def test_checksum_drift_lock_timeout_and_concurrent_runners(
+    migrated_database, tmp_path
+):
+    psycopg, dsn = migrated_database
+    runner = _load_runner()
+    for migration in MIGRATIONS.glob("*.sql"):
+        shutil.copy2(migration, tmp_path / migration.name)
+    with psycopg.connect(dsn, autocommit=True) as connection:
+        runner.run_migrations(connection, tmp_path)
+        first = tmp_path / "001_core_tables.sql"
+        first.write_bytes(first.read_bytes() + b"\n")
+        with pytest.raises(runner.MigrationError, match="checksum drift"):
+            runner.run_migrations(connection, tmp_path)
+        first.write_bytes(first.read_bytes()[:-1])
+
+    with (
+        psycopg.connect(dsn, autocommit=True) as lock_holder,
+        psycopg.connect(dsn, autocommit=True) as contender,
+    ):
+        lock_holder.execute("SELECT pg_advisory_lock(%s)", (runner._LOCK_KEY,))
+        with pytest.raises(runner.MigrationError, match="lock unavailable"):
+            runner.run_migrations(
+                contender, tmp_path, lock_timeout_seconds=0.05
+            )
+        lock_holder.execute("SELECT pg_advisory_unlock(%s)", (runner._LOCK_KEY,))
+
+    barrier = threading.Barrier(2)
+    errors: list[Exception] = []
+
+    def apply_concurrently():
+        try:
+            with psycopg.connect(dsn, autocommit=True) as connection:
+                barrier.wait(timeout=5)
+                runner.run_migrations(connection, tmp_path)
+        except Exception as exc:  # pragma: no cover - asserted below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=apply_concurrently) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not errors

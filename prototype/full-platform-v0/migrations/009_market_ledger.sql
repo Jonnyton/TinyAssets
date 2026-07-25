@@ -1,4 +1,4 @@
--- 008 — Double-entry market ledger + THE single money-movement RPC.
+-- 009 — Double-entry market ledger + THE single money-movement RPC.
 -- ⚠ FOUNDER-GATED: this migration implements the ledger-coexistence decision
 -- (crash-test findings §2a/§3). Do not apply until the founder signs off.
 --

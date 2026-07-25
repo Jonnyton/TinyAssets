@@ -118,15 +118,23 @@ CREATE POLICY requests_select_paid_public ON public.requests
   FOR SELECT TO PUBLIC
   USING (visibility IN ('paid','public'));
 
+CREATE OR REPLACE FUNCTION auth.is_request_bidder(p_request_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.bids
+    WHERE request_id = p_request_id
+      AND bidder_user_id = auth.uid()
+  );
+$$;
+
 CREATE POLICY requests_select_bidder ON public.requests
   FOR SELECT TO PUBLIC
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.bids b
-      WHERE b.request_id = requests.request_id
-        AND b.bidder_user_id = auth.uid()
-    )
-  );
+  USING (auth.is_request_bidder(request_id));
 
 CREATE POLICY requests_insert_self ON public.requests
   FOR INSERT TO PUBLIC
@@ -148,15 +156,23 @@ CREATE POLICY bids_select_bidder ON public.bids
   FOR SELECT TO PUBLIC
   USING (auth.uid() = bidder_user_id);
 
+CREATE OR REPLACE FUNCTION auth.is_request_owner(p_request_id uuid)
+RETURNS boolean
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.requests
+    WHERE request_id = p_request_id
+      AND requester_user_id = auth.uid()
+  );
+$$;
+
 CREATE POLICY bids_select_requester ON public.bids
   FOR SELECT TO PUBLIC
-  USING (
-    EXISTS (
-      SELECT 1 FROM public.requests r
-      WHERE r.request_id = bids.request_id
-        AND r.requester_user_id = auth.uid()
-    )
-  );
+  USING (auth.is_request_owner(request_id));
 
 CREATE POLICY bids_insert_self ON public.bids
   FOR INSERT TO PUBLIC
@@ -234,3 +250,20 @@ CREATE POLICY flags_select_target_owner_bid ON public.flags
 CREATE POLICY flags_insert_self ON public.flags
   FOR INSERT TO PUBLIC
   WITH CHECK (auth.uid() = flagger_id);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_roles WHERE rolname = 'tinyassets_fixture_app'
+  ) THEN
+    CREATE ROLE tinyassets_fixture_app NOLOGIN;
+  END IF;
+END
+$$;
+
+GRANT USAGE ON SCHEMA public, auth TO tinyassets_fixture_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public
+  TO tinyassets_fixture_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public
+  TO tinyassets_fixture_app;
+GRANT EXECUTE ON FUNCTION auth.uid() TO tinyassets_fixture_app;

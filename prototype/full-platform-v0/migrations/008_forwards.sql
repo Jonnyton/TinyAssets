@@ -1,4 +1,4 @@
--- 007 — Capacity forwards (Track E Wave 4).
+-- 008 — Capacity forwards (Track E Wave 4).
 -- Table per the Track E spec, with the bucket-boundary rule enforced in-schema
 -- where SQL can express it. tokens_requested is NON-NEGOTIABLE (adversarial
 -- review finding B-1: settling against raw size makes buyer no-show griefing
@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS public.forwards (
   buyer_user_id     uuid NULL REFERENCES public.users(user_id),
   tokens_requested  bigint NOT NULL DEFAULT 0 CHECK (tokens_requested >= 0),
   tokens_delivered  bigint NOT NULL DEFAULT 0 CHECK (tokens_delivered >= 0),
+  version           bigint NOT NULL DEFAULT 1 CHECK (version > 0),
   created_at        timestamptz NOT NULL DEFAULT now(),
 
   -- Bucket boundaries (UTC): whole hour always; 8h blocks land on 00/08/16;
