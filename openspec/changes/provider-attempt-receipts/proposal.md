@@ -22,8 +22,9 @@ overlapping calls.
 - Leave any durable or public receipt sink gated on an explicit owner,
   authorization policy, retention policy, and schema; this change does not
   invent one.
-- Declare #1606 / R2-1a a blocker for applying the change so receipt authority
-  semantics are based on the settled fail-closed routing boundary.
+- Treat #1592's landed fail-closed credential isolation as the settled first
+  conjunct, while keeping runtime application blocked on R2-1a selected-engine
+  `allowed_providers` and #1691's call-local authority-class contract.
 
 ## Capabilities
 
