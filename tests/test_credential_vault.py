@@ -16,6 +16,7 @@ from tinyassets.credential_vault import (
     load_credential_vault,
     provider_auth_env_overrides,
     resolve_claude_config_dir,
+    resolve_claude_oauth_token,
     resolve_codex_home,
     resolve_github_token,
     write_credential_vault,
@@ -191,6 +192,31 @@ def test_single_record_write_rotates_matching_multi_purpose_vcs_token(tmp_path):
     ) == "ghs-NEW-ROTATED"
     assert summary["credential_count"] == 1
     assert "ghs-OLD" not in str(load_credential_vault(tmp_path))
+
+
+def test_single_subscription_write_preserves_sibling_fields(tmp_path):
+    configured = tmp_path / "claude_cfg"
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "claude_config_dir": str(configured),
+        "oauth_token": "tok-ORIGINAL",
+    }])
+
+    write_credential_vault(tmp_path, [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "oauth_token": "tok-ROTATED",
+    }])
+
+    assert load_credential_vault(tmp_path) == [{
+        "credential_type": "llm_subscription",
+        "service": "claude",
+        "claude_config_dir": str(configured),
+        "oauth_token": "tok-ROTATED",
+    }]
+    assert resolve_claude_config_dir(tmp_path) == configured
+    assert resolve_claude_oauth_token(tmp_path) == "tok-ROTATED"
 
 
 def test_resolve_github_token_uses_exact_destination_and_purpose(tmp_path):
