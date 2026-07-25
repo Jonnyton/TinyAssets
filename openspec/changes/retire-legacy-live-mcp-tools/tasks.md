@@ -1,6 +1,6 @@
 ## 1. Migration evidence gates
 
-- [ ] 1.1 Land and externally accept `reconcile-external-connector-manifests`; verify every supported manifest and submission packet names only its intended canonical or reviewed-directory surface.
+- [ ] 1.1 Land `reconcile-external-connector-manifests`; verify every current supported manifest and submission packet names canonical `/mcp` or is withdrawn, and none names a reviewed-directory surface.
 - [ ] 1.2 Record the host-approved supported-client matrix and telemetry observation window in a durable retirement-evidence artifact before evaluating call data.
 - [ ] 1.3 Collect hidden-name call telemetry for the full predeclared window; prove zero calls or identify and migrate every caller of `universe`, `community_change_context`, `extensions`, `goals`, `gates`, and `wiki`.
 - [ ] 1.4 Complete and record a rendered chatbot conversation through canonical handles for every host in the approved client matrix.
@@ -9,7 +9,7 @@
 ## 2. Fresh ownership and caller inventory
 
 - [ ] 2.1 Refresh `origin/main`, run provider-context and worktree scans, and rerun file-collision checks before claiming runtime files; resolve or depend on the owners observed in PRs #1560, #1550, #1549, #1493, #1478, #1467, #1466, #1465, and #1464.
-- [ ] 2.2 Confirm PR #1561 remains limited to the separate legacy stdio server and PR #1553 remains limited to directory authorization; exclude `tinyassets/mcp_server.py` and `tinyassets/directory_server.py` from this change.
+- [ ] 2.2 Confirm PR #1561 remains limited to the separate legacy stdio server; exclude `tinyassets/mcp_server.py` from this change and never restore `tinyassets/directory_server.py` if the retirement change already removed it.
 - [ ] 2.3 Inventory every repository import and direct Python caller of `universe`, `community_change_context`, `extensions`, `goals`, `gates`, and `wiki`; record a preserve-or-explicitly-migrate decision and focused coverage for each wrapper.
 
 ## 3. Failing contract and execution proofs
@@ -24,14 +24,14 @@
 - [ ] 4.1 Remove exactly the six legacy `_register_structured_tool` registrations from `tinyassets/universe_server.py` while preserving wrapper functions unless task 2.3 proves and tests an explicit caller migration.
 - [ ] 4.2 Remove `_DeprecatedToolVisibility`, the legacy-name set, and dead registration-only state; add no compatibility alias or alternate hidden dispatch path.
 - [ ] 4.3 Make the public canary compare against one exact seven-name set with required `get_status`; rename inaccurate internal `assert_five_handles*` identifiers without aliases while preserving the existing `--assert-handles` CLI.
-- [ ] 4.4 Update the packaged runtime mirror and verify byte parity without changing the intentional `tinyassets/directory_server.py` reviewed surface.
+- [ ] 4.4 Update the packaged runtime mirror and verify byte parity without restoring the retired `tinyassets/directory_server.py` surface.
 - [ ] 4.5 Replace the canonical registered-tool metadata owner with the exact seven-row table; leave no retired-tool metadata residue.
 
 ## 5. Verification and review
 
 - [ ] 5.1 Run the exact-registry, public-canary, authenticated MCP round-trip, structured-envelope, anonymous-challenge, and wrapper-caller focused suites on a clean current-main base.
 - [ ] 5.2 Run plugin build/mirror parity, scoped Ruff, and strict validation of every active OpenSpec change.
-- [ ] 5.3 Obtain an independent diff review that checks the exact six-name removal, absence of hidden dispatch alternatives, canonical behavior preservation, and directory/stdio scope boundaries.
+- [ ] 5.3 Obtain an independent diff review that checks the exact six-name removal, absence of hidden dispatch alternatives, canonical behavior preservation, local-stdio boundaries, and continued absence of `/mcp-directory*`.
 - [ ] 5.4 Run and freshness-stamp the applicable §14 concurrent-client/load proof against the seven-handle server; if the existing harness does not cover this MCP change, add bounded simultaneous `tools/list` plus run/read sessions and prove no registry drift, cross-session leakage, or duplicate run creation.
 
 ## 6. Deploy, acceptance, and spec sync

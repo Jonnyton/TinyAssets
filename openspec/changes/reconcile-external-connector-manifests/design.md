@@ -1,204 +1,246 @@
 ## Context
 
-TinyAssets intentionally distributes three MCP products from one codebase:
+TinyAssets intentionally distributes two MCP products:
 
-| Product | Runtime / entry point | Transport / location | Advertised catalog | Authentication and configuration |
-|---|---|---|---|---|
-| Remote live connector | `tinyassets.universe_server` | Streamable HTTP at `https://tinyassets.io/mcp` | Seven: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, `get_status` | Production `UNIVERSE_SERVER_AUTH=workos`; anonymous reads remain open and write/costly/admin calls require identity. The registered pre-dispatch write challenges are `write_graph`, `run_graph`, `write_page`, and `converse`. |
-| Local MCPB package | staged `tinyassets.universe_server` via `packaging/mcpb/server.py` | Local stdio, launched as `uv run --project ${__dirname} ${__dirname}/server.py` | The same seven names as the remote live connector | Required `tinyassets_data_dir` maps to `TINYASSETS_DATA_DIR`; optional `default_universe` maps to `UNIVERSE_SERVER_DEFAULT_UNIVERSE`. The manifest neither exposes nor sets `UNIVERSE_SERVER_AUTH`, so unset configuration currently selects `DevAuthProvider` (local no-auth), not WorkOS/OAuth. |
-| Remote directory-review surface | `tinyassets.directory_server`, mounted by the remote app | Streamable HTTP at `/mcp-directory` and the Registry's current versioned `/mcp-directory/catalog/<version>` URL | Five: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`; no `converse`, `get_status`, hidden fat tools, or catch-all `action` | Inherits remote bearer resolution/write gates, but is excluded from `/mcp`'s missing-token pre-dispatch OAuth challenge. Listing/public reads remain available; anonymous writes receive tool/action-level rejection. Status is `read_graph(target=status)` with directory-safe redaction. |
+| Product | Runtime / transport | Catalog | Authority |
+|---|---|---|---|
+| Remote TinyAssets | `tinyassets.universe_server`, Streamable HTTP at `https://tinyassets.io/mcp` | Exactly seven: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, `get_status` | WorkOS/OAuth; anonymous public reads and identity-gated mutations/costly work |
+| Local MCPB | staged `tinyassets.universe_server` via `packaging/mcpb/server.py`, local stdio | Same seven names, without claiming functional parity | User-selected local data directory; current package does not configure WorkOS and relies on its local process boundary |
 
-The split is deliberate. Shared handle names are catalog reuse, not evidence of
-transport, auth, configuration, storage, or trust-boundary equivalence.
-`packaging/mcpb/manifest.json`, however, still lists only the hidden legacy
-`universe` and `extensions` tools. The MCPB schema validator checks JSON shape,
-not agreement with the imported FastMCP runtime, so current packaging tests
-cannot detect this contradiction.
+The prior design treated `/mcp-directory` as a third remote product with five
+handles, separate redaction, different auth-challenge behavior, and versioned
+catalog URLs. The host rejected that product split on 2026-07-24. One name and
+one remote endpoint avoid two TinyAssets experiences and eliminate catalog,
+auth, documentation, and behavior drift.
 
-Catalog parity is not functional parity. With the manifest-provided local
-configuration, MCPB selects `DevAuthProvider` and has no resolved actor;
-`converse` is advertised but returns `auth_required`. This limitation must be
-visible in acceptance and must be resolved or deliberately redesigned before a
-shared-runtime legacy retirement can claim the local product is ready.
+Current `/mcp` cannot simply replace the old directory URL today:
 
-The recovered `WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md` compounds the ambiguity:
-it says the live handle cutover has not shipped, documents legacy calls, and
-predates WorkOS auth. PR #1522 renames that file and fixes product identifiers
-but explicitly leaves the technical content stale. It also touches the obsolete
-five-handle change being archived, so it cannot independently satisfy this
-change.
+- its status paths intentionally expose operator diagnostics;
+- its server instructions force `converse` and import embodiment behavior;
+- per-tool OpenAI OAuth `securitySchemes` and runtime challenge metadata are
+  incomplete;
+- broad router annotations understate public, overwrite, persistence, cost,
+  and provider effects;
+- current privacy disclosure is draft/incomplete;
+- several clients and Registry metadata still point to `/mcp-directory`.
+
+The transition therefore removes the old route first, then hardens `/mcp`,
+moves maintained registrations, and proves the surviving real paths. The old
+route does not become a redirect or indefinite compatibility shim.
+
+Completed MCPB manifest parity remains valid and is preserved.
+
+### Source freshness
+
+Rechecked 2026-07-24 against primary sources:
+
+- OpenAI MCP-app developer mode is a web surface; mobile is not a required
+  custom-app acceptance path:
+  <https://help.openai.com/en/articles/12584461-developer-mode-and-full-mcp-connectors-in-chatgpt-beta>.
+- OpenAI requires per-tool auth metadata, Protected Resource Metadata, and
+  runtime OAuth challenges:
+  <https://developers.openai.com/plugins/build/auth>.
+- Anthropic remote connectors accept a remote MCP URL and support Streamable
+  HTTP plus OAuth:
+  <https://support.anthropic.com/en/articles/11503834-building-custom-connectors-via-remote-mcp-servers>.
+- MCP Registry remote metadata binds a public Streamable HTTP URL:
+  <https://modelcontextprotocol.io/registry/remote-servers>.
+
+These source-derived hardening and registration details still require the
+project's opposite-provider review before implementation. The direct host
+decision to remove `/mcp-directory*` is independent of vendor acceptance.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Specify the remote live connector, local MCPB package, and remote directory
-  surface as separate products with non-substitutable acceptance evidence.
-- Make MCPB-declared tools exactly match the middleware-applied advertised
-  catalog of the runtime copied into the bundle.
-- Make catalog parity executable so future runtime additions/removals cannot
-  leave install metadata behind.
-- Preserve the five-handle directory product and its separately verified
-  Registry and ChatGPT artifacts.
-- Correct the canonical live-surface spec's stale implication that the
-  directory advertises `get_status`; its redacted view is a `read_graph` target.
-- Replace the recovered Polsia snapshot with current, source-linked integration
-  guidance that states which product an integrator is using.
-- Correct the MCPB README's stale source/dependency claims.
-- Establish manifest reconciliation as a prerequisite for later legacy-tool
-  retirement.
+- Make `/mcp` the sole remote TinyAssets endpoint and exact-seven contract.
+- Make `TinyAssets` the exact durable public name without `DEV` or another
+  lifecycle qualifier.
+- Make its public status, instructions, auth metadata, annotations,
+  descriptions, errors, and privacy disclosures suitable for reviewed hosts.
+- Bind Registry, ChatGPT, Claude, and maintained client guidance to `/mcp`.
+- Preserve dated `/mcp-directory` evidence as historical truth while
+  superseding active guidance.
+- Remove every directory mount, constant, server, and Worker route first;
+  repoint or withdraw maintained registrations and collect proof afterward.
+- Preserve local MCPB as a distinct stdio/configuration/identity product.
+- Keep all acceptance and migration work free of maintainer compute.
 
 **Non-Goals:**
 
-- No MCP handler, registration, auth, storage, routing, or provider behavior
-  changes.
-- No attempt to add WorkOS/OAuth to the current local MCPB package or to treat
-  its local process boundary as a remote identity boundary.
-- No removal of hidden legacy live tools or their middleware.
-- No expansion of `directory_server` to `converse` or `get_status`.
-- No remote runtime change; the live-surface delta is an as-built wording
-  correction only.
-- No Registry publication, ChatGPT/Claude directory submission, or assertion
-  that an external host has accepted the connector.
-- No synchronization of the obsolete `mcp-five-handle-surface` delta.
+- No anonymous mutation compatibility path.
+- No redirect, proxy alias, auto-scope, or other permanent
+  `/mcp-directory` shim.
+- No claim that remote OAuth evidence proves local MCPB identity or launch.
+- No provider/model execution without requester BYOC or accepted-market
+  authority.
+- No bulk rewriting of dated audits, archived changes, or historical proof.
+- No removal of hidden legacy live tools except through their separately
+  gated change.
 
 ## Decisions
 
-### Compare the staged artifact, not two source files
+### Compare the staged MCPB artifact, not two source files
 
-The parity gate SHALL run the normal MCPB staging path, read the manifest from
-the staged directory, and enumerate `mcp.list_tools(run_middleware=True)` from
-the staged `tinyassets.universe_server` in a subprocess. This verifies what a
-user installs, includes visibility middleware, avoids module-cache pollution,
-and catches staging mistakes as well as source drift.
+The existing parity gate continues to stage the MCPB, read its staged manifest,
+and enumerate middleware-applied tools from the staged runtime in a subprocess.
+This proves what users install and catches staging as well as source drift.
 
-Comparing a hand-maintained constant with the manifest was rejected because it
-would create a third catalog. Comparing registered tools with middleware
-disabled was rejected because it would incorrectly require hidden legacy tools
-in public install metadata.
+### Keep two product contracts explicit
 
-### Keep all three product contracts explicit
+Shared seven-handle names do not make the products equivalent. Remote `/mcp`
+is a hosted WorkOS/OAuth resource server. MCPB is a local stdio process with
+local directory configuration and its observed local auth posture. Each
+requires its own acceptance evidence.
 
-MCPB launches `universe_server`, so its manifest declares the same seven names
-as `/mcp`; that catalog parity is the only equivalence asserted. The bundle is
-a local stdio process with local directory configuration and a current
-dev/no-auth default. The remote live connector remains a Streamable-HTTP
-WorkOS resource server. A remote canary cannot prove MCPB launch/configuration,
-and an MCPB host run cannot prove the remote WorkOS boundary.
+Registry and hosted-chatbot artifacts are remote product metadata and bind only
+to `/mcp`. Versioning occurs through artifact/package/registration versions,
+not alternate endpoint paths.
 
-The Registry manifest continues to point to the versioned
-`/mcp-directory/catalog/<version>` remote and does not acquire a seven-handle
-tool list. The ChatGPT packet continues to equal the five tools enumerated by
-`directory_mcp`; its existing runtime-parity test remains the authority. The
-directory surface inherits remote bearer resolution and write gates while
-retaining its own reviewed schemas and redaction. It is excluded from `/mcp`'s
-missing-token pre-dispatch challenge, so anonymous writes reach tool/action-
-level rejection rather than an equivalent OAuth-launch response; those
-properties are tested rather than inferred from either other product.
+### Make canonical status safe by construction
 
-This avoids forcing unlike products into a lowest-common-denominator catalog
-and prevents an external directory packet from accidentally advertising
-authenticated live-only operations.
+Public `read_graph(target=status)` and `get_status` return a typed allowlist
+projection governed by exact `public-status-v1`. It emits only bounded enums,
+booleans, counts, fixed action codes, and fixed error text; every object rejects
+additional properties. A parse/projection failure returns the fixed safe
+failure envelope and never falls back to raw text. Operator logs, sessions,
+identities, paths, policy hashes, internal exceptions, and debug fields stay
+outside the public MCP result. Authorized operator diagnostics use a separately
+reviewed administrative surface rather than changing projection based on a
+caller-controlled field. This change does not add an eighth public MCP tool or
+a new admin endpoint; it reuses an existing internal operator surface, or a
+separate OpenSpec/security-reviewed change must own any new administrative
+boundary.
 
-### Hidden compatibility tools are not package catalog entries
+### Make instructions and metadata truthful
 
-The six deprecated fat tools are registered internally but filtered from
-`tools/list`. They SHALL remain absent from the MCPB `tools` declaration. The
-later `retire-legacy-live-mcp-tools` change may unregister them only after this
-manifest ships and migration evidence is reviewed. Because MCPB stages the
-same `tinyassets.universe_server` source, remote telemetry cannot prove local
-callers migrated. Retirement also requires installed-host/version evidence and
-a resolution or explicit redesign of the local identity/authority limitation;
-the later lane must rebuild the stage, not update a nonexistent runtime mirror.
+Server instructions describe when each tool is relevant without forcing a
+call, impersonating a universe, or importing another prompt. `converse` occurs
+only from explicit user intent.
 
-### Fold PR #1522; do not stack stale content on its rename
+Every advertised tool declares security schemes matching runtime behavior.
+Public read tools advertise `noauth` plus OAuth; mutating, costly, and
+first-contact `converse` handles advertise OAuth only. AuthKit schemes request
+only `openid`, `profile`, `email`, and `offline_access`; internal
+`tinyassets.*` capabilities remain Resource Server grants rather than OAuth
+scopes. Bearer validation pins RS256, issuer, audience/resource, expiry, and a
+non-anonymous subject. Founder grants/capabilities and visibility,
+ownership, and action/object ACLs are enforced separately before effects.
+`org_id` remains identity metadata, not an invented tenant authority boundary.
 
-Implementation SHALL preserve the rename/provenance corrections from PR #1522
-while replacing the stale technical sections in the same resulting file. The
-implementation lane must first coordinate PR #1522's disposition; merging its
-naming-only task edit into the archived change would recreate a dead active
-path and falsely imply the integration guide is current.
+Router annotations are conservative across every advertised target/action. If
+any path publishes externally or overwrites state, the router's open-world or
+destructive hint reflects that. Descriptions disclose persistence, public
+visibility, provider/data sharing, cost, confirmation, and reversibility.
+Errors and results are bounded and secret-free.
 
-The refreshed handoff SHALL use a three-row current-surface matrix and link to the
-canonical OpenSpec/runtime tests instead of copying a large action inventory
-that will decay again. It must describe current WorkOS/OAuth boundaries and
-local MCPB configuration/no-auth posture separately, and must distinguish the
-remote live seven, local MCPB seven, and remote directory five wherever it
-gives connection, auth, or tool-selection guidance.
+### Retire the duplicate route before consumer proof
 
-### Accept each product through its real user path
+`/mcp` is already the sole product endpoint by host decision. The first
+runtime slice therefore removes `directory_server`, catalog constants, mounts,
+versioned paths, discovery copy, current operational guidance, and Worker
+routing together. Basic provider-free `/mcp` initialize and tool-enumeration
+health is checked in the same slice, but canonical review hardening, Registry
+publication, vendor acceptance, rendered-client breadth, telemetry, and
+post-change clean use do not gate deletion.
 
-Acceptance evidence is product-scoped and SHALL NOT be substituted across
-rows in the matrix:
+Each maintained registration that still names `/mcp-directory*` is repointed
+to `/mcp` or withdrawn. If a vendor surface is pending or unavailable, its
+state is recorded and watched after removal rather than preserving the wrong
+route. Cached or unknown callers receive the ordinary absent-route 404. There
+is no redirect, proxy, alias, silent translation, 410 compatibility response,
+or compatibility JSON.
 
-- Remote live acceptance proves Streamable-HTTP, the exact seven handles,
-  anonymous reads, an OAuth challenge and signed-in write or `converse`, a
-  rendered Claude.ai/ChatGPT connector conversation where applicable, and
-  post-change clean-use evidence (or an explicit unproven watch item).
-- Local MCPB acceptance proves official schema validation, installation and
-  stdio launch in an MCPB-compatible host, exact-seven enumeration, required
-  data-directory and optional default-universe wiring, and the observed local
-  auth mode using an isolated temporary data directory. It records that
-  actorless `converse` is currently unavailable instead of calling all seven
-  handles operational. It makes no remote canary or WorkOS/OAuth claim.
-- Remote directory acceptance proves deterministic Registry generation,
-  ChatGPT packet/runtime name-and-annotation parity, status redaction,
-  versioned-endpoint behavior, and rendered directory-host behavior under its
-  observed auth boundary. It makes no MCPB claim.
+After retirement, the Registry manifest is version-bumped and republished for
+`/mcp`; OpenAI and Claude submissions are rebuilt for seven tools and OAuth;
+and maintained Codex, Cursor, Open WebUI, LibreChat, and other supported client
+packs are re-proven. Hosts unable to support OAuth retain anonymous read-only
+access only where the canonical contract permits it; unsupported claims are
+removed.
+
+### Preserve history, supersede guidance
+
+Dated proof and audits keep the endpoint they actually tested. Current
+runbooks, matrices, submission packets, and registry files receive new
+superseding truth. Historical files are not bulk-edited to simulate a migration
+that had not happened at their evidence date.
+
+### Fold PR #1522 without restoring stale product claims
+
+PR #1522 supplies only the verified handoff filename and identifier cleanup.
+`WORKFLOW_DESIGN_HANDOFF_FOR_POLSIA.md` was absent from the June rename commit
+`aa30a9c8` and first entered git through recovery PR #1490 (`d4d279a0`) on
+2026-07-21 under its pre-rename name. Preserve history with `git mv` to
+`TINYASSETS_DESIGN_HANDOFF_FOR_POLSIA.md`; preserve the TinyAssets product
+name, `TINYASSETS_PAID_MARKET`, canonical repository URL, and `tinyassets/...`
+package paths.
+
+Replace the stale body with the source-linked two-row remote `/mcp` / local
+MCPB matrix. Do not carry forward its five-handle task edit, three-product
+guidance, or any `/mcp-directory*` product premise. Never restore the archived
+five-handle change.
+
+### Accept each product through its real path
+
+Remote acceptance proves exact seven, safe status projection, neutral
+instructions, metadata/runtime OAuth agreement, truthful annotations,
+anonymous-read and authenticated-write behavior, Registry resolution,
+rendered ChatGPT/Claude conversations, supported-client migration,
+concurrency, and post-change clean use.
+
+Local MCPB acceptance proves schema, install, stdio launch, exact-seven
+enumeration, configuration wiring, observed auth behavior, and usable
+provider-free operations from an isolated data directory. Neither proof
+substitutes for the other.
 
 ## Risks / Trade-offs
 
-- **Runtime enumeration can import environment-sensitive modules** → Run the
-  staged probe in a subprocess with an isolated temporary data directory and
-  compare only `tools/list`; fail loudly on import or enumeration errors.
-- **The MCPB manifest schema may accept declarations without enforcing runtime
-  equality** → Keep schema validation and add the separate semantic parity
-  gate; neither substitutes for the other.
-- **A seven-handle update could accidentally leak into directory artifacts** →
-  Retain the exact-set ChatGPT/directory test and the deterministic Registry
-  generator check in the same verification suite.
-- **PR #1522 can conflict with the archive and refreshed handoff** → Fold its
-  rename/provenance content or close/supersede it before implementation; never
-  resolve the conflict by restoring the obsolete active change.
-- **Static integration prose will drift again** → Prefer source links and a
-  concise product matrix; add assertions for the named handle sets and reject
-  pre-cutover claims.
-
-- **Matching seven-name catalogs could be mistaken for product equivalence** —
-  Assert only catalog parity, state transport/auth/config separately, and fail
-  the handoff contract check if remote and local rows are collapsed.
-- **An acceptance run could consume maintainer provider quota** — Keep catalog,
-  launch, configuration, read, and auth-failure proofs provider-free. Any
-  future model execution requires requester BYOC or an accepted-market grant;
-  without one, hold before provider invocation.
+- **Status fields leak when schemas grow** — allowlist projection and
+  fail-closed parse behavior prevent new raw fields from appearing by default.
+- **A seven-tool router understates its riskiest action** — aggregate
+  annotations conservatively and split only when no truthful contract is
+  possible.
+- **Directory removal breaks cached clients** — repoint or withdraw maintained
+  registrations, publish current `/mcp` guidance, and monitor ordinary 404s;
+  do not hide breakage with a redirect or compatibility response.
+- **OAuth excludes no-login hosts** — preserve only canonical anonymous reads;
+  mark unsupported mutation flows honestly.
+- **Historical docs look inconsistent** — keep dated evidence immutable and
+  add explicit superseding current guidance.
+- **MCPB is mistaken for hosted parity** — retain separate configuration,
+  identity, and acceptance requirements.
+- **Acceptance consumes maintainer quota** — all catalog, auth, redaction, and
+  migration checks remain provider-free unless requester authority exists.
 
 ## Migration Plan
 
-1. Confirm the obsolete collapse change is archived with `--skip-specs` and
-   coordinate PR #1522 as folded/superseded.
-2. Capture three baselines separately: remote `/mcp` seven, staged local MCPB
-   seven over stdio, and the versioned remote directory five.
-3. Add a failing staged MCPB manifest/runtime parity test demonstrating the
-   current `{universe, extensions}` versus seven-handle mismatch.
-4. Update the MCPB manifest to the exact seven advertised handles and make the
-   staged parity test pass; keep normal MCPB schema validation green.
-5. Re-run the Registry generator/equality checks and the ChatGPT/directory exact
-   catalog test to prove those products remain five-handle surfaces.
-6. Rename and substantively refresh the Polsia handoff, preserving useful
-   design intent while removing pre-cutover and pre-WorkOS claims.
-7. Correct the MCPB README so it names the staged `tinyassets/` package and its
-   actual dependency shape rather than the removed `fantasy_author` mirror.
-8. Run focused tests, strict OpenSpec validation, and the separate acceptance
-   paths above. Record explicitly which product lacks a rendered host or
-   post-change real-user evidence; do not generalize proof from another row.
-
-Rollback is a normal revert of the manifest/handoff implementation commit. It
-does not alter runtime registrations or stored data. Reverting the parity gate
-alone is not an acceptable steady state because it would restore silent drift.
+1. Record the host directive and adapt this change from three products to two.
+2. Prove basic provider-free `/mcp` initialize and tool enumeration, then
+   remove directory runtime, mounts, constants, catalogs, discovery text,
+   Worker routing, and current operational guidance in one reviewed slice.
+3. Prove every `/mcp-directory*` path is an ordinary 404 with no redirect,
+   proxy, alias, translation, 410, or compatibility body; repoint or withdraw
+   every maintained old registration.
+4. Preserve completed MCPB parity tasks and verify the staged package remains
+   exact seven.
+5. Add failing tests for safe status projection, neutral instructions,
+   security metadata/challenges, truthful annotations/descriptions, and
+   bounded failures on canonical `/mcp`.
+6. Implement canonical hardening and finalize matching privacy disclosures.
+7. Rebuild Registry and supported-host metadata for `/mcp`, exact seven, and
+   OAuth; version and publish through reviewed host flows.
+8. Re-prove maintained supported clients and record unsupported or read-only
+   limitations rather than preserving anonymous mutation.
+9. Obtain at least one rendered supported-chatbot acceptance, Registry,
+   concurrency, post-change, and old-path 404 evidence. Record unavailable
+   vendor surfaces as post-removal watch items, never cutover gates.
+10. Sync canonical specs and archive this change only after all completed
+    tasks and evidence are truthful.
 
 ## Open Questions
 
-- Which MCPB-compatible rendered host is available for final installed-bundle
-  acceptance? If none is available, implementation may land only with the
-  missing external acceptance called out as a host-owned follow-up; it must not
-  claim rendered-host proof.
+- Which supported third-party hosts cannot complete canonical OAuth and should
+  be documented as anonymous-read-only or unsupported?
+- What observation window gives sufficient confidence that every maintained
+  registration migrated without turning the old route into a permanent shim?

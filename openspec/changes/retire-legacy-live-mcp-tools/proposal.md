@@ -8,8 +8,9 @@ The live connector still registers six hidden legacy fat tools even though the m
 - Preserve non-MCP Python wrappers or migrate every import caller explicitly; unregistering an MCP tool does not silently delete internal behavior.
 - Require the public `--assert-handles` canary to accept exactly the seven canonical live handles, including `get_status` as required rather than optional.
 - Add a genuine live-server `run_graph` dispatch/round-trip proof rather than treating presence in `tools/list` as execution evidence.
-- Keep `tinyassets/directory_server.py` as the intentional narrower reviewed-directory surface.
-- Keep the legacy stdio-server fence in PR #1561 and the directory `run_graph` authorization work in PR #1553 as separate concerns.
+- Do not restore or preserve `tinyassets/directory_server.py`;
+  `reconcile-external-connector-manifests` owns `/mcp-directory*` removal.
+- Keep the legacy stdio-server fence in PR #1561 as a separate concern.
 
 ## Capabilities
 
@@ -19,10 +20,10 @@ None.
 
 ### Modified Capabilities
 
-- `live-mcp-connector-surface`: end the hidden-fat-tool migration window, make the public canary enforce exactly seven live handles, and require executable proof that live `run_graph` reaches the canonical run path while preserving the directory surface.
+- `live-mcp-connector-surface`: end the hidden-fat-tool migration window, make the public canary enforce exactly seven live handles, and require executable proof that live `run_graph` reaches the canonical run path without restoring the retired directory surface.
 
 ## Impact
 
 - Future implementation: `tinyassets/universe_server.py` and its packaged runtime mirror; `scripts/mcp_public_canary.py`; focused live-surface and canary tests.
-- External consumers: removal is gated on the `reconcile-external-connector-manifests` change plus telemetry and host migration proof.
+- External consumers: this hidden-tool removal follows the canonical contract from `reconcile-external-connector-manifests`; it has no directory-surface preservation gate.
 - Coordination: implementation must reconcile active PR ownership before touching shared runtime or test files; this proposal changes no runtime behavior.

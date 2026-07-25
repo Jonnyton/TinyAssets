@@ -34,19 +34,21 @@ The live MCP server SHALL register and advertise exactly seven handles: `read_gr
 
 ### Requirement: Registered tools publish exact discoverability and behavior metadata
 
-The system SHALL attach the following title, tag set, and four MCP behavior
-hints to every registered tool after retirement. In the hint columns, `T`
-means true and `F` means false, ordered as read-only, destructive, idempotent,
-and open-world:
+This change SHALL remove only retired rows from the canonical metadata table;
+it SHALL NOT reset metadata for surviving handles. After retirement, the
+system SHALL attach the following canonical title, tag set, and four MCP
+behavior hints to every registered tool. In the hint columns, `T` means true
+and `F` means false, ordered as read-only, destructive, idempotent, and
+open-world:
 
 | Tool | Title | Tags | R | D | I | O |
 |---|---|---|---:|---:|---:|---:|
 | `read_graph` | `Read Graph` | `graph`, `read`, `tinyassets` | T | F | T | F |
-| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | F | F | F |
-| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | F | F | F |
+| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | T | F | T |
+| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | T | F | T |
 | `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | F |
-| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
-| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
+| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | T | F | T |
+| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | T |
 | `get_status` | `Daemon Status + Routing Evidence` | `confidential-tier`, `privacy`, `routing`, `status`, `tinyassets`, `verification` | T | F | T | F |
 
 These hints SHALL remain descriptive MCP metadata rather than authorization
@@ -65,9 +67,9 @@ tool SHALL retain a registry metadata row after its registration is removed.
 - **WHEN** a remaining tool's metadata marks it non-destructive or open-world
 - **THEN** that metadata alone does not bypass the tool's write gate, authentication, ownership, or action-specific validation
 
-### Requirement: Public Canary And Directory Review Surface
+### Requirement: Public Canary And Canonical Review Surface
 
-The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full handshake, reads `tools/list`, and fails (exit 4) unless the live surface advertises exactly `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`. The platform SHALL continue to expose a separate narrower directory surface (`tinyassets/directory_server.py`, served at `/mcp-directory`) intended for reviewed host directories such as Claude's Connectors Directory and ChatGPT Apps; it advertises no catch-all `action` inputs and returns a redacted `get_status` that strips operator diagnostics and injects a `directory_privacy_note`.
+The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full handshake, reads `tools/list`, and fails (exit 4) unless canonical `/mcp` advertises exactly `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`. The platform SHALL NOT preserve or restore `/mcp-directory*` as a reviewed-host surface.
 
 #### Scenario: Canary fails on an extra handle
 
@@ -79,10 +81,11 @@ The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_cana
 - **WHEN** the live `tools/list` advertises the other six canonical handles but omits `get_status`
 - **THEN** `mcp_public_canary.py --assert-handles` exits with code 4 and reports `get_status` as missing
 
-#### Scenario: Directory status redacts operator diagnostics
+#### Scenario: Retired directory path stays absent
 
-- **WHEN** a directory client reads status through the `/mcp-directory` surface
-- **THEN** raw activity logs and internal diagnostics are stripped and the payload carries a `directory_privacy_note`, whereas the live `/mcp` `read_graph target=status` returns the full unredacted status
+- **WHEN** a caller requests `/mcp-directory*`
+- **THEN** it receives the ordinary absent-route 404
+- **AND** no narrower review server or compatibility response is restored
 
 ## ADDED Requirements
 
@@ -118,4 +121,4 @@ After the manifest, telemetry, rendered-client, and host-approval migration gate
 
 **Reason**: The one-release migration window ends after accepted manifest, telemetry, rendered-client, and host evidence. Keeping callable tools hidden forever contradicts the exact seven-handle registration contract and preserves an unauditable compatibility surface.
 
-**Migration**: Supported external clients SHALL use the canonical seven-handle live surface. Repository Python callers SHALL either keep using preserved non-MCP wrappers or be explicitly migrated to owning APIs/canonical routes before a wrapper is deleted. The separate stdio and directory-server lanes are not migrated by this change.
+**Migration**: Supported external clients SHALL use the canonical seven-handle live surface. Repository Python callers SHALL either keep using preserved non-MCP wrappers or be explicitly migrated to owning APIs/canonical routes before a wrapper is deleted. The local stdio lane is not migrated by this change; the retired directory route is never restored.
