@@ -15,8 +15,8 @@ def test_core_tables_present(db):
     with db.cursor() as cur:
         cur.execute(
             "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
-            "AND tablename IN %s",
-            (tuple(expected),),
+            "AND tablename = ANY(%s)",
+            (list(expected),),
         )
         rows = {r[0] for r in cur.fetchall()}
     assert rows == expected

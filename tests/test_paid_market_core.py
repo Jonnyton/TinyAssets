@@ -32,6 +32,7 @@ from tinyassets.paid_market.forwards import (
     ForwardError,
     ForwardState,
     assert_transition,
+    canonical_fee_micros,
     collateral_micros,
     settle_forward,
 )
@@ -335,6 +336,18 @@ class TestStateMachine:
 
 
 class TestSettleForward:
+    def test_positive_gross_fee_has_one_micro_minimum_across_oracles(self):
+        assert canonical_fee_micros(0) == 0
+        assert canonical_fee_micros(1) == 1
+        forward = settle_forward(
+            size_mtok=1,
+            price_micros_per_mtok=1,
+            tokens_requested=0,
+            tokens_delivered=0,
+            collateral_pct=20,
+        )
+        assert forward.seller_gross == 1 and forward.treasury_fee == 1
+
     def test_full_demand_full_delivery(self):
         s = settle_forward(
             size_mtok=10,
@@ -665,6 +678,16 @@ from tinyassets.paid_market.training import (  # noqa: E402
 
 
 class TestTrainingSettlement:
+    def test_positive_gross_fee_has_one_micro_minimum(self):
+        settlement = settle_training_window(
+            price_total_micros=1,
+            checkpoints_contracted=1,
+            checkpoints_scheduled=1,
+            checkpoints_verified=1,
+            collateral_pct=20,
+        )
+        assert settlement.seller_gross == 1 and settlement.treasury_fee == 1
+
     def test_full_run(self):
         s = settle_training_window(
             price_total_micros=100_000_000,
@@ -1115,6 +1138,15 @@ class TestGeography:
 
 
 class TestPhysicalSettlement:
+    def test_positive_gross_fee_has_one_micro_minimum(self):
+        settlement = settle_physical_job(
+            goods_micros=1,
+            shipping_micros=0,
+            units_ordered=1,
+            units_accepted=1,
+        )
+        assert settlement.seller_gross == 1 and settlement.treasury_fee == 1
+
     def test_full_acceptance(self):
         s = settle_physical_job(
             goods_micros=10_000_000, shipping_micros=1_000_000,
@@ -1326,11 +1358,58 @@ from tinyassets.paid_market.ledger import (  # noqa: E402
     forward_settlement_entries,
     physical_settlement_entries,
     pool_close_entries,
+    spot_settlement_entries,
     training_settlement_entries,
 )
 
 
 class TestLedger:
+    def test_spot_settlement_charges_standard_fee_and_conserves(self):
+        entries = spot_settlement_entries(
+            escrow_account="escrow:spot-1",
+            seller_account="user:host",
+            gross_micros=10_000,
+        )
+        assert entries == [
+            ("escrow:spot-1", -10_000),
+            ("user:host", 9_900),
+            ("treasury", 100),
+        ]
+        assert sum(delta for _, delta in entries) == 0
+
+    @pytest.mark.parametrize("bad", [True, 1.5, "100", 0, -1])
+    def test_spot_settlement_requires_positive_integer_gross(self, bad):
+        with pytest.raises(LedgerError):
+            spot_settlement_entries(
+                escrow_account="escrow:spot-1",
+                seller_account="user:host",
+                gross_micros=bad,
+            )
+
+    def test_spot_settlement_charges_one_micro_minimum_fee(self):
+        assert spot_settlement_entries(
+            escrow_account="escrow:spot-1",
+            seller_account="user:host",
+            gross_micros=1,
+        ) == [
+            ("escrow:spot-1", -1),
+            ("user:host", 0),
+            ("treasury", 1),
+        ]
+
+    def test_assert_drained_fails_before_and_passes_after_spot_settlement(self):
+        ledger = Ledger({"escrow:spot-1": 10_000})
+        with pytest.raises(LedgerError, match="not drained"):
+            ledger.assert_drained("escrow:spot-1")
+        ledger.apply(
+            spot_settlement_entries(
+                escrow_account="escrow:spot-1",
+                seller_account="user:host",
+                gross_micros=10_000,
+            )
+        )
+        ledger.assert_drained("escrow:spot-1")
+
     def test_zero_sum_enforced(self):
         led = Ledger({"user:a": 100})
         with pytest.raises(LedgerError):
