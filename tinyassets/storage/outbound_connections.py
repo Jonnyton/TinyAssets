@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+AuthenticatedPrincipalVerifier = Callable[[], str]
+
 
 @dataclass(frozen=True)
 class ConnectionResource:
@@ -100,6 +102,17 @@ class AmbiguousProxyOutcome(RuntimeError):
 
 
 _MAX_PROXY_FRAME_BYTES = 16 * 1024 * 1024
+
+
+def _adapter_safe_proxy_error(exc: BaseException) -> str:
+    """Return the only error text allowed across the adapter process boundary."""
+    if isinstance(exc, AmbiguousProxyOutcome):
+        return "destination outcome ambiguous"
+    if isinstance(exc, GrantResolutionError):
+        return "outbound connection grant unavailable"
+    if isinstance(exc, PermissionError):
+        return "outbound request not permitted"
+    return "outbound request failed"
 
 
 def _send_message(channel: Any, value: object) -> None:
@@ -196,7 +209,7 @@ def _run_proxy_worker(
                     {
                         "ok": False,
                         "error_type": type(exc).__name__,
-                        "message": str(exc),
+                        "message": _adapter_safe_proxy_error(exc),
                     },
                 )
             except Exception:
@@ -338,7 +351,7 @@ class CredentialBlindBroker:
                 verb,
                 "destination outcome ambiguous",
             )
-            raise
+            raise AmbiguousProxyOutcome("destination outcome ambiguous") from None
         except Exception:
             self._record_error(
                 resource,
@@ -609,9 +622,11 @@ class ConnectionLedger:
         db_path: str | Path,
         *,
         allow_test_fixtures: bool = False,
+        verify_authenticated_principal: AuthenticatedPrincipalVerifier | None = None,
     ) -> None:
         self._db_path = Path(db_path)
         self._allow_test_fixtures = allow_test_fixtures
+        self._verify_authenticated_principal = verify_authenticated_principal
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.executescript(_SCHEMA)
@@ -633,6 +648,32 @@ class ConnectionLedger:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
         return connection
+
+    def require_authenticated_principal_id(self) -> str:
+        """Resolve the request principal through a trusted daemon verifier.
+
+        The verifier is a required call-site capability for authority-bearing
+        operations. It must be installed by the authenticated request boundary,
+        must derive the current principal from server-owned context, and must
+        never be constructed from universe/action payload fields.
+        """
+        verifier = self._verify_authenticated_principal
+        if verifier is None:
+            raise PermissionError(
+                "authenticated principal verifier is required"
+            )
+        try:
+            principal_id = verifier()
+        except Exception:
+            raise PermissionError(
+                "authenticated principal verification failed"
+            ) from None
+        if not isinstance(principal_id, str):
+            raise PermissionError("authenticated principal is required")
+        principal_id = principal_id.strip()
+        if not principal_id or principal_id == "anonymous":
+            raise PermissionError("authenticated principal is required")
+        return principal_id
 
     def create_connection(
         self,
@@ -800,11 +841,11 @@ class ConnectionLedger:
     def resolve_scoped_proxy(
         self,
         *,
-        owner_user_id: str,
         universe_id: str,
         connection_class: str,
     ) -> ScopedConnectionProxy:
         """Resolve exactly one current grant; absent/revoked/ambiguous fail closed."""
+        owner_user_id = self.require_authenticated_principal_id()
         with self._connect() as connection:
             rows = connection.execute(
                 """

@@ -416,11 +416,14 @@ def test_receipt_backed_effectors_are_wired_to_identity_migration(
         is reconciliation_supported
     )
     if reconciliation_supported:
-        assert "_reconcile_page_marker(" in inspect.getsource(module)
+        source = inspect.getsource(module)
+        assert "_reconcile_destination_marker(" in source
+        assert '"receipt_finalize_failed"' in source
+        assert '"reconciliation_required"' in source
     else:
         assert "system effect key" in module.DESTINATION_RECONCILIATION["reason"]
         assert "hold_unreconciled_pending(" in inspect.getsource(module)
-    assert "hold_receipt_finalization_failure(" in inspect.getsource(module)
+        assert "hold_receipt_finalization_failure(" in inspect.getsource(module)
 
 
 # ─── @idempotent_by_step decorator ────────────────────────────────────────────

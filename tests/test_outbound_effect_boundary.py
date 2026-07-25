@@ -62,6 +62,8 @@ class _AmbiguousDispatch(_RecordedDispatch):
 def _ledger_with_cap(
     tmp_path,
     dispatch=None,
+    *,
+    verify_authenticated_principal=None,
 ) -> tuple[ConnectionLedger, object]:
     runtime_id = hashlib.sha256(b"grant-1").hexdigest()
     dispatch_class = type(dispatch) if dispatch is not None else _RecordedDispatch
@@ -78,6 +80,9 @@ def _ledger_with_cap(
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=(
+            verify_authenticated_principal or (lambda: "user-1")
+        ),
     )
     ledger.create_connection(
         connection_id="conn-1",
@@ -100,7 +105,6 @@ def _ledger_with_cap(
         ),
     )
     proxy = ledger.resolve_scoped_proxy(
-        owner_user_id="user-1",
         universe_id="universe-1",
         connection_class="issue-writer",
     )
@@ -178,7 +182,6 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
         grant_id="grant-1",
         effect_key="effect-1",
         sink="github_issue",
-        authorized_by="user-1",
     )
     executed = execute_capped_action(
         universe_dir=universe,
@@ -214,6 +217,83 @@ def test_above_cap_holds_without_execution_or_consumption_until_confirmation(
     assert replay["status"] == "executed"
     assert replay["replay"] is True
     assert calls == [{"title": "Needs confirmation"}]
+
+
+def test_confirmed_hold_refuses_a_later_different_decision(tmp_path):
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
+    )
+    ledger.create_connection(
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        connection_class="repository-writer",
+        scopes=("create_issue", "delete_repo"),
+        provider="test-fixture.issue",
+        destination="github.com/acme/production",
+        credential_ref="test-fixture://nonsecret",
+    )
+    ledger.grant_connection(
+        grant_id="grant-1",
+        connection_id="conn-1",
+        owner_user_id="user-1",
+        universe_id="universe-1",
+        unprompted_action_cap=ActionCap(
+            name="repository-actions",
+            maximum=2,
+            unit="actions",
+        ),
+    )
+    proxy = ledger.resolve_scoped_proxy(
+        universe_id="universe-1",
+        connection_class="repository-writer",
+    )
+    universe = tmp_path / "universe"
+    held = execute_capped_action(
+        universe_dir=universe,
+        ledger=ledger,
+        grant_id="grant-1",
+        proxy=proxy,
+        tool_authorized=True,
+        action_value=5,
+        action_unit="actions",
+        effect_key="effect-reviewed",
+        sink="github_repository",
+        run_id="run-hold",
+        verb="create_issue",
+        request={"title": "benign issue the owner reviewed"},
+    )
+    confirmation = confirm_held_effect(
+        universe_dir=universe,
+        ledger=ledger,
+        grant_id="grant-1",
+        effect_key="effect-reviewed",
+        sink="github_repository",
+    )
+
+    assert confirmation["held_decision"] == {
+        "verb": "create_issue",
+        "request": {"title": "benign issue the owner reviewed"},
+        "action_value": 5,
+        "action_unit": "actions",
+        "cap": held["cap"],
+    }
+    with pytest.raises(PermissionError, match="held decision"):
+        execute_capped_action(
+            universe_dir=universe,
+            ledger=ledger,
+            grant_id="grant-1",
+            proxy=proxy,
+            tool_authorized=True,
+            action_value=10_000_000,
+            action_unit="actions",
+            effect_key="effect-reviewed",
+            sink="github_repository",
+            run_id="run-replay",
+            verb="delete_repo",
+            request={"repo": "acme/production", "confirm": "yes"},
+        )
 
 
 def test_same_action_at_cap_executes_without_hold(tmp_path):
@@ -280,7 +360,6 @@ def test_confirmed_cap_execution_is_acquired_once_under_concurrent_replay(
         grant_id="grant-1",
         effect_key="effect-concurrent",
         sink="github_issue",
-        authorized_by="user-1",
     )
 
     def execute(run_id):
@@ -336,7 +415,6 @@ def test_confirmed_cap_failure_can_retry_without_losing_confirmation(tmp_path):
         grant_id="grant-1",
         effect_key="effect-retry",
         sink="github_issue",
-        authorized_by="user-1",
     )
 
     failed = execute_capped_action(
@@ -398,7 +476,6 @@ def test_confirmed_cap_ambiguous_hold_preserves_grant_and_confirmation(tmp_path)
         grant_id="grant-1",
         effect_key="effect-ambiguous-cap",
         sink="github_issue",
-        authorized_by="user-1",
     )
 
     held = execute_capped_action(
@@ -502,8 +579,12 @@ def test_action_cap_rejects_mismatched_units(tmp_path):
         )
 
 
-def test_only_grant_owner_can_confirm_held_effect(tmp_path):
-    ledger, (proxy, _calls) = _ledger_with_cap(tmp_path)
+def test_caller_supplied_grant_owner_cannot_confirm_held_effect(tmp_path):
+    principal = {"user_id": "user-1"}
+    ledger, (proxy, _calls) = _ledger_with_cap(
+        tmp_path,
+        verify_authenticated_principal=lambda: principal["user_id"],
+    )
     universe = tmp_path / "universe"
     execute_capped_action(
         universe_dir=universe,
@@ -520,14 +601,24 @@ def test_only_grant_owner_can_confirm_held_effect(tmp_path):
         request={"title": "Owner only"},
     )
 
-    with pytest.raises(PermissionError, match="grant owner"):
+    forged_owner = ledger.get_grant("grant-1").owner_user_id
+    with pytest.raises(TypeError, match="authorized_by"):
         confirm_held_effect(
             universe_dir=universe,
             ledger=ledger,
             grant_id="grant-1",
             effect_key="effect-owner",
             sink="github_issue",
-            authorized_by="attacker",
+            authorized_by=forged_owner,
+        )
+    principal["user_id"] = "attacker"
+    with pytest.raises(PermissionError, match="authenticated grant owner"):
+        confirm_held_effect(
+            universe_dir=universe,
+            ledger=ledger,
+            grant_id="grant-1",
+            effect_key="effect-owner",
+            sink="github_issue",
         )
 
 

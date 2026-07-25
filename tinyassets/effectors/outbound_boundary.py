@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,30 +44,45 @@ def confirm_held_effect(
     grant_id: str,
     effect_key: str,
     sink: str,
-    authorized_by: str,
     confirmed_at: float | None = None,
 ) -> dict[str, Any]:
     """Record explicit authorization on an existing held effect."""
-    if not authorized_by.strip():
-        raise ValueError("authorized_by must be non-empty")
+    authorized_by = ledger.require_authenticated_principal_id()
     try:
         grant = ledger.require_active_grant(grant_id)
     except RuntimeError as exc:
         raise PermissionError("confirmation requires a current grant") from exc
     if grant.owner_user_id != authorized_by:
-        raise PermissionError("confirmation must come from the grant owner")
+        raise PermissionError(
+            "confirmation must come from the authenticated grant owner"
+        )
+    held = lookup_receipt(
+        universe_dir,
+        idempotency_hint=effect_key,
+        sink=sink,
+    )
+    if held is None or held["status"] != STATUS_HELD:
+        raise LookupError("held effect does not exist")
+    held_decision = held["evidence"].get("held_decision")
+    if not isinstance(held_decision, dict):
+        raise PermissionError("held effect has no reviewable decision")
+    decision_sha256 = _decision_sha256(held_decision)
     confirmation = {
         "authorized_by": authorized_by,
         "confirmed_at": time.time() if confirmed_at is None else confirmed_at,
+        "decision_sha256": decision_sha256,
     }
-    confirm_held_receipt(
+    confirmed = confirm_held_receipt(
         universe_dir,
         idempotency_hint=effect_key,
         sink=sink,
         confirmation=confirmation,
         expected_grant_id=grant_id,
     )
-    return confirmation
+    return {
+        **confirmation,
+        "held_decision": confirmed["held_decision"],
+    }
 
 
 def execute_capped_action(
@@ -86,6 +103,15 @@ def execute_capped_action(
     """Execute an authorized below-cap action or persist an actionable hold."""
     if not tool_authorized:
         raise PermissionError("tool authorization is required")
+    principal_id = ledger.require_authenticated_principal_id()
+    try:
+        grant = ledger.require_active_grant(grant_id)
+    except RuntimeError as exc:
+        raise PermissionError("effect requires a current grant") from exc
+    if grant.owner_user_id != principal_id:
+        raise PermissionError(
+            "effect requires the authenticated grant owner"
+        )
     if proxy.grant_id != grant_id:
         raise PermissionError("proxy grant does not match the evaluated grant")
     decision = ledger.evaluate_unprompted_action_cap(
@@ -101,6 +127,24 @@ def execute_capped_action(
     cap_payload = (
         decision.cap.as_dict() if decision.cap is not None else None
     )
+    held_decision = _held_decision(
+        verb=verb,
+        request=request,
+        action_value=action_value,
+        action_unit=action_unit,
+        cap=cap_payload,
+    )
+    if existing is not None and existing["status"] in (
+        STATUS_HELD,
+        STATUS_FAILED,
+    ):
+        _require_matching_held_decision(existing["evidence"], held_decision)
+    elif (
+        existing is not None
+        and existing["status"] == STATUS_SUCCEEDED
+        and "held_decision" in existing["evidence"]
+    ):
+        _require_matching_held_decision(existing["evidence"], held_decision)
     if existing is not None and existing["status"] == STATUS_SUCCEEDED:
         return _format_capped_success(
             existing["evidence"],
@@ -128,6 +172,7 @@ def execute_capped_action(
             "cap": decision.cap.as_dict(),
             "action_value": action_value,
             "action_unit": action_unit,
+            "held_decision": held_decision,
             "consumption": {"funds": 0, "quota": 0},
             "remediation": remediation,
         }
@@ -184,6 +229,7 @@ def execute_capped_action(
             base_evidence={
                 "confirmation": activation["row"]["evidence"]["confirmation"],
                 "grant_id": grant_id,
+                "held_decision": activation["row"]["evidence"]["held_decision"],
             },
         )
     else:
@@ -197,6 +243,64 @@ def execute_capped_action(
     if result["status"] != STATUS_SUCCEEDED:
         return {**result, "cap": cap_payload}
     return _format_capped_success(result, cap_payload, replay=result["replay"])
+
+
+def _held_decision(
+    *,
+    verb: str,
+    request: object,
+    action_value: float,
+    action_unit: str,
+    cap: dict[str, object] | None,
+) -> dict[str, Any]:
+    """Copy the complete executable decision into the redacted JSON contract."""
+    decision = {
+        "verb": verb,
+        "request": request,
+        "action_value": action_value,
+        "action_unit": action_unit,
+        "cap": cap,
+    }
+    try:
+        return json.loads(_canonical_json(decision))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "held effect decision must use the redacted JSON contract"
+        ) from exc
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        value,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _decision_sha256(decision: dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(decision).encode("utf-8")).hexdigest()
+
+
+def _require_matching_held_decision(
+    evidence: dict[str, Any],
+    current: dict[str, Any],
+) -> None:
+    stored = evidence.get("held_decision")
+    if not isinstance(stored, dict):
+        raise PermissionError("held decision is missing; refusing replay")
+    if _canonical_json(stored) != _canonical_json(current):
+        raise PermissionError(
+            "confirmed replay does not match the held decision"
+        )
+    confirmation = evidence.get("confirmation")
+    if confirmation:
+        if not isinstance(confirmation, dict):
+            raise PermissionError("held decision confirmation is invalid")
+        if confirmation.get("decision_sha256") != _decision_sha256(stored):
+            raise PermissionError(
+                "held decision confirmation is not bound to the decision"
+            )
 
 
 def _format_capped_success(

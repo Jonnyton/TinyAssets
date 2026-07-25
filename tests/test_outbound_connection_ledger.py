@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.storage.outbound_connections import (
+    AmbiguousProxyOutcome,
     ConnectionLedger,
     CredentialBlindBroker,
     GrantResolutionError,
@@ -85,7 +86,10 @@ def test_connection_and_per_universe_grant_persist_with_revocation(tmp_path):
 
 
 def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "boundary.db")
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        verify_authenticated_principal=lambda: "user-1",
+    )
     _grant_github_connection(ledger)
 
     assert ledger.revoke_connection("conn-github", revoked_at=321.0) is True
@@ -98,7 +102,6 @@ def test_revoking_connection_invalidates_all_grants_and_cap_evaluation(tmp_path)
         )
     with pytest.raises(GrantResolutionError, match="revoked"):
         ledger.resolve_scoped_proxy(
-            owner_user_id="user-1",
             universe_id="universe-1",
             connection_class="pull-request-writer",
         )
@@ -149,6 +152,7 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(ledger)
     dispatched = _JsonlDispatch(
@@ -156,7 +160,6 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
     )
 
     proxy = ledger.resolve_scoped_proxy(
-        owner_user_id="user-1",
         universe_id="universe-1",
         connection_class="pull-request-writer",
     )
@@ -176,24 +179,54 @@ def test_resolve_scoped_proxy_uses_only_current_exact_grant(tmp_path):
     assert "dispatch" not in parameters
     assert "dispatch_factory" not in parameters
     assert "dispatch_config" not in parameters
+    assert "owner_user_id" not in parameters
+
+
+def test_resolve_scoped_proxy_refuses_caller_supplied_owner_identity(tmp_path):
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        allow_test_fixtures=True,
+    )
+    _grant_github_connection(ledger)
+    forged_owner = ledger.get_grant("grant-github").owner_user_id
+
+    with pytest.raises(TypeError, match="owner_user_id"):
+        ledger.resolve_scoped_proxy(
+            owner_user_id=forged_owner,
+            universe_id="universe-1",
+            connection_class="pull-request-writer",
+        )
+
+
+def test_resolve_scoped_proxy_fails_closed_without_principal_verifier(tmp_path):
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        allow_test_fixtures=True,
+    )
+    _grant_github_connection(ledger)
+
+    with pytest.raises(PermissionError, match="principal verifier"):
+        ledger.resolve_scoped_proxy(
+            universe_id="universe-1",
+            connection_class="pull-request-writer",
+        )
 
 
 def test_proxy_api_rejects_caller_supplied_factory_or_config(tmp_path):
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(ledger)
     with pytest.raises(TypeError, match="dispatch_factory"):
         ledger.resolve_scoped_proxy(
-            owner_user_id="user-1",
             universe_id="universe-1",
             connection_class="pull-request-writer",
             dispatch_factory="evil.module:leak_secret",
         )
     with pytest.raises(TypeError, match="dispatch_config"):
         ledger.resolve_scoped_proxy(
-            owner_user_id="user-1",
             universe_id="universe-1",
             connection_class="pull-request-writer",
             dispatch_config={"payload": "raw-secret"},
@@ -201,15 +234,17 @@ def test_proxy_api_rejects_caller_supplied_factory_or_config(tmp_path):
 
 
 def test_test_fixture_transport_is_disabled_by_default(tmp_path):
-    ledger = ConnectionLedger(tmp_path / "boundary.db")
+    ledger = ConnectionLedger(
+        tmp_path / "boundary.db",
+        verify_authenticated_principal=lambda: "user-1",
+    )
     _grant_github_connection(ledger)
     proxy = ledger.resolve_scoped_proxy(
-        owner_user_id="user-1",
         universe_id="universe-1",
         connection_class="pull-request-writer",
     )
 
-    with pytest.raises(ProxyRequestError, match="credential unavailable"):
+    with pytest.raises(ProxyRequestError, match="outbound request failed"):
         proxy.request("pull_requests:write", {"title": "Must fail closed"})
 
 
@@ -218,6 +253,7 @@ def test_resolve_scoped_proxy_fails_closed_without_fallback(tmp_path, case):
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
     )
     if case != "absent":
         _grant_github_connection(ledger)
@@ -232,7 +268,6 @@ def test_resolve_scoped_proxy_fails_closed_without_fallback(tmp_path, case):
 
     with pytest.raises(GrantResolutionError, match=case):
         ledger.resolve_scoped_proxy(
-            owner_user_id="user-1",
             universe_id="universe-1",
             connection_class="pull-request-writer",
         )
@@ -247,6 +282,7 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(
         ledger,
@@ -257,7 +293,6 @@ def test_adapter_cannot_recover_secret_from_state_environment_metadata_or_errors
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
     proxy = ledger.resolve_scoped_proxy(
-        owner_user_id="user-1",
         universe_id="universe-1",
         connection_class="pull-request-writer",
     )
@@ -319,6 +354,7 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
     ledger = ConnectionLedger(
         tmp_path / "boundary.db",
         allow_test_fixtures=True,
+        verify_authenticated_principal=lambda: "user-1",
     )
     _grant_github_connection(
         ledger,
@@ -329,7 +365,6 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
         str(_runtime_log(tmp_path, "grant-github", "audit.jsonl"))
     )
     proxy = ledger.resolve_scoped_proxy(
-        owner_user_id="user-1",
         universe_id="universe-1",
         connection_class="pull-request-writer",
     )
@@ -340,6 +375,32 @@ def test_credential_resolver_exception_cannot_leak_secret_to_proxy_error(tmp_pat
     assert secret not in str(raised.value)
     assert secret not in json.dumps(audit.records())
     assert audit.records()[0]["reason"] == "credential unavailable"
+
+
+def test_ambiguous_transport_error_cannot_leak_credential_material(tmp_path):
+    secret = "transport-echoed-bearer-secret"
+    ledger = ConnectionLedger(tmp_path / "boundary.db")
+    _grant_github_connection(ledger)
+
+    def raise_secret_bearing_error(**_kwargs):
+        raise AmbiguousProxyOutcome(
+            f"connection reset after send; Authorization: Bearer {secret}"
+        )
+
+    broker = CredentialBlindBroker(
+        ledger,
+        resolve_credential=lambda _ref: secret,
+        network_request=raise_secret_bearing_error,
+    )
+
+    with pytest.raises(AmbiguousProxyOutcome) as raised:
+        broker.dispatch(
+            "grant-github",
+            "pull_requests:write",
+            {"title": "Ship"},
+        )
+
+    assert secret not in str(raised.value)
 
 
 def test_connector_definition_and_mcp_config_are_attributed_remixable_artifacts(

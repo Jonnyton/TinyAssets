@@ -25,11 +25,12 @@ EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK = "wiki_write_back"
 DESTINATION_RECONCILIATION = {
     "supported": True,
     "reason": (
-        "the resolved wiki page carries a deterministic system-effect marker"
+        "trusted wiki destination metadata records the applied system effect"
     ),
 }
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+_DESTINATION_MARKER_DB = ".wiki_write_back_destination_markers.db"
 
 
 def _parse_packet(value: Any) -> dict[str, Any] | None:
@@ -225,6 +226,11 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
     body, error = _payload_text(packet)
     if error:
         return "", error
+    if (
+        "<!-- tinyassets-wiki-write-back:" in body
+        or "<!-- /tinyassets-wiki-write-back:" in body
+    ):
+        return "", "packet.payload.body contains a reserved effect marker"
     if not _IDEMPOTENCY_RE.fullmatch(idem_hint):
         return "", "idempotency_hint contains unsupported characters"
     heading = _payload_heading(packet)
@@ -238,27 +244,91 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
     )
 
 
-def _reconcile_page_marker(
+def _destination_marker_db_path(universe_dir: Path) -> Path:
+    return universe_dir / "wiki" / _DESTINATION_MARKER_DB
+
+
+def _record_destination_marker(
     *,
+    universe_dir: Path,
+    target: Path,
+    destination: str,
+    effect_key: str,
+) -> None:
+    """Record trusted destination metadata only after the page write lands."""
+    page_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    db_path = _destination_marker_db_path(universe_dir)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path, timeout=30.0) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS applied_wiki_effects (
+                effect_key  TEXT PRIMARY KEY,
+                destination TEXT NOT NULL,
+                page_sha256 TEXT NOT NULL,
+                recorded_at REAL NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO applied_wiki_effects (
+                effect_key, destination, page_sha256, recorded_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(effect_key) DO NOTHING
+            """,
+            (effect_key, destination, page_sha256, time.time()),
+        )
+        row = connection.execute(
+            """
+            SELECT destination, page_sha256
+              FROM applied_wiki_effects
+             WHERE effect_key = ?
+            """,
+            (effect_key,),
+        ).fetchone()
+    if row != (destination, page_sha256):
+        raise RuntimeError(
+            "wiki destination marker conflicts with an existing effect"
+        )
+
+
+def _reconcile_destination_marker(
+    *,
+    universe_dir: Path,
     target: Path,
     destination: str,
     effect_key: str,
 ) -> dict[str, Any]:
-    """Read the destination page and resolve a stale intent by its marker."""
-    marker = f"tinyassets-wiki-write-back:{effect_key}"
+    """Resolve stale intent from trusted metadata the payload cannot write."""
     try:
-        text = target.read_text(encoding="utf-8")
-    except OSError:
+        if not target.is_file():
+            return {"status": "unknown"}
+        with sqlite3.connect(
+            _destination_marker_db_path(universe_dir),
+            timeout=30.0,
+        ) as connection:
+            row = connection.execute(
+                """
+                SELECT destination, page_sha256
+                  FROM applied_wiki_effects
+                 WHERE effect_key = ?
+                """,
+                (effect_key,),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
         return {"status": "unknown"}
-    if f"<!-- {marker} -->" not in text or f"<!-- /{marker} -->" not in text:
+    if row is None or row[0] != destination:
         return {"status": "unknown"}
     return {
         "status": "succeeded",
         "evidence": {
             "destination": destination,
             "path": destination,
-            "effect_marker": marker,
-            "reconciliation": "destination_marker_found",
+            "destination_page_sha256": row[1],
+            "reconciliation": "server_destination_marker_found",
         },
     }
 
@@ -484,7 +554,8 @@ def run_wiki_write_back_effector(
                 sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
                 run_id=run_id,
                 invoke=_stale_replay_must_not_fire,
-                reconcile=lambda effect_key: _reconcile_page_marker(
+                reconcile=lambda effect_key: _reconcile_destination_marker(
+                    universe_dir=universe_dir,
                     target=target,
                     destination=destination,
                     effect_key=effect_key,
@@ -532,6 +603,26 @@ def run_wiki_write_back_effector(
                 "matched_output_key": matched_key,
             }
 
+        try:
+            _record_destination_marker(
+                universe_dir=universe_dir,
+                target=target,
+                destination=destination,
+                effect_key=idem_hint,
+            )
+        except Exception as exc:
+            evidence.update({
+                "phase": "phase_2",
+                "destination": destination,
+                "matched_output_key": matched_key,
+                "idempotency_hint": idem_hint,
+                "recorded_at": time.time(),
+                "receipt_finalize_failed": True,
+                "reconciliation_required": True,
+                "destination_marker_error_type": type(exc).__name__,
+            })
+            return evidence
+
         evidence.update({
             "phase": "phase_2",
             "destination": destination,
@@ -548,17 +639,8 @@ def run_wiki_write_back_effector(
             evidence=evidence,
             run_id=run_id,
         ):
-            from tinyassets.effectors.outbound_boundary import (
-                hold_receipt_finalization_failure,
-            )
-
-            evidence = hold_receipt_finalization_failure(
-                universe_dir=universe_dir,
-                effect_key=idem_hint,
-                sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
-                run_id=run_id,
-                destination_evidence=evidence,
-            )
+            evidence["receipt_finalize_failed"] = True
+            evidence["reconciliation_required"] = True
         return evidence
 
 
