@@ -275,21 +275,23 @@ class TestUniverseAclEnforcement:
             ["tinyassets.universe.costly", "tinyassets.universe.write"],
         )
 
+        # universe-creation 5.2: public create self-serializes — a caller id is
+        # rejected — so capture the generated serial for the follow-up write.
         created = json.loads(us._universe_impl(
             action="create_universe",
-            universe_id="mine",
             text="A seed.",
         ))
+        uid = created["universe_id"]
         updated = json.loads(us._universe_impl(
             action="set_premise",
-            universe_id="mine",
+            universe_id=uid,
             text="Founder-owned update.",
         ))
 
         assert created["status"] == "created"
         assert created["founder_id"] == "alice"
         assert updated["status"] == "updated"
-        assert (universe_base / "mine" / "PROGRAM.md").read_text(
+        assert (universe_base / uid / "PROGRAM.md").read_text(
             encoding="utf-8",
         ) == "Founder-owned update."
 
@@ -300,17 +302,18 @@ class TestUniverseAclEnforcement:
             "alice",
             ["tinyassets.universe.costly", "tinyassets.universe.write"],
         )
+        # universe-creation 5.2: public create self-serializes; use the serial.
         created = json.loads(us._universe_impl(
             action="create_universe",
-            universe_id="alice-world",
             text="Alice's seed.",
         ))
         assert created["founder_id"] == "alice"
+        alice_world = created["universe_id"]
 
         _authenticate("bob", ["tinyassets.universe.write"])
         out = json.loads(us._universe_impl(
             action="set_premise",
-            universe_id="alice-world",
+            universe_id=alice_world,
             text="Hostile cross-founder overwrite.",
         ))
 
