@@ -1231,3 +1231,18 @@ Notes:
 - Review gate: ui-test through real chatbot + independent evidence review
 - Ship/abandon: publish proof/task foldback only; no runtime changes
 - Foldback: proof complete and independently approved; PR #1747 merged
+
+## 2026-07-24 23:15 - repurpose release-reconcile-event
+
+- Provider: codex-gpt5-desktop-release-reconcile
+- Branch: codex/release-reconcile-event
+- Lane state: Active lane after stale-claim reap
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: Release reconcile event trigger
+- PLAN refs: Uptime & Alarms; release/deploy reconciliation
+- Purpose: trigger release reconciliation after successful Docker smoke completion while retaining the cron backstop and non-cancelling concurrency.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: wf-openspec-uptime-backfill; release terminal truth and deploy rollback receipts
+- Related implications: Docker build smoke; build-image/deploy-prod chain; release-state honesty
+- Idea feed refs: none
+- Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
