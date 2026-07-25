@@ -29,12 +29,25 @@ QUEUE_PROTOCOL_VERSION = 2
 OPERATOR_CAPABILITY = "operator_request_v1"
 MAX_LEASE_SECONDS = 90
 MAX_QUARANTINE_SCAN_ROWS = 1000
+MAX_OPERATIONAL_SCAN_ROWS = 1000
 TERMINAL_STATUSES = frozenset({"cancelled", "succeeded", "failed"})
 QUARANTINE_REASONS = frozenset({
     "unsupported_protocol",
     "incomplete",
     "invalid_operator_admission",
 })
+_AUTHORITATIVE_UNIVERSE_SCOPE_SQL = """
+COALESCE(
+    NULLIF(a.universe_id, ''),
+    NULLIF(r.universe_id, '')
+) = ?
+"""
+_UNSCOPED_UNIVERSE_SQL = """
+COALESCE(
+    NULLIF(a.universe_id, ''),
+    NULLIF(r.universe_id, '')
+) IS NULL
+"""
 
 # Fault-injection checkpoints across every precommit transaction phase.
 COMMIT_STEPS = (
@@ -587,13 +600,130 @@ class RequestAdmissionStore:
                         break
         return candidates
 
+    def read_v2_operational_data(
+        self,
+        *,
+        universe_id: str = "",
+        include_unscoped_invalid: bool = False,
+        snapshot_hook: Callable[[], None] | None = None,
+    ) -> dict[str, Any]:
+        """Return bounded active rows plus exact lifecycle aggregates."""
+        with self.connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                scope_sql = (
+                    _AUTHORITATIVE_UNIVERSE_SCOPE_SQL
+                    if universe_id
+                    else "1 = 1"
+                )
+                scope_params = (universe_id,) if universe_id else ()
+                lifecycle_rows = conn.execute(
+                    """
+                    SELECT
+                        CASE
+                            WHEN t.status IN (
+                                'pending', 'running', 'cancel_requested',
+                                'cancelled', 'succeeded', 'failed'
+                            )
+                            THEN t.status
+                            ELSE 'unknown'
+                        END AS lifecycle_status,
+                        COUNT(*) AS row_count,
+                        MIN(t.queued_at) AS oldest_queued_at
+                    FROM branch_tasks_v2 AS t
+                    LEFT JOIN request_admissions AS a
+                        ON a.admission_id = t.admission_id
+                    LEFT JOIN user_requests AS r
+                        ON r.request_id = t.request_id
+                    WHERE
+                    """
+                    + scope_sql
+                    + """
+                    GROUP BY lifecycle_status
+                    """,
+                    scope_params,
+                ).fetchall()
+                unscoped_query = (
+                    "SELECT COUNT(*)"
+                    if include_unscoped_invalid
+                    else "SELECT 1"
+                )
+                unscoped_row = conn.execute(
+                    unscoped_query
+                    + """
+                    FROM branch_tasks_v2 AS t
+                    LEFT JOIN request_admissions AS a
+                        ON a.admission_id = t.admission_id
+                    LEFT JOIN user_requests AS r
+                        ON r.request_id = t.request_id
+                    WHERE
+                    """
+                    + _UNSCOPED_UNIVERSE_SQL
+                    + ("" if include_unscoped_invalid else " LIMIT 1")
+                ).fetchone()
+                unscoped_invalid_count = (
+                    int(unscoped_row[0])
+                    if include_unscoped_invalid
+                    else None
+                )
+                unscoped_invalid_present = (
+                    bool(unscoped_invalid_count)
+                    if include_unscoped_invalid
+                    else unscoped_row is not None
+                )
+                if snapshot_hook is not None:
+                    snapshot_hook()
+                rows = self._v2_integrity_cursor(
+                    conn,
+                    universe_id=universe_id,
+                    pending_only=False,
+                    active_only=True,
+                    include_disabled=True,
+                    include_linked_universe_scope=True,
+                    limit=MAX_OPERATIONAL_SCAN_ROWS + 1,
+                    rowid_order=True,
+                ).fetchall()
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        overflow = len(rows) > MAX_OPERATIONAL_SCAN_ROWS
+        return {
+            "lifecycle": {
+                str(row["lifecycle_status"]): {
+                    "count": int(row["row_count"]),
+                    "oldest_queued_at": str(
+                        row["oldest_queued_at"] or ""
+                    ),
+                }
+                for row in lifecycle_rows
+            },
+            "active_rows": [
+                dict(row) for row in rows[:MAX_OPERATIONAL_SCAN_ROWS]
+            ],
+            "active_scan_limit": MAX_OPERATIONAL_SCAN_ROWS,
+            "active_scan_overflow": overflow,
+            "integrity_scope_complete": not unscoped_invalid_present,
+            **(
+                {
+                    "unscoped_invalid_count": int(
+                        unscoped_invalid_count or 0
+                    ),
+                }
+                if include_unscoped_invalid
+                else {}
+            ),
+        }
+
     def _v2_integrity_cursor(
         self,
         conn: sqlite3.Connection,
         *,
         universe_id: str = "",
         pending_only: bool,
+        active_only: bool = False,
         include_disabled: bool = False,
+        include_linked_universe_scope: bool = False,
         branch_task_id: str = "",
         after_source_rowid: int = 0,
         through_source_rowid: int = 0,
@@ -607,9 +737,17 @@ class RequestAdmissionStore:
         params: list[Any] = []
         if pending_only:
             clauses.append("t.status = 'pending'")
+        if active_only:
+            clauses.append(
+                "t.status NOT IN ('cancelled', 'succeeded', 'failed')"
+            )
         if universe_id:
-            clauses.append("t.universe_id = ?")
-            params.append(universe_id)
+            if include_linked_universe_scope:
+                clauses.append(_AUTHORITATIVE_UNIVERSE_SCOPE_SQL)
+                params.append(universe_id)
+            else:
+                clauses.append("t.universe_id = ?")
+                params.append(universe_id)
         if branch_task_id:
             clauses.append("t.branch_task_id = ?")
             params.append(branch_task_id)
@@ -677,7 +815,35 @@ class RequestAdmissionStore:
                     SELECT 1
                     FROM branch_tasks_v2_quarantine AS q
                     WHERE q.branch_task_id IS t.branch_task_id
-                ) AS linked_quarantine_receipt_exists
+                ) AS linked_quarantine_receipt_exists,
+                COALESCE((
+                    SELECT q.row_digest
+                    FROM branch_tasks_v2_quarantine AS q
+                    WHERE q.branch_task_id IS t.branch_task_id
+                    ORDER BY q.first_seen_at ASC, q.row_digest ASC
+                    LIMIT 1
+                ), '') AS linked_quarantine_row_digest,
+                COALESCE((
+                    SELECT q.reason
+                    FROM branch_tasks_v2_quarantine AS q
+                    WHERE q.branch_task_id IS t.branch_task_id
+                    ORDER BY q.first_seen_at ASC, q.row_digest ASC
+                    LIMIT 1
+                ), '') AS linked_quarantine_reason,
+                COALESCE((
+                    SELECT q.first_seen_at
+                    FROM branch_tasks_v2_quarantine AS q
+                    WHERE q.branch_task_id IS t.branch_task_id
+                    ORDER BY q.first_seen_at ASC, q.row_digest ASC
+                    LIMIT 1
+                ), '') AS linked_quarantine_first_seen_at,
+                COALESCE((
+                    SELECT q.last_seen_at
+                    FROM branch_tasks_v2_quarantine AS q
+                    WHERE q.branch_task_id IS t.branch_task_id
+                    ORDER BY q.first_seen_at ASC, q.row_digest ASC
+                    LIMIT 1
+                ), '') AS linked_quarantine_last_seen_at
             FROM branch_tasks_v2 AS t
             LEFT JOIN request_admissions AS a
                 ON a.admission_id = t.admission_id
@@ -1298,14 +1464,7 @@ class RequestAdmissionStore:
             replayed = dict(existing_for_source)
             replayed["last_seen_at"] = observed_at
             return replayed
-        digest_snapshot = dict(snapshot)
-        digest_snapshot.pop("disabled", None)
-        digest_snapshot.pop("quarantine_reason", None)
-        digest_snapshot.pop("source_rowid", None)
-        digest_snapshot = _canonicalize_quarantine_value(digest_snapshot)
-        digest = hashlib.sha256(
-            _json(digest_snapshot).encode("utf-8")
-        ).hexdigest()
+        digest = _quarantine_row_digest(snapshot)
         source_rowid = int(snapshot.pop("source_rowid"))
         branch_task_id = _quarantine_task_identifier(
             snapshot.get("branch_task_id"),
@@ -1718,6 +1877,20 @@ _TASK_STATUSES = frozenset({
     "succeeded",
     "failed",
 })
+
+
+def _quarantine_row_digest(row: Mapping[str, Any]) -> str:
+    """Hash the canonical observed row without mutable quarantine metadata."""
+    digest_snapshot = {
+        key: value
+        for key, value in row.items()
+        if not str(key).startswith("linked_")
+    }
+    digest_snapshot.pop("disabled", None)
+    digest_snapshot.pop("quarantine_reason", None)
+    digest_snapshot.pop("source_rowid", None)
+    canonical = _canonicalize_quarantine_value(digest_snapshot)
+    return hashlib.sha256(_json(canonical).encode("utf-8")).hexdigest()
 
 
 def _quarantine_receipt_snapshot(

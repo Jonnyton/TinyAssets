@@ -26,6 +26,7 @@ from tinyassets.storage.request_admissions import (
     QUEUE_EPOCH,
     QUEUE_PROTOCOL_VERSION,
     RequestAdmissionStore,
+    _quarantine_row_digest,
 )
 
 
@@ -81,6 +82,21 @@ _TASK_INPUT_KEYS = frozenset({
 _BRANCH_TASK_ID_RE = re.compile(r"^bt2_[0-9a-f]{32}$")
 _ADMISSION_ID_RE = re.compile(r"^adm_[0-9a-f]{32}$")
 _REQUEST_ID_RE = re.compile(r"^req_[0-9a-f]{32}$")
+_OPERATIONAL_STATES = (
+    "awaiting_compatible_capacity",
+    "invalid_operator_admission",
+    "quarantined",
+    "policy_parked",
+)
+_TASK_STATUSES = (
+    "pending",
+    "running",
+    "cancel_requested",
+    "cancelled",
+    "succeeded",
+    "failed",
+)
+_OPERATIONAL_DIAGNOSTIC_LIMIT = 100
 
 
 @dataclass(frozen=True)
@@ -101,6 +117,12 @@ class QuarantineMaintenanceResult:
     error_code: str = ""
 
 
+@dataclass(frozen=True)
+class Epoch2OperationalRead:
+    summary: dict[str, Any]
+    candidates: tuple[Epoch2BranchTask, ...]
+
+
 class Epoch2BranchTaskAdapter:
     """Typed lifecycle operations for the epoch-2 transactional queue."""
 
@@ -111,9 +133,10 @@ class Epoch2BranchTaskAdapter:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.base_path = Path(base_path)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._store = RequestAdmissionStore(
             self.base_path,
-            clock=clock,
+            clock=self._clock,
         )
 
     def list_candidates(
@@ -279,6 +302,206 @@ class Epoch2BranchTaskAdapter:
             limit=limit,
         )
 
+    def operational_read(
+        self,
+        *,
+        universe_id: str,
+        capacity_matcher: Callable[[Epoch2BranchTask], bool],
+        policy_matcher: Callable[[Epoch2BranchTask], bool] | None = None,
+        include_unscoped_invalid: bool = False,
+        snapshot_hook: Callable[[], None] | None = None,
+    ) -> Epoch2OperationalRead:
+        """Return one bounded, transactionally consistent operational read."""
+        stored = self._store.read_v2_operational_data(
+            universe_id=universe_id,
+            include_unscoped_invalid=include_unscoped_invalid,
+            snapshot_hook=snapshot_hook,
+        )
+        lifecycle_counts = {
+            status: 0 for status in (*_TASK_STATUSES, "unknown")
+        }
+        lifecycle_oldest_age_s = {
+            status: 0 for status in (*_TASK_STATUSES, "unknown")
+        }
+        unknown_lifecycle_status_counts: dict[str, int] = {}
+        state_counts = {state: 0 for state in _OPERATIONAL_STATES}
+        oldest_age_s = {state: 0 for state in _OPERATIONAL_STATES}
+        reason_counts: dict[str, dict[str, int]] = {
+            state: {} for state in _OPERATIONAL_STATES
+        }
+        diagnostics: list[dict[str, str]] = []
+        candidates: list[Epoch2BranchTask] = []
+        eligible_pending_count = 0
+        valid_pending_count = 0
+        now = self._clock()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+        now = now.astimezone(timezone.utc)
+        for status, data in stored["lifecycle"].items():
+            lifecycle_status = (
+                status if status in _TASK_STATUSES else "unknown"
+            )
+            count = int(data["count"])
+            lifecycle_counts[lifecycle_status] += count
+            if lifecycle_status == "unknown":
+                unknown_lifecycle_status_counts[status] = count
+            queued_at = _parse_timestamp(data["oldest_queued_at"])
+            if queued_at is not None:
+                lifecycle_oldest_age_s[lifecycle_status] = max(
+                    lifecycle_oldest_age_s[lifecycle_status],
+                    int(max(0.0, (now - queued_at).total_seconds())),
+                )
+
+        for row in stored["active_rows"]:
+            queued_at = _parse_timestamp(str(row.get("queued_at") or ""))
+            age_s = (
+                int(max(0.0, (now - queued_at).total_seconds()))
+                if queued_at is not None
+                else 0
+            )
+            invalid_reason = _classify_epoch2_row(row)
+            task = (
+                _as_epoch2_task(row)
+                if invalid_reason is None
+                else None
+            )
+            has_receipt = bool(
+                row.get("linked_quarantine_receipt_exists")
+                and row.get("linked_quarantine_row_digest")
+            )
+            if row.get("disabled") and has_receipt:
+                operational_state = "quarantined"
+                reason = str(
+                    row.get("linked_quarantine_reason")
+                    or row.get("quarantine_reason")
+                    or invalid_reason
+                    or "quarantined"
+                )
+            elif invalid_reason:
+                operational_state = "invalid_operator_admission"
+                reason = invalid_reason
+            elif (
+                row.get("disabled")
+                or (
+                    task is not None
+                    and policy_matcher is not None
+                    and not policy_matcher(task)
+                )
+            ):
+                operational_state = "policy_parked"
+                reason = (
+                    "disabled" if row.get("disabled") else "policy_disabled"
+                )
+            elif (
+                row.get("status") == "pending"
+                and task is not None
+                and not capacity_matcher(task)
+            ):
+                operational_state = "awaiting_compatible_capacity"
+                reason = "no_live_compatible_worker"
+            else:
+                operational_state = ""
+                reason = ""
+            if (
+                task is not None
+                and not row.get("disabled")
+                and (policy_matcher is None or policy_matcher(task))
+                and task.status == "pending"
+            ):
+                candidates.append(task)
+                valid_pending_count += 1
+                if capacity_matcher(task):
+                    eligible_pending_count += 1
+
+            if not operational_state:
+                continue
+            state_counts[operational_state] += 1
+            state_reasons = reason_counts[operational_state]
+            state_reasons[reason] = state_reasons.get(reason, 0) + 1
+            oldest_age_s[operational_state] = max(
+                oldest_age_s[operational_state],
+                age_s,
+            )
+            if len(diagnostics) >= _OPERATIONAL_DIAGNOSTIC_LIMIT:
+                continue
+            digest = str(
+                row.get("linked_quarantine_row_digest")
+                or _quarantine_row_digest(row)
+            )
+            branch_task_id = str(row.get("branch_task_id") or "")
+            if _BRANCH_TASK_ID_RE.fullmatch(branch_task_id) is None:
+                branch_task_id = f"quarantined-task-{digest[:32]}"
+            diagnostics.append({
+                "branch_task_id": branch_task_id,
+                "row_digest": digest,
+                "operational_state": operational_state,
+                "reason": reason,
+            })
+
+        active_count = sum(
+            lifecycle_counts[status]
+            for status in (
+                "pending",
+                "running",
+                "cancel_requested",
+                "unknown",
+            )
+        )
+        integrity_scope_complete = bool(
+            stored["integrity_scope_complete"]
+        )
+        summary = {
+            "available": True,
+            "queue_epoch": QUEUE_EPOCH,
+            "depth": sum(lifecycle_counts.values()),
+            "lifecycle_counts": lifecycle_counts,
+            "lifecycle_oldest_age_s": lifecycle_oldest_age_s,
+            "unknown_lifecycle_status_counts": (
+                unknown_lifecycle_status_counts
+            ),
+            "operational_state_counts": state_counts,
+            "operational_oldest_age_s": oldest_age_s,
+            "operational_reason_counts": reason_counts,
+            "valid_pending_count": valid_pending_count,
+            "eligible_pending_count": eligible_pending_count,
+            "operational_counts_authoritative": (
+                not stored["active_scan_overflow"]
+                and integrity_scope_complete
+                and lifecycle_counts["unknown"] == 0
+            ),
+            "integrity_scope_complete": integrity_scope_complete,
+            "unclassified_active_count": max(
+                0,
+                active_count - len(stored["active_rows"]),
+            ),
+            "active_scan_limit": int(stored["active_scan_limit"]),
+            "diagnostics": diagnostics,
+            "diagnostics_truncated": (
+                sum(state_counts.values()) > len(diagnostics)
+                or stored["active_scan_overflow"]
+            ),
+        }
+        if "unscoped_invalid_count" in stored:
+            summary["unscoped_invalid_count"] = int(
+                stored["unscoped_invalid_count"]
+            )
+        return Epoch2OperationalRead(
+            summary=summary,
+            candidates=tuple(candidates),
+        )
+
+    def operational_snapshot(
+        self,
+        *,
+        universe_id: str,
+        compatible_capacity: bool,
+    ) -> dict[str, Any]:
+        """Compatibility wrapper for callers that have one capacity class."""
+        return self.operational_read(
+            universe_id=universe_id,
+            capacity_matcher=lambda _task: compatible_capacity,
+        ).summary
+
     def delete_universe(self, universe_id: str) -> int:
         return self._store.delete_universe(universe_id)
 
@@ -334,6 +557,11 @@ def _parse_timestamp(value: str) -> datetime | None:
 def _classify_epoch2_row(
     row: Mapping[str, Any],
 ) -> str | None:
+    if (
+        row.get("linked_quarantine_receipt_exists")
+        and not row.get("disabled")
+    ):
+        return "invalid_operator_admission"
     if (
         type(row.get("queue_epoch")) is not int
         or type(row.get("protocol_version")) is not int
@@ -705,7 +933,13 @@ def _public_admission_result_matches(
 
 
 def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
-    inputs = dict(row.get("inputs") or {})
+    inputs = row.get("inputs")
+    if not isinstance(inputs, dict):
+        try:
+            inputs = json.loads(str(row.get("inputs_json") or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            inputs = {}
+    inputs = dict(inputs)
     return Epoch2BranchTask(
         branch_task_id=str(row["branch_task_id"]),
         branch_def_id=str(row["branch_def_id"]),
@@ -731,6 +965,7 @@ def _as_epoch2_task(row: Mapping[str, Any]) -> Epoch2BranchTask:
 __all__ = [
     "Epoch2BranchTask",
     "Epoch2BranchTaskAdapter",
+    "Epoch2OperationalRead",
     "QuarantineMaintenanceResult",
     "QuarantineReceipt",
     "WorkerClaimDescriptor",
