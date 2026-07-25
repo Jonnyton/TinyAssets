@@ -118,11 +118,41 @@ internal-trust flag for 5.2) and `tinyassets/daemon_server.py` (the narrow
 `set_universe_display_name` index helper for 5.3). `universe_server.py` itself
 was not modified (the birth chokepoint lives in `api/universe.py`).
 
+## ADAPT fold — Codex review round 1 (2026-07-24)
+
+Verdict: `scratchpad/verdict-universe-creation.md` — **ADAPT**. Direct flag
+reachability (closed), HTTP absence, projection isolation, focused tests, mirror
+parity, and reported lint debt all checked out. One required fold: 5.2's
+self-serialization was incomplete at the first-contact seam.
+
+- **Finding:** `ensure_founder_home` threaded `allow_named_universe_id=True` for
+  `winner` from `claim_founder_home`, without proving provenance. That helper
+  does `INSERT ... ON CONFLICT(founder_sub) DO NOTHING` and returns a
+  pre-existing `founder_home` binding verbatim; `founder_home` has no
+  serial-format constraint, so a stale founder-influenced *descriptive* id
+  (pre-boundary caller-selected creation) could cross the trust flag and be
+  materialized as a named universe.
+- **Fix (fail-closed provenance gate):** trust `winner` ONLY when it is the
+  fresh `candidate` just generated this call OR it itself passes the canonical
+  `is_universe_serial` validator (not a regex copy). A winner failing both →
+  log loudly + return `""`; never rebind/migrate a stale descriptive home to a
+  serial here (that is host-run migration, task 5.4). Files:
+  `tinyassets/api/first_contact.py`.
+- **Tests added (`tests/test_first_contact.py`):** stale descriptive
+  `founder_home` is rejected, not materialized, and left intact (can-fail:
+  without the gate it materializes `chosen-name`); a legitimate pre-existing
+  serial reservation still materializes; a public-schema reachability lock
+  asserts the trust flag is absent from both public tool wrappers.
+- **Evidence:** `tests/test_first_contact.py` 40 passed; focused set (same six
+  files) **100 passed**; ruff clean on `first_contact.py` + test file; plugin
+  mirror rebuilt; `openspec validate universe-creation --strict` valid.
+
 ## Commits pushed
 
 - `05775a74` feat(universe): public birth self-serializes; reject caller-selected id
 - `81ab0c58` feat(universe): project learned identity.md name onto immutable index row
-- (+ this report / final tasks.md classification commit)
+- `20661dd5` docs(universe-creation): classify blocked/operational tasks; lane report
+- `4704b95f` fix(universe): fail-closed provenance gate on first-contact home materialization (ADAPT fold)
 
-Branch pushed to `origin/claude/osx-universe-creation`. No PR opened —
-cross-family review happens before any PR.
+Branch pushed to `origin/claude/osx-universe-creation` (head `4704b95f`). No PR
+opened — cross-family review happens before any PR.
