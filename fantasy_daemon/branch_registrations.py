@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -183,6 +184,7 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             return True
         if any(
             target.lifecycle == LIFECYCLE_ACTIVE
+            and target.metadata.get("queue_epoch") != 2
             for target in load_work_targets(universe_path)
         ):
             return True
@@ -206,7 +208,42 @@ def _restartable_work_exists(universe_path: Path) -> bool:
             "restartable-work check failed for %s", universe_path,
             exc_info=True,
         )
+    try:
+        if _live_epoch2_claim_exists(universe_path):
+            return True
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "epoch-2 restartable-work check failed for %s",
+            universe_path,
+            exc_info=True,
+        )
     return False
+
+
+def _live_epoch2_claim_exists(universe_path: Path) -> bool:
+    """Read whether this exact worker owns runnable canonical v2 work."""
+    from tinyassets import branch_tasks_v2
+
+    if branch_tasks_v2.EPOCH2_QUEUE_CONSUMER_READY is not True:
+        return False
+    worker_id = os.environ.get("TINYASSETS_WORKER_ID", "").strip()
+    if not worker_id:
+        return False
+    from tinyassets.storage import data_dir
+
+    canonical_root = data_dir().resolve(strict=False)
+    resolved_universe_path = universe_path.resolve(strict=False)
+    if resolved_universe_path.parent != canonical_root:
+        return False
+    return bool(
+        branch_tasks_v2.Epoch2BranchTaskAdapter(
+            canonical_root,
+        ).list_live_claimed_requests(
+            universe_id=resolved_universe_path.name,
+            worker_id=worker_id,
+            limit=1,
+        )
+    )
 
 
 register_domain_callable(

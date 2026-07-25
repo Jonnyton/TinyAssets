@@ -1174,3 +1174,15 @@ Notes:
 - Review gate: focused RED/GREEN test, workflow suite, actionlint, independent Opus 5 review
 - Memory/implications: receipt validation/publication succeeded; Summary rendering alone failed
 - Ship/abandon: publish reviewed PR to main; do not deploy from this lane
+
+## 2026-07-24 - epoch-2 claimed-request materialization
+
+- Provider: codex-gpt5-desktop-operator
+- Branch: codex/operator-epoch2-consumer
+- Lane state: active implementation
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: STATUS 5.7 row; no PR yet
+- Scope: live-claim-only canonical v2 Request materialization and restart observation; no v2 claim activation or v1 projection
+- Review gate: focused red/green tests, adjoining suite, strict OpenSpec, mirror/import checks, independent Opus 5 exact-head review
+- Memory/implications: 5.8 remains blocked by PLAN's file-lock versus transactional-claim conflict
+- Ship/abandon: publish reviewed prerequisite PR; keep EPOCH2_QUEUE_CONSUMER_READY false
