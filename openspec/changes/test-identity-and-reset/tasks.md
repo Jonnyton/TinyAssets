@@ -11,18 +11,20 @@
 
 ## 1. Safe operator-scoped reset
 
-- [ ] 1.1 Before writing mutating code, freeze the exact cross-store reset/preserve/block inventory,
+- [x] 1.1 Before writing mutating code, freeze the exact cross-store reset/preserve/block inventory,
   ownership/path rules, durable process-shared fenced writer barrier, plan digest inputs, and
   content-free journal plus SQLite commit-witness state machine; land red tests for foreign bindings
   and grants, active market/daemon/run references, credential and receipt blockers, schema growth,
   symlinks/junctions/reparse points, concurrent writers, and every pre/post-rename/commit/cleanup
   fault point.
-  - **Premise: live but blocked (2026-07-24).** Current main added
-    `request_admissions`, `branch_tasks_v2`, its quarantine/maintenance/rollout
-    stores, and execution-authority evidence after this inventory was written.
-    They are unclassified here, and no durable affected-scope fence is enforced
-    by every database/filesystem writer. The pre-implementation gate therefore
-    fails; no mutating scoped-reset code was written.
+  - **Completed (2026-07-25).** The reviewed inventory now explicitly
+    classifies the Epoch-2 admission/task/quarantine/maintenance/rollout stores,
+    rejects every unknown main-database table, freezes exact-founder-home and
+    path rules, and provides a process-shared shared/exclusive writer barrier
+    plus the durable fence/journal boundary contract. Safety tests cover foreign
+    bindings/grants, active daemon/request/task references, credentials,
+    symlinks/reparse points, schema growth, contention, and every recovery fault
+    boundary. No scoped mutation is implemented in this task.
 - [ ] 1.2 Implement the read-only operator plan for one allowlisted external test principal and make
   unknown/repetition semantics explicit: unknown alias or non-allowlisted subject fails closed; an
   allowlisted subject with no state is a no-op; replay of a completed plan returns its receipt and
