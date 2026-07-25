@@ -60,6 +60,11 @@ DescriptorReader = Callable[
     WorkerClaimDescriptor | None,
 ]
 DESCRIPTOR_VALIDITY_SECONDS = 90
+# Flip only in the same change that wires the supervised daemon's selector,
+# claim, and lifecycle paths to this adapter.  This constant is bundled with
+# every runtime mirror, so capability publication never depends on an
+# optional domain package.
+EPOCH2_QUEUE_CONSUMER_READY = False
 logger = logging.getLogger(__name__)
 _IDEMPOTENCY_HASH_RE = re.compile(r"^hmac-sha256:[0-9a-f]{64}$")
 _BODY_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -155,6 +160,18 @@ class Epoch2BranchTaskAdapter:
                 ),
             )
         ]
+
+    def has_active_claim(
+        self,
+        *,
+        universe_id: str,
+        worker_id: str,
+    ) -> bool:
+        """Return whether this worker owns running epoch-2 lifecycle work."""
+        return self._store.has_active_v2_claim(
+            universe_id=universe_id,
+            worker_id=worker_id,
+        )
 
     def get(self, branch_task_id: str) -> Epoch2BranchTask | None:
         row = self._store.get_v2_task(branch_task_id)

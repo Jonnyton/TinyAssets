@@ -1369,6 +1369,7 @@ def _unavailable_epoch2_summary(error: str) -> dict[str, Any]:
         "diagnostics_truncated": False,
         "compatible_worker_count": None,
         "capacity_evidence_available": False,
+        "consumer_ready": False,
     }
 
 
@@ -1396,6 +1397,7 @@ def _epoch2_operational_read(
 ):
     """Read counts and safe candidates from one bounded SQLite snapshot."""
     from tinyassets.branch_tasks_v2 import (
+        EPOCH2_QUEUE_CONSUMER_READY,
         Epoch2BranchTaskAdapter,
         Epoch2OperationalRead,
     )
@@ -1405,7 +1407,8 @@ def _epoch2_operational_read(
     )
     from tinyassets.storage import DB_FILENAME
 
-    database = udir.parent / DB_FILENAME
+    base_path = udir.parent
+    database = base_path / DB_FILENAME
     if not database.is_file():
         return Epoch2OperationalRead(
             summary=_unavailable_epoch2_summary(
@@ -1415,11 +1418,16 @@ def _epoch2_operational_read(
         )
     cfg = dispatcher_config or load_dispatcher_config(udir)
     capacity_error = ""
-    try:
-        workers = _compatible_epoch2_workers(udir)
-    except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+    consumer_ready = EPOCH2_QUEUE_CONSUMER_READY is True
+    if not consumer_ready:
         workers = []
-        capacity_error = str(exc)
+        capacity_error = "epoch2_consumer_not_ready"
+    else:
+        try:
+            workers = _compatible_epoch2_workers(udir)
+        except Exception as exc:  # noqa: BLE001 — surface trust-read failure
+            workers = []
+            capacity_error = str(exc)
 
     def capacity_matches(task) -> bool:
         if (
@@ -1439,7 +1447,7 @@ def _epoch2_operational_read(
 
     try:
         result = Epoch2BranchTaskAdapter(
-            udir.parent,
+            base_path,
         ).operational_read(
             universe_id=udir.name,
             capacity_matcher=capacity_matches,
@@ -1456,6 +1464,7 @@ def _epoch2_operational_read(
             candidates=(),
         )
     result.summary["compatible_worker_count"] = len(workers)
+    result.summary["consumer_ready"] = consumer_ready
     result.summary["capacity_evidence_available"] = not capacity_error
     if capacity_error:
         result.summary["operational_counts_authoritative"] = False
@@ -2390,6 +2399,7 @@ def _action_queue_list(
             "capacity_evidence_available"
         ),
         "capacity_evidence_error": epoch2.get("capacity_evidence_error"),
+        "consumer_ready": epoch2.get("consumer_ready"),
         "valid_epoch2_pending_count": epoch2.get("valid_pending_count"),
         "eligible_epoch2_pending_count": epoch2.get(
             "eligible_pending_count"
@@ -5468,7 +5478,14 @@ def _action_create_universe(
     # universe-creation D2: universe_id is optional. When absent, generate one
     # opaque immutable serial (u- + lowercase ULID). Provided ids are still
     # accepted (dev / existing-universe operations).
-    uid = (universe_id or "").strip() or new_universe_id()
+    supplied_id = (universe_id or "").strip()
+    # Provenance (universe-creation 5.2): the id is platform-generated iff this
+    # function generated it (no caller value). The public MCP boundary rejects a
+    # caller-selected id upstream, so public births always land here with an
+    # empty ``universe_id`` and are generated=True; a supplied id is a dev /
+    # migration / already-reserved value whose provenance is the caller's.
+    id_is_platform_generated = not supplied_id
+    uid = supplied_id or new_universe_id()
     udir = base / uid
 
     # Sanitize
@@ -5563,7 +5580,12 @@ def _action_create_universe(
 
             _home = get_founder_home(base, founder)
             if not _home or not (base / _home / "soul.md").is_file():
-                set_founder_home(base, founder_sub=founder, universe_id=uid)
+                set_founder_home(
+                    base,
+                    founder_sub=founder,
+                    universe_id=uid,
+                    platform_generated=id_is_platform_generated,
+                )
             result["founder_id"] = founder
         else:
             result["founder_id"] = ""
@@ -5970,6 +5992,23 @@ def _action_soul_edit(
         return json.dumps({"error": str(exc), "policy": "soul.edit.md"})
 
     model = read_self_model(udir)
+    # universe-creation task 5.3: when a governed learning event accepts a new
+    # self-name in identity.md, project it onto the universe index row keyed by
+    # this immutable id. The projection updates only the display name — never
+    # the key or runtime operation id — and is best-effort so a registry hiccup
+    # never fails the learning event that already persisted to the brain.
+    learned_name = str(model.get("name") or "").strip()
+    if learned_name and "identity.md" in result["updated_files"]:
+        try:
+            from tinyassets.daemon_server import set_universe_display_name
+
+            set_universe_display_name(
+                _base_path(), universe_id=uid, display_name=learned_name
+            )
+        except Exception:  # noqa: BLE001 - index projection is best-effort
+            logger.warning(
+                "learned-name index projection failed for %s", uid, exc_info=True
+            )
     return json.dumps({
         "universe_id": uid,
         "status": "learned",
@@ -6102,10 +6141,17 @@ def _universe_impl(
     enabled: bool = False,
     tag: str = "",
     anchor_json: str = "",
+    *,
+    allow_named_universe_id: bool = False,
 ) -> str:
     """Pattern A2 body — see ``tinyassets.universe_server.universe`` for the
     chatbot-facing docstring. Behavior is identical; the decorator wrapper
     forwards every argument unchanged.
+
+    ``allow_named_universe_id`` is a keyword-only, internal-trust flag. The
+    public MCP surface (``universe`` and ``write_graph`` tools) never sets it,
+    so a public caller cannot choose a universe's id — see the public-birth
+    boundary below.
     """
     dispatch = UNIVERSE_ACTIONS
     handler = dispatch.get(action)
@@ -6113,6 +6159,26 @@ def _universe_impl(
         return json.dumps({
             "error": f"Unknown action '{action}'.",
             "available_actions": sorted(dispatch.keys()),
+        })
+    # universe-lifecycle-and-soul: every public universe-birth entry point
+    # self-serializes. A public caller-selected id is rejected here at the
+    # shared dispatch boundary — the service assigns an opaque ``u-``+ULID
+    # serial (see ``tinyassets.ids.new_universe_id``). Only trusted internal
+    # callers (first-contact home materialization, migration/dev tooling) may
+    # supply a pre-generated serial via ``allow_named_universe_id``. Direct
+    # ``_action_create_universe`` callers bypass this boundary and keep
+    # accepting explicit ids for dev/test/migration use.
+    if (
+        action == "create_universe"
+        and not allow_named_universe_id
+        and universe_id.strip()
+    ):
+        return json.dumps({
+            "error": (
+                "Universe birth assigns its own opaque serial id; a "
+                "caller-selected universe_id is not accepted."
+            ),
+            "reason": "caller_selected_id_rejected",
         })
     scope_error = _dispatch_scope_error("universe", action, universe_id=universe_id)
     if scope_error is not None:

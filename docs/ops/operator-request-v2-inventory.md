@@ -36,7 +36,8 @@ defaults still contain `host_request=100` and no `operator_request` entry.
 
 ## Public v1 writers
 
-There are two public MCP server surfaces and one shared implementation:
+At the pinned `origin/main` inventory baseline there were two public MCP
+server surfaces and one shared implementation:
 
 1. `tinyassets/universe_server.py::write_graph(target="request")`
 2. `tinyassets/directory_server.py::write_graph(target="request")`
@@ -44,7 +45,15 @@ There are two public MCP server surfaces and one shared implementation:
 
 The shared action writes `requests.json`, then separately appends
 `branch_tasks.json` and catches the append failure. It is therefore one
-underlying non-transactional v1 writer exposed through two public mounts.
+underlying non-transactional v1 writer that was exposed through two public
+mounts at that baseline.
+
+The 2026-07-24 MCP retirement removes `directory_server.py` and its public
+mount. After that cutover, the same underlying non-transactional v1 writer is
+exposed through one public surface:
+`tinyassets/universe_server.py::write_graph(target="request")`. This route
+retirement changes the number of public mounts, not the writer's transactional
+behavior recorded by this inventory.
 
 ## Worker evidence
 

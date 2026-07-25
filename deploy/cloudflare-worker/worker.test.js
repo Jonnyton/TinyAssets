@@ -16,7 +16,7 @@
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import {
+import worker, {
     proxyToTunnel,
     shouldProxy,
     TUNNEL_ORIGIN,
@@ -65,12 +65,12 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/mcp/foo'), true);
     });
 
-    it('accepts /mcp-directory', () => {
-        assert.equal(shouldProxy('/mcp-directory'), true);
+    it('rejects retired /mcp-directory', () => {
+        assert.equal(shouldProxy('/mcp-directory'), false);
     });
 
-    it('accepts /mcp-directory/foo', () => {
-        assert.equal(shouldProxy('/mcp-directory/foo'), true);
+    it('rejects retired /mcp-directory descendants', () => {
+        assert.equal(shouldProxy('/mcp-directory/foo'), false);
     });
 
     it('rejects /', () => {
@@ -89,6 +89,54 @@ describe('shouldProxy', () => {
         assert.equal(shouldProxy('/catalog'), false);
         assert.equal(shouldProxy('/assets/logo.png'), false);
     });
+});
+
+// ------- handler routing ---------------------------------------------------
+
+describe('worker handler — retired /mcp-directory routing', () => {
+    const methods = ['GET', 'HEAD', 'POST', 'OPTIONS'];
+    const retiredUrls = [
+        ['exact path', 'https://tinyassets.io/mcp-directory'],
+        ['trailing slash', 'https://tinyassets.io/mcp-directory/'],
+        ['arbitrary descendant', 'https://tinyassets.io/mcp-directory/arbitrary/deep/path'],
+        [
+            'former versioned catalog',
+            'https://tinyassets.io/mcp-directory/catalog/2026-06-24-underscore-handles',
+        ],
+        ['query string', 'https://tinyassets.io/mcp-directory?catalog=legacy'],
+    ];
+
+    for (const method of methods) {
+        for (const [urlKind, url] of retiredUrls) {
+            it(`returns an ordinary 404 for ${method} ${urlKind}`, async () => {
+                const response = await worker.fetch(new Request(url, { method }), {});
+
+                assert.equal(lastUpstreamRequest, null, 'must not call the tunnel origin');
+                assert.equal(response.status, 404);
+                assert.equal(response.headers.get('Location'), null);
+                assert.equal(response.redirected, false);
+                if (method !== 'HEAD') {
+                    assert.equal(await response.text(), 'Not Found');
+                }
+            });
+        }
+    }
+});
+
+describe('worker handler — canonical /mcp routing', () => {
+    for (const method of ['GET', 'HEAD', 'POST', 'OPTIONS']) {
+        it(`continues to proxy ${method} /mcp`, async () => {
+            const response = await worker.fetch(
+                new Request('https://tinyassets.io/mcp?canonical=true', { method }),
+                {},
+            );
+
+            assert.ok(lastUpstreamRequest);
+            assert.equal(lastUpstreamRequest.method, method);
+            assert.equal(lastUpstreamRequest.url, `${TUNNEL_ORIGIN}/mcp?canonical=true`);
+            assert.equal(response.status, 200);
+        });
+    }
 });
 
 // ------- proxyToTunnel: basic routing --------------------------------------

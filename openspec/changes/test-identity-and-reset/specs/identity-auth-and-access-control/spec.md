@@ -11,9 +11,12 @@ shared status implementation used by both `get_status` and
 `read_graph target=status`. It SHALL return that evidence on first-contact, anonymous, and normal
 successful status reads; SHALL NOT return the raw subject or retain the bearer itself; and SHALL NOT
 let a caller select or inspect another subject. It SHALL fail closed when the fingerprint key is
-unavailable and SHALL NOT fall back to a plain hash or raw subject. The version SHALL change explicitly
-when the key rotates, and the dedicated key SHALL remain separate from provider, maintainer, OAuth, and
-roster credentials and logs.
+unavailable by returning no fingerprint and SHALL NOT fall back to a plain hash or raw subject. Missing
+or invalid fingerprint configuration SHALL NOT fail or truncate the observational status surface; it
+SHALL return `principal_fingerprint: null`, an explicit `identity_evidence` unavailable marker, and a
+fixed non-secret `evidence_caveats.request_identity` entry on the full response. The version SHALL
+change explicitly when the key rotates, and the dedicated key SHALL remain separate from provider,
+maintainer, OAuth, and roster credentials and logs.
 
 #### Scenario: Authenticated caller establishes its own resolved identity
 
@@ -26,7 +29,8 @@ roster credentials and logs.
 #### Scenario: Missing fingerprint key cannot weaken privacy
 
 - **WHEN** the dedicated fingerprint key is absent or invalid
-- **THEN** identity evidence returns a structured unavailable failure and the acceptance check fails
+- **THEN** the status call succeeds with its operational fields intact while identity evidence returns
+  `principal_fingerprint: null` plus a structured unavailable marker and the acceptance check fails
 - **AND** no plain hash, raw subject, provider credential, or ambient maintainer identity is used as a
   fallback.
 

@@ -54,16 +54,16 @@
 
 ## 6. Remove `/mcp-directory` First
 
-- [ ] 6.1 Before Sections 3–5, prove provider-free `/mcp` initialize and exact-seven tool enumeration, then remove `directory_server`, directory catalog constants, mounts, versioned catalog paths, and discovery metadata in the same focused slice. Vendor review, Registry publication, rendered-client breadth, telemetry, and canonical hardening do not gate this removal.
-- [ ] 6.2 Remove `/mcp-directory*` Cloudflare routing and current operational guidance in the same reviewed slice.
-- [ ] 6.3 Regenerate the Claude plugin mirror and every derived artifact from canonical source.
-- [ ] 6.4 Add edge and application rejection tests proving every `/mcp-directory*` path returns the ordinary 404 with no mount, handler, `Location`, redirect, proxy, alias, silent translation, 410, or compatibility body.
+- [x] 6.1 Before Sections 3–5, prove provider-free `/mcp` initialize and exact-seven tool enumeration, then remove `directory_server`, directory catalog constants, mounts, versioned catalog paths, and discovery metadata in the same focused slice. Vendor review, Registry publication, rendered-client breadth, telemetry, and canonical hardening do not gate this removal.
+- [x] 6.2 Remove `/mcp-directory*` Cloudflare routing and current operational guidance in the same reviewed slice.
+- [x] 6.3 Regenerate the Claude plugin mirror and every derived artifact from canonical source.
+- [x] 6.4 Add edge and application rejection tests proving every `/mcp-directory*` path returns the ordinary 404 with no mount, handler, `Location`, redirect, proxy, alias, silent translation, 410, or compatibility body.
 - [ ] 6.5 Repoint each maintained old registration to `/mcp` or withdraw it, then re-run canonical canaries and start post-removal 404 monitoring. Registry publication and rendered clients remain later evidence.
 
 ## 7. Verification, Review, And Foldback
 
 - [ ] 7.1 Run focused runtime, auth, status, annotation, Registry, submission, Worker, MCPB, and client-contract tests plus lint and `git diff --check`.
 - [ ] 7.2 Run strict OpenSpec validation and independent architecture/security/diff review.
-- [ ] 7.3 Update PLAN's distribution substrate only after the approved host direction and required opposite-provider review are recorded.
+- [x] 7.3 Update PLAN's distribution substrate only after the approved host direction and required opposite-provider review are recorded.
 - [ ] 7.4 Sync delta specs into canonical `live-mcp-connector-surface` and `mcp-connector-distribution` and archive the change only after completed tasks and external evidence are truthful. The planning-only PR row is retired when that PR lands; a separate collision-checked runtime row owns apply work.
 - [ ] 7.5 Re-evaluate `retire-legacy-live-mcp-tools` only after this change and local MCPB migration/identity gates are complete.

@@ -1,8 +1,10 @@
 # MCP Host Customer Matrix
 
-Status: distribution planning artifact; not a support-claim source.
+Status: maintained distribution planning artifact; not a support-claim source.
 Date: 2026-05-01
-Last checked: 2026-05-01 against selected public vendor docs.
+Current TinyAssets contract checked: 2026-07-24 against
+`openspec/changes/reconcile-external-connector-manifests/`.
+Vendor-specific claims retain their dated proof and require fresh revalidation.
 
 This matrix keeps TinyAssets customer planning broader than Claude and OpenAI.
 A TinyAssets customer is anyone operating an MCP-capable host: a hosted chatbot,
@@ -12,6 +14,15 @@ custom app that can connect to a TinyAssets MCP server.
 The proof source for public claims remains
 `docs/ops/mcp-host-proof-registry.md`. If a host is not verified there, website
 copy should say "planned" or "compatible by spec, not verified."
+
+The maintained remote contract is one product named exactly `TinyAssets` at
+`https://tinyassets.io/mcp`. It advertises exactly `read_graph`, `write_graph`,
+`run_graph`, `read_page`, `write_page`, `converse`, and `get_status`.
+Fresh anonymous proof is currently limited to non-status `read_graph` targets
+and `read_page`. Although `get_status` remains advertised, its current result
+is not an external-safe projection and MUST NOT be used for anonymous or
+public-host proof until OpenSpec tasks 3.1–3.2 land. Mutation, execution, and
+conversation entry require OAuth.
 
 ## Host vs Client Language
 
@@ -41,22 +52,22 @@ account, different connected apps."
 
 | Host surface | User shape | Likely TinyAssets path | Discovery/install path | Status | Minimum proof |
 |---|---|---|---|---|---|
-| Official MCP Registry | Any registry-aware MCP host | `https://tinyassets.io/mcp-directory` | Published `server.json` | published-live | 2026-05-01 API search returned `io.github.Jonnyton/tinyassets-universe-server` active/latest |
-| Claude Connectors Directory | Logged-in Claude users/admins | `https://tinyassets.io/mcp-directory` | Anthropic directory review | packet-ready; submission-needed | Directory install plus live Claude tool call |
-| Claude custom connector | Logged-in Claude users | `https://tinyassets.io/mcp` | Custom connector settings | protocol-live; UI proof refresh needed | Claude.ai trace with visible result |
-| ChatGPT App Directory | Eligible logged-in ChatGPT users/admins | `https://tinyassets.io/mcp-directory` plus app metadata/widget if required | OpenAI app submission | packet-ready; submission-needed | App Directory install without Developer Mode |
+| Official MCP Registry | Any registry-aware MCP host | `https://tinyassets.io/mcp` | Published `server.json` | metadata reconciliation required | Fresh listing must use exact name `TinyAssets`, canonical `/mcp`, exact seven tools, and truthful OAuth metadata |
+| Claude Connectors Directory | Logged-in Claude users/admins | `https://tinyassets.io/mcp` | Anthropic directory review | fresh canonical submission needed | Directory install plus safe read and authenticated mutation proof |
+| Claude custom connector | Logged-in Claude users | `https://tinyassets.io/mcp` | Custom connector settings | fresh proof needed | Claude.ai trace against canonical `/mcp` with exact name and visible result |
+| ChatGPT App Directory | Eligible logged-in ChatGPT users/admins | `https://tinyassets.io/mcp` plus current app metadata/widget if required | OpenAI app submission | fresh canonical submission needed | App Directory install without Developer Mode plus OAuth read/mutation proof |
 | ChatGPT guest | Logged-out browser user | None through ChatGPT apps/MCP | Not available | unsupported by ChatGPT path | Route to no-login local/self-hosted path |
-| ChatGPT custom MCP/developer mode | Eligible logged-in user/workspace | `https://tinyassets.io/mcp-directory` or full `/mcp` for dev testing | Developer Mode/workspace approval | blocked by BUG-034 | Approval plus read-only tool call |
-| OpenAI API/Agents | Developer/API agent | Remote MCP tool | API configuration | planned | Responses/Agents smoke list + read call |
-| Codex CLI/IDE | Local developer agent | MCP config | Codex config | verified: Codex CLI 0.104.0 | 2026-05-02 proofs: isolated `codex mcp add --url` wrote Streamable HTTP config; `codex exec -m gpt-5.2` listed tools and called `get_workflow_status` |
+| ChatGPT custom MCP/developer mode | Eligible logged-in user/workspace | `https://tinyassets.io/mcp` | Developer Mode/workspace approval | fresh registration/proof needed | Register exact name `TinyAssets`; prove safe read plus OAuth mutation |
+| OpenAI API/Agents | Developer/API agent | Remote MCP tool at `https://tinyassets.io/mcp` | API configuration | planned | Exact-seven tool list plus read call and OAuth mutation boundary |
+| Codex CLI/IDE | Local developer agent | MCP config to `https://tinyassets.io/mcp` | Codex config | historical proof only; refresh needed | Fresh tool-list and anonymous read; do not claim mutation without OAuth proof |
 | Gemini CLI | Local developer agent | MCP server config | Gemini CLI settings | planned | Gemini CLI tool list + read call |
 | VS Code/GitHub Copilot | Local IDE user | `.vscode/mcp.json` or user MCP config | MCP gallery/config/command palette | planned | Copilot Agent mode calls TinyAssets |
-| Cursor | Local IDE user | Cursor MCP config | Cursor settings/add path | registration-path verified; tool-call pending | 2026-05-01 CLI added isolated Streamable HTTP config; Cursor tool-list/read call still required |
+| Cursor | Local IDE user | MCP config to `https://tinyassets.io/mcp` | Cursor settings/add path | historical registration proof only; refresh needed | Fresh canonical tool-list/read call; mutation unsupported until OAuth proof |
 | Cline/Roo/Continue/Windsurf | Local IDE agent user | MCP config or marketplace | Host-specific settings | planned | Tool list plus safe read call |
 | Replit Agent | Cloud developer agent | Replit MCP integration | Replit MCP path | planned | Replit Agent invokes TinyAssets |
-| Open WebUI | Self-hosted/no-hosted-chat-login user | Native Streamable HTTP to `/mcp-directory` or `/mcp` | Admin Settings -> External Tools | verified: local Docker 0.9.2 | 2026-05-01 proof: chat invoked `workflow_get_workflow_status` |
-| LibreChat | Self-hosted/no-hosted-chat-login user | `streamable-http` MCP server config | `librechat.yaml` or UI-created server | verified: local Docker v0.8.5 | 2026-05-01 proof: chat invoked `get_workflow_status_mcp_workflow` |
-| LM Studio | Local model user | Local or remote MCP in `mcp.json` | LM Studio Program tab or add button | planned | Local model invokes read-only tool |
+| Open WebUI | Self-hosted/no-hosted-chat-login user | Native Streamable HTTP to `https://tinyassets.io/mcp` | Admin Settings -> External Tools | anonymous-read-only; historical 0.9.2 proof needs refresh | Fresh non-status `read_graph` plus `read_page`; do not invoke public status; mutation unsupported without OAuth |
+| LibreChat | Self-hosted/no-hosted-chat-login user | `streamable-http` to `https://tinyassets.io/mcp` | `librechat.yaml` or UI-created server | anonymous-read-only; historical v0.8.5 proof needs refresh | Fresh non-status `read_graph` plus `read_page`; do not invoke public status; mutation unsupported without OAuth |
+| LM Studio | Local model user | Local or remote MCP in `mcp.json` | LM Studio Program tab or add button | planned | Anonymous read proof; mutation unsupported until OAuth proof |
 | Jan | Local model user | MCP support/path to verify | App settings or bridge | watch | Do not claim until direct proof |
 | OpenClaw/channel gateway | Channel user | Direct MCP support/path to verify | TBD | watch | Do not claim until direct proof |
 | Microsoft Copilot Studio | Enterprise maker/admin | Remote MCP server or OpenAPI fallback | Tenant/admin tool setup | planned | Agent invokes TinyAssets under tenant policy |
@@ -65,8 +76,8 @@ account, different connected apps."
 ## Product Rules
 
 1. Claude/OpenAI are acceptance gates, not the definition of the customer.
-2. Directory acceptance is stronger than custom URL support. Keep the distinction
-   visible in website copy and proof records.
+2. Host-native directory acceptance is stronger than custom URL support, but
+   every remote registration uses the same canonical `/mcp` product.
 3. Browser-only users need a hosted-chatbot path or a no-login local/self-hosted
    fallback; do not imply ChatGPT guest users can install apps/MCP.
 4. Local and self-hosted users get a first-class no-chatbot-login path.
@@ -80,6 +91,8 @@ account, different connected apps."
    resolves existing user-owned daemons before creating another daemon.
 9. Security-sensitive actions may require per-host re-authentication, stronger
    proof, or handoff even when the host is already linked.
+10. A no-OAuth host is anonymous-read-only. Never describe it as mutation
+    capable or auth-equivalent to a supported OAuth host.
 
 ## Website Implications
 
@@ -106,4 +119,5 @@ or another provider alone grants TinyAssets account authority.
 - LibreChat MCP: <https://www.librechat.ai/docs/features/mcp>
 - LM Studio MCP: <https://lmstudio.ai/docs/app/mcp>
 - VS Code/GitHub Copilot MCP: <https://code.visualstudio.com/docs/copilot/customization/mcp-servers>
-- Existing submission packet sources: `docs/ops/mcp-directory-submission-packet.md`
+- Current TinyAssets connector contract:
+  `openspec/changes/reconcile-external-connector-manifests/`

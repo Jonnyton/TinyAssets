@@ -35,7 +35,7 @@ Each prompt SHALL return its registered behavioral guide and SHALL expose its fu
 
 ### Requirement: Canonical Advertised Handle Set
 
-The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require the six core handles (`CANONICAL_HANDLES`, which includes `converse`) and permit `get_status` as an optional read affordance — the server advertises all seven; the canary treats `get_status` as allowed-but-not-required so a status-less deploy is not drift. As-built note: legacy "five handles" naming survives only in identifiers (e.g. `assert_five_handles_with_retry`, `test_universe_server_five_handles.py`) as historical naming; the enforced contract is the set above.
+The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require that exact set; a missing `get_status` or any extra advertised handle is drift.
 
 #### Scenario: Live surface advertises exactly the seven handles
 
@@ -134,12 +134,24 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 
 ### Requirement: Cloudflare Worker Public Front Door
 
-`https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy `/mcp` and `/mcp-directory` requests to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting the CF Access service-token headers (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL stream SSE bodies straight through without buffering, SHALL preserve request headers and method, and SHALL map any tunnel `5xx` (or an unreachable tunnel) to an explicit `502` JSON body rather than falling through to the GoDaddy origin. `mcp.tinyassets.io` is an internal Access-gated origin and MUST NOT be presented as user-facing.
+`https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A
+Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy only canonical
+`/mcp` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
+the CF Access service-token headers (`CF-Access-Client-Id` /
+`CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL
+stream SSE bodies straight through without buffering, SHALL preserve request
+headers and method, and SHALL map any tunnel `5xx` (or an unreachable tunnel)
+to an explicit `502` JSON body rather than falling through to the GoDaddy
+origin. It SHALL NOT route, redirect, proxy, alias, translate, or return a
+compatibility response for `/mcp-directory*`; those paths receive the ordinary
+edge 404. `mcp.tinyassets.io` is an internal Access-gated origin and MUST NOT be
+presented as user-facing.
 
-#### Scenario: Worker proxies to the Access-gated origin with service tokens
+#### Scenario: Worker proxies canonical MCP only
 
 - **WHEN** a client request arrives at `tinyassets.io/mcp`
 - **THEN** the Worker rewrites `Host` to `mcp.tinyassets.io`, adds the CF Access service-token headers from env secrets, and forwards method, body stream, and non-hop-by-hop headers
+- **AND** the broad Worker binding terminates `/mcp-directory*` as an ordinary edge 404 without proxy, redirect, alias, or translation
 
 #### Scenario: SSE bodies stream without buffering
 
@@ -151,36 +163,59 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 - **WHEN** the tunnel origin returns a `5xx` status or is unreachable
 - **THEN** the Worker responds `502` with a `bad_gateway` JSON body, never a GoDaddy `404` fallthrough
 
-### Requirement: Public Canary And Directory Review Surface
+### Requirement: Public Canary And Canonical Review Surface
 
-The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full handshake, reads `tools/list`, and fails (exit 4) unless the live surface advertises the required canonical handles and nothing beyond the allowed advertised set, plus a lightweight uptime canary (`scripts/uptime_canary.py`). The platform SHALL also expose a narrower directory surface (`tinyassets/directory_server.py`, served at `/mcp-directory`) intended for reviewed host directories such as Claude's Connectors Directory and ChatGPT Apps: it advertises no catch-all `action` inputs and returns a redacted `get_status` that strips operator diagnostics and injects a `directory_privacy_note`.
+The platform SHALL expose `https://tinyassets.io/mcp` as its sole remote
+user-facing MCP endpoint. Its advertised set SHALL be exactly
+`{read_graph, write_graph, run_graph, read_page, write_page, converse,
+get_status}`. Registry and hosted-chatbot review metadata SHALL bind to this
+endpoint rather than an alternate directory product.
+
+The platform SHALL preserve the stdlib-only public canary
+(`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full
+handshake, reads `tools/list`, and fails (exit 4) unless the live surface
+advertises the exact seven handles, plus the lightweight
+`scripts/uptime_canary.py`.
+
+`/mcp-directory` and every versioned `/mcp-directory*` catalog route SHALL be
+unmounted. The platform SHALL NOT redirect, proxy, alias, silently translate,
+return 410, or serve a compatibility response at the retired path.
 
 #### Scenario: Canary fails on advertised-handle drift
 
 - **WHEN** the live `tools/list` is missing a required canonical handle or advertises a handle outside the allowed set (for example a leaked legacy fat tool)
 - **THEN** `mcp_public_canary.py --assert-handles` exits with code 4 and reports the missing/extra handle sets
 
-#### Scenario: Directory status redacts operator diagnostics
+#### Scenario: Retired directory route is absent
 
-- **WHEN** a directory client reads status through the `/mcp-directory` surface
-- **THEN** raw activity logs and internal diagnostics are stripped and the payload carries a `directory_privacy_note`, whereas the live `/mcp` `read_graph target=status` returns the full unredacted status
+- **WHEN** a client calls `/mcp-directory` or a versioned descendant after the cutover
+- **THEN** no MCP transport or catalog is mounted at that path
+- **AND** the response is the ordinary absent-route 404
+- **AND** it has no `Location` redirect, proxy, alias, translation to `/mcp`, 410 status, or compatibility body
 
-### Requirement: Published registry metadata follows the current versioned directory catalog
-The checked-in MCP Registry manifest SHALL advertise the versioned remote URL derived from `tinyassets.connector_catalog.directory_mcp_remote_url()`, and repository tests plus packaging CI SHALL fail when `packaging/registry/server.json` differs from the deterministic generator output. The generator SHALL run directly from a clean repository checkout. Before repaired metadata is accepted for publication, the generated versioned URL SHALL serve the current directory catalog successfully.
+### Requirement: Published registry metadata follows canonical MCP
 
-#### Scenario: a connector catalog version change makes stale metadata fail
-- **WHEN** `DIRECTORY_TOOL_CATALOG_VERSION` changes without regenerating `packaging/registry/server.json`
+The checked-in MCP Registry manifest SHALL advertise
+`https://tinyassets.io/mcp`. Repository tests plus packaging CI SHALL fail when
+`packaging/registry/server.json` differs from deterministic canonical runtime
+metadata. The generator SHALL run directly from a clean repository checkout.
+
+#### Scenario: Canonical registry metadata change makes stale metadata fail
+
+- **WHEN** the canonical Registry endpoint or manifest version changes without regenerating `packaging/registry/server.json`
 - **THEN** the focused artifact-equality test fails
 - **AND** the packaging workflow's generator `--check` step fails
 
-#### Scenario: clean checkout generation uses the current catalog source
-- **WHEN** a contributor runs `python packaging/registry/generate_server_json.py --check` from repository root
-- **THEN** the command imports the repository's real `tinyassets.connector_catalog` module
-- **AND** it compares the checked-in manifest with the document containing `directory_mcp_remote_url()`
+#### Scenario: Clean checkout generation uses canonical metadata
 
-#### Scenario: repaired registry remote is reachable
+- **WHEN** a contributor runs `python packaging/registry/generate_server_json.py --check` from repository root
+- **THEN** the command compares the checked-in manifest with deterministic canonical endpoint metadata without importing a retired directory catalog
+
+#### Scenario: Published registry remote is canonical and reachable
+
 - **WHEN** the generated manifest is proposed for external-directory publication
-- **THEN** a read-only Streamable-HTTP MCP handshake to its remote URL succeeds and lists the current versioned directory catalog handles
+- **THEN** its remote URL is exactly `https://tinyassets.io/mcp`
+- **AND** a read-only Streamable-HTTP MCP handshake lists the canonical exact-seven handles
 
 ### Requirement: Registered tools publish exact discoverability and behavior metadata
 The system SHALL attach the following title, tag set, and four MCP behavior hints to every currently registered tool. In the hint columns, `T` means true and `F` means false, ordered as read-only, destructive, idempotent, and open-world:

@@ -1,5 +1,11 @@
 # OpenAI App ChatGPT Proof - 2026-05-02
 
+> **SUPERSEDED / HISTORICAL — DO NOT EXECUTE.** This is a preserved
+> 2026-05-02 observation, not current registration guidance. The sole remote
+> endpoint is `https://tinyassets.io/mcp`; `/mcp-directory*` is retired to an
+> ordinary 404. Rebuild and re-prove any OpenAI registration from the active
+> `reconcile-external-connector-manifests` OpenSpec change.
+
 Purpose: preserve the live ChatGPT Developer Mode evidence that informed the
 OpenAI submission prep packet.
 
