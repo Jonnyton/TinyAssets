@@ -6,6 +6,13 @@
 
 ## 1. Verified Prerequisites
 
+> Re-verified against the tree 2026-07-24: 1.1 (`ids.new_universe_id` +
+> `_action_create_universe` mkdir-rollback), 1.2 (`seed_okf_bundle`; no starter
+> `self/`/`soul/`/`notes.json`/`activity.log`), 1.3 (`ensure_founder_home`
+> checks create scope before reserving; `get_status` pure read), 1.4
+> (`ensure_founder_home` resolves via founder-home binding, `.active_universe`
+> only written for anonymous creates) all hold. Left checked.
+
 - [x] 1.1 Verify creation generates an opaque lowercase `u-`+ULID serial when no id is supplied and rolls back partial roots.
 - [x] 1.2 Verify creation seeds the linked root OKF soul bundle and omits duplicate starter `self/`, `soul/`, `notes.json`, and `activity.log` artifacts for new universes.
 - [x] 1.3 Verify opening authenticated `converse` with create scope can reserve, materialize, and bind exactly one founder home while `get_status` remains a pure read; without create scope it writes no binding and returns a structured home-create/load error with `auth_scope_required: true`.
@@ -16,6 +23,15 @@
 ## 2. Execution-Authority Contract Tests
 
 - [ ] 2.0 Obtain opposite-provider APPROVE of provider-specific environment, cloud-chain, auth-home, local-subscription, hardware, and market-grant isolation, or incorporate every required ADAPT finding and have it re-reviewed to acceptance. Tasks 2.1-4.7 MUST NOT begin until this gate is satisfied; planning/spec work only.
+  - GATE UNSATISFIED (verified 2026-07-24). This is the P0 #1582 first-contact
+    execution-authority security gate. The review packets are open DRAFT PRs
+    #1617 (`codex/first-contact-authority-handshake`) and #1660
+    (`codex/first-contact-authority-review`), both explicitly "DO NOT MERGE OR
+    IMPLEMENT RUNTIME": they require Claude to independently re-check primary
+    sources and current TinyAssets ownership after its rate-limit reset before
+    the gate returns approve/adapt. Until that verdict lands, tasks 2.1-4.7 are
+    BLOCKED — planning/spec only. This lane built no execution-authority
+    runtime.
 - [ ] 2.1 Add a requester-owned success test proving a complete requester compute/model bundle permits the universe intelligence to generate a reply which the chatbot relays/renders verbatim.
 - [ ] 2.2 Add an accepted-market success test proving accepted compute and, when separately required, model-access grants permit execution and are recorded as market authority.
 - [ ] 2.3 Add missing and partial authority tests proving birth/binding may complete but no provider is invoked and the result is `held` / `setup_required` with `universe_id`, missing elements, and BYOC/market paths.
@@ -27,7 +43,19 @@
 ## 3. Authority Dependencies and Security Gate
 
 - [ ] 3.1 Confirm R2-1a has landed its `allowed_providers` engine/router boundary; consume that boundary rather than implementing a second provider-selection path.
+  - PARTIAL (verified 2026-07-24): the `allowed_providers` router boundary
+    EXISTS and hard-fails a provider not admitted by the resolved universe's
+    allowlist (`tinyassets/providers/router.py:209-345`) — this is the boundary
+    task 4.3 must consume, not duplicate. R2-1a is NOT fully landed: STATUS's
+    "R2-1a set_engine must constrain allowed_providers" row notes the founder's
+    own key still falls through the writer chain. Full consumption stays gated
+    behind task 2.0; recorded, not checked.
 - [ ] 3.2 Confirm R2-1b has landed its race-safe provider result/receipt for both writer calls; extend that object rather than using `_last_provider` or a parallel receipt.
+  - NOT LANDED (verified 2026-07-24): only the R2-1b SPEC landed (#1650,
+    `provider-attempt-receipts`); the runtime still exposes the process-global
+    `_last_provider` (`tinyassets/providers/call.py:54`) — the exact sink the
+    spec forbids. There is no result-local receipt object to extend yet, so
+    task 4.7 cannot begin. Blocked; recorded, not checked.
 
 ## 4. Execution-Authority Implementation
 
@@ -79,12 +107,50 @@
     (`test_creation_adds_unnamed_serial_index_row`,
     `test_learned_name_projects_onto_immutable_index_row`).
 - [ ] 5.4 Inventory descriptive-id roots and live references, then implement an atomic, rollback-safe migration to generated serial roots.
+  - TOOLING LANDED / HOST-RUN OPERATIONAL (verified 2026-07-24). Existing
+    `scripts/rename_live_data_universes_to_serial_ids.ps1` detects descriptive
+    roots by universe markers, generates `u-`+ULID serials, `Move-Item`s the
+    directory, writes a `universe_id_aliases.json` manifest (legacy id ->
+    serial, backed up), and re-points `.active_universe` — with root-containment
+    guards. This is a PowerShell operation against the live-data snapshot
+    (`scripts/` + `Workflow-live-data-snapshot`), OUTSIDE this lane's code Files
+    boundary and a live-data / data-loss-risk class needing host staging +
+    independent review. Evidence it has largely run: `migrate_live_data_okf_
+    baseline.ps1` already excludes a serial-id universe
+    (`u-01kw34sp5bdgzn1s9f7r2tmc4p`). Left to host-action; not a code build here.
 - [ ] 5.5 Verify migrated bindings and read/write/run/status references resolve only the serial id after migration.
+  - HOST-VERIFY (2026-07-24). No runtime `universe_id_aliases.json` resolution
+    layer exists in `tinyassets/` (grep clean) — by design, the migrator
+    RENAMES the directory to the serial, so directory-name-keyed references
+    resolve the serial after the move; the alias file is compatibility-lookup
+    only. Confirming live bindings/read/write/run/status all resolve the serial
+    is post-migration operational verification on the live snapshot, not a code
+    task in this lane. Blocked on 5.4's host run.
 - [ ] 5.6 Remove duplicate `self/`, `soul/`, and brain-archive directories plus empty starter notes/logs from existing roots while preserving non-empty historical runtime data.
+  - TOOLING LANDED / HOST-RUN OPERATIONAL (2026-07-24). Existing
+    `scripts/migrate_live_data_okf_baseline.ps1` rebuilds the canonical OKF
+    baseline top-files per root. Same class as 5.4: a PowerShell operation on
+    the live snapshot, outside this lane's code Files boundary. Host-action.
 
 ## 6. Verification and Release Gates
 
 - [ ] 6.1 Run focused auth, first-contact, provider-routing, learning-extraction, receipt, universe-lifecycle, migration, and HTTP tests.
-- [ ] 6.2 Re-run strict OpenSpec validation after implementation and before syncing or archiving this change.
+  - PARTIAL (2026-07-24): the lifecycle/first-contact/HTTP surfaces this lane
+    touched are green — `pytest tests/test_first_contact.py
+    tests/test_universe_soul.py tests/test_universe_server_directory_app.py
+    tests/test_universe_server_ledger.py tests/test_multi_tenant_isolation.py
+    tests/test_soul_edit.py` → 97 passed. Provider-routing / learning-extraction
+    / receipt coverage belongs to the blocked execution-authority tasks
+    (2.1-4.7) and is not built here. Verifier runs the full suite.
+- [x] 6.2 Re-run strict OpenSpec validation after implementation and before syncing or archiving this change.
+  - DONE (2026-07-24): `openspec validate universe-creation --strict` →
+    "Change 'universe-creation' is valid".
 - [ ] 6.3 Verify the success and setup-required paths through a rendered chatbot conversation using the live connector.
+  - BLOCKED: the success/setup-required (`held`) paths are the
+    execution-authority behavior gated behind task 2.0. Live-connector
+    `ui-test` proof applies once that runtime lands.
 - [ ] 6.4 Freshness-stamp post-fix production evidence that real users complete first contact without consuming maintainer resources; leave a monitoring item if no clean use is visible yet.
+  - PENDING execution-authority landing (gated by 2.0). STATUS P0 #1582 watch
+    item already tracks "newborn contact has no BYOC/market authority path" —
+    no post-fix clean-use evidence is possible until the authority runtime
+    ships.
