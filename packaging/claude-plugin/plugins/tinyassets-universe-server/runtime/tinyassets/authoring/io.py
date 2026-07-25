@@ -391,10 +391,15 @@ def read_handle_bytes(
     handle_id: str,
     *,
     actor_id: str,
-    session_id: str = "",
+    session_id: str,
     now: float | None = None,
 ) -> bytes:
-    """Read handle content, failing closed on expiry, revocation, or scope."""
+    """Read handle content, failing closed on expiry, revocation, or scope.
+
+    *session_id* is required, not optional: a handle is *execution-scoped*, so the
+    caller must state which session it is reading for. Leaving it defaultable let
+    a caller silently read one of the owner's handles from an unrelated session.
+    """
     handle = store.get_file_handle(
         handle_id, actor_id=actor_id, session_id=session_id, now=now
     )

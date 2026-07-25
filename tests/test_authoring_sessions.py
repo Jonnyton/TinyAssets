@@ -757,3 +757,173 @@ def test_authoring_actions_are_listed_and_scope_derived(us):
     assert action_scope_for("extensions", "authoring_inspect").effect == "read"
     assert action_scope_for("extensions", "authoring_test").effect == "costly"
     assert action_scope_for("extensions", "authoring_publish").effect == "write"
+
+
+# ---------------------------------------------------------------------------
+# Publication gates found by the 2026-07-25 cross-family review
+# ---------------------------------------------------------------------------
+
+
+def test_a_recurring_definition_hash_cannot_reuse_an_older_version_test(service):
+    """Edit away and back: the old test's hash matches, its version does not."""
+    from tinyassets.authoring.models import AuthoringValidationError
+
+    session_id = _complete_node_draft(service)
+    service.run_test(actor_id="alice", session_id=session_id)  # tested at v2
+
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=session_id,
+        operations=[{"op": "set", "path": "name", "value": "Renamed"}],
+    )
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=session_id,
+        operations=[{"op": "set", "path": "name", "value": "Recipe checker"}],
+    )
+    inspected = service.inspect_session(actor_id="alice", session_id=session_id)
+    assert inspected["draft_version"] == 4  # same hash as v2, different version
+
+    with pytest.raises(AuthoringValidationError) as exc:
+        service.publish_session(
+            actor_id="alice",
+            session_id=session_id,
+            expected_version=inspected["draft_version"],
+            change_message="stale test evidence",
+        )
+    assert any(i.code == "publish.untested_version" for i in exc.value.issues)
+    assert service.list_versions(actor_id="alice") == []
+
+    # Re-testing this version unblocks it.
+    service.run_test(actor_id="alice", session_id=session_id)
+    published = service.publish_session(
+        actor_id="alice",
+        session_id=session_id,
+        expected_version=inspected["draft_version"],
+        change_message="freshly tested",
+    )
+    assert published["version"]["version_no"] == 1
+
+
+def test_the_same_draft_version_cannot_be_published_twice(service):
+    from tinyassets.authoring.models import AuthoringConflictError
+
+    session_id = _complete_node_draft(service)
+    service.run_test(actor_id="alice", session_id=session_id)
+    draft_version = service.inspect_session(actor_id="alice", session_id=session_id)[
+        "draft_version"
+    ]
+    service.publish_session(
+        actor_id="alice",
+        session_id=session_id,
+        expected_version=draft_version,
+        change_message="v1",
+    )
+
+    with pytest.raises(AuthoringConflictError) as exc:
+        service.publish_session(
+            actor_id="alice",
+            session_id=session_id,
+            expected_version=draft_version,
+            change_message="v1 again",
+        )
+    assert "already published" in str(exc.value)
+    assert len(service.list_versions(actor_id="alice")) == 1
+
+
+def test_store_publish_is_atomic_against_a_concurrent_draft_advance(service, env):
+    """The reviewed version is re-checked *inside* the insert transaction."""
+    from tinyassets.authoring.models import AuthoringConflictError
+    from tinyassets.authoring.store import AuthoringStore
+
+    session_id = _complete_node_draft(service)
+    service.run_test(actor_id="alice", session_id=session_id)
+    store = AuthoringStore()
+    reviewed = store.get_session(session_id, actor_id="alice")
+
+    def publish_reviewed():
+        store.publish_version(
+            artifact_id=reviewed.artifact_id,
+            artifact_kind=reviewed.artifact_kind,
+            owner_id="alice",
+            visibility="public",
+            definition=reviewed.definition,
+            definition_hash=reviewed.definition_hash,
+            change_message="stale",
+            provenance={"source_draft_version": reviewed.draft_version},
+            evidence={},
+            source_session_id=session_id,
+            expected_draft_version=reviewed.draft_version,
+        )
+
+    # Race 1: the draft advances to a *different* definition after review.
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=session_id,
+        operations=[{"op": "set", "path": "name", "value": "Advanced"}],
+    )
+    with pytest.raises(AuthoringConflictError):
+        publish_reviewed()
+
+    # Race 2: the draft advances back to the *same* definition, so the hashes
+    # match again and only the version check can catch it. Without this case the
+    # hash check masks a broken version check.
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=session_id,
+        operations=[{"op": "set", "path": "name", "value": "Recipe checker"}],
+    )
+    current = store.get_session(session_id, actor_id="alice")
+    assert current.definition_hash == reviewed.definition_hash
+    assert current.draft_version != reviewed.draft_version
+    with pytest.raises(AuthoringConflictError):
+        publish_reviewed()
+
+    assert service.list_versions(actor_id="alice") == []
+
+
+def test_an_expired_draft_is_readable_but_not_writable(service, env):
+    """Retention is enforced, not merely stored."""
+    from tinyassets.authoring.models import AuthoringValidationError
+    from tinyassets.authoring.store import AuthoringStore
+
+    session_id = _complete_node_draft(service)
+    store = AuthoringStore()
+    with store._open(write=True) as conn:  # noqa: SLF001 — direct fixture setup
+        conn.execute(
+            "UPDATE authoring_sessions SET retention_until = ? WHERE session_id = ?",
+            ("2000-01-01T00:00:00+00:00", session_id),
+        )
+
+    # Reads still work so the owner can see what lapsed.
+    assert service.inspect_session(actor_id="alice", session_id=session_id)["owner_id"] == (
+        "alice"
+    )
+
+    for call in (
+        lambda: service.apply_edit_batch(
+            actor_id="alice",
+            session_id=session_id,
+            operations=[{"op": "set", "path": "name", "value": "x"}],
+        ),
+        lambda: service.run_test(actor_id="alice", session_id=session_id),
+        lambda: service.start_session(actor_id="alice", resume_session_id=session_id),
+    ):
+        with pytest.raises(AuthoringValidationError) as exc:
+            call()
+        assert any(i.code == "session.retention_expired" for i in exc.value.issues)
+
+
+def test_router_returns_json_for_an_out_of_range_list_index(us):
+    """A malformed path must be a machine-readable rejection, not a stack trace."""
+    started = _call(us, "authoring_start", field_type="node", intent="probe")
+    session_id = started["session"]["session_id"]
+
+    out = _call(
+        us,
+        "authoring_edit",
+        key=session_id,
+        changes_json=json.dumps([{"op": "append", "path": "edges[999]", "value": {}}]),
+    )
+    assert out["error"]
+    assert {i["code"] for i in out["issues"]} == {"op.inapplicable"}

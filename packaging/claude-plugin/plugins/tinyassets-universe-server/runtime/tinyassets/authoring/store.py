@@ -337,16 +337,6 @@ class AuthoringStore:
             ).fetchone()
         return self._session_from_row(row), event
 
-    def mark_session_published(self, session_id: str, *, actor_id: str) -> None:
-        with self._open(write=True) as conn:
-            conn.execute(
-                """
-                UPDATE authoring_sessions SET status = 'published', updated_at = ?
-                 WHERE session_id = ? AND owner_id = ?
-                """,
-                (self.timestamp(), session_id, actor_id),
-            )
-
     # ── events ────────────────────────────────────────────────────────────
 
     def append_event(
@@ -483,9 +473,56 @@ class AuthoringStore:
         change_message: str,
         provenance: dict[str, Any],
         evidence: dict[str, Any],
+        source_session_id: str = "",
+        expected_draft_version: int | None = None,
     ) -> ArtifactVersion:
+        """Insert one immutable version.
+
+        When *source_session_id* / *expected_draft_version* are supplied, the
+        session's version is re-checked **inside this transaction**, so a draft
+        that advances between the caller's review and this insert cannot publish
+        the stale reviewed definition. Re-publishing an already-published
+        (definition hash, source draft version) pair is refused rather than
+        producing duplicate lineage.
+        """
         stamp = self.timestamp()
         with self._open(write=True) as conn:
+            if source_session_id and expected_draft_version is not None:
+                session_row = conn.execute(
+                    """
+                    SELECT draft_version, definition_hash FROM authoring_sessions
+                    WHERE session_id = ? AND owner_id = ?
+                    """,
+                    (source_session_id, owner_id),
+                ).fetchone()
+                if session_row is None:
+                    raise access_denied()
+                if int(session_row["draft_version"]) != int(expected_draft_version):
+                    raise AuthoringConflictError(
+                        "the session advanced before publication committed: "
+                        f"reviewed version {expected_draft_version}, stored "
+                        f"{session_row['draft_version']}"
+                    )
+                if session_row["definition_hash"] != definition_hash:
+                    raise AuthoringConflictError(
+                        "the session definition changed before publication "
+                        "committed; the reviewed definition was not published"
+                    )
+                duplicate = conn.execute(
+                    """
+                    SELECT version_no FROM authoring_versions
+                    WHERE artifact_id = ? AND definition_hash = ?
+                      AND json_extract(provenance_json, '$.source_draft_version') = ?
+                    LIMIT 1
+                    """,
+                    (artifact_id, definition_hash, int(expected_draft_version)),
+                ).fetchone()
+                if duplicate is not None:
+                    raise AuthoringConflictError(
+                        "this exact draft version is already published as version "
+                        f"{duplicate['version_no']}; edit the draft before "
+                        "publishing again"
+                    )
             row = conn.execute(
                 """
                 SELECT version_id, version_no FROM authoring_versions

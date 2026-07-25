@@ -18,7 +18,9 @@
 --     runtime; CHECK + trigger-free monotonicity here via the events table);
 --   * contiguous, unique event sequence per session;
 --   * one (artifact_id, version_no) per published version, immutable;
---   * file handles expire and are owner-scoped, never path-bearing.
+--   * file handles expire and are owner-scoped, never path-bearing;
+--   * every child row (event, handle, confirmation) must belong to a session
+--     the caller owns — the FK alone only proves the session exists.
 --
 -- FIXTURE/PROTOTYPE: as with the rest of this chain, do not apply to live data
 -- without the founder gate.
@@ -174,7 +176,15 @@ CREATE POLICY authoring_events_select_owner ON public.authoring_events
 
 CREATE POLICY authoring_events_insert_owner ON public.authoring_events
   FOR INSERT TO PUBLIC
-  WITH CHECK (auth.uid() = owner_id);
+  WITH CHECK (
+    auth.uid() = owner_id
+    -- The FK only proves the session exists. Without this EXISTS, a caller
+    -- could attach an event to another user's session with their own owner_id.
+    AND EXISTS (
+      SELECT 1 FROM public.authoring_sessions s
+      WHERE s.session_id = authoring_events.session_id AND s.owner_id = auth.uid()
+    )
+  );
 
 ALTER TABLE public.authoring_versions ENABLE ROW LEVEL SECURITY;
 
@@ -188,9 +198,22 @@ CREATE POLICY authoring_versions_select_public ON public.authoring_versions
   FOR SELECT TO PUBLIC
   USING (visibility = 'public' AND auth.uid() IS NOT NULL);
 
+-- A version row names no session column, so its integrity comes from the
+-- provenance session id: the publisher must own the session they claim to
+-- publish from.
 CREATE POLICY authoring_versions_insert_owner ON public.authoring_versions
   FOR INSERT TO PUBLIC
-  WITH CHECK (auth.uid() = owner_id);
+  WITH CHECK (
+    auth.uid() = owner_id
+    AND (
+      coalesce(provenance->>'source_session_id', '') = ''
+      OR EXISTS (
+        SELECT 1 FROM public.authoring_sessions s
+        WHERE s.session_id = provenance->>'source_session_id'
+          AND s.owner_id = auth.uid()
+      )
+    )
+  );
 
 ALTER TABLE public.authoring_file_handles ENABLE ROW LEVEL SECURITY;
 
@@ -205,7 +228,14 @@ CREATE POLICY authoring_handles_select_owner ON public.authoring_file_handles
 
 CREATE POLICY authoring_handles_insert_owner ON public.authoring_file_handles
   FOR INSERT TO PUBLIC
-  WITH CHECK (auth.uid() = owner_id);
+  WITH CHECK (
+    auth.uid() = owner_id
+    AND EXISTS (
+      SELECT 1 FROM public.authoring_sessions s
+      WHERE s.session_id = authoring_file_handles.session_id
+        AND s.owner_id = auth.uid()
+    )
+  );
 
 CREATE POLICY authoring_handles_revoke_owner ON public.authoring_file_handles
   FOR UPDATE TO PUBLIC
@@ -220,7 +250,14 @@ CREATE POLICY authoring_confirmations_select_owner ON public.authoring_confirmat
 
 CREATE POLICY authoring_confirmations_insert_owner ON public.authoring_confirmations
   FOR INSERT TO PUBLIC
-  WITH CHECK (auth.uid() = owner_id);
+  WITH CHECK (
+    auth.uid() = owner_id
+    AND EXISTS (
+      SELECT 1 FROM public.authoring_sessions s
+      WHERE s.session_id = authoring_confirmations.session_id
+        AND s.owner_id = auth.uid()
+    )
+  );
 
 -- Consumption is an owner UPDATE that can only ever set consumed_at once; the
 -- runtime's UPDATE ... WHERE consumed_at IS NULL is the atomic single-use gate.

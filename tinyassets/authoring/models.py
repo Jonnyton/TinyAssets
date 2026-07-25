@@ -468,7 +468,10 @@ def apply_operations(
                     parent.pop(leaf)
                 else:
                     raise ValueError("remove requires a list index path")
-        except (ValueError, KeyError, TypeError) as exc:
+        except (ValueError, LookupError, TypeError) as exc:
+            # LookupError covers IndexError as well as KeyError: `append` to
+            # `edges[999]` must be a machine-readable rejection, not an
+            # exception that escapes the router as a stack trace.
             issues.append(ValidationIssue("op.inapplicable", raw_path, str(exc)))
 
     if issues:
@@ -540,6 +543,7 @@ def validate_definition(
         return [ValidationIssue("definition.malformed", "", "definition must be an object")]
 
     issues: list[ValidationIssue] = []
+    issues.extend(_validate_no_secret_material(definition))
     issues.extend(_validate_manifest_shape(definition))
     issues.extend(_validate_effects(definition))
     issues.extend(_validate_composition(definition, self_artifact_id, resolve_version))
@@ -811,26 +815,65 @@ def _validate_effects(definition: dict[str, Any]) -> list[ValidationIssue]:
                 f"{where}.credential_class",
                 "declare the required credential class ('none' when no secret is used)",
             ))
-        # An effect declares a credential *class*, never the material. A draft is
-        # a shared, inspectable, storable document; secret values belong in the
-        # canonical vault, vended to the adapter at run time.
-        for key in _forbidden_effect_keys(effect):
-            issues.append(ValidationIssue(
-                "effect.inline_credentials_forbidden",
-                f"{where}.{key}",
-                "an effect declaration must not carry secret material; use "
-                "credential_class and let the vault vend the secret",
-            ))
+        # A destination is echoed back to the user in would_execute records and
+        # confirmation prompts, so it must not smuggle a secret in its userinfo
+        # or query string.
+        for issue in _destination_secret_issues(
+            str(effect.get("destination", "")), f"{where}.destination"
+        ):
+            issues.append(issue)
     return issues
 
 
-def _forbidden_effect_keys(effect: dict[str, Any]) -> list[str]:
-    from tinyassets.authoring.sandbox import forbidden_declaration_keys
+def _destination_secret_issues(destination: str, path: str) -> list[ValidationIssue]:
+    from tinyassets.authoring.sandbox import destination_secret_parts
 
-    return [
-        key for key in forbidden_declaration_keys(effect)
-        if str(key).strip().lower() != "credential_class"
-    ]
+    parts = destination_secret_parts(destination)
+    if not parts:
+        return []
+    return [ValidationIssue(
+        "effect.destination_carries_secret",
+        path,
+        "a destination must not carry secret material "
+        f"({', '.join(parts)}); keep the secret in the vault and declare a "
+        "credential_class instead",
+    )]
+
+
+def _validate_no_secret_material(definition: dict[str, Any]) -> list[ValidationIssue]:
+    """Refuse secret-shaped *declaration keys* anywhere in the draft document.
+
+    A draft is stored, echoed back in inspection views, and copied into event
+    payloads and published versions. Storing a secret and redacting it on the way
+    out is the wrong direction — one un-redacted path leaks it — so a declaration
+    key that would hold secret material is refused before it is ever persisted.
+    Free-text *values* (prompts, descriptions, sketches) are user content the
+    platform does not classify; this gate is about keys.
+    """
+    from tinyassets.authoring.sandbox import FORBIDDEN_DECLARATION_KEYS
+
+    issues: list[ValidationIssue] = []
+
+    def walk(node: Any, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                where = f"{path}.{key}" if path else str(key)
+                if str(key).strip().lower() in FORBIDDEN_DECLARATION_KEYS:
+                    issues.append(ValidationIssue(
+                        "definition.inline_credentials_forbidden",
+                        where,
+                        "a draft never carries secret material; declare a "
+                        "credential_class and let the canonical vault vend the "
+                        "secret to the adapter at run time",
+                    ))
+                    continue
+                walk(value, where)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+
+    walk(definition, "")
+    return issues
 
 
 def _validate_sandbox_policy(definition: dict[str, Any]) -> list[ValidationIssue]:

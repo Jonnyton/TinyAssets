@@ -150,7 +150,12 @@ def test_attached_pdfs_bind_to_opaque_execution_scoped_handles(store, session):
     assert bound.values["topic"] == "sourdough"
 
     # The bytes are retrievable only through the handle boundary.
-    assert io.read_handle_bytes(store, handles[0]["handle_id"], actor_id="alice") == PDF
+    assert io.read_handle_bytes(
+        store,
+        handles[0]["handle_id"],
+        actor_id="alice",
+        session_id=session.session_id,
+    ) == PDF
 
 
 def test_disallowed_media_type_fails_before_execution(store, session):
@@ -338,11 +343,15 @@ def test_handle_expires_and_then_fails_closed(store, session):
         lifetime_seconds=1,
     )
     handle_id = bound.values["sources"][0]["handle_id"]
-    assert io.read_handle_bytes(store, handle_id, actor_id="alice") == PDF
+    assert io.read_handle_bytes(
+        store, handle_id, actor_id="alice", session_id=session.session_id
+    ) == PDF
 
     later = store.now() + 5.0
     with pytest.raises(AuthoringAccessError):
-        io.read_handle_bytes(store, handle_id, actor_id="alice", now=later)
+        io.read_handle_bytes(
+            store, handle_id, actor_id="alice", session_id=session.session_id, now=later
+        )
 
 
 def test_revoked_handle_fails_closed(store, session):
@@ -356,7 +365,9 @@ def test_revoked_handle_fails_closed(store, session):
     store.revoke_file_handle(handle_id, actor_id="alice")
 
     with pytest.raises(AuthoringAccessError):
-        io.read_handle_bytes(store, handle_id, actor_id="alice")
+        io.read_handle_bytes(
+            store, handle_id, actor_id="alice", session_id=session.session_id
+        )
 
 
 def test_sibling_user_cannot_read_another_users_handle(store, session):
@@ -369,7 +380,9 @@ def test_sibling_user_cannot_read_another_users_handle(store, session):
     handle_id = bound.values["sources"][0]["handle_id"]
 
     with pytest.raises(AuthoringAccessError):
-        io.read_handle_bytes(store, handle_id, actor_id="mallory")
+        io.read_handle_bytes(
+            store, handle_id, actor_id="mallory", session_id=session.session_id
+        )
 
 
 def test_handle_ids_are_unguessable_and_scoped_to_their_session(store, session):

@@ -81,6 +81,7 @@ def is_network_sink(effect: dict[str, Any]) -> bool:
         return True
     return str(effect.get("sink", "")).strip().lower() in NETWORK_SINKS
 
+
 _BUDGET_FIELDS: tuple[str, ...] = (
     "cpu_seconds",
     "memory_mb",
@@ -310,6 +311,91 @@ def _host_of(destination: str) -> str:
     return raw.split("/")[0].split(":")[0]
 
 
+def destination_secret_parts(destination: str) -> list[str]:
+    """Name the parts of *destination* that would carry secret material.
+
+    A destination is echoed to the user in `would_execute` records and
+    confirmation prompts, so ``https://api.example/hook?token=…`` and
+    ``https://user:pw@host/`` are refused at declaration time rather than
+    redacted on the way out.
+    """
+    raw = str(destination or "").strip()
+    if not raw or "://" not in raw:
+        return []
+    split = urlsplit(raw)
+    found: list[str] = []
+    if split.username or split.password:
+        found.append("embedded userinfo")
+    for chunk in (split.query, split.fragment):
+        if not chunk:
+            continue
+        for pair in re.split(r"[&;]", chunk):
+            key = pair.split("=", 1)[0].strip().lower()
+            if key and (
+                key in FORBIDDEN_DECLARATION_KEYS
+                or any(pattern in key for pattern in _SECRET_KEY_PATTERNS)
+            ):
+                found.append(f"secret-shaped parameter '{key}'")
+    return found
+
+
+def display_destination(destination: str) -> str:
+    """The form safe to echo back: scheme, host, port, path — nothing else.
+
+    Declaration-time validation already refuses a secret-bearing destination;
+    this is the second layer, so a value that reached the store before that gate
+    existed still cannot be echoed with its query string or userinfo attached.
+    """
+    raw = str(destination or "").strip()
+    if not raw or "://" not in raw:
+        return raw
+    split = urlsplit(raw)
+    host = split.hostname or ""
+    if split.port:
+        host = f"{host}:{split.port}"
+    return f"{split.scheme}://{host}{split.path}" if host else raw
+
+
+#: Modules a draft node could use to reach the network. The shipped
+#: ``node_sandbox`` allowlist includes ``requests``/``httpx`` for the graph
+#: substrate, and the host has no egress filter (see :func:`isolation_report`),
+#: so authoring cannot make "network denied except declared destinations" true
+#: for such code. It therefore refuses to execute it rather than pretending.
+NETWORK_CAPABLE_MODULES: frozenset[str] = frozenset({
+    "requests",
+    "httpx",
+    "socket",
+    "ssl",
+    "http",
+    "urllib.request",
+    "ftplib",
+    "smtplib",
+    "telnetlib",
+    "asyncio",
+    "aiohttp",
+    "websockets",
+})
+
+_IMPORT_RE = re.compile(
+    r"^\s*(?:from\s+([A-Za-z_][\w.]*)|import\s+([A-Za-z_][\w.]*(?:\s*,\s*[A-Za-z_][\w.]*)*))",
+    re.MULTILINE,
+)
+
+
+def network_capable_imports(source_code: str) -> list[str]:
+    """Return the network-capable modules a draft node's source imports."""
+    found: set[str] = set()
+    for match in _IMPORT_RE.finditer(str(source_code or "")):
+        raw = match.group(1) or match.group(2) or ""
+        for name in (part.strip() for part in raw.split(",")):
+            if not name:
+                continue
+            root = name.split(".")[0]
+            if name in NETWORK_CAPABLE_MODULES or root in NETWORK_CAPABLE_MODULES:
+                found.add(name)
+    return sorted(found)
+
+
 def decide_network(policy: SandboxPolicy, destination: str) -> NetworkDecision:
     """Deny by default; allow only an exact declared host (or its subdomain)."""
     host = _host_of(destination)
@@ -447,7 +533,7 @@ def simulate_effect(effect: dict[str, Any], *, payload: Any = None) -> dict[str,
         "would_execute": {
             "name": effect.get("name", ""),
             "sink": effect.get("sink", ""),
-            "destination": effect.get("destination", ""),
+            "destination": display_destination(effect.get("destination", "")),
             "effect_class": classify_effect(effect),
             "credential_class": effect.get("credential_class", "unknown"),
             "idempotency_key": idempotency_key(effect, payload),
@@ -466,7 +552,7 @@ def confirmation_prompt(
         "draft_version": int(draft_version),
         "effect": effect.get("name", ""),
         "sink": effect.get("sink", ""),
-        "destination": effect.get("destination", ""),
+        "destination": display_destination(effect.get("destination", "")),
         "effect_class": classify_effect(effect),
         "payload_summary": _payload_summary(payload),
         "credential_class": effect.get("credential_class", "unknown"),
@@ -559,11 +645,3 @@ def authorize_real_effect(
         "confirmation_required": True,
         "idempotency_key": idempotency_key(effect, payload),
     }
-
-
-_HOST_SAFE = re.compile(r"[^a-z0-9.\-]")
-
-
-def normalize_destination(destination: str) -> str:
-    """Lower-cased host form used for policy comparison and reporting."""
-    return _HOST_SAFE.sub("", _host_of(destination))

