@@ -1,19 +1,23 @@
 """Host-operator-only safety primitives for exact-founder-home reset.
 
-This module is intentionally not imported by the MCP or HTTP servers.  The
-public lifecycle surface remains unchanged; scoped reset is an offline
-maintenance operation with an explicit reviewed plan.
+Servers import only its writer-barrier primitive.  Planning and mutation stay
+unregistered operator-only CLI functions: scoped reset is an offline
+maintenance operation with an explicit reviewed plan, never a public deletion
+surface.
 """
 
 from __future__ import annotations
 
 import argparse
+import ctypes
+import getpass
 import hashlib
 import json
 import os
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -23,7 +27,7 @@ from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
 
-INVENTORY_REVISION = "scoped-reset-inventory-v1-2026-07-25"
+INVENTORY_REVISION = "scoped-reset-inventory-v2-2026-07-25"
 
 # Classification is location-specific: these are the only reviewed tables
 # allowed in the root .tinyassets.db.  A migration adding any other table must
@@ -83,13 +87,17 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
 })
 
 FAULT_POINTS = (
+    "after_journal",
+    "after_prepare",
     "before_rename",
     "after_rename",
     "before_commit",
     "after_commit",
     "before_cleanup",
     "after_cleanup",
+    "after_complete",
 )
+_WINDOWS_BARRIER_SLOTS = 256
 
 _ACTIVE_DAEMON_STATES = frozenset({
     "active",
@@ -125,6 +133,22 @@ _HOME_AUDIT_PREFIXES = (
     "auto_ship_attempts.jsonl",
     "bid_execution_log.json",
 )
+_HOME_OPERATIONAL_NAMES = frozenset({
+    ".effector_consents.db",
+    ".external_write_receipts.db",
+    ".idempotency.db",
+    ".langgraph_runs.db",
+    ".runs.db",
+    "checkpoints.db",
+    "knowledge.db",
+    "story.db",
+})
+_HOME_OPERATIONAL_DIRECTORIES = frozenset({
+    ".credentials",
+    ".lance",
+    "checkpoints",
+    "lance",
+})
 _KNOWN_ROOT_DATABASES = frozenset({
     ".auth.db",
     ".external_write_receipts.db",
@@ -139,6 +163,152 @@ _KNOWN_ROOT_DATABASES = frozenset({
     "knowledge.db",
     "story.db",
     "wiki_trigger_attempts.db",
+})
+_ROOT_OPERATIONAL_BLOCKERS = frozenset({
+    ".external_write_receipts.db",
+    ".idempotency.db",
+    ".langgraph_runs.db",
+    ".node_eval.db",
+    ".project_memory.db",
+    "checkpoints.db",
+    "daemon_brain.db",
+    "knowledge.db",
+    "story.db",
+})
+_ROOT_OPERATIONAL_DIRECTORIES = frozenset({
+    ".lance",
+    "checkpoints",
+    "knowledge",
+    "lance",
+    "story",
+})
+
+# Exact schema facts for every table whose rows may be deleted.  Table-name
+# classification alone is insufficient: a new column, key, or trigger can add
+# deletion authority without adding a table.
+_RESETTABLE_TABLE_COLUMNS = MappingProxyType({
+    "universes": (
+        ("universe_id", "TEXT", 0, None, 1),
+        ("display_name", "TEXT", 1, None, 0),
+        ("host_path", "TEXT", 1, None, 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "universe_rules": (
+        ("universe_id", "TEXT", 0, None, 1),
+        ("public_read", "INTEGER", 1, "1", 0),
+        ("public_fork", "INTEGER", 1, "1", 0),
+        ("branch_mode", "TEXT", 1, "'no_fixed_mainline'", 0),
+        ("quick_vote_seconds", "INTEGER", 1, "300", 0),
+        ("updated_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "universe_notes": (
+        ("note_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("source", "TEXT", 1, None, 0),
+        ("text", "TEXT", 1, None, 0),
+        ("category", "TEXT", 1, None, 0),
+        ("status", "TEXT", 1, None, 0),
+        ("target", "TEXT", 0, None, 0),
+        ("clearly_wrong", "INTEGER", 1, "0", 0),
+        ("quoted_passage", "TEXT", 1, "''", 0),
+        ("tags_json", "TEXT", 1, "'[]'", 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+        ("timestamp", "REAL", 1, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+    ),
+    "universe_work_targets": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("target_id", "TEXT", 1, None, 2),
+        ("payload_json", "TEXT", 1, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+    ),
+    "universe_hard_priorities": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("priority_id", "TEXT", 1, None, 2),
+        ("payload_json", "TEXT", 1, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+    ),
+    "universe_snapshots": (
+        ("snapshot_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("branch_id", "TEXT", 1, None, 0),
+        ("label", "TEXT", 1, None, 0),
+        ("artifact_ref", "TEXT", 1, "''", 0),
+        ("created_by", "TEXT", 1, None, 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "branches": (
+        ("branch_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("name", "TEXT", 1, None, 0),
+        ("parent_branch_id", "TEXT", 0, None, 0),
+        ("is_public", "INTEGER", 1, "1", 0),
+        ("status", "TEXT", 1, "'active'", 0),
+        ("created_by", "TEXT", 1, None, 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "branch_heads": (
+        ("branch_id", "TEXT", 0, None, 1),
+        ("snapshot_id", "TEXT", 0, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "user_requests": (
+        ("request_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("branch_id", "TEXT", 0, None, 0),
+        ("user_id", "TEXT", 1, None, 0),
+        ("request_type", "TEXT", 1, None, 0),
+        ("text", "TEXT", 1, None, 0),
+        ("preferred_author_id", "TEXT", 0, None, 0),
+        ("status", "TEXT", 1, "'open'", 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("updated_at", "REAL", 1, None, 0),
+        ("metadata_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "vote_windows": (
+        ("vote_id", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("vote_type", "TEXT", 1, None, 0),
+        ("subject_type", "TEXT", 1, None, 0),
+        ("subject_id", "TEXT", 1, None, 0),
+        ("created_by", "TEXT", 1, None, 0),
+        ("opens_at", "REAL", 1, None, 0),
+        ("closes_at", "REAL", 1, None, 0),
+        ("status", "TEXT", 1, "'open'", 0),
+        ("payload_json", "TEXT", 1, "'{}'", 0),
+        ("result_json", "TEXT", 1, "'{}'", 0),
+    ),
+    "vote_ballots": (
+        ("vote_id", "TEXT", 1, None, 1),
+        ("user_id", "TEXT", 1, None, 2),
+        ("choice", "TEXT", 1, None, 0),
+        ("comment", "TEXT", 1, "''", 0),
+        ("created_at", "REAL", 1, None, 0),
+    ),
+    "founder_home": (
+        ("founder_sub", "TEXT", 0, None, 1),
+        ("universe_id", "TEXT", 1, None, 0),
+        ("created_at", "REAL", 1, None, 0),
+        ("platform_generated", "INTEGER", 1, "0", 0),
+    ),
+    "universe_acl": (
+        ("universe_id", "TEXT", 1, None, 1),
+        ("actor_id", "TEXT", 1, None, 2),
+        ("permission", "TEXT", 1, None, 0),
+        ("granted_at", "REAL", 1, None, 0),
+        ("granted_by", "TEXT", 1, "''", 0),
+    ),
+})
+_RESETTABLE_FOREIGN_KEYS = MappingProxyType({
+    "universe_rules": (
+        ("universe_id", "universes", "universe_id", "NO ACTION", "CASCADE", "NONE"),
+    ),
 })
 
 _CONTROL_SCHEMA = """
@@ -253,12 +423,14 @@ class MaintenanceBarrier:
     fd: int
     path: Path
     exclusive: bool
+    offset: int
+    length: int
     _released: bool = False
 
     def release(self) -> None:
         if self._released:
             return
-        _unlock_fd(self.fd)
+        _unlock_fd(self.fd, offset=self.offset, length=self.length)
         os.close(self.fd)
         self._released = True
 
@@ -269,41 +441,55 @@ class MaintenanceBarrier:
         self.release()
 
 
-def _lock_fd(fd: int, *, exclusive: bool) -> bool:
-    os.lseek(fd, 0, os.SEEK_SET)
+def _lock_fd(
+    fd: int,
+    *,
+    exclusive: bool,
+) -> tuple[int, int] | None:
     if sys.platform == "win32":
         import msvcrt
 
-        mode = msvcrt.LK_NBLCK if exclusive else msvcrt.LK_NBRLCK
-        try:
-            msvcrt.locking(fd, mode, 1)
-        except OSError:
-            return False
-        return True
+        if exclusive:
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, _WINDOWS_BARRIER_SLOTS)
+            except OSError:
+                return None
+            return 0, _WINDOWS_BARRIER_SLOTS
+        for offset in range(_WINDOWS_BARRIER_SLOTS):
+            os.lseek(fd, offset, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            except OSError:
+                continue
+            return offset, 1
+        return None
 
     import fcntl
 
+    os.lseek(fd, 0, os.SEEK_SET)
     mode = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
     try:
         fcntl.flock(fd, mode | fcntl.LOCK_NB)
     except OSError:
-        return False
-    return True
+        return None
+    return 0, 1
 
 
-def _unlock_fd(fd: int) -> None:
-    os.lseek(fd, 0, os.SEEK_SET)
+def _unlock_fd(fd: int, *, offset: int, length: int) -> None:
     if sys.platform == "win32":
         import msvcrt
 
+        os.lseek(fd, offset, os.SEEK_SET)
         try:
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, length)
         except OSError:
             pass
         return
 
     import fcntl
 
+    os.lseek(fd, 0, os.SEEK_SET)
     try:
         fcntl.flock(fd, fcntl.LOCK_UN)
     except OSError:
@@ -322,19 +508,55 @@ def acquire_maintenance_barrier(
     exclusive ownership.  Contention is explicit and never treated as success.
     """
 
-    root = Path(data_dir).resolve(strict=True)
+    root = _validated_root(data_dir)
     path = root / ".scoped-reset.barrier"
-    fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o600)
-    if os.fstat(fd).st_size == 0:
-        os.write(fd, b"\0")
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(
+            str(path),
+            os.O_RDWR | os.O_CREAT | os.O_EXCL | nofollow,
+            0o600,
+        )
+    except FileExistsError:
+        try:
+            fd = os.open(str(path), os.O_RDWR | nofollow)
+        except OSError as exc:
+            raise ScopedResetBlocked(
+                "scoped-reset barrier file cannot be opened safely"
+            ) from exc
+    try:
+        barrier_stat = os.fstat(fd)
+        if (
+            not stat.S_ISREG(barrier_stat.st_mode)
+            or barrier_stat.st_nlink != 1
+            or barrier_stat.st_dev != root.stat().st_dev
+            or _is_link_or_reparse(path)
+        ):
+            raise ScopedResetBlocked(
+                "scoped-reset barrier file is linked, non-regular, "
+                "or outside the data-root filesystem"
+            )
+        if barrier_stat.st_size < _WINDOWS_BARRIER_SLOTS:
+            os.ftruncate(fd, _WINDOWS_BARRIER_SLOTS)
+    except Exception:
+        os.close(fd)
+        raise
     deadline = time.monotonic() + max(0.0, timeout)
-    while not _lock_fd(fd, exclusive=exclusive):
+    lock_range = _lock_fd(fd, exclusive=exclusive)
+    while lock_range is None:
         if time.monotonic() >= deadline:
             os.close(fd)
             mode = "exclusive reset" if exclusive else "shared writer"
             raise ScopedResetLeaseBusy(f"{mode} maintenance barrier is busy")
         time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
-    return MaintenanceBarrier(fd=fd, path=path, exclusive=exclusive)
+        lock_range = _lock_fd(fd, exclusive=exclusive)
+    return MaintenanceBarrier(
+        fd=fd,
+        path=path,
+        exclusive=exclusive,
+        offset=lock_range[0],
+        length=lock_range[1],
+    )
 
 
 def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
@@ -345,6 +567,104 @@ def _table_names(conn: sqlite3.Connection) -> frozenset[str]:
             "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
         )
     )
+
+
+def _validate_resettable_schema(conn: sqlite3.Connection) -> None:
+    for table, expected in _RESETTABLE_TABLE_COLUMNS.items():
+        xinfo = tuple(conn.execute(f'PRAGMA table_xinfo("{table}")'))
+        actual = tuple(
+            (str(row[1]), str(row[2]), int(row[3]), row[4], int(row[5]))
+            for row in xinfo
+        )
+        if actual != expected or any(int(row[6]) != 0 for row in xinfo):
+            raise ScopedResetSchemaError(
+                f"column manifest changed for resettable table: {table}"
+            )
+        foreign_keys = tuple(
+            (
+                str(row[3]),
+                str(row[2]),
+                str(row[4]),
+                str(row[5]),
+                str(row[6]),
+                str(row[7]),
+            )
+            for row in conn.execute(f'PRAGMA foreign_key_list("{table}")')
+        )
+        if foreign_keys != _RESETTABLE_FOREIGN_KEYS.get(table, ()):
+            raise ScopedResetSchemaError(
+                f"foreign-key manifest changed for resettable table: {table}"
+            )
+    authority_objects = tuple(
+        (str(row[0]), str(row[1]))
+        for row in conn.execute(
+            "SELECT type, name FROM sqlite_master "
+            "WHERE type IN ('trigger', 'view') ORDER BY type, name"
+        )
+    )
+    if authority_objects:
+        kind, name = authority_objects[0]
+        raise ScopedResetSchemaError(
+            f"{kind} authority is not reviewed for scoped reset: {name}"
+        )
+    approved_foreign_keys = {
+        (
+            "universe_rules",
+            "universe_id",
+            "universes",
+            "universe_id",
+            "NO ACTION",
+            "CASCADE",
+            "NONE",
+        ),
+        (
+            "request_admissions",
+            "request_id",
+            "user_requests",
+            "request_id",
+            "NO ACTION",
+            "CASCADE",
+            "NONE",
+        ),
+        (
+            "request_admission_events",
+            "request_id",
+            "user_requests",
+            "request_id",
+            "NO ACTION",
+            "CASCADE",
+            "NONE",
+        ),
+        (
+            "branch_tasks_v2",
+            "request_id",
+            "user_requests",
+            "request_id",
+            "NO ACTION",
+            "CASCADE",
+            "NONE",
+        ),
+    }
+    actual_reset_foreign_keys: set[tuple[str, ...]] = set()
+    for table in _table_names(conn):
+        for row in conn.execute(f'PRAGMA foreign_key_list("{table}")'):
+            if (
+                table in _RESETTABLE_TABLE_COLUMNS
+                or str(row[2]) in _RESETTABLE_TABLE_COLUMNS
+            ):
+                actual_reset_foreign_keys.add((
+                    table,
+                    str(row[3]),
+                    str(row[2]),
+                    str(row[4]),
+                    str(row[5]),
+                    str(row[6]),
+                    str(row[7]),
+                ))
+    if actual_reset_foreign_keys != approved_foreign_keys:
+        raise ScopedResetSchemaError(
+            "foreign-key deletion authority changed for scoped reset"
+        )
 
 
 def _is_link_or_reparse(path: Path) -> bool:
@@ -359,9 +679,60 @@ def _is_link_or_reparse(path: Path) -> bool:
     return bool(attributes & reparse)
 
 
+def _validated_root(data_dir: Path, *, strict: bool = True) -> Path:
+    raw = Path(data_dir).absolute()
+    if strict and not raw.is_dir():
+        raise ScopedResetBlocked("scoped-reset data root is missing")
+    if raw.exists() and _is_link_or_reparse(raw):
+        raise ScopedResetBlocked(
+            "scoped-reset data root is a link or reparse point"
+        )
+    root = raw.resolve(strict=strict)
+    if root != raw:
+        raise ScopedResetBlocked(
+            "scoped-reset data root traverses a link or reparse point"
+        )
+    return root
+
+
+def _validated_main_database(root: Path) -> Path:
+    db_file = root / DB_FILENAME
+    if not db_file.is_file():
+        return db_file
+    if _is_link_or_reparse(db_file):
+        raise ScopedResetBlocked(
+            "main database is a link or reparse point"
+        )
+    resolved = db_file.resolve(strict=True)
+    database_stat = resolved.stat()
+    if (
+        resolved.parent != root
+        or database_stat.st_dev != root.stat().st_dev
+        or database_stat.st_nlink != 1
+    ):
+        raise ScopedResetBlocked(
+            "main database escapes the root or has multiple filesystem links"
+        )
+    for suffix in ("-journal", "-shm", "-wal"):
+        sidecar = Path(f"{db_file}{suffix}")
+        if sidecar.exists():
+            sidecar_stat = sidecar.stat()
+            if (
+                _is_link_or_reparse(sidecar)
+                or sidecar_stat.st_nlink != 1
+                or sidecar_stat.st_dev != root.stat().st_dev
+            ):
+                raise ScopedResetBlocked(
+                    "main database sidecar is linked or crosses filesystems: "
+                    f"{sidecar.name}"
+                )
+    return db_file
+
+
 def _walk_home_without_following(home: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     pending = [home]
+    home_device = home.stat().st_dev
     while pending:
         current = pending.pop()
         try:
@@ -376,6 +747,11 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                     f"home contains link or reparse point: {path.relative_to(home)}"
                 )
                 continue
+            if path.stat().st_dev != home_device:
+                blockers.append(
+                    f"home crosses a nested mount boundary: {path.relative_to(home)}"
+                )
+                continue
             if entry.name in _CREDENTIAL_NAMES:
                 blockers.append(
                     f"home contains credential artifact: {path.relative_to(home)}"
@@ -388,7 +764,28 @@ def _walk_home_without_following(home: Path) -> tuple[str, ...]:
                 )
                 continue
             if entry.is_dir(follow_symlinks=False):
+                if entry.name in _HOME_OPERATIONAL_DIRECTORIES:
+                    blockers.append(
+                        "home operational directory has no scoped-reset "
+                        f"adapter: {path.relative_to(home)}"
+                    )
+                    continue
                 pending.append(path)
+            else:
+                base_name = entry.name
+                for suffix in ("-journal", "-shm", "-wal"):
+                    if base_name.endswith(suffix):
+                        base_name = base_name.removesuffix(suffix)
+                        break
+                if (
+                    base_name not in _HOME_OPERATIONAL_NAMES
+                    and not base_name.endswith(".db")
+                ):
+                    continue
+                blockers.append(
+                    "home operational store has no scoped-reset adapter: "
+                    f"{path.relative_to(home)}"
+                )
     return tuple(blockers)
 
 
@@ -427,6 +824,74 @@ def _inspect_database(
     )
     if foreign_grants:
         blockers.append(f"foreign grant references exact home ({foreign_grants})")
+
+    foreign_actor_checks = (
+        (
+            "user_requests",
+            "SELECT COUNT(*) FROM user_requests "
+            "WHERE universe_id = ? AND user_id <> ?",
+            (home_id, principal),
+        ),
+        (
+            "branches",
+            "SELECT COUNT(*) FROM branches "
+            "WHERE universe_id = ? AND created_by NOT IN (?, 'system')",
+            (home_id, principal),
+        ),
+        (
+            "universe_snapshots",
+            "SELECT COUNT(*) FROM universe_snapshots "
+            "WHERE universe_id = ? AND created_by NOT IN (?, 'system')",
+            (home_id, principal),
+        ),
+        (
+            "vote_windows",
+            "SELECT COUNT(*) FROM vote_windows "
+            "WHERE universe_id = ? AND created_by NOT IN (?, 'system')",
+            (home_id, principal),
+        ),
+        (
+            "vote_ballots",
+            "SELECT COUNT(*) FROM vote_ballots AS ballot "
+            "JOIN vote_windows AS vote ON vote.vote_id = ballot.vote_id "
+            "WHERE vote.universe_id = ? AND ballot.user_id <> ?",
+            (home_id, principal),
+        ),
+    )
+    for table, sql, params in foreign_actor_checks:
+        if _matching_count(conn, sql, params):
+            blockers.append(
+                f"foreign actor owns terminal reset state in {table}"
+            )
+
+    preserved_request_checks = (
+        (
+            "request_admissions",
+            "SELECT COUNT(*) FROM request_admissions AS preserved "
+            "JOIN user_requests AS request "
+            "ON request.request_id = preserved.request_id "
+            "WHERE request.universe_id = ?",
+        ),
+        (
+            "request_admission_events",
+            "SELECT COUNT(*) FROM request_admission_events AS preserved "
+            "JOIN user_requests AS request "
+            "ON request.request_id = preserved.request_id "
+            "WHERE request.universe_id = ?",
+        ),
+        (
+            "branch_tasks_v2",
+            "SELECT COUNT(*) FROM branch_tasks_v2 AS preserved "
+            "JOIN user_requests AS request "
+            "ON request.request_id = preserved.request_id "
+            "WHERE request.universe_id = ?",
+        ),
+    )
+    for table, sql in preserved_request_checks:
+        if _matching_count(conn, sql, (home_id,)):
+            blockers.append(
+                f"preserved {table} rows depend on candidate user_requests"
+            )
 
     active_checks: tuple[
         tuple[str, str, tuple[object, ...]],
@@ -533,6 +998,8 @@ def _inspect_root_runs(
     runs_path = root / ".runs.db"
     if not runs_path.is_file():
         return ()
+    if _is_link_or_reparse(runs_path) or runs_path.stat().st_nlink != 1:
+        return ("root run history is linked and cannot be classified",)
     try:
         conn = sqlite3.connect(f"file:{runs_path}?mode=ro", uri=True)
         tables = _table_names(conn)
@@ -570,6 +1037,12 @@ def _inspect_root_runs(
 def _inspect_root_operational_files(root: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     for entry in root.iterdir():
+        if entry.is_dir() and entry.name in _ROOT_OPERATIONAL_DIRECTORIES:
+            blockers.append(
+                "root operational directory has no scoped-reset adapter: "
+                f"{entry.name}"
+            )
+            continue
         if not entry.is_file():
             continue
         name = entry.name
@@ -578,6 +1051,11 @@ def _inspect_root_operational_files(root: Path) -> tuple[str, ...]:
             if base_name.endswith(suffix):
                 base_name = base_name.removesuffix(suffix)
                 break
+        if base_name in _ROOT_OPERATIONAL_BLOCKERS:
+            blockers.append(
+                f"root operational store has no scoped-reset adapter: {name}"
+            )
+            continue
         if (
             name == ".scoped-reset.barrier"
             or base_name in _KNOWN_ROOT_DATABASES
@@ -594,8 +1072,8 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     subject = principal.strip()
     if not subject:
         raise ValueError("principal must be non-empty")
-    root = Path(data_dir).resolve(strict=True)
-    db_file = root / DB_FILENAME
+    root = _validated_root(data_dir)
+    db_file = _validated_main_database(root)
     if not db_file.is_file():
         return ScopeInventory(
             principal=subject,
@@ -615,6 +1093,7 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
             raise ScopedResetSchemaError(
                 "unclassified tables block scoped reset: " + ", ".join(unknown)
             )
+        _validate_resettable_schema(conn)
         row = conn.execute(
             "SELECT universe_id FROM founder_home WHERE founder_sub = ?",
             (subject,),
@@ -652,6 +1131,8 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
                 blockers.append("founder-home directory is missing")
             elif _is_link_or_reparse(home_path):
                 blockers.append("founder-home path is a link or reparse point")
+            elif home_path.stat().st_dev != root.stat().st_dev:
+                blockers.append("founder-home path crosses a mount boundary")
             else:
                 blockers.extend(_walk_home_without_following(home_path))
         else:
@@ -667,7 +1148,8 @@ def inspect_reset_scope(data_dir: Path, *, principal: str) -> ScopeInventory:
     if offer.exists():
         blockers.append("enabled founder market offer must be disabled normally")
     blockers.extend(_inspect_root_runs(root, principal=subject))
-    blockers.extend(_inspect_root_operational_files(root))
+    if home_id is not None:
+        blockers.extend(_inspect_root_operational_files(root))
 
     return ScopeInventory(
         principal=subject,
@@ -884,8 +1366,8 @@ def plan_test_identity_reset(
         )
 
     scope = inspect_reset_scope(data_dir, principal=principal)
-    root = Path(data_dir).resolve(strict=True)
-    db_file = root / DB_FILENAME
+    root = _validated_root(data_dir)
+    db_file = _validated_main_database(root)
     actions: list[dict[str, object]] = []
     if db_file.is_file():
         conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
@@ -949,13 +1431,79 @@ def plan_test_identity_reset(
     }
 
 
+def _windows_roster_acl_is_private(path: Path) -> bool:
+    """Return whether every readable ACE is limited to the operator/system."""
+
+    acl_environment = os.environ.copy()
+    acl_environment["TINYASSETS_ROSTER_ACL_PATH"] = str(path)
+    owner_result = subprocess.run(
+        [
+            "powershell",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "(Get-Acl -LiteralPath "
+            "$env:TINYASSETS_ROSTER_ACL_PATH).Owner",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=acl_environment,
+    )
+    operator = getpass.getuser().casefold()
+    if owner_result.returncode != 0:
+        raise PermissionError(
+            "test identity roster Windows owner could not be inspected"
+        )
+    owner_account = owner_result.stdout.strip().casefold().rsplit("\\", 1)[-1]
+    if owner_account not in {operator, "administrators"}:
+        return False
+    result = subprocess.run(
+        ["icacls", str(path)],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        raise PermissionError(
+            "test identity roster Windows ACL could not be inspected"
+        )
+    allowed_accounts = {operator, "system", "administrators"}
+    saw_operator = False
+    for line in result.stdout.splitlines():
+        if ":" not in line or "(" not in line:
+            continue
+        acl_prefix = line.rsplit(":", 1)[0].strip()
+        identity = acl_prefix.rsplit(maxsplit=1)[-1].casefold()
+        account = identity.rsplit("\\", 1)[-1]
+        if account == operator:
+            saw_operator = True
+            continue
+        if account in allowed_accounts:
+            continue
+        return False
+    return saw_operator
+
+
 def load_test_identity_roster(path: Path) -> TestIdentityRoster:
     """Load the credential-free operator roster from an explicit local file."""
 
-    roster_path = Path(path).resolve(strict=True)
+    raw_roster_path = Path(path).absolute()
+    if _is_link_or_reparse(raw_roster_path):
+        raise PermissionError(
+            "test identity roster must not be a link or reparse point"
+        )
+    roster_path = raw_roster_path.resolve(strict=True)
     if not roster_path.is_file():
         raise ValueError("test identity roster must be a regular file")
-    if sys.platform != "win32":
+    if sys.platform == "win32":
+        if not _windows_roster_acl_is_private(roster_path):
+            raise PermissionError(
+                "test identity roster Windows ACL permits another principal"
+            )
+    else:
         permissions = stat.S_IMODE(roster_path.stat().st_mode)
         if permissions & 0o077:
             raise PermissionError(
@@ -993,8 +1541,8 @@ def read_completed_plan_receipt(
 ) -> dict[str, object] | None:
     """Return the immutable receipt for a witnessed completed plan, if any."""
 
-    root = Path(data_dir).resolve(strict=True)
-    db_file = root / DB_FILENAME
+    root = _validated_root(data_dir)
+    db_file = _validated_main_database(root)
     if not db_file.is_file():
         return None
     conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
@@ -1019,7 +1567,8 @@ def read_completed_plan_receipt(
 
 
 def _connect_control(data_dir: Path) -> sqlite3.Connection:
-    db_file = Path(data_dir) / DB_FILENAME
+    root = _validated_root(data_dir)
+    db_file = _validated_main_database(root)
     conn = sqlite3.connect(str(db_file), timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -1083,6 +1632,12 @@ def _safe_operation_paths(
     plan_id: str,
     home_path: Path | None,
 ) -> tuple[Path | None, Path | None, Path]:
+    if (
+        not plan_id.startswith("sha256:")
+        or len(plan_id) != 71
+        or any(character not in "0123456789abcdef" for character in plan_id[7:])
+    ):
+        raise ScopedResetBlocked("scoped-reset plan id is not canonical")
     operation_id = plan_id.removeprefix("sha256:")
     journal_root = root / ".scoped-reset-journal"
     staging_root = root / ".scoped-reset-staging" / operation_id
@@ -1092,11 +1647,20 @@ def _safe_operation_paths(
                 f"scoped-reset operational path is a link or reparse point: {path}"
             )
         path.mkdir(parents=True, exist_ok=True)
+        if path.stat().st_dev != root.stat().st_dev:
+            raise ScopedResetBlocked(
+                "scoped-reset operational path crosses a mount boundary: "
+                f"{path}"
+            )
     journal_path = journal_root / f"{operation_id}.json"
     if home_path is None:
         return None, None, journal_path
     source = home_path.resolve(strict=True)
-    if source.parent != root or _is_link_or_reparse(source):
+    if (
+        source.parent != root
+        or source != root / source.name
+        or _is_link_or_reparse(source)
+    ):
         raise ScopedResetBlocked("candidate home is outside the approved data root")
     staging_root.mkdir(parents=True, exist_ok=True)
     if _is_link_or_reparse(staging_root):
@@ -1116,8 +1680,39 @@ def _fsync_file(path: Path) -> None:
         os.fsync(handle.fileno())
 
 
+def _flush_windows_directory(path: Path) -> None:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.restype = ctypes.c_void_p
+    kernel32.FlushFileBuffers.argtypes = (ctypes.c_void_p,)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x40000000,  # GENERIC_WRITE is required to flush a directory handle.
+        0x00000001 | 0x00000002 | 0x00000004,
+        None,
+        3,  # OPEN_EXISTING
+        0x02000000,  # FILE_FLAG_BACKUP_SEMANTICS
+        None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        raise OSError(
+            ctypes.get_last_error(),
+            f"cannot open directory for durable flush: {path}",
+        )
+    try:
+        if not kernel32.FlushFileBuffers(handle):
+            raise OSError(
+                ctypes.get_last_error(),
+                f"cannot durably flush directory: {path}",
+            )
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def _fsync_directory(path: Path) -> None:
     if sys.platform == "win32":
+        _flush_windows_directory(path)
         return
     fd = os.open(str(path), os.O_RDONLY)
     try:
@@ -1132,6 +1727,7 @@ def _write_journal(
     plan_id: str,
     home_id: str | None,
     fence: int,
+    principal_fingerprint: str,
     source_path: Path | None,
     staging_path: Path | None,
 ) -> None:
@@ -1141,6 +1737,7 @@ def _write_journal(
         "inventory_revision": INVENTORY_REVISION,
         "home_id": home_id,
         "fence": fence,
+        "principal_fingerprint": principal_fingerprint,
         "source_path": str(source_path) if source_path else "",
         "staging_path": str(staging_path) if staging_path else "",
     }
@@ -1153,6 +1750,73 @@ def _write_journal(
     os.replace(temporary, path)
     _fsync_file(path)
     _fsync_directory(path.parent)
+
+
+def _expected_operation_evidence(
+    root: Path,
+    *,
+    plan_id: str,
+    home_id: str | None,
+) -> tuple[Path | None, Path | None, Path]:
+    if (
+        not plan_id.startswith("sha256:")
+        or len(plan_id) != 71
+        or any(character not in "0123456789abcdef" for character in plan_id[7:])
+    ):
+        raise ScopedResetRecoveryError("incomplete reset has invalid plan id")
+    operation_id = plan_id[7:]
+    journal = root / ".scoped-reset-journal" / f"{operation_id}.json"
+    if home_id is None:
+        return None, None, journal
+    if (
+        not home_id
+        or Path(home_id).name != home_id
+        or "/" in home_id
+        or "\\" in home_id
+    ):
+        raise ScopedResetRecoveryError("incomplete reset has invalid home id")
+    return (
+        root / home_id,
+        root / ".scoped-reset-staging" / operation_id / "home",
+        journal,
+    )
+
+
+def _validated_journal(
+    path: Path,
+    *,
+    plan_id: str,
+    home_id: str | None,
+    fence: int,
+    principal_fingerprint: str,
+    source: Path | None,
+    staging: Path | None,
+) -> dict[str, object]:
+    if _is_link_or_reparse(path) or not path.is_file():
+        raise ScopedResetRecoveryError(
+            f"incomplete reset is missing a safe journal: {plan_id}"
+        )
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ScopedResetRecoveryError(
+            f"incomplete reset journal is invalid: {plan_id}"
+        ) from exc
+    expected = {
+        "version": 1,
+        "plan_id": plan_id,
+        "inventory_revision": INVENTORY_REVISION,
+        "home_id": home_id,
+        "fence": fence,
+        "principal_fingerprint": principal_fingerprint,
+        "source_path": str(source) if source else "",
+        "staging_path": str(staging) if staging else "",
+    }
+    if payload != expected:
+        raise ScopedResetRecoveryError(
+            f"incomplete reset journal evidence disagrees with paths: {plan_id}"
+        )
+    return payload
 
 
 def _remove_journal(path: Path) -> None:
@@ -1343,7 +2007,11 @@ def _safe_cleanup_staging(root: Path, staging: Path | None) -> None:
         return
     resolved = staging.resolve(strict=True)
     expected_parent = root / ".scoped-reset-staging"
-    if expected_parent not in resolved.parents or _is_link_or_reparse(resolved):
+    if (
+        resolved != staging
+        or expected_parent not in resolved.parents
+        or _is_link_or_reparse(resolved)
+    ):
         raise ScopedResetRecoveryError("refusing unsafe reset staging cleanup")
     shutil.rmtree(resolved)
     operation_dir = resolved.parent
@@ -1401,7 +2069,74 @@ def apply_test_identity_reset(
         roster=roster,
     )
     principal_fingerprint = _principal_digest(principal)
-    root = Path(data_dir).resolve(strict=True)
+    root = _validated_root(data_dir)
+    db_file = _validated_main_database(root)
+    if db_file.is_file():
+        receipt_conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+        try:
+            receipt_conn.row_factory = sqlite3.Row
+            if "scoped_reset_operations" in _table_names(receipt_conn):
+                existing = _completed_receipt_for_principal(
+                    receipt_conn,
+                    plan_id=plan_id,
+                    principal_fingerprint=principal_fingerprint,
+                )
+                if existing is not None:
+                    return existing
+        finally:
+            receipt_conn.close()
+    preflight_plan = plan_test_identity_reset(
+        root,
+        alias=identity_alias,
+        roster=roster,
+    )
+    if preflight_plan["blockers"]:
+        raise ScopedResetBlocked("; ".join(preflight_plan["blockers"]))
+    if preflight_plan["noop"]:
+        with acquire_maintenance_barrier(root, exclusive=True, timeout=0.0):
+            db_file = _validated_main_database(root)
+            if db_file.is_file():
+                conn = _connect_control(root)
+                try:
+                    if "scoped_reset_operations" in _table_names(conn):
+                        existing = _completed_receipt_for_principal(
+                            conn,
+                            plan_id=plan_id,
+                            principal_fingerprint=principal_fingerprint,
+                        )
+                        if existing is None:
+                            _recover_locked(root, conn)
+                            existing = _completed_receipt_for_principal(
+                                conn,
+                                plan_id=plan_id,
+                                principal_fingerprint=principal_fingerprint,
+                            )
+                        if existing is not None:
+                            return existing
+                finally:
+                    conn.close()
+            preflight_plan = plan_test_identity_reset(
+                root,
+                alias=identity_alias,
+                roster=roster,
+            )
+            if preflight_plan["blockers"]:
+                raise ScopedResetBlocked("; ".join(preflight_plan["blockers"]))
+            if (
+                not preflight_plan["noop"]
+                or preflight_plan["plan_id"] != plan_id
+            ):
+                raise ScopedResetPlanChanged(
+                    "current state does not match the reviewed plan"
+                )
+        return {
+            "plan_id": plan_id,
+            "status": "noop",
+            "identity_alias": identity_alias,
+            "home_id": None,
+            "fence": 0,
+            "inventory_revision": INVENTORY_REVISION,
+        }
     with acquire_maintenance_barrier(root, exclusive=True, timeout=0.0):
         conn = _connect_control(root)
         try:
@@ -1447,6 +2182,16 @@ def apply_test_identity_reset(
                 principal_fingerprint=principal_fingerprint,
                 home_id=plan["home_id"],
             )
+            _write_journal(
+                journal,
+                plan_id=plan_id,
+                home_id=plan["home_id"],
+                fence=fence,
+                principal_fingerprint=principal_fingerprint,
+                source_path=source,
+                staging_path=staging,
+            )
+            _fault(fault_injector, "after_journal")
             _prepare_operation(
                 conn,
                 plan=plan,
@@ -1455,14 +2200,7 @@ def apply_test_identity_reset(
                 staging_path=staging,
                 journal_path=journal,
             )
-            _write_journal(
-                journal,
-                plan_id=plan_id,
-                home_id=plan["home_id"],
-                fence=fence,
-                source_path=source,
-                staging_path=staging,
-            )
+            _fault(fault_injector, "after_prepare")
             _fault(fault_injector, "before_rename")
             if source is not None and staging is not None:
                 os.replace(source, staging)
@@ -1513,42 +2251,181 @@ def apply_test_identity_reset(
             _fault(fault_injector, "after_commit")
             _fault(fault_injector, "before_cleanup")
             _safe_cleanup_staging(root, staging)
-            _remove_journal(journal)
+            _fault(fault_injector, "after_cleanup")
             _complete_operation(
                 conn,
                 plan_id=plan_id,
                 principal_fingerprint=principal_fingerprint,
             )
-            _fault(fault_injector, "after_cleanup")
+            _fault(fault_injector, "after_complete")
+            _remove_journal(journal)
             return receipt
         finally:
             conn.close()
 
 
+def _operation_evidence_from_row(
+    root: Path,
+    row: sqlite3.Row,
+) -> tuple[Path | None, Path | None, Path]:
+    plan_id = str(row["plan_id"])
+    home_id = str(row["home_id"]) if row["home_id"] else None
+    source, staging, journal = _expected_operation_evidence(
+        root,
+        plan_id=plan_id,
+        home_id=home_id,
+    )
+    stored = (
+        str(row["source_path"]),
+        str(row["staging_path"]),
+        str(row["journal_path"]),
+    )
+    expected = (
+        str(source) if source else "",
+        str(staging) if staging else "",
+        str(journal),
+    )
+    if stored != expected:
+        raise ScopedResetRecoveryError(
+            f"incomplete reset path evidence disagrees with scope: {plan_id}"
+        )
+    candidates = [source, staging, journal.parent]
+    if staging is not None:
+        candidates.extend((staging.parent, staging.parent.parent))
+    for candidate in candidates:
+        if candidate is not None and candidate.exists():
+            if (
+                _is_link_or_reparse(candidate)
+                or candidate.resolve(strict=True) != candidate
+            ):
+                raise ScopedResetRecoveryError(
+                    f"incomplete reset path evidence is linked: {plan_id}"
+                )
+            if candidate.stat().st_dev != root.stat().st_dev:
+                raise ScopedResetRecoveryError(
+                    f"incomplete reset path evidence crossed filesystems: {plan_id}"
+                )
+    _validated_journal(
+        journal,
+        plan_id=plan_id,
+        home_id=home_id,
+        fence=int(row["fence"]),
+        principal_fingerprint=str(row["principal_fingerprint"]),
+        source=source,
+        staging=staging,
+    )
+    return source, staging, journal
+
+
+def _sweep_terminal_or_orphan_journals(
+    root: Path,
+    conn: sqlite3.Connection,
+) -> None:
+    journal_root = root / ".scoped-reset-journal"
+    if not journal_root.exists():
+        return
+    if _is_link_or_reparse(journal_root):
+        raise ScopedResetRecoveryError(
+            "scoped-reset journal root is a link or reparse point"
+        )
+    for temporary in sorted(journal_root.glob("*.tmp")):
+        operation_id = temporary.stem
+        plan_id = f"sha256:{operation_id}"
+        if (
+            len(operation_id) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in operation_id
+            )
+            or _is_link_or_reparse(temporary)
+        ):
+            raise ScopedResetRecoveryError(
+                f"unsafe scoped-reset temporary journal: {temporary.name}"
+            )
+        row = conn.execute(
+            "SELECT 1 FROM scoped_reset_operations WHERE plan_id = ?",
+            (plan_id,),
+        ).fetchone()
+        if row is not None:
+            raise ScopedResetRecoveryError(
+                f"operation has only a temporary journal: {plan_id}"
+            )
+        conn.execute(
+            "UPDATE scoped_reset_leases SET state = 'released', updated_at = ? "
+            "WHERE plan_id = ?",
+            (time.time(), plan_id),
+        )
+        conn.commit()
+        temporary.unlink()
+        _fsync_directory(journal_root)
+    for journal in sorted(journal_root.glob("*.json")):
+        try:
+            payload = json.loads(journal.read_text(encoding="utf-8"))
+            plan_id = str(payload["plan_id"])
+        except (KeyError, OSError, json.JSONDecodeError) as exc:
+            raise ScopedResetRecoveryError(
+                f"unreadable scoped-reset journal: {journal.name}"
+            ) from exc
+        row = conn.execute(
+            "SELECT * FROM scoped_reset_operations WHERE plan_id = ?",
+            (plan_id,),
+        ).fetchone()
+        if row is not None:
+            if str(row["state"]) in {"completed", "rolled_back"}:
+                _operation_evidence_from_row(root, row)
+                _remove_journal(journal)
+            continue
+        home_id = str(payload["home_id"]) if payload.get("home_id") else None
+        source, staging, expected_journal = _expected_operation_evidence(
+            root,
+            plan_id=plan_id,
+            home_id=home_id,
+        )
+        if journal != expected_journal:
+            raise ScopedResetRecoveryError(
+                f"orphan journal path evidence disagrees with scope: {plan_id}"
+            )
+        _validated_journal(
+            journal,
+            plan_id=plan_id,
+            home_id=home_id,
+            fence=int(payload.get("fence", 0)),
+            principal_fingerprint=str(payload.get("principal_fingerprint", "")),
+            source=source,
+            staging=staging,
+        )
+        if staging is not None and staging.exists():
+            raise ScopedResetRecoveryError(
+                f"orphan journal has staged filesystem state: {plan_id}"
+            )
+        conn.execute(
+            "UPDATE scoped_reset_leases SET state = 'released', updated_at = ? "
+            "WHERE plan_id = ?",
+            (time.time(), plan_id),
+        )
+        conn.commit()
+        _remove_journal(journal)
+
+
 def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
     _ensure_control_schema(conn)
+    _sweep_terminal_or_orphan_journals(root, conn)
     rows = conn.execute(
         "SELECT * FROM scoped_reset_operations "
         "WHERE state NOT IN ('completed', 'rolled_back') ORDER BY created_at"
     ).fetchall()
     for row in rows:
         plan_id = str(row["plan_id"])
-        source = Path(str(row["source_path"])) if row["source_path"] else None
-        staging = Path(str(row["staging_path"])) if row["staging_path"] else None
-        journal = Path(str(row["journal_path"]))
+        source, staging, journal = _operation_evidence_from_row(root, row)
         witness = bool(row["commit_witness"])
-        if not journal.is_file():
-            raise ScopedResetRecoveryError(
-                f"incomplete reset is missing its journal: {plan_id}"
-            )
         if witness:
             _safe_cleanup_staging(root, staging)
-            _remove_journal(journal)
             _complete_operation(
                 conn,
                 plan_id=plan_id,
                 principal_fingerprint=str(row["principal_fingerprint"]),
             )
+            _remove_journal(journal)
             continue
         _verify_precommit_database_state(conn, row)
         if staging is not None and staging.exists():
@@ -1567,11 +2444,12 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
                     f"rollback rename failed for plan {plan_id}"
                 ) from exc
             _fsync_directory(root)
+            _fsync_directory(staging.parent)
         if staging is not None:
             operation_dir = staging.parent
             if operation_dir.is_dir() and not any(operation_dir.iterdir()):
                 operation_dir.rmdir()
-        _remove_journal(journal)
+                _fsync_directory(operation_dir.parent)
         now = time.time()
         conn.execute("BEGIN IMMEDIATE")
         try:
@@ -1590,6 +2468,7 @@ def _recover_locked(root: Path, conn: sqlite3.Connection) -> None:
         except Exception:
             conn.rollback()
             raise
+        _remove_journal(journal)
 
 
 def _verify_precommit_database_state(
@@ -1629,13 +2508,43 @@ def _verify_precommit_database_state(
 def recover_scoped_resets(data_dir: Path) -> None:
     """Converge every incomplete operation before affected writers resume."""
 
-    root = Path(data_dir).resolve(strict=True)
+    root = _validated_root(data_dir)
     with acquire_maintenance_barrier(root, exclusive=True, timeout=0.0):
         conn = _connect_control(root)
         try:
             _recover_locked(root, conn)
         finally:
             conn.close()
+
+
+def _assert_recovery_state_is_clean(root: Path) -> None:
+    journal_root = root / ".scoped-reset-journal"
+    if journal_root.exists():
+        if _is_link_or_reparse(journal_root):
+            raise ScopedResetRecoveryError(
+                "scoped-reset journal root is a link or reparse point"
+            )
+        if any(journal_root.glob("*.json")) or any(journal_root.glob("*.tmp")):
+            raise ScopedResetRecoveryError(
+                "writer cannot join while scoped-reset recovery is pending"
+            )
+    db_file = _validated_main_database(root)
+    if not db_file.is_file():
+        return
+    conn = sqlite3.connect(f"file:{db_file}?mode=ro", uri=True)
+    try:
+        if "scoped_reset_operations" not in _table_names(conn):
+            return
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM scoped_reset_operations "
+            "WHERE state NOT IN ('completed', 'rolled_back')"
+        ).fetchone()
+        if pending and int(pending[0]):
+            raise ScopedResetRecoveryError(
+                "writer cannot join while scoped-reset recovery is pending"
+            )
+    finally:
+        conn.close()
 
 
 def prepare_service_writer_barrier(
@@ -1645,14 +2554,66 @@ def prepare_service_writer_barrier(
 ) -> MaintenanceBarrier:
     """Recover interrupted reset state, then admit one service writer process."""
 
-    root = Path(data_dir).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    recover_scoped_resets(root)
-    return acquire_maintenance_barrier(
+    raw_root = Path(data_dir).absolute()
+    if raw_root.exists() and _is_link_or_reparse(raw_root):
+        raise ScopedResetBlocked(
+            "scoped-reset data root is a link or reparse point"
+        )
+    existing_ancestor = raw_root
+    while not existing_ancestor.exists():
+        existing_ancestor = existing_ancestor.parent
+    if (
+        _is_link_or_reparse(existing_ancestor)
+        or existing_ancestor.resolve(strict=True) != existing_ancestor
+    ):
+        raise ScopedResetBlocked(
+            "scoped-reset data-root ancestry traverses a link or reparse point"
+        )
+    raw_root.mkdir(parents=True, exist_ok=True)
+    root = raw_root.resolve(strict=True)
+    if root != raw_root or _is_link_or_reparse(root):
+        raise ScopedResetBlocked(
+            "scoped-reset data root traverses a link or reparse point"
+        )
+    try:
+        recovery_barrier = acquire_maintenance_barrier(
+            root,
+            exclusive=True,
+            timeout=0.0,
+        )
+    except ScopedResetLeaseBusy:
+        writer_barrier = acquire_maintenance_barrier(
+            root,
+            exclusive=False,
+            timeout=timeout,
+        )
+        try:
+            _assert_recovery_state_is_clean(root)
+        except Exception:
+            writer_barrier.release()
+            raise
+        return writer_barrier
+
+    try:
+        conn = _connect_control(root)
+        try:
+            _recover_locked(root, conn)
+        finally:
+            conn.close()
+    finally:
+        recovery_barrier.release()
+
+    writer_barrier = acquire_maintenance_barrier(
         root,
         exclusive=False,
         timeout=timeout,
     )
+    try:
+        _assert_recovery_state_is_clean(root)
+    except Exception:
+        writer_barrier.release()
+        raise
+    return writer_barrier
 
 
 def _build_parser() -> argparse.ArgumentParser:

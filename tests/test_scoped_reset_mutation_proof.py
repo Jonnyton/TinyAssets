@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -143,6 +146,180 @@ def test_widened_principal_filter_is_rejected_before_delete(
     assert (seeded / _HOME_A / "soul.md").is_file()
 
 
+def test_real_planner_predicate_widening_changes_the_reviewed_plan(
+    seeded: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan(seeded)
+    original = scoped_reset._select_rows
+
+    def widen_real_selection(
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        where: str,
+        params: tuple[object, ...],
+    ) -> list[sqlite3.Row]:
+        if table == "universe_acl" and where == "actor_id = ?":
+            return list(conn.execute('SELECT * FROM "universe_acl" ORDER BY rowid'))
+        return original(conn, table=table, where=where, params=params)
+
+    monkeypatch.setattr(scoped_reset, "_select_rows", widen_real_selection)
+
+    with pytest.raises(ScopedResetPlanChanged, match="reviewed plan"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+    assert (seeded / _HOME_A / "soul.md").is_file()
+    assert (seeded / _HOME_B / "soul.md").is_file()
+
+
+@pytest.mark.parametrize(
+    "fault_point",
+    ["after_journal", "after_prepare", "after_complete"],
+)
+def test_journal_ordering_windows_recover_without_stranding_state(
+    seeded: Path,
+    fault_point: str,
+) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match=f"injected:{fault_point}"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after(fault_point),
+        )
+
+    recover_scoped_resets(seeded)
+
+    journals = list((seeded / ".scoped-reset-journal").glob("*.json"))
+    assert journals == []
+    if fault_point in {"after_journal", "after_prepare"}:
+        assert (seeded / _HOME_A / "soul.md").is_file()
+    else:
+        assert not (seeded / _HOME_A).exists()
+
+
+def test_partial_temporary_journal_is_swept_before_retry(
+    seeded: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan(seeded)
+    real_replace = os.replace
+
+    def fail_journal_publish(source: str | Path, target: str | Path) -> None:
+        if Path(source).suffix == ".tmp" and Path(target).suffix == ".json":
+            raise OSError("injected journal publish failure")
+        real_replace(source, target)
+
+    monkeypatch.setattr(scoped_reset.os, "replace", fail_journal_publish)
+    with pytest.raises(OSError, match="journal publish"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+        )
+    monkeypatch.undo()
+
+    recover_scoped_resets(seeded)
+
+    assert list((seeded / ".scoped-reset-journal").glob("*.tmp")) == []
+    assert (seeded / _HOME_A / "soul.md").is_file()
+
+
+def test_recovery_rederives_paths_and_validates_journal(
+    seeded: Path,
+) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+    with _connect(seeded) as conn:
+        conn.execute(
+            "UPDATE scoped_reset_operations SET source_path = ? "
+            "WHERE plan_id = ?",
+            (str(seeded.parent / "outside"), plan["plan_id"]),
+        )
+
+    with pytest.raises(ScopedResetRecoveryError, match="path evidence"):
+        recover_scoped_resets(seeded)
+    assert not (seeded / _HOME_A).exists()
+
+
+def test_recovery_rejects_journal_content_tampering(seeded: Path) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    journal = seeded / ".scoped-reset-journal" / f"{operation_id}.json"
+    payload = json.loads(journal.read_text(encoding="utf-8"))
+    payload["source_path"] = str(seeded.parent / "outside")
+    journal.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ScopedResetRecoveryError, match="journal evidence"):
+        recover_scoped_resets(seeded)
+    assert not (seeded / _HOME_A).exists()
+
+
+def test_recovery_rejects_linked_staging_operation_ancestor(
+    seeded: Path,
+) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    staging_root = seeded / ".scoped-reset-staging"
+    operation_dir = staging_root / operation_id
+    relocated = staging_root / "relocated-operation"
+    operation_dir.replace(relocated)
+    if sys.platform == "win32":
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "New-Item",
+                "-ItemType",
+                "Junction",
+                "-Path",
+                str(operation_dir),
+                "-Target",
+                str(relocated),
+            ],
+            check=True,
+            capture_output=True,
+        )
+    else:
+        operation_dir.symlink_to(relocated, target_is_directory=True)
+
+    with pytest.raises(ScopedResetRecoveryError, match="path evidence"):
+        recover_scoped_resets(seeded)
+    assert not (seeded / _HOME_A).exists()
+
+
 def test_missing_commit_witness_never_restores_files_over_deleted_rows(
     seeded: Path,
 ) -> None:
@@ -207,3 +384,35 @@ def test_filesystem_rollback_failure_stays_recoverable_and_loud(
     monkeypatch.undo()
     recover_scoped_resets(seeded)
     assert (seeded / _HOME_A / "soul.md").is_file()
+
+
+def test_rollback_flushes_both_rename_parents_and_staging_root(
+    seeded: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan(seeded)
+    with pytest.raises(RuntimeError, match="injected:after_rename"):
+        apply_test_identity_reset(
+            seeded,
+            alias="alice",
+            roster=_roster(),
+            plan_id=plan["plan_id"],
+            fault_injector=_fault_after("after_rename"),
+        )
+    operation_id = str(plan["plan_id"]).removeprefix("sha256:")
+    operation_dir = seeded / ".scoped-reset-staging" / operation_id
+    seen: list[Path] = []
+    real_fsync = scoped_reset._fsync_directory
+
+    def record_fsync(path: Path) -> None:
+        seen.append(path)
+        real_fsync(path)
+
+    monkeypatch.setattr(scoped_reset, "_fsync_directory", record_fsync)
+    recover_scoped_resets(seeded)
+
+    assert {
+        seeded,
+        operation_dir,
+        seeded / ".scoped-reset-staging",
+    } <= set(seen)

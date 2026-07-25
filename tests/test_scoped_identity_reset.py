@@ -110,6 +110,51 @@ def test_unclassified_schema_growth_fails_loudly(seeded: Path) -> None:
         inspect_reset_scope(seeded, principal=_SUBJECT_A)
 
 
+@pytest.mark.parametrize(
+    "growth",
+    ["column", "generated_column", "trigger", "incoming_foreign_key"],
+)
+def test_reviewed_schema_manifest_rejects_authority_growth(
+    seeded: Path,
+    growth: str,
+) -> None:
+    from tinyassets.scoped_reset import ScopedResetSchemaError, inspect_reset_scope
+
+    with _connect(seeded) as conn:
+        if growth == "column":
+            conn.execute("ALTER TABLE universes ADD COLUMN future_owner TEXT")
+        elif growth == "generated_column":
+            conn.execute(
+                "ALTER TABLE universes ADD COLUMN shadow TEXT "
+                "GENERATED ALWAYS AS (display_name) VIRTUAL"
+            )
+        elif growth == "trigger":
+            conn.execute(
+                "CREATE TRIGGER future_delete_authority "
+                "AFTER DELETE ON universes BEGIN "
+                "DELETE FROM user_accounts; END"
+            )
+        else:
+            conn.execute(
+                "CREATE TABLE escrow_locks ("
+                "lock_id TEXT PRIMARY KEY, gate_claim_id TEXT NOT NULL, "
+                "staker_id TEXT NOT NULL, recipient_id TEXT, "
+                "status TEXT NOT NULL, universe_id TEXT, "
+                "FOREIGN KEY(universe_id) REFERENCES universes(universe_id) "
+                "ON DELETE CASCADE)"
+            )
+
+    expected = (
+        "foreign-key"
+        if growth == "incoming_foreign_key"
+        else "column"
+        if growth == "generated_column"
+        else growth
+    )
+    with pytest.raises(ScopedResetSchemaError, match=expected):
+        inspect_reset_scope(seeded, principal=_SUBJECT_A)
+
+
 @pytest.mark.parametrize("foreign_state", ["binding", "grant"])
 def test_foreign_binding_or_grant_blocks_exact_home(
     seeded: Path,
@@ -135,6 +180,67 @@ def test_foreign_binding_or_grant_blocks_exact_home(
 
     scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
     assert any(foreign_state in blocker for blocker in scope.blockers)
+
+
+def test_foreign_terminal_actors_block_exact_home(seeded: Path) -> None:
+    from tinyassets.scoped_reset import inspect_reset_scope
+
+    with _connect(seeded) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_requests (
+                request_id, universe_id, user_id, request_type, text,
+                status, created_at, updated_at
+            ) VALUES ('foreign-request', ?, ?, 'test', 'done', 1.0, 1.0, 1.0)
+            """,
+            (_HOME_A, _SUBJECT_B),
+        )
+        conn.execute(
+            """
+            INSERT INTO branches (
+                branch_id, universe_id, name, created_by, created_at, updated_at
+            ) VALUES ('foreign-branch', ?, 'foreign', ?, 1.0, 1.0)
+            """,
+            (_HOME_A, _SUBJECT_B),
+        )
+        conn.execute(
+            """
+            INSERT INTO universe_snapshots (
+                snapshot_id, universe_id, branch_id, label, created_by, created_at
+            ) VALUES ('foreign-snapshot', ?, 'foreign-branch', 'foreign', ?, 1.0)
+            """,
+            (_HOME_A, _SUBJECT_B),
+        )
+        conn.execute(
+            """
+            INSERT INTO vote_windows (
+                vote_id, universe_id, vote_type, subject_type, subject_id,
+                created_by, opens_at, closes_at, status
+            ) VALUES (
+                'foreign-vote', ?, 'test', 'test', 'test', ?, 1.0, 2.0,
+                'closed'
+            )
+            """,
+            (_HOME_A, _SUBJECT_B),
+        )
+        conn.execute(
+            """
+            INSERT INTO vote_ballots (
+                vote_id, user_id, choice, created_at
+            ) VALUES ('foreign-vote', ?, 'yes', 1.0)
+            """,
+            (_SUBJECT_B,),
+        )
+
+    scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
+    for table in (
+        "user_requests",
+        "branches",
+        "universe_snapshots",
+        "vote_windows",
+        "vote_ballots",
+    ):
+        assert any(table in blocker for blocker in scope.blockers)
 
 
 @pytest.mark.parametrize("active_store", ["daemon", "request", "epoch2"])
@@ -185,6 +291,73 @@ def test_active_daemon_request_or_epoch2_task_blocks(
 
     scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
     assert any(active_store in blocker for blocker in scope.blockers)
+
+
+def test_preserved_request_audit_dependencies_block_terminal_request_delete(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import inspect_reset_scope
+
+    with _connect(seeded) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_requests (
+                request_id, universe_id, user_id, request_type, text,
+                status, created_at, updated_at
+            ) VALUES (
+                'request-audit', ?, ?, 'test', 'test', 'done', 1.0, 1.0
+            )
+            """,
+            (_HOME_A, _SUBJECT_A),
+        )
+        conn.execute(
+            """
+            INSERT INTO request_admissions (
+                admission_id, request_id, branch_task_id, tenant_id, actor_id,
+                universe_id, idempotency_key_hash, body_digest,
+                body_digest_version, trigger_source, accepted_priority_weight,
+                priority_policy_version, result_json, created_at, updated_at
+            ) VALUES (
+                'admission-audit', 'request-audit', 'task-audit', 'tenant',
+                ?, ?, 'idem', 'digest', 'v1', 'user_request', 1.0, 'v1',
+                '{}', '2026-07-25T00:00:00Z', '2026-07-25T00:00:00Z'
+            )
+            """,
+            (_SUBJECT_A, _HOME_A),
+        )
+        conn.execute(
+            """
+            INSERT INTO request_admission_events (
+                event_id, admission_id, request_id, branch_task_id,
+                event_type, event_at
+            ) VALUES (
+                'event-audit', 'admission-audit', 'request-audit',
+                'task-audit', 'completed', '2026-07-25T00:00:00Z'
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO branch_tasks_v2 (
+                branch_task_id, admission_id, request_id, universe_id,
+                branch_def_id, trigger_source, priority_weight, status,
+                queued_at, terminal_at
+            ) VALUES (
+                'task-audit', 'admission-audit', 'request-audit', ?,
+                'branch-a', 'user_request', 1.0, 'succeeded',
+                '2026-07-25T00:00:00Z', '2026-07-25T00:01:00Z'
+            )
+            """,
+            (_HOME_A,),
+        )
+
+    scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
+    for table in (
+        "request_admissions",
+        "request_admission_events",
+        "branch_tasks_v2",
+    ):
+        assert any(f"preserved {table}" in blocker for blocker in scope.blockers)
 
 
 def test_active_root_run_schedule_and_market_obligation_block(
@@ -251,6 +424,35 @@ def test_unclassified_root_operational_store_blocks(seeded: Path) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("location", "name", "directory"),
+    [
+        ("root", ".langgraph_runs.db", False),
+        ("root", "lance", True),
+        ("home", "checkpoints.db", False),
+        ("home", "future_home_store.db", False),
+        ("home", "lance", True),
+    ],
+)
+def test_known_but_unadapted_operational_stores_block(
+    seeded: Path,
+    location: str,
+    name: str,
+    directory: bool,
+) -> None:
+    from tinyassets.scoped_reset import inspect_reset_scope
+
+    parent = seeded if location == "root" else seeded / _HOME_A
+    path = parent / name
+    if directory:
+        path.mkdir()
+    else:
+        path.write_bytes(b"unadapted operational state")
+
+    scope = inspect_reset_scope(seeded, principal=_SUBJECT_A)
+    assert any(name in blocker for blocker in scope.blockers)
+
+
 def test_credentials_and_reparse_points_block_without_following(
     seeded: Path,
 ) -> None:
@@ -285,6 +487,33 @@ def test_credentials_and_reparse_points_block_without_following(
     assert credentials.read_text(encoding="utf-8") == '{"sentinel":"do-not-read"}'
 
 
+def test_hardlinked_main_database_blocks_before_inspection(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import ScopedResetBlocked, inspect_reset_scope
+
+    database = seeded / ".tinyassets.db"
+    outside = seeded.parent / "outside-main.db"
+    database.replace(outside)
+    os.link(outside, database)
+
+    with pytest.raises(ScopedResetBlocked, match="multiple filesystem links"):
+        inspect_reset_scope(seeded, principal=_SUBJECT_A)
+
+
+def test_hardlinked_main_database_sidecar_blocks_before_inspection(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import ScopedResetBlocked, inspect_reset_scope
+
+    outside = seeded.parent / "outside-wal"
+    outside.write_bytes(b"outside sqlite state")
+    os.link(outside, Path(f"{seeded / '.tinyassets.db'}-wal"))
+
+    with pytest.raises(ScopedResetBlocked, match="sidecar"):
+        inspect_reset_scope(seeded, principal=_SUBJECT_A)
+
+
 def test_process_shared_barrier_excludes_reset_while_writer_is_active(
     seeded: Path,
 ) -> None:
@@ -304,6 +533,21 @@ def test_process_shared_barrier_excludes_reset_while_writer_is_active(
     resetter.release()
 
 
+def test_barrier_file_link_is_rejected_without_mutating_its_target(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import ScopedResetBlocked, acquire_maintenance_barrier
+
+    victim = seeded.parent / "barrier-victim"
+    victim.write_bytes(b"victim!")
+    os.link(victim, seeded / ".scoped-reset.barrier")
+
+    with pytest.raises(ScopedResetBlocked, match="barrier file"):
+        acquire_maintenance_barrier(seeded, exclusive=False)
+
+    assert victim.read_bytes() == b"victim!"
+
+
 def test_service_writer_barrier_recovers_then_holds_shared_lease(
     seeded: Path,
 ) -> None:
@@ -314,11 +558,54 @@ def test_service_writer_barrier_recovers_then_holds_shared_lease(
     )
 
     writer = prepare_service_writer_barrier(seeded)
+    second_writer = prepare_service_writer_barrier(seeded)
     try:
         with pytest.raises(ScopedResetLeaseBusy):
             acquire_maintenance_barrier(seeded, exclusive=True, timeout=0.05)
     finally:
+        second_writer.release()
         writer.release()
+
+
+def test_two_writer_processes_join_one_clean_shared_barrier(
+    seeded: Path,
+) -> None:
+    from tinyassets.scoped_reset import (
+        ScopedResetLeaseBusy,
+        acquire_maintenance_barrier,
+        prepare_service_writer_barrier,
+    )
+
+    child_code = (
+        "import sys,time;"
+        "from pathlib import Path;"
+        "from tinyassets.scoped_reset import prepare_service_writer_barrier;"
+        "barrier=prepare_service_writer_barrier(Path(sys.argv[1]));"
+        "print('ready',flush=True);"
+        "time.sleep(30)"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(seeded)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "ready"
+        writer = prepare_service_writer_barrier(seeded, timeout=2.0)
+        try:
+            with pytest.raises(ScopedResetLeaseBusy):
+                acquire_maintenance_barrier(
+                    seeded,
+                    exclusive=True,
+                    timeout=0.05,
+                )
+        finally:
+            writer.release()
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
 
 
 def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
@@ -326,22 +613,31 @@ def test_every_writer_process_entrypoint_installs_maintenance_barrier() -> None:
     for relative in (
         "tinyassets/__main__.py",
         "tinyassets/cloud_worker.py",
+        "tinyassets/mcp_server.py",
         "tinyassets/universe_server.py",
+        "tinyassets/desktop/launcher.py",
+        "fantasy_daemon/__main__.py",
+        "fantasy_daemon/api.py",
     ):
         source = (root / relative).read_text(encoding="utf-8")
         assert "prepare_service_writer_barrier" in source, relative
+    tray = (root / "tinyassets_tray.py").read_text(encoding="utf-8")
+    assert "tinyassets.universe_server import main" in tray
 
 
 def test_fault_contract_names_every_recovery_boundary() -> None:
     from tinyassets.scoped_reset import FAULT_POINTS
 
     assert FAULT_POINTS == (
+        "after_journal",
+        "after_prepare",
         "before_rename",
         "after_rename",
         "before_commit",
         "after_commit",
         "before_cleanup",
         "after_cleanup",
+        "after_complete",
     )
 
 
@@ -359,6 +655,24 @@ def test_scoped_reset_is_not_registered_as_public_surface() -> None:
         assert "recover_scoped_resets" not in text
 
     assert "TINYASSETS_TEST_IDENTITIES" not in os.environ
+
+
+def test_packaged_runtime_matches_scoped_reset_writer_sources() -> None:
+    root = Path(__file__).resolve().parents[1]
+    mirror = (
+        root
+        / "packaging"
+        / "claude-plugin"
+        / "plugins"
+        / "tinyassets-universe-server"
+        / "runtime"
+    )
+    for relative in (
+        Path("tinyassets/scoped_reset.py"),
+        Path("tinyassets/mcp_server.py"),
+        Path("tinyassets/desktop/launcher.py"),
+    ):
+        assert (root / relative).read_bytes() == (mirror / relative).read_bytes()
 
 
 def _roster(*, include_subject: bool = True):
@@ -436,12 +750,53 @@ def test_allowlisted_subject_without_state_has_stable_noop_plan(
         aliases={"empty": "workos|empty"},
         allowlisted_subjects=frozenset({"workos|empty"}),
     )
+    (seeded / ".langgraph_runs.db").write_bytes(b"unrelated operator state")
     plan = plan_test_identity_reset(seeded, alias="empty", roster=roster)
 
     assert plan["noop"] is True
+    assert plan["blockers"] == []
     assert plan["home_id"] is None
     assert plan["database_actions"] == []
     assert plan["filesystem_actions"] == []
+
+
+def test_no_database_noop_apply_is_repeatable_without_creating_control_state(
+    tmp_path: Path,
+) -> None:
+    from tinyassets.scoped_reset import (
+        apply_test_identity_reset,
+        plan_test_identity_reset,
+    )
+
+    empty_root = tmp_path / "empty-data"
+    empty_root.mkdir()
+    plan = plan_test_identity_reset(
+        empty_root,
+        alias="alice",
+        roster=_roster(),
+    )
+    assert plan["noop"] is True
+
+    first = apply_test_identity_reset(
+        empty_root,
+        alias="alice",
+        roster=_roster(),
+        plan_id=plan["plan_id"],
+    )
+    replacement = empty_root / _HOME_A
+    replacement.mkdir()
+    (replacement / "sentinel").write_text("new", encoding="utf-8")
+    replay = apply_test_identity_reset(
+        empty_root,
+        alias="alice",
+        roster=_roster(),
+        plan_id=plan["plan_id"],
+    )
+
+    assert first == replay
+    assert first["status"] == "noop"
+    assert not (empty_root / ".tinyassets.db").exists()
+    assert (replacement / "sentinel").read_text(encoding="utf-8") == "new"
 
 
 def test_plan_digest_changes_when_exact_binding_version_changes(
@@ -466,8 +821,9 @@ def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
     seeded: Path,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tinyassets.scoped_reset import main
+    import tinyassets.scoped_reset as scoped_reset
 
     roster_path = tmp_path / "test-identities.json"
     roster_path.write_text(
@@ -478,8 +834,14 @@ def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
         }),
         encoding="utf-8",
     )
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            scoped_reset,
+            "_windows_roster_acl_is_private",
+            lambda _path: True,
+        )
 
-    assert main([
+    assert scoped_reset.main([
         "plan",
         "--data-dir",
         str(seeded),
@@ -497,8 +859,9 @@ def test_operator_cli_loads_private_roster_and_emits_redacted_plan(
 
 def test_roster_rejects_credentials_and_unexpected_fields(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from tinyassets.scoped_reset import load_test_identity_roster
+    import tinyassets.scoped_reset as scoped_reset
 
     roster_path = tmp_path / "bad-roster.json"
     roster_path.write_text(
@@ -510,9 +873,62 @@ def test_roster_rejects_credentials_and_unexpected_fields(
         }),
         encoding="utf-8",
     )
+    if sys.platform == "win32":
+        monkeypatch.setattr(
+            scoped_reset,
+            "_windows_roster_acl_is_private",
+            lambda _path: True,
+        )
 
     with pytest.raises(ValueError, match="unexpected roster fields"):
-        load_test_identity_roster(roster_path)
+        scoped_reset.load_test_identity_roster(roster_path)
+
+
+def test_windows_roster_acl_failure_is_loud(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tinyassets.scoped_reset as scoped_reset
+
+    roster_path = tmp_path / "private.json"
+    roster_path.write_text(
+        json.dumps({
+            "revision": "roster-rev-1",
+            "aliases": {"alice": _SUBJECT_A},
+            "allowlisted_subjects": [_SUBJECT_A],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(scoped_reset.sys, "platform", "win32")
+    monkeypatch.setattr(
+        scoped_reset,
+        "_windows_roster_acl_is_private",
+        lambda _path: False,
+        raising=False,
+    )
+
+    with pytest.raises(PermissionError, match="Windows ACL"):
+        scoped_reset.load_test_identity_roster(roster_path)
+
+
+def test_directory_fsync_uses_windows_flush(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import tinyassets.scoped_reset as scoped_reset
+
+    seen: list[Path] = []
+    monkeypatch.setattr(scoped_reset.sys, "platform", "win32")
+    monkeypatch.setattr(
+        scoped_reset,
+        "_flush_windows_directory",
+        lambda path: seen.append(path),
+        raising=False,
+    )
+
+    scoped_reset._fsync_directory(tmp_path)
+
+    assert seen == [tmp_path]
 
 
 def test_completed_plan_replay_is_read_only_and_returns_receipt(
@@ -697,6 +1113,19 @@ def test_completed_apply_replay_preserves_new_home(
         universe_id=replacement_id,
         platform_generated=True,
     )
+    with _connect(seeded) as conn:
+        conn.execute(
+            """
+            INSERT INTO user_requests (
+                request_id, universe_id, user_id, request_type, text,
+                status, created_at, updated_at
+            ) VALUES (
+                'replacement-active', ?, ?, 'test', 'new state', 'open',
+                1.0, 1.0
+            )
+            """,
+            (replacement_id, _SUBJECT_A),
+        )
 
     replay = apply_test_identity_reset(
         seeded,

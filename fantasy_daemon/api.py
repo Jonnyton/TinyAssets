@@ -64,6 +64,7 @@ _api_key: str = ""
 # None when the API runs standalone (file-adapter-only mode).
 _daemon: Any = None
 _daemon_thread: Any = None
+_writer_barrier: Any = None
 
 
 def configure(
@@ -92,7 +93,14 @@ def configure(
     daemon_thread:
         Optional threading.Thread running the daemon.
     """
-    global _base_path, _api_key, _daemon, _daemon_thread
+    global _base_path, _api_key, _daemon, _daemon_thread, _writer_barrier
+    if _writer_barrier is not None:
+        _writer_barrier.release()
+        _writer_barrier = None
+    if base_path:
+        from tinyassets.scoped_reset import prepare_service_writer_barrier
+
+        _writer_barrier = prepare_service_writer_barrier(Path(base_path))
     _base_path = base_path
     _api_key = api_key
     _daemon = daemon
