@@ -133,9 +133,19 @@ The system SHALL keep every branch mutation and deletion action classified as no
 ### Requirement: Stored versions and branch-adjacent actions preserve branch authority
 The system SHALL resolve every stored branch version to its parent `branch_def_id` and apply the parent branch read boundary before direct version execution, version-derived inspection, or personal canonical use. Goal-wide canonical and selector bindings and globally readable Goal protocol steps SHALL accept only public-parent branches/versions because other users can execute or enumerate them. A missing parent definition SHALL fail closed. Goal list/search/get/protocol output SHALL omit unreadable legacy canonical, selector, and protocol pointers and SHALL recompute branch and gate-summary counts from readable branches; personal canonical resolution SHALL use the credential-validated request subject. `goals action=bind` SHALL require branch author authority. An authorized gates writer MAY claim or attach a conformance pack to a public branch or their own private branch, and claimant/pack authorship SHALL be the credential-validated request subject; run-derived claims SHALL additionally require read authority for the named completed run before output is read. Claim retraction/bonus lifecycle, exact/listed conformance packs, gate claims, Goal metric/common-node/archive projections, gate/quality leaderboards and recommendations, and gate-event citations SHALL derive branch visibility only from the credential-validated request subject before returning records, IDs, actors, counts, ranks, cap influence, or selector inputs. New globally readable gate events SHALL cite only public-parent branch versions, and legacy unreadable citations SHALL be filtered from event get/list/leaderboard output. Remix recording SHALL require readable-parent plus author-owned-child authority and server-bound attribution; provenance traversal SHALL expose only readable roots/ancestors/edges. Scheduler/subscription/universe-loop binding SHALL allow an authenticated subject to use a public target or their own private target, persist that subject as owner/authority, and list/mutate only that subject's rows without trusting an owner argument. Dry branch inspection SHALL use the same private-or-missing read envelope as other branch reads.
 
+Every run record SHALL persist a server-bound universe authority context separately from its actor/provenance label. Run read, output, receipt, query, and mutation surfaces SHALL require both the stored universe ACL and parent-branch authority; a synthetic background actor or a public universe MUST NOT make a private-parent run readable.
+
 #### Scenario: Foreign private version is executed directly
 - **WHEN** a caller supplies a version whose parent is another author's private branch to `run_branch_version`
 - **THEN** the response matches a missing-version denial and no provider call, run row, output, snapshot field, or parent branch ID is exposed
+
+#### Scenario: Synthetic background actor does not make a run public
+- **WHEN** a scheduler or subscriber executes a private branch with a valid receipt
+- **THEN** the run record retains the receipt's server-bound universe context and parent branch, and later run read/write/output surfaces require both universe ACL and parent-branch authority rather than treating the synthetic actor as public
+
+#### Scenario: Public universe contains a private-branch run
+- **WHEN** a non-author can read the run's universe but cannot read the run's private parent branch
+- **THEN** get/list/stream/wait/output/query/receipt and mutation surfaces omit or deny that run without exposing branch-derived output or metadata
 
 #### Scenario: Global canonical or selector targets a private parent
 - **WHEN** a Goal owner attempts to bind an active version whose parent branch is private
@@ -203,7 +213,7 @@ The system SHALL resolve every stored branch version to its parent `branch_def_i
 
 #### Scenario: Valid private branch runs after every human host is offline
 - **WHEN** an authenticated branch author binds their private branch to a schedule or universe loop and the server later fires it without a live request
-- **THEN** the server atomically persists an immutable `.runs.db` receipt containing schema version, binding kind/ID, target kind/ID, authenticated author, and issuance time; execution matches that receipt to the current binding, revalidates the target author, and may run without environment or caller actor fallback
+- **THEN** the server atomically persists an immutable `.runs.db` receipt containing schema version, binding kind/ID, universe ID, target kind/ID, authenticated subject, and issuance time; execution matches that receipt to the current binding, universe, and target, revalidates the target author, and may run without environment or caller actor fallback
 
 #### Scenario: Editable loop intent changes after authorization
 - **WHEN** `soul.md`, schedule inputs, a queue payload, or any other caller/branch-controlled field changes or substitutes the target without a new authenticated binding
