@@ -53,8 +53,9 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface; also create the WorkOS native/public client (PKCE S256, no secret, exact variable-port `127.0.0.1` loopback redirect, offline access) + `WORKOS_HOST_BINDING_RESOURCE` audience | deployment env; WorkOS dashboard | test-identity landing; #1753 tasks 1.3/3.2 | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
+| Raise the Claude Code monthly-spend ceiling (rate limit reset is insufficient) so literal Opus 5 can review gated Codex lanes | claude.ai/settings/usage | PostgreSQL restack and other Opus-gated lanes | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude Opus 5 reset 2026-07-24; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.
+4. **Capacity/context** — Claude model rate limit reset, but CLI is blocked by the account monthly-spend ceiling as of 2026-07-25; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`.
