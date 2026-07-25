@@ -136,7 +136,7 @@ def _extensions_dispatch_keys() -> set[str]:
     """Union of every dispatch table the `extensions` tool routes."""
     inline = {
         "register", "list", "inspect",
-        "approve", "disable", "enable", "remove",
+        "approve", "disable", "enable", "remove", "get_action_scope_status",
     }
     return (
         inline

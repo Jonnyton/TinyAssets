@@ -1407,7 +1407,7 @@ def extensions(
       get_branch, list_branches, patch_branch, patch_nodes, search_nodes,
       set_entry_point, update_node, validate_branch.
     - Runs: attach_existing_child_run, cancel_run, estimate_run_cost,
-      get_memory_scope_status, get_rollback_history, get_routing_evidence,
+      get_action_scope_status, get_memory_scope_status, get_rollback_history, get_routing_evidence,
       get_run, get_run_output, list_run_receipts, list_runs, query_runs,
       record_run_receipt, resume_run, rollback_merge, run_branch,
       run_branch_version, stream_run, wait_for_run.
