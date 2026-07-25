@@ -216,7 +216,7 @@ jobs:
           set -euo pipefail
           stage=packaging/release-stage/macos
           mkdir -p "$stage"
-          cp -R packaging/dist/macos/TinyAssets.app "$stage/"
+          tar -C packaging/dist/macos -czf "$stage/TinyAssets.app.tar.gz" TinyAssets.app
           artifact="$(find packaging/dist/macos -maxdepth 1 -name '*.dmg' -type f)"
           [[ "$(printf '%s\n' "$artifact" | sed '/^$/d' | wc -l)" -eq 1 ]]
           cp "$artifact" "$stage/"
@@ -280,6 +280,10 @@ jobs:
 
   sign-and-verify:
     needs: [plan, build]
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -328,6 +332,8 @@ jobs:
           WINDOWS_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
           WINDOWS_IDENTITY: ${{ secrets.WINDOWS_SIGNING_IDENTITY }}
           APPLE_IDENTITY: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ACCOUNT: ${{ secrets.APPLE_ID }}
           APPLE_TEAM: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
@@ -343,7 +349,8 @@ jobs:
                 missing=true
               ;;
             macos)
-              [[ -n "$APPLE_IDENTITY" && -n "$APPLE_ACCOUNT" &&
+              [[ -n "$APPLE_IDENTITY" && -n "$APPLE_CERTIFICATE" &&
+                 -n "$APPLE_CERTIFICATE_PASSWORD" && -n "$APPLE_ACCOUNT" &&
                  -n "$APPLE_TEAM" && -n "$APPLE_PASSWORD" ]] || missing=true
               ;;
             linux)
@@ -363,6 +370,7 @@ jobs:
           SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
           WINDOWS_SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
           WINDOWS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+          WINDOWS_SIGNING_IDENTITY: ${{ secrets.WINDOWS_SIGNING_IDENTITY }}
         run: |
           $artifact = Get-ChildItem "packaging/dist/windows/TinyAssetsSetup-*.exe"
           if ($artifact.Count -ne 1) { throw "expected exactly one Windows installer" }
@@ -377,10 +385,36 @@ jobs:
           VERSION: ${{ needs.plan.outputs.version }}
           ARCHITECTURE: ${{ matrix.architecture }}
           APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
+          set -euo pipefail
+          cd packaging/dist/macos
+          tar -xzf TinyAssets.app.tar.gz
+          rm TinyAssets.app.tar.gz
+          cd ../../..
+          certificate="$RUNNER_TEMP/tinyassets-signing.p12"
+          keychain="$RUNNER_TEMP/tinyassets-signing.keychain-db"
+          keychain_password="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
+          cleanup_signing_material() {
+            security delete-keychain "$keychain" >/dev/null 2>&1 || true
+            rm -f "$certificate"
+          }
+          trap cleanup_signing_material EXIT
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+          security find-identity -v -p codesigning "$keychain" |
+            grep -F "$APPLE_DEVELOPER_ID_APPLICATION"
           bash packaging/macos/sign-and-notarize.sh
           xcrun stapler validate "packaging/dist/macos/TinyAssets-${VERSION}-${ARCHITECTURE}.dmg"
 
@@ -390,6 +424,7 @@ jobs:
         env:
           SOURCE_DATE_EPOCH: ${{ needs.plan.outputs.source_date_epoch }}
           LINUX_SIGNING_KEY_BASE64: ${{ secrets.LINUX_SIGNING_KEY_BASE64 }}
+          LINUX_SIGNING_IDENTITY: ${{ secrets.LINUX_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
           for artifact in packaging/dist/linux/*.deb packaging/dist/linux/*.tar.gz; do
@@ -470,7 +505,10 @@ jobs:
               "source_commit": "${{ github.sha }}",
               "rollback_action": "restore previous signed manifest and artifact",
           }
-          Path("packaging/dist/${{ matrix.platform }}/rollback-evidence.json").write_text(
+          Path(
+              "packaging/dist/${{ matrix.platform }}/"
+              "rollback-evidence-${{ matrix.platform }}-${{ matrix.architecture }}.json"
+          ).write_text(
               json.dumps(evidence, indent=2, sort_keys=True) + "\n",
               encoding="utf-8",
           )
@@ -478,6 +516,16 @@ jobs:
           if [[ "${{ matrix.platform }}" == "macos" ]]; then
             rm -rf packaging/dist/macos/TinyAssets.app
           fi
+
+      - name: Attest signed build provenance
+        if: needs.plan.outputs.publication_requested == 'true'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            packaging/dist/${{ matrix.platform }}/*.exe
+            packaging/dist/${{ matrix.platform }}/*.dmg
+            packaging/dist/${{ matrix.platform }}/*.deb
+            packaging/dist/${{ matrix.platform }}/*.tar.gz
 
       - name: Upload signed and verified artifacts
         if: needs.plan.outputs.publication_requested == 'true'

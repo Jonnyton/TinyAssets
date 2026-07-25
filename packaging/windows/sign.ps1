@@ -26,6 +26,10 @@ $certificate = Import-PfxCertificate `
     -CertStoreLocation "Cert:\CurrentUser\My" `
     -Password $password
 try {
+    $expectedThumbprint = $env:WINDOWS_SIGNING_IDENTITY.Replace(" ", "").ToUpperInvariant()
+    if ($certificate.Thumbprint.ToUpperInvariant() -ne $expectedThumbprint) {
+        throw "provisioned Windows certificate does not match WINDOWS_SIGNING_IDENTITY"
+    }
     & signtool.exe sign /fd SHA256 /sha1 $certificate.Thumbprint `
         /tr "http://timestamp.digicert.com" /td SHA256 $Artifact
     if ($LASTEXITCODE -ne 0) {

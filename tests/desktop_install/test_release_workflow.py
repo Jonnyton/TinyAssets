@@ -51,8 +51,33 @@ def test_workflow_emits_provenance_sbom_channels_and_rollback_evidence() -> None
     assert "actions/attest-build-provenance" in workflow
     assert "desktop_metadata.py sbom" in workflow
     assert "rollout_percent" in workflow
-    assert "rollback-evidence.json" in workflow
+    assert (
+        "rollback-evidence-${{ matrix.platform }}-${{ matrix.architecture }}.json"
+        in workflow
+    )
     assert "channel" in workflow
+
+
+def test_macos_bundle_is_archived_before_cross_job_transport() -> None:
+    workflow = _workflow_text()
+
+    assert "TinyAssets.app.tar.gz" in workflow
+    assert "tar -xzf" in workflow
+
+
+def test_signed_outputs_are_attested_after_signing() -> None:
+    workflow = _workflow_text()
+
+    signing = workflow.split("sign-and-verify:", 1)[1]
+    assert "actions/attest-build-provenance@v2" in signing
+    assert "subject-path:" in signing
+
+
+def test_macos_certificate_is_imported_into_temporary_keychain() -> None:
+    workflow = _workflow_text()
+
+    assert "security import" in workflow
+    assert "APPLE_CERTIFICATE_P12" in workflow
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:
