@@ -1,8 +1,45 @@
+## Premise verification — 2026-07-24
+
+Compared against `origin/main`, unlanded
+`codex/osx-paid-market-transport`, and the 30 open PRs requested by the lane.
+`live` means independently buildable while dark; `blocked-*` work stays
+unchecked.
+
+| Task | Classification | Evidence / boundary |
+|---|---|---|
+| 1.3 | live → completed audit | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
+| 2.1 | blocked-domain-owner | Draft PR #1679 owns the amended descriptor grammar and requires opposite-provider re-review before 2.1/2.2. |
+| 2.2 | blocked-domain-owner | Same #1679 gate; do not implement its moving descriptor/market-class contract here. |
+| 2.3 | live | Pure quote/canonical-authority tests can use opaque descriptor identities and an injected verifier. |
+| 2.4 | live | Pure exact landed-total and quote validation needs no transport. |
+| 2.5 | blocked-domain-owner (partial live) | Quote-field mutation coverage is standalone; facet/substitutability coverage waits for #1679. |
+| 3.1 | live | Pure fail-closed observation-join and field-fresh tests use fixture receipts only. |
+| 3.2 | live (partial landed) | `index.py` is landed, but field freshness, principal roots, and complete-ceiling semantics are absent. |
+| 3.3 | live | A credential-blind read-only protocol is standalone; no live adapter or outbound effect is authorized. |
+| 3.4 | live | Fake adapters and fault fixtures need no credential, quota, boundary call, or paid API. |
+| 3.5 | stale-inverted → live | `self_hosted_zero_fee` contradicts Wave 2; same-owner volume stays excluded but every positive-gross settlement pays the fee. |
+| 4.1 | live | Pure mandate selection can prove no paid/provider side effect exists. |
+| 4.2 | live | Pure eligibility/ranking returns evidence only and owns no reservation. |
+| 4.3 | live (pure value only) | Immutable receipt/ACL/projection policy is standalone; durable tenant storage remains gated. |
+| 4.4 | live | Pure boundary/mutation tests can prove the result grants no execution or money authority. |
+| 5.1 | blocked-transport-landing | Requires Wave 2 workflow/CAS plus tenant, domain capacity, and S14/B36 owners. |
+| 5.2 | blocked-transport-landing | Also blocked on wallet/chain receipts, domain acceptance, tenant authority, and host cutover. |
+| 5.3 | live (partial landed) | Buckets, settlement, and matching are landed; a pure dark order-policy value remains standalone. |
+| 5.4 | live | A pure allow/refuse policy can keep unsupported instruments dark without registration. |
+| 5.5 | blocked-host/legal (partial live) | No current specialist artifact exists; missing/stale-review dark-gate tests are standalone. |
+| 6.1 | blocked-boundary | Public reads require tenant/privacy, boundary, load/security, canary, chatbot, and host activation gates. |
+| 6.2 | blocked-tenant | Full handoff proof also needs R2-1, Wave 2, domain capacity, and boundary owners. |
+| 6.3 | blocked-S14/B36 | Requires landed transport/public surfaces, tenant owner, and a reviewed capacity harness; draft PR #1695 is planning-only. |
+| 6.4 | blocked-S14/B36 | Depends on 6.3 environment evidence and independent security/concurrency review. |
+| 6.5 | blocked-host | No advertisement, live rollout, canary, chatbot proof, or organic-use evidence is authorized. |
+| 7.1 | live | Pure refusal/default-dark definitions and deployment non-registration are standalone. |
+| 7.2 | blocked-transport-landing | Sync/archive would falsely claim the blocked public, executable, load, legal, and rollout work is complete. |
+
 ## 1. Contract ownership and review gates
 
 - [x] 1.1 Release `paid-market-price-index-and-forwards` from the Wave 2 transaction/migration change and record this change as the build-forward umbrella’s narrow live-price successor.
 - [x] 1.2 Obtain opposite-provider review of the proposal, design, full delta, and compute/LLM/task/fabrication research now archived by PR #1648 against TinyAssets context. Claude Sonnet approved the corrected source mapping on 2026-07-22; the verdict is recorded in `docs/audits/2026-07-22-paid-market-live-price-source-review.md`.
-- [ ] 1.3 Confirm the Wave 2 logical-accounting transaction owner, required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, settlement, or paid-observation tasks; otherwise keep those tasks blocked and dark.
+- [x] 1.3 Confirm the Wave 2 logical-accounting transaction owner, required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, settlement, or paid-observation tasks; otherwise keep those tasks blocked and dark. Premise audit above records every dependent task and leaves all gated behavior dark.
 - [x] 1.4 Run `openspec validate paid-market-live-price-discovery --strict`, full strict validation, requirement/scenario counts, and `git diff --check` after every contract amendment.
 
 ## 2. Pure descriptors, quotes, and evaluation
@@ -19,7 +56,7 @@
 - [ ] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
 - [ ] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
 - [ ] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
-- [ ] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, transaction-owned exact same-owner `self_hosted_zero_fee` ingestion/exclusion, recorded ordinary fees for non-exempt linked-party paid trades, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
+- [ ] 3.5 Add economic-principal-root manipulation tests for split offers, counterparties, workforce/OAuth/seller accounts, reversed pair direction, unknown linkage, exact same-owner ingestion exclusion without a settlement-fee waiver, recorded canonical fees for every positive-gross settlement including linked-party trades, concentration caps, raw-native-price immutability, composite-only ceiling clamp behavior, and low-confidence thin markets.
 
 ## 4. Deterministic economic routing
 
