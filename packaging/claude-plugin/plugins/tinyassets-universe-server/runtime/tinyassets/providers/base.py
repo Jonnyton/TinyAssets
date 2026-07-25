@@ -143,6 +143,38 @@ HOST_SUBSCRIPTION_ENV_VARS: tuple[str, ...] = (
     "CODEX_HOME",
 )
 
+_PROVIDER_CHILD_INHERITED_ENV_VARS: tuple[str, ...] = (
+    "PATH",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TERM",
+    "COLORTERM",
+    "NO_COLOR",
+    "PYTHONUTF8",
+    "PYTHONIOENCODING",
+)
+_PROVIDER_CHILD_CA_FILE_ENV_VARS: tuple[str, ...] = (
+    "SSL_CERT_FILE",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "CODEX_CA_CERTIFICATE",
+)
+_PROVIDER_AUTH_OVERLAY_ENV_VARS: dict[str, frozenset[str]] = {
+    "claude-code": frozenset({
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "ANTHROPIC_API_KEY",
+    }),
+    "codex": frozenset({"CODEX_HOME", "OPENAI_API_KEY"}),
+}
+
 
 def subprocess_env_without_api_keys() -> dict[str, str] | None:
     """Return a subprocess env that ignores API-key auth unless opted in."""
@@ -154,6 +186,136 @@ def subprocess_env_without_api_keys() -> dict[str, str] | None:
     return env
 
 
+def _inherited_env_value(name: str) -> str | None:
+    value = os.environ.get(name)
+    if value is not None or os.name != "nt":
+        return value
+    canonical = name.casefold()
+    return next(
+        (value for key, value in os.environ.items() if key.casefold() == canonical),
+        None,
+    )
+
+
+def _safe_provider_child_base_env() -> dict[str, str]:
+    env = {
+        name: value
+        for name in _PROVIDER_CHILD_INHERITED_ENV_VARS
+        if (value := _inherited_env_value(name)) is not None
+    }
+    for name, value in os.environ.items():
+        canonical = name.upper() if os.name == "nt" else name
+        if canonical.startswith("LC_"):
+            env[canonical] = value
+    for name in _PROVIDER_CHILD_CA_FILE_ENV_VARS:
+        value = _inherited_env_value(name)
+        if not value:
+            continue
+        path = Path(value)
+        try:
+            if path.is_absolute() and path.is_file():
+                env[name] = value
+        except OSError:
+            continue
+    return env
+
+
+def _ensure_private_provider_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        path.chmod(0o700)
+    except OSError:
+        pass
+
+
+def _provider_child_runtime_env(
+    provider_name: str, universe_dir: Path,
+) -> dict[str, str]:
+    provider = provider_name.strip().lower()
+    safe_chars = frozenset(
+        "abcdefghijklmnopqrstuvwxyz0123456789._-"
+    )
+    if (
+        not provider
+        or provider in {".", ".."}
+        or any(char not in safe_chars for char in provider)
+    ):
+        raise ValueError("invalid provider name")
+
+    runtime_root = universe_dir / ".runtime" / "provider-child" / provider
+    home = runtime_root / "home"
+    appdata = home / "AppData" / "Roaming"
+    local_appdata = home / "AppData" / "Local"
+    xdg_config = home / ".config"
+    xdg_cache = home / ".cache"
+    xdg_data = home / ".local" / "share"
+    xdg_state = home / ".local" / "state"
+    xdg_runtime = runtime_root / "xdg-runtime"
+    temp = runtime_root / "tmp"
+    credential_root = universe_dir / ".credentials"
+    claude_config = credential_root / "claude"
+    codex_home = credential_root / "codex"
+    for path in (
+        home,
+        appdata,
+        local_appdata,
+        xdg_config,
+        xdg_cache,
+        xdg_data,
+        xdg_state,
+        xdg_runtime,
+        temp,
+        claude_config,
+        codex_home,
+    ):
+        _ensure_private_provider_dir(path)
+
+    env = _safe_provider_child_base_env()
+    env.update({
+        "HOME": str(home),
+        "USERPROFILE": str(home),
+        "APPDATA": str(appdata),
+        "LOCALAPPDATA": str(local_appdata),
+        "XDG_CONFIG_HOME": str(xdg_config),
+        "XDG_CACHE_HOME": str(xdg_cache),
+        "XDG_DATA_HOME": str(xdg_data),
+        "XDG_STATE_HOME": str(xdg_state),
+        "XDG_RUNTIME_DIR": str(xdg_runtime),
+        "TMPDIR": str(temp),
+        "TMP": str(temp),
+        "TEMP": str(temp),
+        "CLAUDE_CONFIG_DIR": str(claude_config),
+        "CODEX_HOME": str(codex_home),
+        "AWS_EC2_METADATA_DISABLED": "true",
+    })
+    if os.name == "nt" and len(home.drive) == 2 and home.drive.endswith(":"):
+        env["HOMEDRIVE"] = home.drive
+        env["HOMEPATH"] = str(home)[len(home.drive):]
+    return env
+
+
+def _valid_provider_auth_overlay(
+    overlay: object, provider_name: str, universe_dir: Path,
+) -> bool:
+    if not isinstance(overlay, dict):
+        return False
+    allowed = _PROVIDER_AUTH_OVERLAY_ENV_VARS.get(
+        provider_name.strip().lower(), frozenset(),
+    )
+    universe_root = universe_dir.resolve()
+    for name, value in overlay.items():
+        if name not in allowed or not isinstance(value, str) or not value:
+            return False
+        if name not in {"CLAUDE_CONFIG_DIR", "CODEX_HOME"}:
+            continue
+        try:
+            if not Path(value).resolve().is_relative_to(universe_root):
+                return False
+        except OSError:
+            return False
+    return True
+
+
 def subprocess_env_for_provider(
     provider_name: str, *, universe_dir: Path | None = None,
 ) -> dict[str, str]:
@@ -163,31 +325,30 @@ def subprocess_env_for_provider(
     ``TINYASSETS_UNIVERSE`` for vault-auth resolution, so a single daemon can
     resolve per-universe credentials for an explicitly threaded universe.
     """
-    env = subprocess_env_without_api_keys() or os.environ.copy()
-    bound_universe = env.get("TINYASSETS_UNIVERSE", "").strip()
+    bound_universe = os.environ.get("TINYASSETS_UNIVERSE", "").strip()
     resolved_universe = (
         Path(universe_dir)
         if universe_dir is not None
         else Path(bound_universe) if bound_universe else None
     )
     if resolved_universe is None:
-        return env
-
-    for name in (*API_KEY_PROVIDER_ENV_VARS, *HOST_SUBSCRIPTION_ENV_VARS):
-        env.pop(name, None)
-    credential_root = resolved_universe / ".credentials"
-    env["CLAUDE_CONFIG_DIR"] = str(credential_root / "claude")
-    env["CODEX_HOME"] = str(credential_root / "codex")
+        return subprocess_env_without_api_keys() or os.environ.copy()
 
     credential_resolution_failed = False
+    env: dict[str, str] = {}
     try:
         from tinyassets.credential_vault import apply_provider_auth_env
 
-        apply_provider_auth_env(
-            env, provider_name, universe_dir=resolved_universe,
+        env = _provider_child_runtime_env(provider_name, resolved_universe)
+        overlay = apply_provider_auth_env(
+            {}, provider_name, universe_dir=resolved_universe,
         )
-    except ValueError:
-        raise
+        if not _valid_provider_auth_overlay(
+            overlay, provider_name, resolved_universe,
+        ):
+            credential_resolution_failed = True
+        else:
+            env.update(overlay)
     except Exception:
         credential_resolution_failed = True
     if credential_resolution_failed:

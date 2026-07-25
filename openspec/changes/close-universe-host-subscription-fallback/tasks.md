@@ -26,3 +26,14 @@
 - [x] 4.2 Run runtime mirror parity, Ruff, full strict OpenSpec validation, and `git diff --check`
 - [ ] 4.3 Obtain independent security and diff review with no critical or required findings
 - [ ] 4.4 Sync the proven delta into canonical `credential-vault`, archive the change, and remove the completed CLI-isolation row while leaving the P0 plus R2-1a/R2-1b unchanged
+
+## 5. Opus 5 default-deny adaptation
+
+- [x] 5.1 Rebase draft PR #1592 onto current main, claim the exact Slice A0 write set, and record the Opus 5 verdict dependency
+- [x] 5.2 Capture RED for ambient direct/cloud/future authority, home/profile roots, invalid CA inputs, arbitrary overlay keys, safe runtime basics, host-local countercase, and mirror parity
+- [x] 5.3 Replace the stale ADDED-only delta with a MODIFIED canonical requirement and strict-validate the change
+- [x] 5.4 Implement the least-code empty-base allowlist, private universe runtime roots, recognized selected-provider overlay, and sanitized fail-loud behavior
+- [x] 5.5 Apply byte-identical behavior to the packaged runtime mirror
+- [x] 5.6 Run focused and surrounding GREEN, Ruff, mirror parity, strict full-tree OpenSpec validation, and diff checks
+- [ ] 5.7 Obtain required Opus 5 security/diff re-review with no critical or required findings
+- [ ] 5.8 After the canonical vault-clobber lane releases the spec, sync/archive and retire the STATUS row in the merge lane
