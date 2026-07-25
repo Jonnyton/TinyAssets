@@ -464,3 +464,30 @@ Because those edits postdate the earlier exact-artifact approval, task 1.2 is
 open again until Opus 5 confirms the exact new head. Tasks 1.3a/1.3b and
 1.5a/1.5c also remain open for counterparty/owner acceptance. Runtime,
 canonical-spec sync/archive, deployment, and rollout remain unauthorized.
+
+## 2026-07-25 adapted exact-head approval
+
+Opus 5 rereviewed exact adapted head `4fa0dc4e` against current
+`origin/main` at `3f933caf` and returned **APPROVE — spec/review-only**.
+It verified all seven owner-resolution folds, the exact ten-file planning
+scope, canonical MODIFIED/RENAMED requirement preservation, the 60-line
+STATUS budget, and these gates:
+
+- `git diff --check origin/main...HEAD`: clean;
+- target strict OpenSpec validation: valid;
+- all-item strict OpenSpec validation: 42 passed, 0 failed;
+- no stale `draft PR #1736`, target-only tray, #1736-owns-provider-custody,
+  or `ProviderInvocation`-contains-material wording;
+- no new MCP verb, raw-secret control-plane path, maintainer/founder fallback,
+  second authority system, runtime edit, or canonical-spec mutation.
+
+An independent Codex verifier also returned **APPROVE — spec/review-only** on
+the same exact head and gates. Opus noted two non-blocking wording
+observations: “shipped branch” means the open PR's runtime-bearing branch, not
+a merged change, and “authenticated binding read” means the host-principal
+binding read rather than the separate credential-binding read. The surrounding
+gates make both meanings explicit; neither changes ownership.
+
+This exact-head approval authorizes publication of the adapted draft only.
+Tasks 1.3a/1.3b, 1.4, 1.5a/1.5b/1.5c, and 1.6-1.9 remain open. Runtime,
+canonical-spec sync/archive, deployment, and rollout remain unauthorized.

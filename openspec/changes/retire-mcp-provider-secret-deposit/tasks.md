@@ -1,7 +1,7 @@
 ## 1. Review and Ownership Gates
 
 - [x] 1.1 Obtain and durably record the Opus 5 current-main ADAPT verdict.
-- [ ] 1.2 Obtain Opus 5 exact-artifact review of this proposal, design, deltas, and tasks; the earlier approval covered commit `4e5e7529`, while the owner-resolution ADAPT requires a fresh exact-head confirmation before another push.
+- [x] 1.2 Obtain Opus 5 exact-artifact review of this proposal, design, deltas, and tasks; Opus 5 returned **APPROVE — spec/review-only** on exact adapted head `4fa0dc4e` after the owner-resolution ADAPT, with independent Codex exact-head approval.
 - [ ] 1.3a Obtain draft PR #1691 (`constrain-set-engine-provider-authority`) owner acceptance, bound to an exact post-#1727/rebased head SHA, that it owns the generic `setup_required`/held assignment-state contract, provider-destination ceilings, reference-ready assignment CAS/generation, and frozen `ProviderInvocation -> ProviderLaunchHandle` barrier. This change owns the `llm_api_key`-typed refusal and writes no provider-routing delta; landed Slice A0/provider-auth isolation owns the general no-maintainer-route invariant.
 - [ ] 1.3b Require #1691 to resolve its `ProviderInvocation` material-versus-reference ambiguity: requester-owned local invocation carries only an opaque binding reference and credential/auth provenance, and only executor-local `start()` resolves native secret material.
 - [ ] 1.4 Obtain `openspec/specs/distributed-execution/spec.md` and B2 production-authority owner acceptance that `runner/v1` remains an opaque nine-field carrier, requester-owned local invocation uses draft PR #1691's launch barrier, accepted-market execution uses its production B2 authority, and fake-only/production-denied D0 is not ordinary requester-provider authority.
