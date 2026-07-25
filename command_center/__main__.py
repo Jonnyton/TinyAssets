@@ -10,7 +10,7 @@ from .collector import Config
 from .server import serve
 
 
-def main(argv: list[str] | None = None) -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="command_center",
         description=(
@@ -18,9 +18,17 @@ def main(argv: list[str] | None = None) -> None:
             "on a live village map, from your phone."
         ),
     )
-    parser.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = LAN)")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="bind host (default 127.0.0.1; use 0.0.0.0 for intentional LAN access)",
+    )
     parser.add_argument("--port", type=int, default=8787, help="bind port (default 8787)")
-    parser.add_argument("--token", default=None, help="optional shared token for ?token= access")
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="shared API token (minimum 16 characters; default generates one)",
+    )
     parser.add_argument(
         "--dispatch",
         action="store_true",
@@ -51,6 +59,11 @@ def main(argv: list[str] | None = None) -> None:
         help="Bearer token for the platform MCP endpoint (or WORKFLOW_MCP_TOKEN env)",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = build_parser()
     args = parser.parse_args(argv)
     serve(Config.from_args(args))
 

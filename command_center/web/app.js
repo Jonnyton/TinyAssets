@@ -4,8 +4,10 @@
 // ------------------------------------------------------------ config + utils
 const POLL_MS = 3000;
 const params = new URLSearchParams(location.search);
-const TOKEN = params.get("token") || localStorage.getItem("village-token") || "";
-if (TOKEN) localStorage.setItem("village-token", TOKEN);
+const fragment = new URLSearchParams(location.hash.slice(1));
+const TOKEN = fragment.get("token") || sessionStorage.getItem("village-token") || "";
+if (TOKEN) sessionStorage.setItem("village-token", TOKEN);
+if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 if (params.get("present") === "1") document.body.classList.add("present");
 
 const PROVIDERS = {
@@ -35,8 +37,9 @@ function ago(ts) {
   return `${Math.floor(d / 86400)}d`;
 }
 function api(path, opts) {
-  const sep = path.includes("?") ? "&" : "?";
-  return fetch(path + (TOKEN ? sep + "token=" + encodeURIComponent(TOKEN) : ""), opts)
+  const headers = new Headers(opts?.headers || {});
+  if (TOKEN) headers.set("X-Village-Token", TOKEN);
+  return fetch(path, { ...opts, headers })
     .then(async (r) => {
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.error || `${r.status}`);

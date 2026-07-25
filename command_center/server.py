@@ -15,6 +15,7 @@ cached snapshot, so polling a big repo never blocks a phone.
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +33,40 @@ MIME = {
     ".png": "image/png",
     ".ico": "image/x-icon",
 }
+MAX_BODY_BYTES = 65536
+MIN_TOKEN_CHARS = 16
+CONTENT_SECURITY_POLICY = (
+    "default-src 'self'; "
+    "script-src 'self'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data:; "
+    "connect-src 'self'; "
+    "object-src 'none'; "
+    "base-uri 'none'; "
+    "frame-ancestors 'none'"
+)
+
+
+def prepare_auth(
+    cfg: collector.Config,
+    *,
+    token_factory=secrets.token_urlsafe,
+) -> str:
+    """Ensure every server process has a minimum-strength API bearer."""
+    if cfg.token:
+        if len(cfg.token) < MIN_TOKEN_CHARS:
+            raise ValueError(
+                f"Agent Village token must contain at least {MIN_TOKEN_CHARS} characters"
+            )
+        return cfg.token
+    cfg.token = token_factory(32)
+    return cfg.token
+
+
+def share_url(cfg: collector.Config, token: str) -> str:
+    """Return a browser bootstrap URL whose bearer never reaches HTTP."""
+    fragment_token = urllib.parse.quote(token, safe="")
+    return f"http://{cfg.host}:{cfg.port}/#token={fragment_token}"
 
 
 class StateCache:
@@ -83,13 +118,18 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
 
         # -- helpers -----------------------------------------------------
         def _authorized(self) -> bool:
-            if not cfg.token:
-                return True
-            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
-            return (
-                query.get("token", [""])[0] == cfg.token
-                or self.headers.get("X-Village-Token") == cfg.token
+            supplied = self.headers.get("X-Village-Token")
+            return bool(
+                cfg.token
+                and supplied
+                and secrets.compare_digest(supplied, cfg.token)
             )
+
+        def _send_security_headers(self) -> None:
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", CONTENT_SECURITY_POLICY)
 
         def _send_json(self, obj: object, status: int = 200) -> None:
             body = json.dumps(obj).encode()
@@ -97,6 +137,7 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
@@ -109,20 +150,22 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
             self.send_response(200)
             self.send_header("Content-Type", MIME.get(path.suffix, "application/octet-stream"))
             self.send_header("Content-Length", str(len(body)))
+            self._send_security_headers()
             self.end_headers()
             self.wfile.write(body)
 
         # -- routes ------------------------------------------------------
         def do_GET(self) -> None:  # noqa: N802 (stdlib naming)
-            if not self._authorized():
-                self._send_json({"error": "unauthorized"}, 401)
-                return
             split = urllib.parse.urlsplit(self.path)
             path = split.path
             if path in ("/", "/index.html"):
                 self._send_file(static_dir / "index.html")
             elif path in ("/app.css", "/app.js", "/favicon.svg", "/manifest.webmanifest"):
                 self._send_file(static_dir / path.lstrip("/"))
+            elif path == "/api/health":
+                self._send_json({"ok": True})
+            elif not self._authorized():
+                self._send_json({"error": "unauthorized"}, 401)
             elif path == "/api/state":
                 self._send_json(cache.get())
             elif path == "/api/chat":
@@ -131,8 +174,6 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
                 self._send_json({"messages": collector.chat_history(cfg, target)})
             elif path == "/api/providers":
                 self._send_json({"providers": collector.discover_providers(cfg)})
-            elif path == "/api/health":
-                self._send_json({"ok": True})
             else:
                 self._send_json({"error": "not found"}, 404)
 
@@ -145,13 +186,19 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
                 self._send_json({"error": "not found"}, 404)
                 return
             try:
-                length = int(self.headers.get("Content-Length") or 0)
-                payload = json.loads(self.rfile.read(min(length, 65536)) or b"{}")
-            except (ValueError, TypeError):
+                raw_length = self.headers.get("Content-Length")
+                length = int(raw_length) if raw_length is not None else -1
+                if length < 0 or length > MAX_BODY_BYTES:
+                    raise ValueError
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, TypeError, json.JSONDecodeError):
                 self._send_json({"error": "bad json"}, 400)
                 return
+            if not isinstance(payload, dict):
+                self._send_json({"error": "json object required"}, 400)
+                return
             if route == "/api/hire":
-                result = collector.hire(cfg, payload if isinstance(payload, dict) else {})
+                result = collector.hire(cfg, payload)
                 self._send_json(result, 200 if result.get("ok") else 400)
                 return
             target = str(payload.get("target") or "")
@@ -169,13 +216,13 @@ def make_handler(cfg: collector.Config, cache: StateCache) -> type[BaseHTTPReque
 
 
 def serve(cfg: collector.Config) -> None:
+    token = prepare_auth(cfg)
     cache = StateCache(cfg)
     cache.start()
     handler = make_handler(cfg, cache)
     httpd = ThreadingHTTPServer((cfg.host, cfg.port), handler)
     print(f"[village] Agent Village listening on http://{cfg.host}:{cfg.port}", flush=True)
-    if cfg.token:
-        print(f"[village] share URL: http://{cfg.host}:{cfg.port}/?token={cfg.token}", flush=True)
+    print(f"[village] share URL: {share_url(cfg, token)}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

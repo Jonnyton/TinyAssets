@@ -5,12 +5,17 @@ village — from your phone, your laptop, or anything with a browser.
 
 ```
 python -m command_center
-# → http://localhost:8787
-# → on your phone (same network): http://<this-machine's-LAN-IP>:8787
+# → binds only to http://127.0.0.1:8787
+# → prints a per-process http://127.0.0.1:8787/#token=... share URL
+
+# Intentional phone/LAN access:
+python -m command_center --host 0.0.0.0
+# Replace 0.0.0.0 in the printed URL with this machine's LAN IP.
 ```
 
 Zero config, stdlib only, no build step. Run it in any repo; it watches the
-folder it runs in.
+folder it runs in. Every process is authenticated: an omitted token is generated
+automatically, and private API reads plus talk/hire writes require it.
 
 ## What you see
 
@@ -57,9 +62,9 @@ On any universe sheet: pick an engine, a task, and a count.
 
 | Flag | Default | What it does |
 |---|---|---|
-| `--host` | `0.0.0.0` | bind address (LAN = phone can reach it) |
+| `--host` | `127.0.0.1` | loopback-only bind; use `0.0.0.0` for intentional LAN/phone access |
 | `--port` | `8787` | bind port |
-| `--token` | — | require `?token=` on every request; share URL prints at startup |
+| `--token` | generated | explicit shared API token (minimum 16 characters); fragment share URL prints at startup |
 | `--dispatch` | off | also send agent talk to provider CLIs (spends their budget) |
 | `--interval` | `3` | seconds between state polls |
 | `--directory-url` | `https://tinyassets.io` | platform base for the world view (`''` = offline) |
@@ -68,6 +73,14 @@ On any universe sheet: pick an engine, a task, and a count.
 
 ## Sharing tips
 
+- The printed `#token=...` fragment never reaches the HTTP server. The app
+  removes it from visible history, retains it only for the browser session, and
+  sends `X-Village-Token` on private API requests.
+- Direct API clients use
+  `curl -H "X-Village-Token: <token>" http://127.0.0.1:8787/api/state`.
+  `?token=` is deliberately rejected.
+- LAN mode is plain HTTP. Use it only on a trusted network, or put a
+  loopback-bound Village behind your own authenticated TLS tunnel.
 - `?present=1` — chrome-free view for screenshots/streams.
 - `?zoom=world` — open straight into the world view.
 - `?universe=<id>` — deep-link a universe's chat sheet.
