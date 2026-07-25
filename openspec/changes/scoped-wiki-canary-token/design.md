@@ -42,13 +42,20 @@ Alternative considered: synthesize a restricted `Identity`. Rejected because
 generic auth checks could accidentally treat any non-anonymous identity as
 sufficient now or in future code.
 
-### Two exact scope checks
+### Three exact scope checks
 
-The middleware will accept the token only for one non-batch JSON-RPC
+The ASGI middleware will accept the token only for one non-batch JSON-RPC
 `tools/call` whose tool and argument shape exactly match the canary full write.
-The `write_page` handler will independently re-check its normalized function
-arguments before using the dedicated authority. Any extra or changed routing
-argument fails into the existing invalid-token or anonymous-write behavior.
+Because stateful Streamable HTTP executes tools in the persistent MCP session
+task rather than the ASGI request task, a FastMCP `on_call_tool` middleware
+will re-read the actual HTTP request and re-establish the authority only around
+that tool execution. It independently requires one bearer header, canonical MCP
+path and method, the configured token, the exact tool name, and the exact
+parsed arguments. Missing or ambiguous HTTP context fails closed.
+
+The `write_page` handler will then re-check its normalized function arguments
+before using the dedicated authority. Any extra or changed routing argument
+fails into the existing invalid-token or anonymous-write behavior.
 
 The handler will call a dedicated fixed-path writer for
 `drafts/notes/uptime-probe.md`; it will not use the general writer's

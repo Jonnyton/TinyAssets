@@ -6,6 +6,9 @@
   `drafts/notes/uptime-probe.md` and remains anonymous to other auth checks.
 - [x] 1.3 Implement constant-time token validation, exact request-local scope,
   and the fixed-path wiki writer with no token logging.
+- [x] 1.4 Reproduce the stateful Streamable-HTTP context boundary with a real
+  initialize-then-write transport test, then re-establish the exact authority
+  in FastMCP's per-tool execution context.
 
 ## 2. PROBE-003 Roundtrip
 
