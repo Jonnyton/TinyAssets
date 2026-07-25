@@ -267,15 +267,15 @@ Every market-accounting debit, credit, logical reservation transition, fee entry
 - **THEN** the inference domain rejects completion or opens its dispute path before invoking the transaction transport
 - **AND** no completion-dependent funds movement or null-count settlement observation is recorded
 
-#### Scenario: self-hosted work is zero-fee and not a paid-market self-deal
+#### Scenario: same-owner settlement still pays the canonical fee
 - **WHEN** locked tenant-scoped request and winning-bid rows prove exact immutable equality of `request.requester_user_id` and `winning_bid.host_owner_user_id`
-- **THEN** the trusted wrapper invokes the canonical pure self-host settlement adapter and records `self_hosted_zero_fee` with no treasury fee and no on-chain transfer
-- **AND** that work is excluded from paid-market volume and price formation
+- **THEN** any TinyAssets settlement invokes the canonical fee-bearing adapter and records the treasury posting
+- **AND** any policy that excludes same-owner work from market volume or price formation changes neither the fee nor the non-custodial boundary
 
-#### Scenario: broader linkage does not widen the self-host exemption
+#### Scenario: no actor relationship creates a settlement-fee exemption
 - **WHEN** requester and host are common operators, organization members, on-behalf principals, payout-root linked, or otherwise economically linked but their locked immutable user ids are not identical
 - **THEN** the canonical pure paid-market settlement applies the ordinary fee
-- **AND** no caller field, grant, or economic-principal inference can select `self_hosted_zero_fee`
+- **AND** no caller field, exact identity, grant, external route, or economic-principal inference can remove the fee from a settlement
 
 #### Scenario: logical reservation is not real-fund authority
 - **WHEN** a logical reservation or balanced `market.apply_tx` transaction exists without a separately verified wallet or chain-authority receipt required by the `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 successor
@@ -323,10 +323,10 @@ Every market-accounting debit, credit, logical reservation transition, fee entry
 - **AND** any divergence rolls back and fails loud
 
 ### Requirement: Future market transports remain differential-tested against canonical pure oracles
-Every transport introduced by this or a dependent market change SHALL consume the canonical `tinyassets.paid_market` input/output contracts or prove behavioral equivalence through generated differential tests covering valid inputs, rejection boundaries, rounding, state transitions, fees including the exact self-host exemption, refunds, collateral, and conservation. A transport SHALL NOT silently fork a formula into SQL, HTTP, MCP, API, or workflow code; any intentional rule change MUST first modify the canonical oracle requirement and tests through its own OpenSpec change.
+Every transport introduced by this or a dependent market change SHALL consume the canonical `tinyassets.paid_market` input/output contracts or prove behavioral equivalence through generated differential tests covering valid inputs, rejection boundaries, rounding, state transitions, fees on every settlement including same-owner and external-supply settlement, refunds, collateral, and conservation. A transport SHALL NOT silently fork a formula into SQL, HTTP, MCP, API, or workflow code; any intentional rule change MUST first modify the canonical oracle requirement and tests through its own OpenSpec change.
 
 #### Scenario: transport and oracle cannot drift silently
-- **WHEN** a transport implementation changes a price, settlement, apportionment, fee, self-host exemption, refund, collateral, or NAV result for the same inputs
+- **WHEN** a transport implementation changes a price, settlement, apportionment, fee, refund, collateral, or NAV result for the same inputs
 - **THEN** the differential gate fails until an explicit reviewed behavior change updates both canonical contract and implementation
 
 ### Requirement: The ledger boundary is least-privilege and bounded
