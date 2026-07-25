@@ -71,7 +71,7 @@ TRANSCRIPT_WINDOW_S = 2 * 3600  # transcripts older than this are ignored
 @dataclass
 class Config:
     root: Path
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 8787
     token: str | None = None
     dispatch: bool = False
