@@ -413,6 +413,21 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
     CREATE INDEX IF NOT EXISTS idx_canonical_bindings_scope_goal
         ON canonical_bindings(scope_token, goal_id);
 
+    -- Actor-scoped Goal canonicals. Empty scope_actor is the Goal default;
+    -- non-empty values are exact authenticated actor IDs. The legacy
+    -- goals.canonical_branch_version_id column remains during transition.
+    CREATE TABLE IF NOT EXISTS goal_canonicals (
+        goal_id            TEXT NOT NULL,
+        scope_actor        TEXT NOT NULL DEFAULT '',
+        branch_version_id  TEXT NOT NULL,
+        set_at             REAL NOT NULL,
+        set_by             TEXT NOT NULL,
+        PRIMARY KEY (goal_id, scope_actor),
+        FOREIGN KEY (goal_id) REFERENCES goals(goal_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_goal_canonicals_branch_version
+        ON goal_canonicals(branch_version_id);
+
     -- Memory-scope Stage 2a: per-universe access control list.
     -- A universe with zero rows is public; a universe with at least
     -- one row is private and only listed actors can access it.
@@ -607,6 +622,16 @@ def _initialize_author_server_locked(base_path: str | Path) -> Path:
             " bound_by_actor_id, bound_at, visibility) "
             "SELECT goal_id, '', canonical_branch_version_id, "
             "       author, updated_at, 'public' "
+            "FROM goals "
+            "WHERE canonical_branch_version_id IS NOT NULL"
+        )
+        # Preserve every existing Goal default as the empty-actor row.
+        # INSERT OR IGNORE keeps retries idempotent and never overwrites
+        # a newer row written by the dual-write path.
+        conn.execute(
+            "INSERT OR IGNORE INTO goal_canonicals "
+            "(goal_id, scope_actor, branch_version_id, set_at, set_by) "
+            "SELECT goal_id, '', canonical_branch_version_id, updated_at, author "
             "FROM goals "
             "WHERE canonical_branch_version_id IS NOT NULL"
         )
@@ -2923,30 +2948,7 @@ def set_canonical_branch(
     now = _now()
     goal = get_goal(base_path, goal_id=goal_id)
 
-    if branch_version_id is not None:
-        # Validate that it's a real published version AND that it has
-        # not been rolled back / superseded. The active-only check is
-        # the round-2 P1.1 defense-in-depth: the auto-refresh path
-        # already filters via `_latest_published_version_id`, but a
-        # second guard at the write site means a rolled-back version
-        # cannot become canonical via any code path (manual MCP call,
-        # auto-refresh bug, host script, etc.).
-        from tinyassets.branch_versions import get_branch_version
-        version = get_branch_version(base_path, branch_version_id)
-        if version is None:
-            raise ValueError(
-                f"branch_version_id {branch_version_id!r} not found "
-                "in branch_versions — only published versions may be canonical."
-            )
-        version_status = getattr(version, "status", "active") or "active"
-        if version_status != "active":
-            raise ValueError(
-                f"branch_version_id {branch_version_id!r} has "
-                f"status={version_status!r}; only versions with "
-                "status='active' may be promoted to canonical. "
-                "Re-publish a fresh version or restore the rolled-back "
-                "one before retrying."
-            )
+    _validate_canonical_branch_version(base_path, branch_version_id)
 
     # Build history entry for previous canonical (if any).
     prev_bvid = goal.get("canonical_branch_version_id")
@@ -2992,7 +2994,160 @@ def set_canonical_branch(
                 "    bound_at          = excluded.bound_at",
                 (goal_id, branch_version_id, set_by, now),
             )
+        if branch_version_id is None:
+            conn.execute(
+                "DELETE FROM goal_canonicals "
+                "WHERE goal_id = ? AND scope_actor = ''",
+                (goal_id,),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO goal_canonicals "
+                "(goal_id, scope_actor, branch_version_id, set_at, set_by) "
+                "VALUES (?, '', ?, ?, ?) "
+                "ON CONFLICT(goal_id, scope_actor) DO UPDATE SET "
+                "    branch_version_id = excluded.branch_version_id, "
+                "    set_at = excluded.set_at, "
+                "    set_by = excluded.set_by",
+                (goal_id, branch_version_id, now, set_by),
+            )
     return get_goal(base_path, goal_id=goal_id)
+
+
+def _validate_canonical_branch_version(
+    base_path: str | Path,
+    branch_version_id: str | None,
+) -> None:
+    """Require an active published version when a canonical is supplied."""
+    if branch_version_id is None:
+        return
+    from tinyassets.branch_versions import get_branch_version
+
+    version = get_branch_version(base_path, branch_version_id)
+    if version is None:
+        raise ValueError(
+            f"branch_version_id {branch_version_id!r} not found "
+            "in branch_versions — only published versions may be canonical."
+        )
+    version_status = getattr(version, "status", "active") or "active"
+    if version_status != "active":
+        raise ValueError(
+            f"branch_version_id {branch_version_id!r} has "
+            f"status={version_status!r}; only versions with "
+            "status='active' may be promoted to canonical. "
+            "Re-publish a fresh version or restore the rolled-back "
+            "one before retrying."
+        )
+
+
+def set_goal_canonical(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    scope_actor: str,
+    branch_version_id: str | None,
+    set_by: str,
+) -> dict[str, Any]:
+    """Set or unset one actor's personal canonical for a Goal.
+
+    Authorization belongs at the action boundary. A non-empty actor scope is
+    required so default writes cannot bypass ``set_canonical_branch`` and its
+    legacy dual-write/history behavior.
+    """
+    scope_actor = scope_actor.strip()
+    if not scope_actor:
+        raise ValueError(
+            "scope_actor is required for a personal canonical; "
+            "use set_canonical_branch for the Goal default."
+        )
+    initialize_author_server(base_path)
+    get_goal(base_path, goal_id=goal_id)
+    _validate_canonical_branch_version(base_path, branch_version_id)
+    now = _now()
+
+    with _connect(base_path) as conn:
+        if branch_version_id is None:
+            conn.execute(
+                "DELETE FROM goal_canonicals "
+                "WHERE goal_id = ? AND scope_actor = ?",
+                (goal_id, scope_actor),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO goal_canonicals "
+                "(goal_id, scope_actor, branch_version_id, set_at, set_by) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(goal_id, scope_actor) DO UPDATE SET "
+                "    branch_version_id = excluded.branch_version_id, "
+                "    set_at = excluded.set_at, "
+                "    set_by = excluded.set_by",
+                (goal_id, scope_actor, branch_version_id, now, set_by),
+            )
+    return {
+        "goal_id": goal_id,
+        "scope_actor": scope_actor,
+        "branch_version_id": branch_version_id,
+        "set_at": now,
+        "set_by": set_by,
+    }
+
+
+def get_goal_canonical(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    scope_actor: str,
+) -> dict[str, Any] | None:
+    """Return the exact actor/default canonical row without fallback."""
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        goal = conn.execute(
+            "SELECT 1 FROM goals WHERE goal_id = ?",
+            (goal_id,),
+        ).fetchone()
+        if goal is None:
+            raise KeyError(goal_id)
+        row = conn.execute(
+            "SELECT goal_id, scope_actor, branch_version_id, set_at, set_by "
+            "FROM goal_canonicals WHERE goal_id = ? AND scope_actor = ?",
+            (goal_id, scope_actor.strip()),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def resolve_goal_canonical(
+    base_path: str | Path,
+    *,
+    goal_id: str,
+    scope_actor: str = "",
+) -> str | None:
+    """Resolve actor row, then default row, then the legacy Goal column."""
+    initialize_author_server(base_path)
+    scope_actor = scope_actor.strip()
+    with _connect(base_path) as conn:
+        goal = conn.execute(
+            "SELECT canonical_branch_version_id FROM goals WHERE goal_id = ?",
+            (goal_id,),
+        ).fetchone()
+        if goal is None:
+            raise KeyError(goal_id)
+        if scope_actor:
+            actor_row = conn.execute(
+                "SELECT branch_version_id FROM goal_canonicals "
+                "WHERE goal_id = ? AND scope_actor = ?",
+                (goal_id, scope_actor),
+            ).fetchone()
+            if actor_row is not None:
+                return str(actor_row["branch_version_id"])
+        default_row = conn.execute(
+            "SELECT branch_version_id FROM goal_canonicals "
+            "WHERE goal_id = ? AND scope_actor = ''",
+            (goal_id,),
+        ).fetchone()
+        if default_row is not None:
+            return str(default_row["branch_version_id"])
+        legacy = goal["canonical_branch_version_id"]
+    return str(legacy) if legacy else None
 
 
 def get_canonical_branch_history(

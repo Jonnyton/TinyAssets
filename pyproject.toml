@@ -74,7 +74,11 @@ fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
 research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
-desktop = ["Pillow>=10.0", "pystray>=0.19"]
+desktop = [
+    "Pillow>=10.0",
+    "pystray>=0.19",
+    "keyring>=25.0,<26.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

@@ -1263,3 +1263,33 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: strict OpenSpec change, exact HTTP/browser contract tests, security review, and short-lived PR; abandon only if current main already enforces equivalent authentication
 - Foldback: OpenSpec archived; Opus 5 approved; #1760 merged; all checks green; connector-first priority recorded
+
+## 2026-07-25 - harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next
+- STATUS/Issue/PR: STATUS Work row; PR pending
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: define the shared production-load evidence protocol without owning capability scenarios, thresholds, or `tests/load/`.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: 2026-07-21 user-growth concurrency/scalability audit; April Track J pre-draft
+- Idea feed refs: ideas/INBOX.md §14 production-load harness entry
+- Ship/abandon: ship a strict-valid target OpenSpec after Opus 5 artifact review; abandon if the draft cannot keep protocol ownership disjoint from capability owners
+
+## 2026-07-25 - fold back harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence-foldback
+- Lane state: foldback after PR #1775
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next-foldback
+- STATUS/Issue/PR: #1775 merged at `c94575c9`; completed authoring row retired
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: mark proposal validation/landing complete while leaving implementation tasks and the isolated `/mcp` host decision active
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next-foldback\_PURPOSE.md
+- Memory refs: none
+- Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
+- Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
+- Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
