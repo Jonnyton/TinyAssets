@@ -1,6 +1,6 @@
 # First-contact branch/wiki onboarding evidence and correction manifest
 
-**Freshness:** 2026-07-25, rebased `origin/main` source at `5e332a6c` plus direct reads from `https://tinyassets.io/mcp`.
+**Freshness:** 2026-07-25, rebased `origin/main` source at `0b8fb8c1` plus direct reads from `https://tinyassets.io/mcp`.
 **Mode:** read-only audit. No live wiki, runtime, deployment, or canonical-spec mutation was performed.
 **Scope:** current first-contact branch journey, registered MCP prompts, user-facing hints, repository handoff copy, and an exact-path but lower-bound public wiki planning inventory. It is not exhaustive until a privileged `scope=all` inventory or volume export is reconciled.
 
