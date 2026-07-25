@@ -4,11 +4,11 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 
 ## What Changes
 
-- Keep the advertised MCP surface at exactly seven handles and add a bounded, visibility-filtered `read_graph(target="branches")` catalog target.
+- Keep the advertised MCP surface at exactly seven handles and add a bounded, commons-only `read_graph(target="branches")` catalog target.
 - Extend `write_graph(target="branch")` with a closed create-or-patch discriminator: a complete `definition_json` creates one atomically validated branch, while `branch_id` plus `changes_json` preserves transactional patching.
-- Backfill the currently unspecced branch catalog and composite authoring contract, including caller-bound authorship, explicit visibility, non-enumeration of private branches, atomic validation failure, bounded results, and closed response shapes.
+- Backfill the currently unspecced branch catalog and composite authoring contract, including verified-principal authorship, V1 public-commons-only storage, atomic validation failure, bounded results, and closed nested request/response shapes.
 - Replace registered prompt instructions that name hidden legacy tools with compositions over the canonical handles.
-- Produce an exact repository/live-wiki correction manifest; any later live wiki mutation must use the existing dry-run and compare-and-swap path.
+- Produce an exact-path, lower-bound repository/live-wiki planning manifest; prove exhaustiveness before apply, and do not treat the existing race-prone SHA precondition as atomic compare-and-swap.
 - Add no default branch, eighth tool, compatibility alias, provider/compute authority, or runtime implementation in this review lane.
 
 ## Capabilities
@@ -24,5 +24,5 @@ A newly connected chatbot can inspect a branch only after it somehow learns an o
 ## Impact
 
 - Future runtime integration will touch the canonical MCP router and its packaging mirror, the existing branch list/build adapters, focused first-contact tests, and public MCP acceptance probes.
-- The active `universe-creation`, `universe-visibility`, broad-test, and legacy-tool-retirement owners remain read-only dependencies. Their work must land or explicitly adapt this contract before runtime implementation is claimed.
+- The active `universe-creation` and `universe-visibility` owners remain read-only dependencies. The legacy-retirement change is unclaimed as of 2026-07-25 and must record this packet's replacement-first gate when claimed; no current `broad-test` owner/lane exists.
 - This lane changes only OpenSpec artifacts, the evidence manifest, and coordination metadata. Claude Opus 5 opposite-provider review gates a draft spec PR and all runtime work.

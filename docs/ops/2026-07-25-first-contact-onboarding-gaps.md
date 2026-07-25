@@ -2,7 +2,7 @@
 
 **Freshness:** 2026-07-25, `origin/main` source at `92d730bc` plus direct reads from `https://tinyassets.io/mcp`.
 **Mode:** read-only audit. No live wiki, runtime, deployment, or canonical-spec mutation was performed.
-**Scope:** current first-contact branch journey, registered MCP prompts, user-facing hints, repository handoff copy, and a lower-bound public wiki inventory.
+**Scope:** current first-contact branch journey, registered MCP prompts, user-facing hints, repository handoff copy, and an exact-path but lower-bound public wiki planning inventory. It is not exhaustive until a privileged `scope=all` inventory or volume export is reconciled.
 
 ## Outcome
 
@@ -13,7 +13,7 @@ The defect is both instructional and structural:
 3. `write_graph(target="branch")` patches only; the exact-seven surface has no branch catalog or complete-definition create path.
 4. The internal list/build seams are reusable only after authority, privacy, pagination, idempotency, and error-projection hardening.
 
-Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and a closed, atomic `write_graph(target="branch", definition_json=...)` create mode without adding a tool.
+Prompt cleanup alone cannot repair onboarding. The OpenSpec change therefore specifies a bounded `read_graph(target="branches")` catalog and a closed, transactionally idempotent `write_graph(target="branch", definition_json=...)` create mode without adding a tool. Both new modes remain unavailable until every exact branch projection filters restricted related-wiki metadata.
 
 ## Source-owned first-contact gaps
 
@@ -33,9 +33,10 @@ Canonical sources and packaged plugin mirrors were byte-identical when inspected
 
 - `tinyassets/universe_server.py:426-493`: `read_graph` supports exact `target="branch"` only; no `branches` catalog target.
 - `tinyassets/universe_server.py:511-641`: `write_graph(target="branch")` always delegates to patch and cannot create.
+- Freshness check on 2026-07-25 found no `UNIVERSE_SERVER_USER` configuration in `deploy/` or `.github/workflows/`; the environment fallback resolves to anonymous in the inspected deployment configuration and cannot supply verified authority.
 - `tinyassets/api/branches.py:548-619`: internal list is visibility-filtered but unbounded, lacks stable pagination, and exposes ambiguous internal scopes.
 - `tinyassets/api/branches.py:2080-2329`: internal full-definition build validates then saves atomically at the branch level, but accepts caller-influenceable author fields, defaults public visibility, lacks body-bound idempotency, and can echo attempted definitions on error.
-- A private `fork_from` version can be loaded before a safe source-visibility decision.
+- A private `fork_from` version can be loaded before a safe source-visibility decision in the legacy build seam. V1 rejects fork/remix input instead of publishing that unsafe behavior.
 - Exact branch reads currently derive `related_wiki_pages`; the open STATUS concern records restricted path/title/summary leakage. The new catalog must not reuse that projection.
 - Existing branch patch batches are transactional across their operations, but the public router exposes no expected hash/version. They are not compare-and-swap and must not be described as CAS.
 
@@ -43,14 +44,14 @@ Canonical sources and packaged plugin mirrors were byte-identical when inspected
 
 These full hashes came from current `read_page` source proofs. They are pre-images for planning only and must be refreshed immediately before any write.
 
-| Exact page | 2026-07-25 SHA-256 | Classification | Planned correction |
-|---|---|---|---|
-| `pages/plans/chatbot-builder-behaviors.md` | `d7abd7b775b8ceb034d6b44db29d437c52b4944a0a3589130a37877fa283ccc3` | Direct, highest priority | Replace hidden wiki/goals/extensions flows with the reviewed canonical branch/page/goal compositions |
-| `pages/concepts/before-filing-a-patch-request-user-buildable-check.md` | `998b7eaeab1b9f6b367e967d6ee63d5c5ed2b439301d963c2aba0d7dd905438a` | Direct | Correct dotted/hidden handles; do not claim catalog/fork behavior until deployed |
-| `pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md` | `55dc3c3f8d9bfe37e4b0a1d2a1dddd42ad9c17d4df54edd933c6fe8182faaab4` | Direct | Distinguish five substrate operations from seven underscore wire handles |
-| `pages/projects/meet-tiny.md` | `ca1f1378d96b5610f4ec959a0de399d1343a16aaaab7946668d2ddce5da3df1b` | Direct | Replace hidden universe/gates and opaque-ID instructions |
-| `pages/projects/workflow-voice-twitter-daemon.md` | `adce1b720564e7d89faf1ce39c1d2044860cc0391a5b48a5c097e79677524417` | Direct/project state | Replace hidden extensions schedule/get flow only after a supported canonical composition exists |
-| `pages/concepts/auto-hydrate-then-invoke-v1.md` | `3cd4048a17ee715641db254bcc5f8faf470cff9328cd50fbcbe5e29919143963` | Historical concept | Add a concise current-surface/superseded banner; preserve provenance |
+| Exact page | Audience | 2026-07-25 pre-image SHA-256 | Classification | Exact replacement | Dry-run | Guarded write | Post-image SHA-256 |
+|---|---|---|---|---|---|---|---|
+| `pages/plans/chatbot-builder-behaviors.md` | Pending privileged audience read | `d7abd7b775b8ceb034d6b44db29d437c52b4944a0a3589130a37877fa283ccc3` | Direct, highest priority | Pending exact text after canonical branch/page/goal compositions deploy | Pending | Blocked: no serialized writer | Pending |
+| `pages/concepts/before-filing-a-patch-request-user-buildable-check.md` | Pending privileged audience read | `998b7eaeab1b9f6b367e967d6ee63d5c5ed2b439301d963c2aba0d7dd905438a` | Direct | Pending exact text; remove dotted/hidden calls and do not claim excluded fork behavior | Pending | Blocked: no serialized writer | Pending |
+| `pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md` | Pending privileged audience read | `55dc3c3f8d9bfe37e4b0a1d2a1dddd42ad9c17d4df54edd933c6fe8182faaab4` | Direct | Pending exact text distinguishing substrate operations from canonical wire handles | Pending | Blocked: no serialized writer | Pending |
+| `pages/projects/meet-tiny.md` | Pending privileged audience read | `ca1f1378d96b5610f4ec959a0de399d1343a16aaaab7946668d2ddce5da3df1b` | Direct | Pending exact text replacing hidden universe/gates and opaque-ID instructions | Pending | Blocked: no serialized writer | Pending |
+| `pages/projects/workflow-voice-twitter-daemon.md` | Pending privileged audience read | `adce1b720564e7d89faf1ce39c1d2044860cc0391a5b48a5c097e79677524417` | Direct/project state | Pending until a supported schedule/get composition exists | Pending | Blocked: no serialized writer | Pending |
+| `pages/concepts/auto-hydrate-then-invoke-v1.md` | Pending privileged audience read | `3cd4048a17ee715641db254bcc5f8faf470cff9328cd50fbcbe5e29919143963` | Historical concept | Pending concise current-surface/superseded banner; preserve provenance | Pending | Blocked: no serialized writer | Pending |
 
 ## Lower-bound historical/current-surface banner set
 
@@ -80,17 +81,17 @@ For each page independently:
 2. Prepare an exact, minimal `old_text` → `new_text` patch.
 3. Call `write_page` with the exact page, `expected_sha256`, and `dry_run=true`.
 4. Require exactly one match, inspect the preview and proposed new hash.
-5. Only after repository/runtime review gates pass, call authenticated `write_page(..., dry_run=false)` for that one page.
+5. Only after repository/runtime review gates pass and a separately reviewed serialized/locked single-writer boundary is active, call authenticated `write_page(..., dry_run=false)` for that one page.
 6. Re-read and record the post-image SHA-256.
 7. Stop on any SHA mismatch, zero/multiple match, unexpected audience/authority result, or content drift.
 
-The wiki patch owner conflicts on SHA mismatch or when `old_text` does not match exactly once. Full-page writes and filings are not safe previews; this lane uses targeted compare-and-swap patches only.
+The current wiki patch owner conflicts on SHA mismatch or when `old_text` does not match exactly once, but its read/check/write sequence is not locked and therefore is not atomic compare-and-swap. Full-page writes and filings are not safe previews. This lane permits targeted dry-runs now but blocks live mutation until a separately reviewed serialized/locked single-writer boundary exists.
 
 ## Gates before any runtime or live write
 
 - Claude Opus 5 opposite-provider APPROVE or accepted ADAPT on the exact spec/evidence head.
-- Explicit accept/adapt from active universe-creation, universe-visibility, broad-test, and legacy-retirement owners.
-- Private hosted creation remains fail-closed until a PLAN-conforming user-controlled storage route exists.
+- Explicit accept/adapt from active universe-creation and universe-visibility owners. Re-check the currently unclaimed legacy-retirement change when it gains an owner; there is no current `broad-test` lane.
+- V1 remains public-commons-only; private authoring needs a separate PLAN-approved user-controlled-storage contract.
 - Failing tests precede implementation.
 - Exact-seven canary, 500-client load proof, packaged mirror parity, and real browser-rendered chatbot acceptance are required.
 - No founder/maintainer provider quota or compute is used by created branches; later execution remains BYOC/market-authorized independently.
