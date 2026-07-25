@@ -14,9 +14,9 @@
 
 ## 2. Action caps and held effects
 
-- [ ] 2.1 Add a machine-readable unprompted-action cap evaluated independently of tool authorization and of any spend cap.
-- [ ] 2.2 Execute below-cap authorized actions automatically; hold above-cap actions with a receipt naming the cap, consuming no funds or quota, until an authorized confirmation is recorded.
-- [ ] 2.3 Surface held effects with actionable remediation rather than silence, and test that the same action at or below the cap executes without a hold.
+- [x] 2.1 Add a machine-readable unprompted-action cap evaluated independently of tool authorization and of any spend cap.
+- [x] 2.2 Execute below-cap authorized actions automatically; hold above-cap actions with a receipt naming the cap, consuming no funds or quota, until an authorized confirmation is recorded.
+- [x] 2.3 Surface held effects with actionable remediation rather than silence, and test that the same action at or below the cap executes without a hold.
 
 ## 3. Replay safety, reconciliation, and batches
 

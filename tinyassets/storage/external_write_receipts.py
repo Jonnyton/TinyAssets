@@ -87,6 +87,7 @@ _DB_FILENAME = ".external_write_receipts.db"
 STATUS_PENDING = "pending"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
+STATUS_HELD = "held"
 
 # After this many seconds a ``pending`` reservation is considered
 # abandoned (the holding writer died mid-invocation without finalizing
@@ -684,6 +685,7 @@ __all__ = [
     "STATUS_PENDING",
     "STATUS_SUCCEEDED",
     "STATUS_FAILED",
+    "STATUS_HELD",
     "STALE_PENDING_THRESHOLD_SECONDS",
     "receipts_db_path",
     "initialize_receipts_db",

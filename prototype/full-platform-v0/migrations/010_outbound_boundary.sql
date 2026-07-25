@@ -20,7 +20,16 @@ CREATE TABLE boundary.connection_grants (
   owner_user_id  text NOT NULL CHECK (owner_user_id <> ''),
   universe_id    text NOT NULL CHECK (universe_id <> ''),
   granted_at     timestamptz NOT NULL DEFAULT now(),
-  revoked_at     timestamptz
+  revoked_at     timestamptz,
+  unprompted_action_cap jsonb CHECK (
+    unprompted_action_cap IS NULL
+    OR (
+      jsonb_typeof(unprompted_action_cap) = 'object'
+      AND (unprompted_action_cap->>'name') <> ''
+      AND (unprompted_action_cap->>'unit') <> ''
+      AND (unprompted_action_cap->>'maximum') ~ '^[0-9]+([.][0-9]+)?$'
+    )
+  )
 );
 CREATE INDEX connection_grants_resolution
   ON boundary.connection_grants(owner_user_id, universe_id)
