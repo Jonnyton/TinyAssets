@@ -9,9 +9,10 @@ public primitives, not a product-specific hidden loop.
 
 ## What Changes
 
-- **BREAKING** Remove the implicit investigation trigger and trigger-receipt
-  side effects from `file_bug`; filing a page performs only the documented
-  filing operation.
+- **BREAKING** Remove the implicit investigation trigger, trigger receipt, and
+  automatic dispatcher/triage routing metadata from `file_bug`; filing a page
+  performs only the documented filing operation. Generic incentive fields may
+  remain only as inert filing metadata under an independent owner.
 - **BREAKING** Remove the dedicated `bug_investigation` request type, payload
   adapter, handler resolution, execution special cases, and automatic Patch
   Packet write-back from shipped runtime and tests.
@@ -25,14 +26,19 @@ public primitives, not a product-specific hidden loop.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
+- Remove the public website's privileged patch-loop route/status fallback,
+  checked-in community-loop JSON, workflow/label assumptions, and fine-print
+  branding. Preserve a generic user-workflow activity view only when it has
+  live/snapshot provenance and does not imply a platform-owned loop.
 - Keep generic Goal canonical selection, dispatcher/request admission, node
   enqueue, graph execution, wiki/GitHub effect primitives, evaluation
   primitives, and workflow composition available so users can build, publish,
   copy, remix, and combine their own investigation, shipping, or recurring-task
   designs.
 - Move read-only uptime, clean-clone, deploy, and revert-rate observation into
-  the generic `uptime-and-alarms` capability. Its successor may report through
-  the normal alarm sink but cannot dispatch repair or user task work.
+  the generic `uptime-and-alarms` capability. The observer only reads, emits
+  bounded evidence, and exits; the independently owned alarm sink may consume
+  that evidence but neither surface can dispatch repair or user task work.
 
 ## Capabilities
 
@@ -49,7 +55,11 @@ None.
 - `uptime-and-alarms`: own the generic read-only platform/deploy/revert
   observation successor without community-loop or self-heal task dispatch.
 - `wiki-commons`: remove the hidden filed-page trigger receipt/enqueue behavior
-  so typed filing is an atomic wiki operation with no privileged automation.
+  and automatic dispatcher/triage claims so typed filing is an atomic wiki
+  operation with no privileged automation.
+- `public-website-surface`: remove the patch-loop route/status snapshot and
+  community-loop fallback/branding while preserving truthful generic workflow
+  activity and separately sourced platform-uptime evidence.
 
 ## Impact
 
@@ -57,10 +67,13 @@ The implementation slice removes cheat-loop consumers from
 `tinyassets/bug_investigation.py`, `tinyassets/api/wiki.py`,
 `fantasy_daemon/__main__.py`, `tinyassets/auto_ship*.py`,
 `tinyassets/api/auto_ship_actions.py`, extension/auth action registration,
-`get_status`, dispatcher/compiler comments and defaults,
+`get_status`, dispatcher/compiler comments and defaults, queued legacy request
+state, coding-packet auto-ship aliases/config/rubrics, merge-readiness branding,
+public prompts/control-station copy, active plans/wiki guidance,
 `tinyassets/wiki/trigger_receipts.py`, `scripts/community_loop_watch.py`,
 `.github/workflows/community-loop-watch.yml`, production configuration, the
-generated Claude plugin runtime mirror, and tests that assert the retired
+canonical Svelte website and legacy React mirror, checked-in website status
+JSON, generated Claude plugin runtime mirror, and tests that assert the retired
 behavior. Historical design/audit records may retain clearly marked history;
 current operator guidance, configuration, build outputs, and behavioral specs
 must not advertise or exercise the retired path or capability.

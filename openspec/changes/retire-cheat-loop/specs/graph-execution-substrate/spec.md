@@ -32,3 +32,33 @@ publish those designs to the commons for copying, remixing, or combination.
   executing again
 - **AND** it does not interpret output field names as authority to mutate a wiki
   page or repository
+
+### Requirement: Retired Request Classes Fail Closed Before Generic Execution
+
+Dispatcher admission and claim SHALL reject the retired
+`bug_investigation` request class before branch-run or universe-cycle
+execution. An idempotent pre-worker upgrade migration SHALL quarantine or
+terminally refuse every pending/queued v1/v2 row of that class, fence and
+cancel every claimed/running row before lease recovery, and retain completed
+rows as immutable historical evidence. Trigger receipts associated only with
+the retired loop SHALL be archived or removed under recorded retention policy.
+No row, payload, receipt, or completed replay MAY be reinterpreted as a generic
+request, branch run, universe cycle, or user-authored workflow.
+
+#### Scenario: Pending retired row cannot reach a worker
+
+- **WHEN** upgrade encounters a pending or queued `bug_investigation` row
+- **THEN** migration atomically records a retirement reason and moves it to a terminally refused or quarantined state before workers start
+- **AND** dispatcher selection and claim both refuse the retired class
+
+#### Scenario: Claimed or running retired row loses execution race
+
+- **WHEN** upgrade encounters a claimed or running retired row or its lease later recovers
+- **THEN** migration fences and cancels it before generic execution can start or resume
+- **AND** no branch, universe cycle, task, run, or wiki write-back is produced
+
+#### Scenario: Completed retired history is non-executable
+
+- **WHEN** a caller reads or replays a completed historical retired row
+- **THEN** its immutable evidence remains readable under retention policy
+- **AND** replay cannot resubmit, requeue, reinterpret, or execute it

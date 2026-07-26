@@ -29,14 +29,16 @@ the primitives from which a user can build the same outcome explicitly.
 
 - Remove the full product-wired bug-investigation automation, including both
   Goal-ID and branch-definition environment routes.
-- Make `file_bug` a filing operation with no hidden task, receipt, run, or
-  write-back side effect.
+- Make `file_bug` a filing operation with no hidden task, receipt, run,
+  dispatcher/triage route, or write-back side effect.
 - Remove dedicated `bug_investigation` handling from the runtime, deployment
   configuration, generated plugin payload, current operator guidance, and
   behavior-pinning tests.
 - Remove the auto-ship validator, action wrappers, PR writer, ledger/storage,
   configuration, auth/extension registration, and status projection.
 - Retire the `community-patch-loop` capability and all named shipped artifacts.
+- Remove patch-loop/community-loop product presentation and fallback data from
+  the public website while preserving truthful generic user-workflow activity.
 - Preserve generic composition and execution primitives.
 - Move read-only uptime, deploy, clean-clone, and revert-rate observation to a
   generic uptime/alarm successor with no task-dispatch self-heal.
@@ -110,16 +112,72 @@ SHALL stop reading, writing, or resetting them; deployment may archive or
 delete them according to operator data-retention policy without adding a
 runtime migration reader.
 
-### 6. Move observational canaries to uptime-and-alarms
+### 6. Split the read-only observer from the alarm sink
 
 The useful health subset moves to a generically named
 `scripts/platform_uptime_watch.py` plus
 `.github/workflows/platform-uptime-watch.yml` under
-`uptime-and-alarms`. It may update the canonical operational incident/alarm
-sink, but MUST NOT enqueue tasks, select a user workflow, dispatch another
-workflow as self-heal, write repository/wiki state, or advertise an auto-fix
-loop. No `community-loop` named executable, workflow, label, artifact, or
-status field survives.
+`uptime-and-alarms`. The observer only reads public/API evidence, emits a
+bounded generic evidence artifact/stdout result, and exits. It has no
+repository/wiki/issue write credential or call. An independently owned alarm
+sink may consume that output and use its narrow incident authority; it is not
+part of the observer and cannot dispatch a workflow, repair, or user task.
+
+Workflow permissions are job-scoped. The observer may have only the read
+permissions required for checked evidence (`contents:read`, `actions:read`,
+and metadata); it MUST NOT have `actions:write`, `contents:write`,
+`pull-requests:write`, `issues:write`, or reusable/manual input capable of
+enabling dispatch. A distinct sink job may have `issues:write` only if the
+canonical incident owner requires it. No `community-loop` named executable,
+workflow, label, artifact, or status field survives.
+
+### 7. Remove website product presentation, not generic activity truth
+
+The canonical Svelte website SHALL remove the `/patch-loop` product surface,
+checked-in `community-loop-status.json`, community-loop workflow/label/issue
+fallbacks, and fine-print branding. The legacy React mirror is either deleted
+if non-shipped or updated and scan-clean before retirement. `/patch-loop`
+becomes a truthful soft landing to generic patterns/commons rather than a dead
+route or hidden compatibility application.
+
+The `/loop` surface may remain only as a generic view of user-authored
+workflow activity with explicit live/snapshot provenance. Platform uptime
+evidence comes from the generic uptime observer/alarm contract and MUST NOT be
+used as proof that a privileged task loop is moving.
+
+### 8. Quarantine retired queued work before workers can claim it
+
+Removing the direct executor is insufficient because the generic dispatcher
+accepts otherwise unknown request classes. At upgrade, an idempotent
+pre-worker migration SHALL atomically identify every v1/v2
+`bug_investigation` row and trigger receipt. Pending/queued rows become
+terminally refused or quarantined with an immutable retirement reason.
+Claimed/running rows are fenced, cancelled, and quarantined before lease
+recovery can enter generic execution. Completed rows remain immutable history
+and replay/read paths cannot resubmit them.
+
+After cutover, dispatcher admission and claim both fail closed on the retired
+request class before branch-run or universe-cycle execution. No compatibility
+consumer, generic reinterpretation, payload salvage, or automatic write-back
+is permitted. Migration records counts, row identities/digests, prior/final
+states, and retention action without deleting completed history.
+
+### 9. Remove compatibility vocabulary and automatic filing routes
+
+Product-only `auto_ship_ship_classes.yaml`, auto-ship modules/ledger/actions,
+and community-loop merge-readiness classifier are deleted. Independently
+useful coding-packet evaluation may remain only after removing the
+`AUTO_SHIP_READY`, `APPROVE_AUTO_SHIP`, and `auto_shipped` aliases and
+community-loop vocabulary; generic `KEEP_READY`, `APPROVE`, and ordinary
+release evidence remain.
+
+`file_bug` also stops publishing automatic dispatcher-facing fast-lane,
+carrier-review, navigator-triage, or daemon-pickup claims. Independently owned
+incentive metadata may remain only if it is inert filing data and no task,
+route, queue, receipt, or execution consumer is implied. Public prompts,
+control-station copy, current exec plans/specs/milestones, discoverable wiki
+plans, plugin mirrors, and behavior tests are updated or clearly archived so
+no current guidance promises the retired loop.
 
 ## Risks / Trade-offs
 
@@ -138,10 +196,10 @@ status field survives.
   gates to shipped runtime, active deployment/configuration, current runbooks,
   plugin payloads, and executable tests. Historical artifacts may retain
   accurately labeled history.
-- **Queued legacy `bug_investigation` rows exist at deployment** -> The runtime
-  SHALL not special-case or execute them as the retired product loop. Deployment
-  must inspect/clear such operator-owned legacy queue state explicitly rather
-  than add a compatibility consumer.
+- **Queued legacy `bug_investigation` rows exist at deployment** -> Run the
+  idempotent pre-worker quarantine/cancellation migration, fence claimed/running
+  rows, retain immutable completed history, and fail closed at both admission
+  and claim. Never clear ambiguously or add a compatibility consumer.
 
 ## Migration Plan
 
@@ -151,17 +209,23 @@ status field survives.
    `bug_investigation` module and executor special cases.
 3. Remove auto-ship modules, actions, ledger/reset/status integration,
    configuration, current docs, and behavior-pinning tests.
-4. Rename the useful watch subset into generic uptime/alarm artifacts and remove
-   its workflow-dispatch self-heal.
+4. Rename the useful watch subset into a read-only generic uptime observer,
+   separate it from the incident sink, least-privilege its workflow jobs, and
+   remove workflow-dispatch self-heal.
 5. Remove environment/default/deploy/runbook references and update generic
    dispatcher/examples.
-6. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
-7. Run focused tests, full relevant suites, lint, plugin build/probe, and
+6. Remove website patch-loop/community-loop presentation and snapshots, retain
+   only provenance-correct generic workflow activity, and build both canonical
+   site and any retained mirror.
+7. Before workers start, migrate/quarantine legacy queued/running rows and
+   receipts; preserve completed history and activate fail-closed admission.
+8. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
+9. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
-8. Before deployment, inspect production for obsolete environment keys, legacy
-   request rows, and auto-ship ledger/config state; remove/archive them without
-   executing them.
-9. Deploy and run the normal public MCP, clean-clone, production deploy, and
+10. Before deployment, inspect production for obsolete environment keys,
+   migrated request/receipt evidence, and auto-ship ledger/config state;
+   remove/archive them without executing them.
+11. Deploy and run the normal public MCP, clean-clone, production deploy, and
    website deploy canaries. Verify `file_bug` in a rendered chatbot conversation
    files the page without an investigation/trigger side effect and `get_status`
    contains no cheat-specific health projection.

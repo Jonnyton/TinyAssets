@@ -1,9 +1,9 @@
 # Cheat-Loop Retirement Audit
 
-**Date:** 2026-07-26  
+**Date:** 2026-07-26
 **Environment:** Windows worktree
 `C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final`, based on
-`origin/main` at lane creation  
+`origin/main` at lane creation
 **Finding:** current shipped source contradicts the host-approved architecture;
 the cheat loop is disabled in some places but is not deleted from the build.
 **Target:** `openspec/changes/retire-cheat-loop/`
@@ -55,6 +55,7 @@ the runtime is still unchanged in this target-only lane.
 | `tinyassets/api/wiki.py:2430-2570` | `file_bug` imports `bug_investigation` and `trigger_receipts`, creates a pending receipt, reads a retired env key, enqueues, appends `## Investigation`, and returns `investigation`/`trigger` blocks | Remove the entire post-filing automation block; filing returns filing metadata only |
 | `tinyassets/wiki/trigger_receipts.py` | Dedicated mutable receipt store for the filed-page auto-trigger | Delete when the filing trigger is removed |
 | `tinyassets/bug_investigation.py` | Product module for payload mapping, request creation, handler selection, comment formatting, and Patch Packet wiki mutation | Delete, not disable |
+| `tinyassets/api/wiki.py:2343-2453,2572-2576` | Filing also publishes fast-lane, carrier-review, navigator-triage, and daemon-pickup claims even without proving a separate route owner | Remove automatic routing/triage claims; preserve only inert independently owned filing-incentive metadata |
 
 Both handler routes are the same retired automation:
 
@@ -82,7 +83,17 @@ Additional active references include:
 - `deploy/cloud-daemon-settings.json` request priority and safety-net comment;
 - `.github/workflows/deploy-prod.yml:619` production env installation;
 - `docs/ops/post-redeploy-validation-runbook.md` current setup and validation
-  instructions.
+instructions.
+
+The generic dispatcher currently accepts arbitrary request classes when no
+priority allow-list is present. Therefore deleting the direct-execution branch
+alone is unsafe: pending or lease-recovered `bug_investigation` rows could fall
+into an ordinary universe cycle. The cutover must run an idempotent pre-worker
+migration that terminally refuses/quarantines pending rows, fences and cancels
+claimed/running rows before recovery, retains completed history immutably, and
+records ids/digests/prior-final states/retention. Admission and claim both deny
+the retired class afterward; no generic reinterpretation or replay execution
+is allowed.
 
 ### Auto-ship composition
 
@@ -113,6 +124,18 @@ Generic evaluation code or explicit GitHub-effect authority may remain only
 where it has an independent owner and does not preserve an auto-ship action,
 ledger, flag, or implicit composition.
 
+Additional active compatibility/product residue has an exact disposition:
+
+| Surface | Retirement |
+|---|---|
+| `auto_ship_ship_classes.yaml` | Delete the product-only ship classifier configuration |
+| `tinyassets/coding_packet_rubric.py` | Remove `AUTO_SHIP_READY`, `APPROVE_AUTO_SHIP`, and `auto_shipped`; retain generic `KEEP_READY`/`APPROVE` rubric behavior only |
+| `tinyassets/evaluation/coding_process.py` | Remove auto-ship wording while retaining independently useful trajectory evaluation |
+| `scripts/merge_readiness.py` | Remove the community-loop classifier/branding; retain only if renamed and proven independently useful as a generic read-only PR classifier |
+| `tinyassets/api/prompts.py`, `tinyassets/universe_server.py` | Remove current community-loop promises/triage wording without broadening public tools |
+| `docs/exec-plans/active/2026-04-25-file-bug-wiring.md`, current auto-ship specs/milestones, `pages/plans/` | Archive or rewrite current/discoverable guidance so it cannot be mistaken for a live supported product |
+| corresponding tests and plugin mirrors | Rewrite for generic behavior or delete with the retired surface |
+
 ### Named community-loop watch
 
 The useful subset of `scripts/community_loop_watch.py` reads public GitHub
@@ -129,16 +152,42 @@ watch workflow again as a self-heal follow-up. That is not purely observational.
 The workflow also ships community-loop names in its filename, display name,
 concurrency group, label, JSON artifact, incident title, and tests.
 
-The successor is:
+The successor is split:
 
 - `scripts/platform_uptime_watch.py`;
 - `.github/workflows/platform-uptime-watch.yml`;
 - generic uptime/alarm label and evidence artifact names;
-- no workflow/task dispatch or repair;
-- the existing canonical alarm/incident sink for reporting red/green state.
+- a read-only observer job with only `contents:read`, `actions:read`, and
+  metadata, no write or dispatch permission/input, which emits bounded
+  evidence and exits;
+- a distinct canonical alarm/incident sink consumer that may have narrowly
+  scoped `issues:write` but no actions/content/PR write, workflow dispatch,
+  repair, or user-task authority.
 
 This behavior belongs in `uptime-and-alarms`. No executable or build artifact
 named `community-loop` survives.
+
+### Public website presentation
+
+Canonical `public-website-surface` truth and shipped website code still expose
+the retired product:
+
+- `WebSite/site/src/lib/mcp/live.ts` reads
+  `community-loop-watch.yml`, community-loop labels/issues, and
+  `/community-loop-status.json`;
+- `WebSite/site/static/community-loop-status.json` is a checked-in product
+  snapshot;
+- `WebSite/site/src/routes/fine-print/+page.svelte` names the workflow;
+- `WebSite/site-react/lib/live.ts` and its fine print mirror the same shape;
+- canonical site requirements name `/patch-loop` and the community-watch
+  fallback.
+
+The migration removes the patch-loop application and fallback data, makes
+`/patch-loop` a static soft landing to user-authored patterns/commons, and
+keeps `/loop` only as provenance-labeled generic workflow activity. Generic
+platform uptime evidence remains a separate observation and never proves that
+task work is moving. A non-shipped React mirror is deleted; a retained mirror
+must build and pass the same absence scan.
 
 ### Plugin payload
 
@@ -172,23 +221,31 @@ The implementation must delete or rewrite behavior-positive tests, including:
 - `tests/test_auto_ship_ledger.py`
 - `tests/test_auto_ship_health_status.py`
 - `tests/test_validate_ship_packet_action.py`
+- `tests/test_auto_ship_ship_classes_config.py`
+- auto-ship alias cases in `tests/test_coding_packet_rubric.py`
+- `tests/test_merge_readiness.py` community-loop branding/assumptions
 - auto-ship cases in `tests/test_universe_server_isolation.py`,
   `tests/test_api_status.py`, and reset/config tests
 - `tests/test_community_loop_watch.py`
 - `tests/test_community_loop_watch_workflow.py`
+- website live/fine-print/static/build tests in canonical site and any retained
+  React mirror
 
 Replacement tests assert absence and preserve unrelated contracts:
 
-1. `file_bug` creates no task/receipt/run/write-back side effect even with stale
-   env keys;
+1. `file_bug` creates no task/receipt/run/write-back or automatic
+   dispatcher/triage route even with stale env keys;
 2. retired actions receive ordinary unknown-action behavior;
 3. `get_status` works without `auto_ship_health`;
 4. generic canonical execution, dispatcher, completed-run reuse, evaluation,
    effects, and wiki writes still work;
-5. the generic uptime observer never dispatches a workflow/task or performs a
-   repair;
-6. source, active config, current runbooks, executable tests, workflows, and
-   plugin output contain no retired shipped references.
+5. queued/running retired rows are migrated/fenced before workers and completed
+   history remains non-executable;
+6. the generic observer has no write/dispatch credentials or calls; the alarm
+   sink is independently least-privileged;
+7. site routes/data/fine print expose no privileged patch/community loop;
+8. source, active config/specs/plans/wiki guidance, websites, executable tests,
+   workflows, and plugin output contain no retired shipped references.
 
 Historical design notes and audits may retain accurately labeled history. They
 must not be used as active configuration or current runbooks, and scan tests
@@ -196,7 +253,7 @@ must distinguish history from shipped surfaces.
 
 ## OpenSpec Disposition
 
-The target modifies four capabilities:
+The target modifies five capabilities:
 
 - `community-patch-loop`: all nine as-built requirements are removed, then the
   empty main capability is deleted;
@@ -205,6 +262,8 @@ The target modifies four capabilities:
 - `wiki-commons`: loses trigger receipts and makes typed filing side-effect
   boundaries explicit;
 - `uptime-and-alarms`: gains the generic read-only observation successor.
+- `public-website-surface`: removes the privileged patch-loop route/status
+  fallback and keeps only provenance-correct generic workflow/uptime truth.
 
 There is no new product capability, compatibility period, replacement loop, or
 runtime alias.
@@ -216,11 +275,11 @@ Implementation is not complete until all of the following are fresh and green:
 1. focused runtime/config/workflow/plugin tests and ruff;
 2. plugin rebuild/probe plus source/package absence scan;
 3. strict validation of this change and all OpenSpec;
-4. production env/queue/ledger cleanup evidence;
+4. production env/queue/receipt/ledger quarantine and cleanup evidence;
 5. rendered chatbot `ui-test` through `https://tinyassets.io/mcp` proving
    filing-only behavior and absence of the status projection;
-6. normal public MCP, Tier-3 clone, production deploy, and website deploy
-   observation;
+6. canonical website plus any retained mirror build/absence evidence and normal
+   public MCP, Tier-3 clone, production deploy, and website deploy observation;
 7. post-fix real-user evidence, or an explicit short watch item if none exists.
 
 This audit authorizes no runtime edit. It records the verified target boundary
