@@ -1293,3 +1293,18 @@ Notes:
 - Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
 - Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
 - Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
+
+## 2026-07-25 - harden-branch-access-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-branch-access-authority
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-first-next
+- STATUS/Issue/PR: STATUS Work rows; PR pending
+- PLAN refs: API & MCP Interface; connector users are first-class
+- Purpose: specify one authenticated-subject branch authority boundary across reads, projections, reuse, lineage, mutation, and deletion
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-first-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
+- Idea feed refs: none
+- Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
