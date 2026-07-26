@@ -39,7 +39,9 @@ deny-all.
   proof.
 - No flag-independent legacy-action subsystem ships. While the effective gate
   is dark, every `set_engine` source/service and provider path retains exact
-  shipped behavior. The hidden action is unavailable to Tier-1 chatbots and
+  shipped behavior under its configured production-auth or development-mode
+  dispatch gate; this change adds no authenticated-founder precondition or
+  pre-cutover ceiling write. The hidden action is unavailable to Tier-1 chatbots and
   its retirement strictly reduces new exposure. R2-1a implements destination
   authority only behind the effective gate after the three ready-path
   successors; task 8.1 migrates all legacy `allowed_providers=None` records.
@@ -63,9 +65,12 @@ deny-all.
   credential validation and binds request nonce plus authenticated principal.
   A server registry binds its liveness lease to the owning request execution
   scope and revokes it synchronously at request end, so inherited asyncio
-  contexts cannot extend it. `call_provider` explicitly carries the exact
-  object through the router's synchronous helpers and thread-pool closure
-  rather than depending on `ContextVar` propagation. The provider sink binds
+  contexts cannot extend it. The server-owned FastMCP synchronous dispatch
+  adapter may register one exact one-shot worker delegate only while that
+  request task structurally awaits that handler; detached or copied contexts
+  cannot obtain it. `call_provider` explicitly carries the exact object
+  through the router's synchronous helpers and thread-pool closure rather
+  than depending on `ContextVar` propagation alone. The provider sink binds
   it again to the exact universe, credential owner, provider, host, and
   current assignment generation.
 - `harden-background-provider-execution-authority` owns a durable

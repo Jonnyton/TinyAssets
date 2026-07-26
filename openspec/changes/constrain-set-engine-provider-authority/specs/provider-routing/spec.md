@@ -304,14 +304,21 @@ The provider layer SHALL add immutable non-serializable
 For a live request, `call_provider` SHALL retrieve the exact current
 `ProviderRequestCapability` or successor-owned
 `ProviderHostRequestCapability` before transport cleanup, prove its
-server-owned request-liveness lease remains active and the current
-task/execution scope is the registered owner, mint a sealed internal carrier,
+server-owned request-liveness lease remains active and the current execution
+scope is either the registered transport owner or its exact active
+server-registered structured-worker delegate, mint a sealed internal carrier,
 and explicitly pass it
 through internal-only arguments to `call_sync`, `call_with_policy_sync`,
 retry/policy/judge branches, the router `ThreadPoolExecutor` closure, and
-invocation minting. This SHALL NOT depend on ContextVar propagation into the
-pool worker. Inherited asyncio ContextVars SHALL NOT extend the lease or pass
-the owner-scope check. API/MCP schemas, caller kwargs, request/universe
+invocation minting. FastMCP synchronous tool dispatch through an AnyIO worker
+thread SHALL register that one-shot delegate at the server-owned dispatch
+edge before submission, bind it to the parent request lease, exact handler
+invocation, and worker identity, keep it active only while the parent
+structurally awaits that call, and revoke it before releasing the worker
+result. This SHALL NOT depend on a copied ContextVar alone or on ContextVar
+propagation into the router pool worker. Inherited asyncio ContextVars SHALL
+NOT extend the lease or pass the owner/delegate check. API/MCP schemas, caller
+kwargs, request/universe
 payloads, serialized state, and ambient worker context MUST NOT construct or
 populate the carrier.
 
@@ -379,9 +386,15 @@ releases while result completion continues.
 
 `HostLocalProviderCapability` MAY authorize only
 `subscription_auth_probe`, `local_model_readiness_probe`, or
-`sandbox_readiness_probe`. Those operations accept no user prompt, invoke no
-model completion, spend no quota, mutate no universe/branch, and cannot mint a
-`ProviderInvocation`. It is bootstrap-minted, identity-validated,
+`sandbox_readiness_probe`. Those operations accept no user prompt, mutate no
+universe/branch, and cannot mint a `ProviderInvocation`.
+`local_model_readiness_probe` and `sandbox_readiness_probe` invoke no model
+completion and spend no quota. `subscription_auth_probe` MAY perform only the
+canonical bounded fixed private live-viability completion required by
+subscription auth health; it consumes only explicitly configured host-operator
+subscription quota, never requester quota, user prompt content, universe
+content, or a user workload, and remains outside ordinary provider routing.
+It is bootstrap-minted, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and
 unavailable through API/MCP, config/state, environment-derived request input,
 or caller construction. Startup/CI closure SHALL fail if any other host-local
@@ -409,6 +422,11 @@ operation exists.
 - **WHEN** `call_sync` submits provider routing to its class-level thread pool
 - **THEN** its closure carries the exact internal capability object retrieved by `call_provider`
 - **AND** an unset worker ContextVar neither widens authority nor causes a valid request to lose its carrier
+
+#### Scenario: synchronous MCP tool dispatch uses one structured delegate
+- **WHEN** an authenticated FastMCP request invokes a synchronous tool through the server-managed AnyIO worker adapter
+- **THEN** the adapter registers one exact request-bound delegate before submission and the bridge accepts it only while the parent awaits that handler invocation
+- **AND** a detached child, copied context, stale worker, or caller-supplied delegate cannot mint a carrier
 
 #### Scenario: attested local request uses the same sealed carrier boundary
 - **WHEN** local stdio/SSE supplies a live `ProviderHostRequestCapability`
@@ -632,6 +650,11 @@ existing user universe merely to obtain pre-flip proof.
 - **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false` and the universe is absent from configured/registered server-owned canary state
 - **THEN** existing provider calls, defaults, births, helpers, exceptions, retries, fallbacks, pins, policy, judges, and auth health retain shipped results
 - **AND** target carrier/assignment diagnostics grant no authority
+
+#### Scenario: dark legacy engine assignment gains no new auth precondition
+- **WHEN** the effective V2 gate is dark and any production-authenticated or development-mode caller passes the shipped `set_engine` dispatch gate and universe write ACL as enforced by that configured auth mode
+- **THEN** every accepted legacy source/service retains its shipped mutation and readiness behavior
+- **AND** this change adds no independent authentication, founder-only, or destination-ceiling precondition
 
 #### Scenario: full enforcement cannot partially flip
 - **WHEN** any migration, successor, bridge inventory, or surface acceptance gate is incomplete

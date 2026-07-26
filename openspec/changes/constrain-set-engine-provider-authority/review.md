@@ -374,3 +374,42 @@ The final adaptation applies the simplification ladder:
 
 Final disposition remains pending strict validation, four refreshed exact-head
 handoffs, and Opus 5 approval of the simplified target.
+
+## Parallel exact-42ab Opus 5 re-review — 2026-07-25
+
+A separate Opus 5 invocation also reviewed clean commit `42ab3799`. It
+confirmed strict validity and the four exact-head handoffs, then returned
+`ADAPT` on three additional implementation-contract issues:
+
+1. FastMCP 3.2 dispatches canonical synchronous tools through
+   `anyio.to_thread.run_sync`. Requiring the current execution scope to equal
+   only the middleware task would therefore hold every legitimate Tier-1
+   provider call; accepting copied Context alone would instead recreate the
+   detached-child authority defect.
+2. Its local/development `set_engine` concern described the deleted
+   flag-independent slice. Commit `352d1d44` already removed that slice, but
+   the target now states explicitly that dark mode adds neither a production
+   authentication requirement nor a development-mode auth requirement.
+3. The closed host-local probe text incorrectly claimed that
+   `subscription_auth_probe` performs no model call or spend, while canonical
+   subscription health deliberately uses one bounded fixed private live
+   viability completion.
+
+The adaptation:
+
+- adds a server-registered, non-serializable, one-shot
+  `ProviderRequestDelegate` for the exact FastMCP synchronous handler
+  invocation while its transport parent structurally awaits it, with
+  worker/result/request revocation and detached/nested/copied-context refusal;
+- preserves the simplified no-pre-cutover-write design and clarifies shipped
+  production-auth versus development-mode dispatch behavior; and
+- preserves the bounded host-operator subscription probe outside ordinary
+  provider routing while forbidding requester prompt/quota, universe content,
+  and user workload use.
+
+The minor review asks are also folded into tasks: document the three V2
+environment variables and require registered executable role coverage at
+cutover rather than treating an absent local provider as ready.
+
+Final disposition remains pending a fresh exact-head Opus 5 approval, strict
+validation, and refreshed handoff evidence.

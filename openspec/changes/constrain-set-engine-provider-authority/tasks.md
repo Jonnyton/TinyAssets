@@ -70,10 +70,19 @@
   instead of adding its own kill switch/reachability subsystem; preserve all
   shipped behavior while dark and bind the remaining exposure to gated R2-1a,
   three ready-path successors, retirement, and migration task 8.1.
-- [ ] 1.20 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
-  approval of the simplified exact artifacts;
-  resolve every Critical and Important finding.
-- [ ] 1.21 Run strict target/full-tree validation and land this target active
+- [x] 1.20 Obtain a parallel exact-`42ab3799` Claude Opus 5 review; it
+  returned `ADAPT` on FastMCP structured-worker request ownership, a
+  local/development dispatch ambiguity, and the canonical bounded
+  subscription live probe.
+- [x] 1.21 Fold that additional `ADAPT` after the simplification commit: add
+  one-shot structured worker delegation without admitting detached contexts;
+  clarify that dark legacy assignment gains no independent auth precondition;
+  and preserve the bounded fixed private subscription viability probe outside
+  user routing.
+- [ ] 1.22 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
+  approval of the exact adapted artifacts; resolve every Critical and
+  Important finding.
+- [ ] 1.23 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -158,8 +167,10 @@
   `ProviderRequestCapability`; `call_provider` explicitly carries that exact
   object through `call_sync`, `call_with_policy_sync`, retry/judge branches,
   and the router pool closure; server liveness plus owning execution-scope
-  checks reject prior-request replay, lookalikes, and inherited child contexts
-  both before and after parent request termination.
+  checks admit only the exact one-shot FastMCP synchronous-worker delegate
+  while its parent structurally awaits that handler, and reject prior-request
+  replay, lookalikes, copied contexts, detached/nested workers, and inherited
+  child contexts both before and after worker or parent termination.
 - [ ] 4.2 Add failing sink tests for exact mechanism/issuer/current identity,
   cross-principal replay, authentic A-on-A capability used on B, and same
   principal with stale assignment generation.
@@ -213,7 +224,9 @@
 - [ ] 5.1 Implement `ProviderRequestCapability` and request-local mint/reset
   in `tinyassets/auth/middleware.py` with exact principal, nonce, mechanism,
   issuer, identity-token, server-owned liveness lease, owning execution scope,
-  synchronous revocation, and inherited-context refusal invariants.
+  one-shot FastMCP synchronous-worker delegation at the server dispatch edge,
+  synchronous worker/request revocation, and inherited-context refusal
+  invariants.
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
   canonical `engine_setup_required_payload`, surface-live `setup_paths`,
   optional assignment fields, and migration-aware
@@ -227,7 +240,9 @@
   flag/default and enable `engine_source=unassigned` plus newborn deny-all
   atomically. Make the secret-free generated-ID canary registry durable across
   process restart, remove failed-birth entries before returning error, and
-  remove it during bounded-test cleanup.
+  remove it during bounded-test cleanup. Document the three provider-authority
+  V2 environment variables and their default-dark/caller-non-authority
+  semantics in `docs/reference/environment-variables.md`.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
@@ -246,7 +261,10 @@
 ## 6. RED tests — propagation, taxonomy, and reference-only launch
 
 - [ ] 6.1 Add exhaustive call-site tests proving live requests retain the
-  exact current capability across internal args and the router thread pool;
+  exact current capability across the FastMCP structured synchronous-worker
+  delegate, internal args, and the router thread pool; prove the delegate is
+  one-shot, parent-awaited, non-transferable, and revoked before result
+  release;
   background work requires its owner receipt across task/thread/process
   boundaries; and startup/CI inventory proves every bridge carries one exact
   authority type or holds.
@@ -269,8 +287,12 @@
   all existing `UniverseContext`/`ModelConfig`/`ProviderResponse` fields.
 - [ ] 6.5 Add host-capability forgery tests across API/MCP/JSON/config/env/node
   inputs, lookalikes, serialization, and genuine-token request substitution;
-  prove its closed set is exactly the three zero-output probes and no model,
-  quota, universe mutation, or maintainer provider resource becomes reachable.
+  prove its closed set is exactly the three zero-output probes; the local-model
+  and sandbox probes invoke no model or quota; the subscription probe may run
+  only the canonical bounded fixed private live-viability completion against
+  explicitly configured host-operator subscription quota; and no requester
+  prompt/quota, universe mutation, or ordinary provider route becomes
+  reachable.
 - [ ] 6.6 Add provider parity tests proving every CLI/local/HTTP/in-process
   invocation is reference-only and only `ProviderExecutor.start()`
   dereferences after full binding revalidation before calling the provider's
@@ -346,7 +368,11 @@
   Remove test universes, principal entries, and registered IDs afterward.
   Caller data cannot opt in and existing user universes cannot be migrated for proof. A
   fully held surface fails this gate. Stop before flag/default flip,
-  newborn deny-all, or legacy-writer quiescence if any fails.
+  newborn deny-all, or legacy-writer quiescence if any fails. For every ready
+  ceiling, prove each required role has at least one currently registered
+  executable provider. If only an absent `ollama-local` remains, report that
+  role unavailable/exhausted without widening to cloud and fail the applicable
+  readiness gate.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.

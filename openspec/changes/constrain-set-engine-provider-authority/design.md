@@ -99,6 +99,15 @@ authentication. The effective V2 gate closes both; R2-1a owns that gated
 runtime after the three ready-path successors, and task 8.1 migrates every
 legacy `None` record.
 
+“Retains shipped behavior” includes the configured dispatch mode: production
+callers still pass the shipped `universe:admin` scope plus universe write ACL,
+while development-mode stdio/SSE keeps its shipped no-auth short circuit and
+write ACL behavior. This change adds no independent authenticated-founder
+precondition and performs no pre-cutover destination narrowing. After the
+effective gate applies, requester-local cloud assignment arrives through the
+custody-owned authenticated writer; local stdio/plugin execution uses the
+separate attested-host successor rather than a legacy raw-secret action.
+
 Because `universe` is hidden from the seven canonical live handles, Tier-1
 chatbots cannot reach the deprecated action. `retire-legacy-live-mcp-tools`
 may remove it because removal strictly reduces new exposure. Local surfaces
@@ -202,8 +211,20 @@ in a `ContextVar` only at the transport edge. A private thread-safe
 `RequestCapabilityRegistry` binds the lease to the owning transport
 task/execution-scope identity, marks it active only during that request, and
 revokes it synchronously before middleware resets inherited ContextVars.
+FastMCP 3.2 dispatches synchronous tool functions through
+`anyio.to_thread.run_sync`, so a legitimate canonical-handle call reaches
+`call_provider` from a worker thread rather than the middleware task itself.
+The server-owned synchronous dispatch adapter therefore registers one
+non-serializable, one-shot `ProviderRequestDelegate` before worker submission.
+It binds request lease, parent execution scope, exact handler invocation, and
+worker identity; remains active only while the parent structurally awaits that
+call; and is revoked before the worker result is released. A copied context,
+detached task/thread, nested worker, stale invocation, or caller-controlled
+identifier cannot register or reuse it.
+
 Before middleware cleanup, `call_provider` retrieves the exact object, proves
-the lease is active plus the current execution scope is its owner, and mints
+the lease is active plus the current execution scope is its owner or exact
+active structured-worker delegate, and mints
 an internal-only sealed `ProviderAuthorityCarrier` argument for `call_sync`,
 `call_with_policy_sync`, every retry/judge branch, the router pool closure,
 and `ProviderInvocation`. This explicit carrier is required because
@@ -278,8 +299,13 @@ or non-provider local-only before runtime advances.
 `HostLocalProviderCapability` has a closed, spec-listed operation set:
 `subscription_auth_probe`, `local_model_readiness_probe`, and
 `sandbox_readiness_probe`. Each operation is zero-output, accepts no user
-prompt, invokes no model completion, spends no quota, mutates no
-universe/branch, and cannot produce a `ProviderInvocation`. The capability is
+prompt, mutates no universe/branch, and cannot produce a
+`ProviderInvocation`. The local-model and sandbox probes invoke no model and
+spend no quota. The subscription probe preserves the canonical bounded fixed
+private live-viability completion: it may consume only explicitly configured
+host-operator subscription quota, never requester quota, user/universe
+content, or a user workload, and it stays outside ordinary provider routing.
+The capability is
 bootstrap-minted after local operator configuration, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and absent
 from API/MCP/config/state/environment inputs. A closure test fails when any

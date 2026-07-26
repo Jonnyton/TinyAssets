@@ -41,14 +41,24 @@ principal ID, mechanism `tinyassets.authenticated-request.v1`, issuer
 server-owned request-liveness lease. Middleware SHALL register the lease with
 the owning transport task/execution-scope identity, mark it active only for
 that request, revoke it synchronously before context reset in `finally`, and
-make sink liveness checks thread-safe. It SHALL be
+make sink liveness checks thread-safe. When the transport dispatches a
+synchronous MCP tool through a server-managed worker thread, the dispatch
+adapter SHALL register one non-serializable, one-shot
+`ProviderRequestDelegate` bound to the request lease, parent execution scope,
+exact handler invocation, and worker execution identity before submission.
+The delegate SHALL remain active only while the parent transport task
+structurally awaits that exact worker call and SHALL be revoked before the
+worker result is released. A copied `ContextVar`, arbitrary child task/thread,
+caller-controlled worker identifier, or delegate lookalike SHALL NOT register
+or extend a delegate. The capability SHALL be
 non-serializable, non-copyable, non-pickleable, unavailable through API/MCP
 schemas or caller-controlled construction, stored in request-local context,
 and reset with request identity at request end.
 
 Before request context is reset, the internal `call_provider` bridge SHALL
 retrieve the exact object, prove that the server registry still marks its
-lease active and that the caller is the owning transport task/execution scope,
+lease active and that the caller is either the owning transport
+task/execution scope or its active exact structured-worker delegate,
 mint an internal-only sealed `ProviderAuthorityCarrier`, and pass it into `call_sync`,
 `call_with_policy_sync`, retry/policy/judge branches, the router thread-pool
 closure, and `ProviderInvocation`. This explicit propagation SHALL NOT depend
@@ -99,6 +109,16 @@ provider-routing sink SHALL bind those dimensions from fresh server state.
 - **WHEN** an inherited child task calls the bridge before parent middleware returns
 - **THEN** its execution-scope identity does not match the lease owner and no carrier is minted
 - **AND** only the structured owning request task may propagate request authority
+
+#### Scenario: structured synchronous MCP dispatch retains request authority
+- **WHEN** the authenticated transport task submits one synchronous MCP tool through its server-managed worker adapter and structurally awaits that exact call
+- **THEN** the adapter registers one active delegate bound to the request lease, handler invocation, and worker identity before the worker can call the bridge
+- **AND** the worker may mint the carrier only during that awaited invocation
+
+#### Scenario: worker delegation cannot detach or multiply
+- **WHEN** a worker-spawned task/thread, copied context, stale worker, or caller-supplied identifier presents the request capability while the parent request remains active
+- **THEN** it lacks the exact active one-shot delegate and no carrier is minted
+- **AND** worker completion or request completion revokes the delegate before either result is released
 
 #### Scenario: worker ContextVar absence does not drop explicit authority
 - **WHEN** `call_sync` executes in its thread-pool worker without inherited request ContextVars
