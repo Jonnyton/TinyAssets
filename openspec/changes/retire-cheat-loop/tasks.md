@@ -34,8 +34,10 @@
 ## 2. Remove Privileged Bug-Investigation Automation
 
 - [ ] 2.1 Remove the `file_bug` trigger-receipt/enqueue/Investigation response
-  block and delete the dedicated trigger-receipt store when no generic consumer
-  remains.
+  block so no new retired receipt is created. Retain the dedicated receipt
+  reader and persisted data until task 2.5 has inventoried every record,
+  completed the authority-safe migration, and recorded retention evidence;
+  only then delete the store implementation when no generic consumer remains.
 - [ ] 2.2 Delete `tinyassets/bug_investigation.py` and remove its handler
   selection, payload mapping, dedicated request type, queue creation, formatting,
   and Patch Packet write-back consumers.
@@ -66,7 +68,10 @@
   `running`/`cancel_requested` row. Preserve #1803's
   `manual_resolution_required` action for ambiguity beyond the autonomous
   reconciliation window; resolution requires authoritative evidence and never
-  retries retired work.
+  retries retired work. After every receipt is accounted for and retention is
+  durably recorded, task 2.5 authorizes task 2.1's final unused store-reader
+  deletion; persisted evidence follows the recorded retention policy and is
+  never deleted merely because its runtime consumer was removed.
 - [ ] 2.6 Remove `classify_patch_request`, its hard-coded free/paid claimant,
   Claude/Codex writer, opposite-family checker, meaning, and persisted
   `request_classification` policy from `tinyassets/api/market.py`,
@@ -231,9 +236,14 @@
   label/auto-merge/data migrations, #1803 authority gates, rendered/public
   acceptance, and every audit Release Gate are complete, and task inspection
   proves exactly 6.7 remains unchecked. Before archive, strictly validate and
-  prove a scoped working-tree/index diff contains only the six reviewed
-  canonical updates, physical capability deletion, and this foldback's
-  coordination edits, with no unrelated change. Then run
+  invoke the installed OpenSpec `applySpecs` engine path (or its
+  version-equivalent supported sync command) for the six surviving deltas.
+  Require the reviewed operation counts: daemon `added=2`, coordination
+  `added=2`, graph `added=4`, website `renamed=1, modified=2`, uptime
+  `added=1`, and wiki `added=1, removed=1`. Prove a scoped working-tree/index
+  diff contains only those six engine-generated canonical updates, physical
+  capability deletion, and this foldback's coordination edits, with no
+  unrelated change. Then run
   `openspec archive retire-cheat-loop --yes --skip-specs`, mark 6.7 complete in
   the archived task record, remove the STATUS row, prove no empty or
   resurrected capability exists, strictly validate all OpenSpec again, and

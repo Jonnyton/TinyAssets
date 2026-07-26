@@ -522,6 +522,9 @@ Implementation is not complete until all of the following are fresh and green:
 2. plugin rebuild/probe plus source/package absence scan;
 3. strict validation of this change and all OpenSpec;
 4. production env/queue/receipt/ledger quarantine and cleanup evidence;
+   trigger-receipt creation stops before runtime deletion, while its reader and
+   persisted data remain until every record has authority-safe migration and
+   recorded retention evidence;
 5. `retire-legacy-live-mcp-tools` task 4.1 cutover evidence plus absence of the
    internal `community_change_context` action/callers;
 6. receipt-backed live-label and auto-merge enrollment migrations, with zero

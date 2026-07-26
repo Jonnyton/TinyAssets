@@ -379,8 +379,12 @@ release, and stop deployment until #1803 becomes authoritative.
 1. Add negative tests for `file_bug` side effects, filing-route classifiers,
    the community-context action, and absence of the retired
    configuration/request type in source and package output.
-2. Remove the wiki trigger/receipt integration and the dedicated
-   `bug_investigation` module and executor special cases.
+2. Remove the wiki trigger/receipt creation and enqueue integration so no new
+   retired record is born, but retain the receipt reader and persisted evidence
+   until the authority-safe task-2.5 inventory/migration has accounted for
+   every record and durably recorded retention. Only then delete the unused
+   store implementation together with the dedicated `bug_investigation`
+   module and executor special cases.
 3. Remove auto-ship modules, actions, ledger/reset/status integration,
    configuration, current docs, and behavior-pinning tests.
 4. Rename the useful watch subset into a read-only generic uptime observer,
@@ -403,7 +407,10 @@ release, and stop deployment until #1803 becomes authoritative.
    authority-store record under #1803's lock ordering. Apply only existing
    v1/v2 state/field transitions from the daemon-runtime delta; do not invent a
    retired/fenced task status. A pre-#1803 deployment must quiesce legacy
-   workers and prove no claimed row or stop before runtime replacement.
+   workers and prove no claimed row or stop before runtime replacement. After
+   every trigger receipt is inventoried and its retention outcome is recorded,
+   the now-unused reader may be deleted; removing runtime code never authorizes
+   deletion of persisted evidence outside that retention record.
 10. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
 11. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
