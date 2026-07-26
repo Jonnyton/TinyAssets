@@ -1,0 +1,21 @@
+{"prompt": "Talk to my universe", "expected_handle": "converse", "opening": true, "note": "The canonical first-contact turn — control_station requires converse first."}
+{"prompt": "Hey, are you there?", "expected_handle": "converse", "opening": true, "note": "Bare greeting on an opening message still relays to the universe."}
+{"prompt": "I want to meet my universe for the first time", "expected_handle": "converse", "opening": true, "note": "Explicit first-contact phrasing."}
+{"prompt": "Let's pick up where we left off on my world", "expected_handle": "converse", "opening": true, "note": "Resumption phrasing; still an opening turn."}
+{"prompt": "Tell my universe that the protagonist's sister is named Wren", "expected_handle": "converse", "opening": false, "note": "Worldbuilding is relayed, never written directly by the connector."}
+{"prompt": "Ask my universe what it still doesn't know about me", "expected_handle": "converse", "opening": false, "note": "Persona/self-model question routes to the universe itself."}
+{"prompt": "What universes do I have?", "expected_handle": "read_graph", "opening": false, "note": "Enumeration is a direct-control read, not a relay."}
+{"prompt": "Show me the goals on my main universe", "expected_handle": "read_graph", "opening": false, "note": "Structured graph read."}
+{"prompt": "List the branches in my workflow", "expected_handle": "read_graph", "opening": false, "note": "Branch listing is graph state."}
+{"prompt": "Create a new branch called nightly-digest", "expected_handle": "write_graph", "opening": false, "note": "Structural mutation is direct control."}
+{"prompt": "Add a goal to track my reading list", "expected_handle": "write_graph", "opening": false, "note": "Goal creation is a graph write."}
+{"prompt": "Rename my universe to Aetheria", "expected_handle": "write_graph", "opening": false, "note": "Universe metadata mutation."}
+{"prompt": "Run the nightly-digest branch now", "expected_handle": "run_graph", "opening": false, "note": "Execution, distinct from writing the branch."}
+{"prompt": "Kick off a run of my research workflow", "expected_handle": "run_graph", "opening": false, "note": "Execution phrasing without the word 'run' on the handle."}
+{"prompt": "Show me the wiki page about the Resonance", "expected_handle": "read_page", "opening": false, "note": "Page read, not graph read."}
+{"prompt": "What's on the commons page for bug reports?", "expected_handle": "read_page", "opening": false, "note": "Commons read."}
+{"prompt": "Search the wiki for anything about escrow", "expected_handle": "read_page", "opening": false, "note": "Wiki search is a page-surface read."}
+{"prompt": "File a bug: the run status never leaves 'queued'", "expected_handle": "write_page", "opening": false, "note": "Issue filing lands on the commons via write_page."}
+{"prompt": "Write up a design note on the payout flow in the commons", "expected_handle": "write_page", "opening": false, "note": "Commons authoring with no universe target."}
+{"prompt": "Is the daemon healthy right now?", "expected_handle": "get_status", "opening": false, "note": "Liveness/routing evidence."}
+{"prompt": "What model is my universe running on, and what commit is deployed?", "expected_handle": "get_status", "opening": false, "note": "Routing + release_state evidence."}

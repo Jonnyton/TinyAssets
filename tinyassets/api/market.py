@@ -1426,6 +1426,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
         branches_for_goal,
         get_goal,
         goal_gate_summary,
+        resolve_goal_canonical,
     )
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -1445,8 +1446,15 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
 
     # Phase 6.2.2 — viewer-aware. Private Branches owned by other
     # actors are excluded from this Goal's published Branch list.
+    actor = _current_actor()
+    scope_actor = "" if actor == "anonymous" else actor
     branches = branches_for_goal(
-        _base_path(), goal_id=gid, viewer=_current_actor(),
+        _base_path(), goal_id=gid, viewer=actor,
+    )
+    actor_canonical_branch_version_id = resolve_goal_canonical(
+        _base_path(),
+        goal_id=gid,
+        scope_actor=scope_actor,
     )
     is_deleted = goal.get("visibility") == "deleted"
 
@@ -1518,6 +1526,10 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
     return json.dumps({
         "text": "\n".join(lines),
         "goal": goal,
+        "scope_actor": scope_actor,
+        "actor_canonical_branch_version_id": (
+            actor_canonical_branch_version_id
+        ),
         "is_deleted": is_deleted,
         "branches": branches,
         "branch_count": len(branches),
@@ -2159,6 +2171,7 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         CAP_SET_CANONICAL_BRANCH,
         get_goal,
         set_canonical_branch,
+        set_goal_canonical,
     )
 
     gid = (kwargs.get("goal_id") or "").strip()
@@ -2173,8 +2186,21 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         return json.dumps({"status": "rejected", "error": f"Goal '{gid}' not found."})
 
     actor = _current_actor()
-    if actor != goal["author"] and not _current_actor_has_capability(
-        CAP_SET_CANONICAL_BRANCH,
+    scope_actor = (kwargs.get("scope") or "").strip()
+    if scope_actor and actor == "anonymous":
+        return json.dumps({
+            "status": "rejected",
+            "error": "Authentication is required for a personal canonical.",
+        })
+    if scope_actor and scope_actor != actor:
+        return json.dumps({
+            "status": "rejected",
+            "error": "Cannot set a personal canonical for another actor.",
+        })
+    if (
+        not scope_actor
+        and actor != goal["author"]
+        and not _current_actor_has_capability(CAP_SET_CANONICAL_BRANCH)
     ):
         return json.dumps({
             "status": "rejected",
@@ -2186,30 +2212,60 @@ def _action_goal_set_canonical(kwargs: dict[str, Any]) -> str:
         })
 
     try:
-        updated = set_canonical_branch(
-            _base_path(), goal_id=gid,
-            branch_version_id=branch_version_id, set_by=actor,
-        )
+        if scope_actor:
+            updated = set_goal_canonical(
+                _base_path(),
+                goal_id=gid,
+                scope_actor=scope_actor,
+                branch_version_id=branch_version_id,
+                set_by=actor,
+            )
+        else:
+            updated = set_canonical_branch(
+                _base_path(),
+                goal_id=gid,
+                branch_version_id=branch_version_id,
+                set_by=actor,
+            )
     except ValueError as exc:
         return json.dumps({"status": "rejected", "error": str(exc)})
 
     if branch_version_id:
-        text = (
-            f"Canonical branch for Goal '{goal['name']}' set to "
-            f"`{branch_version_id}`. New users forking this Goal will "
-            f"start from this version."
-        )
+        if scope_actor:
+            text = (
+                f"Your canonical branch for Goal '{goal['name']}' is now "
+                f"`{branch_version_id}`. Your canonical runs prefer this "
+                "immutable version."
+            )
+        else:
+            text = (
+                f"Canonical branch for Goal '{goal['name']}' set to "
+                f"`{branch_version_id}`. New users forking this Goal will "
+                f"start from this version."
+            )
     else:
-        text = (
-            f"Canonical branch for Goal '{goal['name']}' unset. "
-            f"No starter branch is currently designated."
-        )
+        if scope_actor:
+            text = (
+                f"Your personal canonical for Goal '{goal['name']}' is unset. "
+                "Your canonical runs now fall back to the Goal default."
+            )
+        else:
+            text = (
+                f"Canonical branch for Goal '{goal['name']}' unset. "
+                f"No starter branch is currently designated."
+            )
 
+    canonical_branch_version_id = (
+        updated.get("branch_version_id")
+        if scope_actor
+        else updated.get("canonical_branch_version_id")
+    )
     return json.dumps({
         "status": "ok",
         "text": text,
         "goal_id": gid,
-        "canonical_branch_version_id": updated.get("canonical_branch_version_id"),
+        "scope_actor": scope_actor,
+        "canonical_branch_version_id": canonical_branch_version_id,
     }, default=str)
 
 
@@ -2311,6 +2367,7 @@ def _action_goal_run_canonical(kwargs: dict[str, Any]) -> str:
     dispatch_result.setdefault("goal_id", gid)
     dispatch_result["branch_version_id_used"] = bvid
     dispatch_result.setdefault("branch_def_id", bdid)
+    dispatch_result["scope_actor"] = resolution.get("scope_actor", "")
     dispatch_result["source"] = resolution.get("source")
     if resolution.get("refresh_attempted"):
         dispatch_result["refresh_attempted"] = True
@@ -2490,8 +2547,10 @@ def goals(
       get_protocol Read a Goal's ordered Branch protocol/runbook.
                    Needs goal_id.
       set_canonical Mark a branch_version_id as the Goal's canonical
-                   (best-known) branch. Author-only or host-only.
-                   Pass branch_version_id="" to unset.
+                   (best-known) branch. Author/capability-only by
+                   default. Pass scope=<your actor id> to set only
+                   your personal canonical. Pass branch_version_id=""
+                   to unset the selected scope.
       set_selector Bind the Goal's selector branch_version — the
                    published TinyAssets branch the substrate dispatches
                    to rank this Goal's bound branches on the
@@ -2545,8 +2604,9 @@ def goals(
       query: search query.
       metric: leaderboard metric (run_count/forks/outcome).
       min_branches: common_nodes cutoff (default 2).
-      scope: common_nodes aggregation. 'this_goal' (default) restricts
-        to one Goal; 'all' aggregates cross-Goal.
+      scope: for set_canonical, the current actor ID selects a personal
+        canonical. For common_nodes, 'this_goal' (default) restricts to
+        one Goal and 'all' aggregates cross-Goal.
       production_only: list filter for fresh-user discovery. Keeps
         public Goals and filters RETRACTED/smoke/disposable entries.
       protocol_json: JSON list for define_protocol.

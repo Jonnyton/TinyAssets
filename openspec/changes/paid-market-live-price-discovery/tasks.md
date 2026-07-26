@@ -1,9 +1,8 @@
-## Premise verification — 2026-07-24
+## Premise verification — 2026-07-25
 
-Compared against `origin/main`, unlanded
-`codex/osx-paid-market-transport`, and the 30 open PRs requested by the lane.
-`live` means independently buildable while dark; `blocked-*` work stays
-unchecked.
+Reconciled on the user-fixed base `92d730bc` against landed #1737 and the
+in-flight `codex/osx-market-workflow` transport lane. `live` means
+independently buildable while dark; `blocked-*` work stays unchecked.
 
 | Task | Classification | Evidence / boundary |
 |---|---|---|
@@ -20,13 +19,13 @@ unchecked.
 | 3.5 | stale-inverted → built | Account- and principal-root self-trades stay excluded while every positive-gross settlement retains the canonical fee. Pair/buyer/seller-root dampening, infeasible-cap equal weighting, and composite-only clamping are covered. |
 | 4.1 | built | Explicit free/BYOC/paid mandate selection creates no provider or money effect. |
 | 4.2 | built | Pure eligibility/ranking returns evidence only and owns no reservation. |
-| 4.3 | blocked-tenant (standalone value built) | Immutable receipt, ACL, retention, replay, and projection policy is built; durable tenant storage remains gated. |
+| 4.3 | built | #1737 landed the immutable private receipt, ACL, retention/legal-hold, replay, commitment, and aggregate-projection contract with focused tests. |
 | 4.4 | built | Boundary/mutation tests prove the result grants no execution, credential, capacity, or money authority. |
-| 5.1 | blocked-transport-landing | Requires Wave 2 workflow/CAS plus tenant, domain capacity, and S14/B36 owners. |
-| 5.2 | blocked-transport-landing | Also blocked on wallet/chain receipts, domain acceptance, tenant authority, and host cutover. |
+| 5.1 | blocked-transport-landing | Waits on `market_workflow`, `market_realtime`, `market_delivery`, and `013_paid_market_workflow.sql` in `codex/osx-market-workflow`. |
+| 5.2 | blocked-transport-landing | Same residual `codex/osx-market-workflow` transport-file gate as 5.1. |
 | 5.3 | built | Pure dark order policy composes the landed bucket and settlement oracles; no durable lock or transport was added. |
 | 5.4 | built | Pure allow/refuse policy keeps unsupported instruments dark without registration. |
-| 5.5 | blocked-host/legal (standalone gate built) | Missing, stale, mismatched, automated, or incomplete review stays dark; no current specialist artifact exists. |
+| 5.5 | split-host/legal (code built; artifact pending) | #1737 landed the fail-closed gate/tests; no current specialist legal-review artifact exists. |
 | 6.1 | blocked-boundary | Public reads require tenant/privacy, boundary, load/security, canary, chatbot, and host activation gates. |
 | 6.2 | blocked-tenant | Full handoff proof also needs R2-1, Wave 2, domain capacity, and boundary owners. |
 | 6.3 | blocked-S14/B36 | Requires landed transport/public surfaces, tenant owner, and a reviewed capacity harness; draft PR #1695 is planning-only. |
@@ -41,11 +40,12 @@ unchecked.
 - [x] 1.2 Obtain opposite-provider review of the proposal, design, full delta, and compute/LLM/task/fabrication research now archived by PR #1648 against TinyAssets context. Claude Sonnet approved the corrected source mapping on 2026-07-22; the verdict is recorded in `docs/audits/2026-07-22-paid-market-live-price-source-review.md`.
 - [x] 1.3 Confirm the Wave 2 logical-accounting transaction owner, required wallet/chain-effect successor from `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, outbound boundary authority/receipts successor, tenant identity/isolation, R2-1 provider authority/credential-class receipts, distributed execution, and each domain capacity/evidence owner have landed before their dependent adapter, public, executable, settlement, or paid-observation tasks; otherwise keep those tasks blocked and dark. Premise audit above records every dependent task and leaves all gated behavior dark.
 - [x] 1.4 Run `openspec validate paid-market-live-price-discovery --strict`, full strict validation, requirement/scenario counts, and `git diff --check` after every contract amendment.
+- [x] 1.5 (done 2026-07-25: Claude Opus 5 round-1 ADAPT -> six adaptations folded -> round-2 APPROVE; verdict held by the fable-fleet lead session and summarized in the PR #1679 comment thread) Obtain opposite-provider re-review of the amended V1 descriptor grammar, one-profile supply identity, four closed lane schemas, schema-owned comparison direction, separately derived public market-class identity, observation-scope provenance, demand/private-scope separation, error privacy, and digest contracts before starting tasks 2.1 or 2.2.
 
 ## 2. Pure descriptors, quotes, and evaluation
 
-- [ ] 2.1 Add failing unit/property tests for stable versioned capability descriptors, canonical digest stability, exact lane facets, unsupported versions, demand-specific values staying in `DemandIntent`, range/set compatibility, resolved-term binding, and hard substitutability mismatches.
-- [ ] 2.2 Implement pure immutable descriptor and quote values outside provider/domain execution code; keep domain facet validators injected and keep private payloads/credentials absent.
+- [ ] 2.1 Add failing unit/property tests for the exact bounded ASCII canonical grammar; normalized structured construction versus strict canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches.
+- [ ] 2.2 Implement pure immutable descriptor and public market-class projection values outside provider/domain execution code with an explicitly injected per-call validator that attests one immutable profile-schema revision and no mutable registry; derive rather than accept both ids; keep private demand commitments tenant-keyed and keep payloads, credentials, prices, routing, reservation, and execution absent.
 - [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
 - [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
 - [ ] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
@@ -62,16 +62,21 @@ unchecked.
 
 - [x] 4.1 Add failing tests proving the requester chooses free, BYOC, or paid fulfillment and that unavailable free/BYOC work never creates a paid lock or maintainer/provider call.
 - [x] 4.2 Implement pure verified-eligibility/hard-constraint filtering and versioned landed-monetary ranking with stable tie-breaks, explicit service-attribute handling, single-currency/FX rules, complete rejection reasons, cap/fee-version enforcement, and no capacity or money reservation side effect.
-- [ ] 4.3 Add tenant-private reproducible evaluation receipts with opaque tenant-keyed commitments, owner/admin/auditor ACLs, non-enumerable ids, candidate versions/freshness, reason codes, monetary/service breakdown, retention/hold/deletion/export policy, and aggregate-only public projection.
+- [x] 4.3 Add tenant-private reproducible evaluation receipts with opaque tenant-keyed commitments, owner/admin/auditor ACLs, non-enumerable ids, candidate versions/freshness, reason codes, monetary/service breakdown, retention/hold/deletion/export policy, and aggregate-only public projection.
+  - Evidence (verified 2026-07-25; #1737, `b57a7836`): `tinyassets/paid_market/routing.py:85-126,188-325` defines immutable retention/receipt/replay/public-projection shapes, tenant-keyed HMAC receipt IDs and commitments, candidate evidence, owner/admin/auditor ACLs, retention/deletion/legal-hold enforcement, replay, and aggregate-only projection. `tests/test_paid_market_routing.py:295-342,345-380,383-413` proves non-enumerability and ACL isolation, replay/public privacy, and fail-closed retention/legal hold.
 - [x] 4.4 Mutation-test that quote ranking cannot authorize provider credentials, alter provider fallback chains, skip domain-native execution fences, or treat ranking as reservation/acceptance/invoice/settlement.
 
 ## 5. Native firm capacity and forwards
 
 - [ ] 5.1 After prerequisites land, add failing integration tests for signed short-lived native firm quotes, domain-created tenant/demand/quote/descriptor/quantity/expiry/fence capacity grants, one atomic consumption winner, partial-consumption conservation, offer-version CAS, expiry/cancellation, and no double-sell under response loss.
+  - Residual gate (2026-07-25): the transport workflow files `market_workflow`, `market_realtime`, `market_delivery`, and `013_paid_market_workflow.sql` remain in flight on branch `codex/osx-market-workflow`; this integration-test task waits on that lane.
 - [ ] 5.2 Implement native firm-quote publication and the default-off selection handoff only: the domain owner creates/fences capacity, `paid-market-economy` records logical budget reservation/accounting intent, and the successor defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 owns wallet/chain effects; discovery evaluates and revalidates but creates none of those authorities. Require that successor's matching verified receipt before a paid settlement becomes a price observation. Add no external-provider execution.
+  - Residual gate (2026-07-25): implementation waits on the in-flight transport workflow files `market_workflow`, `market_realtime`, `market_delivery`, and `013_paid_market_workflow.sql` on branch `codex/osx-market-workflow`.
 - [x] 5.3 Add failing forward tests for exact 8-hour/day/week buckets, ≤28-day horizon, 1M/10M/100M sizes, batch-only initial class, immutable id, authenticated monotone lifecycle, collateral-before-executable, spot collateral-free, deterministic best ask, exact pro-rata demand-relative settlement, threshold-only slashing, buyer compensation, and no-show behavior.
 - [x] 5.4 Implement only physically delivered native spot/forward instruments; reject cash settlement, secondary transfer, leverage/netting, proprietary-model resale, and F3 swarm execution.
 - [ ] 5.5 Before any forward, training, or hardware route is advertised or enabled in a jurisdiction, obtain and bind a current specialist legal-review artifact covering the CFTC facts-and-circumstances forward-contract-exclusion test, applicable commodities/derivatives/securities/consumer/money-transmission rules, and the narrower knowledge-based BIS/export-control triggers; add `tests/test_paid_market_jurisdiction_gates.py` proving missing/stale review keeps the route dark and no automated label is presented as legal approval.
+  - Code half landed (verified 2026-07-25; #1737, `b57a7836`): `tinyassets/paid_market/instruments.py:41-65,126-174` defines `LegalReview` and a fail-closed `jurisdiction_gate`; `tests/test_paid_market_jurisdiction_gates.py:31-98` covers missing, stale, mismatched, incomplete, and automated review while denying any legal-approval label.
+  - Host half remains: obtain and bind the current specialist legal-review artifact with the required jurisdiction-specific forward, commodities/derivatives/securities/consumer/money-transmission, and BIS/export-control analysis. The parent task stays unchecked until that artifact exists.
 
 ## 6. Public, security, concurrency, and uptime proof
 

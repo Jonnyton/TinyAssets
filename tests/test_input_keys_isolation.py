@@ -199,7 +199,10 @@ def test_compile_branch_emits_warnings_through_event_sink():
         prompt_template="{topic} {style_guide}",
     )
     branch = _single_node_branch(node)
-    branch.state_schema = [{"name": "style_guide", "type": "str"}]
+    branch.state_schema = [
+        {"name": "topic", "type": "str"},
+        {"name": "style_guide", "type": "str"},
+    ]
     events: list[dict] = []
 
     def sink(**kwargs):

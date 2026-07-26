@@ -91,7 +91,16 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
     assert "build_branch" in text
     assert "no simulation" not in text
     assert "affirmative consent" not in text
-    assert len(tool.description or "") < 900
+    # #1733 intentionally expanded the I/O contract to restore exact action
+    # catalog parity. Keep that replacement contract pinned instead of the
+    # superseded pre-catalog character budget.
+    assert "action groups:" in text
+    for action in (
+        "get_action_scope_status",
+        "list_run_receipts",
+        "schedule_branch",
+    ):
+        assert action in text
 
 
 def test_wiki_tool_description_is_not_a_catchall() -> None:
@@ -394,9 +403,9 @@ def test_control_station_prompt_has_rule_7_assume_workflow() -> None:
     hard rules.
     """
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-    text = _CONTROL_STATION_PROMPT.lower()
+    text = re.sub(r"\s+", " ", _CONTROL_STATION_PROMPT.lower())
     # Aggressive-assume directive present.
-    assert "assume workflow" in text or "aggressive assumption is a feature" in text
+    assert "assume tinyassets" in text or "aggressive assumption is a feature" in text
     # Forbids disambiguation pickers on ambiguous references.
     assert "disambiguation picker" in text or "do not ask" in text
     # Enumerates at least two ambiguous user phrases the rule applies to.

@@ -217,31 +217,37 @@ def main() -> int:
 
     try:
         from fantasy_daemon.__main__ import DaemonController
+        from tinyassets.scoped_reset import prepare_service_writer_barrier
+        from tinyassets.storage import data_dir
 
-        controller = DaemonController(
-            universe_path=args.universe,
-            db_path=args.db,
-            no_tray=args.no_tray,
-            pinned_provider=args.provider,
-        )
-
-        # If --api flag is set, start the API server alongside the daemon
-        if args.api:
-            logger.info("Starting API server on port %d", args.port)
-            # The API server is currently managed separately in
-            # fantasy_daemon.api.serve(). This integration will be completed
-            # in a later phase. For now, users should run `python -m
-            # fantasy_daemon serve` separately.
-            logger.warning(
-                "API server integration incomplete. "
-                "Run 'python -m fantasy_daemon serve' separately."
+        writer_barrier = prepare_service_writer_barrier(data_dir())
+        try:
+            controller = DaemonController(
+                universe_path=args.universe,
+                db_path=args.db,
+                no_tray=args.no_tray,
+                pinned_provider=args.provider,
             )
 
-        # Run the daemon. DaemonController exposes start() (the blocking
-        # daemon loop); there is no run(). start() returns None on clean
-        # shutdown, so main() returns 0.
-        controller.start()
-        return 0
+            # If --api flag is set, start the API server alongside the daemon
+            if args.api:
+                logger.info("Starting API server on port %d", args.port)
+                # The API server is currently managed separately in
+                # fantasy_daemon.api.serve(). This integration will be completed
+                # in a later phase. For now, users should run `python -m
+                # fantasy_daemon serve` separately.
+                logger.warning(
+                    "API server integration incomplete. "
+                    "Run 'python -m fantasy_daemon serve' separately."
+                )
+
+            # Run the daemon. DaemonController exposes start() (the blocking
+            # daemon loop); there is no run(). start() returns None on clean
+            # shutdown, so main() returns 0.
+            controller.start()
+            return 0
+        finally:
+            writer_barrier.release()
 
     except Exception as e:
         logger.error("Failed to run daemon: %s", e)

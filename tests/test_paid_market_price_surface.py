@@ -763,7 +763,7 @@ def test_principal_vwap_matches_canonical_oracle_without_caps() -> None:
     canonical, _ = compute_vwap(
         [
             SettledTrade(
-                capability_id="sha256:market",
+                market_class_id="sha256:market",
                 price_micros_per_mtok=observation.unit_price_micros,
                 tokens_out=observation.quantity,
                 buyer_id=observation.buyer_principal_root or "",

@@ -840,9 +840,16 @@ class LauncherApp:
 
 def main() -> None:
     """Create and run the launcher GUI."""
-    root = tk.Tk()
-    app = LauncherApp(root=root)
-    app.run()
+    from tinyassets.scoped_reset import prepare_service_writer_barrier
+    from tinyassets.storage import data_dir
+
+    writer_barrier = prepare_service_writer_barrier(data_dir())
+    try:
+        root = tk.Tk()
+        app = LauncherApp(root=root)
+        app.run()
+    finally:
+        writer_barrier.release()
 
 
 if __name__ == "__main__":
