@@ -14,14 +14,18 @@ path as:
 - `engine_assignment_state="remote_ready"`; and
 - `allowed_providers=[]`.
 
-That state is valid only while a current, non-executable activation grant
-bound to the B13 production composition root exists. A B2 grant binds a
-concrete job and capsule, so it cannot truthfully be created by an activation
-request before the later `converse` message exists. The B13 root must create
-and verify that exact B2 grant at the per-job dispatch boundary. The ordinary
-provider router must never interpret the empty provider list as permission to
-use a maintainer, local, BYOC, free, role-default, or environment-selected
-provider.
+That state is valid only while a current, non-executable bounded-market
+mandate bound to the B13 production composition root exists. The mandate
+records the user's total spend ceiling and accepted selection/pricing policy;
+it is neither a reservation nor job authority. A B2 grant binds a concrete job
+and capsule, so it cannot truthfully be created by an activation request
+before the later `converse` message exists. After that message establishes
+exact demand and quantity, the paid-market and wallet owners must return a
+fresh executable firm quote, capacity consumption, and requester-funded spend
+reservation within the mandate. The B13 root must bind those facts into the
+exact B2 grant at the per-job dispatch boundary. The ordinary provider router
+must never interpret the empty provider list as permission to use a
+maintainer, local, BYOC, free, role-default, or environment-selected provider.
 
 The public connector has seven canonical handles. This change must be
 completable from a chatbot without adding an eighth handle, using the
@@ -44,9 +48,9 @@ not gain special compute or execution authority from engine activation.
 - Bind acceptance to a current quote and revalidate every economic and
   identity fact at the server boundary.
 - Atomically compose the accepted economic agreement with a current
-  B13-bound activation grant, publish remote-ready engine state only after the
-  full composition succeeds, and require a fresh exact B2 grant for each
-  concrete job.
+  B13-bound bounded-market mandate, publish remote-ready engine state only
+  after the full composition succeeds, and require fresh quote, capacity,
+  requester-funding, and exact B2 authority for each concrete job.
 - Dispatch subsequent `converse` work through the accepted-market remote seam
   before the ordinary provider router.
 - Fail closed with connector-completable typed refusal or repair results and
@@ -125,6 +129,13 @@ wallet, payment authority, B2/B13 grant, lease, generation, fence, and
 execution capability are server-derived or owned elsewhere and are forbidden
 as caller fields.
 
+`max_total_minor` is the mandate-wide spend ceiling, not a promise that one
+quote covers future work. `acceptance_policy_digest` binds the canonical
+server-held route-selection policy, per-job price/service constraints,
+reservation/retry/refund rules, and any per-job cap. A later job whose exact
+demand, quantity, landed total, fee version, or service terms fall outside that
+policy requires a new explicit acceptance.
+
 The server re-resolves the selection receipt, quote, and descriptor and
 compares their current canonical versions and digests. It verifies that the
 selected route is still the explicitly accepted paid lane, that the quote is
@@ -152,9 +163,10 @@ outside that invocation, and cannot be minted for unauthenticated,
 background, scheduled, deferred, stdio, or SSE work.
 
 Identity permits the actor to request the mutation; it does not permit remote
-execution. The durable activation grant is also non-executable: it records
-only the bounded agreement-to-B13 composition. Positive work authority comes
-from a current B2 signed grant issued through the B13 production composition
+execution. The durable mandate is also non-executable: it records only the
+bounded agreement-to-B13 composition and remaining spend-policy envelope.
+Positive work authority comes from current per-job market/funding/capacity
+results plus a B2 signed grant issued through the B13 production composition
 root after a concrete job and capsule exist.
 
 Alternatives considered:
@@ -175,9 +187,10 @@ server:
    commitment, policy, expiry, cancellation, and capacity;
 3. asks the paid-market owner for the exact accepted-agreement result;
 4. asks the distributed-execution B13 root for a bounded, revocable,
-   non-executable activation grant bound to that agreement, target universe,
-   route/capacity fence, spend ceiling, expiry, and idempotency digest; and
-5. atomically persists the agreement/activation-grant references and publishes
+   non-executable mandate bound to that agreement, target universe, accepted
+   selection/pricing policy, total spend ceiling, expiry, revocation
+   generation, and idempotency digest; and
+5. atomically persists the agreement/mandate references and publishes
    `accepted_market + remote_ready + []`.
 
 If any step fails, none of those activation mutations commits. Payment and
@@ -202,11 +215,29 @@ Alternatives considered:
 ### 5. Accepted-market `converse` dispatch is pre-routing and fail-closed
 
 For an accepted-market universe, `converse` first re-derives the persisted
-agreement and B13-bound activation grant, then asks the B13 production
-composition root for a fresh B2 grant bound to the now-concrete universe,
-message/job, capsule digest, selected daemon/host, lease, generation/fence,
-capability ceiling, expiry, and idempotency identity. Only that exact B2 grant
-may enter the distributed-execution seam.
+agreement and B13-bound bounded-market mandate. After compiling the concrete
+message into exact job demand, quantity, and capsule input, it must:
+
+1. obtain a fresh executable firm quote for that exact demand/quantity under
+   the accepted selection policy;
+2. revalidate quote, fee, currency, service terms, expiry, capacity fence, and
+   remaining mandate budget;
+3. atomically consume/reserve the exact capacity and requester-owned or
+   delegated funding/spend ceiling under a job idempotency identity;
+4. seal the agreement, mandate, quote, demand, quantity, capacity-consumption,
+   funding-reservation, fee, and spend-ledger references/digests into the
+   capsule; and
+5. ask B13 for the B2 grant bound to that sealed capsule plus the selected
+   daemon/host, job, lease, generation/fence, capability ceiling, expiry, and
+   idempotency identity.
+
+Only that exact B2 grant may enter the distributed-execution seam. Concurrent
+jobs serialize against remaining budget and conserved capacity; a loser holds
+before dispatch. Same-job retries reuse the same reservation/consumption and
+B2 result. Cancellation or pre-dispatch failure releases both reservations
+exactly once. Post-dispatch settlement applies actual verified use and releases
+or refunds unused reserved value through the owning market/wallet contracts;
+the connector never invents those effects.
 
 The ordinary provider router is never consulted for this source. If authority
 is absent, expired, revoked, fenced, cancelled, inconsistent, or cannot be
@@ -215,10 +246,10 @@ re-derived, dispatch holds. The assignment owner atomically downgrades stale
 accepted-market repair or renewal action. It never falls through to
 maintainer, requester-host, local, BYOC, free, or role-default provider chains.
 
-Neither an accepted-market agreement nor its activation grant bypasses the
-independent execution-admission and sandbox evidence required for the concrete
-job. Queue, market, or admission artifacts may narrow or reject B2 authority
-but cannot promote themselves into it.
+Neither an accepted-market agreement nor its mandate bypasses the independent
+execution-admission and sandbox evidence required for the concrete job. Queue,
+market, funding, capacity, or admission artifacts may narrow or reject B2
+authority but cannot promote themselves into it.
 
 ### 6. Connector results disclose status, not authority carriers
 
@@ -230,12 +261,13 @@ credential, host address, wallet token, actor/tenant override, or internal
 authority carrier.
 
 Refusal and repair use stable typed codes. Refusal covers malformed or stale
-acceptance, authorization failure, budget conflict, cancellation, unavailable
-capacity, and same-key/different-body conflict. Repair covers a formerly valid
-assignment whose B13-bound activation authority or per-job B2 production path
-is now absent, expired, revoked, fenced, or inconsistent. A path is advertised
-as completable only when all required owners are live on the connector
-surface.
+acceptance, authorization failure, budget conflict, quote/fee/policy drift,
+cancellation, unavailable capacity or requester funding, concurrent
+oversubscription, and same-key/different-body conflict. Repair covers a
+formerly valid assignment whose B13-bound mandate, per-job quote/capacity/
+funding path, or B2 production path is now absent, expired, revoked, fenced,
+consumed, or inconsistent. A path is advertised as completable only when all
+required owners are live on the connector surface.
 
 ### 7. Cutover requires structural, concurrency, and rendered evidence
 
@@ -263,10 +295,13 @@ desktop. Post-fix clean-use evidence remains a separate release gate.
   final revalidation and commit against owner-defined cancellation, expiry, and
   capacity fences; the losing operation returns a typed refusal.
 - **[Risk: activation is mistaken for a pre-minted per-job B2 grant]** →
-  Make the durable activation grant explicitly non-executable and require the
-  B13 root to mint a new exact B2 grant only after each concrete job/capsule
-  exists.
-- **[Risk: a stored activation grant becomes stale after activation]** →
+  Make the durable mandate explicitly non-executable and require fresh
+  per-job quote, capacity, requester-funding, and B2 authority only after each
+  concrete job/capsule exists.
+- **[Risk: concurrent jobs oversubscribe budget or conserved capacity]** →
+  Reserve both under one job-idempotency identity before B2 creation; serialize
+  competing commits and release/refund exactly once through owning contracts.
+- **[Risk: a stored mandate becomes stale after activation]** →
   Re-derive authority at every execution decision, downgrade to held, and
   expose only repair/renewal.
 - **[Risk: an empty provider list is mistaken for permission to fall back]** →
@@ -303,8 +338,9 @@ assignments. It must never reinterpret a quote, request, legacy
 ## Open Questions
 
 No host design question remains in this target. Runtime starts only after the
-paid-market owner exposes its stable quote and selection-receipt identifiers,
-the B13 owner exposes the non-executable activation and per-job B2 composition
-interfaces, and one storage owner can prove the atomic commit. The
-implementation successor advertises only the repair actions it proves live and
-records its numerical section-14 load envelope before executing the gate.
+paid-market owner exposes stable quote/selection identifiers plus per-job
+capacity and requester-funding reservation/settlement interfaces, the B13 owner
+exposes the non-executable mandate and per-job B2 composition interfaces, and
+one storage owner can prove each required atomic commit. The implementation
+successor advertises only the repair actions it proves live and records its
+numerical section-14 load envelope before executing the gate.

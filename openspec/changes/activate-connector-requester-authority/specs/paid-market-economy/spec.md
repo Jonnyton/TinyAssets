@@ -37,7 +37,7 @@ actor/tenant/universe scope. Caller-supplied expiry MUST NOT extend the
 canonical expiry, and stale or changed terms MUST require a newly explicit
 acceptance.
 
-The accepted agreement and current non-executable B13-bound activation grant
+The accepted agreement and current non-executable B13-bound bounded-market mandate
 SHALL either compose with the engine assignment in one atomic activation
 outcome or publish no activation state. A concrete later job still requires
 its own exact B2 grant. Market selection SHALL NOT silently move the user to a
@@ -75,5 +75,52 @@ remain with their owning market contracts.
 
 #### Scenario: maintainer resources cannot cover a failed market path
 
-- **WHEN** the accepted agreement cannot obtain or retain valid market and B2/B13 authority
+- **WHEN** the accepted agreement cannot obtain or retain valid mandate, per-job market/funding/capacity, and B2 authority
 - **THEN** activation or execution holds without charging or invoking any maintainer credential, quota, wallet, or compute
+
+### Requirement: Every concrete job consumes fresh bounded market and requester-funding authority
+
+The paid-market owner SHALL treat activation as a non-executable bounded
+mandate, not a reusable firm quote or capacity reservation. After a later
+message establishes exact job demand and quantity, the owner SHALL obtain and
+verify a fresh executable firm quote under the accepted selection policy,
+revalidate its descriptor, demand, quantity, landed total, currency, fee
+schedule, service terms, expiry, and capacity fence, and atomically reserve or
+consume both conserved capacity and requester-owned or explicitly delegated
+funding within the mandate's per-job policy and remaining
+`max_total_minor`. Those owner-native quote, capacity, funding, fee, and spend
+references/digests SHALL be available for sealing into the job capsule and B2
+derivation. A platform, maintainer, founder, provider, or mutable row MUST NOT
+substitute for requester funding or conserved capacity.
+
+The job economic identity SHALL bind activation, actor, tenant, universe, job,
+canonical demand/quantity, and idempotency key. Same-job retries SHALL reuse
+the original reservation/consumption outcome; changed-body reuse SHALL
+conflict. Concurrent jobs SHALL serialize against remaining mandate budget and
+capacity. Cancellation or failure before dispatch SHALL release both
+reservations exactly once. After dispatch, settlement SHALL charge only
+owner-verified accepted use and release or refund unused reserved value under
+the owning wallet/settlement contracts.
+
+#### Scenario: exact job receives executable economic authority
+
+- **WHEN** a concrete job has a fresh executable quote matching its exact demand and quantity, current capacity, requester funding, and remaining mandate limits
+- **THEN** the market owner atomically records one job-bound capacity consumption and one requester-funded spend reservation
+- **AND** the returned references/digests grant no execution authority until B13 seals them into the exact capsule and B2 grant
+
+#### Scenario: concurrent jobs cannot oversubscribe mandate or capacity
+
+- **WHEN** two jobs concurrently contend for budget or capacity that can satisfy only one
+- **THEN** one atomic reservation wins and the loser holds before B2 creation
+- **AND** total reserved or settled value and capacity never exceed the mandate or conserved supply
+
+#### Scenario: retry cancellation and settlement are exactly-once
+
+- **WHEN** the same job retries after an ambiguous response, cancels before dispatch, or settles after verified execution
+- **THEN** it reuses the original reservation identity, never double-consumes capacity or funds, and releases, charges, or refunds each reserved unit exactly once
+
+#### Scenario: price or funding drift requires repair
+
+- **WHEN** the fresh job quote exceeds the accepted per-job or remaining budget policy, the fee/currency/policy changes, requester funding is unavailable, or capacity is no longer executable
+- **THEN** the job holds with a typed market repair or new-acceptance requirement and no B2 grant is created
+- **AND** no maintainer or alternative fulfillment lane silently substitutes

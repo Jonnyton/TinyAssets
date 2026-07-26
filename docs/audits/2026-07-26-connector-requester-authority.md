@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-26
 
-**Audited base:** `origin/main` `f810f3371759736107568378f666fcb7ff2b4294`
+**Audited base:** `origin/main` `cf30da16e020db19d8374e6568c9d4eeb2689bc8`
 
 **Change:** `activate-connector-requester-authority`
 
@@ -98,7 +98,7 @@ epoch-2 BranchTask intake contract.
 |---|---|---|
 | `identity-auth-and-access-control` | Current OAuth requester, tenant, exact universe, request/session/tool binding, revocation generation | Environment actor, caller-supplied actor/tenant, durable replay of the one-message request capability |
 | `paid-market-economy` | Explicit paid mandate, accepted economic agreement, canonical tenant workflow, body-bound idempotency | Quote ranking, host authority, wallet/chain authority, settlement finality, or execution authority |
-| `distributed-execution` | A non-executable B13-bound activation grant, then one exact B2 grant after each concrete job/capsule exists, plus Engine OS admission evidence | Pre-minting/storing a future-job B2 or promoting request, match, claim, row, receipt, reservation, or provider-attempt evidence |
+| `distributed-execution` | A non-executable B13-bound bounded-market mandate, then fresh firm quote, capacity consumption, requester-funding reservation, and one exact B2 grant after each concrete job/capsule exists, plus Engine OS admission evidence | Pre-minting/storing a future-job B2 or promoting request, match, claim, row, receipt, reservation, or provider-attempt evidence |
 | `live-mcp-connector-surface` | Exact action/input/result, rendered confirmation, refusal, repair, and renewal | New MCP handle, raw grant/secret/payment carrier, deprecated handle, or desktop prerequisite |
 | `provider-routing` (#1784) | Existing owner: `accepted_market + remote_ready + []`, pre-router seam, ordinary-chain bypass, held state | No delta in this successor |
 | live price / Wave 2 | Existing owners: executable firm quote, selection receipt, request/bid/match/claim/delivery lifecycle | No price-index or operator-request delta in this successor |
@@ -115,14 +115,19 @@ fee-schedule version, bounded spend/deadline, and acceptance policy.
 
 The server derives or reloads the actor, tenant, universe, descriptor, demand
 commitment, quote contents, issuer/capacity evidence, host, wallet/chain
-receipt, and B13 activation authority. Caller-supplied versions of those
-authority objects are rejected. Because B2 binds a concrete job/capsule, it is
-not created during activation; the later `converse` sink obtains it from B13
-after the message and job exist.
+receipt, and B13 market-mandate authority. Caller-supplied versions of those
+authority objects are rejected. The mandate is ongoing but bounded by the
+accepted total spend and selection policy; it is neither a reservation nor
+job authority. Because B2 binds a concrete job/capsule, it is not created
+during activation. After the later message and job exist, `converse` obtains a
+fresh executable firm quote for their exact demand and quantity, revalidates
+fees, currency, service policy, capacity, and remaining budget, atomically
+consumes capacity and reserves requester-owned or explicitly delegated
+funding, and only then obtains the exact B2 grant from B13.
 
 One production composition boundary must atomically establish the accepted
-agreement, current executable capacity/settlement prerequisites, the
-non-executable B13-bound activation grant, and exclusive universe assignment:
+agreement, current settlement prerequisites, the non-executable B13-bound
+bounded-market mandate, and exclusive universe assignment:
 
 ```text
 engine_source="accepted_market"
@@ -135,13 +140,22 @@ maintainer spend. Same-key/same-body replay returns the original typed result;
 same-key/different-body reuse conflicts after current actor and universe
 authorization is rechecked.
 
-Each later `converse` authenticates its own message, revalidates the durable
-accepted-market authority, and uses the B13 composition root to obtain the
-exact request-bound B2 job/capsule grant before dispatch. An activation,
-quote, reservation, or mutable database row is never itself executable
-authority. Missing, expired, revoked, fenced, consumed, or inconsistent state
-maps to held repair/renewal and never to maintainer, local, BYOC, free, or
-ordinary provider fallback.
+Each later `converse` authenticates its own message and revalidates the
+durable bounded-market mandate. For the exact job it obtains a fresh
+executable firm quote, atomically consumes conserved capacity and reserves
+requester-owned or explicitly delegated funding, and seals the agreement,
+mandate, quote, demand, quantity, capacity-consumption, funding-reservation,
+fee, and spend-ledger references and digests into the capsule and B2 request.
+B13 then produces the exact request-bound B2 job/capsule grant before
+dispatch. Concurrent jobs serialize budget, funding, and capacity consumption
+so they cannot oversubscribe any bound. Same-job retries reuse the same
+reservation and B2; changed-body reuse conflicts. Pre-dispatch cancellation
+releases capacity and funding exactly once; post-dispatch settlement charges
+only verified use and releases or refunds the unused remainder idempotently.
+An activation, quote, reservation, or mutable database row is never itself
+executable authority. Missing, expired, revoked, fenced, overspent, consumed,
+or inconsistent state maps to held repair/renewal and never to maintainer,
+local, BYOC, free, or ordinary provider fallback.
 
 ## Open Implementation Dependencies
 
@@ -151,14 +165,16 @@ ordinary provider fallback.
 - `paid-market-track-e-wave-2-transport` production baseline/migrations,
   canonical router delegation, delivery/fence integration, and concurrency
   evidence.
-- Distributed-execution B13 production composition, trust/custody, market
-  selection, settlement integration, and live B2 proof.
+- Distributed-execution B13 production composition, trust/custody, per-job
+  firm-quote/capacity/funding consumption, settlement integration, and live
+  B2 proof.
 - The separately owned wallet/chain-settlement successor.
 - Engine OS execution admission (#1573 target; reconciled implementation
   successor).
-- A single transactional persistence boundary. Independent best-effort writes
-  to current request, market, or universe stores cannot satisfy atomic
-  activation.
+- A single transactional persistence boundary for activation plus an atomic
+  per-job budget/capacity/funding boundary. Independent best-effort writes to
+  current request, market, wallet, capacity, or universe stores cannot satisfy
+  either invariant.
 
 No runtime implementation may start through this target lane. Each dependency
 must land under its own claim, or the implementation successor must record an
@@ -183,8 +199,10 @@ internally consistent; it does not prove accepted-market activation, which
 does not exist.
 
 Before cutover the implementation successor must add focused authorization,
-schema/idempotency, quote/fee/spend, atomicity/fault, B2/B13,
-cancel/expiry/revocation/fence, pre-router refusal, and no-maintainer-fallback
-tests; run the PLAN §14 concurrent load proof; pass public canaries; complete
-a rendered chatbot conversation through `https://tinyassets.io/mcp`; and
-record post-fix clean-user evidence or a dated watch item.
+schema/idempotency, quote/fee/spend, atomicity/fault, per-job
+budget/capacity/funding oversubscription, retry/cancel/release/refund,
+B2/B13, expiry/revocation/fence, pre-router refusal, and
+no-maintainer-fallback tests; run the PLAN §14 concurrent load proof; pass
+public canaries; complete a rendered chatbot conversation through
+`https://tinyassets.io/mcp`; and record post-fix clean-user evidence or a
+dated watch item.
