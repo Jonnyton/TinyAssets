@@ -1313,7 +1313,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/reconcile-provider-authority
-- Lane state: claimed; current-main spec-only replacement for draft PR #1691
+- Lane state: landed in main as #1784 / `620fed5a`; supersedes draft PR #1691
 - Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
 - STATUS/Issue/PR: STATUS Work row; draft PR #1784
 - PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
@@ -1322,4 +1322,19 @@ Notes:
 - Memory refs: draft PR #1691 is source-only
 - Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
 - Idea feed refs: none
-- Ship/abandon: ship only after strict OpenSpec validation, exact-revision Opus 5 approval, and published sibling handoffs
+- Ship/abandon: shipped after strict 51/51 validation, exact-revision Opus 5 approval, and published sibling handoffs
+
+## 2026-07-25 - provider-authority-foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-foldback
+- Lane state: claimed; merged-lane coordination cleanup only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-foldback
+- STATUS/Issue/PR: retire #1784 Work row; close superseded draft PR #1691; follow-up PR
+- PLAN refs: Provider Integration; §14 concurrency/load proof
+- Purpose: mark task 1.35, retire the landed STATUS claim, and preserve the target active/unsynced.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-foldback\_PURPOSE.md
+- Memory refs: #1784 exact-head Opus approval
+- Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
+- Idea feed refs: none
+- Ship/abandon: merge only if no other foldback already performed all cleanup
