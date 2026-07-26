@@ -30,6 +30,10 @@ public primitives, not a product-specific hidden loop.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
+- Snapshot and remove the 27 live GitHub label definitions that encode retired
+  loop routing/status, strip them from open issues/PRs without closing or
+  rewriting user content, preserve generic request/gate/checker/payment labels,
+  and publish an idempotent migration receipt plus repository-wide notice.
 - Remove the public website's privileged patch-loop route/status fallback,
   checked-in community-loop JSON, workflow/label assumptions, and fine-print
   branding. Preserve a generic user-workflow activity view only when it has
@@ -54,6 +58,12 @@ None.
 
 - `community-patch-loop`: remove every requirement and retire the capability
   after its generic observation subset moves to `uptime-and-alarms`.
+- `daemon-runtime-and-dispatch`: migrate retired v1/v2 queue rows through only
+  existing statuses/fields, #1803 authority reconciliation, exact queue CAS,
+  and a pre-#1803 worker-quiescence/deployment stop.
+- `development-coordination-runtime`: retire the live GitHub routing/status
+  label taxonomy through a receipt-backed migration that preserves open work
+  and generic coordination labels.
 - `graph-execution-substrate`: make the user-authored composition boundary
   explicit while preserving generic execution primitives.
 - `uptime-and-alarms`: own the generic read-only platform/deploy/revert
@@ -78,12 +88,13 @@ public prompts/control-station copy, active plans/wiki guidance,
 `.github/workflows/community-loop-watch.yml`, production configuration, the
 canonical Svelte website and legacy React mirror, checked-in website status
 JSON, the external `AUTO_FIX_DISABLED` repository variable, active agent
-skills and loop souls, implicit auto-merge and automatic patch-announcement
-workflows, current "auto-fix loop" wording, generated Claude plugin runtime
-mirror, and tests that assert the retired behavior. Historical design/audit
-records may retain clearly marked history; current operator guidance,
-configuration, build outputs, behavioral specs, and agent instructions must
-not advertise or exercise the retired path or capability.
+skills and loop souls, automatic patch-announcement workflow, current
+"auto-fix loop" wording, generated Claude plugin runtime mirror, and tests that
+assert the retired behavior. The independently owned repository auto-enrollment
+workflow remains maintainer integration, not user-task authority. Historical
+design/audit records may retain clearly marked history; current operator
+guidance, configuration, build outputs, behavioral specs, and agent
+instructions must not advertise or exercise the retired path or capability.
 
 Existing generic primitives are not replaced or aliased. Users who want bug
 investigation, patch generation, PR effects, scheduled work, or similar

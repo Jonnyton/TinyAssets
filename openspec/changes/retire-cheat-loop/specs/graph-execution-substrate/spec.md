@@ -39,18 +39,19 @@ publish those designs to the commons for copying, remixing, or combination.
 - **THEN** no skill or catalog route instructs it to file a synthetic request into, wait for, repair, or verify a platform-owned investigation/shipping loop
 - **AND** historical incident evidence is not packaged as an invocable loop skill
 
-#### Scenario: Repository effects require explicit workflow authority
+#### Scenario: Patch announcements require explicit workflow authority
 
-- **WHEN** a pull request opens or a deployment/main push completes
-- **THEN** TinyAssets does not implicitly enroll the pull request for merge or automatically compose and post a patch announcement
-- **AND** any later merge or outbound announcement is an explicitly selected workflow with its own narrow authority and receipt
+- **WHEN** a deployment or main push completes
+- **THEN** TinyAssets does not automatically compose and post a patch-loop announcement
+- **AND** any later outbound announcement is an explicitly selected workflow with its own narrow authority and receipt
 
 ### Requirement: Retired Request Classes Fail Closed Before Generic Execution
 
 Dispatcher admission and claim SHALL reject the retired
 `bug_investigation` request class before branch-run or universe-cycle
 execution. An idempotent pre-worker upgrade migration SHALL quarantine or
-terminally refuse every pending/queued v1/v2 row of that class, make every
+terminally refuse every pending row of that class through the exact existing
+v1/v2 transitions owned by `daemon-runtime-and-dispatch`, make every
 claimed/running row non-admissible and non-claimable, and retain completed rows
 as immutable historical evidence. Trigger receipts associated only with the
 retired loop SHALL be archived or removed under recorded retention policy. No
@@ -65,12 +66,14 @@ authority; preserve consumed authority for conclusive `succeeded`/`failed`
 work; preserve readable `launch_started` or `indeterminate` receipts as
 `fenced_indeterminate` without release, retry, resume, or inferred outcome; and
 on an unreadable authority store preserve the existing row/receipt and hold
-without queue mutation. After releasing a successful authority transaction,
-it SHALL queue-CAS the exact
-task/claim/lease generation into the matching retired terminal or fenced
-state. A changed tuple restarts reconciliation. An ambiguous fence remains
-non-runnable until authoritative evidence becomes conclusive, then finishes
-the retirement transition without re-execution.
+without queue mutation. After releasing a successful authority transaction, it
+SHALL apply only the existing-state transitions owned by
+`daemon-runtime-and-dispatch`: conclusive work may exact-CAS to `cancelled`;
+readable ambiguous work is not reset or terminalized and only its receipt is
+fenced (a v2 row may additionally become disabled/quarantined by exact CAS);
+unreadable work receives no queue mutation. A changed tuple restarts
+reconciliation. An ambiguous fence remains non-runnable until authoritative
+evidence becomes conclusive, then may finish retirement without re-execution.
 
 Retirement classification and fail-closed admission SHALL precede ordinary
 startup/first-use recovery. #1803 SHALL NOT issue new authority for, resume, or
@@ -79,8 +82,8 @@ its authority reconciliation remains mandatory before queue terminalization.
 
 #### Scenario: Pending retired row cannot reach a worker
 
-- **WHEN** upgrade encounters a pending or queued `bug_investigation` row
-- **THEN** migration atomically records a retirement reason and moves it to a terminally refused or quarantined state before workers start
+- **WHEN** upgrade encounters a pending `bug_investigation` row
+- **THEN** migration atomically records the daemon-runtime-owned v1 `cancelled` or v2 `cancelled` plus disabled/quarantine transition before workers start
 - **AND** dispatcher selection and claim both refuse the retired class
 
 #### Scenario: Claimed or running retired row loses execution race
@@ -89,7 +92,8 @@ its authority reconciliation remains mandatory before queue terminalization.
 - **THEN** admission and claim reject it before generic execution can start or resume
 - **AND** retirement reconciles its authority record under #1803 before queue-CAS against the exact task/claim/lease generation
 - **AND** only reserved-before-launch authority is cancelled and released, while ambiguous authority remains fenced-indeterminate
-- **AND** no branch, universe cycle, task, run, or wiki write-back is produced
+- **AND** no new or resumed branch, universe cycle, task, run, or wiki write-back is produced after retirement classification
+- **AND** any pre-cutover execution evidence remains immutable
 
 #### Scenario: Unreadable authority cannot be retired by inference
 

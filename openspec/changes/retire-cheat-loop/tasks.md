@@ -1,7 +1,7 @@
 ## 0. Target And Review Gates
 
-- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, active skills/souls, implicit merge/announcement effects, generated website snapshots, tests, and the Claude plugin mirror; distinguish generic primitives and historical records.
-- [x] 0.2 Write the target proposal, design, five capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
+- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, live GitHub labels/open-item routing, active skills/souls, automatic patch-announcement effects, generated website snapshots, tests, and the Claude plugin mirror; distinguish generic primitives, independent repo integration, and historical records.
+- [x] 0.2 Write the target proposal, design, seven capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
 - [ ] 0.3 Obtain exact-head independent architecture/spec/diff review and fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [ ] 0.4 Record the host's standing 2026-07-26 acceptance only after reviewers agree the complete removal boundary is fully figured out; stop if any unresolved host design choice remains.
 - [ ] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, and publish the target-only draft PR without runtime, deployment, or production mutation.
@@ -25,7 +25,7 @@
   specs/milestones/exec plans/wiki guidance, public prompt/control-station
   promises, the `AUTO_FIX_DISABLED` repository variable, current "auto-fix
   loop" runtime/plugin/test/website wording, active `.agents`/`.claude` skill
-  routes, loop souls, implicit merge/announcement workflows, stale site
+  routes, loop souls, automatic patch-announcement workflows, stale site
   snapshots, or stale plugin copies.
 
 ## 2. Remove Privileged Bug-Investigation Automation
@@ -57,7 +57,10 @@
   **Dependency:** #1803's runtime authority store/reconciler must land before
   any claimed/running row is terminalized. Until then, an absent or
   unimplemented store is the unreadable-authority case: preserve row/receipt,
-  hold non-runnable, and perform no queue CAS or authority release.
+  hold non-runnable, and perform no queue CAS or authority release. Block
+  runtime replacement unless every legacy worker is quiesced and a locked
+  preflight proves there is no retired v1 `running` or v2
+  `running`/`cancel_requested` row.
 
 ## 3. Remove Auto-Ship Product Automation
 
@@ -78,13 +81,21 @@
 - [ ] 3.4 Inspect production data/configuration for obsolete auto-ship ledgers
   and keys, archive or delete them under operator retention policy, and record
   evidence without adding a runtime migration reader.
-- [ ] 3.5 Delete `.github/workflows/auto-enroll-merge.yml` so same-repository
-  PRs receive no standing implicit merge instruction. Delete the
-  push/deploy-triggered `.github/workflows/announce-patch.yml` and its
-  patch-loop announcement script when no independent explicit consumer
-  remains. Preserve generic GitHub/outbound-effect primitives only; a future
-  user/maintainer workflow must be explicitly selected and separately
-  authorized.
+- [ ] 3.5 Delete the push/deploy-triggered
+  `.github/workflows/announce-patch.yml` and its patch-loop announcement script
+  when no independent explicit consumer remains. Preserve generic
+  outbound-effect primitives. Preserve the independently owned
+  `.github/workflows/auto-enroll-merge.yml` maintainer integration, and prove it
+  neither consumes retired labels nor grants user workflows implicit merge
+  authority.
+- [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 27
+  exact retired definitions plus every labelled issue/PR (open and closed) into
+  a digest-bound receipt; strip retired labels from open items without closing
+  or rewriting them; publish one idempotent repository-wide notice; delete the
+  definitions; and verify no workflow/script/site/runtime consumer remains.
+  Preserve generic `daemon-request`, `request:*`, `payment:*`,
+  `gate-required`, `checker:*`, `writer:*`, `needs-human`,
+  `priority:primitive-*`, `merge-effector`, and `secure-merge` labels.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
@@ -144,14 +155,16 @@
   from shipped runtime, active configuration, current operator guidance,
   active specs/milestones/exec plans/wiki pages, website source/static/build,
   executable tests, workflows, and package output; all shipped/current scopes
-  must be clean.
+  must be clean. Query live GitHub labels and open items to prove the 27 retired
+  definitions and their routing/status consumption are absent while generic
+  labels remain.
 - [ ] 6.5 Perform the final rendered-chatbot `ui-test` through
   `https://tinyassets.io/mcp`: file a page and inspect status, proving filing has
   no hidden automation/routing claim and status has no cheat-specific projection.
 - [ ] 6.6 Freshness-stamp production evidence for generic uptime/deploy
   observation and post-fix user filing; if no post-fix real-user use exists,
   leave the required short `STATUS.md` watch item rather than claiming clean use.
-- [ ] 6.7 Sync the graph, wiki, uptime, and website deltas; explicitly rewrite
+- [ ] 6.7 Sync the coordination, daemon, graph, wiki, uptime, and website deltas; explicitly rewrite
   canonical `wiki-commons` Purpose prose that promises trigger receipts and
   `uptime-and-alarms` prose that names the neighboring patch loop; retire the
   `community-patch-loop` main spec; archive this change with implementation;

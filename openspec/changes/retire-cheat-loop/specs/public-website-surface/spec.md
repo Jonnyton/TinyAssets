@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `Status And Loop Presentation Keep Distinct Operational Truths`
+- TO: `Status And Workflow Presentation Keep Distinct Operational Truths`
+
 ## MODIFIED Requirements
 
 ### Requirement: The Public Site Ships As A Static Multi-Route Application

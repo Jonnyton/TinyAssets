@@ -20,8 +20,7 @@ the original branch-definition fallback:
 5. community-loop named runtime, workflow, artifact, label, package, and test
    surfaces;
 6. active loop skills, catalog routes, and shipped loop-team souls;
-7. repository-wide implicit auto-merge and automatic patch-announcement
-   compositions; and
+7. automatic patch-announcement composition; and
 8. generated website/plugin snapshots or prompts that can resurrect the
    retired behavior.
 
@@ -46,6 +45,8 @@ rg -n -i "community[_ -]loop|auto[_ -]ship|TINYASSETS_AUTO_SHIP" tinyassets fant
 rg -n "bug_investigation|attach_patch_packet|trigger_receipt" tinyassets fantasy_daemon packaging/claude-plugin tests deploy .github docs/ops
 rg -n -i "loop-uptime|community[_ -]loop|auto[_ -]fix|patch[_ -]loop" .agents/skills .claude/skills .github/workflows docs/souls WebSite/site/src/lib/content WebSite/site-react/lib
 gh variable list --repo Jonnyton/TinyAssets
+gh label list --repo Jonnyton/TinyAssets --limit 300 --json name,description
+gh issue list --repo Jonnyton/TinyAssets --state open --label <retired-label> --limit 1000 --json number
 openspec validate retire-cheat-loop --strict
 ```
 
@@ -56,6 +57,15 @@ the runtime is still unchanged in this target-only lane.
 The authenticated repository-variable read on 2026-07-26 returned
 `AUTO_FIX_DISABLED=true` (last updated 2026-06-06) and
 `WORKOS_REQUIRE_AUTH=0`; only the former belongs to this retirement.
+
+The authenticated label/open-item read on 2026-07-26 found 27 live
+product-loop definitions: `auto-bug`, `auto-change`, two `auto-checker-*`,
+twenty `auto-fix-*`, `community-loop-red`, `loop-consent`, and
+`priority:loop-discipline`. Representative open-issue counts were
+`auto-bug=40`, `auto-change=213`, `auto-fix-attempted=185`, and
+`priority:loop-discipline=42`; `community-loop-red` and `loop-consent` had zero
+open issues. These are active external routing/status claims, not merely
+historical source vocabulary.
 
 ## Current Shipped Consumers
 
@@ -100,11 +110,12 @@ The generic dispatcher currently accepts arbitrary request classes when no
 priority allow-list is present. Therefore deleting the direct-execution branch
 alone is unsafe: pending or lease-recovered `bug_investigation` rows could fall
 into an ordinary universe cycle. The cutover must run an idempotent pre-worker
-migration that terminally refuses/quarantines pending rows, fences and cancels
-claimed/running rows before recovery, retains completed history immutably, and
-records ids/digests/prior-final states/retention. Admission and claim both deny
-the retired class afterward; no generic reinterpretation or replay execution
-is allowed.
+migration that terminally refuses/quarantines pending rows, denies the class at
+admission/claim, and handles claimed/running
+rows only through #1803's authority proof plus existing queue states. Readable
+ambiguous work is fenced without reset; unreadable work is not queue-mutated.
+Completed history remains immutable and no generic reinterpretation or replay
+execution is allowed.
 
 Current `origin/main` also carries
 `harden-background-provider-execution-authority` (#1803), whose graph delta
@@ -123,10 +134,12 @@ resume, or sweep the retired class as ordinary work.
 Current source does not yet implement #1803's `ProviderWorkAuthorityStore`.
 Therefore the implementation lane may land fail-closed admission,
 pending/queued quarantine, and other surface deletion, but it cannot
-terminalize a claimed/running legacy row until #1803 lands. An absent or
-unimplemented store is handled exactly like unreadable authority: preserve the
-row/receipt, hold it non-runnable, perform no queue CAS or release, and rerun
-reconciliation after the authority owner becomes available.
+terminalize a claimed/running legacy row until #1803 lands. Runtime replacement
+before #1803 is allowed only after every legacy worker is quiesced and a locked
+preflight proves no retired v1 `running` or v2
+`running`/`cancel_requested` row. Otherwise the absent/unimplemented store is
+the unreadable-authority hold: preserve row/receipt, perform no queue CAS or
+release, and stop deployment.
 
 ### Auto-ship composition
 
@@ -176,18 +189,38 @@ Python runtime:
   synthetic filing canaries, and write new incidents under the active skill;
 - `using-agent-skills` routes agents into that loop skill, while
   `website-editing` treats a GitHub community-loop monitor as a live fallback;
-- `.github/workflows/auto-enroll-merge.yml` gives every eligible same-repository
-  PR a standing implicit merge instruction with content/PR write authority;
 - `.github/workflows/announce-patch.yml` automatically reacts to main/deploy
   events and contains an outbound X-post path; its configured
   `scripts/social/patch_announcement.py` path is already stale relative to the
   shipped `scripts/patch_announcement.py`.
 
 These are privileged compositions, not generic primitives. The active loop
-skill/catalog routes, implicit auto-merge workflow, automatic patch
-announcement workflow, and orphaned patch-announcement script leave. Historical
-incident records may remain only outside an active skill package with explicit
-historical labeling.
+skill/catalog routes, automatic patch-announcement workflow, and orphaned
+patch-announcement script leave. Historical incident records may remain only
+outside an active skill package with explicit historical labeling.
+
+`.github/workflows/auto-enroll-merge.yml` is separately classified and remains.
+It is repository-maintainer integration guarded to non-draft same-repository
+PRs targeting `main`, with branch protection and required checks as the merge
+policy. It does not consume universe/task/graph state and does not install
+implicit merge authority into a generic GitHub effect. Generic
+`allow_auto_merge` and merge-effector inputs remain explicit.
+
+### Live GitHub label migration
+
+Before deleting label definitions, implementation snapshots the exact
+definition plus every open/closed issue and PR association into a
+digest-bound, idempotent migration receipt. It removes retired labels from open
+items without closing them or changing their bodies, publishes one
+repository-wide retirement notice linked to the receipt, and then deletes the
+27 definitions. Closed bodies remain historical and the receipt preserves
+their former association.
+
+The preserved generic vocabulary includes `daemon-request`, `request:*`,
+`payment:*`, `gate-required`, `checker:*`, `writer:*`, `writer-pool:*`,
+`needs-human`, `priority:primitive-*`, `merge-effector`, and `secure-merge`.
+After rollout, no workflow, script, website fallback, runtime, or active skill
+may consume a retired label.
 
 ### Shipped prompt and snapshot residues
 
@@ -336,10 +369,14 @@ must distinguish history from shipped surfaces.
 
 ## OpenSpec Disposition
 
-The target modifies five capabilities:
+The target modifies seven capabilities:
 
 - `community-patch-loop`: all nine as-built requirements are removed, then the
   empty main capability is deleted;
+- `daemon-runtime-and-dispatch`: owns exact v1/v2 retirement transitions,
+  #1803 reconciliation ordering, and pre-#1803 worker quiescence/deploy stop;
+- `development-coordination-runtime`: owns receipt-backed retirement of live
+  GitHub routing/status labels without losing open work or generic labels;
 - `graph-execution-substrate`: gains the explicit user-authored composition
   boundary and preserves generic run reuse without implicit write-back;
 - `wiki-commons`: loses trigger receipts and makes typed filing side-effect

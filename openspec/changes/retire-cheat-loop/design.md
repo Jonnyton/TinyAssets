@@ -169,11 +169,14 @@ protocol before changing queue state:
   the retirement attempt without queue mutation.
 
 Only after that authority transaction releases may the coordinator take the
-queue lock and CAS the exact task/claim/lease generation into its matching
-retired terminal or fenced state. A concurrent heartbeat or lease change makes
-the CAS fail and restarts reconciliation. Ambiguous work remains non-runnable
-until authoritative evidence makes it conclusive, after which the same
-retirement transition finishes without re-execution. Completed rows remain
+queue lock and apply the existing-state transitions owned by
+`daemon-runtime-and-dispatch`: conclusive rows exact-CAS to `cancelled`;
+readable ambiguous work is not reset/terminalized and only its receipt is
+fenced (v2 may additionally set its existing disabled/quarantine fields by
+exact CAS); unreadable work receives no queue mutation. A concurrent heartbeat
+or lease change makes the CAS fail and restarts reconciliation. Ambiguous work
+remains non-runnable until authoritative evidence makes it conclusive, after
+which retirement may finish without re-execution. Completed rows remain
 immutable history and replay/read paths cannot resubmit them.
 
 This retirement gate is the first *classification and admission* stage of the
@@ -212,13 +215,43 @@ editing guidance is rewritten around generic provenance-labelled workflow
 activity and separately sourced uptime evidence. Canonical `.agents/skills`
 changes are mirrored into `.claude/skills` with the normal sync gate.
 
-The repository-wide `auto-enroll-merge.yml` standing merge instruction and
-the push/deploy-triggered `announce-patch.yml` effect are also privileged task
-automations. They are deleted. Any future merge enrollment or public
-announcement must be an explicitly selected user/maintainer workflow with its
-own narrow authority and receipt; generic GitHub and outbound-effect primitives
-remain available without an implicit composition. The patch announcement
+The push/deploy-triggered `announce-patch.yml` effect is a patch-loop
+composition and is deleted. A future public announcement must be an explicitly
+selected user/maintainer workflow with its own narrow authority and receipt;
+generic outbound-effect primitives remain available. The patch announcement
 script leaves when it has no independent explicit consumer.
+
+`auto-enroll-merge.yml` is classified separately and preserved: it is this
+repository's maintainer-authored integration workflow, guarded by same-repo,
+non-draft, main-target, branch-protection, and required-check policy. It is not
+installed into a TinyAssets universe, cannot act on user task/graph state, and
+grants no generic GitHub effect implicit merge authority. The generic
+`allow_auto_merge`/merge-effector primitives remain explicit inputs.
+
+Live GitHub labels are executable routing/status vocabulary, not harmless
+documentation. Rollout snapshots every definition and every issue/PR bearing a
+retired label into a digest-bound migration receipt; removes the retired labels
+from open items without closing them or rewriting their content; publishes one
+repository-wide retirement notice linked to the receipt; then deletes these 27
+definitions:
+
+`auto-bug`, `auto-change`, `auto-checker-dispatched`,
+`auto-checker-failed`, `auto-fix-already-fixed`, `auto-fix-attempted`,
+`auto-fix-auth-expired`, `auto-fix-auth-missing`, `auto-fix-blocked`,
+`auto-fix-branch-push-blocked`, `auto-fix-claude-subscription-missing`,
+`auto-fix-codex-subscription-missing`, `auto-fix-exhausted`,
+`auto-fix-pr-blocked`, `auto-fix-provider-exhausted`,
+`auto-fix-retries-1` through `auto-fix-retries-5`, `auto-fix-reviewed`,
+`auto-fix-stale-gate`, `auto-fix-superseded`, `auto-fix-writer-failed`,
+`community-loop-red`, `loop-consent`, and `priority:loop-discipline`.
+
+Closed item bodies remain historical; their former label association is
+recoverable from the receipt after definition deletion. Generic labels remain,
+including `daemon-request`, `request:*`, `payment:*`, `gate-required`,
+`checker:*`, `writer:*`, `writer-pool:*`, `needs-human`,
+`priority:primitive-*`, `merge-effector`, and `secure-merge`. No workflow,
+script, site fallback, or runtime consumer may continue matching a retired
+label.
 
 Current loop-team souls and generated website snapshots are shipped prompt/data
 surfaces, not archival truth. The six shipped `docs/souls` loop-role souls and
@@ -229,11 +262,12 @@ automatic filing promise.
 Task 2.5's claimed/running-row terminalization depends on the #1803 runtime
 authority store and reconciliation protocol landing first. Retirement may
 still land fail-closed admission, pending/queued quarantine, and unrelated
-surface deletion before that dependency. On any deployment where the authority
-store is absent, unimplemented, unavailable, or unreadable, every
-claimed/running retired row takes the unreadable-authority path: preserve the
-row and receipt, record a non-runnable hold, perform no queue CAS or release,
-and retry reconciliation only after #1803 becomes authoritative.
+surface deletion before that dependency. Runtime replacement before #1803
+requires all legacy workers quiesced and a locked preflight proving no retired
+v1 `running` or v2 `running`/`cancel_requested` row. Otherwise an absent,
+unimplemented, unavailable, or unreadable store takes the
+unreadable-authority path: preserve row/receipt, perform no queue CAS or
+release, and stop deployment until #1803 becomes authoritative.
 
 ## Risks / Trade-offs
 
@@ -278,9 +312,10 @@ and retry reconciliation only after #1803 becomes authoritative.
    site and any retained mirror.
 7. Before workers or ordinary #1803 recovery start, activate fail-closed
    admission for the retired class, classify legacy rows, and reconcile any
-   authority-store record under #1803's lock ordering. Then CAS the exact queue
-   generation into its retired terminal/fenced state; preserve ambiguous
-   launches as `fenced_indeterminate` and completed history as non-executable.
+   authority-store record under #1803's lock ordering. Apply only existing
+   v1/v2 state/field transitions from the daemon-runtime delta; do not invent a
+   retired/fenced task status. A pre-#1803 deployment must quiesce legacy
+   workers and prove no claimed row or stop before runtime replacement.
 8. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
 9. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
