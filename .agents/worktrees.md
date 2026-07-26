@@ -1425,3 +1425,17 @@ Notes:
 - Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
 - Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
 - Ship/abandon: merge coordination-only foldback, then release this worktree lane
+
+## 2026-07-26 - retire privileged cheat/community patch loop
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-loop-current-20260726
+- Lane state: claimed; rebase and exact-review target before runtime deletion
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
+- STATUS/Issue/PR: host-directed retirement; PR pending current-main inventory and exact review
+- PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
+- Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
+- Memory refs: host directive 2026-07-26; earlier target exact SHA 5ea18388; current origin/main ba273312
+- Review gate: fresh current-main inventory, exact Claude Opus 5, independent architecture/spec/retirement review
+- Ship/abandon: target OpenSpec first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
