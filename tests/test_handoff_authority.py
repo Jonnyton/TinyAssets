@@ -310,6 +310,54 @@ class TestDestinationConsent:
             _execute(env)
         assert env.calls == []
 
+    def test_a_soul_denied_destination_is_refused_even_with_consent(
+        self, env, adapter
+    ):
+        """A handoff must not bypass generic soul-scoped effect authority.
+
+        Every shipped effector (github_pr, twitter_post, wiki_write_back) checks
+        this before its consent gate. A handoff that skipped it could reach a
+        destination the universe's own soul refuses for every other effect path.
+        """
+        from tinyassets.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            env.universe_dir, effect_authority=("arxiv:arxiv.org/math",)
+        )
+        with pytest.raises(HandoffAuthorityError, match="soul does not authorize"):
+            _prepare(env)
+        assert env.calls == []
+
+    def test_a_soul_granted_destination_still_needs_consent(self, env):
+        """Soul authority and destination consent are both required."""
+        from tinyassets.storage.effector_consents import revoke_consent
+        from tinyassets.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            env.universe_dir, effect_authority=("arxiv:arxiv.org/cs",)
+        )
+        revoke_consent(env.universe_dir, sink="arxiv", destination="arxiv.org/cs")
+        with pytest.raises(HandoffAuthorityError, match="no active consent grant"):
+            _prepare(env)
+
+    def test_a_soul_granted_destination_with_consent_proceeds(self, env):
+        from tinyassets.universe_soul import write_universe_soul
+
+        write_universe_soul(
+            env.universe_dir, effect_authority=("arxiv:arxiv.org/cs",)
+        )
+        assert _prepare(env)["status"] == "confirmation_required"
+
+    def test_a_soul_declaring_nothing_falls_through_to_consent(self, env):
+        """The transitional UNDECLARED contract, matching the landed effectors."""
+        from tinyassets.handoffs.authority import require_effect_authority
+
+        decision = require_effect_authority(
+            env.universe_dir, sink="arxiv", destination="arxiv.org/cs"
+        )
+        assert decision == "undeclared"
+        assert _prepare(env)["status"] == "confirmation_required"
+
     def test_consent_for_another_destination_does_not_transfer(self, env):
         from tinyassets.storage.effector_consents import grant_consent, revoke_consent
 

@@ -668,6 +668,8 @@ def _extensions_impl(
     # ── Outcome events ─────────────────────────────────────────────────────
     outcome_handler = _OUTCOME_ACTIONS.get(action)
     if outcome_handler is not None:
+        from tinyassets.api.permissions import current_request_actor_id
+
         oc_kwargs: dict[str, Any] = {
             "branch_def_id": branch_def_id,
             "run_id": run_id,
@@ -678,6 +680,10 @@ def _extensions_impl(
             "payload_json": outcome_payload_json,
             "note": outcome_note,
             "limit": limit,
+            # Resolved server-side from the credential-validated request. An
+            # attestation names who made it, so this must never come from a
+            # caller-supplied ``author``/``attested_by`` kwarg.
+            "actor_id": current_request_actor_id(),
         }
         return outcome_handler(oc_kwargs)
 

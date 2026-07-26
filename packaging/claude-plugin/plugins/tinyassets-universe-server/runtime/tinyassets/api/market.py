@@ -758,6 +758,17 @@ def _outcome_row_to_dict(row: Any) -> dict:
     }
 
 
+def _normalize_external_ref(outcome_kind: str, external_id: str) -> str:
+    """Normalize an artifact reference via the capability's one rule.
+
+    Imported rather than reimplemented: two sources contributing to the same
+    external artifact must normalize identically, or the artifact double-counts.
+    """
+    from tinyassets.handoffs.models import normalize_external_ref
+
+    return normalize_external_ref(outcome_kind, external_id)
+
+
 def _action_record_outcome(kwargs: dict[str, Any]) -> str:
     import uuid as _uuid
     from datetime import datetime, timezone
@@ -788,6 +799,10 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
     outcome_id = str(_uuid.uuid4())
     recorded_at = datetime.now(timezone.utc).isoformat()
     base = _base_path()
+    # Resolved server-side by the router from the credential-validated request.
+    # An attestation names who made it, so this must never come from a
+    # caller-supplied ``author``/``attested_by`` kwarg.
+    attested_by = (kwargs.get("actor_id") or "").strip()
     with _outcome_connect(base) as conn:
         conn.execute(
             """
@@ -799,11 +814,46 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
             (outcome_id, run_id, outcome_type, evidence_url,
              gate_event_id, payload, recorded_at, note),
         )
+        # This action IS the user-attestation entry point (capability
+        # ``real-world-handoffs-and-outcomes``): a claim recorded here enters the
+        # registry at ``user_attested`` and stays there. A syntactically valid —
+        # or even reachable — ``evidence_url`` never promotes it; only an
+        # explicit authorized verification transition does, and that transition
+        # preserves who made the original attestation. The evidence row is
+        # written in the SAME transaction as the claim, so a claim cannot exist
+        # without its level — the failure mode that would let an unverified
+        # attestation read as verified.
+        conn.execute(
+            """
+            INSERT INTO outcome_evidence (
+                outcome_id, account_id, run_id, outcome_kind, evidence_source,
+                evidence_level, external_id, normalized_external_ref,
+                attested_by, recorded_at, updated_at
+            ) VALUES (?, ?, ?, ?, 'user_attestation', 'user_attested', ?, ?, ?, ?, ?)
+            """,
+            (
+                outcome_id, attested_by, run_id, outcome_type,
+                evidence_url or "",
+                _normalize_external_ref(outcome_type, evidence_url or ""),
+                attested_by, recorded_at, recorded_at,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO outcome_evidence_transition (
+                transition_id, outcome_id, seq, from_level, to_level,
+                evidence_source, actor_id, evidence_json, recorded_at
+            ) VALUES (?, ?, 1, '', 'user_attested', 'user_attestation', ?, '{}', ?)
+            """,
+            (str(_uuid.uuid4()), outcome_id, attested_by, recorded_at),
+        )
     return json.dumps({
         "status": "recorded",
         "outcome_id": outcome_id,
         "run_id": run_id,
         "outcome_type": outcome_type,
+        "evidence_level": "user_attested",
+        "attested_by": attested_by,
         "recorded_at": recorded_at,
     })
 

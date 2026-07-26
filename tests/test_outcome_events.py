@@ -95,6 +95,54 @@ def _rows(base, table: str) -> list[sqlite3.Row]:
 # ── One registry, not two ─────────────────────────────────────────────────────
 
 class TestSingleRegistry:
+    def test_existing_record_outcome_action_creates_user_attested_evidence(
+        self, base, run_id, monkeypatch
+    ):
+        """The canonical action evolves in place; no parallel attestation API."""
+        import json
+
+        from tinyassets.api.extensions import _extensions_impl
+
+        monkeypatch.setattr(
+            "tinyassets.api.permissions.current_request_actor_id",
+            lambda: "account-alice",
+        )
+        result = json.loads(
+            _extensions_impl(
+                action="record_outcome",
+                run_id=run_id,
+                event_type="published_paper",
+                evidence_url="https://example.test/paper",
+                outcome_note="Accepted by the journal",
+            )
+        )
+        assert result["evidence_level"] == "user_attested"
+        assert result["attested_by"] == "account-alice"
+        evidence = _rows(base, "outcome_evidence")
+        assert len(evidence) == 1
+        assert evidence[0]["outcome_id"] == result["outcome_id"]
+
+    def test_record_outcome_does_not_take_the_attester_from_a_caller_kwarg(
+        self, base, run_id, monkeypatch
+    ):
+        import json
+
+        from tinyassets.api.extensions import _extensions_impl
+
+        monkeypatch.setattr(
+            "tinyassets.api.permissions.current_request_actor_id",
+            lambda: "account-alice",
+        )
+        result = json.loads(
+            _extensions_impl(
+                action="record_outcome",
+                run_id=run_id,
+                event_type="published_paper",
+                author="account-mallory",
+            )
+        )
+        assert result["attested_by"] == "account-alice"
+
     def test_a_handoff_outcome_lands_in_outcome_event(self, base, store, run_id):
         recorded = store.record_outcome_evidence(
             account_id="account-alice",

@@ -83,6 +83,16 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         [f"{AUTHORITY_TEST}::TestDeclarationBinding"],
     ),
     (
+        "soul-effect-authority",
+        "tinyassets/handoffs/authority.py",
+        "    if decision == DENIED:",
+        "    if False:",
+        [
+            f"{AUTHORITY_TEST}::TestDestinationConsent::"
+            "test_a_soul_denied_destination_is_refused_even_with_consent"
+        ],
+    ),
+    (
         "destination-consent",
         "tinyassets/handoffs/authority.py",
         "if not is_consent_active(universe_dir, sink=sink, destination=destination):",

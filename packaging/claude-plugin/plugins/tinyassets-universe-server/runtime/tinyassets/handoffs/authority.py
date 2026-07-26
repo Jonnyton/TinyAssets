@@ -171,6 +171,40 @@ def resolve_source(
     )
 
 
+def require_effect_authority(
+    universe_dir: str | Path,
+    *,
+    sink: str,
+    destination: str,
+) -> str:
+    """Apply the generic soul-scoped effect authority every effector honors.
+
+    A handoff is an external write like any other, so it consults
+    :func:`tinyassets.effectors.authority.resolve_soul_effect_authority` before
+    the consent gate — same order, same transitional contract as the shipped
+    effectors (``github_pr``, ``twitter_post``, ``wiki_write_back``):
+
+    - ``DENIED``     — the soul declares grants and this ``<sink>:<destination>``
+                       is not among them. Refuse.
+    - ``UNDECLARED`` — the soul declares no grants at all. Fall through to the
+                       consent gate, which is the pre-soul behavior.
+    - ``AUTHORIZED`` — proceed to the consent gate.
+
+    Skipping this would let a handoff reach a destination the universe's own soul
+    refuses for every other effect path — a bypass of generic effect authority,
+    which task 5.4 forbids explicitly.
+    """
+    from tinyassets.effectors.authority import DENIED, resolve_soul_effect_authority
+
+    decision = resolve_soul_effect_authority(Path(universe_dir), sink, destination)
+    if decision == DENIED:
+        raise HandoffAuthorityError(
+            f"this universe's soul does not authorize {sink}:{destination}; "
+            "a handoff cannot bypass generic effect authority"
+        )
+    return decision
+
+
 def require_destination_consent(
     universe_dir: str | Path,
     *,
@@ -186,6 +220,7 @@ def require_destination_consent(
     """
     from tinyassets.storage.effector_consents import is_consent_active
 
+    require_effect_authority(universe_dir, sink=sink, destination=destination)
     if not is_consent_active(universe_dir, sink=sink, destination=destination):
         raise HandoffAuthorityError(
             f"no active consent grant for {sink}:{destination}; grant it with "
@@ -195,6 +230,7 @@ def require_destination_consent(
 
 __all__ = [
     "HandoffSource",
+    "require_effect_authority",
     "request_subject",
     "require_destination_consent",
     "resolve_source",
