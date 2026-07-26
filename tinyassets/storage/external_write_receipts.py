@@ -35,13 +35,10 @@ After the side-effect lands the writer calls
 final evidence. On failure the writer calls
 :func:`release_reservation` so a retry can re-acquire the hint.
 
-Stale ``pending`` reservations (writer died mid-flight, never
-finalized) are auto-reclaimed by :func:`try_reserve_receipt` after
-:data:`STALE_PENDING_THRESHOLD_SECONDS`. Default 600s (10 min) bounds
-the worst-case "PR was created but receipt write crashed" window;
-after that, any retry under the same hint can re-reserve and the
-worst case is one duplicate PR (the prior PR exists because the
-side-effect ran).
+Pending reservations remain in-flight for
+:data:`STALE_PENDING_THRESHOLD_SECONDS`. After that threshold a replay
+returns ``reconciliation_required``; elapsed time alone never permits
+another external effect.
 
 SQLite "database is locked" handling
 ------------------------------------
@@ -87,13 +84,10 @@ _DB_FILENAME = ".external_write_receipts.db"
 STATUS_PENDING = "pending"
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
+STATUS_HELD = "held"
 
-# After this many seconds a ``pending`` reservation is considered
-# abandoned (the holding writer died mid-invocation without finalizing
-# or releasing). Subsequent reservation attempts may steal it. The
-# value is conservative — `gh pr create` typically settles in <10s,
-# so 10min covers crashes/hangs without making concurrent retries wait
-# forever on a phantom reservation.
+# After this many seconds a ``pending`` reservation requires destination
+# reconciliation. The row is never reclaimed by elapsed time alone.
 STALE_PENDING_THRESHOLD_SECONDS = 600.0
 
 
@@ -136,6 +130,15 @@ CREATE TABLE IF NOT EXISTS external_write_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_receipts_sink_created
     ON external_write_receipts(sink, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS external_write_identity_aliases (
+    caller_hint       TEXT NOT NULL,
+    sink              TEXT NOT NULL,
+    system_effect_key TEXT NOT NULL,
+    recorded_at       REAL NOT NULL,
+    PRIMARY KEY (caller_hint, sink),
+    UNIQUE (system_effect_key, sink)
+);
 """
 
 
@@ -218,6 +221,146 @@ def lookup_receipt(
     }
 
 
+def record_identity_alias(
+    universe_dir: str | Path,
+    *,
+    caller_hint: str,
+    sink: str,
+    system_effect_key: str,
+    recorded_at: float | None = None,
+) -> bool:
+    """Dual-write one strict caller-hint -> system-key parity mapping."""
+    if not caller_hint or not sink or not system_effect_key:
+        raise ValueError("identity alias fields must be non-empty")
+    initialize_receipts_db(universe_dir)
+    timestamp = time.time() if recorded_at is None else recorded_at
+    with _connect(universe_dir) as conn:
+        try:
+            cursor = conn.execute(
+                """
+                INSERT INTO external_write_identity_aliases (
+                    caller_hint, sink, system_effect_key, recorded_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(caller_hint, sink) DO NOTHING
+                """,
+                (caller_hint, sink, system_effect_key, timestamp),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("system effect identity parity conflict") from exc
+        row = conn.execute(
+            """
+            SELECT system_effect_key
+              FROM external_write_identity_aliases
+             WHERE caller_hint = ? AND sink = ?
+            """,
+            (caller_hint, sink),
+        ).fetchone()
+        if row is None or row["system_effect_key"] != system_effect_key:
+            raise ValueError("caller hint maps to a different system effect key")
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+def lookup_identity_alias(
+    universe_dir: str | Path,
+    *,
+    caller_hint: str,
+    sink: str,
+) -> str | None:
+    initialize_receipts_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        row = conn.execute(
+            """
+            SELECT system_effect_key
+              FROM external_write_identity_aliases
+             WHERE caller_hint = ? AND sink = ?
+            """,
+            (caller_hint, sink),
+        ).fetchone()
+    return row["system_effect_key"] if row is not None else None
+
+
+def identity_receipts_have_parity(
+    universe_dir: str | Path,
+    *,
+    caller_hint: str,
+    sink: str,
+    system_effect_key: str,
+) -> bool:
+    """Return true only after both identity journals reached equal terminal state."""
+    caller = lookup_receipt(
+        universe_dir,
+        idempotency_hint=caller_hint,
+        sink=sink,
+    )
+    system = lookup_receipt(
+        universe_dir,
+        idempotency_hint=system_effect_key,
+        sink=sink,
+    )
+    if caller is None or system is None:
+        return False
+    if caller["status"] not in (STATUS_SUCCEEDED, STATUS_FAILED, STATUS_HELD):
+        return False
+    return (
+        caller["status"] == system["status"]
+        and caller["run_id"] == system["run_id"]
+        and caller["evidence"] == system["evidence"]
+    )
+
+
+def identity_sink_has_parity(
+    universe_dir: str | Path,
+    *,
+    sink: str,
+) -> bool:
+    """Return true after at least one dual identity for a sink proves parity."""
+    initialize_receipts_db(universe_dir)
+    with _connect(universe_dir) as connection:
+        aliases = connection.execute(
+            """
+            SELECT caller_hint, system_effect_key
+              FROM external_write_identity_aliases
+             WHERE sink = ?
+            """,
+            (sink,),
+        ).fetchall()
+    return bool(aliases) and all(
+        identity_receipts_have_parity(
+            universe_dir,
+            caller_hint=row["caller_hint"],
+            sink=sink,
+            system_effect_key=row["system_effect_key"],
+        )
+        for row in aliases
+    )
+
+
+def _identity_keys(
+    connection: sqlite3.Connection,
+    *,
+    idempotency_hint: str,
+    sink: str,
+) -> tuple[str, ...]:
+    row = connection.execute(
+        """
+        SELECT caller_hint, system_effect_key
+          FROM external_write_identity_aliases
+         WHERE sink = ?
+           AND (caller_hint = ? OR system_effect_key = ?)
+        """,
+        (sink, idempotency_hint, idempotency_hint),
+    ).fetchone()
+    if row is None:
+        return (idempotency_hint,)
+    peer = (
+        row["system_effect_key"]
+        if idempotency_hint == row["caller_hint"]
+        else row["caller_hint"]
+    )
+    return (idempotency_hint, peer)
+
+
 def try_reserve_receipt(
     universe_dir: str | Path,
     *,
@@ -235,10 +378,6 @@ def try_reserve_receipt(
       a fresh pending row; proceed with the side-effect and call
       :func:`finalize_receipt` or :func:`release_reservation` next.
 
-    * ``{"status": "reserved_after_stale", "row": <receipt>,
-       "displaced_run_id": "<id>"}`` — caller reclaimed a stale
-      pending reservation; proceed.
-
     * ``{"status": "duplicate", "row": <existing receipt>}`` — a
       terminal ``succeeded`` row already exists; caller should return
       the dedup-hit evidence WITHOUT invoking the side-effect.
@@ -248,7 +387,11 @@ def try_reserve_receipt(
       caller should dry-run with a ``concurrent_in_flight`` reason
       rather than fire a duplicate side-effect.
 
-    * ``{"status": "failed_prior", "row": <existing failed receipt>}``
+    * ``{"status": "reconciliation_required", "row": <pending receipt>}``
+      — the pending row aged past the in-flight window; reconcile with
+      the destination or hold for explicit remediation.
+
+    * ``{"status": "reserved_after_failed", "row": <existing receipt>}``
       — the prior attempt under this hint failed and was released to
       ``failed``. Round-2 contract: a fresh retry under the same hint
       MAY re-reserve. We delete the failed row and acquire a new
@@ -266,9 +409,14 @@ def try_reserve_receipt(
     initialize_receipts_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
+        identity_keys = _identity_keys(
+            conn,
+            idempotency_hint=idempotency_hint,
+            sink=sink,
+        )
         # Atomic INSERT … ON CONFLICT DO NOTHING. If we win the race,
         # ``changes()`` returns 1. If we lose, 0.
-        conn.execute(
+        cursor = conn.execute(
             """
             INSERT INTO external_write_receipts (
                 idempotency_hint, sink, evidence_json, run_id,
@@ -278,7 +426,24 @@ def try_reserve_receipt(
             """,
             (idempotency_hint, sink, run_id, ts, STATUS_PENDING),
         )
-        rowcount = conn.total_changes
+        rowcount = cursor.rowcount
+        if rowcount > 0:
+            for peer_key in identity_keys[1:]:
+                peer_cursor = conn.execute(
+                    """
+                    INSERT INTO external_write_receipts (
+                        idempotency_hint, sink, evidence_json, run_id,
+                        created_at, status
+                    ) VALUES (?, ?, '{}', ?, ?, ?)
+                    ON CONFLICT(idempotency_hint, sink) DO NOTHING
+                    """,
+                    (peer_key, sink, run_id, ts, STATUS_PENDING),
+                )
+                if peer_cursor.rowcount != 1:
+                    conn.rollback()
+                    raise sqlite3.IntegrityError(
+                        "dual identity reservation parity conflict"
+                    )
         conn.commit()
         if rowcount > 0:
             # Won the race — fresh reservation.
@@ -336,62 +501,15 @@ def try_reserve_receipt(
         status = existing.get("status")
         if status == STATUS_SUCCEEDED:
             return {"status": "duplicate", "row": existing}
+        if status == STATUS_HELD:
+            return {"status": "held", "row": existing}
         if status == STATUS_PENDING:
             age = ts - float(existing.get("created_at") or 0.0)
             if age < stale_after_seconds:
                 return {"status": "in_flight", "row": existing}
-            # Stale pending — reclaim atomically. UPDATE WHERE
-            # status='pending' AND run_id=<old_id> ensures we don't
-            # clobber a concurrent retry that already reclaimed.
-            displaced = existing.get("run_id") or ""
-            cur = conn.execute(
-                """
-                UPDATE external_write_receipts
-                   SET run_id = ?, created_at = ?, status = ?,
-                       evidence_json = '{}'
-                 WHERE idempotency_hint = ? AND sink = ?
-                   AND status = ?
-                   AND run_id = ?
-                """,
-                (
-                    run_id, ts, STATUS_PENDING,
-                    idempotency_hint, sink,
-                    STATUS_PENDING, displaced,
-                ),
-            )
-            conn.commit()
-            if cur.rowcount == 0:
-                # Another concurrent retry won the reclaim. Re-read and
-                # report the resulting state.
-                row = conn.execute(
-                    "SELECT idempotency_hint, sink, evidence_json, "
-                    "       run_id, created_at, status "
-                    "FROM external_write_receipts "
-                    "WHERE idempotency_hint = ? AND sink = ?",
-                    (idempotency_hint, sink),
-                ).fetchone()
-                if row is None:
-                    raise sqlite3.OperationalError(
-                        "stale-reclaim race resolved by row deletion; "
-                        "refusing to treat as miss"
-                    )
-                reclaim_row = _row_to_dict(row)
-                if reclaim_row.get("status") == STATUS_PENDING:
-                    return {"status": "in_flight", "row": reclaim_row}
-                if reclaim_row.get("status") == STATUS_SUCCEEDED:
-                    return {"status": "duplicate", "row": reclaim_row}
-                return {"status": "in_flight", "row": reclaim_row}
-            row = conn.execute(
-                "SELECT idempotency_hint, sink, evidence_json, run_id, "
-                "       created_at, status "
-                "FROM external_write_receipts "
-                "WHERE idempotency_hint = ? AND sink = ?",
-                (idempotency_hint, sink),
-            ).fetchone()
             return {
-                "status": "reserved_after_stale",
-                "row": _row_to_dict(row),
-                "displaced_run_id": displaced,
+                "status": "reconciliation_required",
+                "row": existing,
             }
         if status == STATUS_FAILED:
             # Failed-prior policy: a retry under the same hint replaces
@@ -411,6 +529,30 @@ def try_reserve_receipt(
                     idempotency_hint, sink, STATUS_FAILED,
                 ),
             )
+            if cur.rowcount == 1:
+                for peer_key in identity_keys[1:]:
+                    peer_cursor = conn.execute(
+                        """
+                        UPDATE external_write_receipts
+                           SET run_id = ?, created_at = ?, status = ?,
+                               evidence_json = '{}'
+                         WHERE idempotency_hint = ? AND sink = ?
+                           AND status = ?
+                        """,
+                        (
+                            run_id,
+                            ts,
+                            STATUS_PENDING,
+                            peer_key,
+                            sink,
+                            STATUS_FAILED,
+                        ),
+                    )
+                    if peer_cursor.rowcount != 1:
+                        conn.rollback()
+                        raise sqlite3.IntegrityError(
+                            "dual identity retry parity conflict"
+                        )
             conn.commit()
             if cur.rowcount == 0:
                 row = conn.execute(
@@ -481,20 +623,243 @@ def finalize_receipt(
     payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        cur = conn.execute(
+        identity_keys = _identity_keys(
+            conn,
+            idempotency_hint=idempotency_hint,
+            sink=sink,
+        )
+        updated: list[int] = []
+        for identity_key in identity_keys:
+            cursor = conn.execute(
+                """
+                UPDATE external_write_receipts
+                   SET evidence_json = ?,
+                       run_id = ?,
+                       created_at = ?,
+                       status = ?
+                 WHERE idempotency_hint = ? AND sink = ?
+                   AND run_id = ?
+                """,
+                (payload, run_id, ts, status, identity_key, sink, run_id),
+            )
+            updated.append(cursor.rowcount)
+        if any(rowcount != 1 for rowcount in updated):
+            conn.rollback()
+            return False
+        conn.commit()
+        return True
+
+
+def finalize_reconciliation(
+    universe_dir: str | Path,
+    *,
+    idempotency_hint: str,
+    sink: str,
+    evidence: dict[str, Any],
+    run_id: str,
+    status: str,
+    now: float | None = None,
+) -> bool:
+    """Persist reconciliation over a prior pending intent without reclaiming it."""
+    if not idempotency_hint:
+        return False
+    if status not in (STATUS_SUCCEEDED, STATUS_FAILED, STATUS_HELD):
+        raise ValueError("reconciliation status must be terminal or held")
+    initialize_receipts_db(universe_dir)
+    payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    timestamp = time.time() if now is None else now
+    with _connect(universe_dir) as conn:
+        identity_keys = _identity_keys(
+            conn,
+            idempotency_hint=idempotency_hint,
+            sink=sink,
+        )
+        updated: list[int] = []
+        for identity_key in identity_keys:
+            cursor = conn.execute(
+                """
+                UPDATE external_write_receipts
+                   SET evidence_json = ?, run_id = ?, created_at = ?, status = ?
+                 WHERE idempotency_hint = ? AND sink = ? AND status = ?
+                """,
+                (
+                    payload,
+                    run_id,
+                    timestamp,
+                    status,
+                    identity_key,
+                    sink,
+                    STATUS_PENDING,
+                ),
+            )
+            updated.append(cursor.rowcount)
+        if any(rowcount != 1 for rowcount in updated):
+            conn.rollback()
+            return False
+        conn.commit()
+        return True
+
+
+def try_record_held_receipt(
+    universe_dir: str | Path,
+    *,
+    idempotency_hint: str,
+    sink: str,
+    evidence: dict[str, Any],
+    run_id: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Insert a held intent without overwriting any existing journal state."""
+    if not idempotency_hint:
+        raise ValueError("idempotency_hint must be non-empty")
+    initialize_receipts_db(universe_dir)
+    payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+    timestamp = time.time() if now is None else now
+    with _connect(universe_dir) as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO external_write_receipts (
+                idempotency_hint, sink, evidence_json, run_id,
+                created_at, status
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(idempotency_hint, sink) DO NOTHING
+            """,
+            (
+                idempotency_hint,
+                sink,
+                payload,
+                run_id,
+                timestamp,
+                STATUS_HELD,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT idempotency_hint, sink, evidence_json, run_id,
+                   created_at, status
+              FROM external_write_receipts
+             WHERE idempotency_hint = ? AND sink = ?
+            """,
+            (idempotency_hint, sink),
+        ).fetchone()
+        conn.commit()
+    if row is None:
+        raise sqlite3.OperationalError("held receipt insert produced no row")
+    return {
+        "status": "held_created" if cursor.rowcount > 0 else "existing",
+        "row": _row_to_dict(row),
+    }
+
+
+def confirm_held_receipt(
+    universe_dir: str | Path,
+    *,
+    idempotency_hint: str,
+    sink: str,
+    confirmation: dict[str, Any],
+    expected_grant_id: str,
+) -> dict[str, Any]:
+    """Atomically attach owner confirmation to the matching held intent."""
+    initialize_receipts_db(universe_dir)
+    with _connect(universe_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT idempotency_hint, sink, evidence_json, run_id,
+                   created_at, status
+              FROM external_write_receipts
+             WHERE idempotency_hint = ? AND sink = ?
+            """,
+            (idempotency_hint, sink),
+        ).fetchone()
+        current = _row_to_dict(row)
+        if not current or current["status"] != STATUS_HELD:
+            conn.rollback()
+            raise LookupError("held effect does not exist")
+        evidence = dict(current["evidence"])
+        if evidence.get("grant_id") != expected_grant_id:
+            conn.rollback()
+            raise PermissionError("held effect belongs to a different grant")
+        evidence["confirmation"] = confirmation
+        payload = json.dumps(evidence, sort_keys=True, separators=(",", ":"))
+        cursor = conn.execute(
             """
             UPDATE external_write_receipts
-               SET evidence_json = ?,
-                   run_id = ?,
-                   created_at = ?,
-                   status = ?
-             WHERE idempotency_hint = ? AND sink = ?
-               AND run_id = ?
+               SET evidence_json = ?
+             WHERE idempotency_hint = ? AND sink = ? AND status = ?
             """,
-            (payload, run_id, ts, status, idempotency_hint, sink, run_id),
+            (payload, idempotency_hint, sink, STATUS_HELD),
         )
         conn.commit()
-        return cur.rowcount > 0
+    if cursor.rowcount != 1:
+        raise RuntimeError("held effect confirmation lost its journal race")
+    return evidence
+
+
+def try_activate_confirmed_hold(
+    universe_dir: str | Path,
+    *,
+    idempotency_hint: str,
+    sink: str,
+    run_id: str,
+    expected_grant_id: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Atomically acquire a confirmed hold for one execution attempt."""
+    initialize_receipts_db(universe_dir)
+    timestamp = time.time() if now is None else now
+    with _connect(universe_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT idempotency_hint, sink, evidence_json, run_id,
+                   created_at, status
+              FROM external_write_receipts
+             WHERE idempotency_hint = ? AND sink = ?
+            """,
+            (idempotency_hint, sink),
+        ).fetchone()
+        current = _row_to_dict(row)
+        if not current:
+            conn.rollback()
+            return {"status": "missing"}
+        if current["status"] == STATUS_SUCCEEDED:
+            conn.rollback()
+            return {"status": "duplicate", "row": current}
+        if current["status"] == STATUS_PENDING:
+            conn.rollback()
+            return {"status": "in_flight", "row": current}
+        if current["status"] not in (STATUS_HELD, STATUS_FAILED):
+            conn.rollback()
+            return {"status": "not_confirmable", "row": current}
+        evidence = current["evidence"]
+        if evidence.get("grant_id") != expected_grant_id:
+            conn.rollback()
+            raise PermissionError("held effect belongs to a different grant")
+        if not evidence.get("confirmation"):
+            conn.rollback()
+            return {"status": "held", "row": current}
+        cursor = conn.execute(
+            """
+            UPDATE external_write_receipts
+               SET run_id = ?, created_at = ?, status = ?
+             WHERE idempotency_hint = ? AND sink = ?
+               AND status IN (?, ?)
+            """,
+            (
+                run_id,
+                timestamp,
+                STATUS_PENDING,
+                idempotency_hint,
+                sink,
+                STATUS_HELD,
+                STATUS_FAILED,
+            ),
+        )
+        conn.commit()
+    if cursor.rowcount != 1:
+        return {"status": "in_flight", "row": current}
+    return {"status": "reserved", "row": current}
 
 
 def release_reservation(
@@ -523,34 +888,50 @@ def release_reservation(
     initialize_receipts_db(universe_dir)
     ts = now if now is not None else time.time()
     with _connect(universe_dir) as conn:
-        if mark_failed:
-            cur = conn.execute(
-                """
-                UPDATE external_write_receipts
-                   SET status = ?, created_at = ?
-                 WHERE idempotency_hint = ? AND sink = ?
-                   AND status = ? AND run_id = ?
-                """,
-                (
-                    STATUS_FAILED, ts,
-                    idempotency_hint, sink,
-                    STATUS_PENDING, run_id,
-                ),
-            )
-        else:
-            cur = conn.execute(
-                """
-                DELETE FROM external_write_receipts
-                 WHERE idempotency_hint = ? AND sink = ?
-                   AND status = ? AND run_id = ?
-                """,
-                (
-                    idempotency_hint, sink,
-                    STATUS_PENDING, run_id,
-                ),
-            )
+        identity_keys = _identity_keys(
+            conn,
+            idempotency_hint=idempotency_hint,
+            sink=sink,
+        )
+        updated: list[int] = []
+        for identity_key in identity_keys:
+            if mark_failed:
+                cursor = conn.execute(
+                    """
+                    UPDATE external_write_receipts
+                       SET status = ?, created_at = ?
+                     WHERE idempotency_hint = ? AND sink = ?
+                       AND status = ? AND run_id = ?
+                    """,
+                    (
+                        STATUS_FAILED,
+                        ts,
+                        identity_key,
+                        sink,
+                        STATUS_PENDING,
+                        run_id,
+                    ),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM external_write_receipts
+                     WHERE idempotency_hint = ? AND sink = ?
+                       AND status = ? AND run_id = ?
+                    """,
+                    (
+                        identity_key,
+                        sink,
+                        STATUS_PENDING,
+                        run_id,
+                    ),
+                )
+            updated.append(cursor.rowcount)
+        if any(rowcount != 1 for rowcount in updated):
+            conn.rollback()
+            return False
         conn.commit()
-        return cur.rowcount > 0
+        return True
 
 
 def record_receipt(
@@ -684,12 +1065,21 @@ __all__ = [
     "STATUS_PENDING",
     "STATUS_SUCCEEDED",
     "STATUS_FAILED",
+    "STATUS_HELD",
     "STALE_PENDING_THRESHOLD_SECONDS",
     "receipts_db_path",
     "initialize_receipts_db",
     "lookup_receipt",
+    "record_identity_alias",
+    "lookup_identity_alias",
+    "identity_receipts_have_parity",
+    "identity_sink_has_parity",
     "try_reserve_receipt",
     "finalize_receipt",
+    "finalize_reconciliation",
+    "try_record_held_receipt",
+    "confirm_held_receipt",
+    "try_activate_confirmed_hold",
     "release_reservation",
     "record_receipt",
     "delete_receipt",

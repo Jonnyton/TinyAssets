@@ -222,9 +222,16 @@ class UniverseServerManager:
         return "default-universe"
 
     def _ensure_active_universe_file(self) -> None:
-        marker = self._data_dir() / ACTIVE_UNIVERSE_FILENAME
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(self._active_universe, encoding="utf-8")
+        from tinyassets.scoped_reset import prepare_service_writer_barrier
+
+        root = self._data_dir()
+        writer_barrier = prepare_service_writer_barrier(root)
+        try:
+            marker = root / ACTIVE_UNIVERSE_FILENAME
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text(self._active_universe, encoding="utf-8")
+        finally:
+            writer_barrier.release()
 
     def _check_universe_switch(self) -> bool:
         base = self._data_dir()
@@ -474,8 +481,9 @@ class UniverseServerManager:
                 "mcp",
                 [
                     "-c",
-                    "from tinyassets.universe_server import mcp; "
-                    f"mcp.run(transport='streamable-http', host='0.0.0.0', port={MCP_PORT})",
+                    "from tinyassets.universe_server import main; "
+                    f"main(host='0.0.0.0', port={MCP_PORT}, "
+                    "transport='streamable-http')",
                 ],
             ),
             cwd=str(PROJECT_DIR),

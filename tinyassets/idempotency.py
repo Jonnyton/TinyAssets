@@ -24,9 +24,12 @@ from __future__ import annotations
 
 import contextlib
 import functools
+import hashlib
 import json
 import logging
+import os
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -34,6 +37,114 @@ from typing import Any, Callable
 logger = logging.getLogger(__name__)
 
 _IDEMPOTENCY_TTL = timedelta(days=30)
+EFFECT_IDENTITY_MODE_ENV = "TINYASSETS_EFFECT_IDENTITY_MODE"
+
+
+def derive_effect_key(
+    *,
+    goal_id: str,
+    schedule_period: str,
+    item_fingerprint: str,
+) -> str:
+    """Derive the stable outbound effect identity from durable system fields."""
+    identity = {
+        "goal_id": goal_id.strip(),
+        "schedule_period": schedule_period.strip(),
+        "item_fingerprint": item_fingerprint.strip(),
+    }
+    for field, value in identity.items():
+        if not value:
+            raise ValueError(f"{field} must be non-empty")
+    canonical = json.dumps(
+        identity,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"effect:v1:{hashlib.sha256(canonical).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class EffectorIdentity:
+    mode: str
+    active_key: str
+    caller_hint: str
+    system_key: str | None
+    parity_recorded: bool
+
+
+def resolve_effector_identity(
+    packet: dict[str, Any],
+    *,
+    sink: str,
+    universe_dir: str | Path | None,
+    mode: str | None = None,
+) -> EffectorIdentity:
+    """Select legacy/dual/system receipt identity behind one migration flag."""
+    selected_mode = (
+        mode
+        if mode is not None
+        else os.environ.get(EFFECT_IDENTITY_MODE_ENV, "legacy")
+    ).strip().lower()
+    if selected_mode not in {"legacy", "dual", "system"}:
+        raise ValueError(
+            f"{EFFECT_IDENTITY_MODE_ENV} must be legacy, dual, or system"
+        )
+    caller_hint = ""
+    for field in ("idempotency_hint", "idempotency_key"):
+        value = packet.get(field)
+        if isinstance(value, str) and value.strip():
+            caller_hint = value.strip()
+            break
+    if selected_mode == "legacy":
+        return EffectorIdentity(
+            mode=selected_mode,
+            active_key=caller_hint,
+            caller_hint=caller_hint,
+            system_key=None,
+            parity_recorded=False,
+        )
+
+    system_key = derive_effect_key(
+        goal_id=str(packet.get("goal_id") or ""),
+        schedule_period=str(packet.get("schedule_period") or ""),
+        item_fingerprint=str(packet.get("item_fingerprint") or ""),
+    )
+    parity_recorded = False
+    if caller_hint and selected_mode == "dual":
+        if universe_dir is None:
+            raise ValueError("universe_dir is required for identity parity")
+        from tinyassets.storage.external_write_receipts import (
+            record_identity_alias,
+        )
+
+        record_identity_alias(
+            universe_dir,
+            caller_hint=caller_hint,
+            sink=sink,
+            system_effect_key=system_key,
+        )
+        parity_recorded = True
+    elif caller_hint and selected_mode == "system":
+        if universe_dir is None:
+            raise ValueError("universe_dir is required for identity parity")
+        from tinyassets.storage.external_write_receipts import (
+            identity_sink_has_parity,
+        )
+
+        if not identity_sink_has_parity(universe_dir, sink=sink):
+            raise ValueError(
+                "system identity mode requires proven dual-write parity"
+            )
+        parity_recorded = True
+    elif selected_mode == "dual":
+        raise ValueError("dual identity mode requires a caller hint for parity")
+    return EffectorIdentity(
+        mode=selected_mode,
+        active_key=caller_hint if selected_mode == "dual" else system_key,
+        caller_hint=caller_hint,
+        system_key=system_key,
+        parity_recorded=parity_recorded,
+    )
 
 
 class IdempotencyStore:

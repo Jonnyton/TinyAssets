@@ -5,7 +5,7 @@
 - [x] 1.3 Obtain Opus 5 review of the drafted proposal, design, delta spec, tasks, and supersession text; resolve every Critical and Important finding.
 - [x] 1.4 After review approval, mark `docs/specs/2026-04-18-load-test-harness-plan.md` superseded as implementation authority while preserving it as historical scenario research.
 - [x] 1.5 After review approval, retire the reviewed §14 harness entry from `ideas/INBOX.md` with this change as durable build authority.
-- [ ] 1.6 Run strict OpenSpec validation and land this target change without syncing it into as-built specs.
+- [x] 1.6 Run strict OpenSpec validation and land this target change without syncing it into as-built specs.
 
 ## 2. Dependent protocol implementation
 

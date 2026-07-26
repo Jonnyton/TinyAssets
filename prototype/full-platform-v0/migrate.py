@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import NamedTuple
 
 _MIGRATION_NAME = re.compile(r"^(?P<version>\d{3})_(?P<name>[a-z0-9_]+)\.sql$")
+_RESERVED_MIGRATION_VERSIONS = frozenset({10})
 _LOCK_KEY = 7_293_461_550_848_602_031
 _FIXTURE_SCHEMA_SHA256 = (
-    "b8234852d42262960910c2d3239d75d861f87904556ebfb3ca8a1be8c4c53a4b"
+    "56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473"
 )
 
 
@@ -61,11 +62,16 @@ def discover_migrations(directory: Path) -> tuple[Migration, ...]:
             )
         )
 
-    expected = list(range(1, len(migrations) + 1))
     actual = [migration.version for migration in migrations]
+    expected = [
+        version
+        for version in range(1, (actual[-1] if actual else 0) + 1)
+        if version not in _RESERVED_MIGRATION_VERSIONS or version in versions
+    ]
     if actual != expected:
         raise MigrationError(
-            f"migration versions must be gap-free from 001: got {actual}"
+            "migration versions must be gap-free from 001 except reserved "
+            f"versions {sorted(_RESERVED_MIGRATION_VERSIONS)}: got {actual}"
         )
     return tuple(migrations)
 
@@ -239,6 +245,32 @@ def _verify_existing_fixture(connection) -> None:
                    ) IS NOT NULL
                AND to_regprocedure('market.assert_drained(text)') IS NOT NULL
         """,
+        "market workflow": """
+            SELECT ARRAY[
+              'requests','bids','matches','match_bids','fanout_slots',
+              'claims','transition_events','outbox','authority_grants',
+              'command_log'
+            ]::text[] <@ ARRAY(
+              SELECT tablename::text
+              FROM pg_tables
+              WHERE schemaname = 'market_workflow'
+            )
+               AND to_regprocedure(
+                     'market_workflow.submit_request(bytea,text)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'market_workflow.transition_request(bytea,text)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'market_workflow.apply_accounting_settlement(uuid,bigint,bytea,text)'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'market_workflow.workflow_status()'
+                   ) IS NOT NULL
+               AND to_regprocedure(
+                     'market_workflow.can_read_request(text,uuid)'
+                   ) IS NOT NULL
+        """,
         "row security": """
             SELECT count(*) = 9
             FROM pg_tables
@@ -286,6 +318,9 @@ def _fixture_schema_sha256(connection) -> str:
             'tinyassets_fixture_app',
             'tinyassets_fixture_market_owner',
             'tinyassets_fixture_settlement',
+            'tinyassets_fixture_workflow_command',
+            'tinyassets_fixture_workflow_owner',
+            'tinyassets_fixture_workflow_reader',
             'tinyassets_migration'
           ])
 
@@ -319,7 +354,9 @@ def _fixture_schema_sha256(connection) -> str:
                    ), '')
                  )
           FROM pg_namespace AS n
-          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+          WHERE n.nspname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
 
           UNION ALL
           SELECT 'relation',
@@ -356,7 +393,9 @@ def _fixture_schema_sha256(connection) -> str:
                  )
           FROM pg_class AS c
           JOIN pg_namespace AS n ON n.oid = c.relnamespace
-          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+          WHERE n.nspname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
             AND c.relkind = ANY(ARRAY['r','p','S'])
             AND NOT (
               n.nspname = 'public' AND c.relname = 'schema_migrations'
@@ -377,7 +416,9 @@ def _fixture_schema_sha256(connection) -> str:
           JOIN pg_namespace AS n ON n.oid = c.relnamespace
           LEFT JOIN pg_attrdef AS d
             ON d.adrelid = a.attrelid AND d.adnum = a.attnum
-          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+          WHERE n.nspname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
             AND c.relkind = ANY(ARRAY['r','p'])
             AND NOT (
               n.nspname = 'public' AND c.relname = 'schema_migrations'
@@ -392,7 +433,9 @@ def _fixture_schema_sha256(connection) -> str:
           FROM pg_constraint AS con
           JOIN pg_class AS c ON c.oid = con.conrelid
           JOIN pg_namespace AS n ON n.oid = c.relnamespace
-          WHERE n.nspname = ANY(ARRAY['public','auth','market'])
+          WHERE n.nspname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
             AND NOT (
               n.nspname = 'public' AND c.relname = 'schema_migrations'
             )
@@ -402,7 +445,9 @@ def _fixture_schema_sha256(connection) -> str:
                  schemaname || '.' || indexname,
                  indexdef
           FROM pg_indexes
-          WHERE schemaname = ANY(ARRAY['public','auth','market'])
+          WHERE schemaname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
             AND NOT (
               schemaname = 'public' AND tablename = 'schema_migrations'
             )
@@ -419,7 +464,9 @@ def _fixture_schema_sha256(connection) -> str:
                    coalesce(with_check, '')
                  )
           FROM pg_policies
-          WHERE schemaname = ANY(ARRAY['public','auth','market'])
+          WHERE schemaname = ANY(
+            ARRAY['public','auth','market','market_workflow']
+          )
 
           UNION ALL
           SELECT 'function',
@@ -458,7 +505,7 @@ def _fixture_schema_sha256(connection) -> str:
                  )
           FROM pg_proc AS p
           JOIN pg_namespace AS n ON n.oid = p.pronamespace
-          WHERE n.nspname = ANY(ARRAY['auth','market'])
+          WHERE n.nspname = ANY(ARRAY['auth','market','market_workflow'])
              OR (
                n.nspname = 'public'
                AND p.proname = ANY(ARRAY[
