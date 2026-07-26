@@ -176,14 +176,132 @@ Not touched, per constraint: `tinyassets/api/branches.py`, permissions,
    `True/False/1.0/"1"/None/0/3`, closing a `True == 1` type-confusion that would
    otherwise have let a bool select the v1 closed schema.
 
-## Gap found, deliberately not built (outside 2.1/2.2/2.5)
+## Gap found, deliberately not built (outside 2.1/2.2/2.5) — NOW CLOSED
 
-`PaidObservation` binds `market_class_id`, `market_scope_revision`, and
-`public_scope`, but **not** the exact `descriptor_id`. The spec's "Settlement records
-normalized delivery evidence" requirement and the scenario *"compatible supply
-headroom shares one demand class — AND the aggregate still retains each source's
-exact descriptor id as evidence"* both call for it. That belongs to task 3.1's
-observation-join surface (`tinyassets/paid_market/price_surface.py:55-75`), already
-marked built, so it is reported here rather than silently widened into this lane.
+`PaidObservation` bound `market_class_id`, `market_scope_revision`, and
+`public_scope`, but **not** the exact `descriptor_id`. Reported here rather than
+silently widened into the lane. Codex's money review then found the same surface
+from the other side and instructed that deferring it into already-built task 3.1
+would preserve a false completed state — so it was repaired in this lane. See
+Round 2 below.
+
+---
+
+# Round 2 — Codex money review (ADAPT), three findings
+
+Verdict artifact: `verdict-A3.md` (reviewed `e88bbd8d`). Each finding below is
+recorded red -> fix -> green -> mutation -> pushed sha.
+
+## Finding 2 (Required) — `canonical_fee_required` meant positive, not canonical
+
+`_require_canonical_fee` checked only `fee_micros > 0`, so a 1-micro fee on a
+1,000,000-micro gross was accepted as canonical.
+
+- **Red** — `tests/test_paid_market_price_surface.py::test_positive_but_non_canonical_fee_is_refused`
+  and two siblings failed at collection: `ModuleNotFoundError:
+  tinyassets.paid_market.fee_schedule`.
+- **Fix** — new `tinyassets/paid_market/fee_schedule.py`: an immutable versioned
+  registry binding `fee_schedule_version` -> `fee_ppm`, delegating the *amount* to
+  the landed canonical primitive `forwards.canonical_fee_micros` so the paid market
+  keeps exactly one fee formula. `SettlementBinding` carries
+  `fee_schedule_version` (so the three receipts must already agree on it).
+  `_require_canonical_fee` keeps `canonical_fee_required` for a zero fee and adds
+  `canonical_fee_mismatch` and `unknown_fee_schedule_version`.
+- **Green** — 584 passed, 22 skipped across `tests/test_paid_market_*.py`; ruff clean.
+- **Mutation** — `_fee_matches_schedule` is its own seam
+  (`tests/test_paid_market_manipulation_mutation.py:559`); forcing it to `True`
+  makes the off-schedule guard go red, so the *schedule* half is load-bearing
+  independently of the *positivity* half.
+- **Pushed** — `25c61cfe`.
+
+## Finding 1 (Critical) — the influence cap did not close the unbounded-price path
+
+A positive fixed weight times an unbounded caller-provided price is still
+unbounded, and principal roots/linkage were caller-supplied, so split-account
+volume could claim unrelated roots and evade the exclusions.
+
+- **Red** — 47 failures across the three suites, including
+  `unit_price_not_settlement_derived`, `test_split_account_volume_cannot_evade_the_influence_cap`,
+  `test_the_same_settlement_cannot_be_observed_twice`, the quote-binding matrix,
+  and `observation_descriptor_ids`.
+- **Fix** —
+  - `_require_settlement_derived_price`: a declared price is admitted only when
+    `unit_price_micros * quantity == binding.gross_micros` exactly. The
+    authoritative reference is the gross the three authorities settled, so a 10^18
+    print costs 10^18 * quantity micros of real money plus its canonical fee.
+    Integer micros only; a gross that does not divide by the delivered quantity
+    fails loud rather than rounding into the index.
+  - `buyer_principal_root` / `seller_principal_root` / `linked_party` moved into
+    `SettlementBinding` — the parties are now settlement authority, not a caller
+    value, so `_index_eligible` cannot be steered.
+  - `_settlement_identity_scale` dampens by requester / host-owner volume, so
+    fabricating a fresh root pair per wash print no longer slips under every root-
+    and pair-level bucket; `_require_unique_settlements` refuses a replayed
+    settlement id.
+  - `_capped_scales` re-bases each partition on its least-dampened member. Composing
+    partitions through `min()` on absolute `1/volume` ratios let a single-identity
+    partition win every `min()` and erase the other caps — a latent composition bug
+    the new partition exposed. No-op in the water-filling branch (uncapped keys
+    already scale to 1); it only corrects the infeasible-cap branch.
+  - `join_paid_observation` now *derives* descriptor, market class, scope revision,
+    and scope bytes from the settlement's `ValidatedQuote` instead of accepting
+    them, and still re-validates the scope bytes rather than trusting the dataclass.
+    `PriceSurface.observation_descriptor_ids` retains each source's exact descriptor
+    id as aggregate evidence.
+- **Green** — 612 passed, 22 skipped across `tests/test_paid_market_*.py`; ruff clean;
+  mirror rebuilt (288 files, import probe ok).
+- **Mutation** — five new monkeypatch probes (settlement-derived price, settlement-
+  identity dampening, settlement uniqueness, quote binding, fee schedule). Beyond
+  those, a **source-mutant run** deleted each new control from `price_surface.py`
+  directly: all 21 new-control tests went red and no other test did.
+- **Pushed** — `aa7d272a`.
+
+## Finding 3 — task 2.1's checkoff was premature
+
+The 2.1 evidence claimed "quote-bound observation-scope provenance" but pointed at
+two disconnected facts with no join between them, so a quote/observation mismatch
+could not go red.
+
+- **Chosen resolution: complete the binding, not uncheck.** The review warned that
+  deferring the gap into task 3.1 — already marked built — would preserve a false
+  completed state. Since Finding 1 required rewriting the same join, the
+  authoritative quote-to-observation binding was completed here and 3.1 was
+  reopened and repaired rather than left overclaiming.
+- **Red -> green** — four new provenance tests in
+  `tests/test_paid_market_scope_provenance.py`: the observation's scope bytes are
+  the signature-covered bytes re-parsed out of `canonical_bytes` (`:513`); a
+  tampered scope never validates, so no observation exists at all (`:540`); a v1
+  quote is refused `quote_scope_unsigned` (`:555`); descriptor / currency /
+  fee-version mismatches fail closed (`:564`). 43 passed.
+- **tasks.md corrected to the true state** — 2.1's evidence rewritten to name the
+  real join tests and say plainly that the earlier claim was premature; 3.1 gains a
+  repair note plus the deliberate fail-closed divisibility trade-off; 2.5's probe
+  count corrected 6 -> 11 with current line refs; premise rows 2.1 / 2.5 / 3.1 /
+  3.5 restamped. No box was checked that was not already true.
+  `openspec validate paid-market-live-price-discovery --strict`: valid.
+- **Pushed** — `3967702f`.
+
+## Round-2 evidence
+
+| Check | Result |
+|---|---|
+| `tests/test_paid_market_price_surface.py` | 54 passed |
+| `tests/test_paid_market_scope_provenance.py` | 43 passed |
+| `tests/test_paid_market_manipulation_mutation.py` | 91 passed |
+| All `tests/test_paid_market_*.py` | 612 passed, 22 skipped |
+| Source-mutant probe (5 controls removed) | 21 new-control tests red, 0 others |
+| `ruff check tinyassets/paid_market/ tests/test_paid_market_*.py` | All checks passed |
+| `openspec validate paid-market-live-price-discovery --strict` | valid |
+| `packaging/claude-plugin/build_plugin.py` | 288 files staged, import probe ok; pre-commit mirror parity verified |
+| Full `pytest tests/` | NOT RUN — paid-market scope only, as in round 1 |
+| Cross-family review (Codex, refute-3-claims gate) | see below |
+
+**Not run, stated rather than implied:** the full `pytest tests/` sweep. Round 1
+left it `PENDING_FULL` and Codex's own run was killed by Windows process-resource
+exhaustion. `price_surface` / `PaidObservation` / `SettlementBinding` have no
+importer outside `tinyassets/paid_market/price_surface.py` itself and the
+paid-market tests (verified by repo-wide grep), so the blast radius of these
+commits is the 612-test set above — but that is a scope argument, not a green
+full-suite run, and it is not claimed as one.
 
 LANE_RESULT: PENDING
