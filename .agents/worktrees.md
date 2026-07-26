@@ -1385,14 +1385,14 @@ Notes:
 
 ## 2026-07-26 - refresh PostgreSQL transactional control-plane authority
 
-- Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review pending
+- Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review approved
 - Branch: codex/postgres-control-plane-exact-main-20260726
-- Lane state: claimed; current-main target OpenSpec/audit refresh only
+- Lane state: host-review; current-main target OpenSpec/audit refresh only
 - Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact
-- STATUS/Issue/PR: claimed STATUS row; supersedes stale stacked draft PR #1670 only after exact review
+- STATUS/Issue/PR: draft PR #1802; stale stacked draft PR #1670 closed as superseded
 - PLAN refs: per-domain canonical store; full-platform zero-host architecture; §14 load proof
 - Purpose: preserve PostgreSQL authority for catalog/ledger/inbox/market while reconciling current identity, custody, migration, load, market, and execution owners
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact\_PURPOSE.md
 - Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
-- Review gate: exact current-main Opus 5 plus independent architecture/security/diff review; fresh evidence only in `docs/audits/2026-07-26-postgres-control-plane-refresh.md`
+- Review gate: passed at semantic SHA `bc5fdcbb` — exact current-main Opus 5 plus three independent architecture/spec/verification approvals; host acceptance remains open
 - Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority

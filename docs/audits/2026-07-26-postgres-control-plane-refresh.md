@@ -8,8 +8,10 @@
 and `27f19947`; historical packet review remains on
 `origin/codex/restack-postgres-control-plane-20260725`
 
-**Status:** `ADAPT` findings folded into the current candidate; exact-head
-Claude Opus 5 and independent re-review pending
+**Status:** exact semantic SHA `bc5fdcbb` approved by Claude Opus 5 and three
+independent Codex-side architecture/spec/verification review paths; draft PR
+#1802 published. Host acceptance and every implementation/production gate
+remain open.
 
 **Authority:** target OpenSpec/audit only. No PLAN, SQL, runtime, production
 inventory, Supabase mutation, migration, first write, sync, archive,
@@ -33,12 +35,13 @@ host-approved PLAN reconciliation and their owning capability.
 
 ## Historical branch disposition
 
-PR #1670 is stacked on an obsolete moderation branch and cannot be retargeted
-unchanged. `origin/codex/restack-postgres-control-plane-20260725` was a useful
-five-file source packet but is behind current main and carries stale
-coordination and review truth. This lane transplants only its OpenSpec content
-onto current main, regenerates review evidence, and publishes a new successor
-PR rather than force-pushing either historical branch.
+PR #1670 was stacked on an obsolete moderation branch and could not be
+retargeted unchanged. `origin/codex/restack-postgres-control-plane-20260725`
+was a useful five-file source packet but was behind current main and carried
+stale coordination and review truth. This lane transplanted only its OpenSpec
+content onto current main, regenerated review evidence, published successor
+draft PR #1802, and closed #1670 as superseded rather than force-pushing either
+historical branch.
 
 ## Current-main owner reconciliation
 
@@ -91,17 +94,18 @@ The first current-main architecture review returned `ADAPT` and required:
 7. preserve the production baseline, migration-home, DR/uptime, load, custody,
    per-domain identity, stock-PostgreSQL exit, and first-write gates.
 
-Those corrections are present in the current candidate. A fresh exact-head
-review must still confirm them before any push or PR replacement.
+Those corrections are present in semantic SHA `bc5fdcbb` and were confirmed
+before its push and PR replacement.
 
-## Verification pending exact candidate
+## Verification of exact semantic candidate
 
-- `openspec validate establish-postgres-control-plane --strict`
-- `openspec validate --all --strict`
-- `git diff --check`
-- exact current-main Claude Opus 5 review
-- independent architecture/security/diff review
-- `STATUS.md` line-budget and claim-boundary check
+- `openspec validate establish-postgres-control-plane --strict` — pass
+- `openspec validate --all --strict` — 54/54 pass
+- `git diff --check` — pass
+- exact current-main Claude Opus 5 review — `APPROVE` at `bc5fdcbb`
+- three independent architecture/spec/verification paths — `APPROVE` at
+  `bc5fdcbb`
+- `STATUS.md` — 60 lines; claim boundary matches the eight-file target packet
 
-No current result is asserted in this section until it is run against the
-committed exact candidate.
+These verdicts approve target OpenSpec/audit publication only. They grant no
+runtime, database, migration, deployment, or production authority.
