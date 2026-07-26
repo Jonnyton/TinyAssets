@@ -44,4 +44,12 @@ Fresh Windows evidence on 2026-07-25:
 - `openspec validate --all --strict`: 48 passed, 0 failed.
 
 Final status is pending an exact-revision Opus 5 re-review and publication of
-the one-way sibling handoffs.
+the final review disposition.
+
+The one-way sibling handoffs were published without reciprocal gates:
+
+- custody: PR #1746 comment `issuecomment-5081176707`;
+- universe creation / first-contact authority: PR #1660 comment
+  `issuecomment-5081177162`; and
+- provider-attempt receipts: merged spec PR #1650 comment
+  `issuecomment-5081177511`.

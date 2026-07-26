@@ -13,7 +13,7 @@
   credential-authority vocabulary; correct B2/B13/V6 ownership; export lock
   ordering; preserve canonical MODIFIED behavior; and make newborn deny-all an
   independent invariant.
-- [ ] 1.4 Publish non-blocking coordination handoffs to the active custody,
+- [x] 1.4 Publish non-blocking coordination handoffs to the active custody,
   universe-creation, and receipt owners. The handoffs declare this change's
   interfaces and their required downstream edits; they MUST NOT request
   reciprocal acceptance or block this target spec from landing.
