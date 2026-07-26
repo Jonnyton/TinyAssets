@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from fractions import Fraction
 
 import pytest
 
@@ -1053,3 +1054,99 @@ def test_vwap_is_an_integer_and_lies_within_the_observed_price_range() -> None:
 
     assert isinstance(value, int)
     assert min(prices) <= value <= max(prices)
+
+
+# --------------------------------------------------------------------------
+# KNOWN LIMITATION — cross-partition cap composition is not a joint solution
+# --------------------------------------------------------------------------
+
+
+def _composed_shares(observations, cap_ppm: int):
+    """Reproduce `_raw_vwap_field`'s composition for two identity partitions.
+
+    `observations` are ``(quantity, p1_key, p2_key)`` triples.  Returns each
+    partition's per-identity share of the final weight.
+    """
+    p1_volumes: dict[tuple[str, str], int] = {}
+    p2_volumes: dict[tuple[str, str], int] = {}
+    for quantity, first, second in observations:
+        p1_volumes[(first, first)] = p1_volumes.get((first, first), 0) + quantity
+        p2_volumes[(second, second)] = p2_volumes.get((second, second), 0) + quantity
+    p1_scales = price_surface._capped_scales(p1_volumes, cap_ppm)
+    p2_scales = price_surface._capped_scales(p2_volumes, cap_ppm)
+
+    weights = [
+        (
+            first,
+            second,
+            quantity * min(p1_scales[(first, first)], p2_scales[(second, second)]),
+        )
+        for quantity, first, second in observations
+    ]
+    total = sum(weight for _, _, weight in weights)
+    first_shares: dict[str, Fraction] = {}
+    second_shares: dict[str, Fraction] = {}
+    for first, second, weight in weights:
+        first_shares[first] = first_shares.get(first, Fraction(0)) + weight / total
+        second_shares[second] = second_shares.get(second, Fraction(0)) + weight / total
+    return first_shares, second_shares
+
+
+def test_known_limitation_cross_partition_caps_are_not_jointly_solved() -> None:
+    """This test PINS a defect, it does not assert correctness.
+
+    Composing per-partition caps through `min()` does not solve them jointly.
+    The achievable bound for a partition of ``n`` identities at cap ``c`` is
+    ``max(c, 1/n)`` — the water-filling solver's own documented fallback — and
+    this composition can exceed it.
+
+    Codex's round-2 counterexample, reproduced exactly.  Partition 1 holds
+    ``{A: 1000, B: 9000}``; at a 25% cap that partition is infeasible
+    (``2 * 0.25 <= 1``) so both identities should share influence equally,
+    bound ``max(25%, 50%) = 50%``.  Partition 2 holds
+    ``{a,b,c,d: 250 each, E: 9000}`` with bound ``max(25%, 20%) = 25%``.
+
+    Current behaviour: partition 2's cap binds correctly and partition 1's
+    does not — ``A`` reaches 75% against a 50% bound.  Before the re-basing
+    change the violation sat in the other partition (``E`` reached 50% against
+    a 25% bound), so BOTH forms are wrong here; re-basing moved the violation,
+    it did not introduce it.
+
+    A correct fix is a joint fixed point over one shared total (each group
+    capped at ``c * T`` of the *final* weight rather than of its own
+    partition), which is a real redesign of `capped_pair_weights` and is
+    deliberately not attempted here.  This test goes red the moment the
+    composition is fixed — that is the intended signal, not a failure.
+    """
+    observations = [
+        (250, "A", "a"),
+        (250, "A", "b"),
+        (250, "A", "c"),
+        (250, "A", "d"),
+        (9_000, "B", "E"),
+    ]
+    first_shares, second_shares = _composed_shares(observations, 250_000)
+
+    first_bound = max(Fraction(250_000, 1_000_000), Fraction(1, 2))
+    second_bound = max(Fraction(250_000, 1_000_000), Fraction(1, 5))
+
+    # Partition 2 is respected.
+    assert all(share <= second_bound for share in second_shares.values())
+    # Partition 1 is NOT — pinned so the defect cannot silently change.
+    assert first_shares["A"] == Fraction(3, 4)
+    assert first_shares["A"] > first_bound
+    assert first_shares["B"] == Fraction(1, 4)
+
+
+def test_single_identity_partition_does_not_erase_the_other_caps() -> None:
+    """The half of the composition that re-basing genuinely fixed.
+
+    When every observation shares one requester, that partition holds a single
+    identity and carries no dampening information.  Before re-basing it
+    returned a uniformly tiny `1 / total_volume` scale that won every `min()`
+    and erased the pair/buyer/seller caps outright, letting a whale print the
+    price.  Its scale is now 1 — "not dampened here".
+    """
+    scales = price_surface._capped_scales({("only", "only"): 12_030}, 250_000)
+
+    assert scales == {("only", "only"): Fraction(1)}

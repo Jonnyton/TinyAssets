@@ -11,7 +11,7 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 | 2.2 | unblocked -> built | Same #1679 landing. `descriptors.py` derives both ids; `capability_id` stayed purged. Payload/credential/price/routing/reservation/execution remain absent. |
 | 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
 | 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
-| 2.5 | unblocked -> built (price bound added 2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Eleven manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. The first six proved a weight cap only — the unit price is now bounded against settled gross and the canonical fee against its schedule version. |
+| 2.5 | unblocked -> built, one OPEN residual (2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Thirteen manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. The first six proved a weight cap only — price and delivered quantity are now both settlement evidence, the canonical fee is schedule-derived, and quote attributes are re-read from signed bytes. **Residual:** cross-partition cap composition is not jointly solved (round-2 finding B); pinned by an executable known-limitation test and needs its own lane. |
 | 3.1 | built (join repaired 2026-07-25) | Fail-closed observation joins and independently fresh price fields use fixture receipts only. The join was reopened after Codex's money review: it agreed three receipt copies and then accepted every other price-index input from its caller. Identity/scope now derive from the quote and the price from the settled gross. |
 | 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
 | 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
@@ -113,15 +113,35 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     stale fields never become executable and a fresh field never refreshes a stale
     one. Fee-on-every-settlement holds identically for self-trade, linked-party, and
     arm's-length — no self/linked-party fee exemption is encoded anywhere.
-  - Corrected 2026-07-25 (Codex money review): the earlier six probes proved a
-    *weight* cap only, and `unit_price_micros` was an unbounded caller value — a
-    positive fixed weight times an unbounded price is still unbounded. The price is
-    now bounded against authoritative money (`unit_price * quantity ==
-    gross_micros`, exact integer micros) and the parties moved into
-    `SettlementBinding`, so split-account volume can no longer claim unrelated
-    roots. Beyond the monkeypatch probes, a source-mutant run removed each new
-    control from `price_surface.py` directly: all 21 new-control tests went red and
-    no other test did.
+  - Corrected 2026-07-25 (Codex money review, two rounds): the earlier six probes
+    proved a *weight* cap only, and `unit_price_micros` was an unbounded caller
+    value — a positive fixed weight times an unbounded price is still unbounded.
+    Round 1 bound `unit_price * quantity == gross_micros`; the round-2 re-review
+    refuted that as insufficient, because bounding the *product* does not bound the
+    *price* while `quantity` is still caller-supplied. Both factors are now
+    settlement evidence (`gross_micros` and `delivered_quantity`), the parties moved
+    into `SettlementBinding`, and the join re-reads every quote identity field out
+    of the signed `canonical_bytes` rather than trusting the public
+    `ValidatedQuote` dataclass. Beyond the monkeypatch probes, a source-mutant run
+    removed each new control from `price_surface.py` directly: all 21 new-control
+    tests went red and no other test did.
+  - **OPEN — cross-partition cap composition is not a joint solution.** Round-2
+    finding B, not fixed and not claimed as fixed. `_raw_vwap_field` composes each
+    identity partition's cap through `min()` of per-partition scales, which does
+    not solve the caps jointly: an identity can exceed its partition's achievable
+    bound `max(cap, 1/n)`. Codex's counterexample is pinned as an executable test
+    (`tests/test_paid_market_manipulation_mutation.py::
+    test_known_limitation_cross_partition_caps_are_not_jointly_solved`) and that
+    test goes red when the composition is fixed. Both the pre- and post-re-basing
+    forms violate the bound, in different partitions, so this predates the
+    re-basing change rather than being introduced by it; re-basing did fix the
+    strictly-worse single-identity-partition case, which has its own test. A
+    correct fix is a joint fixed point over one shared total (each group capped at
+    `c * T` of the *final* weight, not of its own partition) — a real redesign of
+    `capped_pair_weights`. The obvious iterative form was prototyped and rejected:
+    with exact `Fraction` arithmetic it does not converge and the denominators
+    explode. This needs its own lane before the index is treated as
+    manipulation-safe.
 
 ## 3. Price surfaces and reference adapters
 

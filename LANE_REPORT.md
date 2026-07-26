@@ -312,4 +312,93 @@ worktree and was still running when this report was written. Its verdict is
 required before this lane is treated as reviewed; nothing here should be read as
 carrying it.
 
+---
+
+# Round 3 — Codex re-review returned ADAPT; three of four points fixed
+
+The round-2 cross-family gate came back **ADAPT** and refuted the round-2 price
+claim. It was right. Recorded here rather than argued with.
+
+## A (critical) — bounding the product does not bound the price. FIXED
+
+`quantity` was still caller-supplied, so a settlement that moved 1,000,000 micros
+for 1,000 delivered units could be declared `(price=1_000_000, quantity=1)`: the
+equality held exactly while publishing a 1,000x fabricated unit price.
+
+- **Red** — `test_quantity_is_settlement_evidence_not_a_caller_declaration`.
+- **Fix** — `delivered_quantity` is a `SettlementBinding` field, so both factors
+  are settlement evidence and the unit price is fully determined.
+  `join_paid_observation` no longer takes a `quantity` argument at all.
+- **Green / mutation** — covered by the existing
+  `_require_settlement_derived_price` probe; the source-mutant pass still reds it.
+- **Pushed** — `9d06ae93`.
+
+## C (critical) — the join trusted a forgeable dataclass. FIXED
+
+`ValidatedQuote` is an ordinary public dataclass, so *holding* one proved nothing:
+an attacker could keep the `canonical_bytes` of a genuinely signed quote and
+replace the attributes around them.
+
+- **Red** — `test_quote_attributes_must_match_the_bytes_the_issuer_signed`
+  (7 params) and `test_unreadable_or_foreign_signed_bytes_fail_closed`.
+- **Fix** — `_require_attributes_match_signed_bytes` re-reads quote_id,
+  descriptor, market class, scope revision, scope bytes, currency, and fee version
+  out of the signed body — the exact shape `quotes.quote_signing_bytes` emits.
+  This immediately caught the lane's **own test fixtures**, which were forgeable
+  stubs; they now build self-consistent bytes and deliberate drift is its own test.
+- **Mutation** — new probe `test_signed_bytes_reverification_is_load_bearing`.
+- **Pushed** — `9d06ae93`.
+
+## D — unknown was reading as benign. FIXED
+
+`linked_party` accepted `None`/`0`/`"false"`, an empty principal root counted as a
+"known" root, and `principal_share_cap_ppm=True` passed as a 1-ppm cap. All three
+now fail closed (`test_party_and_delivery_evidence_fails_closed`,
+`test_a_bool_cannot_pass_as_the_influence_cap`). **Pushed** — `9d06ae93`.
+
+## B (critical) — cross-partition cap composition. NOT FIXED, recorded as open
+
+Codex's claim: re-basing `_capped_scales` can weaken a correct cap. Verified
+numerically, and the finding is real but the framing needed one correction —
+**both** forms are wrong, in different partitions:
+
+| form | partition 1 (bound 50%) | partition 2 (bound 25%) |
+|---|---|---|
+| before re-basing | A 50%, B 50% — ok | E **50%** — violated |
+| after re-basing | A **75%** — violated | E 25% — ok |
+
+So re-basing moved the violation rather than introducing it; the pre-existing
+`min()`-of-scales composition does not solve the caps jointly. Re-basing *did*
+fix the strictly-worse single-identity-partition case (a partition with one
+identity returned a uniformly tiny scale that won every `min()` and erased every
+other cap), which now has its own test.
+
+**Not fixed, and not claimed as fixed.** The correct fix is a joint fixed point
+over one shared total — each group capped at `c * T` of the *final* weight rather
+than of its own partition — which is a real redesign of `capped_pair_weights`.
+The obvious iterative form was prototyped and **rejected**: with exact `Fraction`
+arithmetic it does not converge and the denominators explode (it failed to
+complete Codex's single 5-observation case in 120s). Guessing here, on a money
+path, immediately after shipping one incomplete fix in the same area, is exactly
+the failure the review exists to catch.
+
+Instead the counterexample is pinned as an executable known-limitation test,
+`test_known_limitation_cross_partition_caps_are_not_jointly_solved`, which
+asserts what the code *does* (and says so in its docstring) and goes red the
+moment the composition is fixed. It is not an `xfail` and weakens no existing
+assertion. Carried into `tasks.md` 2.5 as an OPEN residual.
+
+## Round-3 evidence
+
+| Check | Result |
+|---|---|
+| All `tests/test_paid_market_*.py` | 642 passed, 22 skipped |
+| Mutation probes | 13 (2 added this round) |
+| `ruff check tinyassets/paid_market/ tests/test_paid_market_*.py` | All checks passed |
+| `openspec validate paid-market-live-price-discovery --strict` | valid |
+| Mirror | rebuilt; pre-commit parity verified |
+| Cross-family gate (Codex round 2) | ADAPT — A/C/D fixed, B open |
+| Full `pytest tests/` | still NOT run |
+| Cross-family re-review of round 3 | NOT dispatched |
+
 LANE_RESULT: PENDING
