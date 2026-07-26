@@ -136,9 +136,10 @@
   GitHub-resolvable SHA, and obtain Claude Opus 5 approval of that exact
   current-main revision. Opus verified PR/head/comment resolvability, strict
   51/51 validity, and no remaining Critical or Important finding.
-- [ ] 1.35 Run strict target/full-tree validation and land this target active
-  and unsynced. Close/supersede draft #1691 only after the replacement and all
-  citation handoffs are durable.
+- [x] 1.35 Land #1784 on current main as merge `620fed5a` after strict target
+  validation and 51/51 full-tree validation. Keep this target active and
+  unsynced; #1691 is superseded and its live STATUS row retires in the
+  foldback.
 
 ## 2. Published dependent-lane expectations (not completion tasks)
 
