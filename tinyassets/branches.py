@@ -404,6 +404,23 @@ class NodeDefinition:
     # the canonical 6+5 vocab page for context.
     effects: list[str] = field(default_factory=list)
 
+    # Real-world handoff declarations (capability
+    # ``real-world-handoffs-and-outcomes``). Each entry names a *typed* external
+    # effect this node's output may become: output_field, adapter,
+    # adapter_action, destination, effect_class, outcome_kind, and optionally
+    # credential_class + evidence_contract. Validated by
+    # ``tinyassets.handoffs.models.parse_declaration``.
+    #
+    # This is richer than ``effects`` above on purpose, and does not replace it:
+    # ``effects`` names a sink for the legacy packet shape, whereas a handoff
+    # binds an exact declared output to an exact destination so that neither the
+    # output nor the destination can be substituted at invocation time. Because
+    # the declaration lives on the node, it is carried into every published
+    # branch version's snapshot (``node_defs``) and is therefore immutable for
+    # that version — which is what lets a confirmation be bound to a source
+    # version/hash.
+    handoffs: list[dict[str, Any]] = field(default_factory=list)
+
     # Legacy compat fields from NodeRegistration
     author: str = "anonymous"
     registered_at: str = ""
