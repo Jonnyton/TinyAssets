@@ -571,3 +571,23 @@ resolves its credential reference and performs network I/O.
 
 Final disposition remains pending strict validation, exact-SHA handoff
 refresh, and fresh Opus 5 approval of the merged revision.
+
+## Thirteenth exact-revision Opus 5 review — 2026-07-25
+
+Opus 5 reviewed exact local commit `40d92d16` after the current-main merge.
+It independently verified every normative architecture boundary, all four
+handoff bodies, installed FastMCP/MCP behavior, current role call sites,
+wiki-canary isolation, `remote_ready`, outbound credential-blind proxy
+ownership, universe-less maintenance, canary reaping, dark compatibility, and
+the absence of a Village/web dependency. Strict validation passed 51/51.
+
+The architecture survived refutation. Opus returned `ADAPT` on release
+integrity only: `40d92d16` was not yet GitHub-resolvable and PR #1784 still
+pointed at pre-adaptation `87a553fe`, so the reviewed artifacts were not what
+the PR would merge. It also noted two non-blocking inventory clarifications:
+name both `_register_structured_tool` implementations and explicitly include
+the mirrored Claude-plugin provider runtime.
+
+The inventory clarifications are folded. Final disposition requires pushing
+the exact candidate, re-stamping all four handoffs to the resolvable SHA, and
+obtaining exact-revision Opus approval under task 1.34.

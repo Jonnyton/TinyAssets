@@ -125,10 +125,17 @@
   setup behavior, align cloud readiness, preserve wiki-canary-only authority,
   and consume the outbound owner's ledger/proxy without a parallel authority
   path.
-- [ ] 1.32 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
-  approval of the exact current-main artifacts; resolve every Critical and
-  Important finding.
-- [ ] 1.33 Run strict target/full-tree validation and land this target active
+- [x] 1.32 Obtain exact-`40d92d16` Claude Opus 5 review. It found the
+  architecture sound and all four handoffs accurate, then returned `ADAPT`
+  solely because the reviewed commit was still local while PR #1784 remained
+  at `87a553fe`; a local-only SHA is not durable approval evidence.
+- [x] 1.33 Fold its two inventory clarifications: name both
+  `_register_structured_tool` implementations and include the mirrored
+  Claude-plugin provider runtime in call-site/transport proof.
+- [ ] 1.34 Push the exact candidate, refresh all four handoffs to the
+  GitHub-resolvable SHA, and obtain Claude Opus 5 approval of that exact
+  current-main revision; resolve every Critical and Important finding.
+- [ ] 1.35 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -194,8 +201,13 @@
   completion-based Codex refresh-viability caller, and per-transport auth
   middleware. Inventory the outer ASGI `AuthContextMiddleware`, FastMCP
   stateful streamable-HTTP session/message task split, TinyAssets
-  `Middleware.on_call_tool`, `_register_structured_tool`, and AnyIO worker
-  entry. Classify that completion as background maintenance requiring its
+  `Middleware.on_call_tool`, both
+  `tinyassets/mcp_server.py::_register_structured_tool` and
+  `tinyassets/universe_server.py::_register_structured_tool` (the latter owns
+  all seven live handles), and AnyIO worker entry. Include the mirrored
+  `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`
+  provider call/router/Ollama and ingestion image-extractor paths in the same
+  transport/call-site inventory. Classify that completion as background maintenance requiring its
   owner receipt or a zero-output replacement, never a host-local probe.
   Record that the shipped setup envelope advertises deprecated
   `universe action=set_engine` even though `universe` is not one of the seven
