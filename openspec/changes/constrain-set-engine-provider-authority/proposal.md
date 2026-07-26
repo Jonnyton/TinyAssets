@@ -126,10 +126,13 @@ deny-all.
 - **BREAKING:** A router-minted immutable `ProviderInvocation` contains only
   the authorized provider, assignment generation, opaque credential binding
   reference, credential/auth provenance, and immutable call inputs. It never
-  contains native secret material. Only
-  `ProviderExecutor.start(ProviderInvocation)` may resolve native material,
-  call the selected provider's canonical `complete(...)`, and return a
-  registered `ProviderLaunchHandle`.
+  contains native secret material.
+  `ProviderExecutor.start(ProviderInvocation)` alone validates the complete
+  binding tuple, coordinates canonical `complete(...)`, and returns a
+  registered `ProviderLaunchHandle`. Only CLI/local/in-process transports may
+  dereference inside executor child/request memory; remote HTTP receives a
+  grant-bound proxy handle, and the outbound proxy alone resolves its
+  credential reference and performs network I/O.
 - Every retry, policy attempt, judge call, hard pin, and stale context rechecks
   the fresh ceiling. Held authority fails before credential, quota,
   auth-health, or provider access and is never converted into fallback prose.
