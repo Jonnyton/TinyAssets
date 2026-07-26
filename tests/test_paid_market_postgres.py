@@ -155,6 +155,8 @@ def test_ledger_boundary_is_non_login_fixed_path_and_least_privilege(
             "VALUES ('user:forged', 1)",
             "SELECT * FROM market.apply_tx("
             "'tenant-a', 'forged', repeat('0', 64), '', '[]'::jsonb)",
+            "SELECT * FROM market.apply_settlement("
+            "'{}'::text::bytea, repeat('0', 64))",
             "SELECT market.assert_drained('escrow:x')",
         ):
             with pytest.raises(psycopg.errors.InsufficientPrivilege):
@@ -175,7 +177,7 @@ def test_ledger_boundary_is_non_login_fixed_path_and_least_privilege(
             "INSERT INTO market.balances(account, balance_micros) "
             "VALUES ('escrow:path', 100)"
         )
-        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
         assert _apply(connection, body)[0] == "applied"
 
 
@@ -217,7 +219,7 @@ def test_canonical_hash_replay_conflict_and_bounds(market_database):
             "INSERT INTO market.balances(account, balance_micros) "
             "VALUES ('escrow:1', 10000)"
         )
-        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
         first = _apply(connection, body)
         replay = _apply(connection, body)
         assert first == ("applied", replay[1])
@@ -320,7 +322,7 @@ def test_identical_replay_100_callers_applies_once(market_database):
     def apply_once():
         try:
             with psycopg.connect(dsn, autocommit=True) as connection:
-                connection.execute("SET ROLE tinyassets_fixture_settlement")
+                connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
                 barrier.wait(timeout=10)
                 results.append(_apply(connection, body))
         except Exception as exc:  # pragma: no cover - asserted below
@@ -363,14 +365,14 @@ def test_repeatable_read_replay_never_fabricates_a_null_transaction(
             "INSERT INTO market.balances(account, balance_micros) "
             "VALUES ('escrow:snapshot', 100)"
         )
-        writer.execute("SET ROLE tinyassets_fixture_settlement")
+        writer.execute("SET ROLE tinyassets_fixture_workflow_owner")
         with stale_reader.transaction():
             stale_reader.execute(
                 "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
             )
             stale_reader.execute("SELECT count(*) FROM market.transactions")
             assert _apply(writer, body)[0] == "applied"
-            stale_reader.execute("SET ROLE tinyassets_fixture_settlement")
+            stale_reader.execute("SET ROLE tinyassets_fixture_workflow_owner")
             with pytest.raises(
                 (psycopg.errors.SerializationFailure, psycopg.errors.RaiseException)
             ):
@@ -429,7 +431,7 @@ def test_python_transport_canonical_body_executes_unchanged_in_postgres(
             "INSERT INTO market.balances(account, balance_micros) "
             "VALUES ('escrow:python', 10000)"
         )
-        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
 
         class PostgresRpc:
             def apply_settlement(self, serialized):
@@ -464,7 +466,7 @@ def test_duplicate_accounts_match_pure_ledger_and_failures_roll_back(
             "INSERT INTO market.balances(account, balance_micros) "
             "VALUES ('escrow:diff', 1000000)"
         )
-        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
         for index in range(50):
             gross = rng.randint(100, 10_000)
             fee = gross // 100
@@ -484,7 +486,7 @@ def test_duplicate_accounts_match_pure_ledger_and_failures_roll_back(
             ).fetchall()
         )
         assert actual == pure.balances
-        connection.execute("SET ROLE tinyassets_fixture_settlement")
+        connection.execute("SET ROLE tinyassets_fixture_workflow_owner")
 
         overdraft = _body(
             "overdraft",

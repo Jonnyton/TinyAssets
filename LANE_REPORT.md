@@ -1,343 +1,382 @@
-# Lane report — o5-retire-inventory
-
-Branch `claude/o5-retire-inventory`. Tree analysed: `92d730bc` (`origin/main` = `d8ef3dea`;
-the 1-commit delta is STATUS.md-only and affects no finding). No runtime code changed; no `.py`
-touched, so ruff was not required.
-
----
-
-> **SUPERSEDED BY THE REWORK SECTION BELOW.** The Scope 1 block that follows is the **v1**
-> report. An opposite-provider review returned **reject** on it; its "6 wire callers" headline and
-> "176 Python bindings" labelling are wrong. Read §*Rework (v2)* for the corrected figures. The v1
-> text is kept verbatim so the correction is auditable.
-
-## Scope 1 — retire-legacy-live-mcp-tools tasks 2.1–2.3: DONE *(v1 — superseded)*
-
-Artifact: **`docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md`** (new).
-Tasks 2.1, 2.2, 2.3 checked off in `openspec/changes/retire-legacy-live-mcp-tools/tasks.md`,
-each with an inline evidence summary.
-
-**Premise verified:** `universe_server.py` registers 13 tools — 7 canonical + the 6 hidden
-(`_DEPRECATED_TOOL_NAMES`, line 1030), dropped from `tools/list` by `_DeprecatedToolVisibility`
-(line 1983) but still dispatchable via `on_call_tool`.
-
-### Inventory summary — counts per caller class
-
-| Caller class | Count | Breaks on unregistration? | Decision |
-|---|---|---|---|
-| `tests/` direct import (`from …universe_server import <legacy>`) | 57 bindings / 26 files | No | Preserve |
-| `tests/` module-attr call (`us.<legacy>(…)`) | 119 bindings / 41 files | No | Preserve |
-| **Production runtime Python callers (`tinyassets/` non-test)** | **0** | — | none exist |
-| Canonical→legacy delegation edges inside `universe_server.py` | **0** | — | none exist |
-| `scripts/` Python-API callers | 0 | — | none exist |
-| `fantasy_daemon/universe_server.py` (`import *`) | 1 | No | Preserve |
-| **Wire callers (MCP tool-name dispatch)** | **6 sites / 3 files** | **Yes** | **Migrate** |
-| Retired-tool metadata residue (conway panel JSON, market.py labels) | 8 refs / 2 files | No | Fix strings (task 4.5) |
-| Excluded false positives (website snapshot data, packaged mirror, logger names, hint prose) | — | No | Do not "fix" |
-
-**Union: 176 Python bindings across 67 files — every one under `tests/`.**
-
-### Key findings
-
-1. **2.3-A — zero production-runtime Python callers, zero canonical→legacy delegation.** Both
-   surfaces delegate independently to the same `tinyassets/api/*` impls. This confirms task 4.1's
-   default: remove the 6 registrations, keep the 6 `def`s. Deleting the wrapper bodies would break
-   67 test files for no benefit.
-2. **2.3-B (blocker) — `wiki action=list` has no canonical replacement.** `read_page` only ever
-   emits `read`/`search`/`since`. Two live scripts depend on it, including
-   `scripts/navigator_wiki_sweep.py`, which defaults to **`https://tinyassets.io/mcp`** and drives
-   the navigator's standing 30-min sweep cadence. Retirement must first extend `read_page` or
-   retire the cadence with host sign-off.
-3. **2.2-A — open PR #1467 would restore the retired `directory_server.py`.** It carries
-   `modified +30/-3` against a file `origin/main` deleted in `60f7f9f1` (#1718). Must be rebased
-   before merge — violates tasks 2.2 and 4.4 otherwise.
-4. **Action-reachability gap:** the 6 legacy tools are `action=` passthroughs exposing **187**
-   dispatchable actions; the canonical 7 are narrow target routers reaching **18**. **169 orphaned**
-   (`gates` = 20 of 20 — no canonical handle routes to it at all). Not 169 regressions — much of it
-   is deliberate surface reduction — but it makes retirement a ~90% action-surface cut, not a
-   rename. Two live STATUS.md rows already depend on orphaned actions (`goals action=bind/set_canonical`;
-   `wiki action=promote`).
-5. **2.3-C — precedent exists.** `scripts/last_activity_canary.py` already made this exact
-   migration (`universe action=inspect` → `read_graph target="graph"`) and documents that every
-   shape assertion stayed unchanged. The two `mcp_probe.py` universe sites can follow it verbatim today.
-6. **The public canary cannot see the hidden six** — it reads `tools/list`, which the middleware
-   already filters. A green `--assert-handles` run is not retirement evidence; hence task 3.1's
-   "listing middleware bypassed" requirement.
-
-**2.1 ownership:** of the nine PRs, 5 CLOSED; **4 OPEN and all edit `universe_server.py`** —
-#1493 `a4115dd3`, #1467 `5fb6d16a`, #1466 `4427d012`, #1465 `8eef71b8`. They are dependency edges
-for the implementation lane. `claim_check.py --check-files` on this lane's write-set: **CLEAR**.
-**2.2 boundary:** #1561 (`1a5d45af`) confirmed 3 files, stdio-only; `tinyassets/mcp_server.py`'s
-tool surface is disjoint from the six, so it is structurally unaffected.
-
-Scoped honestly in §7 of the artifact: this is repository-internal only and does **not** satisfy
-task 1.3 (external hidden-name call telemetry). No live probe was run.
-
----
-
-## Rework (v2) — after opposite-provider review returned `reject`
-
-Artifact reworked in place: **`docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md`** (v2).
-Verdict source: `…/scratchpad/verdict-retire-inventory.md`. **Every count in the verdict was
-re-derived independently before folding; all reproduced exactly.**
-
-### What the review refuted
-
-1. **"6 wire callers" — refuted.** v1 missed an entire caller class: **38 legacy wire invocation
-   sites across 8 website JS/TS/Svelte/mjs files**. v1's six rows also mixed unlike things (4 real
-   wire calls, 1 panel metadata, 1 response-label residue v1 itself called "not dispatch calls").
-2. **"176 Python bindings … all under `tests/`" — mislabelled.** 176 is a **reference** count
-   (57 imports + 119 module-attr references), not a caller count. The row headed "module-attr
-   call" contains **17 non-call introspection** references. And "all under `tests/`" omits the
-   **non-test** `import *` at `fantasy_daemon/universe_server.py:2`.
-3. **`wiki action=list` caller scope — undercounted.** v1 said "2 live scripts"; the real set is
-   5 wire sites plus the public playground.
-4. **Additional missed classes** — packaged plugin skills instructing `universe` calls, the plugin
-   boot path, `bids/README.md`, and playground UI copy.
-5. **Limits section understated its blind spots** — it implied the static repo inventory was
-   complete when it covered only Python.
-
-### What I re-verified myself (independent AST + language-aware scan)
-
-| Figure | v1 claim | Re-derived | Status |
-|---|---|---|---|
-| Python explicit imports | 57 / 26 files | **57 / 26** | reproduces |
-| Python module-attr references | 119 / 41 files, labelled "call" | **119 / 41**, of which **102 calls + 17 introspection** | arithmetic right, **label wrong** |
-| Reference union (57+119) | "176 bindings" | **176 references** across **67** files | **mislabelled** |
-| Actual Python call expressions | not reported | **376 across 62 files** (274 imported-name + 102 attr) | **missing from v1** |
-| Non-test Python binding | mentioned separately | `fantasy_daemon/universe_server.py:2` `import *` | **checkoff phrase unqualified** |
-| Website wire sites | **0 reported** | **38 across 8 files** — `wiki` 7, `goals` 9, `universe` 5, `community_change_context` 2, `extensions` 15 | **missed** |
-| Total literal wire sites | 6 | **42 across 10 files** (+1 dynamic, +1 registration-level test) | **refuted** |
-| `wiki action=list` dependents | 2 scripts | **5 wire sites + public playground** | **undercounted** |
-| Open-PR state (#1493/#1467/#1466/#1465/#1561) | pinned shas | re-queried 2026-07-25, **all unchanged** | confirmed |
-
-Mechanism confirmed, not assumed: `live.ts:103` → `rpc('tools/call')`; `playground.ts:132`;
-`snapshot-mcp.mjs:210` (official MCP SDK). `fetchLive`/`fetchVitals` are imported and invoked by
-11 rendered page components across the two trees; `snapshot-mcp.mjs:25` hardcodes
-`https://tinyassets.io/mcp`. Both trees are deployable (`deploy-site.yml` / `deploy-site-react.yml`,
-both `workflow_dispatch`-only, sharing the `pages` concurrency group) and their headers
-**contradict each other** about which is live — so both are counted; `deploy-site.yml` is the
-documented rollback path.
-
-### Two findings v2 adds beyond the verdict
-
-- **2.3-D — `extensions action=stream_run` is a second orphaned action with live callers.**
-  `read_graph` emits only `list/get/search/inspect/list_runs/get_run/get_branch`; `stream_run`
-  exists only in the legacy docstring (`universe_server.py:1413`). Both `live.ts` trees call it
-  from `fetchMcpPatchLoopFeed` (`live.ts:836`), reached from the rendered `/loop` page via the
-  **default** `source='mcp'` branch.
-- **2.3-E — task 4.4's mirror rebuild breaks four packaged slash commands.**
-  `runtime/server.py:39-40` boots the mirrored `universe_server`; `premise`/`progress`/`status`/
-  `steer` SKILL.md instruct `universe` calls, and three of the actions they name
-  (`get_activity`, `give_direction`, the premise verbs) have **no** canonical equivalent.
-
-Also corrected: `callTool('loop', …)` (`live.ts:838`/`841`) is **not** a legacy caller — `loop` is
-not among the 13 registered tools at all. Correctly excluded from the 38; now logged in §4e so a
-later reader does not re-add it.
-
-### Final counts (v2)
-
-- **Python — unaffected by unregistration:** 57 imports / 26 files; 119 module-attr references /
-  41 files (102 calls + 17 introspection); **376 call expressions / 62 files**; 1 non-test
-  `import *`. Union of classes A+B = **67 files, all under `tests/`** — the star import is the
-  documented exception to "every repository import."
-- **Wire — broken by unregistration:** **42 literal sites / 10 files** = 4 Python
-  (`navigator_wiki_sweep.py:162`, `mcp_probe.py:139,146,155`) + **38 website / 8 files**; plus
-  1 dynamic dispatcher (`Playground.svelte:95`) and 1 registration-level test
-  (`test_universe_server_five_handles.py:127`).
-- **Of those 42, 9 have no canonical replacement:** `wiki action=list` ×5,
-  `community_change_context` ×2, `extensions action=stream_run` ×2. The other **33** are
-  straightforward migrations via the `last_activity_canary.py` precedent.
-- **Non-dispatch classes:** 3 metadata panels, 3 response labels, **8+ instruction surfaces**
-  (4 packaged skills, `bids/README.md:24`, playground copy, `api/universe.py:2540` hint).
-- Action-reachability gap unchanged and re-verified: **187 dispatchable actions → 18 canonical-
-  reachable → 169 orphaned** (`gates` 20 of 20).
-
-### Task checkoff reconciliation
-
-| Task | Now | Why |
-|---|---|---|
-| 2.1 | **`[x]` retained, qualified** | Deliverables done; PR state re-queried today. The "resolve **or depend**" half is now real: artifact §11 is stated as **binding preconditions**, and task 4.1 carries the dependency inline. Caveat recorded: raw scan output not retained, `origin/main` stamp decays. |
-| 2.2 | **`[x]` retained** | Unrefuted. #1561 `1a5d45af` re-queried (OPEN draft, 3 files, stdio-only); `mcp_server.py` disjoint; `directory_server.py` absent since `60f7f9f1`. |
-| 2.3 | **`[ ]` UNCHECKED** | Its contract ("**every** repository import and direct caller … preserve-or-explicitly-migrate decision") is not met: the wire half was wrong by 36 sites and its checkoff asserted three false statements. The Python half is complete and retained; 2.3 re-checks only after the class E/F/G/K migration decisions in §11 are recorded. |
-
-Task 4.1 also gained an inline block note naming the §11 preconditions — that is what makes 2.1's
-"depend on the owners" clause actually binding rather than advisory.
-
-**Still not established (unchanged):** task 1.3 external telemetry, live probes, installed-client
-and deployed-bundle state, which website tree is actually serving, adjudication of the 169 orphans.
-Class G (user-typed playground input) is not statically enumerable at all.
-
----
-
-## Scope 2 — BUG-018 closure: BLOCKED (false premise — page is not in this repo)
-
-**The BUG-018 page does not exist anywhere in this repository, and the wiki is not repo-managed.**
-The edit as specified could not be performed in-worktree. Evidence:
-
-- `git ls-files | grep -i bug-018` → **0 tracked files**; repo-wide `BUG-018` hits are only
-  references (`STATUS.md`, `docs/ops/post-redeploy-wiki-migration.md`, `docs/audits/…`).
-- **Zero files tracked under `wiki/`**; no `.gitmodules`. The repo's `pages/bugs/` holds a
-  different, unrelated series (`bug-093`, `bug-095`).
-- `deploy-prod.yml:293` explicitly **strips** `TINYASSETS_WIKI_PATH` so `wiki_path()` falls back to
-  the platform default (`data_dir()/wiki`) — i.e. the **production host volume**. The wiki is live
-  service data, not source.
-- The only local copy is a stale 2026-06-24 snapshot at
-  `Projects/Workflow-live-data-snapshot/wiki/…`, outside this lane's worktree.
-
-**Live state confirmed** (read-only `read_page` against the production connector, 2026-07-25):
-page `pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md`,
-`is_draft: false`, `status: open`, `updated: 2026-04-22`, 3807 chars,
-`sha256 = 14d56d920a54bfb0f558837b891c0f5383f7e44a68fe92d86543a55c4c42c749`.
-
-**I did not perform the write.** It is a mutation of live production data, outside the lane's
-"work only inside this worktree" fence, and it cannot be captured in this lane's commit. The host
-decision authorises the content change, so this needs only a go-ahead — not a re-decision.
-
-Ready to run as-is (CAS-guarded; `write_page` exposes `patch` with `expected_sha256`, so the
-malformed filename is preserved and the surrounding body is untouched):
-
-```
-write_page action=patch
-  page="pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md"
-  expected_sha256="14d56d920a54bfb0f558837b891c0f5383f7e44a68fe92d86543a55c4c42c749"
-  old_text="status: open"
-  new_text="status: closed (superseded by feature-describe-branch-related-wiki-pages)"
-```
-
-then a second `patch` appending the body note (re-read for the new sha first):
-
-```
-old_text="## Related\n\n_none yet_"
-new_text="## Related\n\nClosed 2026-07-25 per host decision — see docs/ops/post-redeploy-wiki-migration.md §1.8."
-```
-
-Two notes for whoever runs it:
-- **Keep the filename.** Confirmed deliberate; renaming risks wikilink breakage for zero reader benefit.
-- The live body contains pre-existing malformed markup (stray `</observed>`,
-  `<parameter name="expected">` residue). Use `patch`, **not** a full-content `write` — a wholesale
-  rewrite would likely mangle it further. Unrelated to this closure, but worth a separate cleanup row.
-
-**Follow-up surfaced, not actioned** (outside this lane's claimed write-set): the STATUS.md
-`host-decision` row *"BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki
-action=promote` a draft over it?"* is now answered by the 2026-07-25 decision (keep the filename)
-and is ready to be deleted. I left STATUS.md untouched to stay inside the collision check I ran.
-
----
-
-## Fold 2 (v3) — after opposite-provider round 2 returned `adapt`
-
-Verdict source: `…/scratchpad/verdict-retire-inventory.md` §"Round 2" (reviewed v2 at `9bd88a07`,
-read-only static analysis + read-only GitHub PR queries). Artifact bumped **v2 → v3** in place.
-
-**Round 2 confirmed v2's substance.** It independently reproduced every headline count — 38 website
-sites / 8 files with the per-tool split 7/9/5/2/15; 42 literal wire sites / 10 files; 57 imports /
-26 files; 119 references / 41 files = 176; 376 calls / 62 files; 17 non-call references; the
-non-test star import — plus the `wiki action=list` no-equivalent analysis, both new blockers, and
-all three task-checkoff states. It named four corrections. **Every disputed number below was
-re-derived by me before folding, not taken from the verdict.**
-
-### Correction 1 — B2 file count: 4 → **5** (count 17 unchanged)
-
-Re-ran my binding-aware AST pass (module aliases resolved per-file, `Attribute` nodes classified by
-whether their `id()` is the `.func` of an enclosing `Call`):
-
-| File | Non-call refs |
-|---|---|
-| `tests/test_mcp_dispatch_docstring_parity.py` | 11 |
-| `tests/test_api_market.py` | 2 |
-| `tests/test_goals_discoverability.py` | 2 |
-| `tests/test_api_universe.py` | 1 |
-| `tests/test_validate_ship_packet_action.py` | 1 |
-| **Total** | **17 across 5 files** |
-
-Same run re-emitted `total module-attr refs: 119` / `of which calls: 102`, so classes B/B1 are
-unchanged and only the B2 **file** count was wrong. The verdict's 5-file list matches mine exactly.
-**Applied:** §4a row `4` → **`5`** plus an inline correction note naming all five files.
-
-### Correction 2 — blocker prose
-
-**2.3-D (`stream_run`).** v2 claimed it "appears in the repository only inside the legacy
-`extensions` docstring." I verified this myself and **v2 was false**: `_action_stream_run` at
-`tinyassets/api/runs.py:924`; dispatch entry `_RUN_ACTIONS["stream_run"]` at `:1891`; enumerated at
-`tinyassets/api/extensions.py:737`; and covered by real tests (`test_branch_runner.py:751,925,963`;
-`test_api_runs.py:37,65,96`). Re-ran my canonical-action AST extraction to confirm the blocker
-still holds — `read_graph` emits exactly `['get','get_branch','get_run','inspect','list',
-'list_runs','search']`, no `stream_run`. **Applied:** 2.3-D reframed as **canonical
-unreachability**, with the explicit note that retirement removes the only wire *route* to working,
-tested functionality — which makes restoring it a routing decision, not new feature work.
-
-I also swept for the same defect wherever else I had written "docstring-only," since the verdict
-named only `stream_run`. Same error found and fixed for `get_node_output`
-(`api/evaluation.py:394`, dispatch `:783`), and verified real for `get_activity`
-(`api/universe.py:6084`), `give_direction` (`:6088`), `read_premise` (`:6089`), `set_premise`
-(`:6090`), `submit_node_bid` (`:6109`). §5 now defines "orphaned" as *unreachable through the
-canonical seven*, never *unimplemented*.
-
-**2.3-E (packaged skills) — three sub-corrections, all verified:**
-
-| v2 said | Truth | How I verified |
-|---|---|---|
-| `get_premise` / `set_premise` | **`read_premise`** / `set_premise` | `premise/SKILL.md:13` reads `action="read_premise"`. `get_premise` is a tool on the *separate* stdio server `tinyassets/mcp_server.py` (artifact §3) — a different server entirely. |
-| "**three** of the five actions … no canonical equivalent" | **four** of five | Unique set across the 4 skills = {`read_premise`, `set_premise`, `inspect`, `get_activity`, `give_direction`}. Only `inspect` is emitted by `read_graph` (AST extraction above) ⇒ **4** unreachable. |
-| "the moment **4.1** lands" | breaks at **4.4** | The mirror is a checked-in copy carrying its own registrations — `runtime/tinyassets/universe_server.py:1030` still defines `_DEPRECATED_TOOL_NAMES`. `runtime/server.py:39-40` boots **the mirror**, so 4.1 (source-only) leaves the plugin working; the window opens when **4.4** regenerates it. |
-
-**Applied:** 2.3-E retitled to task 4.4, given a per-skill reachability table, and all three defects
-recorded inline. Precondition 5 in §11 restated with the 4.4 deadline. This one is a real
-sequencing fix, not cosmetic — v2 would have had the migration land against the wrong task.
-
-### Correction 3 — new authorization/action-scope metadata class (**class L / Finding 2.3-F**)
-
-Verified `tinyassets/auth/provider.py:516-618`: five `_extend_scope_rows(..., tool=…)` calls keyed
-on `universe` `:516`, `wiki` `:525`, `extensions` `:580`, `gates` `:600`, `goals` `:610`, carrying
-`write_actions` / `costly_actions` / `admin_actions` — including the money-write set
-(`escrow_lock/release/refund/fund/set_wallet/withdraw`). I then traced **all six**
-`require_action_scope` call sites and confirmed each passes a hardcoded legacy tool-name literal.
-Five enforcement sites are on bodies canonical handles delegate into; the `gates` site is reached
-only from the hidden legacy dispatcher:
-`api/universe.py:6235`→`:6151`, `api/wiki.py:2789`→`:2651`, `api/extensions.py:399`→`:248`,
-`api/market.py:2595` (`"goals"`), `api/market.py:3936` (`"gates"`), `api/first_contact.py:50`
-(`"universe"`).
-
-**Why it matters:** task 4.2 is told to remove "the legacy-name set, and dead registration-only
-state." This table *looks* exactly like that and **is not** — it is load-bearing authorization and
-availability state. A missing row fails closed; the narrower risk is removing mutating
-classifications while leaving actions to default to `read` in resolve-always mode.
-**Applied:** new census row L, new §4f / Finding 2.3-F, new §11 precondition 10, and an inline
-scope guard on tasks 4.2/4.4 in `tasks.md` requiring them to state whether they preserved or
-lockstep-migrated the registry and mirror, gated by a two-part regression. Does **not** change the
-42-site count; `community_change_context` has no scope row (fixed single action).
-
-### Checkoff re-validation
-
-Re-checked against the corrected artifact — **no checkoff changes**, and this matches round 2's own
-finding 4 ("2.1 may remain checked … 2.2 may remain checked … 2.3 is correctly unchecked"):
-
-| Task | State | Still correct because |
-|---|---|---|
-| 2.1 | `[x]` | Unaffected by all three corrections. Round 2 independently re-queried #1493/#1467/#1466/#1465 and reproduced OPEN + matching head SHAs. |
-| 2.2 | `[x]` | Unaffected. Round 2 reproduced #1561 OPEN draft `1a5d45af`, exactly 3 files, six names disjoint, #1467's `directory_server.py` delta still present. |
-| 2.3 | `[ ]` | Still correctly unchecked. None of the three corrections clears a gate — 2.3-F *adds* a blocker, and 2.3-D/E tighten two existing ones. |
-
-`openspec validate retire-legacy-live-mcp-tools --strict` → **valid**. No `.py` touched, so ruff was
-not required.
-
----
-
-## Fold 3 (v4) — after opposite-provider round 3 returned `adapt`
-
-Round 3 left B2 (**17 references / 5 files**), 2.3-D, and 2.3-E unchanged. It corrected Finding
-2.3-F's failure mode: `require_action_scope` fails closed when `action_scope_for` returns `None`,
-raising `PermissionError` before resolve-always's read exemption. This was reproduced in the local
-tree and at production source SHA `0603aae1`. The residual fail-open risk is narrower: removing
-only write/costly/admin classifications while leaving mutating actions in the registry defaults
-them to `read`, which resolve-always mode permits.
-
-Applied across inventory §4f/§10/§11 and tasks 2.3/3.5/4.2/4.4: the registry is load-bearing
-authorization **and availability** state; source enforcement and the packaged mirror must be
-preserved or lockstep-migrated; and a regression must prove both missing-metadata denial and
-non-read classification for every mutating action. The §4f reachability row now agrees with §5:
-`gates` is **not** reached through a canonical handle (20 of 20 gate actions remain orphaned).
-Task 2.3 remains unchecked.
-
-LANE_RESULT: done - folded round-3 ADAPT into inventory v4 and task gates: missing action-scope metadata fails closed, classification-only removal is the narrower resolve-always fail-open risk, `gates` has zero canonical routes, and tasks 4.2/4.4 now require lockstep source/mirror migration plus a two-part regression; B2 17/5 and 2.3-D/E remain unchanged.
+# Scoped-reset lane report
+
+Date: 2026-07-25
+Branch: `codex/osx-scoped-reset`
+Base requested: `origin/main` at `6cde7ef0`
+Round-1 pushed head: `6c793c3d`
+
+## Task 1.1 — freeze the safety contract
+
+Implemented an explicit reset/preserve/block inventory for the current main
+database and Epoch-2 stores. The planner fails closed on unknown tables,
+unknown or unadapted home/root operational stores and root-run tables,
+hidden/generated columns, changed resettable columns/keys/foreign-key
+authority, triggers/views, foreign owners, active work, and preserved rows that
+would otherwise be cascade deleted. Root/database/sidecar/home/barrier/journal/
+staging paths reject symlinks, junctions, reparse points, hardlinks, and
+filesystem/mount crossings.
+
+The process-shared maintenance barrier uses Windows reader slots for concurrent
+service writers and an all-slot exclusive reset lock. Every supported writer
+entrypoint recovers or joins a verified-clean barrier before writing. The
+legacy API acquires its replacement barrier before releasing the live one.
+
+Red evidence:
+
+- Initial contract run: 10 failures in `tests/test_scoped_identity_reset.py`.
+- Independent-review additions reproduced failures for generated columns,
+  hardlinked barrier/sidecar files, unadapted stores, foreign terminal actors,
+  preserved cascade dependencies, and second-writer startup.
+
+Green evidence:
+
+- `tests/test_scoped_identity_reset.py` is green as part of the final 64-test
+  focused run.
+- Real two-process writer startup and reset exclusion pass on Windows.
+
+Files:
+
+- `tinyassets/scoped_reset.py`
+- `tinyassets/__main__.py`
+- `tinyassets/cloud_worker.py`
+- `tinyassets/universe_server.py`
+- `tinyassets/mcp_server.py`
+- `tinyassets/desktop/launcher.py`
+- `tinyassets_tray.py`
+- `fantasy_daemon/__main__.py`
+- `fantasy_daemon/api.py`
+- `tests/test_scoped_identity_reset.py`
+
+## Task 1.2 — read-only operator plan
+
+Implemented an operator-only `python -m tinyassets.scoped_reset plan` command
+that accepts an explicit credential-free roster, resolves only allowlisted
+aliases, emits no raw subject, and binds the plan digest to roster/inventory
+revisions, a domain-separated principal digest, exact row digests, resolved
+paths, the home filesystem object plus entry/content digest, blockers, and
+preservation scope. POSIX permissions and Windows owner/DACL are checked.
+Unknown/non-allowlisted aliases fail closed. Read-only SQLite inspection does
+not create WAL/SHM sidecars.
+
+No-state planning and apply are stable mutation-free no-ops, including a data
+root with no database. Completed replay returns the old receipt before
+inspecting or touching a newly registered, actively blocked replacement home.
+
+Red evidence:
+
+- Four missing-planner failures plus two missing CLI/receipt failures.
+- A no-database no-op apply reproduced the control-only-schema failure.
+- Completed replay with an active replacement home reproduced an incorrect
+  blocker before receipt lookup.
+
+Green evidence:
+
+- Both regressions pass in the final focused run.
+
+Files:
+
+- `tinyassets/scoped_reset.py`
+- `tests/test_scoped_identity_reset.py`
+
+## Task 1.3 — exact scoped apply and deterministic recovery
+
+Implemented operator-only apply under the exclusive barrier and a durable
+principal/home fence. Apply revalidates the exact plan, roster-principal
+binding, filesystem object identity, and entry/content digest, then checks the
+filesystem identity again immediately before rename. It publishes the
+content-free journal before the SQLite prepared witness, stages only the exact
+founder home by same-filesystem rename, deletes only exact planned primary-key
+rows, and commits those deletes with the commit witness.
+
+Recovery re-derives all paths instead of trusting SQLite, compares journal and
+database evidence, rejects linked staging ancestors, rolls pre-commit state
+back, completes post-commit cleanup, sweeps orphan/partial journals, and
+durably flushes both rename parents plus staging/journal parents. All public
+servers import only the writer barrier; apply/plan/recovery are not registered
+as MCP actions or API routes.
+
+Red evidence:
+
+- Ten initial missing-apply failures.
+- Eight Windows directory-durability failures before directory flushing was
+  implemented.
+- Independent review reproduced the journal-before-row and
+  journal-before-completion crash windows, trusted recovery paths, linked
+  staging ancestors, missing rollback-parent flushes, and multi-writer
+  admission failure.
+
+Green evidence:
+
+- All journal, rename, commit, cleanup, completion, replay, and rollback
+  boundaries pass in the final focused run.
+- The durable Opus 5 review verdict is REJECT for reviewed head `f613b23d`.
+  This fold fixes and proves its findings but does not invent a post-fix
+  reviewer approval.
+
+Files:
+
+- `tinyassets/scoped_reset.py`
+- writer entrypoint files listed under task 1.1
+- packaged runtime mirrors under
+  `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`
+- `tests/test_scoped_identity_reset.py`
+
+## Task 1.4 — mutation and fault proof
+
+Added a 13-case CI-executable proof that mutates the real `founder_home` and
+`universe_acl` planner selection predicates and delete keys, corrupts the
+commit witness and journal/path evidence,
+interrupts partial journal publication, injects rollback rename failure,
+checks reverse-rename durability flushes, and substitutes a linked staging
+ancestor. Each widened filter or broken recovery guard makes the proof red.
+
+Red evidence:
+
+- Three initial mutation/recovery failures.
+- Additional independent-review regressions were each observed red before
+  implementation.
+
+Green evidence:
+
+- `tests/test_scoped_reset_mutation_proof.py`: 13 passed.
+
+Files:
+
+- `tests/test_scoped_reset_mutation_proof.py`
+- `tinyassets/scoped_reset.py`
+
+## Final verification
+
+- Focused reset test files: 74 passed.
+- Standalone mutation proof: 13 passed.
+- Adjacent legacy API suites: 263 passed, 1 existing Starlette deprecation
+  warning.
+- Ruff on every changed Python source, test, and packaged mirror: clean.
+- `python packaging/claude-plugin/build_plugin.py`: passed; import probe
+  `probe-ok`.
+- Canonical/package equality regression: passed.
+- `openspec validate test-identity-and-reset --strict`: valid.
+- `git diff --check`: clean before commit.
+- Pre-commit gates: mirror parity, mojibake, import graph, path resolver,
+  cross-provider drift, and skill validation passed.
+- Branch pushed to `origin/codex/osx-scoped-reset` at `6c793c3d`; no PR opened.
+
+## Deliberately not done
+
+- No MCP action or public API route was added for reset.
+- The existing global reset implementation was not changed.
+- No PR was opened.
+- Tasks 2.x and 3.x were not implemented in this lane.
+- No WorkOS identities, credentials, live connector evidence, or production
+  reset was created.
+- This report is intentionally not committed.
+
+## Opus 5 REJECT fold
+
+### Finding 1 — cross-home data loss from path-only binding
+
+- **Red:** `test_apply_refuses_home_directory_identity_swap` reproduced an
+  unchanged plan and completed deletion after Alice's planned path was replaced
+  by Bob's directory: 1 failed, `DID NOT RAISE`.
+- **Fix:** The plan action now binds the roster-principal fingerprint,
+  directory device/inode, and deterministic entry/content digest. Apply
+  re-plans under the exclusive barrier and rechecks the filesystem identity
+  immediately before `os.replace`.
+- **Green:** The focused regression passes and Bob's file plus parked Alice
+  home survive.
+- **Mutation proof:** Replacing the identity capture with
+  `{"path": str(home)}` turned the regression red again: 1 failed,
+  `DID NOT RAISE`.
+
+### Finding 2 — silent destruction of unclassified in-home stores
+
+- **Red:** The reviewer formats `.sqlite3`, `.jsonl`, `.parquet`, and an
+  extensionless store all produced no blocker: 4 failed.
+- **Fix:** Home files are classified against an explicit resettable-content
+  suffix set; known operational stores and every unclassified format abort the
+  plan/apply without deletion.
+- **Green:** All four formats are blocked, apply raises
+  `ScopedResetBlocked`, and the store/home bytes survive: 4 passed.
+- **Mutation proof:** Temporarily allowing the four suffix classes made all
+  four regressions red again because no blocker was reported.
+
+### Finding 3 — fail-open legacy writer fence
+
+- **Red:** The legacy reconfigure probe acquired an exclusive reset lease on
+  root A after root B acquisition failed while the API still pointed at A:
+  1 failed, `legacy API still serves root A without its writer fence`.
+- **Fix:** `configure()` now acquires the replacement shared barrier, swaps the
+  module lease, then releases the previous barrier. Acquisition failure changes
+  no live state.
+- **Green:** Failed root B configuration leaves root A's shared lease held, and
+  the root/barrier pair swaps before the old lease releases: 2 passed.
+- **Mutation proof:** Restoring release-before-acquire turned the same probe
+  red with the original unfenced-root assertion.
+
+### Finding 4 — root stores and `.runs.db` schema growth skipped
+
+- **Red:** A root `future_queue.sqlite3` and a live `pending_jobs` table in
+  `.runs.db` yielded no blockers.
+- **Fix:** Root files and root-run tables are explicit allowlists; unknown
+  entries abort reset. Read-only WAL snapshots require the existing SHM and
+  never create one.
+- **Green:** Both unknown surfaces report blockers and the root/home bytes
+  survive the refused apply.
+- **Mutation proof:** The inventory regression directly pins both default-deny
+  decisions; widening either allowlist makes the focused assertion red.
+
+### Finding 5 — `founder_home` widening survived mutation proof
+
+- **Red:** The Opus mutation widened `founder_home` to universe-only and the
+  old 64-test suite stayed green.
+- **Fix:** The planner validates every selected founder-home row against both
+  exact principal and exact home before producing an action; the mutation
+  suite now widens `founder_home` explicitly.
+- **Green:** The widened runtime selector raises
+  `ScopedResetPlanChanged("founder-home selection escaped...")`; the mutation
+  file is 13 passed.
+- **Mutation proof:** The new selector-widening case is itself the executable
+  mutation and fails without the exact-row validation.
+
+### Finding 6 — plan created SQLite WAL/SHM sidecars
+
+- **Red:** The recursive size/mtime/SHA snapshot gained
+  `.tinyassets.db-wal` and `.tinyassets.db-shm`.
+- **Fix:** Sidecar-free databases use immutable read-only SQLite. Existing WAL
+  snapshots use read-only mode only when their SHM already exists; a WAL
+  without SHM fails closed.
+- **Green:** `test_plan_does_not_create_sqlite_sidecars` preserves the complete
+  recursive snapshot.
+- **Mutation proof:** Replacing the helper with the former bare `mode=ro`
+  connection makes the snapshot regression red by adding both sidecars.
+
+### Finding 7 — unsupported independent-approval claim
+
+- **Red:** `git log --name-only 6cde7ef0..f613b23d` contained no review
+  artifact while the old report claimed `APPROVE`.
+- **Fix:** `docs/reviews/2026-07-25-scoped-reset-opus5.md` durably records the
+  named/date/range REJECT and all seven findings. This report removes the false
+  approval claim.
+- **Green:** The review artifact is included in the commit candidate; this
+  intentionally uncommitted report points to it.
+- **Mutation proof:** Removing the durable artifact or restoring the approval
+  sentence makes the documented review-evidence check false by inspection.
+
+## Round 2 - recovery ownership and case-fold containment
+
+### Finding 8 - automatic recovery cleanup deleted a replacement staging directory
+
+- **Red:** The reviewer reproduction crashed at `after_commit`, parked the
+  reset-created staged home, moved Bob's pre-existing home into the exact
+  staging path, and called automatic recovery. Recovery did not raise and
+  deleted Bob's directory. In the first focused run this regression and both
+  recovery legs of the general containment test failed with `DID NOT RAISE`
+  (3 staging-ownership failures total).
+- **Fix:** The already-reviewed home identity manifest is now persisted in both
+  `plan_json` and the pre-rename journal, with the database copy bound to the
+  existing `state_digest` and the two copies cross-validated during recovery.
+  `_safe_cleanup_staging` cannot be called without a planned identity and is
+  the only `shutil.rmtree` site in scoped reset. It verifies device, inode, and
+  complete entry/content digest before deletion. Pre-commit rollback uses the
+  same authorization before moving staged state back.
+- **Green:** The replacement directory causes
+  `ScopedResetRecoveryError("...filesystem identity...")`; Bob's bytes remain
+  at the staging path and the parked reset-owned home remains intact. The
+  reviewer regression and all four general containment cases pass.
+- **Mutation proof:** Temporarily turning
+  `_assert_recovery_filesystem_identity` into a no-op made the reviewer
+  regression, both staged-replacement containment cases, and the foreign
+  already-restored source case red: 4 failed, 3 passed. Restoring the guard
+  returned them to green.
+
+### Finding 9 - Windows case collision bypassed credential and audit classification
+
+- **Red:** On the case-folding Windows pytest path, `AUTH.JSON`, `Auth.Json`,
+  `.CREDENTIAL-VAULT.JSON`, and `BID_EXECUTION_LOG.JSON` produced no blocker;
+  all four reviewer variants failed before apply could be proven to abort.
+- **Fix:** Home traversal now computes `entry.name.casefold()` once and uses
+  that normalized name for every credential, audit prefix, operational
+  directory, operational filename, SQLite sidecar, and suffix decision. The
+  allowlist and deny rules therefore use one case-insensitive classification
+  domain.
+- **Green:** All four case-collided stores are classified as credential or
+  audit artifacts, apply raises `ScopedResetBlocked`, and their bytes plus the
+  founder home survive.
+- **Mutation proof:** Temporarily replacing `entry.name.casefold()` with the
+  original `entry.name` made all six credential, audit, operational-file, and
+  operational-directory variants red again.
+
+### Structural assessment and choice
+
+Two rounds finding the same guarantees at new paths showed an incomplete
+generalization, not two unrelated last-edge bugs. The row-delete side was
+already structurally exact: reviewed primary keys are the only rows deletion
+accepts. The filesystem side also already built the right identity-owned
+manifest before mutation, but recovery dropped the filesystem actions and the
+tree-delete primitive accepted only a path.
+
+The chosen structural change reuses that manifest rather than creating a
+parallel deletion model:
+
+1. One shared state-digest function binds database and filesystem actions.
+2. Prepared database evidence and the durable journal both carry the reviewed
+   filesystem identity before rename or deletion.
+3. Recovery validates plan digest evidence, owner fingerprint, source path,
+   action kind, and journal parity before returning a deletion identity.
+4. The sole scoped-reset tree-delete primitive requires that identity and
+   refuses mismatches; rollback uses the same identity gate.
+5. Home classification normalizes once before every protected-name or
+   resettable-suffix decision.
+6. Pre-commit recovery accepts exactly two filesystem states: owned staging
+   with absent source (restore it), or absent staging with the same owned source
+   already restored. Both-present, neither-present, and foreign identity abort
+   without marking rollback complete or releasing the lease.
+
+This closes the class at the destructive primitive and recovery-evidence
+boundary instead of adding another path-specific check. An interrupted
+operation created by older code without filesystem manifest evidence now
+fails recovery loudly and preserves staged state rather than guessing.
+
+### General containment invariant
+
+`test_foreign_directory_is_refused_at_every_filesystem_boundary` enumerates all
+filesystem ownership transitions:
+
+- replacement of the reviewed source before apply;
+- replacement at the `before_rename` boundary;
+- replacement of staging before pre-commit rollback;
+- replacement of staging before post-commit cleanup.
+
+Every case must abort and preserve both the foreign directory and the parked
+reset-owned directory. Removing the pre-rename identity recheck makes its case
+red (wrong exception after database commit), while disabling the shared
+staging guard makes both recovery cases destructive and red. The journal
+manifest has its own red-first persistence regression. A second parameterized
+state-table test proves that pre-commit recovery refuses both missing home state
+and a foreign source replacement, while a non-vacuity control accepts the
+already-restored reset-owned source.
+
+### Round-2 final verification
+
+- First reviewer-reproduction run: 7 failed, 2 passed for the expected reasons.
+- Independent-review state-machine additions: 2 failed, 7 passed before the
+  final recovery-state fix.
+- Focused reviewer and containment cases after the fix: 14 passed.
+- Full reset set:
+  `tests/test_scoped_identity_reset.py tests/test_scoped_reset_mutation_proof.py`
+  - 89 passed.
+- Standalone mutation proof: 21 passed.
+- Literal mutations: recovery identity guard no-op - 4 failed; case-fold
+  removal - 6 failed; pre-rename recheck removal - 1 failed.
+- `ruff check` on canonical source, packaged mirror, and both reset test files:
+  all checks passed.
+- Canonical/package SHA-256 parity:
+  `8661C1A7974FE5D1D7E24CEAA54D26FD0678E4CCBCAA36DED7940BA2EA151E7E`.
+- `git diff --check`: clean.
+- Independent read-only review of the final diff: Ready yes; no Critical,
+  Important, or Minor findings.
+- `.claude/.fleet_floor_state.json` and `.claude/.fleet_warn_stamp` remain
+  untouched and untracked.
+- No PR was opened.
+
+LANE_RESULT: done - both Round-2 data-loss holes are structurally closed, mutation-pinned, fully verified, committed, and pushed
