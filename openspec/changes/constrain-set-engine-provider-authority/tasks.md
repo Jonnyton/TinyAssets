@@ -79,10 +79,18 @@
   clarify that dark legacy assignment gains no independent auth precondition;
   and preserve the bounded fixed private subscription viability probe outside
   user routing.
-- [ ] 1.22 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
+- [x] 1.22 Refresh exact-SHA review/handoff evidence and obtain the next Opus
+  5 review; it approved the simplification but returned `ADAPT` because
+  cloud-only target readiness emptied canonical non-writer roles and the
+  completion-based auth probe lacked a background-authority bucket.
+- [x] 1.23 Fold that `ADAPT`: require role-complete ready ceilings with
+  per-provider bindings, hold cloud-only custody until a requester-owned role
+  supplement exists, and move `_AUTH_PROBE_PROMPT` behind background
+  maintenance authority or a zero-output replacement.
+- [ ] 1.24 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
   approval of the exact adapted artifacts; resolve every Critical and
   Important finding.
-- [ ] 1.23 Run strict target/full-tree validation and land this target active
+- [ ] 1.25 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -144,7 +152,10 @@
   `call_provider` caller, including graph run/resume/version/policy/judge,
   RAPTOR, reflexion, agentic retrieval, background work, and maintenance.
   Name `_DEFAULT_ENGINE_SOURCE`, `universe_has_assigned_engine`, every
-  `engine_setup_required_payload` branch, and per-transport auth middleware.
+  `engine_setup_required_payload` branch, `_AUTH_PROBE_PROMPT` and its
+  completion-based Codex refresh-viability caller, and per-transport auth
+  middleware. Classify that completion as background maintenance requiring
+  its owner receipt or a zero-output replacement, never a host-local probe.
   Record that the shipped setup envelope advertises deprecated
   `universe action=set_engine` even though `universe` is not one of the seven
   live handles; do not carry that dead path into target setup.
@@ -189,9 +200,13 @@
   first-contact birth ID before target initialization, while any existing-home
   principal and every caller-supplied opt-in fail before canary registration.
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
-  `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
-  generation increment, singleton ceiling, inferred/matching writer, and
-  byte-exact zero mutation on invalid route under the effective gate. Prove
+  `anthropic -> claude-code` and `openai -> codex`, exact cloud binding entry,
+  generation increment, inferred/matching writer, and byte-exact zero
+  mutation on invalid route under the effective gate. Prove cloud custody
+  alone stays `held + []`; an atomic cloud-plus-attested-requester-local
+  supplement publishes one per-provider binding map and a ceiling whose
+  intersection with writer/judge/extract/embed is non-empty. Maintainer-owned
+  local compute and any non-role-complete mapping remain held. Prove
   with the global flag false and empty canary state that all four shipped
   `set_engine` sources, all ten accepted BYOC services, config/readiness
   results, provider destination behavior, and `allowed_providers=None` no-op
@@ -239,20 +254,24 @@
   canary-proven Tier-1 connector and local surface gates pass, flip the global
   flag/default and enable `engine_source=unassigned` plus newborn deny-all
   atomically. Make the secret-free generated-ID canary registry durable across
-  process restart, remove failed-birth entries before returning error, and
-  remove it during bounded-test cleanup. Document the three provider-authority
+  process restart, remove failed-birth entries before returning error,
+  reconcile orphan IDs with no living universe at startup before routing, and
+  remove registry state during bounded-test cleanup. Document the three provider-authority
   V2 environment variables and their default-dark/caller-non-authority
   semantics in `docs/reference/environment-variables.md`.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
-  existing opaque binding reference and strict service/writer mapping; add
+  existing cloud binding entry and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
-  attested local/host target mappings only under the effective gate. While
-  dark, keep every legacy source/service/config/readiness/destination behavior
-  unchanged. Refuse target migration/assignment before mutation if existing
-  config is unparseable so fallback-empty merge cannot drop unrelated keys.
+  attested local/host target mappings only under the effective gate. Persist a
+  non-secret per-provider binding map; keep cloud-only assignments held and
+  atomically publish ready only after a requester-owned role supplement makes
+  every canonical role reachable. While dark, keep every legacy
+  source/service/config/readiness/destination behavior unchanged. Refuse
+  target migration/assignment before mutation if existing config is
+  unparseable so fallback-empty merge cannot drop unrelated keys.
 - [ ] 5.4 Implement assignment generation, exclusive transaction, secret-free
   journal, pending quarantine, coherent atomic publication, failed deny-all
-  recovery, and startup cleanup.
+  recovery, per-provider binding-map replacement, and startup cleanup.
 - [ ] 5.5 Export `ProviderAssignmentAdmission` with shared readers, exclusive
   writers, canonical universe keying, fixed lock order, generation/digest
   checks, and fail-loud reverse/reentrant acquisition.
@@ -287,12 +306,12 @@
   all existing `UniverseContext`/`ModelConfig`/`ProviderResponse` fields.
 - [ ] 6.5 Add host-capability forgery tests across API/MCP/JSON/config/env/node
   inputs, lookalikes, serialization, and genuine-token request substitution;
-  prove its closed set is exactly the three zero-output probes; the local-model
-  and sandbox probes invoke no model or quota; the subscription probe may run
-  only the canonical bounded fixed private live-viability completion against
-  explicitly configured host-operator subscription quota; and no requester
-  prompt/quota, universe mutation, or ordinary provider route becomes
-  reachable.
+  prove its closed set is exactly three zero-output/non-completion probes.
+  The host-local subscription probe performs credential inspection only. Prove
+  `_AUTH_PROBE_PROMPT` completion is rejected without the background owner's
+  exact maintenance receipt, cannot use ambient maintainer auth, and no
+  requester prompt/quota, universe mutation, or ordinary provider route
+  becomes reachable.
 - [ ] 6.6 Add provider parity tests proving every CLI/local/HTTP/in-process
   invocation is reference-only and only `ProviderExecutor.start()`
   dereferences after full binding revalidation before calling the provider's
@@ -319,7 +338,9 @@
 - [ ] 7.2 Implement sole provider-layer propagation through every inventoried
   request call site and router pool closure; integrate the separate background
   owner's receipt and host successor's local request capability at the same
-  sink; add only the three closed zero-output host-local probes.
+  sink; add only the three closed zero-output host-local probes; move the
+  completion-based subscription refresh-viability caller behind its bounded
+  background-maintenance receipt or replace it with a zero-output probe.
 - [ ] 7.3 Implement immutable router-minted `ProviderInvocation` with request
   capability/receipt, target/principal, provider, generation, opaque
   reference/digest, provenance, classifications, call inputs, and launch
@@ -344,7 +365,8 @@
   classification; unreadable vault/config stays fail-safe and blocks
   conversion. Raw-key-only records map to `failed + []` only inside the gated
   migration. A retained subscription maps ready only with complete current
-  principal/universe/provider/host/generation/custody evidence.
+  principal/universe/provider/host/generation/custody evidence plus a
+  role-complete per-provider binding map.
 - [ ] 8.2 Prove conversion locked, durable, idempotent, resumable, preserves
   unrelated credential bytes, leaves no unclassified universe or post-cutover
   `None`, and cannot restore wider authority. Do not flip the flag/default
@@ -366,13 +388,14 @@
   prove the generated ID enters the private registry before target
   initialization/visibility and later enforcement keys only on that ID.
   Remove test universes, principal entries, and registered IDs afterward.
-  Caller data cannot opt in and existing user universes cannot be migrated for proof. A
-  fully held surface fails this gate. Stop before flag/default flip,
+  Caller data cannot opt in and existing user universes cannot be migrated for
+  proof. A fully held surface fails this gate. Stop before flag/default flip,
   newborn deny-all, or legacy-writer quiescence if any fails. For every ready
-  ceiling, prove each required role has at least one currently registered
-  executable provider. If only an absent `ollama-local` remains, report that
-  role unavailable/exhausted without widening to cloud and fail the applicable
-  readiness gate.
+  ceiling, prove writer, judge, extract, and embed each have at least one
+  currently registered, executable, bound authorized provider; exercise the
+  live editorial `role="judge"` and ingestion `role="extract"` call sites. If
+  only an absent `ollama-local` remains or any role intersection is empty,
+  keep the assignment held and fail the readiness gate without widening.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.

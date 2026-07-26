@@ -84,7 +84,9 @@ After gated migration, every newborn begins with
 `engine_source="unassigned"`,
 `engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
 `allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
-require `[]`.
+require `[]`. Non-empty is necessary but not sufficient: a ready ceiling must
+intersect every canonical `writer`, `judge`, `extract`, and `embed` chain and
+carry one current provider-specific binding entry for every destination.
 
 Before migration, optional assignment fields remain absent and
 `TINYASSETS_PROVIDER_AUTHORITY_V2` defaults false. `_DEFAULT_ENGINE_SOURCE`
@@ -132,19 +134,20 @@ The resolver is total over both the shipped source domain and target values:
 | `self_hosted_endpoint` | held intent | `activate-requester-host-engines`; never ready before endpoint and account-to-host proof |
 | `market_rented` | remote-only intent | always `[]` in ordinary routing; B2+B13 own execution |
 | `host_daemon` | legacy read/migration name | rename to `founder_hosted_daemon` only through the host successor; otherwise held |
-| `requester_local` + `anthropic` | target custody source | `["claude-code"]`; #1746's post-custody writer emits source + opaque binding |
-| `requester_local` + `openai` | target custody source | `["codex"]`; #1746's post-custody writer emits source + opaque binding |
+| `requester_local` + `anthropic` | target custody source | cloud binding + writer preference only; remains `held + []` until a separately authorized role supplement makes the ceiling role-complete |
+| `requester_local` + `openai` | target custody source | cloud binding + writer preference only; remains `held + []` until a separately authorized role supplement makes the ceiling role-complete |
 | `local_model` + `ollama` | target zero-cloud source | `["ollama-local"]`; `activate-requester-host-engines` emits source + attested host binding |
 | `founder_hosted_daemon` | target hosted source | successor-selected ceiling after stable authenticated account-to-host binding |
 
 An omitted writer is derived; a supplied writer must match exactly. Aliases,
 unknown values, mismatches, missing opaque binding references, and unsupported
-assignment fields fail before mutation. Ready requester-local assignment
-stores only an opaque credential binding reference plus non-secret
-provenance. #1746 alone owns raw/recoverable `llm_api_key` ingress refusal,
-binding custody, legacy retirement, and the atomic post-custody writer that
-emits `engine_source=requester_local`, service, opaque binding reference,
-generation/digest, and its singleton ceiling.
+assignment fields fail before mutation. Requester-local assignment stores a
+non-secret `provider_authority_bindings` map from canonical provider to its own
+opaque binding reference/digest and provenance. #1746 alone owns
+raw/recoverable `llm_api_key` ingress refusal, cloud binding custody, legacy
+retirement, and the atomic post-custody writer that emits
+`engine_source=requester_local`, service, the cloud binding entry, and writer
+preference. Cloud custody alone remains held.
 
 `self_hosted_endpoint`, `host_daemon`, `local_model`, and
 `founder_hosted_daemon` remain held until
@@ -157,8 +160,12 @@ successor modifies `daemon-identity-and-host-pool`, `desktop-host-runtime`,
 `ProviderHostRequestCapability` for attested interactive local stdio/SSE and
 it may consume `daemon_summon` but not treat pool rows or unattested client IDs
 as authority. It is the sole writer of ready `local_model` and
-`founder_hosted_daemon` assignments. `market_rented` remains held permanently
-in the ordinary router.
+`founder_hosted_daemon` assignments. It may also add an attested
+requester-owned `ollama-local` binding to a requester-local cloud assignment
+through the same admission transaction; only the atomic compositor may then
+publish the role-complete cloud-plus-local ceiling. Maintainer compute never
+supplies this supplement. `market_rented` remains held permanently in the
+ordinary router.
 
 ### 3. Assignment and custody share one exported admission primitive
 
@@ -166,10 +173,11 @@ A per-universe exclusive writer performs:
 
 1. mutation-free validation;
 2. secret-free journal plus `pending`/deny-all quarantine;
-3. source/reference update preserving unrelated credential bytes;
+3. source/per-provider-binding-map update preserving unrelated credential
+   bytes;
 4. durable `commit_ready` identity and non-secret digests;
-5. atomic final publication of state, generation, preference, reference,
-   provenance, and ceiling; and
+5. atomic final publication of state, generation, preference, binding map,
+   provenance, and role-complete ceiling; and
 6. durable matching journal cleanup.
 
 Post-quarantine failure publishes `failed + []`; it never restores prior wider
@@ -186,8 +194,9 @@ identity:
 Callers cannot choose its lock path. Global order is assignment admission
 before credential-custody index/keyring locks; reverse acquisition and
 untracked reentrancy fail loud. A custody writer validates expected assignment
-generation and credential-record digest before its narrower locks. A launch
-reader validates the same generation/digest before dereference. #1746 consumes
+generation and affected provider-binding digest before its narrower locks. A
+launch reader validates the selected provider's same generation/digest before
+dereference. #1746 consumes
 this published interface without a second lock; its exact-SHA provider-owner
 acceptance is an output gate from this owner, not a dependency back onto this
 target spec.
@@ -300,12 +309,12 @@ or non-provider local-only before runtime advances.
 `subscription_auth_probe`, `local_model_readiness_probe`, and
 `sandbox_readiness_probe`. Each operation is zero-output, accepts no user
 prompt, mutates no universe/branch, and cannot produce a
-`ProviderInvocation`. The local-model and sandbox probes invoke no model and
-spend no quota. The subscription probe preserves the canonical bounded fixed
-private live-viability completion: it may consume only explicitly configured
-host-operator subscription quota, never requester quota, user/universe
-content, or a user workload, and it stays outside ordinary provider routing.
-The capability is
+`ProviderInvocation`; the subscription operation is non-completion credential
+inspection only. The shipped `_AUTH_PROBE_PROMPT` refresh-viability completion
+is a background maintenance provider call, not a host-local probe. It holds
+until `harden-background-provider-execution-authority` issues its exact
+bounded maintenance receipt or a proven zero-output replacement lands; ambient
+maintainer authentication is never enough. The capability is
 bootstrap-minted after local operator configuration, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and absent
 from API/MCP/config/state/environment inputs. A closure test fails when any

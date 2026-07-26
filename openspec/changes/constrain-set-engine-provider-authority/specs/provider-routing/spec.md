@@ -80,7 +80,12 @@ bounded canary may the global flag flip. For every effectively gated universe,
 runtime, creation, and assignment SHALL persist state, generation, and
 `allowed_providers` and SHALL use `[]` for
 `unassigned`, `pending`, `held`, and `failed`, and a non-empty canonical list
-only for `ready`. Assignment replaces rather than unions the prior ceiling.
+only for `ready`. A ready ceiling MUST be role-complete: its intersection with
+each canonical `writer`, `judge`, `extract`, and `embed` chain is non-empty.
+Every provider in the ceiling SHALL have its own current entry in a non-secret
+`provider_authority_bindings` map containing the provider-specific opaque
+binding reference/digest and provenance required at the sink. Assignment
+replaces rather than unions the prior ceiling and binding map.
 
 Source resolution SHALL be total over shipped and target domains. Target
 newborn/setup source `unassigned` SHALL remain `unassigned + []` with no
@@ -88,11 +93,16 @@ provider or credential access. Legacy
 `byo_api_key` is read/migration-only: new writes are refused and it converts
 to target `requester_local` only after
 `retire-mcp-provider-secret-deposit` creates an opaque binding and atomically
-writes the new source, service, reference, generation/digest, and singleton
-ceiling; otherwise it becomes `failed + []` only during the gated migration,
-never merely because optional assignment fields are absent. `requester_local` service
-`anthropic` maps to `claude-code`/`["claude-code"]`; service `openai` maps to
-`codex`/`["codex"]`.
+writes the new source, service, cloud-provider binding entry, and
+generation/digest. A cloud binding alone remains `held + []`; it MUST NOT
+publish ready authority until the same assignment transaction has enough
+separately authorized provider bindings for role completeness. Otherwise it
+becomes `failed + []` only during the gated migration, never merely because
+optional assignment fields are absent. `requester_local` service `anthropic`
+maps writer preference to `claude-code`; service `openai` maps writer
+preference to `codex`. Against the shipped role chains neither cloud provider
+alone is role-complete (`claude-code` lacks judge/extract/embed; `codex` lacks
+embed).
 
 Legacy `host_daemon` migrates only through
 `activate-requester-host-engines` to `founder_hosted_daemon`.
@@ -102,6 +112,12 @@ endpoint/daemon/local model, requester authorization, and stable
 authenticated account-to-host principal. The successor is the sole ready
 writer for target `local_model`/`ollama`, which maps to
 `ollama-local`/`["ollama-local"]`, and `founder_hosted_daemon`.
+It may also publish an attested requester-owned `ollama-local` binding as the
+role supplement for a requester-local cloud assignment through the same
+`ProviderAssignmentAdmission`; the atomic compositor then publishes
+`["claude-code", "ollama-local"]` or `["codex", "ollama-local"]` only when
+every provider has its own valid binding and all four canonical roles remain
+reachable. Maintainer-owned local compute is never a supplement.
 `market_rented` remains held/deny-all in the ordinary router for its entire
 lifecycle.
 
@@ -138,9 +154,20 @@ policy-fallback, and judge behavior.
 - **THEN** it is attempted first for its role
 - **AND** only remaining providers in the same authorized chain may follow
 
-#### Scenario: requester-local assignments are singleton
+#### Scenario: cloud-only requester-local assignment stays held
 - **WHEN** an authenticated requester assigns canonical `anthropic` or `openai` with a valid opaque binding reference
-- **THEN** state is `ready`, generation increments once, and preference/ceiling equal the canonical singleton mapping
+- **THEN** the cloud binding and writer preference may persist, but state remains `held` with `allowed_providers=[]`
+- **AND** the assignment cannot become ready while any canonical role chain has no bound authorized destination
+
+#### Scenario: requester-owned role supplement makes cloud assignment ready
+- **WHEN** the same universe has a valid cloud binding plus an attested requester-owned `ollama-local` binding
+- **THEN** one atomic assignment publishes the matching cloud-plus-local ceiling and per-provider binding map
+- **AND** writer, judge, extract, and embed each retain at least one bound authorized destination
+
+#### Scenario: ceiling without complete provider bindings stays held
+- **WHEN** a proposed ceiling contains any provider without its own current matching binding entry
+- **THEN** assignment remains `held` with `allowed_providers=[]`
+- **AND** no other provider's binding or maintainer resource substitutes
 
 #### Scenario: attested local model makes canonical zero-cloud fallback reachable
 - **WHEN** the host successor validates target `local_model` service `ollama` and its stable account-to-host binding
@@ -163,11 +190,11 @@ policy-fallback, and judge behavior.
 
 #### Scenario: reassignment replaces authority
 - **WHEN** a ready universe receives another valid assignment
-- **THEN** new state/reference/preference/generation/ceiling replace the old transaction atomically
+- **THEN** new state/binding-map/preference/generation/ceiling replace the old transaction atomically
 - **AND** stale contexts cannot retain the removed provider
 
 #### Scenario: malformed assignment fails held
-- **WHEN** state, generation, ceiling, binding reference/digest, transaction identity, journal, or admission lock is inconsistent or unreadable
+- **WHEN** state, generation, ceiling, per-provider binding map/digest, transaction identity, journal, or admission lock is inconsistent or unreadable
 - **THEN** routing holds before credential or provider access
 
 #### Scenario: explicit context remains the configuration source
@@ -192,9 +219,9 @@ canonical auth-health gate runs without target authority.
 
 An authorized pinned writer with dead login SHALL fail loud rather than route
 elsewhere. An authorized chain MAY fall through to `ollama-local` only when
-`ollama-local` is inside the same effective authority ceiling. A singleton
-requester-local ceiling whose remote provider is dead SHALL exhaust without
-using an unauthorized local provider.
+`ollama-local` is inside the same effective authority ceiling with its own
+valid binding. A chain with no remaining authorized writer SHALL exhaust
+without using an unauthorized local provider.
 
 #### Scenario: dead-auth writer is skipped only inside authority
 - **WHEN** the probe reports an authorized `claude-code` as `not_logged_in` and another authorized writer remains
@@ -207,7 +234,7 @@ using an unauthorized local provider.
 - **AND** returns its response
 
 #### Scenario: unauthorized local fallback cannot rescue dead auth
-- **WHEN** a singleton requester-local remote provider reports `not_logged_in` and `ollama-local` is outside authority
+- **WHEN** the only authorized writer reports `not_logged_in` and `ollama-local` is outside authority
 - **THEN** routing raises canonical dynamic exhaustion for that authorized provider
 - **AND** does not attempt the local model
 
@@ -351,8 +378,9 @@ Before each attempt, the router SHALL:
    `activate-requester-host-engines`, and its local
    principal/host/session/universe/generation tuple; or validate the exact
    background receipt from its owner;
-4. validate binding principal/universe/provider/host/generation/digest and
-   non-empty, unexpired, non-tombstoned, non-revoked state; and
+4. select the admitted provider's binding-map entry and validate its
+   principal/universe/provider/host/generation/digest plus non-empty,
+   unexpired, non-tombstoned, non-revoked state; and
 5. mint a router-token-bound `ProviderInvocation`.
 
 Invocation SHALL contain exactly one HTTP request capability, attested
@@ -387,14 +415,17 @@ releases while result completion continues.
 `HostLocalProviderCapability` MAY authorize only
 `subscription_auth_probe`, `local_model_readiness_probe`, or
 `sandbox_readiness_probe`. Those operations accept no user prompt, mutate no
-universe/branch, and cannot mint a `ProviderInvocation`.
-`local_model_readiness_probe` and `sandbox_readiness_probe` invoke no model
-completion and spend no quota. `subscription_auth_probe` MAY perform only the
-canonical bounded fixed private live-viability completion required by
-subscription auth health; it consumes only explicitly configured host-operator
-subscription quota, never requester quota, user prompt content, universe
-content, or a user workload, and remains outside ordinary provider routing.
-It is bootstrap-minted, identity-validated,
+universe/branch, invoke no model completion, spend no quota, and cannot mint a
+`ProviderInvocation`. `subscription_auth_probe` covers only non-completion
+credential inspection.
+
+The shipped completion-based refresh-viability probe using
+`_AUTH_PROBE_PROMPT` is not host-local. It SHALL hold until
+`harden-background-provider-execution-authority` issues a bounded maintenance
+`ProviderWorkAuthorityReceipt` for that exact operation or it is replaced by
+a proven zero-output probe. It MUST NOT run on ambient maintainer
+authentication outside that receipt.
+The host-local capability is bootstrap-minted, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and
 unavailable through API/MCP, config/state, environment-derived request input,
 or caller construction. Startup/CI closure SHALL fail if any other host-local
@@ -455,6 +486,11 @@ operation exists.
 - **WHEN** host-local maintenance is requested
 - **THEN** it is one of the three named probe operations and cannot invoke completion or consume quota
 - **AND** inventory fails for any additional operation
+
+#### Scenario: completion-based auth viability is background maintenance
+- **WHEN** the shipped `_AUTH_PROBE_PROMPT` refresh-viability completion is requested
+- **THEN** a host-local capability cannot run it
+- **AND** it requires the background owner's exact bounded maintenance receipt or a zero-output replacement
 
 #### Scenario: invocation is reference-only
 - **WHEN** requester-local authority succeeds
@@ -624,7 +660,8 @@ registry durably before target birth initialization or visibility. The
 secret-free registry SHALL reload across process restart. After birth,
 enforcement keys only on the registered universe ID, not on principal alone.
 A registration whose birth transaction does not commit SHALL be removed
-durably before the failure returns.
+durably before the failure returns. Startup reconciliation SHALL remove any
+registered ID that has no corresponding living universe.
 
 Target enforcement is active for a universe only when the global flag is true
 or its canonical ID is in configured/registered server-owned canary state.
@@ -675,6 +712,9 @@ existing user universe merely to obtain pre-flip proof.
 Provider routing SHALL export one `ProviderAssignmentAdmission` keyed by
 canonical universe identity. It SHALL provide shared launch readers and
 exclusive assignment/custody writers; callers MUST NOT choose lock paths.
+This requirement is subject to the effective V2 gate. While dark, admission
+may inventory/advisory-check only and MUST preserve shipped call, assignment,
+custody, and lock results without introducing a new refusal.
 Global acquisition order SHALL be assignment admission before credential
 index/keyring locks. Reverse acquisition and untracked reentrancy SHALL fail
 loud. Exclusive custody operations SHALL verify expected assignment generation

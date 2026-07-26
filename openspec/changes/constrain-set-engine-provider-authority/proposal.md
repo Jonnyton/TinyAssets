@@ -46,19 +46,24 @@ deny-all.
   authority only behind the effective gate after the three ready-path
   successors; task 8.1 migrates all legacy `allowed_providers=None` records.
   This exact owner/timing replaces the unsafe pre-cutover shortcut.
-- Requester-owned local assignments publish a singleton canonical provider
-  ceiling only after their assignment and opaque credential binding reference
-  are ready. Legacy `byo_api_key` is read/migration-only and converts only
-  through the custody-owned post-binding writer; otherwise it fails deny-all.
-  Unknown services, aliases, mismatches, and partial state fail before
-  mutation. Raw-secret ingress/refusal remains solely owned by
+- Requester-owned cloud custody publishes only its cloud binding entry and
+  writer preference; by itself it remains held. A ready assignment must be
+  role-complete across writer/judge/extract/embed and carry one
+  provider-specific opaque binding entry per authorized destination. The host
+  successor may add an attested requester-owned `ollama-local` supplement;
+  only the atomic compositor then publishes the cloud-plus-local ceiling.
+  Maintainer compute never supplies it. Legacy `byo_api_key` is
+  read/migration-only and converts only through the custody-owned
+  post-binding writer; otherwise it fails deny-all. Unknown services, aliases,
+  mismatches, and partial state fail before mutation. Raw-secret
+  ingress/refusal remains solely owned by
   `retire-mcp-provider-secret-deposit`.
 - Self-hosted and host-daemon intent remains held at deny-all until its owning
   activation path proves executable authority. `market_rented` always remains
   deny-all in the ordinary provider router.
 - Assignment becomes one cross-process, per-universe transaction: validate,
-  publish deny-all quarantine, update source/reference state, then atomically
-  publish one coherent ready or held assignment.
+  publish deny-all quarantine, update source/per-provider binding state, then
+  atomically publish one coherent role-complete ready or held assignment.
 - Each live request provider attempt intersects the fresh assignment ceiling
   with a server-minted, request-scoped `ProviderRequestCapability` owned by
   `identity-auth-and-access-control`. The capability is created only after

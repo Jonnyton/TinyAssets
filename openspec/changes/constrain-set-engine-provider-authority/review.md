@@ -259,7 +259,7 @@ The next adaptation:
   not yet exist.
 
 Current exact-revision authority lives in the bodies of these four durable
-handoff comments, which task 1.20 requires to match the final PR head before
+handoff comments, which task 1.24 requires to match the final PR head before
 merge:
 
 - custody acceptance: `issuecomment-5081341084`;
@@ -374,6 +374,35 @@ The final adaptation applies the simplification ladder:
 
 Final disposition remains pending strict validation, four refreshed exact-head
 handoffs, and Opus 5 approval of the simplified target.
+
+## Ninth exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `27e4bfe2`. It approved deletion of the
+flag-independent shortcut, exact ambient residual, effective gate, generated
+ID canary, successor/retirement direction, global-default carve-out, registry
+reaping, sandbox sync order, and all four handoffs. It returned `ADAPT` on two
+remaining target-side gaps:
+
+- a bare cloud singleton could be marked ready even though it empties
+  canonical judge/extract/embed roles; and
+- the shipped completion-based `_AUTH_PROBE_PROMPT` viability call was
+  incorrectly grouped with zero-output host-local probes.
+
+The adaptation requires role-complete readiness: every ready ceiling
+intersects writer/judge/extract/embed and carries a current provider-specific
+binding entry per destination. Anthropic/OpenAI custody alone persists its
+cloud binding and writer preference but stays `held + []`; an atomic
+cloud-plus-attested-requester-owned-local composition may become ready.
+Maintainer local compute never supplies the role supplement, and cutover
+exercises the live editorial judge and ingestion extract callers.
+
+The host-local subscription probe is now non-completion credential inspection
+only. `_AUTH_PROBE_PROMPT` is background maintenance and holds until
+`harden-background-provider-execution-authority` supplies its exact bounded
+receipt or a zero-output replacement lands.
+
+Final disposition remains pending strict validation, four refreshed exact-head
+handoffs, and Opus 5 approval.
 
 ## Parallel exact-42ab Opus 5 re-review — 2026-07-25
 
