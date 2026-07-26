@@ -78,6 +78,15 @@ identity, moderation, host registry, authoring, handoff, or private-content
 custody. OKF, artifact, vault, and host-local stores retain authority assigned
 by their owning capabilities.
 
+`Inbox` has the narrowest safe meaning under current PLAN truth: durable
+request/admission records plus domain-owned transition and outbox state. It
+does not include scheduler policy, task ownership, work claiming, execution
+leases, provider selection, or work-coordination authority. PLAN still says
+one file-locked claimer while the live coordination board records epoch-2
+transactional claiming; this change does not resolve that contradiction.
+Claim integration and rollout remain blocked until a host-approved PLAN
+reconciliation and the owning capability delta define the model.
+
 Alternatives considered:
 
 - **Dual PostgreSQL/SQLite authority:** rejected because conflict recovery,
@@ -90,6 +99,36 @@ Alternatives considered:
   transport.
 - **Keep the deployed SQLite bridge:** rejected because it cannot provide the
   target multi-user concurrency or zero-host independence.
+
+### Persistence records never mint cross-domain authority
+
+PostgreSQL proves only that an accepted command durably committed the fields
+owned by its domain. A row, lock, claim, lease, outbox event, cursor, receipt,
+RLS result, or transaction outcome cannot create, replace, or attest authority
+owned elsewhere.
+
+In particular:
+
+- provider work continues to require #1784's owner-native
+  `ProviderInvocation`/`ProviderExecutor` authority or accepted-market B2/B13
+  authority before ordinary routing;
+- execution continues to require #1573's trusted requirement, sealed binding,
+  and two-phase admission/evidence validation; a queue row or database lease
+  is not sandbox or execution-admission evidence;
+- branch/catalog projections consume #1797's authenticated-subject and
+  readable-version authority, including indistinguishability of unreadable
+  private state, rather than inferring permission from row presence or RLS
+  visibility;
+- paid-market state machines and accounting remain owned by #1786, while
+  descriptor/market-class identity, fee-schedule/version, settlement identity,
+  and price evidence remain owned by #1798; a stored request, quote, match,
+  reservation, or settlement row creates no compute capacity, payment, wallet,
+  custody, chain-finality, or execution authority; and
+- credential, egress, private-custody, and external-effect owners remain the
+  only sources of their grants and evidence.
+
+This is an enforcement boundary, not a new public MCP primitive or a second
+identity/authority system.
 
 ### Supabase hosts launch, while PostgreSQL remains the application contract
 
@@ -195,6 +234,12 @@ organization mapping blocks only organization-scoped activation, not an
 otherwise accepted personal-domain slice. No schema can invent a second
 identity model merely to unblock a domain.
 
+Catalog and branch-linked projections additionally consume the landed branch
+authority helpers and SHALL preserve unreadable-private indistinguishability:
+row existence, foreign-key failure shape, count, timing, conflict text, or RLS
+behavior cannot reveal an unreadable private branch or version. PostgreSQL
+does not make a caller-selected branch readable.
+
 Tenant identity must participate in every tenant-owned foreign-key, unique, and
 lookup boundary where an unscoped identifier could otherwise cross tenants.
 Any privileged database function has a non-login owner, fixed safe
@@ -297,13 +342,15 @@ PostgreSQL is unavailable do not satisfy the CI gate.
    the implemented `postgres-control-plane` capability, and archive this
    change only after production evidence and independent review.
 
-Current identity, universe visibility, paid-market Wave 2, operator-request,
-outbound-boundary, moderation, and custody owners retain their domain
-decisions. `harden-production-load-evidence` owns the shared evidence protocol,
-and its dependent `implement-production-load-harness` change must land the
-accepted schema and implementation before this capability executes load proof.
-This change owns only its population, SLO, and adapter; it consumes accepted
-decisions only where a catalog, ledger, inbox, or market table needs them.
+Current identity, universe visibility, branch authority, provider authority,
+execution admission, paid-market Wave 2, live-price discovery,
+operator-request, outbound-boundary, moderation, and custody owners retain
+their domain decisions. `harden-production-load-evidence` owns the shared
+evidence protocol. Its dependent implementation successor is still open as
+draft PR #1792 and is not main authority; it must land an accepted schema and
+implementation before this capability executes load proof. This change owns
+only its population, SLO, and adapter, and consumes accepted decisions only
+where a catalog, ledger, inbox, or market table needs them.
 
 Before step 6's first authoritative write, rollback disables the new path and
 leaves additive schema unused. After it, rollback is forward-fix only for data

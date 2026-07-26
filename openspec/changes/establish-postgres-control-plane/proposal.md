@@ -32,6 +32,14 @@ host acceptance of any adaptation.
   requester provider credentials, signing keys, or other secret authority in
   the shared control plane. Private-content custody remains a per-situation
   choice owned by its accepted domain policy.
+- Define `inbox` as durable request/admission and domain transition/outbox
+  state only. PostgreSQL does not take scheduler, task-claim, execution-lease,
+  provider-routing, or work-coordination ownership while PLAN's file-lock
+  versus epoch-2 claim model remains unresolved.
+- Make persistence non-escalating: a row, lock, claim, lease, cursor, receipt,
+  or projection never mints provider, accepted-market B2/B13, execution
+  admission, branch access, credential, custody, capacity, or payment
+  authority owned by another capability.
 - Treat the first canonical PostgreSQL production write as a separately
   recorded, host-approved one-way boundary after the baseline and exit drills
   pass.
@@ -70,3 +78,6 @@ another domain may opt in only after a host-approved PLAN amendment and its own
 separately accepted capability contract. Existing daemon-local SQLite,
 SqliteSaver, knowledge/memory stores, OKF bundles, artifact stores, and
 private-content custody choices are not migrated or reclassified here.
+The active file-lock/epoch-2 claim-model contradiction remains outside this
+change and blocks any attempt to treat the transactional inbox as scheduling
+or execution-claim authority.

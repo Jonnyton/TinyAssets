@@ -2,11 +2,11 @@
 
 - [x] 1.1 Record the host's 2026-07-23 Option 1 selection and preserve the current domain-bounded PostgreSQL, GitHub-export, local-state, OKF/artifact, custody-neutral private-content, BYOC, and stock-PostgreSQL-exit boundaries in this change.
 - [x] 1.2 Map canonical and active OpenSpec ownership; keep `postgres-control-plane` limited to the generic persistence substrate and record collisions with identity, visibility, uptime, moderation, paid-market, operator-request, brain/OKF, and local SQLite owners.
-- [x] 1.3 Obtain independent Codex architecture/security reviews of the planning artifacts and fold in auth-ownership, privacy-conflict, tenant-context, baseline, privileged-role, zero-host, and first-write corrections.
-- [ ] 1.4 Obtain a fresh current-main Claude Opus 5 source/deployment re-check with an explicit APPROVE, ADAPT, or REJECT verdict and exact current evidence. The 2026-07-25 attempt remains blocked by the account's monthly-spend ceiling even though model rate limits reset.
+- [ ] 1.3 Obtain independent current-main Codex architecture/security reviews of the planning artifacts and fold in auth-ownership, claim-model, non-escalation, privacy-conflict, tenant-context, baseline, privileged-role, zero-host, and first-write corrections.
+- [ ] 1.4 Obtain a fresh current-main Claude Opus 5 source/deployment re-check with an explicit APPROVE, ADAPT, or REJECT verdict and exact current evidence; the historical packet approval does not approve this successor.
 - [ ] 1.5 Obtain explicit host acceptance of every Claude adaptation or stop this change if the host rejects the resulting boundary.
 - [x] 1.6 Verify this restack against current PLAN ancestry: PostgreSQL owns catalog/ledger/inbox/market transactions, GitHub is their export sink, and private custody remains deliberately per-situation; no PLAN edit is authorized or required by this lane.
-- [ ] 1.7 Re-run OpenSpec/STATUS/idea/provider-context collision checks and update downstream dependencies before claiming any runtime, deployment, database, or production-inventory file.
+- [ ] 1.7 Re-run OpenSpec/STATUS/idea/provider-context collision checks and update downstream dependencies before claiming any runtime, deployment, database, or production-inventory file. Treat PR #1792 as open and unsatisfied until its implementation/schema actually lands.
 
 ## 2. Read-Only Production Inventory And Baseline
 
@@ -45,7 +45,7 @@
 
 ## 6. Security, Concurrency, And Zero-Host Evidence
 
-- [ ] 6.1 Before load execution, require the shared `implement-production-load-harness` change and accepted evidence-schema version to have landed, then record this capability's approved launch workload/SLO envelope: dataset size, tenant mix, reader/writer concurrency, burst and sustained duration, failure injection, and numerical latency/error/deadlock/saturation/recovery pass-fail thresholds. Until then record `not_run` with the protocol dependency code; do not create a local substitute.
+- [ ] 6.1 Before load execution, require the shared production-load implementation successor (draft PR #1792 at this review) and accepted evidence-schema version to have landed, then record this capability's approved launch workload/SLO envelope: dataset size, tenant mix, reader/writer concurrency, burst and sustained duration, failure injection, and numerical latency/error/deadlock/saturation/recovery pass-fail thresholds. Until then record `not_run` with the protocol dependency code; do not create a local substitute.
 - [ ] 6.2 Run the foundation security matrix for tenant/actor binding, role denial, privileged functions, pool reuse/exhaustion, and cross-tenant keys; add sentinel/taint evidence for every enabled ingress, persistence, log/error, audit/outbox, notification, Storage, export, ranking, analytics, and training boundary, recording disabled channels as unavailable rather than omitting them.
 - [ ] 6.3 Run concurrent migration-runner, transaction-contention, database-failure, and backup/restore fault-injection tests with raw failure and recovery evidence. For every enabled accepted notification adapter, also run duplicate/reorder/disconnect/catch-up tests; record disabled or unaccepted adapters as `unavailable` or inapplicable while always proving durable version/outbox recovery.
 - [ ] 6.4 After the shared implementation and evidence schema land, run the production-shaped workload under that versioned protocol against the pre-approved capability-owned launch envelope with PostgreSQL/Supabase versions, topology/region, pool configuration, commands, latency distributions, catch-up lag, deadlocks, occupancy/saturation, lost/duplicate writes, and recovery timings.

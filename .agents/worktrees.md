@@ -1394,5 +1394,5 @@ Notes:
 - Purpose: preserve PostgreSQL authority for catalog/ledger/inbox/market while reconciling current identity, custody, migration, load, market, and execution owners
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-final\_PURPOSE.md
 - Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573
-- Review gate: exact current-main Opus 5 plus independent architecture/security/diff review; fresh evidence in `docs/audits/2026-07-26-postgres-control-plane-refresh.md`
+- Review gate: exact current-main Opus 5 plus independent architecture/security/diff review; fresh evidence only in `docs/audits/2026-07-26-postgres-control-plane-refresh.md`
 - Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority

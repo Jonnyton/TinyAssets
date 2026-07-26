@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Activated transactional domains have one PostgreSQL authority
-The system SHALL use Supabase-hosted PostgreSQL at launch as the sole mutation authority for the activated catalog, ledger, inbox, and market transactional domains. This capability SHALL NOT authorize another domain to adopt the substrate; any expansion requires a host-approved PLAN amendment and that domain's own separately accepted OpenSpec change. Host-local SQLite/files SHALL remain execution, checkpoint, or rebuildable cache state; separately specified OKF/artifact and private-custody stores SHALL retain their domain authority; GitHub SHALL remain an export/contribution transport; none SHALL become a second mutation authority for the same domain.
+The system SHALL use Supabase-hosted PostgreSQL at launch as the sole mutation authority for the activated catalog, ledger, inbox, and market transactional domains. Within this capability, `inbox` SHALL mean durable request/admission records and domain-owned transition/outbox state only; it SHALL NOT include scheduler policy, task ownership, work claiming, execution leases, provider selection, or work-coordination authority. Claim integration SHALL remain blocked until the file-lock versus epoch-2 claim-model contradiction is resolved in PLAN and the owning capability. This capability SHALL NOT authorize another domain to adopt the substrate; any expansion requires a host-approved PLAN amendment and that domain's own separately accepted OpenSpec change. Host-local SQLite/files SHALL remain execution, checkpoint, or rebuildable cache state; separately specified OKF/artifact and private-custody stores SHALL retain their domain authority; GitHub SHALL remain an export/contribution transport; none SHALL become a second mutation authority for the same domain.
 
 #### Scenario: Shared mutation commits once
 - **WHEN** an activated shared control-plane command succeeds
@@ -11,6 +11,24 @@ The system SHALL use Supabase-hosted PostgreSQL at launch as the sole mutation a
 #### Scenario: Local execution stores remain local
 - **WHEN** a daemon checkpoints a run or persists host-local execution/cache state
 - **THEN** that state remains outside the shared PostgreSQL authority unless a separately approved domain contract explicitly promotes a public/shared projection
+
+#### Scenario: A durable inbox record is mistaken for a work claim
+- **WHEN** PostgreSQL stores a request, admission decision, transition, outbox event, queue-shaped row, lock, or lease
+- **THEN** that record grants no scheduler, task-owner, provider-selection, execution-claim, or work-coordination authority
+- **AND** claim integration remains disabled until its PLAN and capability owners accept the exact model
+
+### Requirement: Persistence evidence never escalates authority
+The system SHALL treat PostgreSQL rows, locks, claims, leases, cursors, receipts, RLS results, and transaction outcomes only as durability evidence for fields already authorized by their owning domain. They SHALL NOT mint, replace, satisfy, or attest provider authority, accepted-market B2/B13 authority, execution admission or isolation evidence, branch/read authority, credential or egress grants, private-custody permission, external-effect authority, compute capacity, payment authority, wallet funding, custody, chain settlement, or chain finality. Provider work SHALL still consume its owner-native authority carrier; execution SHALL still pass trusted pre-launch admission and post-launch actual-execution evidence validation; branch-linked projections SHALL preserve authenticated-subject authority and unreadable-private indistinguishability; and market rows SHALL preserve the paid-market owners' state-machine, descriptor/class identity, fee-version, settlement-identity, and price-evidence invariants.
+
+#### Scenario: A stored provider or execution decision lacks owner authority
+- **WHEN** a row, lock, lease, receipt, or transition says that a provider, compute host, model execution, or accepted-market path was selected
+- **THEN** no provider call or execution starts unless the provider/B2/B13 and execution-admission owners independently authorize it
+- **AND** the persistence record is not accepted as sandbox, launch, capacity, payment, or completion evidence
+
+#### Scenario: A persisted market result lacks payment or price authority
+- **WHEN** PostgreSQL stores a request, quote, bid, match, logical reservation, delivery, settlement, or price observation
+- **THEN** the owning paid-market command and evidence contracts still determine validity
+- **AND** the row alone proves no fee correctness, funding, custody, payout, chain finality, compute availability, or executable capacity
 
 ### Requirement: Private-content custody is explicit and secret authority remains outside the control plane
 The system SHALL require every private-content field and every private or restricted artifact reference to bind to a separately accepted, per-situation custody policy before persistence. Public immutable artifact references require their accepted artifact authority but SHALL NOT require a private-custody decision. A private custody policy MAY select a host, private universe brain, user vault, or approved platform-held store; this generic substrate SHALL NOT choose among them. The shared PostgreSQL control plane SHALL NOT store requester or host provider credentials, API keys, OAuth tokens, secret-bearing provider subscription authentication/account material, local client authentication files, wallet signing keys, database signing secrets, or other secret authority. Platform-resident domain tables SHALL carry only fields and opaque references allowed by the owning domain's accepted custody, retention, visibility, and access policy; RLS, a service role, or platform-side encryption SHALL NOT create permission by itself.
@@ -107,6 +125,7 @@ The system SHALL keep migration and service-role credentials unavailable to ordi
 
 ### Requirement: Tenant and actor context is verified and transaction local
 Every shared control-plane command SHALL consume actor, tenant, visibility, grant, and ownership decisions from their accepted identity/visibility/domain authorities rather than define a second identity model, trust caller payload, ordinary SQL, or ambient host configuration. A narrowly granted authenticated wrapper or equivalent trusted command boundary SHALL establish database actor/tenant context transaction-locally and independently verify the supplied authoritative context, current object version, and state transition. Public, anonymous, authenticated, and ordinary application roles SHALL NOT call context setters directly or forge context with `SET LOCAL` or `set_config`. Every tenant-owned canonical row SHALL carry the canonical tenant/owner identity, and tenant scope SHALL participate in relevant foreign keys, uniqueness constraints, and indexes. Forced RLS SHALL provide defense in depth and SHALL NOT be the source of positive mutation authority.
+For catalog or branch-linked projections, the command and query boundaries SHALL preserve unreadable-private indistinguishability: row presence, absence, counts, conflict or foreign-key errors, timing classes, and RLS behavior SHALL NOT reveal an unreadable private branch or version, and caller-supplied branch identifiers SHALL NOT create readability.
 
 #### Scenario: Payload identity conflicts with authentication
 - **WHEN** a request payload supplies an actor or tenant different from the verified request context
@@ -125,6 +144,11 @@ Every shared control-plane command SHALL consume actor, tenant, visibility, gran
 #### Scenario: RLS-visible row lacks command authority
 - **WHEN** an actor can read a row through a permitted projection but lacks the current grant or state-transition authority
 - **THEN** the command rejects without mutation
+
+#### Scenario: A private branch is not readable
+- **WHEN** an actor addresses a catalog or inbox projection linked to an unreadable private branch or version
+- **THEN** the result is indistinguishable from an absent target under the owning branch-authority contract
+- **AND** PostgreSQL row existence, RLS behavior, conflicts, or foreign-key errors reveal no private metadata
 
 ### Requirement: Realtime and exports are recoverable projections
 The system SHALL treat Realtime messages as at-least-once invalidations and GitHub records as public export/contribution projections, never as queue or mutation truth. Any required notification SHALL be represented by a durable version/cursor or transactional outbox record committed with the authoritative PostgreSQL change, and a disconnected consumer SHALL recover by reading versioned PostgreSQL state.
