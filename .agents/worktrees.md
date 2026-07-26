@@ -1426,16 +1426,30 @@ Notes:
 - Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
 - Ship/abandon: merge coordination-only foldback, then release this worktree lane
 
+## 2026-07-26 - background-branch-execution-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/background-branch-authority-spec
+- Lane state: claimed; OpenSpec planning only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: split target specification from blocked runtime implementation
+- PLAN refs: Daemon Platform; Multi-User Evolutionary Design; API & MCP Interface; Uptime & Alarms
+- Purpose: bind scheduled, autonomous, and post-response branch execution to server-owned target authority while keeping valid private loops live.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
+- Related implications: harden-branch-access-authority; universe-creation; retire-legacy; provider-attempt receipts
+- Ship/abandon: planning PR only after exact current-main Opus review; no runtime or Village/web dependency
+
 ## 2026-07-26 - retire privileged cheat/community patch loop
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-current-20260726
-- Lane state: claimed; rebase and exact-review target before runtime deletion
+- Lane state: claimed; current-main target reviewed before runtime deletion
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
-- STATUS/Issue/PR: host-directed retirement; PR pending current-main inventory and exact review
+- STATUS/Issue/PR: host-directed retirement; target-only draft PR pending publication
 - PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
 - Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
-- Memory refs: host directive 2026-07-26; earlier target exact SHA 5ea18388; current origin/main ba273312
-- Review gate: fresh current-main inventory, exact Claude Opus 5, independent architecture/spec/retirement review
+- Memory refs: host directive 2026-07-26; reviewed target SHA eec0783c; current origin/main 60d8ece6
+- Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
 - Ship/abandon: target OpenSpec first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
