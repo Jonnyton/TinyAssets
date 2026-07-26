@@ -57,4 +57,4 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude Opus 5 available 2026-07-25; opposite-provider reviews resumed; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.
+4. **Capacity/context** — Claude Opus 5 reset 2026-07-24; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.
