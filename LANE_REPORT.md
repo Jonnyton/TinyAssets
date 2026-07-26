@@ -374,8 +374,8 @@ now fail closed (`test_party_and_delivery_evidence_fails_closed`,
 - **Mutation** — `test_joint_partition_cap_is_load_bearing` forces the joint
   solver open and the 5-partition split-volume guard goes red. The parameterized
   2/3/5-partition probe proves adding partitions cannot restore admission.
-- **Pushed SHA** — pending implementation commit; recorded in the follow-up
-  evidence commit before branch push.
+- **Pushed SHA** — implementation commit `8756564c`; this evidence stamp follows
+  it on the same pushed branch.
 
 ## Round-3 evidence
 
@@ -390,4 +390,4 @@ now fail closed (`test_party_and_delivery_evidence_fails_closed`,
 | Full `pytest tests/` | still NOT run |
 | Cross-family re-review of round 3 | NOT dispatched |
 
-LANE_RESULT: PENDING
+LANE_RESULT: done - finding B reshaped to one joint settlement-weight cap; 178 focused tests passed and commit 8756564c was pushed
