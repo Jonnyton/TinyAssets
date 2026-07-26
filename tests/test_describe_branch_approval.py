@@ -167,8 +167,9 @@ class TestDescribeBranchApproval:
         assert unapp["node_id"] == "sc1"
         assert unapp["display_name"] == "Custom Runner"
         assert "APPROVAL REQUIRED" in result["summary"]
-        assert "approve_source_code" in result["summary"]
-        assert "must be approved before it can run" in result["summary"]
+        assert "approve_source_code" not in result["summary"]
+        assert "internal operator surface" in result["summary"]
+        assert "before this branch can run" in result["summary"]
         assert "once validated" not in result["summary"]
 
     def test_unapproved_node_still_valid_structurally(self):

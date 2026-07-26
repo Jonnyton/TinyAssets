@@ -355,20 +355,23 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
     if "permission denied" in msg:
         return _failure_payload(
             exc, "permission_denied:approval_required",
-            "Ask host to approve the source_code node via extensions"
-            " action=approve_source_code before running.",
+            "Ask the host to approve the source_code node through the internal "
+            "operator surface before running; approval is not exposed by the "
+            "advertised handles.",
         )
     if "approv" in msg or "source_code" in msg:
         return _failure_payload(
             exc, "node_not_approved",
-            "Ask host to approve the source_code node via extensions"
-            " action=approve_source_code before running.",
+            "Ask the host to approve the source_code node through the internal "
+            "operator surface before running; approval is not exposed by the "
+            "advertised handles.",
         )
     if "concurrent" in msg or "conflict" in msg or "modified" in msg or "stale" in msg:
         return _failure_payload(
             exc, "state_mutation_conflict",
             "Concurrent modification detected; re-fetch the branch state"
-            " with get_branch then reapply your edit.",
+            f' with read_graph target="branch" branch_id="{bid}", then '
+            "reapply your edit.",
         )
     if "compile failed" in msg or "already being used as a state key" in msg:
         return _failure_payload(
@@ -383,7 +386,7 @@ def _classify_run_error(exc: Exception, bid: str) -> dict[str, Any]:
         )
     return _failure_payload(
         exc, "unknown",
-        f"Inspect the run transcript with get_run for branch '{bid}' details.",
+        f'Inspect the branch with read_graph target="branch" branch_id="{bid}".',
     )
 
 
@@ -443,14 +446,16 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
     if "approv" in msg or "source_code" in msg:
         return (
             "node_not_approved",
-            "Ask host to approve the source_code node via extensions"
-            " action=approve_source_code before running.",
+            "Ask the host to approve the source_code node through the internal "
+            "operator surface before running; approval is not exposed by the "
+            "advertised handles.",
         )
     if "permission denied" in msg:
         return (
             "permission_denied:approval_required",
-            "Ask host to approve the source_code node via extensions"
-            " action=approve_source_code before running.",
+            "Ask the host to approve the source_code node through the internal "
+            "operator surface before running; approval is not exposed by the "
+            "advertised handles.",
         )
     if "exit code" in msg or "subprocess failure" in msg or "api likely unavailable" in msg:
         return (
@@ -462,7 +467,8 @@ def _classify_run_outcome_error(error_str: str) -> tuple[str, str] | None:
         return (
             "state_mutation_conflict",
             "Concurrent modification detected; re-fetch the branch state"
-            " with get_branch then reapply your edit.",
+            ' with read_graph target="branch" branch_id="<branch id>", then '
+            "reapply your edit.",
         )
     if "compile failed" in msg or "already being used as a state key" in msg:
         return (
@@ -695,10 +701,9 @@ def _action_run_branch(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `wait_for_run` to wait for progress without burning repeated "
-        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
-        "Each takes a `run_id` "
-        "from the structured content of this response.",
+        "Use `read_graph target=\"run\" run_id=\"<run id>\"` for a "
+        "snapshot. Wait and cancel controls are not exposed by the "
+        "advertised handles.",
     ]).strip()
 
     result: dict[str, Any] = {
@@ -1260,7 +1265,8 @@ def _action_resume_run(kwargs: dict[str, Any]) -> str:
         f"**Run {outcome.status}.** Resume handed to the background executor.",
         "",
         f"Error: {outcome.error}" if outcome.error else "",
-        "Use `get_run` to check progress or `cancel_run` to stop.",
+        "Use `read_graph target=\"run\" run_id=\"<run id>\"` to check "
+        "progress. Cancel is not exposed by the advertised handles.",
     ]).strip()
 
     return json.dumps({
@@ -1554,7 +1560,9 @@ def _action_run_routing_evidence(kwargs: dict[str, Any]) -> str:
         "runs": records,
         "count": len(records),
         "caveat": records[0]["caveat"] if records else (
-            "No runs found. Execute a branch first, then call get_routing_evidence."
+            f'No runs found. Execute it with run_graph branch_def_id="{bid}" '
+            'inputs_json="<state JSON>"; dedicated routing-evidence lookup is '
+            "not exposed by the advertised handles."
         ),
     }, default=str)
 
@@ -1750,10 +1758,9 @@ def _action_run_branch_version(kwargs: dict[str, Any]) -> str:
         "background executor.",
         "",
         *error_lines,
-        "Use `wait_for_run` to wait for progress without burning repeated "
-        "tool calls, `get_run` for a snapshot, or `cancel_run` to stop. "
-        "Each takes a `run_id` "
-        "from the structured content of this response.",
+        "Use `read_graph target=\"run\" run_id=\"<run id>\"` for a "
+        "snapshot. Wait and cancel controls are not exposed by the "
+        "advertised handles.",
     ]).strip()
 
     result: dict[str, Any] = {
@@ -1837,7 +1844,8 @@ def _action_rollback_merge(kwargs: dict[str, Any]) -> str:
         text_lines.append(
             f"Cleared selector bindings on {selector_repointed_count} "
             "Goal(s); leaderboard falls back to platform default until "
-            "operator re-binds via `goals action=set_selector`."
+            "an operator rebinds through the internal selector-binding "
+            "surface, which is not exposed by the advertised handles."
         )
     return json.dumps({
         "text": "\n".join(text_lines),

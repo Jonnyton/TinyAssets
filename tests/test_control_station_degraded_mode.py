@@ -24,10 +24,11 @@ These tests catch silent removal or accidental regression of key phrases.
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
-from tinyassets.universe_server import control_station
+from tinyassets.universe_server import control_station, mcp
 
 
 def _prompt_text() -> str:
@@ -40,17 +41,14 @@ def test_prompt_body_matches_module_constant():
     assert _prompt_text() == _CONTROL_STATION_PROMPT
 
 
-def test_control_station_routes_small_workflow_authoring_to_chat_tools():
-    """Community users should be able to author small workflow units from chat.
-
-    The prompt must steer chatbots to build_branch / patch_branch and away from
-    GitHub Actions YAML as the authoring surface.
-    """
+def test_control_station_routes_supported_edits_and_reports_creation_gap():
+    """The prompt must use canonical edits and never fake unsupported creation."""
     body = _prompt_text()
-    assert "chat-native" in body
     assert "GitHub Actions YAML" in body
-    assert "extensions action=build_branch" in body
-    assert "extensions action=patch_branch" in body
+    assert 'write_graph target="branch"' in body
+    assert "new-workflow creation" in body
+    assert "do not currently expose" in " ".join(body.split())
+    assert "do not imply a design was saved" in " ".join(body.split())
 
 
 # ---- directive presence ---------------------------------------------------
@@ -106,12 +104,8 @@ def test_directive_names_multiple_failure_triggers():
     )
 
 
-def test_directive_covers_all_six_coarse_tools():
-    """Directive must name all six coarse tools whose failure triggers the rule.
-
-    `gates` was added after verifier's second-pass audit flagged the enumeration
-    didn't match the actual @mcp.tool set (6 tools, rule originally named 5).
-    """
+def test_directive_covers_every_advertised_handle_without_stale_enumeration():
+    """The degraded-mode rule applies to the dynamic advertised surface."""
     body = _prompt_text()
     # Find the rule-10 block for targeted assertion.
     rule_10_match = re.search(
@@ -121,11 +115,12 @@ def test_directive_covers_all_six_coarse_tools():
     )
     assert rule_10_match, "could not locate rule 10 block"
     rule_10 = rule_10_match.group(0)
-    for tool in ["universe", "extensions", "goals", "gates", "wiki", "get_status"]:
-        assert f"`{tool}`" in rule_10, (
-            f"rule 10 doesn't name the `{tool}` tool — partial coverage risks "
-            f"the chatbot applying the rule to some tools but not others"
-        )
+    advertised = {
+        tool.name
+        for tool in asyncio.run(mcp.list_tools(run_middleware=True))
+    }
+    assert advertised
+    assert "any advertised handle" in rule_10
 
 
 # ---- forbidden-action coverage -------------------------------------------
@@ -367,22 +362,16 @@ def test_rule_13_in_hard_rules_block():
     )
 
 
-def test_rule_13_names_list_runs():
-    """Rule 13 must require calling list_runs first to discover prior runs."""
+def test_rule_13_names_canonical_run_listing():
+    """Rule 13 must use the canonical runs read first."""
     rule = _rule_13_block(_prompt_text())
-    assert "list_runs" in rule, (
-        "rule 13 must name 'list_runs' as the first required tool call "
-        "when user references an unnamed prior run"
-    )
+    assert 'read_graph target="runs"' in rule
 
 
-def test_rule_13_names_get_run_output():
-    """Rule 13 must require get_run_output to retrieve the actual result."""
+def test_rule_13_names_canonical_run_result_read():
+    """Rule 13 must retrieve the actual result through read_graph."""
     rule = _rule_13_block(_prompt_text())
-    assert "get_run_output" in rule, (
-        "rule 13 must name 'get_run_output' as the retrieval step — "
-        "not just listing runs, but fetching what they produced"
-    )
+    assert 'read_graph target="run"' in rule
 
 
 def test_rule_13_forbids_asserting_from_memory():
