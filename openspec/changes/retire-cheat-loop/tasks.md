@@ -54,6 +54,10 @@
   counts/ids/digests/prior-final states/retention; and prevent generic
   reinterpretation or replay. Retirement classification precedes ordinary
   recovery, but #1803 reconciliation remains mandatory before terminalization.
+  **Dependency:** #1803's runtime authority store/reconciler must land before
+  any claimed/running row is terminalized. Until then, an absent or
+  unimplemented store is the unreadable-authority case: preserve row/receipt,
+  hold non-runnable, and perform no queue CAS or authority release.
 
 ## 3. Remove Auto-Ship Product Automation
 

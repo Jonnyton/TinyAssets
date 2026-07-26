@@ -221,10 +221,19 @@ remain available without an implicit composition. The patch announcement
 script leaves when it has no independent explicit consumer.
 
 Current loop-team souls and generated website snapshots are shipped prompt/data
-surfaces, not archival truth. The seven `docs/souls` loop roles and their core
-team manifest are removed, and canonical/legacy snapshots are regenerated so
-they cannot resurrect the retired branch, area, roles, or automatic filing
-promise.
+surfaces, not archival truth. The six shipped `docs/souls` loop-role souls and
+their core-team manifest are removed, and canonical/legacy snapshots are
+regenerated so they cannot resurrect the retired branch, area, roles, or
+automatic filing promise.
+
+Task 2.5's claimed/running-row terminalization depends on the #1803 runtime
+authority store and reconciliation protocol landing first. Retirement may
+still land fail-closed admission, pending/queued quarantine, and unrelated
+surface deletion before that dependency. On any deployment where the authority
+store is absent, unimplemented, unavailable, or unreadable, every
+claimed/running retired row takes the unreadable-authority path: preserve the
+row and receipt, record a non-runnable hold, perform no queue CAS or release,
+and retry reconciliation only after #1803 becomes authoritative.
 
 ## Risks / Trade-offs
 

@@ -120,6 +120,14 @@ mutation; then queue-CAS the exact task/claim/lease generation only after a
 successful reconciliation proof. #1803 must never issue new authority for,
 resume, or sweep the retired class as ordinary work.
 
+Current source does not yet implement #1803's `ProviderWorkAuthorityStore`.
+Therefore the implementation lane may land fail-closed admission,
+pending/queued quarantine, and other surface deletion, but it cannot
+terminalize a claimed/running legacy row until #1803 lands. An absent or
+unimplemented store is handled exactly like unreadable authority: preserve the
+row/receipt, hold it non-runnable, perform no queue CAS or release, and rerun
+reconciliation after the authority owner becomes available.
+
 ### Auto-ship composition
 
 The following are executable product-loop modules, not generic primitives:
