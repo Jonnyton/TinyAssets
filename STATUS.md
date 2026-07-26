@@ -8,7 +8,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.
-- [filed:2026-07-26] constrain-set-engine-provider-authority and universe-creation duplicate-ADD identity requirement “Missing or partial authority holds execution after birth”; owners must merge/order before archive.
 - **[P1 filed:2026-04-30]** Castles II run `28479d8ddfb44488`: `provider_exhausted` at `candidate_discovery` (BUG-038/039); blocks branch-run proof.
 ## Work
 | Task | Files | Depends | Status |
@@ -53,7 +52,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Approve an isolated canonical `/mcp` baseline environment + traffic envelope; provider-free, no maintainer quota, test identities + cleanup, canary-coordinated | deployment test environment | harden-production-load-evidence; test-identity-and-reset | host-decision |
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface; also create the WorkOS native/public client (PKCE S256, no secret, exact variable-port `127.0.0.1` loopback redirect, offline access) + `WORKOS_HOST_BINDING_RESOURCE` audience | deployment env; WorkOS dashboard | test-identity landing; #1753 tasks 1.3/3.2 | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
-| Stage and approve descriptive-universe root migration + OKF cleanup with backup/rollback and post-move reference proof | scripts/{rename_live_data_universes_to_serial_ids,migrate_live_data_okf_baseline}.ps1; Workflow-live-data-snapshot; migration manifests | universe-creation 5.4-5.6; independent data-loss review | host-action |
+| **Build rollback-safe universe-root migration + cleanup; current scripts are unsafe — DO NOT RUN** — journal before move; atomically update binding/index/references; no-overwrite soul backup; real duplicate cleanup | scripts/{rename_live_data_universes_to_serial_ids,migrate_live_data_okf_baseline}.ps1; tests/test_universe_root_migration.py | universe-creation 5.4-5.6; independent data-loss review; release broad `tests/` claims; host approval only after dry-run proof | pending |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.

@@ -49,11 +49,12 @@
     is what the connector renders verbatim as the universe's own first-person
     voice, so a platform-authored message travels as `note`, the same split the
     existing `write_page` / `_BRAIN_WRITE_RELAY_ACTIONS` relays use.
-  - HISTORICAL SHIPPED PATH, SUPERSEDED FOR TARGET CUTOVER:
-    `setup_paths` currently names `universe action=set_engine` with
-    `engine_source=byo_api_key`. Approved PR #1784 forbids advertising raw
-    API-key deposit and retires caller-built authority. Task 4.2 MUST consume
-    only successor-proven setup paths and remove this path before provider
+  - CURRENT MAIN, SUPERSEDED FOR TARGET CUTOVER: `setup_paths` carries
+    `path: byo_api_key` with the truthful but Tier-1-dead instruction to ask the
+    host to use an internal engine-assignment surface; the advertised seven
+    handles expose no such action. Approved PR #1784 preserves this shipped
+    projection while V2 is dark, then forbids raw API-key deposit at cutover.
+    Task 4.2 MUST consume only successor-proven setup paths before provider
     authority/newborn deny-all activates. The absent market path remains absent
     until the connector successor makes it completable.
   - DISTINGUISHABILITY (BUG-038/039 not masked): the payload requires BOTH
@@ -91,13 +92,14 @@
 - [x] 2.0 Consume the opposite-provider-approved provider-authority target from PR #1784 (`abdca5fe`) and remove every conflicting ownership claim from this change.
   - VERIFIED 2026-07-26: Opus 5 APPROVED the exact provider target; its
     published handoff requires target lineage only, successor-proven setup
-    paths, and `fulfillment_class`, with no caller-built authority bundle.
+    paths, and setup-payload `fulfillment_class`, with no caller-built authority
+    bundle.
 - [ ] 2.1 After the provider owner lands runtime, prove opening `converse` passes only canonical server-derived universe/request lineage and receives its typed result without caller-built provider authority.
 - [ ] 2.2 Prove `ProviderAuthorityHeldError` preserves completed birth and maps directly to `engine_setup_required_payload` before provider invocation, with the materialized `universe_id`, typed missing elements, and no fabricated `reply`.
 - [ ] 2.3 After `activate-connector-requester-authority` lands, prove a Tier-1 accepted-market success executes through its B2/B13 remote seam and the chatbot relays the universe reply verbatim.
 - [ ] 2.4 After `activate-requester-host-engines` lands, prove each supported host/local surface consumes its attested capability without implying that browser-only users need a desktop.
 - [ ] 2.5 Add hostile ambient-resource integration tests proving a provider-owner refusal remains held at the universe boundary; do not duplicate provider isolation or fallback implementation here.
-- [ ] 2.6 Prove reply generation and model-backed learning extraction consume the same opaque provider request capability and result-local receipt, using `fulfillment_class` without writing credential `authority_class` or `_last_provider`.
+- [ ] 2.6 Prove reply generation and model-backed learning extraction consume the same opaque provider request capability; the setup payload uses `fulfillment_class`, while result-local evidence uses only owner-defined receipt fields and never `_last_provider`.
 
 ## 3. Owned Dependencies
 
@@ -111,7 +113,7 @@
 - [ ] 4.1 Pass only canonical target universe/request lineage from `converse` into the provider owner; reject caller-built bundles, provider allowlists, and ambient authority reconstruction.
 - [ ] 4.2 Catch the typed provider hold and map it to the canonical setup-required payload while preserving birth; advertise only owner-supplied live routes, never raw API-key deposit or unavailable market/desktop paths.
 - [ ] 4.3 Relay a successful universe reply verbatim and carry the same opaque provider request capability through model-backed learning extraction without inspecting, widening, or minting it.
-- [ ] 4.4 Consume provider-attempt result evidence using `fulfillment_class=requester_owned|accepted_market`; keep credential `authority_class` separate and create no parallel receipt.
+- [ ] 4.4 Map `fulfillment_class=requester_owned|accepted_market` only in the canonical setup-required payload and consume provider-attempt evidence using its owner-defined fields; keep credential `authority_class` separate and create no parallel receipt.
 
 ## 5. Lifecycle Residuals
 
@@ -190,30 +192,25 @@
     (`test_creation_adds_unnamed_serial_index_row`,
     `test_learned_name_projects_onto_immutable_index_row`).
 - [ ] 5.4 Inventory descriptive-id roots and live references, then implement an atomic, rollback-safe migration to generated serial roots.
-  - TOOLING LANDED / HOST-RUN OPERATIONAL (verified 2026-07-24). Existing
-    `scripts/rename_live_data_universes_to_serial_ids.ps1` detects descriptive
-    roots by universe markers, generates `u-`+ULID serials, `Move-Item`s the
-    directory, writes a `universe_id_aliases.json` manifest (legacy id ->
-    serial, backed up), and re-points `.active_universe` — with root-containment
-    guards. This is a PowerShell operation against the live-data snapshot
-    (`scripts/` + `Workflow-live-data-snapshot`), OUTSIDE this lane's code Files
-    boundary and a live-data / data-loss-risk class needing host staging +
-    independent review. Evidence it has largely run: `migrate_live_data_okf_
-    baseline.ps1` already excludes a serial-id universe
-    (`u-01kw34sp5bdgzn1s9f7r2tmc4p`). Left to host-action; not a code build here.
+  - UNSAFE CANDIDATE ONLY — DO NOT RUN (verified 2026-07-26).
+    `scripts/rename_live_data_universes_to_serial_ids.ps1` moves roots before
+    writing its alias manifest, updates only `.active_universe`, and does not
+    transactionally update `founder_home`, the universes index, or all live
+    references. Replacement tooling MUST journal rollback state before the
+    first move, update bindings/index/references under one recoverable
+    transaction, and survive a crash at every boundary.
 - [ ] 5.5 Verify migrated bindings and read/write/run/status references resolve only the serial id after migration.
-  - HOST-VERIFY (2026-07-24). No runtime `universe_id_aliases.json` resolution
-    layer exists in `tinyassets/` (grep clean) — by design, the migrator
-    RENAMES the directory to the serial, so directory-name-keyed references
-    resolve the serial after the move; the alias file is compatibility-lookup
-    only. Confirming live bindings/read/write/run/status all resolve the serial
-    is post-migration operational verification on the live snapshot, not a code
-    task in this lane. Blocked on 5.4's host run.
+  - BLOCKED on the safe 5.4 replacement. Verification MUST prove
+    `founder_home`, the universes index, active-universe state, read/write/run/
+    status paths, and rollback/restart all converge on the serial id before a
+    legacy root is retired.
 - [ ] 5.6 Remove duplicate `self/`, `soul/`, and brain-archive directories plus empty starter notes/logs from existing roots while preserving non-empty historical runtime data.
-  - TOOLING LANDED / HOST-RUN OPERATIONAL (2026-07-24). Existing
-    `scripts/migrate_live_data_okf_baseline.ps1` rebuilds the canonical OKF
-    baseline top-files per root. Same class as 5.4: a PowerShell operation on
-    the live snapshot, outside this lane's code Files boundary. Host-action.
+  - UNSAFE CANDIDATE ONLY — DO NOT RUN (verified 2026-07-26).
+    `scripts/migrate_live_data_okf_baseline.ps1` overwrites governed soul files
+    with blank templates, including learned `identity.md`, and only reports
+    legacy directories instead of removing them. Replacement tooling MUST
+    support dry-run, back up/no-overwrite every governed file, remove only
+    proven duplicate/empty artifacts, and preserve all non-empty history.
 
 ## 6. Verification and Release Gates
 
@@ -238,9 +235,10 @@
     (`test_universe_server_framing.py` ×3, `test_universe_server_metadata.py`
     ×2, `test_input_keys_isolation.py` ×1) — verified by re-running them in a
     detached `origin/main` worktree. They belong to their own lane.
-- [x] 6.2 Re-run strict OpenSpec validation after implementation and before syncing or archiving this change.
-  - DONE (2026-07-24): `openspec validate universe-creation --strict` →
-    "Change 'universe-creation' is valid".
+- [ ] 6.2 Re-run strict OpenSpec validation after every implementation task and immediately before syncing or archiving this change.
+  - CURRENT PLANNING EVIDENCE (2026-07-26): the reconciled change validates
+    strictly, but implementation and release gates remain open; task 1.6 records
+    this pre-implementation validation and does not satisfy final validation.
 - [ ] 6.3 Verify the success and setup-required paths through a rendered chatbot conversation using the live connector.
   - BLOCKED on tasks 3.1-3.4 and 4.1-4.4 plus a live in-app browser route.
     `ui-test` preflight on 2026-07-26 returned `No browser is available`; no

@@ -20,8 +20,10 @@ successors.
   eligible providers, or minting provider authority in the universe layer.
 - Preserve completed birth/home binding when provider execution holds. The
   action layer maps the typed hold to the canonical setup-required payload and
-  advertises only successor-proven paths that are live for the request surface;
-  raw API-key deposit and unavailable desktop/market routes are absent.
+  advertises only successor-proven paths that are live for the request surface
+  after the effective provider-authority V2 cutover. While that gate is dark,
+  the provider owner preserves shipped setup-path behavior; cutover cannot
+  retain raw API-key deposit or unavailable desktop/market routes.
 - On success the chatbot only relays/renders the universe intelligence's reply;
   it never authors that reply. Reply generation, learning extraction,
   fulfillment evidence, and provider fallback remain governed by their

@@ -90,19 +90,23 @@ elements, and only setup paths the owning successor proves live and completable
 for that surface. It MUST NOT require provider exhaustion or fabricate a
 universe reply.
 
-Raw `byo_api_key` deposit is not advertised. Accepted-market setup appears only
-after `activate-connector-requester-authority` lands its connector-visible
+While the effective provider-authority V2 gate is dark, the provider owner
+preserves the shipped setup-path projection. After cutover, raw `byo_api_key`
+deposit is not advertised. Accepted-market setup appears only after
+`activate-connector-requester-authority` lands its connector-visible
 agreement/result and B2/B13 remote-dispatch path. Host/local setup appears only
 after `activate-requester-host-engines` lands its attested account-to-host
-capability. If neither is live, the hold remains truthful without a dead
-instruction and cutover stays blocked.
+capability. If neither is live, cutover stays blocked rather than replacing the
+shipped projection with a dead instruction.
 
 On success the chatbot relays the universe's reply verbatim. The same opaque
 provider request capability may cross reply generation and model-backed
 learning extraction according to the provider owner; the universe layer does
-not inspect or widen it. Result evidence uses
-`fulfillment_class=requester_owned|accepted_market`; credential
-`authority_class` remains separately owned by credential/provider receipts.
+not inspect or widen it. The setup-required payload uses
+`fulfillment_class=requester_owned|accepted_market`. Result-local provider
+evidence uses only fields defined by `provider-attempt-receipts`, including its
+separate credential `authority_class`; the universe layer does not relabel or
+extend that receipt.
 
 ### D5 - Lifecycle residuals are narrow
 
@@ -124,7 +128,12 @@ The remaining lifecycle work is:
   carrier requirements before this change archives. This change removes its
   duplicate identity header rather than relying on archive order.
 - `provider-attempt-receipts` owns result-local
-  `authority_held`/credential evidence; this change only consumes it.
+  `authority_held`/credential evidence; this change only consumes its published
+  fields and does not require receipt-side `fulfillment_class`.
+- `credential-vault` owns the default-empty universe-scoped provider child
+  environment and auth-home refusal; `outbound-boundary-layer` owns remote
+  credential blindness. STATUS P0 #1573 retains the unresolved runtime
+  isolation/fallback risk.
 - `activate-requester-host-engines` owns attested Tier-2/Tier-3/plugin local
   execution and its setup path.
 - `activate-connector-requester-authority` owns Tier-1 accepted-market setup,
