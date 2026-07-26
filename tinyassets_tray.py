@@ -52,11 +52,48 @@ TUNNEL_TOKEN_ENV = "CLOUDFLARE_TUNNEL_TOKEN"
 LEGACY_TUNNEL_TOKEN_ENV = "TUNNEL_TOKEN"
 TRUE_VALUES = {"1", "true", "yes", "on"}
 
-PROJECT_DIR = Path(__file__).resolve().parent
-LOG_DIR = PROJECT_DIR / "logs"
+
+def _packaged_data_dir() -> Path:
+    from tinyassets.storage import data_dir
+
+    return data_dir()
+
+
+def _runtime_paths() -> tuple[Path, Path]:
+    if getattr(sys, "frozen", False):
+        project_dir = Path(sys.executable).resolve().parent
+        return project_dir, _packaged_data_dir() / "logs"
+    project_dir = Path(__file__).resolve().parent
+    return project_dir, project_dir / "logs"
+
+
+PROJECT_DIR, LOG_DIR = _runtime_paths()
 SINGLETON_LOCK_PATH = LOG_DIR / ".tray.lock"
 
 _LOCAL_PROVIDER_SET = set(LOCAL_PROVIDERS)
+
+
+def _runtime_command(role: str, source_args: list[str]) -> list[str]:
+    """Resolve a child command for source Python or a frozen desktop bundle."""
+    if getattr(sys, "frozen", False):
+        forwarded = source_args[2:] if source_args[:1] == ["-m"] else []
+        return [sys.executable, "--packaged-role", role, *forwarded]
+    return [sys.executable, *source_args]
+
+
+def _packaged_authority_state() -> tuple[bool, str]:
+    if not getattr(sys, "frozen", False):
+        return True, ""
+    from tinyassets.desktop.onboarding import (
+        PackagedAuthorityUnavailable,
+        require_packaged_authority,
+    )
+
+    try:
+        require_packaged_authority(_packaged_data_dir() / "desktop")
+    except PackagedAuthorityUnavailable as exc:
+        return False, str(exc)
+    return True, ""
 
 
 def _env_truthy(name: str) -> bool:
@@ -336,6 +373,9 @@ class UniverseServerManager:
         """
         if provider not in ALL_PROVIDERS:
             return False, f"unknown provider {provider!r}"
+        authority_ready, authority_reason = _packaged_authority_state()
+        if not authority_ready:
+            return False, authority_reason
         running = self._running_providers()
         if provider in _LOCAL_PROVIDER_SET:
             other_local = [p for p in running if p in _LOCAL_PROVIDER_SET]
@@ -353,7 +393,7 @@ class UniverseServerManager:
             print(f"  [skip] {provider}: {reason}")
             return False
 
-        LOG_DIR.mkdir(exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         runtime_key = self._next_daemon_key(provider)
         try:
             from tinyassets.daemon_registry import provider_capacity_warning
@@ -389,12 +429,18 @@ class UniverseServerManager:
 
         try:
             proc = subprocess.Popen(
-                [
-                    sys.executable, "-m", "fantasy_author",
-                    "--universe", str(universe_path),
-                    "--provider", provider,
-                    "--no-tray",
-                ],
+                _runtime_command(
+                    "daemon",
+                    [
+                        "-m",
+                        "fantasy_daemon",
+                        "--universe",
+                        str(universe_path),
+                        "--provider",
+                        provider,
+                        "--no-tray",
+                    ],
+                ),
                 cwd=str(PROJECT_DIR),
                 env=env,
                 stdout=log,
@@ -409,8 +455,13 @@ class UniverseServerManager:
             self.daemon_procs[runtime_key] = (proc, log)
         return True
 
-    def start_mcp(self) -> None:
-        LOG_DIR.mkdir(exist_ok=True)
+    def start_mcp(self) -> bool:
+        authority_ready, authority_reason = _packaged_authority_state()
+        if not authority_ready:
+            self._phase = authority_reason
+            self.mcp_proc = None
+            return False
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         env = os.environ.copy()
         # Pin the canonical data root as an absolute path so the MCP
         # subprocess's data_dir() resolves identically no matter what
@@ -426,21 +477,25 @@ class UniverseServerManager:
         log.flush()
 
         self.mcp_proc = subprocess.Popen(
-            [
-                sys.executable, "-c",
-                "from tinyassets.universe_server import main; "
-                f"main(host='0.0.0.0', port={MCP_PORT}, "
-                "transport='streamable-http')"
-            ],
+            _runtime_command(
+                "mcp",
+                [
+                    "-c",
+                    "from tinyassets.universe_server import main; "
+                    f"main(host='0.0.0.0', port={MCP_PORT}, "
+                    "transport='streamable-http')",
+                ],
+            ),
             cwd=str(PROJECT_DIR),
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        return True
 
     def start_tunnel(self) -> None:
-        LOG_DIR.mkdir(exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
 
         log = open(LOG_DIR / "tunnel.log", "a", encoding="utf-8")
         log.write(f"\n--- Tunnel start {time.strftime('%H:%M:%S')} ---\n")
@@ -482,7 +537,7 @@ class UniverseServerManager:
         skip silently — same defensive shape as the mojibake pre-commit
         hook's script-existence check.
         """
-        LOG_DIR.mkdir(exist_ok=True)
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
         watchdog_script = PROJECT_DIR / "scripts" / "tab_watchdog.py"
         if not watchdog_script.is_file():
             # Partial checkout or upstream refactor — skip-with-warning,
@@ -837,12 +892,15 @@ class UniverseServerManager:
 
     def run(self) -> None:
         """Start everything and block until quit."""
-        auto_start = self._auto_start_providers()
+        authority_ready, authority_reason = _packaged_authority_state()
+        auto_start = self._auto_start_providers() if authority_ready else []
         print("Starting TinyAssets Server...")
         print(f"  Project:   {PROJECT_DIR}")
         print(f"  Universe:  {self._active_universe}")
         print(f"  Endpoint:  {MCP_URL}")
         print(f"  Providers: {auto_start or 'none (auto-start off)'}")
+        if not authority_ready:
+            print(f"  Account:    pending ({authority_reason})")
         print()
 
         # 1. Launch daemons
@@ -854,8 +912,10 @@ class UniverseServerManager:
 
         # 2. Launch MCP server
         self._phase = "Starting MCP server on port 8001..."
-        self.start_mcp()
-        print("  [OK] MCP server starting on port 8001")
+        if self.start_mcp():
+            print("  [OK] MCP server starting on port 8001")
+        else:
+            print(f"  [skip] MCP server: {self._phase}")
 
         time.sleep(2)
 
@@ -908,7 +968,7 @@ def main() -> int:
     Returns exit code: 0 on success, 0 also on singleton conflict (silent
     no-op so double-clicking the desktop shortcut is harmless).
     """
-    LOG_DIR.mkdir(exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
     acq = acquire_singleton_lock(SINGLETON_LOCK_PATH)
     if not acq.acquired:
         pid_str = f" (PID {acq.existing_pid})" if acq.existing_pid else ""

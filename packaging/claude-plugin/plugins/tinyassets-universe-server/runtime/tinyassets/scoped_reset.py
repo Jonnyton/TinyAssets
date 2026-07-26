@@ -27,7 +27,7 @@ from typing import AbstractSet, Callable, Mapping
 
 from tinyassets.storage import DB_FILENAME
 
-INVENTORY_REVISION = "scoped-reset-inventory-v3-2026-07-25"
+INVENTORY_REVISION = "scoped-reset-inventory-v4-2026-07-25"
 
 # Classification is location-specific: these are the only reviewed tables
 # allowed in the root .tinyassets.db.  A migration adding any other table must
@@ -60,6 +60,7 @@ MAIN_DB_TABLE_CLASSIFICATIONS = MappingProxyType({
     "goals": "preserve",
     "gate_claims": "preserve",
     "canonical_bindings": "preserve",
+    "goal_canonicals": "preserve",
     "unreconciled_writes": "block_matching",
     # Queue Epoch 2 is authority/audit-bearing.  Terminal rows are preserved;
     # active or ambiguous rows block instead of being cascaded away.

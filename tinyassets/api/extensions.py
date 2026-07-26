@@ -86,6 +86,7 @@ from tinyassets.api.runtime_ops import (
     _PROJECT_MEMORY_WRITE_ACTIONS,
     _SCHEDULER_ACTIONS,
 )
+from tinyassets.authoring.service import _AUTHORING_ACTIONS
 from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
@@ -709,6 +710,42 @@ def _extensions_impl(
         }
         return attribution_handler(attr_kwargs)
 
+    # ── Node / evaluator authoring sessions (target 4.3) ───────────────────
+    # Authoring composes under this canonical router: no new advertised MCP
+    # handle, and the ``extensions`` tool signature is NOT widened. Each
+    # authoring parameter reuses an existing kwarg (same technique as the
+    # effector-consent actions above), which is also why a chatbot can reach
+    # these without a connector-surface change:
+    #   key                → session_id          field_type   → artifact_kind
+    #   intent             → sketch / effect name resume_from  → draft to resume
+    #   branch_version_id  → base published ver.  select       → view
+    #   since              → diff anchor event_id changes_json → edit operations
+    #   expected_version   → reviewed draft ver.  notes        → change message
+    #   value              → test mode            request_id   → confirmation token
+    #   payload_json       → action body (test inputs, visibility, risk acks)
+    authoring_handler = _AUTHORING_ACTIONS.get(action)
+    if authoring_handler is not None:
+        from tinyassets.api.engine_helpers import _current_actor
+
+        return authoring_handler({
+            "actor_id": _current_actor(),
+            "session_id": key,
+            "artifact_kind": field_type,
+            "sketch": intent,
+            "effect_name": intent,
+            "base_version_id": branch_version_id,
+            "resume_session_id": resume_from,
+            "view": select,
+            "anchor": since,
+            "operations_json": changes_json,
+            "expected_version": expected_version,
+            "change_message": notes,
+            "mode": value,
+            "confirmation": request_id,
+            "payload_json": payload_json,
+            "limit": limit,
+        })
+
     # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
     leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
     if leaderboard_handler is not None:
@@ -758,6 +795,9 @@ def _extensions_impl(
             "quality_leaderboard", "recommended_parent_for_fork",
             "grant_effector_consent", "revoke_effector_consent",
             "list_effector_consents",
+            "authoring_start", "authoring_inspect", "authoring_edit",
+            "authoring_test", "authoring_confirm_effect", "authoring_publish",
+            "authoring_list",
         ],
     })
 

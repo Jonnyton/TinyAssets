@@ -80,6 +80,7 @@ def test_inventory_classifies_current_schema_and_epoch2_stores(
     assert scope.home_id == _HOME_A
     assert scope.blockers == ()
     assert scope.schema_tables <= MAIN_DB_TABLE_CLASSIFICATIONS.keys()
+    assert MAIN_DB_TABLE_CLASSIFICATIONS["goal_canonicals"] == "preserve"
     assert MAIN_DB_TABLE_CLASSIFICATIONS["request_admissions"] == "preserve"
     assert MAIN_DB_TABLE_CLASSIFICATIONS["request_admission_events"] == "preserve"
     assert MAIN_DB_TABLE_CLASSIFICATIONS["branch_tasks_v2"] == "preserve_or_block"
