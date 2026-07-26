@@ -428,13 +428,20 @@ The launch interface layered above the canonical provider interface is:
 2. `await ProviderLaunchHandle.result() -> ProviderResponse`.
 
 Every `BaseProvider` retains canonical
-`complete(prompt, system, config, *, universe_dir=None)`. Only
-executor-local `ProviderExecutor.start()` may validate the full non-empty, unexpired,
-non-tombstoned, non-revoked principal/universe/provider/host/generation/digest
-tuple, dereference the binding, and call the selected provider's
-`complete(...)`. Native material exists only in provider child/request memory,
-never argv, journal, log, config, receipt, or server state. `start()` returns
-after transport owns an irreversible registered copy of inputs.
+`complete(prompt, system, config, *, universe_dir=None)`.
+`ProviderExecutor.start()` is the sole provider-layer tuple validator and
+launch coordinator. For CLI, local, and in-process transports, only the
+executor may dereference after validating the full non-empty, unexpired,
+non-tombstoned, non-revoked
+principal/universe/provider/host/generation/digest tuple; native material
+exists only in provider child/request memory. For remote HTTP, the executor
+instead obtains a non-serializable, grant-bound proxy handle from
+`outbound-boundary-layer` and binds it to an executor-scoped provider
+instance. That provider's canonical `complete(...)` sends only a redacted
+request through the handle; the outbound proxy alone resolves the credential
+reference and performs network I/O. Neither path places native material in
+argv, journal, log, config, receipt, or server state. `start()` returns after
+the selected transport owns an irreversible registered copy of inputs.
 Provider/handle code then cannot reread universe config, vault, ambient
 environment, or auth homes.
 

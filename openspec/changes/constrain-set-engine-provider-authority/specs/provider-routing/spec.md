@@ -487,13 +487,20 @@ or `unknown`.
 values are captured at the exact execution boundary for the same call.
 
 `ProviderExecutor.start(invocation) -> ProviderLaunchHandle`; the handle SHALL
-expose `result() -> ProviderResponse` and idempotent close. Only
-executor-local `start()` may revalidate and dereference the opaque binding,
-materializing native secret only in provider child/request memory, then invoke
-the selected provider's canonical `complete(...)`. It SHALL return after
-transport owns a registered irreversible copy of launch inputs. Provider and
-handle code thereafter MUST NOT reread config, vault, ambient environment, or
-auth homes.
+expose `result() -> ProviderResponse` and idempotent close.
+`ProviderExecutor.start()` SHALL be the sole provider-layer validator of the
+complete binding tuple and the sole coordinator that invokes the selected
+provider's canonical `complete(...)`. For CLI, local, and in-process
+transports, only executor-local `start()` MAY dereference the opaque binding,
+materializing native secret only in provider child/request memory. For remote
+HTTP, it SHALL NOT dereference or perform network I/O; it SHALL obtain a
+non-serializable handle bound to the current outbound grant and credential
+reference, bind that handle to an executor-scoped provider instance, and call
+canonical `complete(...)` with redacted request data. The outbound proxy alone
+SHALL resolve the credential and perform the HTTP request. `start()` SHALL
+return after the selected transport owns a registered irreversible copy of
+launch inputs. Provider and handle code thereafter MUST NOT reread config,
+vault, ambient environment, or auth homes.
 
 Launch timeout SHALL be distinct from model completion. Partial creation,
 cancellation, timeout, result/close races, and crash recovery SHALL have one
@@ -598,10 +605,15 @@ operation exists.
 - **THEN** invocation contains opaque reference/digest and provenance
 - **AND** contains no native/recoverable credential
 
-#### Scenario: executor-local start owns dereference
-- **WHEN** requester-local provider starts
-- **THEN** only `ProviderExecutor.start()` validates the complete binding tuple and dereferences
-- **AND** native material exists only inside provider child/request memory
+#### Scenario: executor owns validation and transport selection
+- **WHEN** a requester-local provider starts
+- **THEN** only `ProviderExecutor.start()` validates the complete binding tuple and coordinates canonical provider invocation
+- **AND** CLI/local/in-process transports dereference only in executor child/request memory, while remote HTTP uses only the outbound owner's grant-bound credential-blind proxy handle
+
+#### Scenario: remote HTTP secret and network ownership is singular
+- **WHEN** an authorized remote HTTP provider is selected
+- **THEN** the executor-scoped provider sends a redacted request through the outbound proxy handle
+- **AND** only the outbound proxy resolves the credential reference and performs network I/O
 
 #### Scenario: direct provider bypass holds
 - **WHEN** provider code is invoked without router launch token

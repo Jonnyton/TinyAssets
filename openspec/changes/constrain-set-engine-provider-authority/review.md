@@ -558,3 +558,16 @@ activation is added here.
 
 Final disposition remains pending merge to current main, strict validation,
 refreshed exact-head handoffs, and fresh Opus 5 approval.
+
+Current main `f7142a57` then merged cleanly. That merge made
+`_WikiCanaryExecutionAuthority` and its anonymous bearer as-built, so the
+provider contract now composes with the landed narrow canary while refusing
+to mint provider authority from it. The outbound integration was also
+narrowed to one implementable boundary: the executor is the sole
+provider-layer tuple validator and launch coordinator; CLI/local/in-process
+may dereference only in executor child/request memory; remote HTTP receives a
+non-serializable grant-bound proxy handle, and the outbound proxy alone
+resolves its credential reference and performs network I/O.
+
+Final disposition remains pending strict validation, exact-SHA handoff
+refresh, and fresh Opus 5 approval of the merged revision.

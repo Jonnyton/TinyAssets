@@ -114,7 +114,11 @@ deny-all.
   remote HTTP providers, the binding consumes the current user/per-universe
   grant and credential-blind daemon-side proxy owned by
   `outbound-boundary-layer`; a missing/revoked grant holds without ambient
-  fallback.
+  fallback. `ProviderExecutor.start()` remains the sole provider-layer
+  tuple validator and launch coordinator, but it passes only a redacted
+  request through a grant-bound proxy handle; the outbound proxy alone
+  resolves the credential reference and performs remote HTTP I/O. Runtime
+  activation waits for that owner to accept the exact handle contract.
 - This change is the sole owner of provider-authority propagation into the
   provider layer. It defines the frozen invocation/launch boundary and
   exhaustive call-site threading; no separate

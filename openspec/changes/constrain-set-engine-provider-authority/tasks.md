@@ -394,9 +394,11 @@
   content, cannot use ambient maintainer auth, and no ordinary provider route
   becomes reachable.
 - [ ] 6.6 Add provider parity tests proving every CLI/local/HTTP/in-process
-  invocation is reference-only and only `ProviderExecutor.start()`
-  dereferences after full binding revalidation before calling the provider's
-  canonical `complete(...)`.
+  invocation is reference-only and only `ProviderExecutor.start()` validates
+  the full binding tuple and coordinates canonical `complete(...)`. Prove
+  CLI/local/in-process dereference occurs only in executor child/request
+  memory, while remote HTTP receives only a grant-bound proxy handle and the
+  outbound owner alone resolves credentials and performs network I/O.
 - [ ] 6.7 Add shared-reader/assignment races proving `start()` freezes one
   principal/universe/provider/host/generation/digest tuple before unlock and
   result completion cannot reread authority.
@@ -437,8 +439,11 @@
   maintenance variant—never native secret material.
 - [ ] 7.4 Replace direct one-phase provider execution with
   `ProviderExecutor.start() -> ProviderLaunchHandle -> result()`,
-  executor-local dereference followed by canonical provider `complete()`,
-  frozen transport state, and direct-bypass refusal.
+  executor-local dereference for CLI/local/in-process or a grant-bound
+  credential-blind outbound proxy handle for remote HTTP, followed by
+  canonical provider `complete()`, frozen transport state, and direct-bypass
+  refusal. The executor is the sole provider-layer validator/coordinator; the
+  outbound proxy is the sole remote-HTTP secret/network owner.
 - [ ] 7.5 Implement bounded launch cleanup, secret-free launch identity,
   durable fence/reconciliation, and atomic terminal state.
 - [ ] 7.6 Preserve canonical dynamic exhaustion, retry, fallback,
