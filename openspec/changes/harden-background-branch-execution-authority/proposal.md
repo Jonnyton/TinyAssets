@@ -21,6 +21,13 @@ support private branches or prove who authorized unattended work.
   dispatch, and graph child enqueue persist only opaque binding references and
   fail closed when the binding is absent, stale, revoked, exhausted, or no
   longer authorized.
+- Cover authenticated request admission, goal-pool and paid-market producer
+  emission, live/frozen direct child invocation, and interrupted-run resume as
+  additional issuance roots with the same target-attempt gate.
+- **BREAKING**: epoch-1 graph work may reach a private same-universe child only
+  through an exact authenticated parent allowlist and committed child binding;
+  branch-authored `child_actor` is rejected rather than used as execution
+  identity.
 - Bind daemon loop authority to a pinned `soul.md` version and rotate or revoke
   it when governed learning changes the declared loop.
 - Preserve the existing graph lineage, depth, run-budget, universe, and
@@ -48,11 +55,11 @@ support private branches or prove who authorized unattended work.
 ### Modified Capabilities
 
 - `daemon-runtime-and-dispatch`: Schedules, subscriptions, daemon soul loops,
-  and claimed branch tasks require valid background target authority before
-  dispatch.
-- `graph-execution-substrate`: In-node child enqueue carries attenuated target
-  authority without weakening physical-universe, lineage, depth, budget, or
-  concurrency guards.
+  request admission, producer emission, resume, and claimed branch tasks
+  require valid background target authority before dispatch.
+- `graph-execution-substrate`: Enqueued and direct live/frozen child execution
+  carries attenuated target authority without weakening physical-universe,
+  lineage, depth, retry, budget, or concurrency guards.
 - `universe-lifecycle-and-soul`: A declared loop branch and its background
   authority are versioned and changed as one recoverable lifecycle.
 - `distributed-execution`: Queue reservations, B2 execution grants, target
@@ -62,9 +69,12 @@ support private branches or prove who authorized unattended work.
 ## Impact
 
 The change affects authenticated scheduler handlers and storage,
-`tinyassets/scheduler.py`, universe soul creation/editing, branch-task storage
-and graph enqueue, daemon and cloud-worker dispatch, distributed worker
-admission, provenance/audit records, migration tooling, and their concurrency,
-crash-recovery, connector, and rendered-chatbot tests. It consumes the existing
-identity/ACL, daemon-identity, branch-access, provider-execution, and
-provider-attempt contracts rather than redefining them.
+`tinyassets/scheduler.py`, request admission and run resume, goal/market
+producers and subscriptions, universe soul creation/editing, branch-task
+storage, graph enqueue and direct child invocation, daemon and cloud-worker
+dispatch, distributed worker admission, provenance/audit records, migration
+tooling, and their concurrency, crash-recovery, connector, and
+rendered-chatbot tests. It consumes the existing identity/ACL, daemon-identity,
+branch-access, request-admission, demand-side scheduling, paid-market,
+provider-execution, and provider-attempt contracts rather than redefining
+them.

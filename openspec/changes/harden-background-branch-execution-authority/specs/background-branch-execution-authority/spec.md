@@ -13,7 +13,7 @@ The system SHALL represent durable unattended branch authorization as a server-o
 - **AND** neither attempt mutates the durable binding into a bearer
 
 ### Requirement: Bindings have closed server-owned issuance roots
-The system SHALL create or rotate a background target binding only from an authenticated schedule/subscription transition, an authorized universe creation or governed soul transition, an authorized root run, or an attenuating parent-attempt transition. Each root MUST derive identity from canonical request or durable authority state and MUST authorize the exact universe, branch, operation, and source revision. Caller `owner_actor`, process environment, queue possession, stored actor labels, admission evidence, daemon/worker identity, and branch visibility MUST NOT issue or widen a binding.
+The system SHALL create or rotate a background target binding only from an authenticated schedule/subscription transition, authenticated Request admission, an authenticated goal subscription or accepted paid-market contract followed by producer emission, an authorized universe creation or governed soul transition, an authorized root run or resume, or an attenuating parent-attempt transition for enqueue or direct child invocation. Each root MUST derive identity from canonical request or durable authority state and MUST authorize the exact universe, branch, operation, and source revision. Caller `owner_actor`, `child_actor`, `posted_by`, process environment, pool YAML, queue possession, stored actor labels, admission evidence, daemon/worker identity, fresh-install default subscription, and branch visibility MUST NOT issue or widen a binding.
 
 #### Scenario: Caller-supplied owner cannot become authority
 - **WHEN** a schedule request supplies `owner_actor` equal to another account or a private branch author
@@ -23,6 +23,21 @@ The system SHALL create or rotate a background target binding only from an authe
 - **WHEN** an active parent attempt requests a same-universe child inside its explicit target policy and remaining limits
 - **THEN** the service may create an exact child binding while atomically debiting the parent envelope
 - **AND** the child receives no operation, target, depth, count, cost, or lifetime authority absent from the parent
+
+#### Scenario: Request admission commits target authority
+- **WHEN** an authenticated operator Request is admitted for an exact universe loop or branch target
+- **THEN** its Request, admission, protocol task, and source binding commit as one aggregate or none commit
+- **AND** the admission verdict alone cannot authorize later execution
+
+#### Scenario: Producer emission consumes durable subscriber authority
+- **WHEN** a goal-pool or paid-market producer emits a task for a subscriber universe
+- **THEN** it may derive an exact binding only from that universe's current authenticated goal subscription or accepted market contract generation
+- **AND** anonymous default subscriptions, producer identity, pool content, and poster labels grant nothing
+
+#### Scenario: Resume derives from exact run authority
+- **WHEN** a canonically authorized principal resumes an interrupted run with a current durable run binding
+- **THEN** one resume binding/attempt is fenced to the run's exact checkpoint and branch version
+- **AND** startup recovery or the stored run actor cannot mint it
 
 ### Requirement: Attempts are issued just in time from current canonical state
 The system SHALL revalidate an active exact binding generation, authorizing principal, universe ACL, physical universe, branch existence/access, live or pinned target version, source revision/cancellation, executor eligibility, lineage, limits, and prior-attempt state before creating or claiming each attempt. The admitted attempt MUST pin the exact branch version/content digest. A failed check MUST create no runnable attempt and MUST perform no provider, credential, payment, or outbound-effect access.
@@ -34,11 +49,11 @@ The system SHALL revalidate an active exact binding generation, authorizing prin
 
 #### Scenario: Revoked principal fails before downstream access
 - **WHEN** the authorizing principal loses required universe or branch access before a trigger fires
-- **THEN** the source enters an authority hold without a runnable attempt
+- **THEN** the source enters a target-authority hold without a runnable attempt
 - **AND** provider, credential, payment, and outbound-effect systems are not consulted
 
 ### Requirement: Logical attempt keys are unique and recoverable
-The system SHALL derive a deterministic logical-attempt key from the source identity and generation plus its due instant, event ID, soul-cycle ordinal, task generation, or parent/child invocation ordinal as applicable. The authority store MUST enforce one attempt per key across concurrent hosts. A replay MUST follow the existing attempt outcome, while an indeterminate attempt MUST hold until reconciliation rather than minting a replacement.
+The system SHALL derive a deterministic logical-attempt key from the source identity and generation plus its due-period identity, event ID, soul-cycle ordinal, Request/admission/task identity and body digest, producer item/subscription-or-contract revision, resume checkpoint/generation, task generation, or parent/node/child/retry invocation ordinal as applicable. The authority store MUST enforce one attempt per key across concurrent hosts. A replay MUST follow the existing attempt outcome, while an indeterminate attempt MUST hold until reconciliation rather than minting a replacement.
 
 #### Scenario: Concurrent schedule ticks have one winner
 - **WHEN** two hosts process the same schedule generation and due instant concurrently
@@ -49,8 +64,13 @@ The system SHALL derive a deterministic logical-attempt key from the source iden
 - **THEN** recovery resumes, terminates, or quarantines that exact attempt
 - **AND** retry does not create a second attempt for the logical key
 
+#### Scenario: Child retry has a stable distinct ordinal
+- **WHEN** one live or frozen direct child invocation retries within its bounded policy
+- **THEN** each retry receives one deterministic retry-ordinal key and exact pinned target attempt
+- **AND** replay cannot add an unbudgeted retry
+
 ### Requirement: Authority failures are typed holds with monotonic fencing
-The system SHALL fence stale work with binding, source, target, attempt, executor-claim, and revocation generations. Missing, mismatched, revoked, expired, exhausted, unauthorized, or indeterminate authority MUST place the source/task in a non-runnable typed `authority_hold` without deleting its definition or history. Reauthorization MUST mint a new generation; it MUST NOT revive or mutate a stale attempt.
+The system SHALL fence stale work with binding, source, target, attempt, executor-claim, and revocation generations. Missing, mismatched, revoked, expired, exhausted, unauthorized, or indeterminate authority MUST place a queue row in the persisted non-runnable `target_authority_held` state, or an equivalent source-owned hold for a non-queue source, without deleting its definition or history. A queue transition to held and an authenticated held-to-pending transition MUST be generation-checked; reauthorization MUST mint a new binding generation and MUST NOT revive or mutate a stale attempt.
 
 #### Scenario: Binding rotation fences a stale worker
 - **WHEN** a source is reauthorized and its binding generation advances while an old worker is preparing to execute
@@ -60,6 +80,12 @@ The system SHALL fence stale work with binding, source, target, attempt, executo
 - **WHEN** recovery cannot prove whether a prior attempt crossed its irreversible execution boundary
 - **THEN** the source remains held as indeterminate with its audit evidence intact
 - **AND** no replacement authority is guessed
+
+#### Scenario: Held queue work has explicit cap accounting
+- **WHEN** a BranchTask enters `target_authority_held`
+- **THEN** it stops consuming the global active pending/running capacity
+- **AND** it continues to consume exactly one non-refundable lifetime-lineage unit
+- **AND** reauthorizing that same row does not consume another lineage unit
 
 ### Requirement: Source and authority lifecycle transitions are crash-consistent
 The system SHALL create, rotate, pause, revoke, and remove trigger/soul/task sources and their authority records in one transaction where they share a store or through a prepared, digest-bound, idempotently recoverable pair where they do not. A source MUST NOT become pickable before its binding is committed, and a revoked generation MUST NOT become runnable because one store rolled back independently.
@@ -74,7 +100,7 @@ The system SHALL create, rotate, pause, revoke, and remove trigger/soul/task sou
 - **THEN** its delivery record is linked to one attempt or one explicit denial/hold record before delivery is considered complete
 
 ### Requirement: Child target authority is transferred under existing growth guards
-The system SHALL derive graph-enqueued child authority from a non-serializable parent delegation and atomically debit the parent's remaining envelope before making the child task pickable. Default delegation MUST be limited to same-universe public targets. A private target MUST require an explicit exact-target allowlist from the authenticated root or parent binding. Existing stable-origin, physical-universe, depth, run-wide, global-active, lifetime-lineage, and integrity guards MUST remain independently enforced.
+The system SHALL derive graph-enqueued and live/frozen direct-child authority from a non-serializable parent delegation and atomically debit the parent's remaining envelope before making a child task pickable or starting direct execution. Default delegation MUST be limited to same-universe public targets. A private target MUST require an explicit exact-target allowlist from the authenticated root or parent binding. Branch definitions containing `child_actor` MUST fail validation after enforcement rather than selecting execution identity. Initial invocations and every retry MUST have stable ordinals and independently pinned attempts. Existing stable-origin, physical-universe, depth, retry, run-wide, global-active, lifetime-lineage, and integrity guards MUST remain independently enforced.
 
 #### Scenario: Dynamic private target cannot inherit principal rights
 - **WHEN** branch-authored code names a private same-universe branch that is not in the parent binding's exact allowlist
@@ -84,6 +110,11 @@ The system SHALL derive graph-enqueued child authority from a non-serializable p
 - **WHEN** multiple source nodes concurrently derive children from one nearly exhausted parent envelope
 - **THEN** at most the remaining authority and queue capacity is committed
 - **AND** every excess derivation fails without a pickable task
+
+#### Scenario: Direct async child cannot bypass enqueue authority
+- **WHEN** a live or frozen `invoke_branch` node uses async mode or a retry
+- **THEN** it derives and claims the same class of exact attenuated child authority before execution
+- **AND** neither `child_actor` nor the stored parent run actor grants access
 
 ### Requirement: Authority domains compose without promotion
 The system SHALL keep background target authority distinct from trigger admission, queue/lease reservation, daemon control, distributed B2 execution grants, provider-work authority, provider-attempt receipts, credentials, payment, moderation, and outbound-effect authority. Execution MUST satisfy every applicable domain independently, and no identifier, signature, verdict, or receipt from one domain may mint or substitute for another.
@@ -104,7 +135,7 @@ The system SHALL persist the canonical authorizing principal, binding and attemp
 - **THEN** run provenance uses the canonical binding principal as authorizer and records the daemon separately as executor
 
 ### Requirement: Legacy migration never guesses unattended authority
-The system SHALL inventory every legacy schedule, subscription, soul or `PROGRAM.md` loop, live/archive branch task, and enqueue producer before enforcement. It MUST backfill a binding only from canonical durable evidence that independently proves principal, ACL, exact target, source generation, and physical universe. Ambiguous work MUST remain preserved but paused or held as `reauthorization_required`; `owner_actor`, environment, public visibility, queue possession, or daemon/worker identity MUST NOT be treated as proof.
+The system SHALL inventory every legacy schedule, subscription, Request admission, goal/market producer subscription/contract and emitted task, soul or `PROGRAM.md` loop, live/archive branch task, enqueue/direct-child path, interrupted run/resume, `_current_actor` seam, and dispatcher before enforcement. It MUST backfill a binding only from canonical durable evidence that independently proves principal, ACL, exact target, source generation, and physical universe. Ambiguous work MUST remain preserved but paused or held as `reauthorization_required`; `owner_actor`, `child_actor`, `posted_by`, environment, pool content, public visibility, queue possession, admission verdict, or daemon/worker identity MUST NOT be treated as proof.
 
 #### Scenario: Legacy owner string is insufficient
 - **WHEN** a schedule has only an `owner_actor` value and no canonical principal/ACL record
