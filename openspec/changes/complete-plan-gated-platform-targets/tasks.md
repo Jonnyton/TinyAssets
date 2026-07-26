@@ -103,7 +103,7 @@
 
 ## 7. Foldback
 
-- [x] 7.1 Validate the change strictly, obtain an opposite-provider review, and **incorporate its findings, before PR or merge.**
+- [ ] 7.1 Validate the change strictly, obtain an opposite-provider review, and **incorporate its findings, before PR or merge.**
   - Gate wording corrected 2026-07-25. It previously read "before pushing" and was checked while the branch had already been pushed and the verdict was still pending — an irreversible gate recorded as met before its evidence existed. The branch being pushed is not the risk boundary here; PR/merge is.
   - Evidence: `openspec validate complete-plan-gated-platform-targets --strict` passes; full-tree `openspec validate --all --strict` result recorded in `LANE_REPORT.md`. Codex cross-family verdict **`adapt`** returned 2026-07-25 with nine findings (seven substantive), all folded into this change in the same commit that re-checks this task; the per-finding disposition is in `LANE_REPORT.md` § *Codex verdict + fold*.
   - Not claimed: the folded text has **not** been re-reviewed. That confirming pass is task 7.2 and is open.
