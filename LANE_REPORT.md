@@ -1,148 +1,382 @@
-# Lane report — complete-plan-gated-platform-targets
+# Scoped-reset lane report
 
-**Branch:** `claude/o5-plan-gated-targets` (base `origin/main` 8a76a93d) · pushed, **no PR opened**
-**Commits:** `df05220b` — `spec: PLAN-gated full-platform targets (catalog/discovery/presence/portability)`; then the Codex-`adapt` fold commit at this branch's head (§ *Codex verdict + fold*).
-**Scope:** spec-authoring only. No runtime code touched.
-**Change dir:** `openspec/changes/complete-plan-gated-platform-targets/` (did not exist; created)
-**Validation (post-fold):** `openspec validate complete-plan-gated-platform-targets --strict` passes; full tree `openspec validate --all --strict` = **42 passed, 0 failed**. Task count 9/58 (matches `openspec list`).
+Date: 2026-07-25
+Branch: `codex/osx-scoped-reset`
+Base requested: `origin/main` at `6cde7ef0`
+Round-1 pushed head: `6c793c3d`
 
-## Change name
+## Task 1.1 — freeze the safety contract
 
-`complete-plan-gated-platform-targets` — five new target-only capabilities.
+Implemented an explicit reset/preserve/block inventory for the current main
+database and Epoch-2 stores. The planner fails closed on unknown tables,
+unknown or unadapted home/root operational stores and root-run tables,
+hidden/generated columns, changed resettable columns/keys/foreign-key
+authority, triggers/views, foreign owners, active work, and preserved rows that
+would otherwise be cascade deleted. Root/database/sidecar/home/barrier/journal/
+staging paths reject symlinks, junctions, reparse points, hardlinks, and
+filesystem/mount crossings.
 
-The three groups the 2026-07-22 full-coverage audit left unowned were all blocked on the same four PLAN positions, which landed on `origin/main` 2026-07-25 via the brain-OKF foldback (#1761). Verified at authoring time (tasks.md 1.1): **1A** = *Design Decisions* per-domain canonical store + user-designed brain organization; **1B** = Scoping Rule 4 custody reopened as open research; **1C** = Scoping Rule 1 irreducibility finding; **1D** = Scoping Rule 3 guidance-vs-enforcement.
+The process-shared maintenance barrier uses Windows reader slots for concurrent
+service writers and an all-slot exclusive reset lock. Every supported writer
+entrypoint recovers or joins a verified-clean barrier before writing. The
+legacy API acquires its replacement barrier before releasing the live one.
 
-Fenced against the two sibling target changes — `complete-independent-full-platform-targets` (moderation, tray, node authoring, handoffs) and `build-forward-platform-capabilities` (boundary, data, demand, hardware, training, pool, token). Neither claims these four groups. No file overlap: this lane writes only its own change dir.
+Red evidence:
 
-## Target group → requirement inventory
+- Initial contract run: 10 failures in `tests/test_scoped_identity_reset.py`.
+- Independent-review additions reproduced failures for generated columns,
+  hardlinked barrier/sidecar files, unadapted stores, foreign terminal actors,
+  preserved cascade dependencies, and second-writer startup.
 
-36 requirements across five new capabilities, all `## ADDED` (35 at first authoring; the custody-manifest requirement was added in the fold), plus **one target-only `## MODIFIED`** requirement against the shipped `wiki-commons` typed-filing contract (fold finding 5).
+Green evidence:
 
-### catalog/collaboration → `collaborative-catalog-and-editing` (7)
+- `tests/test_scoped_identity_reset.py` is green as part of the final 64-test
+  focused run.
+- Real two-process writer startup and reset exclusion pass on Windows.
 
-1. Catalog is Postgres-canonical and **indexes** commons knowledge without duplicating it — bundle wins on divergence; index is rebuildable; brain organizations are catalog *subjects*, not schema.
-2. Collaborative writes are compare-and-swap on a monotonic version; stale writes refused with current version + change description, never merged.
-3. Every write appends an immutable revision; revert is recorded **forward** as a new revision.
-4. Two collaboration models bind to **content class** and the boundary is enforced — commons-path write to platform code is refused with the fork-and-PR path named.
-5. External export is a derived one-way projection; round-trip import re-enters the ordinary authenticated write path with no CAS/authority/visibility/moderation bypass and cannot resurrect withheld content.
-6. Catalog projections enforce visibility **including on derived fields and counts**; authority from the authenticated subject, no env fallback.
-7. Everything composes under the canonical handle set; invariant test asserts the advertised set is unchanged.
+Files:
 
-### discovery/remix → `node-discovery-and-remix` (7)
+- `tinyassets/scoped_reset.py`
+- `tinyassets/__main__.py`
+- `tinyassets/cloud_worker.py`
+- `tinyassets/universe_server.py`
+- `tinyassets/mcp_server.py`
+- `tinyassets/desktop/launcher.py`
+- `tinyassets_tray.py`
+- `fantasy_daemon/__main__.py`
+- `fantasy_daemon/api.py`
+- `tests/test_scoped_identity_reset.py`
 
-1. One-call composite signal block; uncomputable signals reported **absent**, never defaulted to a value that reads as evidence.
-2. Ranking delegated to a user-buildable selector reusing the shipped DESIGN-008 contract — bind-time purity rejection, seeded default, unbind falls back rather than failing.
-3. Discovery never reveals unreadable content, **including through derived blocks**; no leakage via rank gaps, totals, pagination, or timing; lineage through a restricted ancestor truncates at an opaque boundary.
-4. Commons content ranks equal first-class; no platform-origin weighting outside the selector; cross-domain matches labelled, not filtered.
-5. Remix-from-N records every parent edge and credit **atomically**, and **introduces** aggregate credit enforcement (≤ 1.0 across all contributors, checked transactionally) — corrected in the fold: the store enforces only the per-row `[0,1]` range, so this is new enforcement, not a preserved invariant. Cycle rejection and idempotent retry.
-6. Convergence is propose-then-ratify with authenticated append-only ratifications, proposer recusal, supersede-not-delete, walkable superseded lineage; policy values are remixable, enforcement properties are not configurable away.
-7. Standing similarity interest is a durable owner-bound stored query read back through the ordinary read path; matches survive disconnection; cost scales in outstanding queries, not queries×changes.
+## Task 1.2 — read-only operator plan
 
-### presence → `realtime-collaboration-presence` (6)
+Implemented an operator-only `python -m tinyassets.scoped_reset plan` command
+that accepts an explicit credential-free roster, resolves only allowlisted
+aliases, emits no raw subject, and binds the plan digest to roster/inventory
+revisions, a domain-separated principal digest, exact row digests, resolved
+paths, the home filesystem object plus entry/content digest, blockers, and
+preservation scope. POSIX permissions and Windows owner/DACL are checked.
+Unknown/non-allowlisted aliases fail closed. Read-only SQLite inspection does
+not create WAL/SHM sidecars.
 
-1. Presence is advisory and **never a write authority** — CAS is the sole conflict authority (a held record can't block; a lost record can't relax).
-2. Presence expires on heartbeat, scoped per artifact, no explicit release required, no inheritance.
-3. Versioned-row broadcast, **not** convergent replication; per-artifact CRDT escalation needs its own change.
-4. Presence and streams enforce read-visibility at **delivery time**; unauthorized subscription is indistinguishable from subscribing to a nonexistent artifact; revocation stops delivery without client action.
-5. Realtime is degradable — every collaborative operation completes with the transport fully down; reconnection is loss-free and duplicate-free.
-6. Fan-out bounded by subscription, not global change volume; load sheds delivery, never commit latency or success; §14 proof obligation.
+No-state planning and apply are stable mutation-free no-ops, including a data
+root with no database. Completed replay returns the old receipt before
+inspecting or touching a newly registered, actively blocked replacement home.
 
-### portability/deletion/succession/feedback → `data-portability-and-deletion` (9) + `platform-succession-and-feedback` (7)
+Red evidence:
 
-Portability/deletion: **the manifest itself is custody-mode-scoped** — platform records plus a holder registration (not an inventory), assembled at request time with per-mode coverage stated, resolution defined for all four modes, and a post-deletion receipt that resolves through a self-contained document plus a bearer capability rather than the erased identity (added in the fold) · custody mode recorded per item with unknown-fails-safe · export enumerates everything with **enclose-or-descriptor** + explicit completeness statement + partial labelling · every offered custody mode must satisfy the export contract or is non-conforming · unreachable holder yields a **graceful resumable deferral** distinguishable from permanent failure · no cross-principal private content, no elevated-role reach · deletion erases platform-held directly **and issues a verifiable obligation** elsewhere with confirmed/unconfirmed reporting · wiki-orphan survival with no cascade · identity detachment is **resolution-time suppression over append-only ledgers**, not a rewrite · initiator-bound expiring confirmation with pre-confirmation disclosure.
+- Four missing-planner failures plus two missing CLI/receipt failures.
+- A no-database no-op apply reproduced the control-only-schema failure.
+- Completed replay with an active replacement home reproduced an incorrect
+  blocker before receipt lookup.
 
-Succession/feedback: machine-checkable successor roster (reports, does not block) · **succession grants no content access in any custody mode** · phase-split executable bus-factor gates, real-value conditions unsatisfiable by a simulated participant · staleness-detectable runbook incl. redeploy-from-nothing · typed authenticated filing **extending the `wiki-commons` contract** with per-invocation attribution presentation and retained abuse binding · publish-authorization enforced with **named refusal, not silent stripping**, scoped to structured/derived elements with prose under explicit publication confirmation, guidance seeded as remixable commons · **the external tracker stays the canonical queue** (architecture §23.1) and the platform-side filing is a durable staging record projected into it by a receipted idempotent outbound effect.
+Green evidence:
 
-## Irreducibility calls (1C) — **zero new handles, zero new primitives**
+- Both regressions pass in the final focused run.
 
-Recorded in `design.md` § D2 for all eleven standalone RPCs the architecture named across §§15/16/21/22/23:
+Files:
 
-| Behavior | Named as | Call | Lands as |
-|---|---|---|---|
-| Node discovery | `discover_nodes` | not irreducible | `read_graph` action |
-| Standing similarity | `subscribe_similar_in_progress` | not irreducible | stored query via `write_graph`, read via `read_graph`; realtime push is a web transport, not a handle |
-| Remix from N | `remix_node` | **already expressible** | `write_graph` action; gap is atomicity |
-| Convergence propose | `propose_convergence` | not irreducible | `write_graph` action |
-| Convergence ratify | `ratify_convergence` | not as a handle; authority boundary is enforcement, policy is commons | `write_graph` + seeded policy |
-| Node update | `update_node` | not irreducible | `write_graph` over CAS/revision |
-| Comment | `comment` | not irreducible | existing unified-notes substrate |
-| Export | `export_my_data` | not irreducible | `read_graph` action |
-| Deletion | `delete_account` | not irreducible | `write_graph` action |
-| Delete confirmation | `request_delete_confirmation` | not irreducible | `write_graph` action |
-| Feedback | `/feedback` | not irreducible | `write_page` typed filing |
+- `tinyassets/scoped_reset.py`
+- `tests/test_scoped_identity_reset.py`
 
-**The load-bearing call is remix-from-N**, the strongest new-primitive candidate in the source material. It fails the irreducibility test on *verifiable* grounds rather than judgment: `tinyassets/attribution/schema.py:47` keys `attribution_edge` on `UNIQUE (parent_id, child_id)`, so one child already carries N parent edges — set-valued parentage is shipped substrate. What is actually missing is **two** things: atomicity of the N-edge write, and **new aggregate credit enforcement**. (Corrected in the fold — the first draft of this report called the aggregate bound an existing invariant. It is not: `attribution_credit` enforces `CHECK (credit_share >= 0.0 AND credit_share <= 1.0)` per row and `UNIQUE (artifact_id, actor_id)`, `api/market.py:922` clamps only the individual share, and the aggregate sum is enforced nowhere — it lives in a schema-module design comment and the advisory `RemixProvenance.is_credit_valid`.) Both became requirement 5 of `node-discovery-and-remix`, not a primitive; the no-new-handle result is unchanged.
+## Task 1.3 — exact scoped apply and deterministic recovery
 
-Self-verified independently: `CANONICAL_HANDLES` in `scripts/mcp_public_canary.py:72` matches the seven; `wiki-commons` § *Typed filings bypass the draft gate with per-kind IDs and dedup* confirms the feedback composition target exists.
+Implemented operator-only apply under the exclusive barrier and a durable
+principal/home fence. Apply revalidates the exact plan, roster-principal
+binding, filesystem object identity, and entry/content digest, then checks the
+filesystem identity again immediately before rename. It publishes the
+content-free journal before the SQLite prepared witness, stages only the exact
+founder home by same-filesystem rename, deletes only exact planned primary-key
+rows, and commits those deletes with the commit witness.
 
-## Open questions surfaced
+Recovery re-derives all paths instead of trusting SQLite, compares journal and
+database evidence, rejects linked staging ancestors, rolls pre-commit state
+back, completes post-commit cleanup, sweeps orphan/partial journals, and
+durably flushes both rename parents plus staging/journal parents. All public
+servers import only the writer barrier; apply/plan/recovery are not registered
+as MCP actions or API routes.
 
-Seven, in `design.md` § *Open Questions* — recorded, not answered (the seventh added in the fold):
+Red evidence:
 
-1. **(1B)** What evidence upgrades a non-platform deletion from unconfirmed to confirmed (holder attestation? vault-key destruction? nothing verifiable for host-machine custody?), and which custody modes must reach conformance before launch.
-2. **(1B + legal)** Is resolution-time identity suppression sufficient for right-to-be-forgotten over append-only ledgers, or is cryptographic erasure required? Jurisdictional; needs the specialist legal review already tracked.
-3. **Deletion × convergence** — when a required ratifier's identity is detached by deletion, does the proposal stall, auto-recuse the seat, or fall to quorum? Changes whether ratification is per-identity or per-owner-set. Neither 1B nor 1C settles it.
-4. **Repository topology** — is the commons-bundle git snapshot the same repo as the catalog export sink, or two (§16.4 proposed two)? 1A settles canonicity per domain, not repo shape.
-5. **Governance of widely-inherited commons seeds** — 1D blesses seeding a remixable default but not who maintains the default discovery selector / convergence policy, nor what review applies to changing a seed users inherit by not choosing.
-6. **Named succession principals** — roster holders, real-value-cutover human co-signer, registrar successor. Host/founder action; tasks.md 6.4.
-7. **(Host decision, added in the fold)** Should the commons filing ever replace the external tracker as the canonical feedback queue? The landed §23.1 position is specified; the reversal is not adopted and may not be adopted by an implementing lane without this decision. Smallest ask: *keep GitHub canonical, or authorize the commons as canonical with GitHub as the mirror?*
+- Ten initial missing-apply failures.
+- Eight Windows directory-durability failures before directory flushing was
+  implemented.
+- Independent review reproduced the journal-before-row and
+  journal-before-completion crash windows, trusted recovery paths, linked
+  staging ancestors, missing rollback-parent flushes, and multi-writer
+  admission failure.
 
-Two things that *looked* like open questions but were resolvable from landed/shipped positions, so they were reconciled in `design.md` rather than filed as open: the realtime substrate (PLAN's architecture reference already fixes versioned-rows as a durable commitment), and §23.7's "anonymous users file feedback equally" against the shipped authenticated-write boundary (D8 — MCP path stays authenticated with pseudonymous *presentation*; genuinely unauthenticated feedback enters via external channels marked lower-trust, so the write boundary is not weakened). The fold added a third: §23.1's canonical-queue position, which the draft had *reversed* rather than reconciled — now specified as landed (D8a), with the reversal itself demoted to open question 7.
+Green evidence:
 
-## Notes
+- All journal, rename, commit, cleanup, completion, replay, and rollback
+  boundaries pass in the final focused run.
+- The durable Opus 5 review verdict is REJECT for reviewed head `f613b23d`.
+  This fold fixes and proves its findings but does not invent a post-fix
+  reviewer approval.
 
-- **STATUS.md not edited.** The row is `pending` on `origin/main`. This branch is pushed without a PR, so a claim edit here would never land and would only add conflict surface on the fleet's hottest file. The row should flip when this lands.
-- **Target-only guard is explicit** in `tasks.md`: `openspec archive` syncs deltas into `openspec/specs/` as a side effect, and that tree is as-built truth — archiving while unbuilt would write five fictional capabilities into canonical truth. Terminal task 7.4 records that zero of five has any implementation on `origin/main`.
-- **One MODIFIED delta**, added in the fold: the `wiki-commons` typed-filing contract, so feedback intake has a single owner instead of two (finding 5). The other adjacencies (`shared-goals-and-convergence` exact-identifier common-node discovery, `wiki-commons` hash-guarded deletion, `evaluation-outcomes-and-attribution` append-only ledgers, `knowledge-retrieval-and-memory` OKF bundle export, and `data-commons` dataset manifests/licensing per finding 9) are named as boundaries in `design.md` and specified as *additive*; if an implementing lane must change one, it authors the MODIFIED delta then.
-- **Live defect class folded in:** the STATUS P1 concern that branch get/describe leaks restricted wiki path/title/summary via `_related_wiki_pages` is the same derived-block-escapes-the-predicate shape discovery would have at much larger scale. Requirement 3 of `node-discovery-and-remix` and task 3.3 are written against it directly, with negative tests as part of the requirement rather than follow-up hardening.
+Files:
 
-## Codex verdict + fold
+- `tinyassets/scoped_reset.py`
+- writer entrypoint files listed under task 1.1
+- packaged runtime mirrors under
+  `packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/`
+- `tests/test_scoped_identity_reset.py`
 
-Dispatched in-lane via `codex exec --cd <win-path> - < .codex_review_prompt.txt` (stdin, not argv). Adversarial framing: refute five claims — 1C zero-new-handles, the `attribution_edge` irreducibility evidence, 1B custody-agnosticism, no as-built contamination, no invented positions — plus a vacuous-requirement sweep.
+## Task 1.4 — mutation and fault proof
 
-**Verdict: `adapt`** (2026-07-25) — *"structurally sound and strict-valid, but it needs normative handle coverage, custody-manifest closure, feedback ownership reconciliation, and corrected review/task evidence before merge."* Nine findings; seven substantive, one clean pass (#8 target-only/as-built), one no-collision note with a small addition (#9). **All nine folded.** No finding was rejected.
+Added a 13-case CI-executable proof that mutates the real `founder_home` and
+`universe_acl` planner selection predicates and delete keys, corrupts the
+commit witness and journal/path evidence,
+interrupts partial journal publication, injects rollback rename failure,
+checks reverse-rename durability flushes, and substitutes a linked staging
+ancestor. Each widened filter or broken recovery guard makes the proof red.
 
-### Per-finding disposition
+Red evidence:
 
-**1 — Unauthorized position reversal (feedback canonicity). FOLDED, position restored.**
-Confirmed against the source: architecture §23.1 says GitHub Issues is the canonical public bug/feature-request surface, §23.2's `/feedback` opens an Issue, and external channels route in — *"GitHub remains the canonical queue."* None of the four 2026-07-25 PLAN decisions touches feedback-record ownership. The draft requirement *"The commons filing SHALL remain the canonical record"* was a reversal this lane had no authority to make.
-Fix: requirement renamed and rewritten — the external tracker **stays** canonical; the platform-side filing is a **durable staging and provenance record** projected into the canonical queue as an idempotent receipted effect, reported as *pending projection* rather than *queued* until projection succeeds. That preserves the property the draft was reaching for (a projection failure must not lose the report) without moving canonicity to get it. New `design.md` § D8a records the reversal and why it was withdrawn; **open question 7** files the reversal as a host decision with the smallest concrete ask, and the requirement forbids an implementing lane adopting it without one. Task 6.8 rewritten with the same warning.
+- Three initial mutation/recovery failures.
+- Additional independent-review regressions were each observed red before
+  implementation.
 
-**2 — Zero-new-handle conclusion not normative across the change. FOLDED.**
-Correct: the only suite-wide-looking SHALL was scoped to *"every catalog and collaboration behavior in this capability."*
-Fix: the catalog requirement is rewritten as **one cross-capability normative invariant** — *"Every behavior in this change and its successors routes under the canonical handle set"* — that names all five capabilities, asserts `tools/list` stays exactly the seven (`read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, `get_status`), fixes the per-behavior routing as a normative list, and is inherited unchanged by every successor split. Each of the eight behaviors Codex enumerated — discovery, remix, convergence, presence, export, deletion, confirmation, succession — additionally carries its own no-new-handle condition plus a scenario, so a successor split that takes one capability cannot drop the invariant. Separately, the Realtime subscription/heartbeat/broadcast path is now **named** as the already-approved non-MCP web transport in both the realtime spec and the invariant, so "under the seven handles or the commons" is not quietly resting on an unnamed fourth transport. Task 2.7 requires the invariant test to cover the change's behaviors as a set.
+Green evidence:
 
-**3 — Remix evidence overstated the shipped credit invariant. FOLDED, correction accepted.**
-Verified independently: `attribution_credit` has `CHECK (credit_share >= 0.0 AND credit_share <= 1.0)` per row and `UNIQUE (artifact_id, actor_id)`; `tinyassets/api/market.py:922` clamps only the individual share; the aggregate sum is enforced **nowhere** — it exists as a design comment in `attribution/schema.py` and the advisory `RemixProvenance.is_credit_valid` helper (`schema.py:202-209`) that no write path must call.
-Fix: requirement, D2, task 1.4, task 3.6, and this report now say the gap is **atomic N-edge writing AND new aggregate enforcement**. The requirement adds a scenario asserting the aggregate refusal comes from a check introduced by this capability, and tells an implementing lane to specify treatment of pre-existing violating rows rather than assuming there are none. No-new-handle result unchanged, as Codex noted.
+- `tests/test_scoped_reset_mutation_proof.py`: 13 passed.
 
-**4 — Custody of the custody manifest unresolved (1B not closed). FOLDED.**
-Fix: new requirement *"The custody manifest is itself custody-mode-scoped and the platform is not assumed to own the inventory."* The platform holds its own items plus a **holder registration** (identity, mode, reachability, last-enumeration time) per non-platform holder — explicitly **not** an inventory of contents. Manifests are assembled at request time as the union of platform records and each reachable holder's own enumeration, each entry attributed to its asserting holder, with coverage stated per mode (answered / deferred / unenumerable); every "every owned item" guarantee now reads as scoped to that union plus its coverage statement. Enumeration resolution is defined for all four modes (platform-held direct; brain under owner auth; vault under owner key authority, unenumerable by the platform without it; host when online, deferred when not), and a mode with no defined resolution may not be offered. The post-deletion path no longer depends on the erased identity: a **self-contained receipt document** readable with no platform call, plus a **bearer capability** whose server-side record holds only item/holder references and obligation state. New tasks 5.2 and 5.8; D3 extended.
+Files:
 
-**5 — Feedback filing duplicates the landed `wiki-commons` typed-filing contract. FOLDED (option A).**
-Chose the MODIFIED-delta path over a parallel action, because feedback *is* a typed filing (D2 already routed it there) and forking would duplicate identifier allocation and dedup.
-Fix: new **target-only MODIFIED delta** at `specs/wiki-commons/spec.md` extending *"Typed filings bypass the draft gate with per-kind IDs and dedup"* — as-built paragraph and its three scenarios reproduced verbatim (MODIFIED replaces wholesale on sync), then the extension: feedback-only categories get their own prefixes/counters, bug and feature-request feedback reuses the existing BUG/FEAT counters and the same 0.5-threshold duplicate check, `attribute_as` is presentation-only and outside filing identity, `component`/`severity` become optional **for feedback kinds only**. The succession/feedback requirement now names `wiki-commons` as sole owner of filing identity and dedup. `design.md` § D9, proposal *Modified Capabilities*, and the tasks guard updated; the delta is unsyncable like everything else here.
+- `tests/test_scoped_reset_mutation_proof.py`
+- `tinyassets/scoped_reset.py`
 
-**6 — Two non-checkable acceptance statements. FOLDED, both scoped.**
-(a) Free-text body: the hard boundary is now scoped to **structured and platform-derived elements** — references, attachments, derived context/summaries — where a read predicate can resolve the referent. Caller prose goes through an **explicit publication confirmation** plus post-hoc moderation, and the platform explicitly does not claim to have checked it (content classification is what 1D leaves to guidance). Task 6.7 rewritten.
-(b) Timing: the absolute "no inference through timing" prohibition becomes a stated **noninterference bound with an executable test model** — one fixed query against two corpora differing only by one restricted artifact, documented sample size/statistic/threshold, violation treated as a defect — plus a constraint that suppression work must not scale observably with suppressed-candidate count. New task 3.4. The other seven leak channels stay absolute, because they are directly enumerable.
+## Final verification
 
-**7 — Task 7.1 false completion evidence. FOLDED.**
-Unchecked, gate reworded from *"before pushing"* to *"before PR/merge"*, and re-checked only in this fold commit with accurate evidence: strict validation, the `adapt` verdict, and the per-finding disposition below it. It explicitly **does not** claim the folded text was re-reviewed — that is new task 7.2, open. Section 7 renumbered accordingly (terminal sync/archive guard is now 7.5).
+- Focused reset test files: 74 passed.
+- Standalone mutation proof: 13 passed.
+- Adjacent legacy API suites: 263 passed, 1 existing Starlette deprecation
+  warning.
+- Ruff on every changed Python source, test, and packaged mirror: clean.
+- `python packaging/claude-plugin/build_plugin.py`: passed; import probe
+  `probe-ok`.
+- Canonical/package equality regression: passed.
+- `openspec validate test-identity-and-reset --strict`: valid.
+- `git diff --check`: clean before commit.
+- Pre-commit gates: mirror parity, mojibake, import graph, path resolver,
+  cross-provider drift, and skill validation passed.
+- Branch pushed to `origin/codex/osx-scoped-reset` at `6c793c3d`; no PR opened.
 
-**8 — Target-only/as-built claim passes. NO CHANGE NEEDED, re-verified after the fold.**
-`git diff` touches nothing under `openspec/specs/`; the new `wiki-commons` delta lives inside the change dir and the sync/archive guard was extended to cover it explicitly (syncing it early would overwrite a live requirement with a partly-unbuilt one).
+## Deliberately not done
 
-**9 — No collision with `demand-side` / `data-commons`. FOLDED (the addition).**
-`data-commons` added as an explicit **read/boundary dependency**: in the export requirement (dataset assets carry that capability's own manifest reference and retrieval descriptor; licensing, pricing, gating, and contributor provenance are not restated), in `design.md` § Boundaries, in task 5.2, in the proposal's Impact dependencies, and in the successor-split task 7.3 — a portability successor including dataset assets must name it. No delta move, as Codex said.
+- No MCP action or public API route was added for reset.
+- The existing global reset implementation was not changed.
+- No PR was opened.
+- Tasks 2.x and 3.x were not implemented in this lane.
+- No WorkOS identities, credentials, live connector evidence, or production
+  reset was created.
+- This report is intentionally not committed.
 
-### Post-fold validation
+## Opus 5 REJECT fold
 
-- `openspec validate complete-plan-gated-platform-targets --strict` → **valid**.
-- `openspec validate --all --strict` → **42 passed, 0 failed** (unchanged; the new `wiki-commons` delta validates inside the change).
-- `openspec list` → **9/58 tasks** (was 9/54: +1 timing-acceptance, +2 custody-manifest/post-deletion-receipt, +1 confirming-review pass; the 9 complete are section 1's eight plus 7.1).
-- Diff scope: 10 files, all inside the change dir plus this report. `git diff --stat -- openspec/specs` is empty.
+### Finding 1 — cross-home data loss from path-only binding
 
-**Not claimed:** the folded text is unreviewed. Task 7.2 holds the confirming opposite-provider pass as a pre-PR/merge gate — not dispatched in this turn because the host scoped it to fold-and-push with no PR, so the gate is not yet live.
+- **Red:** `test_apply_refuses_home_directory_identity_swap` reproduced an
+  unchanged plan and completed deletion after Alice's planned path was replaced
+  by Bob's directory: 1 failed, `DID NOT RAISE`.
+- **Fix:** The plan action now binds the roster-principal fingerprint,
+  directory device/inode, and deterministic entry/content digest. Apply
+  re-plans under the exclusive barrier and rechecks the filesystem identity
+  immediately before `os.replace`.
+- **Green:** The focused regression passes and Bob's file plus parked Alice
+  home survive.
+- **Mutation proof:** Replacing the identity capture with
+  `{"path": str(home)}` turned the regression red again: 1 failed,
+  `DID NOT RAISE`.
 
-LANE_RESULT: done - all 7 substantive Codex findings folded (position reversal withdrawn + filed as host decision, cross-capability handle invariant, corrected credit evidence, custody-manifest closure, single-owner filing delta, two scoped acceptance methods, task-truth fix) plus finding 9's data-commons dependency; strict-valid, 42/42 tree, no as-built contamination, committed and pushed.
+### Finding 2 — silent destruction of unclassified in-home stores
+
+- **Red:** The reviewer formats `.sqlite3`, `.jsonl`, `.parquet`, and an
+  extensionless store all produced no blocker: 4 failed.
+- **Fix:** Home files are classified against an explicit resettable-content
+  suffix set; known operational stores and every unclassified format abort the
+  plan/apply without deletion.
+- **Green:** All four formats are blocked, apply raises
+  `ScopedResetBlocked`, and the store/home bytes survive: 4 passed.
+- **Mutation proof:** Temporarily allowing the four suffix classes made all
+  four regressions red again because no blocker was reported.
+
+### Finding 3 — fail-open legacy writer fence
+
+- **Red:** The legacy reconfigure probe acquired an exclusive reset lease on
+  root A after root B acquisition failed while the API still pointed at A:
+  1 failed, `legacy API still serves root A without its writer fence`.
+- **Fix:** `configure()` now acquires the replacement shared barrier, swaps the
+  module lease, then releases the previous barrier. Acquisition failure changes
+  no live state.
+- **Green:** Failed root B configuration leaves root A's shared lease held, and
+  the root/barrier pair swaps before the old lease releases: 2 passed.
+- **Mutation proof:** Restoring release-before-acquire turned the same probe
+  red with the original unfenced-root assertion.
+
+### Finding 4 — root stores and `.runs.db` schema growth skipped
+
+- **Red:** A root `future_queue.sqlite3` and a live `pending_jobs` table in
+  `.runs.db` yielded no blockers.
+- **Fix:** Root files and root-run tables are explicit allowlists; unknown
+  entries abort reset. Read-only WAL snapshots require the existing SHM and
+  never create one.
+- **Green:** Both unknown surfaces report blockers and the root/home bytes
+  survive the refused apply.
+- **Mutation proof:** The inventory regression directly pins both default-deny
+  decisions; widening either allowlist makes the focused assertion red.
+
+### Finding 5 — `founder_home` widening survived mutation proof
+
+- **Red:** The Opus mutation widened `founder_home` to universe-only and the
+  old 64-test suite stayed green.
+- **Fix:** The planner validates every selected founder-home row against both
+  exact principal and exact home before producing an action; the mutation
+  suite now widens `founder_home` explicitly.
+- **Green:** The widened runtime selector raises
+  `ScopedResetPlanChanged("founder-home selection escaped...")`; the mutation
+  file is 13 passed.
+- **Mutation proof:** The new selector-widening case is itself the executable
+  mutation and fails without the exact-row validation.
+
+### Finding 6 — plan created SQLite WAL/SHM sidecars
+
+- **Red:** The recursive size/mtime/SHA snapshot gained
+  `.tinyassets.db-wal` and `.tinyassets.db-shm`.
+- **Fix:** Sidecar-free databases use immutable read-only SQLite. Existing WAL
+  snapshots use read-only mode only when their SHM already exists; a WAL
+  without SHM fails closed.
+- **Green:** `test_plan_does_not_create_sqlite_sidecars` preserves the complete
+  recursive snapshot.
+- **Mutation proof:** Replacing the helper with the former bare `mode=ro`
+  connection makes the snapshot regression red by adding both sidecars.
+
+### Finding 7 — unsupported independent-approval claim
+
+- **Red:** `git log --name-only 6cde7ef0..f613b23d` contained no review
+  artifact while the old report claimed `APPROVE`.
+- **Fix:** `docs/reviews/2026-07-25-scoped-reset-opus5.md` durably records the
+  named/date/range REJECT and all seven findings. This report removes the false
+  approval claim.
+- **Green:** The review artifact is included in the commit candidate; this
+  intentionally uncommitted report points to it.
+- **Mutation proof:** Removing the durable artifact or restoring the approval
+  sentence makes the documented review-evidence check false by inspection.
+
+## Round 2 - recovery ownership and case-fold containment
+
+### Finding 8 - automatic recovery cleanup deleted a replacement staging directory
+
+- **Red:** The reviewer reproduction crashed at `after_commit`, parked the
+  reset-created staged home, moved Bob's pre-existing home into the exact
+  staging path, and called automatic recovery. Recovery did not raise and
+  deleted Bob's directory. In the first focused run this regression and both
+  recovery legs of the general containment test failed with `DID NOT RAISE`
+  (3 staging-ownership failures total).
+- **Fix:** The already-reviewed home identity manifest is now persisted in both
+  `plan_json` and the pre-rename journal, with the database copy bound to the
+  existing `state_digest` and the two copies cross-validated during recovery.
+  `_safe_cleanup_staging` cannot be called without a planned identity and is
+  the only `shutil.rmtree` site in scoped reset. It verifies device, inode, and
+  complete entry/content digest before deletion. Pre-commit rollback uses the
+  same authorization before moving staged state back.
+- **Green:** The replacement directory causes
+  `ScopedResetRecoveryError("...filesystem identity...")`; Bob's bytes remain
+  at the staging path and the parked reset-owned home remains intact. The
+  reviewer regression and all four general containment cases pass.
+- **Mutation proof:** Temporarily turning
+  `_assert_recovery_filesystem_identity` into a no-op made the reviewer
+  regression, both staged-replacement containment cases, and the foreign
+  already-restored source case red: 4 failed, 3 passed. Restoring the guard
+  returned them to green.
+
+### Finding 9 - Windows case collision bypassed credential and audit classification
+
+- **Red:** On the case-folding Windows pytest path, `AUTH.JSON`, `Auth.Json`,
+  `.CREDENTIAL-VAULT.JSON`, and `BID_EXECUTION_LOG.JSON` produced no blocker;
+  all four reviewer variants failed before apply could be proven to abort.
+- **Fix:** Home traversal now computes `entry.name.casefold()` once and uses
+  that normalized name for every credential, audit prefix, operational
+  directory, operational filename, SQLite sidecar, and suffix decision. The
+  allowlist and deny rules therefore use one case-insensitive classification
+  domain.
+- **Green:** All four case-collided stores are classified as credential or
+  audit artifacts, apply raises `ScopedResetBlocked`, and their bytes plus the
+  founder home survive.
+- **Mutation proof:** Temporarily replacing `entry.name.casefold()` with the
+  original `entry.name` made all six credential, audit, operational-file, and
+  operational-directory variants red again.
+
+### Structural assessment and choice
+
+Two rounds finding the same guarantees at new paths showed an incomplete
+generalization, not two unrelated last-edge bugs. The row-delete side was
+already structurally exact: reviewed primary keys are the only rows deletion
+accepts. The filesystem side also already built the right identity-owned
+manifest before mutation, but recovery dropped the filesystem actions and the
+tree-delete primitive accepted only a path.
+
+The chosen structural change reuses that manifest rather than creating a
+parallel deletion model:
+
+1. One shared state-digest function binds database and filesystem actions.
+2. Prepared database evidence and the durable journal both carry the reviewed
+   filesystem identity before rename or deletion.
+3. Recovery validates plan digest evidence, owner fingerprint, source path,
+   action kind, and journal parity before returning a deletion identity.
+4. The sole scoped-reset tree-delete primitive requires that identity and
+   refuses mismatches; rollback uses the same identity gate.
+5. Home classification normalizes once before every protected-name or
+   resettable-suffix decision.
+6. Pre-commit recovery accepts exactly two filesystem states: owned staging
+   with absent source (restore it), or absent staging with the same owned source
+   already restored. Both-present, neither-present, and foreign identity abort
+   without marking rollback complete or releasing the lease.
+
+This closes the class at the destructive primitive and recovery-evidence
+boundary instead of adding another path-specific check. An interrupted
+operation created by older code without filesystem manifest evidence now
+fails recovery loudly and preserves staged state rather than guessing.
+
+### General containment invariant
+
+`test_foreign_directory_is_refused_at_every_filesystem_boundary` enumerates all
+filesystem ownership transitions:
+
+- replacement of the reviewed source before apply;
+- replacement at the `before_rename` boundary;
+- replacement of staging before pre-commit rollback;
+- replacement of staging before post-commit cleanup.
+
+Every case must abort and preserve both the foreign directory and the parked
+reset-owned directory. Removing the pre-rename identity recheck makes its case
+red (wrong exception after database commit), while disabling the shared
+staging guard makes both recovery cases destructive and red. The journal
+manifest has its own red-first persistence regression. A second parameterized
+state-table test proves that pre-commit recovery refuses both missing home state
+and a foreign source replacement, while a non-vacuity control accepts the
+already-restored reset-owned source.
+
+### Round-2 final verification
+
+- First reviewer-reproduction run: 7 failed, 2 passed for the expected reasons.
+- Independent-review state-machine additions: 2 failed, 7 passed before the
+  final recovery-state fix.
+- Focused reviewer and containment cases after the fix: 14 passed.
+- Full reset set:
+  `tests/test_scoped_identity_reset.py tests/test_scoped_reset_mutation_proof.py`
+  - 89 passed.
+- Standalone mutation proof: 21 passed.
+- Literal mutations: recovery identity guard no-op - 4 failed; case-fold
+  removal - 6 failed; pre-rename recheck removal - 1 failed.
+- `ruff check` on canonical source, packaged mirror, and both reset test files:
+  all checks passed.
+- Canonical/package SHA-256 parity:
+  `8661C1A7974FE5D1D7E24CEAA54D26FD0678E4CCBCAA36DED7940BA2EA151E7E`.
+- `git diff --check`: clean.
+- Independent read-only review of the final diff: Ready yes; no Critical,
+  Important, or Minor findings.
+- `.claude/.fleet_floor_state.json` and `.claude/.fleet_warn_stamp` remain
+  untouched and untracked.
+- No PR was opened.
+
+LANE_RESULT: done - both Round-2 data-loss holes are structurally closed, mutation-pinned, fully verified, committed, and pushed
