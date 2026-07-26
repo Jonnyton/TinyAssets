@@ -1411,3 +1411,17 @@ Notes:
 - Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
 - Review gate: passed at semantic SHA `bc5fdcbb` — exact current-main Opus 5 plus three independent architecture/spec/verification approvals; host accepted the reconciled target boundary 2026-07-26
 - Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority
+
+## 2026-07-26 - background-provider-authority foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-successors-foldback
+- Lane state: foldback after PR #1803 merged
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: retire the landed planning claim; target stays active with 33 runtime tasks
+- PLAN refs: Daemon Platform; Providers; API & MCP Interface; Uptime & Alarms
+- Purpose: preserve the approved implementation handoff without treating planning as runtime completion.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
+- Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
+- Ship/abandon: merge coordination-only foldback, then release this worktree lane
