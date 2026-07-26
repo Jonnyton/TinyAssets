@@ -25,28 +25,13 @@ def _load_runner():
     return module
 
 
-def test_fixture_migration_ids_are_unique_reserved_gap_and_dependency_ordered():
+def test_fixture_migration_ids_match_the_migration_directory():
     runner = _load_runner()
     migrations = runner.discover_migrations(MIGRATIONS)
-    assert [migration.filename for migration in migrations] == [
-        "001_core_tables.sql",
-        "002_flags.sql",
-        "003_rls.sql",
-        "004_indexes.sql",
-        "005_seed.sql",
-        "006_discover_nodes.sql",
-        "007_token_normalization.sql",
-        "008_forwards.sql",
-        "009_market_ledger.sql",
-        "011_goal_canonicals.sql",
-        "012_authoring_sessions.sql",
-        "013_paid_market_workflow.sql",
-    ]
+    expected_filenames = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+    assert [migration.filename for migration in migrations] == expected_filenames
     assert [migration.version for migration in migrations] == [
-        *range(1, 10),
-        11,
-        12,
-        13,
+        int(filename.partition("_")[0]) for filename in expected_filenames
     ]
 
 
@@ -136,7 +121,7 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
         assert rows == [
             (version, name, 64)
             for version, name in zip(
-                [*range(1, 10), 11, 12, 13],
+                list(range(1, 14)),
                 [
                     "core_tables",
                     "flags",
@@ -147,6 +132,7 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
                     "token_normalization",
                     "forwards",
                     "market_ledger",
+                    "outbound_boundary",
                     "goal_canonicals",
                     "authoring_sessions",
                     "paid_market_workflow",
@@ -236,7 +222,7 @@ def test_populated_baseline_is_independent_of_runner_role_name(
             )
             assert connection.execute(
                 "SELECT count(*) FROM public.schema_migrations"
-            ).fetchone() == (12,)
+            ).fetchone() == (13,)
     finally:
         with psycopg.connect(dsn, autocommit=True) as admin:
             admin.execute(
@@ -353,7 +339,7 @@ def test_populated_baseline_history_is_recorded_atomically(
         )
         assert connection.execute(
             "SELECT count(*) FROM public.schema_migrations"
-        ).fetchone() == (12,)
+        ).fetchone() == (13,)
 
 
 def test_populated_baseline_rejects_lookalike_function_body(
@@ -413,7 +399,7 @@ def test_checksum_drift_lock_timeout_and_concurrent_runners(
         assert connection.execute(
             "SELECT array_agg(version ORDER BY version) "
             "FROM public.schema_migrations"
-        ).fetchone() == ([*range(1, 10), 11, 12, 13],)
+        ).fetchone() == (list(range(1, 14)),)
         first = tmp_path / "001_core_tables.sql"
         first.write_bytes(first.read_bytes() + b"\n")
         with pytest.raises(runner.MigrationError, match="checksum drift"):

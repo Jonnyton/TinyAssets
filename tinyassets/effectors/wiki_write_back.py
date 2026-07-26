@@ -22,8 +22,15 @@ from tinyassets.effectors.authority import resolve_soul_effect_authority
 logger = logging.getLogger(__name__)
 
 EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK = "wiki_write_back"
+DESTINATION_RECONCILIATION = {
+    "supported": True,
+    "reason": (
+        "trusted wiki destination metadata records the applied system effect"
+    ),
+}
 
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,200}$")
+_DESTINATION_MARKER_DB = ".wiki_write_back_destination_markers.db"
 
 
 def _parse_packet(value: Any) -> dict[str, Any] | None:
@@ -64,14 +71,6 @@ def _destination(packet: dict[str, Any]) -> str:
     value = packet.get("destination") or packet.get("target_page")
     if isinstance(value, str):
         return value.strip().replace("\\", "/")
-    return ""
-
-
-def _idempotency_hint(packet: dict[str, Any]) -> str:
-    for key in ("idempotency_hint", "idempotency_key"):
-        value = packet.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
     return ""
 
 
@@ -227,6 +226,11 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
     body, error = _payload_text(packet)
     if error:
         return "", error
+    if (
+        "<!-- tinyassets-wiki-write-back:" in body
+        or "<!-- /tinyassets-wiki-write-back:" in body
+    ):
+        return "", "packet.payload.body contains a reserved effect marker"
     if not _IDEMPOTENCY_RE.fullmatch(idem_hint):
         return "", "idempotency_hint contains unsupported characters"
     heading = _payload_heading(packet)
@@ -238,6 +242,99 @@ def _render_section(*, packet: dict[str, Any], idem_hint: str) -> tuple[str, str
         f"<!-- /{marker} -->",
         "",
     )
+
+
+def _destination_marker_db_path(universe_dir: Path) -> Path:
+    return universe_dir / "wiki" / _DESTINATION_MARKER_DB
+
+
+def _record_destination_marker(
+    *,
+    universe_dir: Path,
+    target: Path,
+    destination: str,
+    effect_key: str,
+) -> None:
+    """Record trusted destination metadata only after the page write lands."""
+    page_sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    db_path = _destination_marker_db_path(universe_dir)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path, timeout=30.0) as connection:
+        connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA busy_timeout = 30000")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS applied_wiki_effects (
+                effect_key  TEXT PRIMARY KEY,
+                destination TEXT NOT NULL,
+                page_sha256 TEXT NOT NULL,
+                recorded_at REAL NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO applied_wiki_effects (
+                effect_key, destination, page_sha256, recorded_at
+            ) VALUES (?, ?, ?, ?)
+            ON CONFLICT(effect_key) DO NOTHING
+            """,
+            (effect_key, destination, page_sha256, time.time()),
+        )
+        row = connection.execute(
+            """
+            SELECT destination, page_sha256
+              FROM applied_wiki_effects
+             WHERE effect_key = ?
+            """,
+            (effect_key,),
+        ).fetchone()
+    if row != (destination, page_sha256):
+        raise RuntimeError(
+            "wiki destination marker conflicts with an existing effect"
+        )
+
+
+def _reconcile_destination_marker(
+    *,
+    universe_dir: Path,
+    target: Path,
+    destination: str,
+    effect_key: str,
+) -> dict[str, Any]:
+    """Resolve stale intent from trusted metadata the payload cannot write."""
+    try:
+        if not target.is_file():
+            return {"status": "unknown"}
+        with sqlite3.connect(
+            _destination_marker_db_path(universe_dir),
+            timeout=30.0,
+        ) as connection:
+            row = connection.execute(
+                """
+                SELECT destination, page_sha256
+                  FROM applied_wiki_effects
+                 WHERE effect_key = ?
+                """,
+                (effect_key,),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return {"status": "unknown"}
+    if row is None or row[0] != destination:
+        return {"status": "unknown"}
+    return {
+        "status": "succeeded",
+        "evidence": {
+            "destination": destination,
+            "path": destination,
+            "destination_page_sha256": row[1],
+            "reconciliation": "server_destination_marker_found",
+        },
+    }
+
+
+def _stale_replay_must_not_fire() -> None:
+    raise RuntimeError("stale wiki intent must reconcile before fire")
 
 
 def _append_or_update_section(path: Path, section: str, idem_hint: str) -> dict[str, Any]:
@@ -298,7 +395,13 @@ def run_wiki_write_back_effector(
     destination = _destination(packet)
     universe_dir = _universe_dir(base_path)
     wiki_root = _wiki_root_for_universe(universe_dir)
-    idem_hint = _idempotency_hint(packet)
+    from tinyassets.idempotency import resolve_effector_identity
+
+    idem_hint = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+        universe_dir=universe_dir,
+    ).active_key
 
     if not destination:
         return {
@@ -440,9 +543,35 @@ def run_wiki_write_back_effector(
                 "reservation_created_at": held.get("created_at"),
                 "intent": packet,
             }
+        if status == "reconciliation_required":
+            from tinyassets.effectors.outbound_boundary import (
+                execute_replay_safe_effect,
+            )
+
+            reconciled = execute_replay_safe_effect(
+                universe_dir=universe_dir,
+                effect_key=idem_hint,
+                sink=EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK,
+                run_id=run_id,
+                invoke=_stale_replay_must_not_fire,
+                reconcile=lambda effect_key: _reconcile_destination_marker(
+                    universe_dir=universe_dir,
+                    target=target,
+                    destination=destination,
+                    effect_key=effect_key,
+                ),
+            )
+            return {
+                **reconciled,
+                "dry_run": reconciled.get("status") != "succeeded",
+                "phase": "phase_2",
+                "destination": destination,
+                "idempotency_hint": idem_hint,
+                "matched_output_key": matched_key,
+                "intent": packet,
+            }
         if status not in (
             "reserved",
-            "reserved_after_stale",
             "reserved_after_failed",
         ):
             return {
@@ -474,6 +603,26 @@ def run_wiki_write_back_effector(
                 "matched_output_key": matched_key,
             }
 
+        try:
+            _record_destination_marker(
+                universe_dir=universe_dir,
+                target=target,
+                destination=destination,
+                effect_key=idem_hint,
+            )
+        except Exception as exc:
+            evidence.update({
+                "phase": "phase_2",
+                "destination": destination,
+                "matched_output_key": matched_key,
+                "idempotency_hint": idem_hint,
+                "recorded_at": time.time(),
+                "receipt_finalize_failed": True,
+                "reconciliation_required": True,
+                "destination_marker_error_type": type(exc).__name__,
+            })
+            return evidence
+
         evidence.update({
             "phase": "phase_2",
             "destination": destination,
@@ -481,7 +630,7 @@ def run_wiki_write_back_effector(
             "idempotency_hint": idem_hint,
             "recorded_at": time.time(),
         })
-        if status in ("reserved_after_stale", "reserved_after_failed"):
+        if status == "reserved_after_failed":
             evidence["reservation_origin"] = status
 
         if not _finalize_receipt(
@@ -491,6 +640,7 @@ def run_wiki_write_back_effector(
             run_id=run_id,
         ):
             evidence["receipt_finalize_failed"] = True
+            evidence["reconciliation_required"] = True
         return evidence
 
 
