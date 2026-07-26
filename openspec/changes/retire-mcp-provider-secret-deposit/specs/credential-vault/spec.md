@@ -153,16 +153,16 @@ The selected universe's credential helper MAY overlay only `CODEX_HOME` and
 `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY` for `claude-code`. Existing
 `llm_subscription` resolution and materialization remain unchanged by this
 change. A legacy `llm_api_key` SHALL NOT be selected or decoded by that helper.
-For a requester-local API-key binding, the typed #1691 local-launch adapter
-SHALL validate the persisted credential-owner principal, universe, provider,
-host, scope, assignment generation, expiry, and tombstone state and cross draft
-PR #1691's shared-reader `ProviderInvocation -> ProviderLaunchHandle` barrier,
-then resolve the native secret exactly once into the permitted ephemeral
-API-key variable. The current D0 path is fake-only/production-denied and is not
-ordinary requester-provider authority. Accepted-market remote execution
-remains blocked on its owner-accepted production B2 authority and SHALL NOT
-receive this local secret. The control-plane vault helper SHALL receive no raw
-API key.
+For a requester-local API-key binding, the provider-authority-owned typed
+local-launch adapter SHALL validate the persisted credential-owner principal,
+universe, provider, host, scope, assignment generation, expiry, and tombstone
+state under shared `ProviderAssignmentAdmission` and cross the
+`ProviderInvocation -> ProviderLaunchHandle` barrier, then resolve the native
+secret exactly once into the permitted ephemeral API-key variable. The current
+D0 path is fake-only/production-denied and is not ordinary requester-provider
+authority. Accepted-market remote execution remains blocked on its
+owner-accepted production B2 authority and SHALL NOT receive this local
+secret. The control-plane vault helper SHALL receive no raw API key.
 
 After the helper returns, the builder SHALL revalidate the complete overlay and
 SHALL refuse an auth-home path that physically resolves outside the canonical
@@ -277,11 +277,11 @@ metadata-service and egress controls remain separate boundaries.
 - **WHEN** a universe-scoped caller requests `future-cli`, `gemini`, `CODEX`, or any provider name other than exact `claude-code` or `codex`
 - **THEN** provider launch is refused before a vault, binding, or native-secret helper is invoked
 
-#### Scenario: Missing credential uses empty runtime auth with the #1691 launch exception
+#### Scenario: Missing credential uses empty runtime auth with the provider-authority launch exception
 
 - **WHEN** a canonical universe provider has neither a credential record nor a current requester-local API-key binding
 - **THEN** environment construction succeeds with a universe-owned empty runtime auth home
-- **AND** the accepted #1691 launch adapter returns setup-required hold before provider invocation, with no maintainer/founder fallback
+- **AND** the accepted provider-authority launch adapter returns setup-required hold before provider invocation, with no maintainer/founder fallback
 
 #### Scenario: Bring-your-own llm_api_key deposit is rejected
 
@@ -319,12 +319,13 @@ trimming: ignored non-alphabet characters are not independently rejected,
 while an actual base64 or UTF-8 decoding exception SHALL be surfaced as
 `ValueError`.
 
-For requester-local API-key use, draft PR #1691
-(`constrain-set-engine-provider-authority`) SHALL select one exact opaque
-binding in its assignment transaction, and its typed local-launch adapter SHALL
-fail held on an empty, stale, wrong-provider, wrong-principal, wrong-host,
-wrong-generation, expired, or tombstoned binding without scanning vault
-records, host homes, environment variables, or keyring entries.
+For requester-local API-key use,
+`constrain-set-engine-provider-authority` SHALL select one exact opaque binding
+in its assignment transaction under `ProviderAssignmentAdmission`, and its
+typed local-launch adapter SHALL fail held on an empty, stale, wrong-provider,
+wrong-principal, wrong-host, wrong-generation, expired, or tombstoned binding
+without scanning vault records, host homes, environment variables, or keyring
+entries.
 
 #### Scenario: Normalized BYO aliases identify only a retirement slot
 
@@ -345,7 +346,7 @@ records, host homes, environment variables, or keyring entries.
 
 #### Scenario: Current exact binding selects only local dereference
 
-- **WHEN** #1691's assignment binding is current and exactly matches persisted credential-owner principal, universe, provider, host, scope, and generation and crosses that change's shared-reader launch barrier
+- **WHEN** the provider assignment binding is current and exactly matches persisted credential-owner principal, universe, provider, host, scope, and generation and crosses shared `ProviderAssignmentAdmission`
 - **THEN** the local-launch adapter resolves only that opaque binding at native launch
 - **AND** no `llm_api_key` secret is decoded or returned by the universe vault
 
@@ -389,8 +390,9 @@ claim cross-process locking, a unique temporary filename, compare-and-swap, or
 version conflict detection.
 
 A vault containing legacy `llm_api_key` records SHALL use an opaque
-byte-preserving dual loader under the exclusive assignment lock owned by draft
-PR #1691 (`constrain-set-engine-provider-authority`). The legacy side SHALL
+byte-preserving dual loader under the exclusive writer from
+`ProviderAssignmentAdmission`, owned by
+`constrain-set-engine-provider-authority`. The legacy side SHALL
 inventory each raw JSON object byte slice, stored order, exact ten-alias
 retirement slot, and digest without normalizing or decoding any secret field.
 The ordinary side SHALL parse and validate only retained `llm_subscription`,
@@ -406,12 +408,13 @@ unambiguously preserve every legacy byte slice, relative order, slot, or
 digest. It SHALL NOT pass a legacy record through the ordinary normalizer,
 collapse aliases, decode fields, silently drop a record, or rewrite a legacy
 object. Retirement transitions and exact compare-delete SHALL use the same
-draft-PR-#1691 exclusive assignment lock, expected record digest, and assignment
-generation. Launch exclusion SHALL compose with draft PR #1691's shared-reader
+exclusive `ProviderAssignmentAdmission` writer, expected record digest, and
+assignment generation. Launch exclusion SHALL compose with its shared-reader
 `ProviderInvocation -> ProviderLaunchHandle` barrier for requester-owned local
 execution; accepted-market execution remains separately blocked on an
-owner-accepted production B2 authority contract. This change does not claim
-that either dependency is landed or accepted.
+owner-accepted production B2 authority contract. The provider-authority
+contract is merged in PR #1784; this change does not claim the B2 dependency
+is accepted.
 
 #### Scenario: Single record upserts into an existing vault
 
@@ -472,12 +475,12 @@ that either dependency is landed or accepted.
 
 - **WHEN** two processes write the same universe vault concurrently, including overlapping one-record read-modify-write upserts
 - **THEN** the boundary provides no lock, unique temporary path, compare-and-swap check, lost-update prevention, or deterministic winner guarantee
-- **AND** a vault containing legacy `llm_api_key` is the narrow exception because its dual-loader writes hold draft PR #1691's exclusive assignment lock
+- **AND** a vault containing legacy `llm_api_key` is the narrow exception because its dual-loader writes hold exclusive `ProviderAssignmentAdmission`
 
 #### Scenario: Legacy llm_api_key survives every ordinary write shape
 
 - **WHEN** the existing vault contains any legacy `llm_api_key` and a caller attempts a one-record upsert, two-or-more exact replacement, or empty clear
-- **THEN** the retained `llm_subscription`, `vcs`, and `social` operation remains usable under draft PR #1691's exclusive assignment lock
+- **THEN** the retained `llm_subscription`, `vcs`, and `social` operation remains usable under exclusive `ProviderAssignmentAdmission`
 - **AND** every legacy `llm_api_key` object byte slice and relative order survives exactly
 
 #### Scenario: Ambiguous opaque preservation fails before replacement
@@ -501,5 +504,5 @@ that either dependency is landed or accepted.
 #### Scenario: Retirement transition is locked and compare-and-delete
 
 - **WHEN** migration inventories or advances a legacy `llm_api_key` record
-- **THEN** it holds the exclusive assignment lock owned by draft PR #1691 (`constrain-set-engine-provider-authority`) and verifies the expected digest and generation
+- **THEN** it holds exclusive `ProviderAssignmentAdmission`, owned by `constrain-set-engine-provider-authority`, and verifies the expected digest and generation
 - **AND** a mismatch performs no deletion and re-inventories current state

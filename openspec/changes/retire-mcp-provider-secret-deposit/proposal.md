@@ -18,7 +18,9 @@ deputy for another principal's provider authority.
   secret store; keep only an opaque, non-derivable, host/principal/universe/
   provider/generation-bound reference in control-plane state.
 - Dereference the secret exactly at requester-owned local provider launch
-  behind PR #1691's frozen `ProviderInvocation -> ProviderLaunchHandle`
+  behind the merged `constrain-set-engine-provider-authority` change's
+  `ProviderAssignmentAdmission` and frozen
+  `ProviderInvocation -> ProviderLaunchHandle`
   barrier. `ProviderInvocation` carries a reference and provenance, never
   secret material; there is no file, environment, host-home, or
   maintainer/founder fallback.
@@ -30,14 +32,17 @@ deputy for another principal's provider authority.
   principal's binding.
 - Keep the current `runner/v1` credential-reference field as an opaque carrier,
   not an authority validator. Requester-owned local invocation must compose the
-  exact credential binding with draft PR #1691's frozen launch barrier.
+  exact credential binding with that provider-authority owner's frozen launch
+  barrier.
   Accepted-market remote execution must use the owner-accepted production
   B2/distributed-execution authority contract. The current D0
   fake-only/production-denied seam is not ordinary requester-provider
   authority; add no parallel authority system.
-- Keep #1691 as the sole owner of generic provider-destination ceilings,
-  `setup_required`/held assignment state, assignment CAS/generation, and the
-  frozen launch barrier. This change owns the `llm_api_key`-typed ingress
+- Consume merged PR #1784 (`constrain-set-engine-provider-authority`, accepted
+  head `0d7877b7`, merge `620fed5a`) as the sole owner of generic
+  provider-destination ceilings, `setup_required`/held assignment state,
+  `ProviderAssignmentAdmission`, assignment CAS/generation, and the frozen
+  launch barrier. This change owns the `llm_api_key`-typed ingress
   refusal and writes no competing `provider-routing` delta. The general
   no-maintainer-route invariant remains owned by landed Slice A0/provider-auth
   isolation.
@@ -70,7 +75,7 @@ deputy for another principal's provider authority.
 - `identity-auth-and-access-control`: State that universe administration does
   not confer provider-credential authority.
 - `distributed-execution`: Preserve the existing nine-field `runner/v1`
-  carrier truth while distinguishing requester-owned #1691 local invocation
+  carrier truth while distinguishing requester-owned provider-authority local invocation
   from accepted-market B2 execution and refusing to present the current
   fake-only/production-denied D0 seam as ordinary provider authority.
 
@@ -81,9 +86,10 @@ deputy for another principal's provider authority.
 - Future runtime owners: universe setup/prompt handling, local tray/native
   credential storage, provider launch, credential-vault retirement tooling, and
   canonical/plugin mirrors.
-- Exact dependency anchors: draft PR #1691
-  (`constrain-set-engine-provider-authority`) for assignment,
-  reference-only `ProviderInvocation`, and generic `setup_required/held`; PR
+- Exact dependency anchors: merged PR #1784
+  (`constrain-set-engine-provider-authority`, accepted head `0d7877b7`, merge
+  `620fed5a`) for assignment, `ProviderAssignmentAdmission`, reference-only
+  `ProviderInvocation`, and generic `setup_required/held`; PR
   #1736 for native account-token storage/backend policy and its existing
   `OriginClient` protocol; proposed `bind-host-principal-to-account` for the
   authenticated server-side production principal-to-host route;

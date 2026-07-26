@@ -33,8 +33,9 @@ verdict is
   client-owned upstream transcripts remain outside TinyAssets control.
 - Keep requester-supplied provider API keys only in requester-controlled
   native OS secret storage.
-- Carry a non-secret binding reference through draft PR #1691's requester-
-  local assignment/launch barrier or an owner-accepted production B2 market
+- Carry a non-secret binding reference through merged PR #1784's
+  `ProviderAssignmentAdmission` and requester-local assignment/launch barrier,
+  or an owner-accepted production B2 market
   authority path; keep `runner/v1` opaque and D0 fake-only/production-denied.
 - Dereference only at the selected local executor's provider-launch boundary.
 - Retire legacy recoverable records without decoding/exporting them.
@@ -51,8 +52,9 @@ verdict is
   existing canonical behavior and owners.
 - Claiming the local custody race proof satisfies the broader §14 Track J load
   suite.
-- Runtime edits while #1691, `bind-host-principal-to-account`, #1736's
-  client/native-store seam, universe-creation, #1484, and
+- Runtime edits while #1784's provider-authority implementation,
+  `bind-host-principal-to-account`, #1736's client/native-store seam,
+  universe-creation, #1484, and
   distributed-execution owners still hold their seams.
 
 ## Decisions
@@ -70,9 +72,11 @@ and execution.
 This change therefore introduces `provider-credential-custody` and modifies
 only the shipped capabilities whose current truth conflicts with it.
 
-Alternative rejected: fold everything into #1691. #1691 intentionally owns
-provider destinations, `setup_required`, assignment, and invocation shape—not
-credential-source isolation—and its provider-routing delta would collide.
+Alternative rejected: fold everything into
+`constrain-set-engine-provider-authority`. Merged PR #1784 intentionally owns
+provider destinations, `setup_required`, assignment admission, and invocation
+shape—not credential-source isolation—and its provider-routing delta would
+collide.
 
 ### 2. `write_graph` is the preferred successor candidate, not landed behavior
 
@@ -101,7 +105,7 @@ The native store creates a random, versioned `native_secret_ref` in a
 provider-secret namespace. It never overwrites or reuses #1736's predictable
 account-token reference.
 
-The control plane's versioned #1691 assignment state stores a
+The control plane's versioned provider-assignment state stores a
 `credential_binding_ref` that is:
 
 - opaque, random, non-secret, and not a key-derivation input;
@@ -121,8 +125,8 @@ Enrollment is a two-store commit-token protocol, not a cross-store CAS:
    id, and one-use commit token as `pending` in a bounded local pending index,
    then writes the exact secret under that native reference;
 2. the control plane compare-and-swaps a pending binding carrying that
-   enrollment id and commit-token digest into draft PR #1691's expected
-   assignment generation;
+   enrollment id and commit-token digest through
+   `ProviderAssignmentAdmission` into the expected assignment generation;
 3. the host reads that exact committed binding and records a local
    acknowledgement before marking the mapping `committed`;
 4. a bounded reconciler may tombstone a timed-out pending local reference only
@@ -143,8 +147,9 @@ state.
 
 ### 4. The owning authority path depends on fulfillment class
 
-Draft PR #1691 (`constrain-set-engine-provider-authority`) owns requester-owned
-local assignment and its shared-reader
+Merged PR #1784 (`constrain-set-engine-provider-authority`, accepted head
+`0d7877b7`, merge `620fed5a`) owns requester-owned local assignment,
+`ProviderAssignmentAdmission`, and its shared-reader
 `ProviderInvocation -> ProviderLaunchHandle` launch barrier. The shipped D0
 path is fake-only/production-denied and therefore cannot be required as
 ordinary requester-provider authority. Accepted-market remote execution must
@@ -159,9 +164,10 @@ Consuming D0's landed `Verified[T]` and execution-record types is type reuse,
 not a D0 authority grant. It does not create a production D0 route, make D0
 live-acceptable, or upgrade an opaque locator into provider authority.
 
-For requester-owned local execution, the implementable seam is a typed #1691
-local-launch adapter that receives the frozen `ProviderInvocation` and exact
-`credential_binding_ref`, validates their complete tuple, and crosses #1691's
+For requester-owned local execution, the implementable seam is the
+provider-authority owner's typed local-launch adapter. It receives the frozen
+`ProviderInvocation` and exact `credential_binding_ref`, validates their
+complete tuple under shared `ProviderAssignmentAdmission`, and crosses the
 launch barrier before constructing a provider child. For accepted-market
 remote execution, the binding may compose only with the future owner-accepted
 production B2 authority envelope. If either path later routes through
@@ -174,7 +180,7 @@ fulfillment class, not an empty capability ceiling or fake-only D0 record.
 
 For requester-owned local invocation, after destination, credential-owner
 principal from verified request/assignment authority, host, assignment
-generation, and draft PR #1691's shared-reader
+generation, and the provider-authority owner's shared-reader
 `ProviderInvocation -> ProviderLaunchHandle` barrier validate, the selected
 executor resolves the binding once and injects the secret into provider-child
 memory/environment. Accepted-market remote execution SHALL use its separately
@@ -222,15 +228,16 @@ Invariants:
   authentication succeeds;
 - owner notification, replacement verification, and provider-side
   rotation/revocation precede assignment cutover and deletion;
-- `cutover_committed` is a compare-and-swap of #1691 assignment binding and
+- `cutover_committed` is a compare-and-swap of the provider assignment binding and
   generation; failure remains held and cannot delete the legacy record;
 - an owner who intentionally declines replacement may reach
   `closed_without_replacement` only through `discovered -> held -> notified ->
   rotation_required -> revoked_upstream -> artifacts_deleted ->
   record_deleted -> closed_without_replacement`, and the assignment remains
   permanently held/setup-required;
-- every transition holds the exclusive assignment lock owned by draft PR
-  #1691 (`constrain-set-engine-provider-authority`);
+- every transition holds the exclusive writer from
+  `ProviderAssignmentAdmission`, owned by
+  `constrain-set-engine-provider-authority`;
 - delete is compare-and-delete against the inventoried digest;
 - stale generation re-inventories rather than acting;
 - idempotency keys are scoped to universe, slot, and generation;
@@ -281,7 +288,8 @@ claim; they are not part of this review/spec-only write set.
 Acceptance requires a named local multi-process race covering pending
 enrollment, commit-token publication, local acknowledgement, local tombstone,
 late control-plane binding, split-brain compare-clear, rotate, dereference,
-revoke, delete, retry, stale-host expiry, and draft PR #1691's launch barrier.
+revoke, delete, retry, stale-host expiry, and the provider-authority launch
+barrier.
 It must prove a unique usable binding, coherent generations, no torn secret
 read, and no orphaned or resurrected active native reference.
 
@@ -296,11 +304,12 @@ credential dereference.
   the unsafe path as a shim.
 - **Unowned legacy secret cannot be safely revoked** → remain terminally held;
   do not export or delete a still-live upstream key.
-- **Control-plane binding is mistaken for authority** → require exact #1691
-  local invocation authority or the separately accepted production B2
+- **Control-plane binding is mistaken for authority** → require exact
+  provider-authority local invocation authority or the separately accepted production B2
   authority for market execution; fake-only D0 never upgrades a locator.
-- **Rotation races an in-flight launch** → use #1691's shared-reader launch
-  barrier plus drain or explicit cancellation before native deletion.
+- **Rotation races an in-flight launch** → use shared
+  `ProviderAssignmentAdmission` through the launch barrier, then drain or
+  explicitly cancel before native deletion.
 - **Native store unavailable** → fail closed with no file/env fallback.
 - **Provider revocation cannot be machine-verified** → accept only an honestly
   labeled owner attestation and remain held until recorded.
@@ -309,10 +318,11 @@ credential dereference.
 
 ## Migration Plan
 
-1. Obtain written acceptance from draft PR #1691
-   (`constrain-set-engine-provider-authority`) for requester-owned local launch
-   and from the distributed-execution/B2 owners for accepted-market production
-   authority; keep D0 fake-only/production-denied and the runner opaque.
+1. Consume merged PR #1784 (`constrain-set-engine-provider-authority`, accepted
+   head `0d7877b7`, merge `620fed5a`) for requester-owned local assignment
+   admission and launch; obtain distributed-execution/B2 owner acceptance for
+   accepted-market production authority; keep D0 fake-only/production-denied
+   and the runner opaque.
 2. Preserve PR #1736's account-token lifecycle, native-backend allowlist, and
    client-side `OriginClient` protocol unchanged. Land
    `bind-host-principal-to-account` as the authenticated server-side route
@@ -331,13 +341,14 @@ credential dereference.
    `llm_api_key` canary at ingress before mutation or durable diagnostic sinks
    and return the existing `setup_required/held` contract.
 5. Create a pending local replacement and commit token, publish its binding
-   through #1691 assignment CAS, acknowledge the exact token locally,
+   through the provider-authority assignment CAS, acknowledge the exact token locally,
    reconcile any late-binding/local-tombstone split brain to held, and verify
    exact provider authentication without reading legacy secret bytes.
 6. Hold legacy assignments, notify owners, require upstream
    rotation/revocation, commit the replacement cutover, then delete only
    exact-owned artifacts and the digest-matched source record.
-7. Enable launch-time local dereference only in the typed #1691 adapter for
+7. Enable launch-time local dereference only in the provider-authority owner's
+   typed adapter, under shared `ProviderAssignmentAdmission`, for
    requester-owned execution. Keep accepted-market remote execution blocked
    until its production B2 authority owner accepts the composition.
 8. Complete local concurrency, parity, exact-seven `/mcp`, rendered-chatbot,
@@ -352,9 +363,9 @@ is enrolled.
 - Will the universe/live-interface owners accept the preferred
   `write_graph(target=universe)` successor candidate, or name another existing
   canonical handle before hidden-tool unregistration?
-- Will #1691 and distributed-execution/B2 owners accept the
-  requester-local/accepted-market authority split while D0 remains
-  fake-only/production-denied and the runner stays opaque?
+- Will distributed-execution/B2 owners accept the remaining
+  accepted-market side of the requester-local/accepted-market authority split
+  while D0 remains fake-only/production-denied and the runner stays opaque?
 - What provider-revocation attestations are machine-verifiable per provider,
   and which require explicitly labeled owner attestation?
 - Which later capability will own organization-pooled credential delegation?

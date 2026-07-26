@@ -42,7 +42,8 @@ account-token references.
 
 ### Requirement: The control plane stores only an opaque bound credential reference
 The control plane SHALL store the authoritative opaque non-secret
-`credential_binding_ref` only in #1691's versioned assignment state. The
+`credential_binding_ref` only in
+`constrain-set-engine-provider-authority`'s versioned assignment state. The
 reference SHALL be random, non-derivable, and bound to exact credential-owner
 principal, universe, canonical provider, host or daemon, scope, assignment
 generation, issue time, and expiry. It SHALL NOT contain or derive secret
@@ -73,9 +74,10 @@ binding or generation state.
 The selected host SHALL create a random `native_secret_ref`, enrollment id, and
 one-use commit token in an atomically updated, secret-free bounded local
 pending index before writing the exact native secret and entering state
-`pending`. The control plane SHALL
-compare-and-swap a binding carrying that enrollment id and commit-token digest
-into draft PR #1691's expected assignment generation. The host SHALL read and
+`pending`. The control plane SHALL use exclusive
+`ProviderAssignmentAdmission` to compare-and-swap a binding carrying that
+enrollment id and commit-token digest into the expected assignment generation.
+The host SHALL read and
 verify that exact committed binding and record a local acknowledgement before
 advancing the mapping to `committed`. The two stores SHALL NOT be described as
 sharing one CAS or transaction.
@@ -127,10 +129,11 @@ that binding.
 
 ### Requirement: Provider API-key dereference occurs only at the authorized local launch boundary
 A provider API key SHALL be dereferenced exactly once by the selected
-requester-controlled executor after a typed #1691 local-launch adapter
+requester-controlled executor after the provider-authority-owned typed
+local-launch adapter
 validates provider destination, persisted credential-owner principal,
 universe, host, scope, assignment generation, expiry, and tombstone state and
-crosses draft PR #1691's shared-reader
+crosses shared `ProviderAssignmentAdmission` and the
 `ProviderInvocation -> ProviderLaunchHandle` barrier. The secret MAY enter
 provider-child memory or an ephemeral child environment only for that
 requester-owned local launch and SHALL NOT enter process arguments, persisted
@@ -146,7 +149,7 @@ composition, and SHALL NOT receive a requester-local secret merely because the
 runner carries a locator.
 
 #### Scenario: validated launch resolves one coherent generation
-- **WHEN** a requester-owned provider invocation crosses draft PR #1691's launch barrier with a current exact binding
+- **WHEN** a requester-owned provider invocation crosses shared `ProviderAssignmentAdmission` and the provider-authority launch barrier with a current exact binding
 - **THEN** the selected local executor resolves exactly that generation once and launches only the canonical selected provider
 
 #### Scenario: accepted-market execution does not borrow requester-local authority
@@ -161,7 +164,7 @@ runner carries a locator.
 
 #### Scenario: rotation fences new launches
 - **WHEN** rotation or revocation advances the binding generation while launches are concurrent
-- **THEN** draft PR #1691's shared-reader launch barrier admits no new requester-owned launch with the retired generation
+- **THEN** shared `ProviderAssignmentAdmission` admits no new requester-owned launch with the retired generation
 - **AND** the old native reference is deleted only after captured-generation launches drain or are explicitly cancelled
 
 ### Requirement: Shared-universe administration does not confer credential use
@@ -214,13 +217,14 @@ refused.
 
 The saga SHALL never decode, export, automatically migrate, or use the legacy
 secret and SHALL hold provider launch until terminal `closed` has a current
-replacement assignment. Every transition SHALL hold the exclusive assignment
-lock owned by draft PR #1691 (`constrain-set-engine-provider-authority`), be
-monotonic and idempotent, and fence requester-owned launch through that change's
-shared-reader `ProviderInvocation -> ProviderLaunchHandle` barrier.
+replacement assignment. Every transition SHALL hold the exclusive writer from
+`ProviderAssignmentAdmission`, owned by
+`constrain-set-engine-provider-authority`, be monotonic and idempotent, and
+fence requester-owned launch through that change's shared-reader
+`ProviderInvocation -> ProviderLaunchHandle` barrier.
 `replacement_verified` SHALL require exact local provider authentication
 without reading legacy bytes. `cutover_committed` SHALL be a compare-and-swap
-of the #1691 binding and generation after upstream rotation/revocation
+of the provider assignment binding and generation after upstream rotation/revocation
 attestation. A mismatch SHALL remain held and re-inventory; rollback SHALL
 enroll a fresh local generation or remain held and SHALL never restore raw
 vault material. Accepted-market execution remains separately governed by its
@@ -234,7 +238,7 @@ owner-accepted production B2 authority.
 #### Scenario: replacement verification and upstream revocation precede cutover
 - **WHEN** an owner begins retirement of a live legacy `llm_api_key`
 - **THEN** provider launch remains held until a pending local replacement authenticates exactly and positive provider or explicitly labeled owner revocation attestation is recorded
-- **AND** #1691 assignment cutover occurs only afterward by expected-generation compare-and-swap
+- **AND** provider assignment cutover occurs only afterward by expected-generation compare-and-swap under exclusive `ProviderAssignmentAdmission`
 
 #### Scenario: explicit no-replacement retirement remains held
 - **WHEN** the authorized owner declines a replacement and positively attests upstream revocation
@@ -254,7 +258,7 @@ owner-accepted production B2 authority.
 #### Scenario: exact artifacts precede source record deletion
 - **WHEN** every inventoried artifact has the expected canonical path, digest, owner, slot, generation, and exactly one reference
 - **THEN** those exact artifacts are compare-deleted before the unchanged source record
-- **AND** the final source deletion verifies the inventoried digest under draft PR #1691's exclusive assignment lock
+- **AND** the final source deletion verifies the inventoried digest under exclusive `ProviderAssignmentAdmission`
 
 #### Scenario: crash and retry converge without resurrection
 - **WHEN** the process crashes after any legal saga transition and retries with the universe/slot/generation-scoped idempotency key
@@ -278,6 +282,6 @@ owner-accepted production B2 authority.
 - **AND** malformed, unclassifiable, or ambiguously preservable vault state blocks reset before mutation
 
 #### Scenario: multi-process custody race has one usable binding
-- **WHEN** concurrent pending enrollment, commit-token publication, local acknowledgement, local tombstone, late control-plane binding, split-brain compare-clear, rotation, dereference, revocation, deletion, retry, stale-host expiry, and draft PR #1691 launch barriers target one universe/provider/host
+- **WHEN** concurrent pending enrollment, commit-token publication, local acknowledgement, local tombstone, late control-plane binding, split-brain compare-clear, rotation, dereference, revocation, deletion, retry, stale-host expiry, and provider-authority launch barriers target one universe/provider/host
 - **THEN** exactly one current binding and generation is usable or all paths remain held
 - **AND** no torn secret read, post-fence launch, lost rotation, deadlock, duplicate authority, orphaned active native reference, or tombstone resurrection occurs

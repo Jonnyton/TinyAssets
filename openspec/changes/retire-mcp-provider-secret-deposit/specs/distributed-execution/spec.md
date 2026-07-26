@@ -29,9 +29,10 @@ a provider credential binding. The shipped capability set does not become
 credential-bearing merely because the carrier field exists. Before any future
 provider invocation is converted to `runner/v1`, its owner-accepted adapter
 SHALL first validate the authority required by its fulfillment class.
-Requester-owned local invocation SHALL use draft PR #1691's
-(`constrain-set-engine-provider-authority`) frozen
-`ProviderInvocation -> ProviderLaunchHandle` barrier and exact opaque binding.
+Requester-owned local invocation SHALL use
+`constrain-set-engine-provider-authority`'s exported
+`ProviderAssignmentAdmission`, frozen
+`ProviderInvocation -> ProviderLaunchHandle` barrier, and exact opaque binding.
 Accepted-market remote execution SHALL use its owner-accepted production B2
 authority contract. The current D0 path is fake-only/production-denied and
 SHALL NOT be required or accepted as ordinary requester-provider authority.
@@ -55,9 +56,9 @@ authority.
 - **THEN** `SandboxRunner` preserves the canonical nine-field carrier behavior and does not infer universe, provider, host, assignment generation, or execution authority
 - **AND** the field confers no provider credential or dispatch authority
 
-#### Scenario: requester-owned local invocation uses the #1691 launch barrier
+#### Scenario: requester-owned local invocation uses provider assignment admission
 - **WHEN** an accepted requester-owned local invocation is later routed through `runner/v1`
-- **THEN** its #1691-owned adapter validates the frozen invocation and exact binding before constructing or dispatching the runner request
+- **THEN** its provider-authority-owned adapter validates the frozen invocation and exact binding under shared `ProviderAssignmentAdmission` before constructing or dispatching the runner request
 - **AND** fake-only D0 is neither required nor accepted as provider authority
 
 #### Scenario: accepted-market execution waits for production B2 authority

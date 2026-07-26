@@ -7,6 +7,19 @@ named every drift-sensitive claim
 Change reviewed: `retire-mcp-provider-secret-deposit`
 Verdict: **ADAPT**
 
+## Current disposition — 2026-07-26
+
+This file preserves the 2026-07-24 review record, so its references to draft
+PR #1691 remain historical evidence rather than current dependency truth.
+Merged PR #1784 (`constrain-set-engine-provider-authority`) superseded #1691
+at accepted head `0d7877b7` and merge `620fed5a`. It now owns
+`ProviderAssignmentAdmission`, assignment-before-custody lock order,
+generation/digest validation, generic held/setup state, and the reference-only
+`ProviderInvocation -> ProviderLaunchHandle` boundary. The active custody
+artifacts consume those exported contracts and no longer normatively depend on
+#1691. Runtime, sync/archive, deployment, and rollout remain blocked pending
+the still-open owner and implementation gates in `tasks.md`.
+
 ## Executive finding
 
 Keep `retire-mcp-provider-secret-deposit` as a separate OpenSpec change. The
