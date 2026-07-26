@@ -37,12 +37,13 @@ public primitives, not a product-specific hidden loop.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
-- Delete the product-specific internal `community_change_context` action,
-  handler, plan-heading/auto-change queue logic, Codex-writer/Claude-checker
-  rule, plugin copies, tests, and website callers. Its hidden MCP registration
-  leaves through the exact-six registration removal owned by
-  `retire-legacy-live-mcp-tools`; this change depends on that cutover rather
-  than preserving a dispatchable internal compatibility path.
+- First remove the production and rollback website
+  `community_change_context` wire callers so the caller migration unblocks
+  `retire-legacy-live-mcp-tools`. After that owner removes and rebuilds the
+  exact six hidden MCP registrations, delete the product-specific internal
+  action, handler, plan-heading/auto-change queue logic,
+  Codex-writer/Claude-checker rule, plugin behavior, and tests. Preserve no
+  dispatchable internal compatibility path.
 - Snapshot and remove the 28 live GitHub label definitions that encode retired
   loop routing/status, strip them from open issues/PRs without closing or
   rewriting user content, preserve generic request/gate/checker/payment labels,
@@ -50,9 +51,10 @@ public primitives, not a product-specific hidden loop.
   publish an idempotent migration receipt plus repository-wide notice.
 - Remove the public website's privileged patch-loop route/status fallback,
   checked-in community-loop JSON, `community_change_context` callers, homepage
-  `ChatDemo.svelte` loop narrative, workflow/label assumptions, and fine-print
-  branding. Preserve a generic user-workflow activity view only when it has
-  live/snapshot provenance and does not imply a platform-owned loop.
+  loop narrative, workflow/label assumptions, and fine-print branding across
+  the production React/Next tree and retained Svelte rollback tree. Preserve a
+  generic user-workflow activity view only when it has live/snapshot provenance
+  and does not imply a platform-owned loop.
 - Keep generic Goal canonical selection, dispatcher/request admission, node
   enqueue, graph execution, wiki/GitHub effect primitives, evaluation
   primitives, and workflow composition available so users can build, publish,
@@ -103,16 +105,18 @@ coding-packet auto-ship aliases/config/rubrics, merge-readiness branding,
 public prompts/control-station copy, active plans/wiki guidance,
 `tinyassets/wiki/trigger_receipts.py`, `scripts/community_loop_watch.py`,
 `.github/workflows/community-loop-watch.yml`, production configuration, the
-canonical Svelte website and legacy React mirror, checked-in website status
-JSON, the external `AUTO_FIX_DISABLED` repository variable, active agent
+production React/Next website and retained Svelte rollback tree, checked-in
+website status JSON, the external `AUTO_FIX_DISABLED` repository variable, active agent
 skills and loop souls, automatic patch-announcement workflow, current
 "auto-fix loop" wording, generated Claude plugin runtime mirror, and tests that
 assert the retired behavior. The repository auto-enrollment workflow also
 leaves because it escalates generic PR creation into merge without the
-separately required merge authority and receipt. A receipt-backed external
-migration snapshots and disables every still-open auto-merge enrollment proven
-to have been created by that workflow, while preserving explicit
-user/maintainer enrollments and holding ambiguous provenance for review.
+separately required merge authority and receipt. A crash-safe, idempotent
+external migration write-ahead records and quiesces the workflow, drains active
+runs, and then snapshots/reconciles/disables every still-open auto-merge
+enrollment historically proven to have been created by it, while preserving
+explicit user/maintainer enrollments and holding ambiguous provenance for
+review.
 Historical design/audit records may retain clearly marked history; current
 operator guidance, configuration, build outputs, behavioral specs, and agent
 instructions must not advertise or exercise the retired path or capability.

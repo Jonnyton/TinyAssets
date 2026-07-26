@@ -41,15 +41,16 @@ the primitives from which a user can build the same outcome explicitly.
   configuration, auth/extension registration, and status projection.
 - Retire the `community-patch-loop` capability and all named shipped artifacts.
 - Remove patch-loop/community-loop product presentation and fallback data from
-  the public website while preserving truthful generic user-workflow activity.
+  the production React/Next website and retained Svelte rollback tree while
+  preserving truthful generic user-workflow activity.
 - Preserve generic composition and execution primitives.
 - Remove hard-coded patch-intake writer/checker/access policy while preserving
   explicit requester pickup incentives, directed-daemon selection, and the
   user's soul-declared loop dispatch as ordinary user-authored routing.
-- Delete the internal `community_change_context` product action, its
-  auto-change/auto-fix queue semantics, hard-coded provider-family review rule,
-  website callers, tests, and plugin copies after the legacy-registration owner
-  removes its hidden MCP entry.
+- Remove both website `community_change_context` wire callers first; after they
+  unblock the legacy-registration owner and its exact-six cutover lands, delete
+  the internal product action, auto-change/auto-fix queue semantics,
+  hard-coded provider-family review rule, tests, and plugin behavior.
 - Move read-only uptime, deploy, clean-clone, and revert-rate observation to a
   generic uptime/alarm successor with no task-dispatch self-heal.
 
@@ -152,12 +153,13 @@ workflow, label, artifact, or status field survives.
 
 ### 7. Remove website product presentation, not generic activity truth
 
-The canonical Svelte website SHALL remove the `/patch-loop` product surface,
-checked-in `community-loop-status.json`, community-loop workflow/label/issue
-fallbacks, and fine-print branding. The legacy React mirror is either deleted
-if non-shipped or updated and scan-clean before retirement. `/patch-loop`
-becomes a truthful soft landing to generic patterns/commons rather than a dead
-route or hidden compatibility application.
+The production React/Next website and retained Svelte rollback tree SHALL both
+remove the `/patch-loop` product surface, checked-in
+`community-loop-status.json`, community-loop workflow/label/issue fallbacks,
+and fine-print branding. Both build and remain scan-clean before retirement;
+this change does not delete the production tree or decide a framework
+migration. `/patch-loop` becomes a truthful soft landing to generic
+patterns/commons rather than a dead route or hidden compatibility application.
 
 The `/loop` surface may remain only as a generic view of user-authored
 workflow activity with explicit live/snapshot provenance. Platform uptime
@@ -243,13 +245,15 @@ Explicit requester incentives, directed-daemon assignments, and
 soul-declared loop dispatch remain under their independent authority owners.
 
 The hidden-but-dispatchable `community_change_context` product stack also
-leaves: remove its internal action and action-map row,
-`_CHANGE_LOOP_PLAN_HEADINGS`, auto-change/auto-fix queue aggregation,
-hard-coded Codex-writer/Claude-checker standard, wrapper/plugin/tests, and both
-website callers. `retire-legacy-live-mcp-tools` owns removal of the exact six
-legacy MCP registrations and is therefore a cutover dependency; this change
-does not preserve the internal product action after registration retirement.
-Generic GitHub reads, PLAN reads, and graph composition remain available for a
+leaves in dependency order. This lane first removes both website wire callers
+and proves no supported production/rollback site still calls the hidden name;
+that releases the caller gate on `retire-legacy-live-mcp-tools`. That owner
+then removes and rebuilds the exact six legacy MCP registrations under its
+telemetry/host gates. After cutover, this lane removes the internal action and
+action-map row, `_CHANGE_LOOP_PLAN_HEADINGS`, auto-change/auto-fix queue
+aggregation, hard-coded Codex-writer/Claude-checker standard,
+wrapper/plugin/tests, and leaves no internal compatibility dispatch. Generic
+GitHub reads, PLAN reads, and graph composition remain available for a
 user-authored review-context design.
 
 The active `loop-uptime-maintenance` agent skill and its catalog routes are
@@ -271,25 +275,33 @@ remain available. The patch announcement script leaves when it has no
 independent explicit consumer.
 
 Workflow deletion is not sufficient because GitHub persists auto-merge
-enrollment on each pull request. Before deletion, a dry-run/apply migrator
-snapshots every open auto-enrolled PR's number/node id, exact head SHA, state,
-base/head repositories, draft flag, enabled actor/time, and attribution
-evidence into a digest-bound receipt. It attributes an enrollment to this
-workflow only when the exact eligible tuple matches and repository source
-evidence proves this is the sole `gh pr merge --auto` path for the
-`app/github-actions` actor. Apply re-reads the exact tuple immediately before
-disabling, skips/records a changed tuple, disables the attributed enrollment,
-and post-reads the PR into the receipt. Explicit user/maintainer enrollments
-remain untouched; ambiguous provenance is held for host review. Cutover
-requires zero proven workflow-owned open enrollment and no unresolved
-ambiguity hidden by workflow deletion.
+enrollment on each pull request. The migrator first persists a write-ahead
+receipt plus idempotency key, disables and verifies the live workflow, and
+cancels/drains queued or running instances so no enrollment can race the
+snapshot or zero check. It then snapshots every open auto-enrolled PR's
+number/node id, exact head SHA/state/repository/draft tuple and full
+`autoMergeRequest` fields (actor/time, merge method, commit fields) with
+historical Actions/repository attribution evidence at `enabledAt`.
+Current-source uniqueness is not enough because GitHub Actions workflows share
+an actor identity.
+
+Each disable requires a durably persisted per-PR intent and an immediate exact
+tuple pre-read; because GitHub offers no expected-head CAS, changed tuples are
+skipped for a fresh plan. Apply post-reads and persists outcomes, and restart
+reconciles an already-disabled planned tuple under the same key. Explicit
+user/maintainer enrollments remain untouched; ambiguous provenance is held for
+host review. A final full open-PR rescan must prove the workflow remains
+disabled/drained, the receipt is complete, and attributed plus ambiguous
+counts are zero before workflow-file deletion.
 
 Live GitHub labels are executable routing/status vocabulary, not harmless
-documentation. Rollout snapshots every definition and every issue/PR bearing a
-retired label into a digest-bound migration receipt; removes the retired labels
-from open items without closing them or rewriting their content; publishes one
-repository-wide retirement notice linked to the receipt; then deletes these 28
-definitions:
+documentation. Before apply, rollout disables/removes every retired-label
+producer (including the community-loop watch workflow) and drains active runs.
+It then paginates every definition and every open/closed issue/PR association
+to exhaustion into a digest-bound migration receipt; removes the retired
+labels from open items without closing them or rewriting their content;
+publishes one repository-wide retirement notice linked to the receipt; then
+deletes these 28 definitions:
 
 `auto-bug`, `auto-change`, `auto-checker-dispatched`,
 `auto-checker-failed`, `auto-fix-already-fixed`, `auto-fix-attempted`,
@@ -374,29 +386,32 @@ release, and stop deployment until #1803 becomes authoritative.
 4. Rename the useful watch subset into a read-only generic uptime observer,
    separate it from the incident sink, least-privilege its workflow jobs, and
    remove workflow-dispatch self-heal.
-5. Coordinate the exact-six hidden MCP cutover with
-   `retire-legacy-live-mcp-tools`, then remove the internal
+5. Remove both production/rollback website `community_change_context` wire
+   callers and prove the hidden-name caller gate is clear.
+6. Let `retire-legacy-live-mcp-tools` complete its exact-six registration and
+   packaged-mirror cutover, then remove the unreachable internal
    `community_change_context` stack without a compatibility action.
-6. Remove environment/default/deploy/runbook references and update generic
+7. Remove environment/default/deploy/runbook references and update generic
    dispatcher/examples.
-7. Remove website patch-loop/community-loop presentation, homepage narrative,
-   legacy community-context callers, and snapshots; retain only
-   provenance-correct generic workflow activity, and build both canonical site
-   and any retained mirror.
-8. Before workers or ordinary #1803 recovery start, activate fail-closed
+8. Remove website patch-loop/community-loop presentation, homepage narrative,
+   legacy community-context callers, and snapshots from the production
+   React/Next tree and retained Svelte rollback tree; retain only
+   provenance-correct generic workflow activity, build both, and correct active
+   website guidance that still reverses their deploy/rollback ownership.
+9. Before workers or ordinary #1803 recovery start, activate fail-closed
    admission for the retired class, classify legacy rows, and reconcile any
    authority-store record under #1803's lock ordering. Apply only existing
    v1/v2 state/field transitions from the daemon-runtime delta; do not invent a
    retired/fenced task status. A pre-#1803 deployment must quiesce legacy
    workers and prove no claimed row or stop before runtime replacement.
-9. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
-10. Run focused tests, full relevant suites, lint, plugin build/probe, and
+10. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
+11. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
-11. Before deployment, inspect production for obsolete environment keys,
+12. Before deployment, inspect production for obsolete environment keys,
    migrated request/receipt evidence, auto-ship ledger/config state, and open
    auto-merge enrollments; disable only receipt-proven workflow enrollments and
    remove/archive the other retired state without executing it.
-12. Deploy and run the normal public MCP, clean-clone, production deploy, and
+13. Deploy and run the normal public MCP, clean-clone, production deploy, and
    website deploy canaries. Verify `file_bug` in a rendered chatbot conversation
    files the page without an investigation/trigger side effect and `get_status`
    contains no cheat-specific health projection.

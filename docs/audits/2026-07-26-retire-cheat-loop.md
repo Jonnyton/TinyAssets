@@ -56,6 +56,7 @@ gh variable list --repo Jonnyton/TinyAssets
 gh label list --repo Jonnyton/TinyAssets --limit 300 --json name,description
 gh issue list --repo Jonnyton/TinyAssets --state open --label <retired-label> --limit 1000 --json number
 gh pr list --repo Jonnyton/TinyAssets --state open --limit 1000 --json id,number,headRefOid,isDraft,headRepository,baseRefName,state,autoMergeRequest
+gh run list --repo Jonnyton/TinyAssets --workflow deploy-site-react.yml --limit 10 --json databaseId,status,conclusion,createdAt,headSha,url
 openspec validate retire-cheat-loop --strict
 ```
 
@@ -125,11 +126,13 @@ plan-heading policy, auto-change/auto-fix queue aggregation, and hard-coded
 tests pin it; `WebSite/site/src/lib/mcp/live.ts` and
 `WebSite/site-react/lib/live.ts` still call it.
 
-`retire-legacy-live-mcp-tools` owns the exact-six hidden MCP registration
-cutover. This retirement depends on its task 4.1, then deletes the internal
-action, action-map row, wrapper/plugin/tests, and callers rather than preserving
-a dispatchable compatibility path. Generic GitHub reads, PLAN reads, and graph
-composition remain for user-authored review-context workflows.
+This lane first removes both website wire callers, which unblocks the
+`retire-legacy-live-mcp-tools` exact-six hidden MCP registration cutover. After
+that owner's tasks 4.1/4.4 remove/rebuild the hidden registration, this lane
+deletes the internal action, action-map row, wrapper/plugin behavior, and tests
+rather than preserving a dispatchable compatibility path. Generic GitHub
+reads, PLAN reads, and graph composition remain for user-authored
+review-context workflows.
 
 ### Dedicated execution behavior
 
@@ -256,19 +259,30 @@ An authenticated GraphQL read on 2026-07-26 found 21 open pull requests with
 auto-merge still enabled, all by `app/github-actions`. GitHub persists those
 instructions on the PR, so deleting the workflow would not revoke them.
 Rollout snapshots each open enrollment's PR/node/head/state/repositories/draft,
-enabled actor/time, and attribution evidence into a digest-bound receipt. The
-repository scan found this workflow is the sole `gh pr merge --auto` source.
-Apply re-reads exact eligible tuples, disables only workflow-attributed
-enrollments, post-reads the result, preserves explicit user/maintainer
-enrollments, and holds ambiguous provenance for host review. Workflow deletion
-requires zero proven workflow-owned open enrollments.
+full auto-merge request, and historical attribution evidence into a
+digest-bound write-ahead receipt under an idempotency key. Before inventory or
+mutation, apply disables/verifies the live workflow and cancels/drains active
+runs. The repository scan found this workflow is the sole current
+`gh pr merge --auto` source, while historical Actions evidence at each
+`enabledAt` supplies attribution because the GitHub Actions actor is shared.
+Apply persists each per-PR intent, re-reads the exact tuple, disables only
+attributed enrollments, post-reads/persists the outcome, and reconciles
+already-disabled planned tuples after a crash. It preserves explicit
+user/maintainer enrollments and holds ambiguous provenance for host review.
+Workflow deletion requires a final full rescan, complete receipt,
+disabled/drained workflow, and zero attributed or ambiguous open enrollments.
 
 ### Live GitHub label migration
 
 Before deleting label definitions, implementation snapshots the exact
-definition plus every open/closed issue and PR association into a
-digest-bound, idempotent migration receipt. It removes retired labels from open
-items without closing them or changing their bodies, publishes one
+definition plus every fully paginated open/closed issue and PR association into
+a digest-bound, idempotent migration receipt. Fresh inventory observed 693 open
+issue, 783 closed issue, and 485 closed PR retired-label associations in
+aggregate, so pagination is a release condition. Before apply, every producer
+is disabled/removed and active runs are drained; at minimum the
+`community-loop-watch` replacement in task 4.2 must land first because the old
+workflow can recreate `community-loop-red`. Apply removes retired labels from
+open items without closing them or changing their bodies, publishes one
 repository-wide retirement notice linked to the receipt, and then deletes the
 28 definitions. Closed bodies remain historical and the receipt preserves
 their former association.
@@ -310,10 +324,19 @@ Additional active compatibility/product residue has an exact disposition:
 | `auto_ship_ship_classes.yaml` | Delete the product-only ship classifier configuration |
 | `tinyassets/coding_packet_rubric.py` | Remove `AUTO_SHIP_READY`, `APPROVE_AUTO_SHIP`, and `auto_shipped`; retain generic `KEEP_READY`/`APPROVE` rubric behavior only |
 | `tinyassets/evaluation/coding_process.py` | Remove auto-ship wording while retaining independently useful trajectory evaluation |
+| `tinyassets/providers/codex_provider.py` | Remove auto-fix product wording while retaining generic provider invocation behavior |
 | `scripts/merge_readiness.py` | Remove the community-loop classifier/branding; retain only if renamed and proven independently useful as a generic read-only PR classifier |
+| `scripts/post_x_update.py` | Preserve only as an explicitly invoked generic outbound primitive after removing patch-announcement/product-loop wording |
+| `tinyassets/effectors/validate_patch.py` | Preserve the explicit validation primitive while removing TinyAssets/"our loop" product-composition comments |
 | `tinyassets/api/prompts.py`, `tinyassets/universe_server.py` | Remove current community-loop promises/triage wording without broadening public tools |
+| `docs/ops/bot-identity-setup.md` | Rewrite current product-bot/community-loop and automatic-merge guidance around explicit user/maintainer workflow authority |
 | `docs/exec-plans/active/2026-04-25-file-bug-wiring.md`, current auto-ship specs/milestones, `pages/plans/` | Archive or rewrite current/discoverable guidance so it cannot be mistaken for a live supported product |
 | corresponding tests and plugin mirrors | Rewrite for generic behavior or delete with the retired surface |
+
+`CLAUDE.md` may continue documenting an explicit human/agent-selected
+`gh pr merge --auto` command as a user/maintainer choice; it is not the
+repository-wide standing workflow and does not bypass the separate merge
+authorization decision.
 
 ### Named community-loop watch
 
@@ -348,8 +371,12 @@ named `community-loop` survives.
 
 ### Public website presentation
 
-Canonical `public-website-surface` truth and shipped website code still expose
-the retired product:
+The current production React/Next site and retained Svelte rollback source both
+expose the retired product. Fresh GitHub evidence on 2026-07-26 shows five
+successful `deploy-site-react` runs (latest 2026-06-27); the current workflow
+comments identify React as live and Svelte as dispatch-only rollback, while the
+older cutover runbook and website skill still state the reverse and must be
+corrected.
 
 - `WebSite/site/src/lib/mcp/live.ts` reads
   `community-loop-watch.yml`, community-loop labels/issues, and
@@ -364,12 +391,13 @@ the retired product:
 - canonical site requirements name `/patch-loop` and the community-watch
   fallback.
 
-The migration removes the patch-loop application and fallback data, makes
-`/patch-loop` a static soft landing to user-authored patterns/commons, and
-keeps `/loop` only as provenance-labeled generic workflow activity. Generic
-platform uptime evidence remains a separate observation and never proves that
-task work is moving. A non-shipped React mirror is deleted; a retained mirror
-must build and pass the same absence scan.
+The migration removes the patch-loop application and fallback data from both
+trees, makes `/patch-loop` a static soft landing to user-authored
+patterns/commons, and keeps `/loop` only as provenance-labeled generic workflow
+activity. Generic platform uptime evidence remains a separate observation and
+never proves that task work is moving. Both the deployed React tree and Svelte
+rollback tree must build and pass the same absence scan; this retirement does
+not delete the live React source or decide a new framework migration.
 
 ### Plugin payload
 
@@ -461,7 +489,9 @@ The target modifies seven capabilities:
   and makes typed filing side-effect boundaries explicit;
 - `uptime-and-alarms`: gains the generic read-only observation successor.
 - `public-website-surface`: removes the privileged patch-loop route/status
-  fallback and keeps only provenance-correct generic workflow/uptime truth.
+  fallback from the React production and Svelte rollback trees, corrects their
+  deployment ownership, and keeps only provenance-correct generic
+  workflow/uptime truth.
 
 There is no new product capability, compatibility period, replacement loop, or
 runtime alias.

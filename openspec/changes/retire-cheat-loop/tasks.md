@@ -76,12 +76,16 @@
   explicit requester pickup incentives, authorized directed-daemon selection,
   `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and user-owned
   soul `loop_branch_def_id` execution under their independent authority.
-- [ ] 2.7 After `retire-legacy-live-mcp-tools` task 4.1 removes the exact six
-  hidden MCP registrations, delete the internal `community_change_context`
-  action, action-map row, wrapper, `_CHANGE_LOOP_PLAN_HEADINGS`,
-  auto-change/auto-fix queue aggregation, Codex-writer/Claude-checker rule,
-  plugin copies, tests, and both website callers. Preserve generic GitHub/PLAN
-  reads for user-authored review-context workflows; add no alias.
+- [ ] 2.7 Before `retire-legacy-live-mcp-tools` task 4.1, remove the
+  `community_change_context` wire callers from both the production React/Next
+  and Svelte rollback sites and prove no supported site caller remains.
+- [ ] 2.8 After `retire-legacy-live-mcp-tools` tasks 4.1/4.4 remove and rebuild
+  the exact six hidden MCP registrations, delete the internal
+  `community_change_context` action, action-map row, wrapper,
+  `_CHANGE_LOOP_PLAN_HEADINGS`, auto-change/auto-fix queue aggregation,
+  Codex-writer/Claude-checker rule, plugin behavior, and tests. Preserve
+  generic GitHub/PLAN reads for user-authored review-context workflows; add no
+  alias.
 
 ## 3. Remove Auto-Ship Product Automation
 
@@ -104,31 +108,39 @@
   evidence without adding a runtime migration reader.
 - [ ] 3.5 Delete the push/deploy-triggered
   `.github/workflows/announce-patch.yml` and its patch-loop announcement script
-  when no independent explicit consumer remains. Delete
-  `.github/workflows/auto-enroll-merge.yml`, which escalates same-repository
-  PR-create authority into eventual merge without the separately required
-  merge capability, exact head SHA, and receipt. Preserve generic PR-create,
+  when no independent explicit consumer remains. Preserve generic PR-create,
   exact-head merge, and outbound-effect primitives for explicit
-  user/maintainer workflows.
+  user/maintainer workflows. Preserve `scripts/post_x_update.py` only as an
+  explicit generic outbound primitive after removing patch-loop-only wording;
+  preserve `tinyassets/effectors/validate_patch.py` only after neutralizing
+  retired product comments. Task 3.7 exclusively owns disabling and deleting
+  `.github/workflows/auto-enroll-merge.yml`.
 - [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 28
-  exact retired definitions plus every labelled issue/PR (open and closed) into
-  a digest-bound receipt; strip retired labels from open items without closing
-  or rewriting them; publish one idempotent repository-wide notice; delete the
-  definitions; and verify no workflow/script/site/runtime consumer remains.
+  exact retired definitions plus every fully paginated labelled issue/PR (open
+  and closed) into a digest-bound receipt. Apply only after task 4.2 and every
+  other retired-label producer are disabled/removed and queued/in-progress
+  runs are drained; record that quiescence. Strip retired labels from open
+  items without closing or rewriting them; publish one idempotent
+  repository-wide notice; delete the definitions; and verify no
+  workflow/script/site/runtime consumer remains.
   Preserve generic `daemon-request`, `request:*`, `payment:*`,
   `gate-required`, `checker:*`, `writer:*`, `writer-pool:*`, `needs-human`,
   `priority:primitive-*`, `patch_request`, `merge-effector`, and `secure-merge`
   labels. Prove `patch_request` has no active routing consumer and cannot imply
   writer/checker/daemon/merge/effect authority.
 - [ ] 3.7 Add a dry-run/apply auto-merge retirement migrator. Snapshot every
-  open auto-enrolled PR's number/node/head/state/repositories/draft/enabled
-  actor+time and attribution evidence into a digest-bound receipt. Attribute
-  only exact eligible `app/github-actions` tuples proven to come from the sole
-  repository `gh pr merge --auto` path; re-read the exact tuple before
-  mutation, skip/record changes, disable attributed enrollment, and post-read
-  the result. Preserve user/maintainer enrollments, hold ambiguous provenance
-  for host review, and require zero workflow-owned open enrollments before
-  deleting `.github/workflows/auto-enroll-merge.yml`.
+  open auto-enrolled PR's number/node/head/state/repositories/draft and full
+  `autoMergeRequest` tuple into a digest-bound write-ahead receipt with an
+  idempotency apply key. Before snapshot/mutation, disable and verify the live
+  workflow and cancel/drain queued/in-progress runs. Attribute only exact
+  eligible `app/github-actions` tuples with historical Actions/repository
+  evidence at `enabledAt`; current-source uniqueness is insufficient.
+  Persist each per-PR intent before its exact tuple pre-read, skip changes,
+  disable attributed enrollment, persist post-read outcome, and reconcile
+  already-disabled planned tuples on restart. Preserve user/maintainer
+  enrollments; hold ambiguity for host review. Finish with a full open-PR
+  rescan and require a complete receipt, disabled/drained workflow, and zero
+  attributed or ambiguous open enrollments before deleting the workflow file.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
@@ -152,24 +164,25 @@
 
 ## 5. Remove Public Product Presentation
 
-- [ ] 5.1 Remove the canonical Svelte site's patch-loop application,
+- [ ] 5.1 Remove the retained Svelte rollback site's patch-loop application,
   `community-loop-status.json`, community workflow/label/issue fallbacks, and
   fine-print branding; remove `WebSite/site/src/lib/components/ChatDemo.svelte`
   privileged file-to-daemon-to-gates-to-live narrative and the canonical
   `community_change_context` caller; make `/patch-loop` a static soft landing
   to generic patterns/commons and keep `/loop` only as provenance-labeled
   user-workflow activity.
-- [ ] 5.2 Remove or update the legacy React mirror, its fine print, tests, and
-  `community_change_context` caller, and build artifacts; delete it if
-  non-shipped, otherwise prove parity and absence of every retired website
-  reference.
+- [ ] 5.2 Update the currently deployed React/Next site, its homepage, fine
+  print, tests, `community_change_context` caller, and build artifacts; prove
+  absence of every retired website reference. Do not delete the production
+  tree as a "legacy mirror."
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
-- [ ] 5.4 Build/test the canonical site and any retained mirror; prove platform
-  uptime evidence is separately labeled and never presented as privileged task
-  loop activity.
+- [ ] 5.4 Build/test the production React/Next site and retained Svelte rollback
+  site; correct active runbook/skill prose that reverses their deployment
+  ownership; prove platform uptime evidence is separately labeled and never
+  presented as privileged task-loop activity.
 
 ## 6. Rebuild Packaging And Verify
 
@@ -180,9 +193,9 @@
 - [ ] 6.2 Retire `.agents/skills/loop-uptime-maintenance` and its active catalog
   routes, preserve incident records only as clearly historical non-skill
   evidence if needed, rewrite website-editing guidance around generic
-  provenance-labelled workflow activity and separate uptime evidence, run the
-  skill sync, and prove `.agents`/`.claude` contain no privileged loop
-  instruction.
+  provenance-labelled workflow activity, separate uptime evidence, and current
+  React-production/Svelte-rollback truth, run the skill sync, and prove
+  `.agents`/`.claude` contain no privileged loop instruction.
 - [ ] 6.3 Run focused wiki, dispatcher/executor/migration, extension/auth,
   filing-route, community-context, auto-merge-state, status, uptime,
   deploy-workflow, reset, and plugin tests plus ruff, plugin probe/build,
@@ -203,7 +216,9 @@
   leave the required short `STATUS.md` watch item rather than claiming clean use.
 - [ ] 6.7 Sync the coordination, daemon, graph, wiki, uptime, and website deltas; explicitly rewrite
   canonical `wiki-commons` Purpose prose that promises trigger receipts and
-  `uptime-and-alarms` prose that names the neighboring patch loop; retire the
+  `uptime-and-alarms` prose that names the neighboring patch loop, and the
+  `public-website-surface` historical-run scenario that requires patch-loop
+  feed/community-watch fallback; retire the
   `community-patch-loop` main spec only after its stable completed-run reuse
   guarantee is owned by `daemon-runtime-and-dispatch`; archive this change with
   implementation; and remove its STATUS row in the landing commit.
