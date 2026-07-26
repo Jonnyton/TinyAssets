@@ -40,14 +40,23 @@ boundary and default-deny host-device passthrough. Admission compares proved
 property-set inclusion, not labels or booleans.
 
 Every resolved policy, isolation, projection, egress, credential, and
-authority reference/digest SHALL match the logical requirement. Missing,
-stale, mismatched, untrusted, malformed, or unknown requirement fields or
-backend evidence SHALL raise the shared non-fallbackable
-`ExecutionAdmissionError` before launch. That error SHALL terminate the turn,
-cross universe and graph boundaries unchanged, and SHALL NOT become provider
+authority reference/digest SHALL match the logical requirement. Pre-launch
+admission SHALL validate trusted requirement/capsule data, profile support,
+and current capability/self-test evidence before launch. Missing, stale,
+mismatched, untrusted, malformed, or unknown pre-launch data SHALL raise
+shared non-fallbackable `ExecutionAdmissionError` before launch.
+
+Post-launch validation SHALL then verify returned evidence bound to the same
+requirement/capsule and actual execution. Missing or invalid actual-launch
+evidence SHALL raise
+`ExecutionAdmissionError(reason=backend_evidence_invalid)` and the model
+output SHALL NOT become a successful reply, learning result, or fallback
+input. Admission errors in either phase SHALL terminate the turn, cross
+universe and graph boundaries unchanged, and SHALL NOT become provider
 cooldown, retry, alternate provider, local fallback, explicit fallback,
 degraded output, or fallback prose. Authority errors, provider errors after
-successful admission, and accepted-market/backend results remain distinct.
+successful pre-launch admission, and accepted-market/backend execution
+failures remain distinct.
 
 Cached sandbox status and installed-executable probes SHALL be diagnostic only
 and SHALL NOT derive, satisfy, or attest this requirement. No
@@ -76,9 +85,15 @@ child process proves the required guarantee set.
 
 #### Scenario: unavailable or unknown isolation terminates the turn
 
-- **WHEN** the requirement, one of its bound references/digests, or the backend profile/guarantee evidence is missing, stale, mismatched, malformed, unknown, or fails property-set inclusion
+- **WHEN** the requirement, one of its bound references/digests, or current backend profile/guarantee evidence is missing, stale, mismatched, malformed, unknown, or fails property-set inclusion
 - **THEN** execution admission raises shared `ExecutionAdmissionError` before launch
 - **AND** the reply and learning turn do not retry or fall back through another provider or execution mode
+
+#### Scenario: invalid actual-launch evidence cannot succeed
+
+- **WHEN** post-launch validation cannot bind returned evidence to the admitted requirement/capsule and actual execution
+- **THEN** it raises `ExecutionAdmissionError(reason=backend_evidence_invalid)`
+- **AND** no provider output becomes a reply, learning result, success, or fallback input
 
 #### Scenario: diagnostic availability grants no execution authority
 

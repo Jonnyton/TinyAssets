@@ -14,6 +14,6 @@
 ## 3. Implementation-lane prerequisites
 
 - [ ] 3.1 Before any runtime work, create separately claimed implementation rows with exact file boundaries and refresh provider-context at build phase.
-- [ ] 3.2 Require tests that mutation-prove diagnostic-only status, no Codex dangerous bypass, immutable trusted-callsite derivation, shared terminal admission errors across provider/runner/B2 paths, tool-denied inference, closed projections, sealed capsule binding, and runner-backed graph/NodeBid `source_exec`.
+- [ ] 3.2 Require tests that mutation-prove diagnostic-only status, no Codex dangerous bypass, immutable trusted-callsite derivation, shared terminal admission errors across provider/runner/B2 paths, tool-denied inference, closed projections, sealed capsule binding, pre-launch refusal, post-launch evidence rejection, and runner-backed graph/NodeBid `source_exec`.
 - [ ] 3.3 Require request-bound distributed-execution evidence proving the complete property set for every backend/profile binding before enabling the corresponding workload.
 - [ ] 3.4 Keep implementation, build, canonical spec sync, archive, deployment, live acceptance, and post-fix monitoring outside this spec-only rewrite.

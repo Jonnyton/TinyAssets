@@ -93,12 +93,20 @@ verified. A VM with broader mounts, egress, credentials, devices, or missing
 evidence is not stronger. Missing or unknown properties deny, and a boolean
 such as today's `isolation_enforced` cannot be promoted to either tier.
 
-Admission succeeds only when the logical requirement is present and trusted;
-its workload/profile combination is valid; every resolved
+Admission has two fail-closed phases. Pre-launch admission succeeds only when
+the logical requirement is present and trusted; its workload/profile
+combination is valid; every resolved
 policy/isolation/projection/egress/credential/authority digest matches; the
-selected backend supports the profile; and its request-bound evidence proves
-the complete required property set. Missing, stale, mismatched, or unknown
-workload, profile, property, binding, reference, digest, or requirement denies.
+selected backend supports the profile; and its current capability/self-test
+evidence proves the complete required property set. Missing, stale,
+mismatched, or unknown workload, profile, property, binding, reference,
+digest, requirement, or pre-launch evidence denies before launch.
+
+Post-launch validation then verifies returned evidence bound to the same
+requirement/capsule, actual process or remote execution, policy/projection,
+egress, resources, cleanup, and result. Missing or invalid actual-launch
+evidence raises `ExecutionAdmissionError(reason=backend_evidence_invalid)`;
+the output cannot become a successful result or trigger fallback.
 
 Alternative rejected: use `sandbox_workspace`, `requires_sandbox`, or a readiness boolean as the requirement. Each is caller-influenced or fungible and cannot express workload/profile compatibility or minimum isolation.
 
@@ -185,6 +193,10 @@ normalize runner preflight and protocol refusals; universe/provider paths
 preserve it; accepted-market admission maps B2/B13 capsule refusal. Backend
 failure after a successful dispatch remains a backend result rather than an
 admission error.
+
+Pre-launch refusal and post-launch evidence rejection use the same terminal
+type, but only the latter may use `backend_evidence_invalid` for evidence that
+could not exist before launch.
 
 The #1784/R2-1a provider lane owns updating router handlers that currently
 catch `ProviderError` or `Exception` so they re-raise

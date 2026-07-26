@@ -46,11 +46,18 @@ when it proves every base guarantee plus a distinct guest-kernel boundary and
 default-deny host-device passthrough.
 
 Missing, stale, mismatched, unknown, malformed, unsupported, or unsatisfied
-pre-launch data SHALL become shared `ExecutionAdmissionError` with a closed
-reason code. Graph/NodeBid SHALL normalize runner preflight and protocol
-refusals into that type and terminate the run as `failed` without in-process
-execution or fallback. Backend failure after successful dispatch remains a
-runner result rather than an admission error.
+pre-launch requirement/capsule/profile/property data SHALL become shared
+`ExecutionAdmissionError` with a closed reason code. Graph/NodeBid SHALL
+normalize runner preflight and protocol refusals into that type and terminate
+the run as `failed` without in-process execution or fallback.
+
+Post-launch validation SHALL verify returned evidence bound to the same outer
+capsule, inner `job_id`, and actual execution. Missing or invalid
+actual-launch evidence SHALL become
+`ExecutionAdmissionError(reason=backend_evidence_invalid)`; the output SHALL
+NOT become a successful runner result, graph output, or fallback input.
+Backend execution failure with valid evidence after successful dispatch
+remains a runner result rather than an admission error.
 
 `ExecutionAdmissionError.reason` SHALL be exactly one of
 `requirement_missing`, `requirement_untrusted`, `requirement_malformed`,
@@ -100,6 +107,12 @@ changing its meaning.
 - **WHEN** the requirement, outer capsule, one of its bound references/digests, or backend evidence is missing, stale, mismatched, unknown, malformed, unsupported, or fails property-set inclusion, or runner preflight refuses
 - **THEN** the graph or NodeBid execution ends as `failed` with shared `ExecutionAdmissionError`
 - **AND** it does not execute in-process or fall back to another provider, runner capability, or execution mode
+
+#### Scenario: invalid actual-launch evidence cannot succeed
+
+- **WHEN** returned backend evidence does not bind to the admitted outer capsule, inner `job_id`, and actual execution
+- **THEN** the run ends `failed` with `ExecutionAdmissionError(reason=backend_evidence_invalid)`
+- **AND** no backend output becomes a successful runner result, graph output, or fallback input
 
 ### Requirement: Branch sandbox demand is advisory metadata and never an execution gate
 
