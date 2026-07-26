@@ -25,8 +25,10 @@ support private branches or prove who authorized unattended work.
   authenticated request admission, goal-pool and paid-market producer
   emission, live/frozen direct child invocation, and interrupted-run resume as
   additional issuance roots with the same target-attempt gate.
-- Cover authenticated wiki `file_bug` investigation forward-triggers without
-  treating the written page, bug ID, or queue row as authority.
+- Treat historical wiki `file_bug` investigation forward-triggers and
+  `bug_investigation` rows only as inputs to `retire-cheat-loop` task 2.5;
+  never issue, bind, backfill, drain, revive, or execute them as background
+  work. Current `file_bug` remains filing-only.
 - **BREAKING**: retire the default compiled `universe_cycle` execution bypass;
   materialize it as a registered Branch and governed soul-loop binding before
   unattended execution.
@@ -76,7 +78,7 @@ support private branches or prove who authorized unattended work.
 
 The change affects authenticated scheduler handlers and storage,
 `tinyassets/scheduler.py`, request admission and run resume, goal/market
-producers and subscriptions, wiki bug forwarding, universe soul
+producers and subscriptions, historical retired wiki-forward inventory, universe soul
 creation/editing and built-in-cycle retirement, branch-task storage, graph
 enqueue and direct child invocation, daemon and cloud-worker dispatch,
 distributed worker admission, provenance/audit records, migration tooling, and

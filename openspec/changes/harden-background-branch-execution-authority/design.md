@@ -13,8 +13,13 @@ re-enter after the request that originally authorized it:
 8. branch work enqueued by an approved source node;
 9. live or frozen `invoke_branch` child execution, including async and retry;
 10. interrupted-run resume and startup recovery;
-11. the default compiled `branches/universe_cycle.yaml` daemon stream; and
-12. wiki `file_bug` forwarding into `bug_investigation` queue work.
+11. the default compiled `branches/universe_cycle.yaml` daemon stream.
+
+Historical wiki `file_bug` forwarding into `bug_investigation` queue work is
+not a twelfth issuance root. `retire-cheat-loop` makes current filing
+side-effect-free and owns the authority-safe locked migration of legacy rows
+and receipts; this change may inventory that retired class only to exclude it
+from binding, backfill, bounded drain, revival, and execution.
 
 The current paths preserve scheduling and queue state but not target authority.
 `tinyassets.scheduler` accepts an `owner_actor` string from the action payload;
@@ -51,7 +56,7 @@ a host-approved PLAN reconciliation names the owner.
   revocation state before every logical attempt;
 - pin each admitted attempt to an exact branch snapshot and execution audience;
 - make schedule/subscription and soul-loop changes recoverable across crashes;
-- close request-admission, producer, wiki-forward, built-in-cycle,
+- close request-admission, producer, built-in-cycle,
   direct-child, and resume authority seams;
 - attenuate authority for graph-enqueued children without weakening existing
   universe, lineage, depth, budget, or concurrency limits;
@@ -95,7 +100,7 @@ The binding contains, at minimum:
 - universe ID, exact branch definition ID, and operation;
 - source kind and source identity: schedule, subscription, pinned soul, root
   run, request admission, producer subscription/contract, resumed run, direct
-  child, authenticated wiki forward-trigger, or parent attempt;
+  child or parent attempt;
 - current source revision/digest and revocation generation;
 - target mode (`live_at_attempt` or `pinned_version`);
 - permitted executor class and optional daemon/runtime binding;
@@ -152,11 +157,11 @@ A binding can be issued or rotated only by one of these transitions:
   reauthorizes them through the connector. Market-derived producer work
   remains held until `paid-market-track-e-wave-2-transport` defines and lands
   the accepted execution-contract generation this root consumes.
-- **Authenticated wiki forward-trigger:** the `file_bug` write derives the
-  canonical request principal and current universe/branch authority, then
-  commits or recoverably pairs the bug filing revision with one exact
-  investigation binding/task. Bug text, bug ID, stored page, and queue row are
-  not authority.
+- **Wiki filing is excluded:** `file_bug` commits filing metadata only and
+  creates no background binding, attempt, task, queue entry, or trigger receipt.
+  Historical `bug_investigation` rows and receipts are retirement inputs owned
+  by `retire-cheat-loop` task 2.5; no principal or content evidence can convert
+  them into a background issuance root.
 - **Universe creation or governed soul edit:** an authenticated principal that
   can administer the universe and run the declared branch creates or rotates
   the loop binding. A governed edit that preserves the normalized loop target
@@ -226,8 +231,6 @@ Each source supplies one deterministic key:
   admission generation;
 - producer emission: producer kind + durable subscription/contract generation
   + source-item revision + subscriber universe;
-- wiki forward-trigger: universe + authenticated filing principal + bug ID +
-  committed filing revision;
 - run resume: run ID + exact checkpoint/version + resume generation;
 - claimed task: physical universe + branch task ID + task generation; and
 - graph child: parent attempt + node execution/invocation ordinal + child
@@ -483,12 +486,14 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
 1. **Inventory and classify:** enumerate schedules, subscriptions, current and
    legacy soul/`PROGRAM.md` loops, live/archive branch tasks, graph enqueue
    and live/frozen invoke paths, Request admission, goal/market producers and
-   their subscriptions/contracts, wiki `file_bug` forward-triggers, the
+   their subscriptions/contracts, historical retired wiki `file_bug`
+   forward-triggers, the
    compiled built-in universe cycle, resume/recovery, daemon dispatchers,
    cloud workers, `_current_actor`, and direct runtime call sites. Record whether
    canonical principal, ACL, target, physical universe, source generation, and
    executor evidence is provable. Actor/environment strings are diagnostic
-   only.
+   only. Historical wiki forwards are classified only for handoff to
+   `retire-cheat-loop` task 2.5 and are never candidates for binding or drain.
 2. **Resolve live ownership:** obtain host approval for the PLAN reconciliation
    that assigns one production scheduling/claim mutation authority. Model,
    interface, inventory, and dark/test work may proceed beforehand; live
@@ -498,14 +503,17 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
    recovery scanners. In dark mode, compute classifications and would-allow/
    would-deny decisions without authorizing execution or changing legacy
    behavior.
-4. **Enable new issuance roots:** authenticated schedule/subscription and wiki
-   forward-trigger creation, Request/producer tasks, universe creation/soul
-   edits, root/resumed runs, and child derivation write bindings. New rows
-   remain non-live until their end-to-end target and provider gates pass.
+4. **Enable new issuance roots:** authenticated schedule/subscription,
+   Request/producer tasks, universe creation/soul edits, root/resumed runs, and
+   child derivation write bindings. New rows remain non-live until their
+   end-to-end target and provider gates pass. Wiki filing is permanently
+   excluded and remains filing-only.
 5. **Backfill only provable work:** create bindings only where canonical durable
    records independently prove principal, universe ACL, exact target, source,
    and generation. Never infer from `owner_actor`, public visibility,
    `UNIVERSE_SERVER_USER`, queue possession, or daemon/worker identity.
+   Explicitly exclude every `bug_investigation` row and trigger receipt,
+   regardless of evidence; preserve them for the retirement migration.
 6. **Hold ambiguous legacy work:** pause or mark
    `reauthorization_required`; preserve source definitions and history.
    Authenticated unpause/recreate/redeclare rotates a new binding. Legacy
@@ -513,13 +521,16 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
 7. **Drain the transport boundary:** before enabling epoch-2 graph/queue
    execution, link every pre-authority row to provable state, drain it under
    the explicitly bounded old public-only path, or hold it. Record a zero-
-   unclassified invariant.
+   unclassified invariant. Retired `bug_investigation` work is outside this
+   drain and follows only `retire-cheat-loop` task 2.5.
 8. **Enforce by source class:** schedule/subscription (after
    `demand-side-signals` sync), Request/producer task, soul loop, run resume,
    claimed task, graph enqueue/direct child, then distributed worker. Each
    class requires focused concurrency/failure proof and call-site closure
    before activation.
-9. **Activate live:** run full OpenSpec/test/lint gates, §14 load/concurrency
+9. **Activate live:** only after `retire-cheat-loop` has completed task 2.5,
+   synced its filing-only/retirement requirements, and archived, run full
+   OpenSpec/test/lint gates, §14 load/concurrency
    evidence, canaries, rendered connector `ui-test`, and post-fix real-user
    observation.
 10. **Rollback:** stop new attempt issuance and claims, leave sources/tasks

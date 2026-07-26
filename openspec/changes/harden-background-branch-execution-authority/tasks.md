@@ -1,10 +1,10 @@
 ## 1. Inventory and Stable Interfaces
 
-- [ ] 1.1 Inventory every schedule, subscription, soul/`PROGRAM.md` loop, compiled built-in universe cycle, Request admission, goal-pool/paid-market producer, wiki `file_bug` forward-trigger, `BranchTask`, graph-enqueue, live/frozen `invoke_branch`, resume/recovery, `_current_actor`, daemon/cloud/distributed worker, and async root-run entry (`execute_branch_async`, `execute_branch_version_async`, `_execute_branch_core`, selector, leaderboard, market delegate) that can execute outside or after an authorizing request; add a CI closure assertion.
-- [ ] 1.2 Record the canonical identity, ACL, branch, daemon, run, request/admission, wiki filing, goal-subscription, paid-market acceptance contract, queue, B2, provider-work, and provider-attempt read interfaces consumed by target authority without duplicating their truth.
+- [ ] 1.1 Inventory every schedule, subscription, soul/`PROGRAM.md` loop, compiled built-in universe cycle, Request admission, goal-pool/paid-market producer, `BranchTask`, graph-enqueue, live/frozen `invoke_branch`, resume/recovery, `_current_actor`, daemon/cloud/distributed worker, and async root-run entry (`execute_branch_async`, `execute_branch_version_async`, `_execute_branch_core`, selector, leaderboard, market delegate) that can execute outside or after an authorizing request; separately inventory historical wiki `file_bug` forward-triggers only as retirement inputs excluded from authority, and add a CI closure assertion.
+- [ ] 1.2 Record the canonical identity, ACL, branch, daemon, run, request/admission, filing-only wiki negative contract, goal-subscription, paid-market acceptance contract, queue, B2, provider-work, and provider-attempt read interfaces consumed by target authority without duplicating their truth.
 - [ ] 1.3 Define typed `BackgroundBranchBinding`, `BackgroundBranchAttempt`, source-kind, target-mode, lifecycle, hold-reason, and provenance contracts with strict validation and lossless round trips.
 - [ ] 1.4 Define the `BackgroundBranchAuthorityStore` protocol, transaction/CAS primitives, lock order, and bounded query seams without exposing storage tables to callers.
-- [ ] 1.5 Add deterministic logical-attempt-key builders for schedule periods, subscription events, soul cycles, Request/task bodies, producer subscription/contract items, wiki bug filing revisions, resume checkpoints, claimed task generations, and graph child/retry ordinals.
+- [ ] 1.5 Add deterministic logical-attempt-key builders for schedule periods, subscription events, soul cycles, Request/task bodies, producer subscription/contract items, resume checkpoints, claimed task generations, and graph child/retry ordinals; add no wiki-filing key.
 - [ ] 1.6 Obtain host approval for the `PLAN.md` reconciliation that assigns one live scheduling/task-claim mutation authority; block production persistence integration and activation until it lands while allowing model, inventory, dark-mode, and test work.
 
 ## 2. Authority Store and Recovery Core
@@ -32,8 +32,8 @@
 - [ ] 3.10 Replace goal subscriptions with authenticated principal/universe target delegations; put the anonymous fresh-install maintenance default in `reauthorization_required` until a founder authorizes it through the connector.
 - [ ] 3.11 Keep every paid-market/NodeBid producer row non-pickable until `paid-market-track-e-wave-2-transport` lands an accepted execution-contract generation; then bind that canonical requester, contract, subscriber universe, exact target policy, and generation without treating the market row as authority.
 - [ ] 3.12 Change goal-pool and paid-market producer emission to derive one exact prepared child/task binding per source-item/subscription-or-contract generation before queue pickability; reject `posted_by`, pool YAML, and producer identity as authority.
-- [ ] 3.13 Route authenticated wiki `file_bug` investigation forwarding through one filing-revision binding/task transaction or recoverable pair; remove the bare `bug_investigation.append_task` ingress.
-- [ ] 3.14 Add Request-transaction, wiki-forward, goal-subscription, default-maintenance, market-hold/contract, duplicate producer-pump, cross-universe, source-revision, and connector reauthorization tests.
+- [ ] 3.13 Prove authenticated wiki `file_bug` remains filing-only and creates no background binding, attempt, task, queue entry, or trigger receipt; remove any background-authority caller or test that treats investigation forwarding as an issuance root.
+- [ ] 3.14 Add Request-transaction, wiki-filing-negative, goal-subscription, default-maintenance, market-hold/contract, duplicate producer-pump, cross-universe, source-revision, and connector reauthorization tests.
 
 ## 4. Soul-Loop Authority Lifecycle
 
@@ -78,14 +78,14 @@
 
 ## 7. Legacy Migration and Rollout Controls
 
-- [ ] 7.1 Build a read-only inventory/report command for legacy triggers, Request admissions, wiki bug forwards, goal/market subscriptions/contracts and producer rows, soul/`PROGRAM.md`/compiled built-in cycles, live/archive tasks, graph enqueue/direct invocation, resume/recovery, `_current_actor`, and dispatch call sites with canonical-evidence classifications.
+- [ ] 7.1 Build a read-only inventory/report command for legacy triggers, Request admissions, goal/market subscriptions/contracts and producer rows, soul/`PROGRAM.md`/compiled built-in cycles, live/archive tasks, graph enqueue/direct invocation, resume/recovery, `_current_actor`, and dispatch call sites with canonical-evidence classifications; report historical wiki bug forwards and `bug_investigation` receipts/rows only as retirement inputs for task 2.5 of `retire-cheat-loop`.
 - [ ] 7.2 Add dark-mode would-allow/would-hold decisions and metrics without creating live authority or altering legacy execution.
-- [ ] 7.3 Implement deterministic backfill only when canonical durable principal, ACL, exact target, source generation, and physical-universe evidence all prove the binding.
-- [ ] 7.4 Preserve every ambiguous source/task in `reauthorization_required`; never backfill from `owner_actor`, `child_actor`, `posted_by`, pool/bug content, environment, built-in branch identity, public visibility, queue possession, or daemon/worker identity.
+- [ ] 7.3 Implement deterministic backfill only when canonical durable principal, ACL, exact target, source generation, and physical-universe evidence all prove the binding; categorically exclude every historical `bug_investigation` row and trigger receipt regardless of apparent evidence.
+- [ ] 7.4 Preserve every ambiguous non-retired source/task in `reauthorization_required`; never backfill from `owner_actor`, `child_actor`, `posted_by`, pool/bug content, environment, built-in branch identity, public visibility, queue possession, or daemon/worker identity. Preserve retired investigation records for their authority-first locked migration without binding, drain, revival, or execution.
 - [ ] 7.5 Extend existing authenticated unpause/recreate/redeclare paths to rotate valid bindings without adding an Agent Village or web-app dependency.
 - [ ] 7.6 Add activation counters and assertions for zero unclassified sources/tasks, zero unclosed prepared pairs, and zero legacy authority fallbacks.
 - [ ] 7.7 Implement rollback that stops new issuance/claims, fences in-flight generations, retains history, and leaves work pending/held without restoring legacy authority.
-- [ ] 7.8 Add migration idempotency, partial-evidence, stale-ACL, legacy-program, dark-row drain/hold, repeated rollback, and recovery tests.
+- [ ] 7.8 Add migration idempotency, partial-evidence, stale-ACL, legacy-program, dark-row drain/hold, repeated rollback, and recovery tests, including proof that retired investigation rows/receipts can only enter `retire-cheat-loop` task 2.5.
 
 ## 8. Verification, Activation, and Foldback
 
@@ -97,4 +97,4 @@
 - [ ] 8.6 Deploy dark mode, verify metrics and rollback, then activate one source class at a time only after its focused evidence passes.
 - [ ] 8.7 Run public connector canaries and a rendered chatbot conversation that creates and observes unattended work with correct authorizer/executor provenance; save `output/user_sim_session.md` and trace/screenshot evidence.
 - [ ] 8.8 Check fresh production traces for clean post-fix real-user use; if absent, add a dated `STATUS.md` watch item instead of claiming proven adoption.
-- [ ] 8.9 After `demand-side-signals`, `harden-background-provider-execution-authority`, `operator-request-trigger-contract`, universe/run owners, and the accepted paid-market contract owner have synced their dependencies, verify the scheduler, startup, supervisor-drain, and interrupted-resume requirements are complete merged copies; then sync this change's five deltas second, archive it, retire its `STATUS.md` row, and record the landing only after every gate passes.
+- [ ] 8.9 After `retire-cheat-loop` has completed task 2.5, synced the filing-only and retired-class guarantees, and archived, and after `demand-side-signals`, `harden-background-provider-execution-authority`, `operator-request-trigger-contract`, universe/run owners, and the accepted paid-market contract owner have synced their dependencies, verify the scheduler, startup, supervisor-drain, and interrupted-resume requirements are complete merged copies; then sync this change's five deltas second, archive it, retire its `STATUS.md` row, and record the landing only after every gate passes.
