@@ -8,15 +8,71 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
 # Force mock provider responses in all tests to avoid real API calls
 from tinyassets.providers import call as _provider_call
 
 _provider_call.set_force_mock(True)
+
+
+class _CredentialSubjectProvider(AuthProvider):
+    """Resolve a test bearer token to the same persisted subject."""
+
+    def resolve_token(self, token: str) -> Identity | None:
+        if not token:
+            return None
+        return Identity(
+            user_id=token,
+            username=f"{token}-display",
+            capabilities=[
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+                "tinyassets.extensions.admin",
+            ],
+        )
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {"client_id": "pytest-credential-subject", **metadata}
+
+    def create_authorization(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        return "pytest-credential-subject-code"
+
+    def exchange_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> dict[str, Any] | None:
+        return None
+
+
+@pytest.fixture
+def authenticate_request() -> Callable[[str | None], None]:
+    """Bind branch-authority tests to a credential-derived request subject."""
+    set_provider(_CredentialSubjectProvider())
+    auth_middleware(None)
+    yield auth_middleware
+    auth_middleware(None)
+    set_provider(DevAuthProvider())
 
 
 @pytest.fixture(autouse=True)

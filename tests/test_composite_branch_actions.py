@@ -22,11 +22,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 
 @pytest.fixture
-def comp_env(tmp_path, monkeypatch):
+def comp_env(tmp_path, monkeypatch, authenticate_request):
     base = tmp_path / "output"
     base.mkdir()
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(base))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request("tester")
     from tinyassets import universe_server as us
 
     importlib.reload(us)
@@ -71,6 +72,8 @@ RECIPE_SPEC = {
 
 
 def _build_approved_source_branch(us, *, node_id="approved_calc"):
+    from tinyassets.auth.middleware import auth_middleware
+
     _call(
         us,
         "register",
@@ -85,9 +88,11 @@ def _build_approved_source_branch(us, *, node_id="approved_calc"):
     )
     prior_actor = os.environ.get("UNIVERSE_SERVER_USER")
     os.environ["UNIVERSE_SERVER_USER"] = "host-operator"
+    auth_middleware("host-operator")
     try:
         approved = _call(us, "approve", node_id=node_id)
     finally:
+        auth_middleware("tester")
         if prior_actor is None:
             os.environ.pop("UNIVERSE_SERVER_USER", None)
         else:
@@ -801,13 +806,11 @@ def test_build_branch_truncates_mermaid_above_12_nodes(comp_env):
     assert "12-node" in result["text"] or "structuredContent" in result["text"]
 
 
-def test_unknown_action_catalog_lists_composite_actions(comp_env):
+def test_unknown_action_without_metadata_is_denied(comp_env):
     us, _ = comp_env
     result = _call(us, "notarealaction")
-    avail = result.get("available_actions", [])
-    assert "build_branch" in avail
-    assert "patch_branch" in avail
-    assert "update_node" in avail
+    assert "error" in result
+    assert result.get("available_actions", []) == []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -898,7 +901,7 @@ def test_update_node_rejects_missing_branch(comp_env):
     us, _ = comp_env
     result = _call(us, "update_node", branch_def_id="deadbeef",
                    node_id="anything", display_name="X")
-    assert result["status"] == "rejected"
+    assert "not found" in result["error"].lower()
 
 
 def test_update_node_requires_ids(comp_env):
