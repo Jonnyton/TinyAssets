@@ -1225,13 +1225,14 @@ def get_status(universe_id: str = "") -> str:
     if not universe_exists:
         caveats.append(
             f"Universe '{uid}' does not exist on disk. Daemon is reporting "
-            "default-fallback identity, not a live universe. Call "
-            "universe action=list to see what exists; universe action=create "
-            "to bootstrap."
+            "default-fallback identity, not a live universe. Use read_graph "
+            'target="graphs" to see what exists; use write_graph '
+            f'target="universe" graph_id="{uid}" to bootstrap.'
         )
         actionable_next_steps.append(
-            f"Create universe '{uid}' or pick an existing one via universe "
-            "action=list."
+            f"Create universe '{uid}' with write_graph target=\"universe\" "
+            f'graph_id="{uid}", '
+            'or pick an existing one with read_graph target="graphs".'
         )
 
     # BUG-023 Phase 1 — surface per-subsystem disk observability so

@@ -285,7 +285,7 @@ def test_wiki_search_no_results_returns_empty_list(wiki_env):
     res = json.loads(wiki(action="search", query="zzz_nothing_should_match"))
     assert res["results"] == []
     assert res["search_complete"] is False
-    assert "action=since" in res["completeness_warning"]
+    assert "read_page changed_since=" in res["completeness_warning"]
 
 
 def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
@@ -313,7 +313,7 @@ def test_wiki_search_returns_completeness_warning_with_matches(wiki_env):
     assert _result_paths(res) == {"pages/workflows/search-target.md"}
     assert res["search_complete"] is False
     assert "lexical" in res["completeness_warning"]
-    assert "action=since" in res["completeness_warning"]
+    assert "read_page changed_since=" in res["completeness_warning"]
 
 
 def test_wiki_since_returns_pages_updated_after_timestamp(wiki_env):
@@ -736,7 +736,7 @@ def test_wiki_read_large_page_marks_content_and_supports_offset(wiki_env):
     assert first["read_end"] == 4000
     assert first["next_offset"] == 4000
     assert "WIKI READ TRUNCATED" in first["content"]
-    assert "offset=4000" in first["content"]
+    assert "not exposed by the advertised handles" in first["content"]
     assert "end marker" not in first["content"]
 
     second = json.loads(
@@ -1120,7 +1120,8 @@ def test_wiki_file_bug_rejects_unsupported_body_field(wiki_env):
     assert "error" in res
     assert "content" in res["error"]
     assert "repro, observed, expected, workaround" in res["error"]
-    assert "title=..., component=..., severity=..." in res["hint"]
+    assert 'write_page kind="bug"' in res["hint"]
+    assert "wiki" not in res["hint"]
     assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
 
 
@@ -1189,6 +1190,8 @@ def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
     assert isinstance(dup["similar"], list)
     assert len(dup["similar"]) >= 1
     assert dup["effort_dispatch_route"]["lane"] == "standard-triage"
+    assert "cosign_bug" not in dup["hint"]
+    assert "not exposed by the advertised handles" in dup["hint"]
 
 
 def test_wiki_cosign_bug_requires_args(wiki_env):

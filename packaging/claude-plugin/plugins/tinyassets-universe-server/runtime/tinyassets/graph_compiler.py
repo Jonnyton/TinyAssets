@@ -1740,7 +1740,7 @@ def _build_node_mcp_invoker(
             # write reach the wiki from in-node code even if one is aliased.
             if action in WIKI_WRITE_ACTIONS:
                 raise CompilerError(
-                    f"Node '{node.node_id}' may call wiki READ actions only; "
+                    f"Node '{node.node_id}' may use in-node knowledge reads only; "
                     f"'{action}' is a write and is not exposed in-node."
                 )
             raw = wiki(action=action, **kwargs)

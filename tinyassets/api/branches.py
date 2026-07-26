@@ -1121,8 +1121,9 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
 
     approval_warning_lines = [
         f"  - APPROVAL REQUIRED: node '{n['node_id']}' ({n['display_name']}) has"
-        " unapproved source_code — host must run extensions action=approve_source_code"
-        " before this branch can run."
+        " unapproved source_code — the host must approve it through the internal "
+        "operator surface before this branch can run; approval is not exposed "
+        "by the advertised handles."
         for n in unapproved_sc
     ]
 
@@ -1159,8 +1160,8 @@ def _ext_branch_describe(kwargs: dict[str, Any]) -> str:
         "approved before it can run."
         if unapproved_sc
         else (
-            "Note: run this branch with action='run_branch' once validated. "
-            "Pass state field values via inputs_json."
+            f'Note: run this branch with run_graph branch_def_id="{bid}" '
+            'inputs_json="<state JSON>" once validated.'
         )
     )
     summary_parts += ["", "Graph:", mermaid, "", run_note]
@@ -1526,7 +1527,8 @@ def _lookup_node_body(
         if not hit:
             return {}, (
                 f"standalone node '{node_id}' not found. "
-                "Check `extensions action=list` for registered nodes."
+                "Global registered-node discovery is not exposed by the "
+                "advertised handles."
             )
         return {
             "node_id": hit.get("node_id", node_id),
@@ -1585,7 +1587,7 @@ def _lookup_node_body(
             }, ""
     return {}, (
         f"node '{node_id}' not found on branch '{source}'. "
-        "Use `extensions action=get_branch` to list its nodes."
+        f'Use `read_graph target="branch" branch_id="{source}"` to list its nodes.'
     )
 
 
@@ -2619,10 +2621,9 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 f"patch_branch denied: branch '{bid}' is authored by "
-                f"'{branch_author}'; caller is '{caller}'. Pass "
-                "force=true to mutate another author's branch, or fork "
-                "it (publish_version + build_branch with fork_from) and "
-                "amend your own copy. See BUG-081."
+                f"'{branch_author}'; caller is '{caller}'. Cross-author "
+                "mutation and fork creation are not exposed by the advertised "
+                "handles; use an internal operator surface. See BUG-081."
             ),
             "branch_author": branch_author,
             "caller": caller,
@@ -3018,11 +3019,11 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             lines.append(f"- … and {len(entries) - 12} more.")
         lines.append("")
         lines.append(
-            "_To reuse: call `add_node` with "
-            "`node_ref_json={\"source\": \"<branch_def_id>\", "
-            "\"node_id\": \"<node_id>\"}`, or include the same "
-            "`node_ref` inside a `spec_json` / `changes_json` node "
-            "entry on build_branch / patch_branch. See #66._"
+            "_To reuse: send an `add_node` operation containing "
+            "`node_ref={\"source\": \"<branch_def_id>\", "
+            "\"node_id\": \"<node_id>\"}` through "
+            '`write_graph target="branch" branch_id="<target id>" '
+            'changes_json="[...]". See #66._'
         )
     else:
         if query or role:
@@ -3033,9 +3034,8 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
             )
         else:
             lines.append(
-                "_No nodes registered yet. Build one with "
-                "`extensions action=build_branch` and future callers "
-                "will find it here._"
+                "_No nodes registered yet. Standalone node and new-workflow "
+                "creation are not exposed by the advertised handles._"
             )
 
     return json.dumps({
@@ -3377,22 +3377,18 @@ def _branch_design_guide_prompt() -> str:
 
 
 _BRANCH_DESIGN_GUIDE = """\
-You help users author community-designed graph branches through the
-`extensions` tool. A branch is a LangGraph topology (nodes + edges +
-state schema) the user can fork, share, and (in Phase 3) run.
+You help users inspect, edit, and run community-designed graph branches through
+the advertised canonical handles. A branch is a LangGraph topology (nodes +
+edges + state schema) the user can fork, share, and run.
 
 ## Before you invent — search for reusable nodes
 
-Before you design any node for the user's new Branch, check whether an
-existing node already fills the role. Every node already on the server
-was written once and validated; reusing it preserves lineage and lets
-comparative evaluation (judge_run, compare_runs) work across branches.
-
-```
-extensions action=search_nodes node_query="citation audit"
-extensions action=search_nodes node_query="outline" phase="plan"
-goals action=common_nodes scope=all min_branches=2
-```
+Before you design any node, inspect known candidate branches with
+`read_graph target="branch" branch_id=...`. Every node already on the server was written
+once and validated; reusing it preserves lineage and lets comparative
+evaluation work across branches. Global node search and cross-Goal common-node
+aggregation are not exposed by the advertised handles, so do not claim an
+exhaustive search.
 
 For each relevant hit, point the user at it and ask whether to reuse.
 If yes, include a `node_ref` inside the `node_defs` entry rather than
@@ -3409,23 +3405,21 @@ canonical body is snapshotted into the new Branch and diverges from
 there. If the user later edits it on either side, the other stays
 unchanged. (v1; live shared nodes may come later.)
 
-Bare `node_id` that collides with an existing standalone registered
-node is REJECTED by the server; you must pass `node_ref` or
-`intent="copy"` or rename. This is intentional — silent shadowing was
-a bug (#66).
+Bare `node_id` that collides with an existing standalone registered node is
+rejected by the server; in an existing branch patch, pass `node_ref` /
+`intent="copy"` or rename. This is intentional — silent shadowing was a bug
+(#66).
 
-## Author flow (PREFERRED — one round trip)
+## New-workflow authoring gap
 
-Use `build_branch` with the whole workflow in a single `spec_json`.
-You get back a validated branch with a mermaid diagram in one call —
-no per-node chatter, no tool-call budget burn:
-This is the chat-native authoring path for small workflow units. Do NOT
-send community users to GitHub Actions YAML, repo files, or CI config
-when they ask to make or revise a workflow from chat; use `build_branch`
-for new units and `patch_branch` for edits.
+The advertised handle set does not currently expose creation of a new branch
+or standalone node. Do NOT call a hidden tool, send community users to GitHub
+Actions YAML/repo files/CI config, or imply a design was stored. Say the
+surface gap plainly. A complete branch design still uses the following
+single-payload shape; it can be applied once a canonical create route exists:
 
 ```
-extensions action=build_branch spec_json='{
+spec_json='{
   "name": "Recipe tracker",
   "description": "Capture, categorize, archive recipes",
   "entry_point": "capture",
@@ -3459,30 +3453,27 @@ extensions action=build_branch spec_json='{
 }'
 ```
 
-If validation fails, `build_branch` returns concrete `suggestions` with
-proposed fixes — apply them and retry. No partial branch is ever visible.
-On success, `build_branch` returns a structured `batch_receipt` that records
-what landed, validation status, and source_code approval status. Treat this
-receipt as evidence only: it is not an authorization grant, trust session, or
-approval-token bypass. Check `batch_receipt.authorization_effect` for the
-machine-readable non-grant/non-bypass flags before narrating approval scope.
+Do not fabricate validation suggestions or a batch receipt for an unsaved new
+design. Receipts exist only after a real supported write completes.
 
 ## Branch skills
 
 When the user wants to create a skill, remix one, or copy one they found
-elsewhere, attach it to the Branch as a `skills` snapshot. A skill is
-Branch context, not executable code. It must include `name` and `body`;
-include `source_url`, `source_note`, `parent_skill_id`, `license`,
-`version`, `tags`, or `metadata` when the user gives that provenance.
-Do not write skill text to the wiki as a workaround when the user wants
-the Branch to carry it.
+elsewhere for an existing Branch, attach it as a `skills` snapshot through
+`write_graph target="branch" branch_id=... changes_json=...`. A skill is Branch context, not
+executable code. It must include `name` and `body`; include `source_url`,
+`source_note`, `parent_skill_id`, `license`, `version`, `tags`, or `metadata`
+when the user gives that provenance. Do not write skill text to a shared page
+as a workaround when the user wants the Branch to carry it.
 
 ## Editing an existing workflow (PREFERRED)
 
-Use `patch_branch` with a batch of ops. Transactional — all land or none:
+First call `read_graph target="branch" branch_id=...` so the edit is informed. Then call
+`write_graph target="branch" branch_id=... changes_json=...` with one batch.
+Transactional — all land or none:
 
 ```
-extensions action=patch_branch branch_def_id=... changes_json='[
+write_graph target="branch" branch_id=... changes_json='[
   {"op": "add_node", "node_id": "novelty_check",
    "display_name": "Novelty assessor",
    "prompt_template": "Rate novelty of: {claim}"},
@@ -3496,54 +3487,50 @@ extensions action=patch_branch branch_def_id=... changes_json='[
 ]'
 ```
 
-Successful `patch_branch` responses also include `batch_receipt`. Rejected
-patches do not. The receipt lets the chatbot summarize the batch and point to
-remaining blockers, but it never overrides `source_code` approval or host-owned
-gates. Check `batch_receipt.authorization_effect` for the machine-readable
+Successful branch writes include `batch_receipt`. Rejected patches do not.
+The receipt lets the chatbot summarize the batch and point to remaining
+blockers, but it is not an authorization grant and never overrides
+`source_code` approval or host-owned gates.
+Check `batch_receipt.authorization_effect` for the machine-readable
 non-grant/non-bypass flags before narrating approval scope.
 
-## Atomic actions (single-item surgery only)
+## Single-item surgery
 
-Use these ONLY when the user wants exactly one small change and the
-per-turn tool-call budget is not at risk:
-
-- `create_branch name="..." description="..."`
-- `add_node branch_def_id=... node_id=... display_name=... prompt_template=...`
-- `connect_nodes branch_def_id=... from_node=... to_node=...`
-- `set_entry_point branch_def_id=... node_id=...`
-- `add_state_field branch_def_id=... field_name=... field_type=...`
-- `validate_branch branch_def_id=...`
-- `describe_branch branch_def_id=...`
+Even for one small change, use one changes_json op through
+`write_graph target="branch" branch_id=... changes_json=...`. New-branch
+creation is not exposed. For
+inspection or validation evidence, use
+`read_graph target="branch" branch_id=...` and report
+only what it returns.
 
 ## Hard rule
 
-After `describe_branch`, check `runnable` before telling the user their
-branch is ready to run. If `runnable=false`, surface
+After `read_graph target="branch" branch_id=...`, check `runnable` before
+telling the user their branch is ready to run. If `runnable=false`, surface
 `unapproved_source_code_nodes` or validation errors and stop. If
-`runnable=true`, use `run_branch` with a JSON `inputs_json` that fills the
+`runnable=true`, use `run_graph` with a JSON `inputs_json` that fills the
 state_schema fields. The runner returns a `run_id`, final status, and
 per-node trace.
 
 ## Power users
 
 Pass `source_code="def run(state): ..."` instead of `prompt_template`
-for code nodes. Pass `reducer="append"` on `add_state_field` for
-accumulating list fields. The same 10 actions cover both audiences;
-the difference is how much you abstract on the user's behalf.
+for code nodes in changes_json. Pass `reducer="append"` on an
+`add_state_field` op for accumulating list fields. The difference for power
+users is how much you abstract on their behalf, not which handle you call.
 
 ## Running a branch
 
 Once validated, execute with:
 
-- `run_branch branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
-- `wait_for_run run_id=... since_step=-1 max_wait_s=60` to wait for progress
-  without burning repeated tool calls.
-- `get_run run_id=...` for a full snapshot with mermaid + per-node status.
-- `stream_run run_id=... since_step=-1` only for low-level incremental reads.
-- `get_run_output run_id=... field_name=archived` to pull one field.
-- `cancel_run run_id=...` to request cooperative stop.
+- `run_graph branch_def_id=... inputs_json='{"raw_recipe": "pasta"}'`
+- `read_graph target="runs"` to find runs.
+- `read_graph target="run" run_id=...` for a full result snapshot.
+
+Wait, incremental stream, field-only output, and cancellation controls are not
+exposed by the advertised handles. Say so plainly rather than inventing them.
 
 The never-simulate rule lives in `control_station` (hard rule 5):
-if run_branch fails, the branch isn't validated, or a source_code node
+if `run_graph` fails, the branch isn't validated, or a source_code node
 isn't approved, state the reason and stop.
 """

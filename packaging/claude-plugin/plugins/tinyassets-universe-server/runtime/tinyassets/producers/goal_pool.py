@@ -97,10 +97,10 @@ def _rung_claim_recommendations(
             "description": rung.get("description", ""),
             "branch_requirements": dict(rung.get("branch_requirements") or {}),
             "bounty_requirements": dict(rung.get("bounty_requirements") or {}),
-            "claim_action": (
-                "gates action=claim "
-                f"branch_def_id={branch_def_id or '<branch_def_id>'} "
-                f"rung_key={rung_key} evidence_url=<evidence_url>"
+            "claim_action": None,
+            "claim_gap": (
+                "Gate claims are not exposed by the advertised handles; "
+                "use an internal operator surface."
             ),
         })
     return recommendations

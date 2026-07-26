@@ -153,8 +153,8 @@ NOT governed by this policy.
 - Every accepted soul edit appends an entry to [log](log.md).
 - Every accepted soul edit writes a new snapshot under
   [soul_versions](soul_versions/index.md).
-- The MCP execution path for `universe action=soul.edit` reads and follows this
-  file; the authority lives here, not in a hardcoded string.
+- Learning requests relayed through `converse` read and follow this file; the
+  authority lives here, not in a hardcoded string.
 """
     return _doc(
         "Soul Edit Policy",

@@ -978,8 +978,8 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
 ):
     """P0 #1582: first contact births a universe that cannot answer.
 
-    Birth still succeeds; the founder gets an actionable setup reply naming the
-    real attachment path instead of `All providers exhausted for role=writer`.
+    Birth still succeeds; the founder gets an honest setup hold instead of
+    `All providers exhausted for role=writer` or a retired tool route.
     """
     from tinyassets.universe_server import converse
 
@@ -995,7 +995,8 @@ def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
     assert out["status"] == "held"
     assert out["reason"] == "setup_required"
     assert "All providers exhausted" not in rendered
-    assert "set_engine" in rendered
+    assert "set_engine" not in rendered
+    assert "not exposed by the advertised handles" in rendered
     assert "byo_api_key" in rendered
 
 

@@ -337,9 +337,8 @@ def test_capability_present_consent_missing_returns_dry_run(
     assert result["phase"] == "phase_2"
     assert result["reason"] == "missing_consent"
     assert result["destination"] == _DESTINATION
-    # The hint should mention the grant action so the chatbot knows
-    # what to surface to the user.
-    assert "grant_effector_consent" in result["hint"]
+    assert "not exposed by the advertised handles" in result["hint"]
+    assert "extensions" not in result["hint"]
 
 
 def test_consent_destination_must_match_exactly(universe_dir, monkeypatch):

@@ -296,12 +296,17 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     steps = [
         {
             "id": "premise",
-            "label": "Save a soul purpose with create_universe text or set_premise.",
+            "label": (
+                "Save a purpose with write_graph target=\"universe\" text= "
+                "when creating the universe."
+            ),
             "complete": has_premise,
         },
         {
             "id": "canon_source",
-            "label": "Upload at least one canon source with add_canon or add_canon_from_path.",
+            "label": (
+                "Canon-source upload is not exposed by the advertised handles."
+            ),
             "complete": False,
         },
         {
@@ -317,8 +322,8 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     ]
     if has_premise:
         next_action = (
-            "Upload canon with add_canon or add_canon_from_path, then wait for "
-            "the daemon to process the synthesize_source signal."
+            "Canon-source upload and synthesis waiting are not exposed by the "
+            "advertised handles."
         )
     else:
         next_action = (
@@ -1678,27 +1683,28 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # and wiki span all domains.
     result["cross_surface_hint"] = {
         "note": (
-            "This workspace is one container; cross-domain branches and Goals "
-            "live at extensions + goals + wiki regardless of this workspace's theme."
+            "This workspace is one container; canonical graph and page reads "
+            "span domains regardless of this workspace's theme. Global workflow "
+            "enumeration is not exposed by the advertised handles."
         ),
         "paths": [
             {
-                "action": "extensions action=list_branches",
-                "purpose": "All workflows across all domains",
+                "action": 'read_graph target="branch" branch_id="<known id>"',
+                "purpose": "Inspect a known workflow by identifier",
             },
             {
-                "action": "goals action=list",
+                "action": 'read_graph target="goals"',
                 "purpose": (
                     "Domain-agnostic intents "
                     "(research, software, science, fantasy, etc.)"
                 ),
             },
             {
-                "action": "wiki action=search",
+                "action": 'read_page query="<terms>"',
                 "purpose": "Cross-domain notes, bugs, and design plans",
             },
             {
-                "action": "universe action=list",
+                "action": 'read_graph target="graphs"',
                 "purpose": "Other workspaces if multiple exist",
             },
         ],
@@ -2080,8 +2086,8 @@ def _action_submit_request(
             "error": (
                 f"Request text exceeds {_SUBMIT_REQUEST_MAX_BYTES} bytes "
                 f"({text_bytes} submitted). Summarize or split into "
-                "multiple requests. For long prose, use `add_canon` "
-                "instead."
+                "multiple requests. For private long-form material, relay it "
+                "to the universe through converse instead."
             ),
         })
 
@@ -2252,7 +2258,7 @@ def _action_submit_request(
         "ahead_of_yours": ahead,
         "what_happens_next": (
             f"The daemon will see your request on its next review cycle; "
-            f"{position_note}. Use `universe action=inspect universe_id={uid}` "
+            f'{position_note}. Use `read_graph target="graph" graph_id="{uid}"` '
             "to watch the queue or check whether your request is now active work."
         ),
     })
@@ -4587,7 +4593,10 @@ def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
             "premise": None,
             "has_soul": soul is not None,
             "soul": soul.summary() if soul is not None else None,
-            "note": "No premise set. Use action='set_premise' to create one.",
+            "note": (
+                "No premise set. Tell the universe its premise through "
+                "converse."
+            ),
         })
     return json.dumps({
         "universe_id": uid,
@@ -4649,9 +4658,9 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
 
 
 _CANON_SAME_FILENAME_BEHAVIOR = (
-    "A later add_canon call with the same filename replaces the stored "
-    "source bytes and manifest entry when the content hash changes; "
-    "identical bytes are treated as unchanged."
+    "A later ingest of the same canon-source filename replaces the stored "
+    "source bytes and manifest entry when the content hash changes; identical "
+    "bytes are treated as unchanged."
 )
 
 
@@ -5097,7 +5106,10 @@ def _action_read_source(
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
         return json.dumps({
-            "error": "Filename required. Use list_sources to see available files.",
+            "error": (
+                "Filename required. Source enumeration is not exposed by the "
+                "advertised handles."
+            ),
         })
 
     # Resolve + contain against the canon ROOT (not the ``sources/`` subdir) so
@@ -5114,7 +5126,9 @@ def _action_read_source(
     if not target.is_file():
         return json.dumps({
             "error": f"Source file '{safe_name}' not found.",
-            "hint": "Use list_sources to see available files.",
+            "hint": (
+                "Source enumeration is not exposed by the advertised handles."
+            ),
         })
 
     try:
@@ -5171,7 +5185,12 @@ def _action_read_canon(
 
     safe_name = Path(filename).name
     if not safe_name:
-        return json.dumps({"error": "Filename required. Use list_canon to see available files."})
+        return json.dumps({
+            "error": (
+                "Filename required. Canon enumeration is not exposed by the "
+                "advertised handles."
+            ),
+        })
 
     # Resolve + contain before any ``is_file`` / read so a symlinked canon
     # file whose target lives outside canon_dir is rejected, not read.
@@ -5182,7 +5201,7 @@ def _action_read_canon(
     if not target.is_file():
         return json.dumps({
             "error": f"Canon file '{safe_name}' not found.",
-            "hint": "Use list_canon to see available files.",
+            "hint": "Canon enumeration is not exposed by the advertised handles.",
         })
 
     try:
@@ -5490,9 +5509,10 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
             "status": "selected",
             "scope": "request",
             "note": (
-                f"Selected '{uid}' for this session. Pass universe_id on each "
-                "call to act on it; this does not change the daemon's global "
-                "active universe."
+                f"Selected '{uid}' for this session. Pass the explicit target "
+                "on each advertised handle (graph_id for graph operations; "
+                "universe_id for converse, page, and status operations); this "
+                "does not change the daemon's global active universe."
             ),
         })
 
@@ -5831,14 +5851,17 @@ def engine_setup_required_payload(
         ),
         "setup_paths": [{
             "path": "byo_api_key",
-            "how": "universe action=set_engine",
+            "how": "Engine assignment is not exposed by the advertised handles.",
             "inputs_json": {
                 "engine_source": "byo_api_key",
                 "service": "anthropic | openai",
                 "api_key": "<your key>",
             },
-            "note": "Your own API key, stored in this universe's private vault "
-                    "and never echoed back.",
+            "note": (
+                "Your own API key would be stored in this universe's private "
+                "vault and never echoed back. Ask the host to use the internal "
+                "engine-assignment surface."
+            ),
         }],
     }
 
@@ -6037,8 +6060,10 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
         "preferred_writer": fields["preferred_writer"],
-        "next_step": "Host a daemon for this universe via "
-                     "`universe action=daemon_summon` to bind a runtime instance.",
+        "next_step": (
+            "Runtime-daemon binding is not exposed by the advertised handles; "
+            "ask the host to use the internal operator surface."
+        ),
     })
 
 
