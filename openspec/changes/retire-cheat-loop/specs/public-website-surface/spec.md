@@ -1,7 +1,7 @@
 ## RENAMED Requirements
 
-- FROM: `Status And Loop Presentation Keep Distinct Operational Truths`
-- TO: `Status And Workflow Presentation Keep Distinct Operational Truths`
+- FROM: `### Requirement: Status And Loop Presentation Keep Distinct Operational Truths`
+- TO: `### Requirement: Status And Workflow Presentation Keep Distinct Operational Truths`
 
 ## MODIFIED Requirements
 

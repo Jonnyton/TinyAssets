@@ -64,6 +64,15 @@ The last command passed on 2026-07-26 after all proposal artifacts were
 complete. These searches are diagnostic inventory, not proof of implementation;
 the runtime is still unchanged in this target-only lane.
 
+An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
+built all six surviving canonical deltas. The public-website result reported
+`renamed=1, modified=2`, contained the renamed requirement, and replaced the
+historical patch-loop/community-watch scenario. A separate parser comparison
+proved the `community-patch-loop` delta's nine removed headings exactly equal
+the canonical capability's nine requirements. The CLI's normal archive path
+cannot validly write zero requirements, which is why the reviewed physical
+delete plus `--skip-specs` procedure is load-bearing.
+
 The authenticated repository-variable read on 2026-07-26 returned
 `AUTO_FIX_DISABLED=true` (last updated 2026-06-06) and
 `WORKOS_REQUIRE_AUTH=0`; only the former belongs to this retirement.
@@ -475,7 +484,12 @@ must distinguish history from shipped surfaces.
 The target modifies seven capabilities:
 
 - `community-patch-loop`: all nine as-built requirements are removed, then the
-  empty main capability is deleted;
+  main capability is physically deleted. OpenSpec rejects an empty capability,
+  so the reviewed foldback procedure explicitly applies the six surviving
+  canonical deltas, verifies the exact nine-heading removal set, deletes the
+  canonical directory, strictly validates, and archives with `--skip-specs`;
+  normal archive sync is forbidden because it aborts or would recreate an empty
+  skeleton;
 - `daemon-runtime-and-dispatch`: owns exact v1/v2 retirement transitions,
   #1803 reconciliation ordering, and pre-#1803 worker quiescence/deploy stop;
 - `development-coordination-runtime`: owns receipt-backed retirement of live

@@ -415,6 +415,17 @@ release, and stop deployment until #1803 becomes authoritative.
    website deploy canaries. Verify `file_bug` in a rendered chatbot conversation
    files the page without an investigation/trigger side effect and `get_status`
    contains no cheat-specific health projection.
+14. Fold canonical specs back explicitly rather than asking OpenSpec to create
+   an invalid zero-requirement capability: apply the six non-retired
+   capability deltas to their canonical specs, verify the nine
+   `community-patch-loop` removal headings exactly match the nine remaining
+   canonical requirements, physically delete
+   `openspec/specs/community-patch-loop/`, and run strict validation. Archive
+   this change with `openspec archive retire-cheat-loop --yes --skip-specs`
+   only after a clean-tree proof shows those six canonical updates and the
+   physical deletion are already present. The archived delta remains the
+   removal audit trail; `--skip-specs` prevents archive from aborting on, or
+   resurrecting, an empty capability.
 
 Rollback is by reverting the removal commit only if ordinary bug filing or
 generic workflow execution regresses. The retired automation is not an

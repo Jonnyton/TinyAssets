@@ -74,7 +74,12 @@ None.
 ### Modified Capabilities
 
 - `community-patch-loop`: remove every requirement and retire the capability
-  after its generic observation subset moves to `uptime-and-alarms`.
+  after its generic observation subset moves to `uptime-and-alarms`. Because
+  OpenSpec rejects a zero-requirement canonical spec, final foldback SHALL
+  explicitly apply the six surviving capability deltas, physically delete the
+  reviewed `community-patch-loop` canonical directory, strictly validate the
+  resulting tree, and archive this change with `--skip-specs`; it SHALL NOT
+  attempt a normal all-removals sync that aborts or recreates an empty spec.
 - `daemon-runtime-and-dispatch`: migrate retired v1/v2 queue rows through only
   existing statuses/fields, #1803 authority reconciliation, exact queue CAS,
   and a pre-#1803 worker-quiescence/deployment stop.

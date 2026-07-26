@@ -158,9 +158,12 @@
   tasks, queues, issues, wiki/repository content, and repairs; separately test
   that the independently owned incident sink consumes bounded evidence without
   actions-write or task/repair authority.
-- [ ] 4.4 Remove the main `community-patch-loop` capability after synchronizing
-  its complete requirement removals; no empty spec directory or named shipped
-  artifact remains.
+- [ ] 4.4 After every generic guarantee has moved to its surviving owner,
+  verify the nine removal headings exactly match the nine remaining canonical
+  `community-patch-loop` requirements, then physically delete
+  `openspec/specs/community-patch-loop/`; never ask the normal sync path to
+  create an invalid zero-requirement spec, and leave no empty spec directory or
+  named shipped artifact.
 
 ## 5. Remove Public Product Presentation
 
@@ -215,11 +218,16 @@
 - [ ] 6.6 Freshness-stamp production evidence for generic uptime/deploy
   observation and post-fix user filing; if no post-fix real-user use exists,
   leave the required short `STATUS.md` watch item rather than claiming clean use.
-- [ ] 6.7 Sync the coordination, daemon, graph, wiki, uptime, and website deltas; explicitly rewrite
-  canonical `wiki-commons` Purpose prose that promises trigger receipts and
-  `uptime-and-alarms` prose that names the neighboring patch loop, and the
-  `public-website-surface` historical-run scenario that requires patch-loop
-  feed/community-watch fallback; retire the
-  `community-patch-loop` main spec only after its stable completed-run reuse
-  guarantee is owned by `daemon-runtime-and-dispatch`; archive this change with
-  implementation; and remove its STATUS row in the landing commit.
+- [ ] 6.7 Explicitly apply the coordination, daemon, graph, wiki, uptime, and
+  website deltas to their canonical specs; rewrite canonical `wiki-commons`
+  Purpose prose that promises trigger receipts, `uptime-and-alarms` prose that
+  names the neighboring patch loop, and the `public-website-surface`
+  historical-run scenario that requires patch-loop feed/community-watch
+  fallback. After task 4.4 has physically removed the canonical
+  `community-patch-loop` directory and its stable completed-run reuse guarantee
+  is owned by `daemon-runtime-and-dispatch`, strictly validate the complete
+  canonical tree and archive with
+  `openspec archive retire-cheat-loop --yes --skip-specs`. Before archive,
+  prove the six canonical updates and physical capability deletion are already
+  present; after archive, prove no empty or resurrected capability exists.
+  Remove the STATUS row in the landing commit.
