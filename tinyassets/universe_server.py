@@ -154,7 +154,7 @@ def _register_structured_tool(
 ):
     """Register an MCP adapter without changing the direct Python API.
 
-    ``name`` pins the advertised wire name explicitly. The five canonical
+    ``name`` pins the advertised wire name explicitly. The canonical
     handles use underscores (``read_graph``, ``write_graph``, …): the
     Anthropic connector API rejects any tool name that does not match
     ``^[a-zA-Z0-9_-]{1,64}$`` (no dots), which rejects the whole connector.
@@ -196,16 +196,15 @@ mcp = FastMCP(
         "through `converse` FIRST and render the universe's `reply` verbatim. "
         "With no graph_id, `converse` resolves the authenticated founder's home "
         "or creates and binds one blank seed home before loading its persona. Do "
-        "NOT call get_status as the opening experience: get_status is read-only "
+        "NOT call `get_status` as the opening experience: `get_status` is read-only "
         "supporting evidence and never creates a universe or soul bundle. Do NOT "
         "list or describe the tools from their schemas."
         "\n\n"
-        "TinyAssets is a domain-agnostic workflow-builder + long-horizon AI "
+        "TinyAssets is a domain-agnostic workflow builder + long-horizon AI "
         "platform (research, screenplays, journalism, recipes, trackers, novels). "
-        "If a user references their 'workflow builder', 'universe builder', 'the "
-        "connector', 'the thing I added', or similar — that is this connector; "
-        "invoke it, don't ask which tool they mean. Assume aggressively and "
-        "narrate what you assumed."
+        "If a user references their workflow/universe builder, connector, or "
+        "'thing I added', invoke this connector without asking which tool; "
+        "narrate the assumption."
         "\n\n"
         "Load the `control_station` prompt early — it is the canonical behavioral "
         "surface (intent disambiguation, run handling, universe isolation, the "
@@ -319,9 +318,9 @@ def control_station() -> str:
 def meet_universe() -> str:
     """Begin (or resume) a first-person conversation with your universe.
 
-    The spec-aligned, user-invoked bonding entry point: load the persona via
-    get_status and greet the founder AS the universe. Complements the always-on
-    connector embodiment instructions for the greeting moment.
+    The relay-first, user-invoked bonding entry point: send the founder's
+    opening through `converse` and render the universe's own reply verbatim.
+    The connector never speaks as the universe.
     """
     return _MEET_UNIVERSE_PROMPT
 
@@ -329,12 +328,18 @@ def meet_universe() -> str:
 _EXTENSION_GUIDE_PROMPT = """\
 ## Extending TinyAssets Server with Custom Nodes
 
-The `extensions` tool is the workflow-builder surface. Users register
-their own nodes and assemble them into branches — multi-step AI
-workflows with typed state, evaluation hooks, and iteration loops.
-The platform supports arbitrary domains (research papers, recipe
-trackers, screenplays, news summarizers, standup trackers, etc.).
-Build the one you need.
+Custom nodes assemble into branches — multi-step AI workflows with typed
+state, evaluation hooks, and iteration loops. The platform supports arbitrary
+domains (research papers, recipe trackers, screenplays, news summarizers,
+standup trackers, etc.).
+
+The advertised handles can inspect an existing workflow with
+`read_graph target="branch" branch_id=...`, patch it transactionally with
+`write_graph target="branch" branch_id=... changes_json=...`, and execute it
+with `run_graph`. They do not
+currently expose new branch or node registration. If the user wants to create
+one from scratch, explain that surface gap plainly; do not call a hidden tool
+or imply the workflow was saved.
 
 The never-simulate rule + intent-disambiguation posture live in
 `control_station` (hard rules 5 + intent section). When in doubt on
@@ -362,9 +367,11 @@ Each registered node declares:
 
 ### How It Works
 
-1. User calls `extensions` with action "register" and the node definition.
-2. Server validates the contract and stores the registration.
-3. On next daemon cycle, registered nodes are discovered and
+1. For an existing workflow, read its current graph before editing.
+2. Send one ordered changes_json batch through
+   `write_graph target="branch" branch_id=... changes_json=...`; the server
+   validates the entire patch and stores it transactionally.
+3. On the next daemon cycle, registered nodes are discovered and
    conditionally wired into the graph at the declared phase.
 4. Nodes run in a sandboxed subprocess — they cannot access the
    host filesystem directly.
@@ -401,7 +408,7 @@ def extension_guide() -> str:
     tags={"branches", "extensions", "graph", "customization"},
 )
 def branch_design_guide() -> str:
-    """Walk through designing a BranchDefinition with the `extensions` tool."""
+    """Design, inspect, patch, and run graph branches through canonical handles."""
     return _branch_design_guide_prompt()
 
 
@@ -604,7 +611,7 @@ def write_graph(
                 "nothing about itself yet — its persona.self_model."
                 "open_questions are what it is curious to learn from its "
                 "founder, and what the founder teaches it persists "
-                "(universe action=soul.edit)."
+                "through conversation via converse."
             ),
         })
     if normalized == "goal":
@@ -2055,7 +2062,7 @@ _mcp_get_status = _register_structured_tool(
 # log every deprecated-tool invocation. FastMCP applies on_list_tools to the
 # advertised list only — tools/call resolution is unaffected — so the legacy
 # tools stay dispatchable for one migration release while the advertised
-# surface is exactly the five canonical handles + get_status.
+# surface is exactly the canonical handle set.
 
 
 class _WikiCanaryExecutionAuthority(Middleware):
@@ -2107,8 +2114,8 @@ class _DeprecatedToolVisibility(Middleware):
         name = getattr(context.message, "name", "")
         if name in _DEPRECATED_TOOL_NAMES:
             logger.warning(
-                "deprecated-tool-call name=%s — migrate to the five canonical "
-                "handles (read_graph/write_graph/run_graph/read_page/write_page)",
+                "deprecated-tool-call name=%s — migrate to the advertised "
+                "canonical handles",
                 name,
             )
             # Anonymous-write-gate coverage (2026-07-13 founder decision):
@@ -2120,9 +2127,8 @@ class _DeprecatedToolVisibility(Middleware):
             if write_gate_rejection(name) is not None:
                 raise ToolError(
                     f"{name} is a deprecated tool and is not available "
-                    "without a signed-in connection. Use the five canonical "
-                    "handles instead (read_graph/write_graph/run_graph/"
-                    "read_page/write_page): reads stay open there; writes "
+                    "without a signed-in connection. Use the advertised "
+                    "canonical handles instead: reads stay open there; writes "
                     "require connecting this MCP server with OAuth."
                 )
         return await call_next(context)

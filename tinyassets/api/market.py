@@ -1154,7 +1154,8 @@ def _action_goal_propose(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "visibility must be 'public' or 'private' at propose "
-                "time. Use the `delete_goal` action to soft-delete."
+                "time. Goal soft-deletion is not exposed by the advertised "
+                "handles."
             ),
         })
     goal_dict = {
@@ -1175,9 +1176,8 @@ def _action_goal_propose(kwargs: dict[str, Any]) -> str:
         return json.dumps(_format_commit_failed(exc))
     text = (
         f"**Proposed Goal: {saved['name']}.**\n\n"
-        "Bind existing workflows to this Goal with the `goals` action "
-        "`bind` (pass the Goal name and workflow name). Search for "
-        "related intent with `goals action=search query=...`."
+        "Goal binding is not exposed by the advertised handles. Search for "
+        'related intent with read_graph target="goals" query="<terms>".'
     )
     return json.dumps({
         "text": text,
@@ -1357,7 +1357,7 @@ def _action_goal_bind(kwargs: dict[str, Any]) -> str:
         text = (
             f"**Bound** workflow '{branch['name']}' to "
             f"Goal '{goal['name']}'. Inspect the Goal with "
-            "`goals action=get` (Goal name or id in structuredContent)."
+            f'`read_graph target="goal" goal_id="{gid}"`.'
         )
         status = "bound"
     else:
@@ -1406,7 +1406,10 @@ def _action_goal_list(kwargs: dict[str, Any]) -> str:
             )
         text = "\n".join(lines)
     else:
-        text = "No Goals match the filter yet. Propose one with `goals action=propose name=...`."
+        text = (
+            "No Goals match the filter yet. Propose one with "
+            'write_graph target="goal" name="<name>".'
+        )
     return json.dumps({
         "text": text,
         "goals": rows,
@@ -1492,8 +1495,7 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
             )
         if len(protocol) > 12:
             lines.append(
-                f"- … and {len(protocol) - 12} more. Use "
-                f"`goals action=get_protocol goal_id={gid}`."
+                f"- … and {len(protocol) - 12} more in the structured result."
             )
         lines.append("")
     if branches:
@@ -1508,13 +1510,12 @@ def _action_goal_get(kwargs: dict[str, Any]) -> str:
             )
         if len(branches) > 12:
             lines.append(
-                f"- … and {len(branches) - 12} more. Filter with "
-                f"`extensions action=list_branches goal_id={gid}`."
+                f"- … and {len(branches) - 12} more in the structured result."
             )
     else:
         lines.append(
-            "_No Branches yet. Bind an existing Branch with "
-            f"`goals action=bind branch_def_id=... goal_id={gid}`._"
+            "_No Branches yet. Goal binding is not exposed by the "
+            "advertised handles._"
         )
     if is_deleted:
         lines.append("")
@@ -1664,7 +1665,7 @@ def _action_goal_get_protocol(kwargs: dict[str, Any]) -> str:
     else:
         lines = [
             f"Goal '{goal['name']}' has no Branch protocol yet.",
-            "Define one with `goals action=define_protocol protocol_json=...`.",
+            "Protocol definition is not exposed by the advertised handles.",
         ]
     return json.dumps({
         "text": "\n".join(lines),
@@ -1841,14 +1842,13 @@ def _action_goal_leaderboard(kwargs: dict[str, Any]) -> str:
                 )
     elif metric == "outcome":
         lines.append(
-            "_No gate claims yet. Define a ladder with "
-            "`gates action=define_ladder` and have Branches submit "
-            "`gates action=claim`._"
+            "_No gate claims yet. Ladder definition and gate claiming are "
+            "not exposed by the advertised handles._"
         )
     else:
         lines.append(
-            "_No workflows bound to this Goal yet. Use "
-            "`goals action=bind` with the workflow name and Goal name._"
+            "_No workflows bound to this Goal yet. Goal binding is not "
+            "exposed by the advertised handles._"
         )
 
     return json.dumps({
@@ -1916,8 +1916,10 @@ def _action_goal_common_nodes(kwargs: dict[str, Any]) -> str:
                 lines.append(f"- … and {len(entries) - 12} more.")
             lines.append("")
             lines.append(
-                "_Reuse an existing node via `node_ref={source, "
-                "node_id}` in build_branch / add_node (#66)._"
+                "_Reuse an existing node with write_graph target=\"branch\" "
+                "branch_id=\"<branch_id>\" changes_json='[{\"op\":"
+                "\"add_node\",\"node_ref\":{\"source\":\"<source>\","
+                "\"node_id\":\"<node_id>\"}}]' (#66)._"
             )
         else:
             lines.append(
@@ -2042,8 +2044,8 @@ def _action_goal_archive_consultation(kwargs: dict[str, Any]) -> str:
             lines.append("_No bound Branches match that archive query._")
         else:
             lines.append(
-                "_No Branches are bound to this Goal yet. Bind existing "
-                "Branches before selecting fork parents._"
+                "_No Branches are bound to this Goal yet. Goal-to-branch "
+                "binding is not exposed by the advertised handles._"
             )
 
     return json.dumps({
@@ -2141,9 +2143,10 @@ def _action_goal_set_selector(kwargs: dict[str, Any]) -> str:
     if branch_version_id:
         text = (
             f"Selector branch for Goal '{goal['name']}' set to "
-            f"`{branch_version_id}`. Future "
-            "`quality_leaderboard` / `recommend_parent_for_fork` "
-            "calls dispatch this branch to rank candidates."
+            f"`{branch_version_id}`. Future internal leaderboard and "
+            "recommended-parent operations dispatch this branch to rank "
+            "candidates; those operations are not exposed by the advertised "
+            "handles."
         )
     else:
         text = (
@@ -2942,7 +2945,7 @@ def _action_gates_claim(kwargs: dict[str, Any]) -> str:
             "status": "rejected",
             "error": (
                 "Branch is not bound to a Goal. "
-                "Bind it via `goals action=bind` before claiming."
+                "Goal binding is not exposed by the advertised handles."
             ),
         })
     try:
@@ -3118,8 +3121,9 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "run_id": rid,
             "run_status": run.get("status"),
             "hint": (
-                "Only runs in 'completed' status can claim a rung. "
-                "Re-run the branch or `wait_for_run` before claiming."
+                "Only runs in 'completed' status can claim a rung. Re-run the "
+                "branch or check it later with read_graph target=\"run\" "
+                f'run_id="{rid}" before claiming.'
             ),
         })
 
@@ -3148,8 +3152,8 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "error": "branch_not_bound_to_goal",
             "branch_def_id": bid,
             "hint": (
-                "Bind the branch to a Goal via "
-                "`goals action=bind` before claiming a rung from a run."
+                "Goal binding is not exposed by the advertised handles; ask "
+                "an operator to bind the branch before claiming a rung."
             ),
         })
 
@@ -3169,8 +3173,8 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
                 "The branch must emit a non-empty string field named "
                 "'recommended_rung_claim' in the run's final output. "
                 "The value must match a rung_key in the bound Goal's "
-                "ladder (read it via `goals action=get goal_id=...` "
-                "or `gates action=get_ladder goal_id=...`)."
+                "ladder; inspect the Goal with read_graph target=\"goal\" "
+                f'goal_id="{goal_id}".'
             ),
         })
 
@@ -3185,7 +3189,7 @@ def _action_gates_claim_from_branch_run(kwargs: dict[str, Any]) -> str:
             "goal_id": goal_id,
             "hint": (
                 "Branch references a Goal that no longer exists. "
-                "Rebind via `goals action=bind`."
+                "Goal rebinding is not exposed by the advertised handles."
             ),
         })
     available_rungs = [

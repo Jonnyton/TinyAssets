@@ -82,9 +82,9 @@ class TestAddCanonSynthesisSignal:
             "mode": "filename_upsert",
             "identity": "canon/sources/ryn.md",
             "same_filename_behavior": (
-                "A later add_canon call with the same filename replaces the "
-                "stored source bytes and manifest entry when the content hash "
-                "changes; identical bytes are treated as unchanged."
+                "A later ingest of the same canon-source filename replaces "
+                "the stored source bytes and manifest entry when the content "
+                "hash changes; identical bytes are treated as unchanged."
             ),
             "history_retained": False,
             "supersede_supported": False,
@@ -322,7 +322,8 @@ class TestSourceInspection:
         ))
 
         assert "error" in out
-        assert "list_sources" in out["error"]
+        assert "not exposed by the advertised handles" in out["error"]
+        assert "list_sources" not in out["error"]
 
 
 # ─── add_canon_from_path rejects bad input ─────────────────────────────

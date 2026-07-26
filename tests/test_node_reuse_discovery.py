@@ -234,26 +234,26 @@ class TestReusePromptNudges:
         us, _ = ext_env
         text = us._CONTROL_STATION_PROMPT.lower()
         assert "reuse before invent" in text or "before you invent" in text
-        assert "search_nodes" in text
-        assert "common_nodes" in text
+        assert 'read_graph target="branch"' in text
+        assert "global node search" in text
+        assert "not exposed" in text
         assert "node_ref" in text
 
     def test_branch_design_guide_points_at_search_first(self, ext_env):
         from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
         text = _BRANCH_DESIGN_GUIDE.lower()
-        assert "search_nodes" in text
+        assert 'read_graph target="branch"' in text
         assert "node_ref" in text
         # The guide must position search BEFORE the author flow.
-        search_idx = text.index("search_nodes")
-        author_idx = text.index("author flow")
+        search_idx = text.index("before you invent")
+        author_idx = text.index("new-workflow authoring gap")
         assert search_idx < author_idx, (
             "search-before-invent nudge must appear before the author flow"
         )
 
-    def test_branch_design_guide_names_chat_native_authoring(self, ext_env):
+    def test_branch_design_guide_reports_unsupported_new_authoring(self, ext_env):
         from tinyassets.api.branches import _BRANCH_DESIGN_GUIDE
         text = _BRANCH_DESIGN_GUIDE
-        assert "chat-native" in text
-        assert "GitHub Actions YAML" in text
-        assert "build_branch" in text
-        assert "patch_branch" in text
+        assert "GitHub Actions YAML" in " ".join(text.split())
+        assert "does not currently expose creation of a new branch" in text
+        assert 'write_graph target="branch"' in text
