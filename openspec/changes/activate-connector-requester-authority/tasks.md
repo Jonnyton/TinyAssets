@@ -1,8 +1,8 @@
 ## 1. Target And Authority Gates
 
-- [x] 1.1 Reconcile the #1784 successor handoff, current PLAN modules, four owning capabilities, active paid-market changes, operator Request/BranchTask contract, and current connector/provider/runtime seams; keep this successor accepted-market-only.
+- [x] 1.1 Reconcile the #1784 successor handoff, current PLAN modules, five owning capabilities, active paid-market changes, operator Request/BranchTask contract, and current connector/provider/runtime seams; keep this successor accepted-market-only.
 - [x] 1.2 Run the primitive collision check and name the connector action exactly `write_graph(target="engine", action="activate_accepted_market")`, with no new handle, overload of the live `target="universe"` birth path, legacy `universe` handle, Request/BranchTask overload, raw secret, desktop prerequisite, or free-form authority.
-- [x] 1.3 Write the proposal, design, four capability deltas, and dated current-code/owner audit while granting target authority only.
+- [x] 1.3 Write the proposal, design, five capability deltas, and dated current-code/owner audit while granting target authority only.
 - [ ] 1.4 Obtain exact-head independent architecture/security/spec reviews and a fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [ ] 1.5 Record the host's standing 2026-07-26 acceptance only after the exact reviewers agree the target is fully figured out; stop if a reviewer finds an unresolved host design choice.
 - [ ] 1.6 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, and publish the target-only draft PR without runtime, payment, deployment, or production authority.
@@ -16,6 +16,7 @@
 - [ ] 2.5 Land the Engine OS execution-admission implementation and prove that market or B2 authority cannot replace capability, capsule, runner/backend, or sandbox enforcement evidence.
 - [ ] 2.6 Land the reviewed wallet/chain-effect successor required by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6, applicable domain-native capacity owners, and distributed-execution S14/B36 from `docs/exec-plans/active/2026-07-18-distributed-execution-platform.md`; preserve each owner's independent idempotent prepare/commit/cancel and authority.
 - [ ] 2.7 Land a paid-market accepted-agreement producer that consumes the canonical request, current quote, and explicit acceptance without reusing request submission, bid, match, claim, or delivery as acceptance; bind all existing request fields server-side.
+- [ ] 2.8 Fold the provider-routing reconciliation into #1784 owner truth: activation stores only agreement plus current non-executable mandate references; each concrete `converse` delegates to B13 for fresh per-job B2; no future-job B2 is stored or required by `remote_ready`.
 
 ## 3. Connector Schema And Request Identity
 
@@ -60,5 +61,5 @@
 ## 8. Foldback
 
 - [ ] 8.1 Re-run strict OpenSpec, focused/full tests, lint, security, concurrency/load, public canary, rendered-chatbot, and independent exact-diff review at the landing SHA.
-- [ ] 8.2 Sync the four deltas into canonical specs and archive this change only after implementation and production-shaped acceptance are complete.
+- [ ] 8.2 Sync the five deltas into canonical specs, including the #1784 provider-routing clarification, and archive this change only after implementation and production-shaped acceptance are complete.
 - [ ] 8.3 Delete the landed STATUS implementation row, retire the worktree lane, and publish final authority, evidence, rollback, and post-fix-use records.
