@@ -6,15 +6,52 @@ Covers: record_outcome, list_outcomes, get_outcome.
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
-from tinyassets.runs import initialize_runs_db
+from tinyassets.runs import initialize_runs_db, runs_db_path
 from tinyassets.universe_server import extensions
+
+
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "tinyassets.api.permissions.current_request_actor_id",
+        lambda: "account-alice",
+    )
     initialize_runs_db(tmp_path)
+    run_ids = {
+        "run-001",
+        "run-A",
+        "run-B",
+        "run-C",
+        "run-X",
+        "run-Y",
+        *(f"run-{i}" for i in range(3)),
+        *(
+            f"run-{kind}"
+            for kind in (
+                "published_paper",
+                "merged_pr",
+                "deployed_app",
+                "won_competition",
+                "custom",
+            )
+        ),
+    }
+    with sqlite3.connect(runs_db_path(tmp_path)) as conn:
+        conn.executemany(
+            """
+            INSERT INTO runs (
+                run_id, branch_def_id, thread_id, status, actor,
+                owner_user_id, started_at
+            ) VALUES (?, 'branch-1', 'thread-1', 'completed',
+                      'account-alice', 'account-alice', 1.0)
+            """,
+            [(run_id,) for run_id in sorted(run_ids)],
+        )
 
 
 # ── record_outcome ─────────────────────────────────────────────────────────────

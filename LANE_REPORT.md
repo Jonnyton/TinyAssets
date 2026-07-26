@@ -9,16 +9,16 @@
 
 ## Per-task outcome
 
-| Task | State | Why |
-|---|---|---|
-| **5.1** models + store + registry extension + migration | **BUILT — checked** | Landed with evidence. |
-| **5.2** consent/confirmation, receipt-bound creation, dedup, provenance, router | **BUILT — checked** | Landed with evidence; both named gates discharged. |
-| **5.3** signed webhooks / provider polling | **DEFERRED — unchecked** | Pre-declared de-collision: shares the inbound receiver with the boundary inbox URLs, which needs a host decision. |
-| **5.4** integrate through canonical effect owners | **BUILT — checked** | Landed with evidence; a real authority bypass was found and closed. |
-| **5.5** disputes + five test files | **PARTIAL — unchecked** | 4 of 5 test files landed; `test_handoff_verification.py` needs 5.3, dispute half fenced to moderation PR #1667. |
-| **5.6** §14 handoff proof | **PARTIAL — unchecked** | Concurrency + exactly-once clauses proven; webhook/poll overlap and the 10× provider mix need 5.3. |
-| **5.7** rendered chatbot proof | **BLOCKED — unchecked** | Code is on an unmerged branch; a rendered conversation now would prove the old surface. |
-| **6.1** collision re-check | Note appended | Write-set expansion recorded, including all four files outside the declared list. |
+| Task | State | Pushed SHA | Why |
+|---|---|---|---|
+| **5.1** models + store + registry extension + migration | **BUILT — checked** | `cf8a03f5`, `88d1c04e` | Landed with evidence. |
+| **5.2** consent/confirmation, receipt-bound creation, dedup, provenance, router | **BUILT — checked** | `cf8a03f5`, `f8c3c6e9`, `14547803` | Landed with authenticated persisted-run authority. |
+| **5.3** signed webhooks / provider polling | **DEFERRED — unchecked** | `93ea0fb1` | Shares the inbound receiver with boundary inbox URLs; needs a host decision. |
+| **5.4** integrate through canonical effect owners | **BUILT — checked** | `cf8a03f5`, `f8c3c6e9`, `e46b04ab` | Canonical authority/identity/receipt path plus replay recovery. |
+| **5.5** disputes + five test files | **PARTIAL — unchecked** | `93ea0fb1` | 4 of 5 test files landed; verification needs 5.3 and disputes remain moderation-owned. |
+| **5.6** §14 handoff proof | **PARTIAL — unchecked** | `93ea0fb1` | Concurrency/exactly-once proven; webhook/poll and 10× provider mix need 5.3. |
+| **5.7** rendered chatbot proof | **BLOCKED — unchecked** | `93ea0fb1` | Unmerged and later verification depends on 5.3. |
+| **6.1** collision re-check | Note appended | `93ea0fb1` | Write-set expansion recorded. |
 
 **5.6/5.7 were not reachable.** They gate on 5.3–5.5, and 5.3 was deferred by
 instruction. Neither was checked; both carry per-clause notes stating exactly
@@ -65,7 +65,7 @@ and it is what makes the declaration immutable per content hash.
 
 ---
 
-## Two real defects found and closed
+## Four real defects found and closed
 
 **1. Handoffs bypassed generic soul-scoped effect authority.** Every shipped
 effector (`github_pr`, `twitter_post`, `wiki_write_back`) consults
@@ -84,26 +84,39 @@ writes its `outcome_evidence` row in the **same transaction** as the claim, at
 would let an unverified attestation read as verified. The attester is resolved
 server-side from the credential-validated request, never a caller kwarg.
 
+**3. `record_outcome` did not bind the attestation to persisted run ownership.**
+The router now refuses anonymous and foreign-run attestations before any outcome
+table is written. The actor comes from authenticated request context and the
+authority decision comes from the persisted run record; caller strings are never
+accepted as authority.
+
+**4. Accepted receipt replay could not repair a missing outcome link.** A crash
+after receipt finalization but before registry linkage left the handoff accepted
+forever with no outcome, because replay skipped outcome creation. Replays now
+repair the link, while a partial unique index elects one writer if recoveries
+race and all other callers return the shared evidence.
+
 ---
 
 ## Test evidence (Windows, Python 3.14, 2026-07-26)
 
 ```
 tests/test_handoff_authority.py     37 passed
-tests/test_handoff_receipts.py      30 passed
+tests/test_handoff_receipts.py      31 passed
 tests/test_handoff_concurrency.py    9 passed   (3 consecutive runs, no flake)
-tests/test_handoff_store.py          4 passed
-tests/test_outcome_events.py        30 passed
+tests/test_handoff_store.py          5 passed
+tests/test_outcome_events.py        32 passed
 ```
 
 Touched-and-adjacent run (adds `test_outcomes_schema`, `test_outcome_mcp`,
 `test_external_write_receipts`, `test_effector_consents`,
-`test_outbound_effect_boundary`, `test_authoring_sessions`): **224 passed, 0
-failed**.
+`test_outbound_effect_boundary`, `test_authoring_sessions`, and
+`test_soul_scoped_effect_authority`): **242 passed, 0 failed**.
 
 `ruff check` on this lane's files: **clean**. The 7 `E501`s in
 `tinyassets/api/market.py` are **pre-existing** — verified by linting
-`git show HEAD:tinyassets/api/market.py`, same 7 line numbers — and are untouched.
+the pre-lane file at the same 7 line numbers — this lane did not alter those
+lines.
 
 `openspec validate complete-independent-full-platform-targets --strict`: **valid**.
 `python packaging/claude-plugin/build_plugin.py`: mirror parity verified by the
@@ -119,9 +132,9 @@ warning). Verified by checking out a detached `origin/main` worktree
 Nothing in this branch touches `create_branch` or `_append_global_ledger`. This
 overlaps the existing STATUS "main-red round 2" row.
 
-### Mutation probe — 29/29 go red
+### Mutation probe — 32/32 go red
 
-`python scripts/handoff_mutation_probe.py` → *every mutation went red (29
+`python scripts/handoff_mutation_probe.py` → *every mutation went red (32
 checked)*. Each removes exactly one invariant and is confirmed to turn its named
 test red; original bytes are restored in a `finally` block and no git
 restore/reset is used.
@@ -195,7 +208,11 @@ than accepted:
 | `88d1c04e` | Store-level lifecycle/registry tests. |
 | `f8c3c6e9` | Soul effect-authority bypass closed; `record_outcome` becomes the attestation entry point. |
 | `93ea0fb1` | `tasks.md` check-offs with evidence, 6.1 write-set record. |
+| `cb7e2d4f` | Initial lane report with per-task built/deferred evidence. |
+| `14547803` | Task 5.2: bind outcome attestations to authenticated persisted-run ownership. |
+| `e46b04ab` | Task 5.4: recover accepted outcome linkage from canonical receipt replay. |
+| *(final)* | Updated aggregate evidence and pushed SHA record. |
 
 Branch pushed to `origin/claude/o5-handoffs`. No PR opened.
 
-LANE_RESULT: partial - 5.1/5.2/5.4 built, checked off with 110 lane tests (224 touched-and-adjacent, 0 failed) and a 29/29 mutation probe; found and closed a real generic-effect-authority bypass and made record_outcome the user_attested entry point; 5.3 deferred per de-collision so 5.5/5.6/5.7 stay honestly unchecked with per-clause notes; 13 adjacent test_outcome_gates failures verified pre-existing on origin/main.
+LANE_RESULT: partial - 5.1/5.2/5.4 built and checked off with 114 lane tests (242 touched-and-adjacent, 0 failed) and a 32/32 mutation probe; 5.3 remains deferred on the shared inbound-receiver host decision, so 5.5/5.6/5.7 remain honestly unchecked.
