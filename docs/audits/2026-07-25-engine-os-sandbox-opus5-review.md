@@ -321,6 +321,34 @@ These are future gates, not work authorized by this audit:
 
 **Preliminary Opus 5 disposition: `ADAPT`.**
 
+### Exact-candidate review round
+
+Candidate `51f90c9e` passed structural verification (53/53 strict OpenSpec,
+clean diff, exact canonical headings), but semantic review correctly returned
+`ADAPT`:
+
+1. accepted-market B2/B13 pre-routing could not be forced through ordinary
+   `ProviderInvocation`/`ProviderExecutor`;
+2. frozen inner `runner/v1` could not bind the complete requirement and
+   backend evidence end to end;
+3. isolation labels lacked enforceable property-set definitions;
+4. a provider-owned exception did not cover runner/B2 admission; and
+5. the engine lane over-specified credential/egress vocabulary.
+
+The same Opus 5 pass also found that the reversed canonical
+`source_code ... execute in-process` title requires an explicit
+`RENAMED Requirements` entry, and that the advisory sandbox-demand
+MODIFIED body must preserve shipped default/round-trip, diagnostic-warning,
+and `runnable` behavior.
+
+The successor candidate addresses those findings by using owner-native sealed
+bindings of one logical requirement; a distributed-execution-owned outer
+capsule keyed to the frozen inner `job_id`; property-set inclusion for
+isolation; shared closed `ExecutionAdmissionError` semantics across
+provider/runner/B2 paths; opaque owner-defined credential/egress references;
+an explicit source-heading rename; and restored advisory behavior. A fresh
+exact-head Opus 5 verdict remains required.
+
 C1 and C2 are structural blockers. C3, C4, C6, C7, and C8 are required
 corrections. C5's security requirement remains valid, but its proposed owner
 boundary is corrected by current-main evidence: do not create a second
