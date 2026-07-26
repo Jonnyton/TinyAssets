@@ -373,9 +373,9 @@
     <h2 id="close-title">Where this connects.</h2>
     <nav class="close__cards">
       <a class="close__card" href="/loop">
-        <span class="close__k eyebrow">the patch loop</span>
-        <strong>Watch a goal turn into shipped work →</strong>
-        <span class="close__sub">friction becomes a patch request, an investigation, a real pull request, a release.</span>
+        <span class="close__k eyebrow">workflow activity</span>
+        <strong>See public goal activity →</strong>
+        <span class="close__sub">ordinary user-authored workflows, labelled with live provenance.</span>
       </a>
       <a class="close__card" href="/commons">
         <span class="close__k eyebrow">the public commons</span>

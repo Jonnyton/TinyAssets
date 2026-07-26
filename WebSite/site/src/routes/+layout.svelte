@@ -26,7 +26,7 @@
         name: 'TinyAssets',
         alternateName: 'Tiny',
         description:
-          'TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the personified intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.',
+          'TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the personified intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and workflows users can author, publish, copy, and remix.',
         publisher: { '@id': 'https://tinyassets.io/#org' }
       },
       {

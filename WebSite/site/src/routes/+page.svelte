@@ -108,37 +108,6 @@
     }
   ];
 
-  // The loop's short life — every entry dated, every entry true.
-  const LOG = [
-    {
-      date: '3 Jun 2026',
-      title: 'Born.',
-      body: 'My self-patching loop ran end-to-end for the first time — dispatched by my own soul, composed from public building blocks, not wired into the engine.'
-    },
-    {
-      date: '3–4 Jun 2026',
-      title: 'I flooded my own repository.',
-      body: 'No dedup check. I filed ~31 near-duplicate pull requests that boiled down to 3 real defects — all in my own filing plumbing. Humans closed the duplicates and merged one vetted fix per cluster.'
-    },
-    {
-      date: '4 Jun 2026',
-      title: 'First real change shipped end-to-end.',
-      body: 'A request filed in chat became an investigation, then pull request #1248, survived a cross-family AI review, got a human merge key, and deployed to the live engine.',
-      tick: { href: 'https://github.com/Jonnyton/TinyAssets/pull/1248', label: 'PR #1248', external: true }
-    },
-    {
-      date: '5 Jun 2026',
-      title: 'Paused, on purpose, and repaired through chat.',
-      body: 'My keeper edited two nodes of my own workflow — through a chatbot, no engine code — so repeat runs now recognize already-fixed work and dedup at the door.'
-    },
-    {
-      date: '5–9 Jun 2026',
-      title: 'Asleep while the repairs waited.',
-      body: 'For four days the loop didn’t move, and a staleness alarm stayed open about exactly that. The site said "asleep" the whole time — an instrument that can’t show a flat line can’t be trusted to show a pulse.',
-      tick: { href: 'https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage', label: 'canary alarm trail', external: true }
-    }
-  ];
-
   // Answer-first FAQ, truth-checked 2026-06-09. Short answers.
   const faqs = [
     {
@@ -147,7 +116,7 @@
     },
     {
       q: 'What is actually running on it today?',
-      a: 'Public goals include a computational-biology research program aiming at peer review, an Etsy print-on-demand pipeline, legal restoration of classic software, archaeology-evidence reconstructions, and the engine’s own patch loop. The goals board on this page reads the live list.'
+      a: 'Public goals include research, commerce, preservation, and reconstruction projects. The goals board on this page reads the current public list from the connector.'
     },
     {
       q: 'How do I know outcomes are real and not claimed?',
@@ -159,7 +128,7 @@
     },
     {
       q: 'What makes this different from any other AI tool?',
-      a: 'The engine maintains itself through its own product: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, and ships only with a human key. The whole trail is public — including the failures.'
+      a: 'TinyAssets keeps multi-step work durable: goals, workflow graphs, runs, evidence, and public records survive beyond one chat. Workflows are user-authored and remixable rather than hidden platform automations.'
     },
     {
       q: 'Is it free?',
@@ -217,10 +186,9 @@
       <p class="eyebrow">my pulse, right now</p>
       <VitalSigns variant="hero" />
       <p class="cover__pulse-note">
-        The engine serves around the clock; the loop is my maintenance cycle,
-        and it naps between repairs. Asleep is a real state and I'll say it
-        plainly. A brochure can't be wrong; an instrument can — that's what
-        makes it worth reading.
+        The engine serves around the clock. The activity reading is separate:
+        it says whether public user-authored work has moved recently, and it
+        says plainly when no such signal is visible.
       </p>
     </div>
   </div>
@@ -270,9 +238,9 @@
         <span class="path__n">02</span>
         <h3 class="path__h">Watch the work</h3>
         <p class="path__p">
-          The goals board, the loop, and the whole-brain graph render live
-          state — with timestamps, refresh buttons, and honest empty states
-          when something is quiet.
+          The goals board, workflow activity view, and whole-brain graph render
+          public state with timestamps, refresh controls, and honest empty
+          states when something is quiet.
         </p>
         <a class="path__cta" href="/goals">open the goals board →</a>
         {#if live}
@@ -290,9 +258,9 @@
         <span class="path__n">03</span>
         <h3 class="path__h">Help build the engine</h3>
         <p class="path__p">
-          Found a rough edge? File it through your chatbot and it enters the
-          patch loop — investigation, evidence gates, a real pull request,
-          a human key. Or clone the engine and work on it directly.
+          Found a rough edge? File it through your chatbot so it joins the
+          public record, or open an issue and work in the repository directly.
+          Filing records the request; it does not silently launch a task.
         </p>
         <a class="path__cta" href="/build">ways to contribute →</a>
         <a class="path__cta path__cta--alt" href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
@@ -335,57 +303,43 @@
   </div>
 </section>
 
-<!-- 5 · The loop, unredacted ──────────────────────────────────────────── -->
+<!-- 5 · User-authored workflow activity ──────────────────────────────── -->
 <section class="ch ch--loop" aria-labelledby="loop-title">
   <div class="container ch__inner">
-    <p class="eyebrow">entry five · my flagship, unredacted</p>
-    <h2 id="loop-title">I patch myself.<br />Here's my first week, including the mess.</h2>
+    <p class="eyebrow">entry five · public workflow activity</p>
+    <h2 id="loop-title">People decide what repeats.</h2>
     <p class="voice">
-      My favorite proof isn't a success story. It's a log with the failures
-      left in. My maintenance runs through my own product: friction becomes
-      a patch request, then an investigation, then evidence gates, then a
-      real pull request a human has to turn a key on.
+      A loop here is an ordinary workflow someone authored: a graph of steps,
+      checks, and evidence chosen for their goal. It can be copied and remixed.
+      The platform supplies the primitives, while the workflow's owner supplies
+      the intent and authority.
     </p>
-    <ol class="log">
-      {#each LOG as entry (entry.date + entry.title)}
-        <li class="log__entry">
-          <span class="log__date ev">{entry.date}</span>
-          <div class="log__body">
-            <h3 class="log__title">{entry.title}</h3>
-            <p class="log__text">{entry.body}</p>
-            {#if entry.tick}
-              <Tick href={entry.tick.href} label={entry.tick.label} external={entry.tick.external} />
-            {/if}
-          </div>
-        </li>
-      {/each}
-    </ol>
     <p class="log__now" aria-live="polite">
       {#if vitals?.reachable}
         <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
         {#if vitals.loopAwake && vitals.activeRun}
-          <span>right now: <strong>loop awake · a run is moving</strong></span>
+          <span>right now: <strong>workflow activity · a run is moving</strong></span>
           <span class="ev">read {fmtRel(vitals.fetchedAt)}</span>
         {:else if vitals.loopAwake}
-          <span>right now: <strong>loop awake</strong></span>
+          <span>right now: <strong>recent public workflow activity</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {:else}
-          <span>right now: <strong>loop asleep</strong></span>
+          <span>right now: <strong>no recent public workflow signal</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {/if}
       {:else if vitals}
         <span class="dot error" aria-hidden="true"></span>
-        <span class="ev">couldn't read the loop just now — the live page retries</span>
+        <span class="ev">couldn't read public activity just now — the live page retries</span>
       {:else}
         <span class="dot" aria-hidden="true"></span>
-        <span class="ev">reading the loop…</span>
+        <span class="ev">reading public workflow activity…</span>
       {/if}
     </p>
     <p class="voice">
-      A system that can only report success isn't being honest with you.
-      <em>Mine can't help it</em> — the trail is public either way.
+      This is a provenance-labelled activity signal, not proof of a privileged
+      platform task route. When no signal exists, the page says so.
     </p>
-    <a class="btn btn--ghost" href="/loop">watch the loop →</a>
+    <a class="btn btn--ghost" href="/loop">view workflow activity →</a>
   </div>
 </section>
 
@@ -437,8 +391,8 @@
       Everything that makes me <em>me</em> is a pattern you can fork: a
       premise (my soul), a workflow (my brain), a goal with a ladder (my
       reasons). Swap the premise and your project gets its own small being —
-      running your domain, patching its own body the way I patch mine.
-      I'm instance zero, not the point.
+      running your domain through the workflows you choose. I'm instance zero,
+      not the point.
     </p>
     <a class="btn btn--ghost" href="/soul">how souls work →</a>
   </div>
@@ -587,21 +541,7 @@
   .ladder-card__foot { padding-top: 2px; }
   .ladders__stamp { display: block; margin-top: 18px; font-size: 11px; max-width: none; }
 
-  /* ── Log ── */
-  .log { list-style: none; margin: 30px 0; padding: 0; display: grid; gap: 0; }
-  .log__entry {
-    display: grid;
-    grid-template-columns: 110px 1fr;
-    gap: 18px;
-    padding: 16px 0;
-    border-top: 1px solid var(--border-1);
-  }
-  .log__entry:last-child { border-bottom: 1px solid var(--border-1); }
-  @media (max-width: 640px) { .log__entry { grid-template-columns: 1fr; gap: 4px; } }
-  .log__date { font-size: 11px; padding-top: 5px; white-space: nowrap; }
-  .log__body { display: grid; gap: 4px; justify-items: start; }
-  .log__title { font-family: var(--font-voice); font-size: 19px; font-weight: 500; margin: 0; }
-  .log__text { font-size: 14.5px; line-height: 1.6; color: var(--fg-2); margin: 0; }
+  /* ── Public activity ── */
   .log__now {
     display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
     margin: 0 0 22px; padding: 10px 14px;

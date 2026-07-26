@@ -37,7 +37,7 @@
     <div class="col">
       <span class="eyebrow">Watch Tiny</span>
       <ul>
-        <li><a href="/loop">The loop — how he patches himself</a></li>
+        <li><a href="/loop">Workflow activity — public, user-authored</a></li>
         <li><a href="/commons">Commons — the public brain</a></li>
         <li><a href="/graph">Graph — the whole map</a></li>
         <li><a href="/fine-print">Vital signs &amp; fine print</a></li>

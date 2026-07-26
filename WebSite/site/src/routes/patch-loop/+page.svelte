@@ -1,30 +1,67 @@
-<!--
-  /patch-loop — retired route, now /loop. Soft-landing alias.
-  The link is the primary affordance; the 2s meta refresh is a convenience.
--->
+<!-- /patch-loop is a static retired-product soft landing. -->
 <svelte:head>
-  <title>Loop — Tiny</title>
-  <link rel="canonical" href="https://tinyassets.io/loop" />
-  <meta http-equiv="refresh" content="2;url=/loop" />
-  <meta name="description" content="The patch loop is now the Loop — live runs, real PRs, and the gates a change passes before it ships." />
+  <title>Build your own workflow — TinyAssets</title>
+  <link rel="canonical" href="https://tinyassets.io/patterns" />
+  <meta
+    name="description"
+    content="The former patch-loop product is retired. Task automations are ordinary user-authored, copyable, remixable workflows built from TinyAssets patterns."
+  />
 </svelte:head>
 
-<section class="moved">
-  <p class="eyebrow">this page moved</p>
+<section class="moved" aria-labelledby="moved-title">
+  <p class="eyebrow">retired product surface</p>
+  <h1 id="moved-title">Automation is a pattern you own.</h1>
   <p class="moved__line">
-    The patch loop is now the <em>Loop</em> — the same self-patching cycle,
-    showing live runs, real PRs, and the gates a change clears before it ships.
+    TinyAssets no longer presents a platform-owned patch application. Recurring
+    task automation is an ordinary workflow: authored by a user, copied or
+    remixed from public patterns, and run only under that workflow's explicit
+    choices and authority.
   </p>
-  <a class="moved__cta" href="/loop">Watch the Loop →</a>
-  <p class="moved__sub ev">/patch-loop → /loop · taking you there in a moment</p>
+  <div class="moved__actions">
+    <a class="moved__cta" href="/patterns">Browse workflow patterns →</a>
+    <a class="moved__cta moved__cta--quiet" href="/commons">Explore the commons →</a>
+  </div>
 </section>
 
 <style>
-  .moved { max-width: 540px; margin: 0 auto; display: grid; gap: 16px; padding: clamp(72px, 14vw, 140px) clamp(18px, 4vw, 32px); }
+  .moved {
+    max-width: 680px;
+    margin: 0 auto;
+    display: grid;
+    gap: 18px;
+    padding: clamp(72px, 14vw, 140px) clamp(18px, 4vw, 32px);
+  }
   .eyebrow { display: block; }
-  .moved__line { font-family: var(--font-voice); font-size: clamp(20px, 3vw, 26px); line-height: 1.42; color: var(--fg-1); margin: 0; max-width: 32ch; }
-  .moved__line em { font-style: italic; color: var(--ember-700); }
-  .moved__cta { justify-self: start; margin-top: 6px; font-family: var(--font-sans); font-size: 14px; font-weight: 600; color: var(--fg-on-ember); background: var(--accent); padding: 11px 20px; border-radius: var(--radius-pill); text-decoration: none; transition: background var(--dur-fast) var(--ease-standard); }
+  h1 {
+    margin: 0;
+    font-size: clamp(38px, 7vw, 68px);
+    font-weight: 500;
+    line-height: 1;
+    letter-spacing: -.035em;
+  }
+  .moved__line {
+    max-width: 58ch;
+    margin: 0;
+    color: var(--fg-2);
+    font-family: var(--font-voice);
+    font-size: clamp(19px, 2.6vw, 24px);
+    line-height: 1.5;
+  }
+  .moved__actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; }
+  .moved__cta {
+    padding: 11px 20px;
+    border-radius: var(--radius-pill);
+    background: var(--accent);
+    color: var(--fg-on-ember);
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+  }
   .moved__cta:hover { background: var(--accent-hover); text-decoration: none; }
-  .moved__sub { color: var(--fg-3); margin: 4px 0 0; }
+  .moved__cta--quiet {
+    border: 1px solid var(--border-2);
+    background: transparent;
+    color: var(--fg-1);
+  }
+  .moved__cta--quiet:hover { border-color: var(--accent); background: transparent; }
 </style>

@@ -142,7 +142,7 @@
           {/if}
           <span class="pulse__row pulse__row--quiet">
             <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
-            <span class="pulse__k">{vitals.loopAwake ? 'loop awake' : 'loop asleep'}</span>
+            <span class="pulse__k">{vitals.loopAwake ? 'recent workflow activity' : 'no recent workflow activity'}</span>
           </span>
           <span class="pulse__stamp ev">
             read {fmtRel(vitals.fetchedAt)}
@@ -310,7 +310,7 @@
       <article class="oss__card">
         <h3 class="oss__h">Clone the repo</h3>
         <p class="oss__p">
-          Read the engine, the loop, and every workflow definition. It's all
+          Read the engine and its public workflow definitions. It's all
           public.
         </p>
         <pre class="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
@@ -340,9 +340,9 @@
         <span class="close__sub">live public goals, each with its outcome ladder.</span>
       </a>
       <a class="close__card" href="/loop">
-        <span class="close__k eyebrow">the patch loop</span>
-        <strong>Watch how it maintains itself →</strong>
-        <span class="close__sub">friction becomes a patch request, a real PR, a release.</span>
+        <span class="close__k eyebrow">workflow activity</span>
+        <strong>See public user-authored work →</strong>
+        <span class="close__sub">live public signals, labelled with source and read time.</span>
       </a>
     </nav>
   </div>

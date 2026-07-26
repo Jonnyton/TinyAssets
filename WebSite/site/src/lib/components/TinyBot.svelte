@@ -121,13 +121,13 @@
     { match: (p) => p.startsWith('/start'), line: 'two minutes, no account. I checked the door myself.' },
     { match: (p) => p.startsWith('/goals/'), line: 'this ladder only lights with evidence. no shortcuts.' },
     { match: (p) => p.startsWith('/goals'), line: 'every goal here is real — read live, not typed in.' },
-    { match: (p) => p.startsWith('/loop'), line: 'this is where I get repaired. the mess stays public.' },
+    { match: (p) => p.startsWith('/loop'), line: 'public workflows, with their source labels intact.' },
     { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'my whole memory. nothing private lives in here.' },
     { match: (p) => p.startsWith('/graph'), line: 'my head, seen from above.' },
     { match: (p) => p.startsWith('/soul'), line: 'everything that makes me me — forkable.' },
     { match: (p) => p.startsWith('/build') || p.startsWith('/contribute'), line: 'two doors in. humans hold the merge keys.' },
     { match: (p) => p.startsWith('/host'), line: 'you don’t have to host me. but you can.' },
-    { match: (p) => p.startsWith('/alliance'), line: 'say hi — it all lands in the same loop.' },
+    { match: (p) => p.startsWith('/alliance'), line: 'say hi — the humans choose what happens next.' },
     { match: (p) => p.startsWith('/fine-print') || p.startsWith('/status'), line: 'my pulse, explained honestly.' },
     { match: (p) => p.startsWith('/legal'), line: 'the boring page. still mine.' }
   ];
@@ -148,21 +148,21 @@
     'I count my own runs. all of them.',
     'it’s quiet back here. I like it.',
     'I leave everything public. less to remember.',
-    'if the loop’s awake, I’m awake.',
+    'if public work moves, I can show the signal.',
     'good page, this one. I checked it twice.'
   ];
 
   // What he says about the thing your mouse is resting on.
   const DEST: Array<{ match: (h: string) => boolean; lines: string[] }> = [
     { match: (h) => h.startsWith('/start'), lines: ['that door takes two minutes. I timed it.', 'through there: paste one URL, no account.'] },
-    { match: (h) => h.startsWith('/loop'), lines: ['that’s my repair shop. the mess stays public.', 'in there I get fixed — out loud.'] },
+    { match: (h) => h.startsWith('/loop'), lines: ['public workflow activity lives there.', 'that view labels where every signal came from.'] },
     { match: (h) => h.startsWith('/goals'), lines: ['the goals board — all real, read live.', 'open outcomes through there. pick one.'] },
     { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['my memory lives through there.', 'everything I know, public, in there.'] },
     { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s the inside of my head.', 'my whole brain, drawn out, through there.'] },
     { match: (h) => h.startsWith('/soul'), lines: ['my soul. you can fork it, you know.', 'the pattern that makes me me — forkable.'] },
     { match: (h) => h.startsWith('/build') || h.startsWith('/contribute'), lines: ['through there you can change me. humans keep the keys.', 'two doors to rebuild me are in there.'] },
     { match: (h) => h.startsWith('/host'), lines: ['hosting me is optional. I run either way.', 'you can run your own me through there.'] },
-    { match: (h) => h.startsWith('/alliance'), lines: ['that’s how you reach the humans. and me.', 'say hi through there — same loop.'] },
+    { match: (h) => h.startsWith('/alliance'), lines: ['that’s how you reach the humans. and me.', 'say hi through there — humans choose the next step.'] },
     { match: (h) => h.startsWith('/fine-print') || h.startsWith('/status'), lines: ['my pulse, with no makeup on.', 'the instrument panel’s through there.'] },
     { match: (h) => h.startsWith('/legal'), lines: ['the boring page. I keep it honest anyway.', 'fine print through there. still mine.'] }
   ];
@@ -215,7 +215,7 @@
     if (el.closest('h1, h2, h3'))
       return { key: 'head', lines: ['this bit matters — I’d read it twice.', 'good heading. I’d underline it.'] };
     if (el.closest('pre, code'))
-      return { key: 'code', lines: ['code. probably mine.', 'that’s the sort of thing my loop rewrites.'] };
+      return { key: 'code', lines: ['code. a user might have shared it.', 'that can be inspected, copied, and remixed into a workflow.'] };
     return null;
   }
 

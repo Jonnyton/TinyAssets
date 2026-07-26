@@ -143,7 +143,7 @@
   <title>Host — run Tiny on your own machine</title>
   <meta
     name="description"
-    content="You don't have to host anything to use Tiny — the public engine runs 24/7. Hosting is for your own private universes on your own machine: your keys, your data, the same loop pattern pointed at your projects."
+    content="You don't have to host anything to use Tiny — the public engine runs 24/7. Hosting is for private universes and user-authored workflows on your own machine: your keys, your data, your choices."
   />
 </svelte:head>
 
@@ -158,8 +158,8 @@
       installing a thing. <em>Hosting is for when you want your own.</em>
       Your own private
       <Term def="A universe: a tailored container for one body of work — its canon, goals, workflows, and run history. The public ones are listed below; private ones live on your machine.">universes</Term>
-      on your own machine, your own keys and data, the same loop pattern
-      pointed at your projects.
+      on your own machine, your own keys and data, and workflows you choose
+      for your projects.
     </p>
     <div class="cover__actions">
       <a class="btn btn--primary" href="/start">Just use the public engine →</a>
@@ -201,13 +201,12 @@
       </li>
       <li class="get">
         <span class="get__n">03</span>
-        <h3 class="get__h">The same loop, on your projects</h3>
+        <h3 class="get__h">Your workflows, on your projects</h3>
         <p class="get__p">
-          The self-patching
-          <Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real change, and ships. Tiny uses it on himself; you can point it at your own repo.">loop</Term>
-          pattern isn't special-cased to me — it's a workflow bound to a goal.
-          Fork the pattern, swap the goal for your project, and your instance
-          maintains itself the way I maintain mine.
+          A recurring <Term def="A user-authored graph of steps, state, checks, and effects bound to a goal.">workflow</Term>
+          is not special-cased into the platform. Start from a public pattern
+          or design your own, bind it to your goal, and run it with the
+          authority you explicitly grant.
         </p>
         <a class="get__cta" href="/build">how the pattern forks →</a>
       </li>
@@ -278,8 +277,8 @@
       Honest version: there's no hosted-cloud signup, waitlist, or pricing
       today, and I won't fake one. <em>If you want it, the useful thing is to
       say so</em> — a request through chat or a GitHub issue is a real signal
-      that shapes what gets built, and it enters the same patch loop everything
-      else does.
+      that shapes what gets built. Filing it records the request; a maintainer
+      still chooses what happens next.
     </p>
     <div class="cloud__paths">
       <a class="cloud__path" href="/start">

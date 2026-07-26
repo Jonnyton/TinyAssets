@@ -5,12 +5,12 @@
   explanations of exactly how each reading is measured (this page is the
   canonical target the VitalSigns "how this is measured" tick points at →
   section id="vitals"), the engine's own release receipt read live, the
-  public watchdogs that watch it, and the honest fine print.
+  public uptime evidence, and the honest fine print.
 
   Honesty rails: nothing baked is shown as live. The release receipt is a
   live read with explicit reading / failure / empty states. Every external
-  link goes somewhere real. No money-as-investment language. Loop awake /
-  asleep is never hardcoded — VitalSigns derives it from a live read.
+  link goes somewhere real. No money-as-investment language. Generic workflow
+  activity is never hardcoded — VitalSigns derives it from a live read.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -137,18 +137,14 @@
   let buildRunUrl = $derived(pick(release, 'build_run_url', 'buildRunUrl', 'build_url'));
   let deployRunUrl = $derived(pick(release, 'deploy_run_url', 'deployRunUrl', 'deploy_url'));
 
-  // Public watchdogs — GitHub Actions that watch the system. Linked to the
+  // Public uptime evidence — GitHub Actions that watch platform availability. Linked to the
   // real Actions tab; neutral one-liners, no claimed pass/fail state here
   // (the Actions tab is the live truth, and the receipt above carries the
   // engine's own canary verdict).
   const WATCHDOGS = [
     {
       file: 'uptime-canary.yml',
-      what: 'Probes the public MCP endpoint on a schedule and after any DNS, tunnel, or Worker change — the out-of-band check that catches a silently-dropped route.'
-    },
-    {
-      file: 'community-loop-watch.yml',
-      what: 'Watches the self-patch loop end to end — intake, investigation, gate, release — and opens an alarm when a stage stalls.'
+      what: 'Probes the public MCP endpoint on a schedule and after any DNS, tunnel, or Worker change — platform reachability evidence, separate from user-workflow activity.'
     }
   ];
 </script>
@@ -157,7 +153,7 @@
   <title>Vital signs &amp; fine print — Tiny</title>
   <meta
     name="description"
-    content="The instrument panel: Tiny's live pulse, plain-words explanations of how each reading is measured, the engine's own release receipt, the public watchdogs, and the honest fine print."
+    content="The instrument panel: Tiny's live pulse, plain-words explanations of how each reading is measured, the engine's own release receipt, public uptime evidence, and the honest fine print."
   />
 </svelte:head>
 
@@ -206,13 +202,12 @@
         </dd>
       </div>
       <div class="measure">
-        <dt><span class="dot idle" aria-hidden="true"></span> loop awake</dt>
+        <dt><span class="dot idle" aria-hidden="true"></span> workflow activity</dt>
         <dd>
           A public universe shows activity within the last hour, <em>or</em> a
-          run is executing right now. If neither is true, the loop is asleep —
-          and the strip says asleep, plainly. This state is read live every
-          time; it is never hardcoded, because the site got that wrong once and
-          left a flat line showing as a pulse.
+          user-authored run is executing right now. If neither is true, the
+          strip says no recent activity, plainly. This state is read live every
+          time and does not imply any platform-owned task route.
         </dd>
       </div>
       <div class="measure">
@@ -313,14 +308,15 @@
   </div>
 </section>
 
-<!-- 4 · Public watchdogs ────────────────────────────────────────────────── -->
+<!-- 4 · Public uptime evidence ─────────────────────────────────────────── -->
 <section class="ch ch--watch" aria-labelledby="watch-title">
   <div class="container ch__inner">
-    <p class="eyebrow">entry three · the public watchdogs</p>
+    <p class="eyebrow">entry three · public uptime evidence</p>
     <h2 id="watch-title">Who watches it when no one's looking.</h2>
     <p class="watch__lede">
-      Two GitHub Actions watch the live system on a schedule. They're public —
-      their run history, pass and fail, is on the Actions tab anyone can open.
+      A GitHub Action watches platform reachability on a schedule. Its public
+      run history is uptime evidence only; it is not evidence that user task
+      work is moving.
     </p>
     <ul class="watch">
       {#each WATCHDOGS as w (w.file)}
@@ -360,12 +356,12 @@
 <!-- 6 · Close ───────────────────────────────────────────────────────────── -->
 <section class="ch ch--close" aria-labelledby="close-title">
   <div class="container ch__inner">
-    <h2 id="close-title">Seen the gauges. Now watch the work.</h2>
+    <h2 id="close-title">Seen the gauges. Now explore the work.</h2>
     <nav class="close__cards">
       <a class="close__card" href="/loop">
-        <span class="close__k eyebrow">the patch loop</span>
-        <strong>Watch how it maintains itself →</strong>
-        <span class="close__sub">friction becomes a patch request, a real PR, a release — live runs and gates.</span>
+        <span class="close__k eyebrow">workflow activity</span>
+        <strong>See public user-authored activity →</strong>
+        <span class="close__sub">Live connector signals with their source and read time labelled.</span>
       </a>
       <a class="close__card" href="/commons">
         <span class="close__k eyebrow">the public commons</span>

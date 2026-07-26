@@ -36,7 +36,7 @@
     {
       part: 'a loop declaration',
       one: 'which workflow maintains it',
-      body: 'A named workflow that keeps the project true to its premise over time — the same kind of self-patching loop you can watch running here.'
+      body: 'An optional named workflow the owner chooses to run over time. It is ordinary graph composition, not privileged platform behavior.'
     },
     {
       part: 'authority scopes',
@@ -77,8 +77,8 @@
     },
     {
       n: '04',
-      h: 'Let its loop run',
-      p: 'Declare which workflow maintains it, and let it run — overnight, scheduled, resumable. It patches its own body the way Tiny patches mine, within the fence you set.'
+      h: 'Run the workflow you chose',
+      p: 'Declare a user-authored workflow and run it — overnight, scheduled, resumable — within the authority fence you set.'
     }
   ];
 </script>
@@ -110,11 +110,11 @@
       </p>
     </div>
     <div class="cover__pulse">
-      <p class="eyebrow">the loop in question, right now</p>
+      <p class="eyebrow">public workflow activity, right now</p>
       <VitalSigns variant="hero" />
       <p class="cover__pulse-note">
-        Whether my loop is awake or asleep, this reads it live — I won't
-        pretend a pulse I don't have.
+        This reads recent public run and universe signals live. It does not
+        claim that a platform-owned maintenance route exists.
       </p>
     </div>
   </div>
@@ -205,7 +205,7 @@
       </li>
       <li class="monday__beat">
         <span class="monday__when ev">and quietly</span>
-        <p class="monday__what">Its <strong>patch loop fixed a rough edge</strong> you complained about Friday — the friction you flagged became a patch request, ran through its own investigation, and the fix is already in by the time you look.</p>
+        <p class="monday__what">Its owner-selected workflow <strong>completed another pass</strong> — with the steps, evidence, and authority defined by that project's own premise.</p>
       </li>
     </ul>
     <p class="voice">
