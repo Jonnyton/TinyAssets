@@ -25,9 +25,16 @@
   custody tasks 1.3a/1.3b, plus explicit supersession notices for the active
   universe-authority bundle and receipt enums. This output gate does not make
   provider routing depend on sibling acceptance.
-- [ ] 1.7 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
+- [x] 1.7 Fold the second exact-revision Opus 5 `ADAPT`: add the typed-held
+  setup mapper, a durable host/local successor lane, archive/sync precedence,
+  auth-health MODIFIED behavior, server-checkable request liveness, explicit
+  newborn source, and exact field naming.
+- [ ] 1.8 Republish final-SHA custody acceptance and merged-change
+  archive/sync precedence, explicitly carving `ProviderAuthorityHeldError`
+  out of receipt `error/provider_error`.
+- [ ] 1.9 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.8 Run strict target/full-tree validation and land this target active
+- [ ] 1.10 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -48,7 +55,8 @@
 - `provider-attempt-receipts` consumes same-call
   `credential_kind`/credential `authority_class` evidence and adds
   `outcome=authority_held` plus `route_condition=authority_held`.
-  `ProviderAuthorityHeldError` is never provider `error/provider_error`.
+  `ProviderAuthorityHeldError` is never provider `error/provider_error`;
+  adapt the merged active change before archive/sync into canonical specs.
 - `activate-requester-host-engines` is a separate successor under
   `daemon-identity-and-host-pool`, `desktop-host-runtime`, and
   `provider-routing`. It consumes a stable authenticated account-to-host
@@ -89,7 +97,9 @@
   non-anonymous bearer request receives one non-copyable/non-serializable
   `ProviderRequestCapability`; `call_provider` explicitly carries that exact
   object through `call_sync`, `call_with_policy_sync`, retry/judge branches,
-  and the router pool closure; reset/prior-request replay/lookalikes fail.
+  and the router pool closure; server liveness plus owning execution-scope
+  checks reject prior-request replay, lookalikes, and inherited child contexts
+  both before and after parent request termination.
 - [ ] 4.2 Add failing sink tests for exact mechanism/issuer/current identity,
   cross-principal replay, authentic A-on-A capability used on B, and same
   principal with stale assignment generation.
@@ -105,26 +115,33 @@
   byte-exact zero mutation on invalid route.
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
-  `requester_local`, `local_model`, and `founder_hosted_daemon`. Prove each
-  maps through its named writer or to held/failed deny-all, raw-secret refusal
-  stays custody-owned, and attested local model yields only `ollama-local`.
+  `unassigned`, `requester_local`, `local_model`, and
+  `founder_hosted_daemon`. Prove newborn source is `unassigned`, each maps
+  through its named writer or to held/failed deny-all, raw-secret refusal stays
+  custody-owned, and attested local model yields only `ollama-local`.
 - [ ] 4.7 Add failure/crash injection at quarantine, reference update,
   commit-ready, final publication, and cleanup; prove deny-all recovery,
   digest matching, and unrelated credential-byte preservation.
 - [ ] 4.8 Add two-writer and custody/launch lock-order tests proving coherent
   generations, assignment-before-custody order, reverse/reentrant refusal, and
   no compare-delete/dereference overlap.
-- [ ] 4.9 Capture the request/birth/assignment RED evidence.
+- [ ] 4.9 Add failing first-contact/converse tests proving a pre-provider
+  `ProviderAuthorityHeldError` maps to canonical
+  `engine_setup_required_payload` without exhaustion or chain state, preserves
+  completed birth/home, and never becomes generic error prose.
+- [ ] 4.10 Capture the request/birth/assignment RED evidence.
 
 ## 5. GREEN implementation — request capability, birth, and assignment
 
 - [ ] 5.1 Implement `ProviderRequestCapability` and request-local mint/reset
   in `tinyassets/auth/middleware.py` with exact principal, nonce, mechanism,
-  issuer, and identity-token invariants.
-- [ ] 5.2 After the generic held/`engine_setup_required_payload` path and at
+  issuer, identity-token, server-owned liveness lease, owning execution scope,
+  synchronous revocation, and inherited-context refusal invariants.
+- [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
+  canonical `engine_setup_required_payload`; then, only after that path and at
   least one ready source are live behind the deployment gate, implement
-  independent newborn deny-all initialization in the atomic birth transaction
-  for every entry path.
+  `engine_source=unassigned` plus independent newborn deny-all initialization
+  in the atomic birth transaction for every entry path.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
@@ -155,7 +172,8 @@
 - [ ] 6.4 Add canonical-preservation tests for `preferred_writer`,
   `preferred_judge`, explicit-context-over-global resolution,
   non-request absent-context fallback, unknown-role-to-writer default,
-  pin clear guidance, each judge called exactly once/no duplicate,
+  auth-health quarantine with authority-bounded local fallthrough, pin clear
+  guidance, each judge called exactly once/no duplicate,
   three-attempt two-through-eight-second bridge bounds, no-router and
   unrelated-exception semantics, policy telemetry and authority-safe policy
   fall-through, Bubblewrap/Codex mode selection, CLI sandbox recognition, and
@@ -222,8 +240,9 @@
   generic held/setup-required chatbot path is rendered; every
   background/run/scheduled/daemon bridge carries its owner receipt or is
   safely held; and the live founder home has a reviewed ready mapping or
-  explicit replacement. Stop before enabling newborn deny-all or quiescing
-  legacy writers if not.
+  explicit replacement. The setup gate passes only when the typed
+  `ProviderAuthorityHeldError` itself renders the canonical setup payload.
+  Stop before enabling newborn deny-all or quiescing legacy writers if not.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.

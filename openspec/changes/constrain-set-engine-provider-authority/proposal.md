@@ -13,7 +13,7 @@ cannot mint requester-provider authority, sibling gates were still circular,
 and cutover had no reachable ready source. An exact-revision re-review then
 found that an ambient `ContextVar` cannot cross the router thread pool,
 background/daemon work had no authority owner, the source table was not total,
-and active sibling deltas contradicted the proposed boundary. This revision
+and merged-unsynced sibling deltas contradicted the proposed boundary. This revision
 uses an explicit internal request carrier, names a durable background owner,
 makes source migration total, and publishes exact precedence for sibling
 adaptation.
@@ -40,11 +40,13 @@ adaptation.
   with a server-minted, request-scoped `ProviderRequestCapability` owned by
   `identity-auth-and-access-control`. The capability is created only after
   credential validation and binds request nonce plus authenticated principal.
-  `call_provider` explicitly carries the exact object through the router's
-  synchronous helpers and thread-pool closure rather than depending on
-  `ContextVar` propagation. The provider sink binds it again to the exact
-  universe, credential owner, provider, host, and current assignment
-  generation.
+  A server registry binds its liveness lease to the owning request execution
+  scope and revokes it synchronously at request end, so inherited asyncio
+  contexts cannot extend it. `call_provider` explicitly carries the exact
+  object through the router's synchronous helpers and thread-pool closure
+  rather than depending on `ContextVar` propagation. The provider sink binds
+  it again to the exact universe, credential owner, provider, host, and
+  current assignment generation.
 - `harden-background-provider-execution-authority` owns a durable
   `ProviderWorkAuthorityReceipt` for post-response graph/run/resume/schedule,
   daemon, retrieval, and other task/thread/process provider work. Those paths
@@ -79,8 +81,9 @@ adaptation.
   `daemon-identity-and-host-pool`, `desktop-host-runtime`, and
   `provider-routing`. It is the sole writer of ready host/local assignments,
   including `local_model` -> `["ollama-local"]`. Cutover is forbidden until
-  a ready request path, rendered setup-required path, and every relevant
-  background/daemon authority bridge are live or safely held.
+  a ready request path, the exact typed authority hold renders the canonical
+  setup-required payload, and every relevant background/daemon authority
+  bridge is live or safely held. Both future owners have durable STATUS lanes.
 - Draft PR #1606 remains source-only retained work. Its assignment lock,
   transaction, migration, and deployment-fence pieces may be selectively
   ported after current-main review; it does not merge as an authority owner.
@@ -112,10 +115,10 @@ None.
   planning lane.
 - Upstream inputs: authenticated transport middleware supplies the
   request-scoped capability; an internal typed carrier crosses the router
-  pool; the sink derives target bindings from server state. The active
-  `universe-creation` delta currently supplies a caller-built eligible set and
-  MUST adapt before it merges: it retains only target universe/request lineage
-  and `fulfillment_class`.
+  pool; the sink derives target bindings from server state. The merged active
+  `universe-creation` change currently supplies a caller-built eligible set
+  and MUST adapt before archive/sync into canonical specs: it retains only
+  target universe/request lineage and `fulfillment_class`.
 - Sibling boundaries: `retire-mcp-provider-secret-deposit` owns raw
   `llm_api_key` ingress refusal and OS custody; `provider-attempt-receipts`
   owns immutable result-local evidence; credential-vault owns ambient
@@ -128,5 +131,5 @@ None.
   request carrier, held outcome, and reference-only launch interfaces and does
   not wait for sibling acceptance before the target spec lands. Custody does
   require exact-SHA provider-owner acceptance before its dependent runtime
-  advances; universe creation and receipts must adapt their conflicting
-  active deltas before those lanes merge.
+  advances; the merged active universe-creation and receipt changes must adapt
+  their conflicting deltas before archive/sync into canonical specs.

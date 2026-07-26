@@ -70,7 +70,9 @@ reader. Runtime, creation, and assignment SHALL use `[]` for `unassigned`,
 `pending`, `held`, and `failed`, and a non-empty canonical list only for
 `ready`. Assignment replaces rather than unions the prior ceiling.
 
-Source resolution SHALL be total over the shipped domain. Legacy
+Source resolution SHALL be total over shipped and target domains. Target
+newborn/setup source `unassigned` SHALL remain `unassigned + []` with no
+provider or credential access. Legacy
 `byo_api_key` is read/migration-only: new writes are refused and it converts
 to target `requester_local` only after
 `retire-mcp-provider-secret-deposit` creates an opaque binding and atomically
@@ -165,6 +167,40 @@ policy-fallback, and judge behavior.
 - **THEN** canonical process-global/default configuration fallback remains available
 - **AND** a live request/universe operation with absent context holds instead
 
+### Requirement: Auth-health quarantine of dead-login subscription providers
+When an auth-health probe is injected, the router SHALL drop a provider whose
+subscription login is definitively `not_logged_in` from fallback chains,
+policy attempt orders, and judge ensemble only after the non-empty provider
+authority ceiling is established. The gate SHALL remain conservative:
+`unknown` and `ok` stay, a probe exception means keep, and no injected probe
+remains a no-op.
+
+An authorized pinned writer with dead login SHALL fail loud rather than route
+elsewhere. An authorized chain MAY fall through to `ollama-local` only when
+`ollama-local` is inside the same effective authority ceiling. A singleton
+requester-local ceiling whose remote provider is dead SHALL exhaust without
+using an unauthorized local provider.
+
+#### Scenario: dead-auth writer is skipped only inside authority
+- **WHEN** the probe reports an authorized `claude-code` as `not_logged_in` and another authorized writer remains
+- **THEN** routing goes to that next authorized healthy provider
+- **AND** no provider outside authority is inspected or attempted
+
+#### Scenario: authorized unknown and local providers are never stranded
+- **WHEN** authorized subscription writers report `not_logged_in` and authorized `ollama-local` reports `unknown`
+- **THEN** routing falls through to `ollama-local`
+- **AND** returns its response
+
+#### Scenario: unauthorized local fallback cannot rescue dead auth
+- **WHEN** a singleton requester-local remote provider reports `not_logged_in` and `ollama-local` is outside authority
+- **THEN** routing raises canonical dynamic exhaustion for that authorized provider
+- **AND** does not attempt the local model
+
+#### Scenario: pinned dead-auth writer fails loud
+- **WHEN** an authorized pinned writer reports `not_logged_in`
+- **THEN** routing raises `AllProvidersExhaustedError` referencing subscription login
+- **AND** no other provider is called
+
 ### Requirement: Per-node policy routing honors llm_policy overrides
 `call_with_policy` SHALL honor an explicit `llm_policy` dict by building an
 attempt order from `difficulty_override` matched against the call difficulty,
@@ -238,7 +274,7 @@ directory and resolved configuration. `ModelConfig` SHALL retain timeout,
 token cap, temperature, reasoning effort, workspace-sandbox, allowed-tool, and
 disallowed-tool settings. `ProviderResponse` SHALL retain text, provider,
 model, family, latency, and degraded flag, and add exact call-local credential
-kind and credential-authority class.
+fields `credential_kind` and `authority_class`.
 
 Every `BaseProvider` implementation SHALL retain canonical async
 `complete(prompt, system, config, *, universe_dir=None) -> ProviderResponse`.
@@ -247,13 +283,16 @@ The provider layer SHALL add immutable non-serializable
 `ProviderLaunchHandle`, plus an executor-local `ProviderExecutor`.
 
 For a live request, `call_provider` SHALL retrieve the exact current
-`ProviderRequestCapability` before middleware cleanup and explicitly pass it
+`ProviderRequestCapability` before middleware cleanup, prove its server-owned
+request-liveness lease remains active and the current task/execution scope is
+the registered owner, mint a sealed internal carrier, and explicitly pass it
 through internal-only arguments to `call_sync`, `call_with_policy_sync`,
 retry/policy/judge branches, the router `ThreadPoolExecutor` closure, and
 invocation minting. This SHALL NOT depend on ContextVar propagation into the
-pool worker. API/MCP schemas, caller kwargs, request/universe payloads,
-serialized state, and ambient worker context MUST NOT construct or populate
-the carrier.
+pool worker. Inherited asyncio ContextVars SHALL NOT extend the lease or pass
+the owner-scope check. API/MCP schemas, caller kwargs, request/universe
+payloads, serialized state, and ambient worker context MUST NOT construct or
+populate the carrier.
 
 Background, resumed, scheduled, daemon, RAPTOR, reflexion, retrieval, and
 post-response graph work SHALL supply a server-owned
@@ -272,8 +311,9 @@ Before each attempt, the router SHALL:
    `tinyassets.authenticated-request.v1`, issuer
    `tinyassets.auth.middleware`, principal matching the authenticated
    transport identity captured by the carrier, and target universe matching
-   the routed universe; or validate the exact background receipt from its
-   owner;
+   the routed universe; recheck its server-owned liveness lease immediately
+   before minting invocation; or validate the exact background receipt from
+   its owner;
 4. validate binding principal/universe/provider/host/generation/digest and
    non-empty, unexpired, non-tombstoned, non-revoked state; and
 5. mint a router-token-bound `ProviderInvocation`.
@@ -281,13 +321,13 @@ Before each attempt, the router SHALL:
 Invocation SHALL contain request capability or owner-defined background
 receipt, target universe, authenticated principal, admitted provider,
 assignment generation, opaque binding reference/digest, credential/auth
-provenance, credential kind, credential-authority class, immutable call
-inputs, and router-only launch token. It MUST NOT contain native or recoverable
+provenance, `credential_kind`, `authority_class`, immutable call inputs, and
+router-only launch token. It MUST NOT contain native or recoverable
 secret material.
 
 Credential kinds SHALL be `llm_subscription`, `llm_api_key`, `local`, `none`,
-or `unknown`. Credential-authority classes (the receipt field currently named
-`authority_class`) SHALL be `universe`, `host`, `local`, `none`, or `unknown`.
+or `unknown`. `authority_class` SHALL be `universe`, `host`, `local`, `none`,
+or `unknown`.
 `unknown` grants nothing; universe remote success cannot report host. These
 values are captured at the exact execution boundary for the same call.
 
@@ -338,6 +378,11 @@ operation exists.
 - **WHEN** `call_sync` submits provider routing to its class-level thread pool
 - **THEN** its closure carries the exact internal capability object retrieved by `call_provider`
 - **AND** an unset worker ContextVar neither widens authority nor causes a valid request to lose its carrier
+
+#### Scenario: inherited child context is not request liveness
+- **WHEN** an asyncio child inherits identity/capability ContextVars from the request
+- **THEN** it cannot mint a carrier because its execution scope is not the registered owner
+- **AND** after request completion the revoked server lease also fails at the sink
 
 #### Scenario: post-response work requires its durable owner receipt
 - **WHEN** graph, resume, schedule, daemon, retrieval, or other background work reaches routing after request middleware returned
@@ -545,11 +590,13 @@ attempts/results. `universe-creation` SHALL own the generic rendered
 `engine_setup_required_payload` envelope and map this typed cause into it;
 provider routing does not define a second user-facing envelope.
 
-On merge, this requirement supersedes the active
+On merge, this requirement supersedes the merged active
 `universe-creation` clause that admits a caller-built eligible-provider bundle
-and the active `provider-attempt-receipts` closed enums that omit
-`authority_held`. Those sibling deltas MUST adapt before they merge, regardless
-of branch merge order.
+and the merged active `provider-attempt-receipts` closed enums that omit
+`authority_held`. The receipt clause that maps otherwise-unrelated exceptions
+to `outcome=error` / `route_condition=provider_error` SHALL explicitly exclude
+`ProviderAuthorityHeldError`. Those sibling changes MUST adapt before
+archive/sync into `openspec/specs/`, regardless of archive order.
 
 #### Scenario: held authority is not provider fault
 - **WHEN** authority-derived emptiness or binding mismatch raises `ProviderAuthorityHeldError`

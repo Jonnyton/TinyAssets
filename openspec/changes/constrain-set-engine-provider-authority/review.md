@@ -102,3 +102,42 @@ Adapted exact-SHA `967b048d` handoffs:
   `issuecomment-5081288830`; and
 - receipt closed-enum precedence: PR #1650 comment
   `issuecomment-5081289120`.
+
+## Second exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed `f2b6e9ef` and returned `ADAPT`. One Critical finding showed
+that the live first-contact mapper recognizes only
+`AllProvidersExhaustedError` plus non-null chain state, so the new
+pre-provider `ProviderAuthorityHeldError` would bypass
+`engine_setup_required_payload` and become generic failure prose.
+
+Important findings:
+
+- `activate-requester-host-engines` had no durable lane, leaving the target
+  zero-cloud local source owner nominal rather than actionable;
+- the universe and receipt changes were already merged-active, so their
+  conflict must be resolved before archive/sync rather than before merge;
+- auth-health quarantine's canonical local-fallthrough requirement was not
+  yet MODIFIED by the authority ceiling; and
+- inherited asyncio ContextVars could outlive middleware reset without a
+  positive server-checkable liveness binding.
+
+The next adaptation adds:
+
+- a universe-lifecycle requirement and owned RED/GREEN task mapping the exact
+  typed hold to the canonical setup payload without requiring exhaustion,
+  chain state, or provider attempts;
+- one durable STATUS row owning both background-receipt and
+  requester-host/local successor change directories;
+- explicit archive/sync precedence, including the receipt
+  `error/provider_error` carve-out;
+- a full MODIFIED auth-health requirement with authority-bounded local
+  fallback;
+- a private server liveness registry bound to the owning request execution
+  scope, synchronously revoked at request end and rechecked at the sink;
+- explicit newborn `engine_source=unassigned`; and
+- exact `credential_kind` and `authority_class` field names.
+
+Fresh Windows strict validation after these edits: target valid; full tree
+48 passed, 0 failed. Final disposition remains pending final-SHA handoffs and
+another Opus 5 review.

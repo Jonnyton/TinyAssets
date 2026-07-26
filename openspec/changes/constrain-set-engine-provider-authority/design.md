@@ -74,9 +74,10 @@ Assignment replaces rather than unions the ceiling and increments an immutable
 generation. Preference, policy, pin, registration, auth health, quota,
 fallback, and retry may never add a provider.
 
-Every newborn begins with `engine_assignment_state="unassigned"`,
-`engine_assignment_generation=0`, and `allowed_providers=[]`. `ready` requires
-a non-empty ceiling; all other states require `[]`.
+Every newborn begins with `engine_source="unassigned"`,
+`engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
+`allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
+require `[]`.
 
 ### 2. Source resolution is strict and held sources stay deny-all
 
@@ -84,6 +85,7 @@ The resolver is total over both the shipped source domain and target values:
 
 | `engine_source` | Target treatment | Ready ceiling / owner |
 |---|---|---|
+| `unassigned` | target newborn/setup state | always `unassigned + []`; no provider or credential access |
 | `byo_api_key` | legacy read/migration only; new writes refused | convert to `requester_local` only after #1746 creates an opaque binding; otherwise `failed + []` |
 | `self_hosted_endpoint` | held intent | `activate-requester-host-engines`; never ready before endpoint and account-to-host proof |
 | `market_rented` | remote-only intent | always `[]` in ordinary routing; B2+B13 own execution |
@@ -155,13 +157,18 @@ bearer and resolving a non-anonymous `Identity`. It contains:
 - authenticated principal ID;
 - mechanism `tinyassets.authenticated-request.v1`;
 - issuer `tinyassets.auth.middleware`; and
-- unexported identity token.
+- unexported identity token; and
+- opaque server-owned request-liveness lease ID.
 
 It is non-serializable, non-copyable, non-pickleable, and unconstructible from
 tool/API data or other modules. Middleware stores it beside request identity
-in a `ContextVar` only at the transport edge. Before middleware cleanup,
-`call_provider` retrieves the exact object and passes it through an
-internal-only typed `ProviderAuthorityCarrier` argument into `call_sync`,
+in a `ContextVar` only at the transport edge. A private thread-safe
+`RequestCapabilityRegistry` binds the lease to the owning transport
+task/execution-scope identity, marks it active only during that request, and
+revokes it synchronously before middleware resets inherited ContextVars.
+Before middleware cleanup, `call_provider` retrieves the exact object, proves
+the lease is active plus the current execution scope is its owner, and mints
+an internal-only sealed `ProviderAuthorityCarrier` argument for `call_sync`,
 `call_with_policy_sync`, every retry/judge branch, the router pool closure,
 and `ProviderInvocation`. This explicit carrier is required because
 `ProviderRouter.call_sync` deliberately does not propagate `ContextVar` state
@@ -173,7 +180,9 @@ The provider sink requires the exact capability carried from the current
 transport edge and validates:
 
 - exact mechanism/issuer and identity token;
-- capability principal equals current authenticated identity;
+- capability principal equals the transport identity captured in the
+  server-owned lease;
+- lease remains active and was propagated by its owning execution scope;
 - target universe equals routed universe and permits the invoking operation;
 - binding owner equals the capability principal;
 - binding universe/provider/host/generation/digest equal fresh server state;
@@ -183,6 +192,11 @@ The authority-derived destination set is the fresh assignment ceiling after
 those checks. There is no caller-supplied eligible set and no parallel
 universe bundle. Authentic A-on-A authority replayed against B fails even when
 both assignments select the same provider.
+
+An asyncio child inherits a copied Context but not ownership of the
+server-side lease. It cannot mint the sealed carrier while the parent request
+is active, and after middleware returns the synchronously revoked lease fails
+again. ContextVar reset is cleanup, not the authority invalidation mechanism.
 
 Background/resumed/scheduled work cannot reuse this capability.
 `harden-background-provider-execution-authority` owns the durable
@@ -202,11 +216,13 @@ The dependency direction is one-way: provider routing publishes this contract
 and does not require sibling acceptance before the target spec lands. Custody
 does require exact-SHA provider-owner acceptance before its dependent runtime
 advances; that acceptance is an output of this owner, not a reciprocal gate
-back onto this spec. Active `universe-creation` and
-`provider-attempt-receipts` deltas currently conflict with this replacement
-and MUST adapt before they merge: the former removes its caller-built eligible
-provider set and keeps only target lineage plus `fulfillment_class`; the
-latter extends its closed enums with `authority_held`.
+back onto this spec. The merged active `universe-creation` and
+`provider-attempt-receipts` changes currently conflict with this replacement
+and MUST adapt before archive/sync into canonical specs: the former removes
+its caller-built eligible provider set and keeps only target lineage plus
+`fulfillment_class`; the latter extends its closed enums with
+`authority_held` and carves this typed hold out of its otherwise-unrelated
+exception `error/provider_error` rule.
 
 ### 5. Propagation has one owner; host-local cannot rescue request work
 
@@ -216,8 +232,12 @@ router helpers, their thread-pool closures, retry/policy/judge branches, and
 launch. `harden-background-provider-execution-authority` owns receipt minting
 and transport across task/thread/process boundaries after the request ends,
 including graph/run/resume/version, RAPTOR, reflexion, agentic retrieval,
-scheduler, cloud worker, and daemon paths. Remaining callers are explicitly
-classified as zero-output host maintenance or local-only.
+scheduler, cloud worker, and daemon paths. No caller is presumed classified
+ahead of the task-3.2 inventory: current editorial, ingestion extractor, and
+selector-dispatch provider spends are background-owner candidates and hold
+until assigned to request or work authority. Every remaining caller MUST be
+proven request-carried, work-receipted, one of the closed zero-output probes,
+or non-provider local-only before runtime advances.
 
 `HostLocalProviderCapability` has a closed, spec-listed operation set:
 `subscription_auth_probe`, `local_model_readiness_probe`, and
@@ -254,7 +274,7 @@ Under shared admission, the router resolves:
 - canonical provider and assignment generation;
 - opaque credential binding reference and digest when required;
 - credential/auth provenance;
-- credential kind and credential-authority class;
+- exact `credential_kind` and `authority_class` fields;
 - immutable prompt/system/model/endpoint inputs; and
 - router-only launch token.
 
@@ -290,8 +310,7 @@ The provider boundary emits credential execution evidence:
 
 - `credential_kind`: `llm_subscription`, `llm_api_key`, `local`, `none`,
   `unknown`;
-- `credential_authority_class` (the receipt field currently named
-  `authority_class`): `universe`, `host`, `local`, `none`, `unknown`.
+- `authority_class`: `universe`, `host`, `local`, `none`, `unknown`.
 
 This answers how/whose credential permitted the provider call. `unknown`
 grants nothing; universe remote success cannot report host. The receipt lane
@@ -330,11 +349,13 @@ end-to-end ready source is deployed and rendered:
 2. `activate-requester-host-engines` with stable account-to-host binding; or
 3. its attested `local_model` route with `ollama-local`.
 
-The held/`setup_required` chatbot envelope must be live and rendered before
-newborn deny-all state is enabled. `universe-creation` owns that generic
-envelope because it already owns `engine_setup_required_payload`; provider
-routing supplies only the typed held cause. Any background/run/scheduled or
-daemon path that can reach providers must also carry a valid
+The canonical `engine_setup_required_payload` must be live and rendered for
+the exact pre-provider `ProviderAuthorityHeldError` cause before newborn
+deny-all state is enabled. The universe action layer owns the direct mapping;
+it MUST NOT require `AllProvidersExhaustedError`, non-null chain state, or a
+provider attempt. Provider routing supplies only the typed held cause. Any
+background/run/scheduled or daemon path that can reach providers must also
+carry a valid
 `ProviderWorkAuthorityReceipt` from
 `harden-background-provider-execution-authority`, or be held and proven not to
 break the connector's canonical handles and autonomous loops, before cutover.
