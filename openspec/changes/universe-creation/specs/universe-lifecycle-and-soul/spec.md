@@ -34,7 +34,7 @@ The lifecycle migrator SHALL assign a generated immutable serial to each existin
 - **THEN** the original root and references remain usable and no half-migrated root is treated as a living universe
 
 ### Requirement: Existing roots drop duplicate empty starter artifacts without losing history
-After a root is migrated, cleanup SHALL remove duplicate `self/`, `soul/`, and brain-archive directories and empty starter `notes.json` or `activity.log` files that are not part of the canonical root soul bundle. Cleanup SHALL preserve non-empty historical notes and logs until an explicit typed runtime destination and verified migration exist.
+After a root is migrated, cleanup SHALL remove duplicate `self/`, `soul/`, and brain-archive directories and empty starter `notes.json` or `activity.log` files that are not part of the canonical root soul bundle. Cleanup SHALL preserve non-empty historical notes and logs until an explicit typed runtime destination and verified migration exist. Before mutation it MUST produce a dry-run inventory and durable backup/journal of every governed soul file and candidate artifact. It MUST use no-overwrite semantics for existing governed soul content, including learned `identity.md`, and MUST refuse rather than replace non-empty or divergent content with a baseline template.
 
 #### Scenario: duplicate empty artifacts are removed
 - **WHEN** a migrated root contains duplicate model directories, brain archives, or empty starter notes/logs with no canonical reader
@@ -43,3 +43,8 @@ After a root is migrated, cleanup SHALL remove duplicate `self/`, `soul/`, and b
 #### Scenario: non-empty historical runtime data is preserved
 - **WHEN** a migrated root contains non-empty historical notes or activity logs without a typed destination
 - **THEN** cleanup preserves that data and reports it for a later explicit migration
+
+#### Scenario: learned soul content cannot be reset by cleanup
+- **WHEN** an existing governed soul file differs from a baseline template or contains learned identity
+- **THEN** cleanup preserves the exact file and records it in the dry-run/backup evidence
+- **AND** no blank or starter template overwrites it

@@ -19,6 +19,10 @@
 - [x] 1.4 Verify the authenticated first-contact path resolves through founder home context rather than a host-global active-universe marker.
 - [x] 1.5 Reclassify lifecycle work under `universe-lifecycle-and-soul`; remove the obsolete proposed `universe-creation` capability and the duplicate identity/provider-authority delta now owned by `constrain-set-engine-provider-authority`.
 - [x] 1.6 Validate the reconciled active change strictly and confirm its one residual lifecycle delta remains unsynced while implementation tasks are open.
+  - VERIFIED 2026-07-26 on Windows worktree head `78abb9b5`:
+    `openspec validate universe-creation --strict` passed and
+    `openspec validate --all --strict` passed 56/56. This is planning evidence,
+    not the final post-implementation gate in task 6.2.
 
 ## 1B. Newborn Voice (P0 #1582 — host decision 2026-07-25)
 
