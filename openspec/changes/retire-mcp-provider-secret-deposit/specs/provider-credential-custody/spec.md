@@ -191,9 +191,16 @@ complete assignment and binding tuple under shared
 per-universe grant-bound credential-blind proxy handle owned by
 `outbound-boundary-layer`. Provider/executor code SHALL send only a redacted
 request through that handle. The outbound proxy alone SHALL resolve the
-credential reference and perform network I/O. Neither the executor nor an
-HTTP provider SHALL dereference native material into provider-child memory,
-environment, arguments, config, logs, traces, receipts, or server state.
+credential reference and perform network I/O. For requester-owned
+`llm_api_key`, that proxy and the native secret store SHALL run on the same
+attested requester-controlled host, and the proxy SHALL resolve through this
+capability's native reference rather than through a legacy
+`credential-vault` `llm_api_key` record. This path SHALL remain blocked until
+the `outbound-boundary-layer` owner accepts that custody-source adaptation;
+retained `llm_subscription`, `vcs`, and `social` custody remains unchanged.
+Neither the executor nor an HTTP provider SHALL dereference native material
+into provider-child memory, environment, arguments, config, logs, traces,
+receipts, or server state.
 
 A missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe
 outbound grant/proxy SHALL hold before provider, credential, or network
@@ -202,8 +209,8 @@ grant, proxy, secret path, or ambient fallback.
 
 #### Scenario: authorized remote HTTP uses only the outbound proxy
 - **WHEN** requester-owned remote HTTP passes assignment, binding, and outbound-grant validation
-- **THEN** `ProviderExecutor.start()` binds the redacted request to the outbound owner's non-serializable proxy handle
-- **AND** only that proxy resolves the credential reference and performs network I/O
+- **THEN** `ProviderExecutor.start()` binds the redacted request to the outbound owner's non-serializable proxy handle on the same attested requester-controlled host as native custody
+- **AND** only that proxy resolves the provider-custody native reference and performs network I/O; it never resolves a legacy vault `llm_api_key`
 
 #### Scenario: invalid outbound authority holds before secret or network access
 - **WHEN** the outbound grant or proxy is missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe

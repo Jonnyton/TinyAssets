@@ -90,10 +90,11 @@ deputy for another principal's provider authority.
 - Future runtime owners: universe setup/prompt handling, local tray/native
   credential storage, provider launch, credential-vault retirement tooling, and
   canonical/plugin mirrors.
-- Surface successors remain separate: `activate-requester-host-engines` owns
-  completable Tier-2/Tier-3/plugin native-custody setup and attested local
-  request authority; `activate-connector-requester-authority` owns the
-  newborn Tier-1 accepted-market path without raw secret deposit or
+- Surface successors remain separate and are not yet created:
+  `activate-requester-host-engines` is the planned owner of completable
+  Tier-2/Tier-3/plugin native-custody setup and attested local request
+  authority; `activate-connector-requester-authority` is the planned owner of
+  the newborn Tier-1 accepted-market path without raw secret deposit or
   desktop/web-app dependency. This custody lane grants neither path.
 - Exact dependency anchors: merged PR #1784
   (`constrain-set-engine-provider-authority`, Opus-approved head `abdca5fe`, merge
@@ -102,6 +103,9 @@ deputy for another principal's provider authority.
   #1736 for native account-token storage/backend policy and its existing
   `OriginClient` protocol; proposed `bind-host-principal-to-account` for the
   authenticated server-side production principal-to-host route;
+  `openspec/changes/outbound-boundary-layer/` for acceptance of the
+  requester-host-local credential-blind proxy's provider-custody native
+  reference source while retaining other credential classes;
   `openspec/changes/universe-creation/` plus #1484 for the birth/configuration
   seam; `openspec/specs/distributed-execution/spec.md` plus its B2 production-
   authority owner for accepted-market composition;

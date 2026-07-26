@@ -204,10 +204,16 @@ For requester-owned remote HTTP, `ProviderExecutor.start()` obtains only the
 non-serializable, per-universe grant-bound credential-blind proxy handle owned
 by `outbound-boundary-layer`. The proxy alone resolves the credential
 reference and performs network I/O; provider/executor code sends only a
-redacted request through it. Missing, expired, revoked, ambiguous, or
-wrong-universe outbound grant/proxy authority holds before provider,
-credential, or network access. This change creates no second outbound ledger,
-grant, proxy, secret path, or ambient fallback.
+redacted request through it. For this `llm_api_key` path, the proxy and native
+secret store must run on the same attested requester-controlled host, and the
+proxy resolves through `provider-credential-custody`'s native reference—not
+through the retiring `credential-vault` `llm_api_key` record. The active
+`outbound-boundary-layer` owner must accept that narrow custody-source
+adaptation before runtime; retained subscription/VCS/social custody behavior
+remains unchanged. Missing, expired, revoked, ambiguous, or wrong-universe
+outbound grant/proxy authority holds before provider, credential, or network
+access. This change creates no second outbound ledger, grant, proxy, secret
+path, or ambient fallback.
 
 Accepted-market remote execution SHALL use its separately accepted B2
 authority and SHALL NOT receive a requester-local secret merely because

@@ -162,8 +162,11 @@ CLI/local/in-process transport, it may then resolve the native secret exactly
 once into permitted provider child/request memory. For remote HTTP, it SHALL
 obtain only `outbound-boundary-layer`'s non-serializable, per-universe
 grant-bound credential-blind proxy handle; that proxy alone resolves the
-reference and performs network I/O, and no API-key variable enters the child
-environment. The current D0 path is fake-only/production-denied and is not
+provider-custody native reference on the same attested
+requester-controlled host and performs network I/O, never resolving a legacy
+vault `llm_api_key`; no API-key variable enters the child environment. This
+narrow custody-source adaptation remains blocked on outbound-owner
+acceptance. The current D0 path is fake-only/production-denied and is not
 ordinary requester-provider authority. Accepted-market remote execution
 remains blocked on its owner-accepted production B2 authority and SHALL NOT
 receive this local secret. The control-plane vault helper SHALL receive no raw
