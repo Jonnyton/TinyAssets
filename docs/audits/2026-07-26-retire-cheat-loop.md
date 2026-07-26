@@ -20,8 +20,9 @@ the original branch-definition fallback:
 5. community-loop named runtime, workflow, artifact, label, package, and test
    surfaces;
 6. active loop skills, catalog routes, and shipped loop-team souls;
-7. automatic patch-announcement composition; and
-8. generated website/plugin snapshots or prompts that can resurrect the
+7. hard-coded patch-request claimant/writer/checker composition;
+8. automatic patch-announcement and implicit auto-merge composition; and
+9. generated website/plugin snapshots or prompts that can resurrect the
    retired behavior.
 
 TinyAssets retains the domain-agnostic pieces from which a user may build these
@@ -43,6 +44,7 @@ rg -n -i --glob '!openspec/changes/archive/**' "cheat[ _-]?loop|CHEAT_LOOP|cheat
 rg -n "TINYASSETS_BUG_INVESTIGATION_(GOAL_ID|BRANCH_DEF_ID)|_maybe_enqueue_investigation|_resolve_investigation_handler|enqueue_investigation_request" .
 rg -n -i "community[_ -]loop|auto[_ -]ship|TINYASSETS_AUTO_SHIP" tinyassets fantasy_daemon scripts .github deploy packaging/claude-plugin tests docs/ops
 rg -n "bug_investigation|attach_patch_packet|trigger_receipt" tinyassets fantasy_daemon packaging/claude-plugin tests deploy .github docs/ops
+rg -n "classify_patch_request|request_classification|code_writer_gate|checker_gate|claimable_by" tinyassets packaging/claude-plugin tests
 rg -n -i "loop-uptime|community[_ -]loop|auto[_ -]fix|patch[_ -]loop" .agents/skills .claude/skills .github/workflows docs/souls WebSite/site/src/lib/content WebSite/site-react/lib
 gh variable list --repo Jonnyton/TinyAssets
 gh label list --repo Jonnyton/TinyAssets --limit 300 --json name,description
@@ -58,10 +60,13 @@ The authenticated repository-variable read on 2026-07-26 returned
 `AUTO_FIX_DISABLED=true` (last updated 2026-06-06) and
 `WORKOS_REQUIRE_AUTH=0`; only the former belongs to this retirement.
 
-The authenticated label/open-item read on 2026-07-26 found 27 live
+The authenticated label/open-item read on 2026-07-26 found 28 live
 product-loop definitions: `auto-bug`, `auto-change`, two `auto-checker-*`,
 twenty `auto-fix-*`, `community-loop-red`, `loop-consent`, and
-`priority:loop-discipline`. Representative open-issue counts were
+`priority:loop-discipline`, plus `ready_for_checker`, whose live description
+still promises loop PR pre-checks and whose historical PR associations must be
+receipt-preserved (292 PR associations, zero open issues). Representative
+open-issue counts were
 `auto-bug=40`, `auto-change=213`, `auto-fix-attempted=185`, and
 `priority:loop-discipline=42`; `community-loop-red` and `loop-consent` had zero
 open issues. These are active external routing/status claims, not merely
@@ -85,6 +90,15 @@ Both handler routes are the same retired automation:
 
 Keeping the Goal route while deleting only the branch-definition fallback would
 leave a host-configured product loop and would not satisfy the directive.
+
+### Hidden patch-request composition
+
+| Surface | Current behavior | Retirement |
+|---|---|---|
+| `tinyassets/api/market.py:202-235` | `classify_patch_request` injects free/paid daemon claimants, a Claude/Codex writer gate, and an opposite-family checker gate | Delete the classifier; ordinary request submission does not choose a platform writer/checker team |
+| `tinyassets/api/universe.py:2157-2174` | Persists `request_classification` into submitted requests/tasks | Stop writing it and ignore/strip pending legacy metadata as non-authorizing residue |
+| `tinyassets/work_targets.py:546-553` | Copies the hidden classification into downstream targets | Remove the propagation while preserving explicitly authorized generic routing inputs |
+| pickup and soul dispatch | Explicit requester incentives, directed-daemon selection, `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and a user soul's `loop_branch_def_id` | Preserve as bounded user-authored routing under their existing authority owners; none grants provider, credential, effect, release, or merge authority |
 
 ### Dedicated execution behavior
 
@@ -199,12 +213,13 @@ skill/catalog routes, automatic patch-announcement workflow, and orphaned
 patch-announcement script leave. Historical incident records may remain only
 outside an active skill package with explicit historical labeling.
 
-`.github/workflows/auto-enroll-merge.yml` is separately classified and remains.
-It is repository-maintainer integration guarded to non-draft same-repository
-PRs targeting `main`, with branch protection and required checks as the merge
-policy. It does not consume universe/task/graph state and does not install
-implicit merge authority into a generic GitHub effect. Generic
-`allow_auto_merge` and merge-effector inputs remain explicit.
+`.github/workflows/auto-enroll-merge.yml` also leaves. It makes auto-merge the
+default for every eligible same-repository PR to `main`, so a generic
+PR-creation effect can acquire eventual merge without the separately required
+merge capability, exact head SHA authorization, and receipt. Current branch
+protection checks do not restore that missing authority boundary. Generic
+PR-create and exact-head merge effects remain separately available to an
+explicit user/maintainer workflow.
 
 ### Live GitHub label migration
 
@@ -213,7 +228,7 @@ definition plus every open/closed issue and PR association into a
 digest-bound, idempotent migration receipt. It removes retired labels from open
 items without closing them or changing their bodies, publishes one
 repository-wide retirement notice linked to the receipt, and then deletes the
-27 definitions. Closed bodies remain historical and the receipt preserves
+28 definitions. Closed bodies remain historical and the receipt preserves
 their former association.
 
 The preserved generic vocabulary includes `daemon-request`, `request:*`,
@@ -221,6 +236,12 @@ The preserved generic vocabulary includes `daemon-request`, `request:*`,
 `needs-human`, `priority:primitive-*`, `merge-effector`, and `secure-merge`.
 After rollout, no workflow, script, website fallback, runtime, or active skill
 may consume a retired label.
+
+The blank `patch_request` label is explicitly preserved as generic filing/effect
+trace vocabulary, not a loop route: the live repository has one closed request
+issue and its merged exact-head merge-effector PR bearing it, and the current
+source scan finds no workflow or runtime consumer. This does not preserve the
+removed `request_classification` policy or any automatic writer/checker route.
 
 ### Shipped prompt and snapshot residues
 

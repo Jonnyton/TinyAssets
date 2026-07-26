@@ -28,8 +28,8 @@ publish those designs to the commons for copying, remixing, or combination.
 #### Scenario: Generic completed-run reuse has no packet writeback
 
 - **WHEN** a generic branch task reuses a matching completed durable run
-- **THEN** the executor may return its ordinary reused-run evidence without
-  executing again
+- **THEN** the daemon-runtime owner returns its required stable reused-run
+  evidence without executing again
 - **AND** it does not interpret output field names as authority to mutate a wiki
   page or repository
 
@@ -39,11 +39,43 @@ publish those designs to the commons for copying, remixing, or combination.
 - **THEN** no skill or catalog route instructs it to file a synthetic request into, wait for, repair, or verify a platform-owned investigation/shipping loop
 - **AND** historical incident evidence is not packaged as an invocable loop skill
 
-#### Scenario: Patch announcements require explicit workflow authority
+#### Scenario: Repository effects require explicit workflow authority
 
-- **WHEN** a deployment or main push completes
-- **THEN** TinyAssets does not automatically compose and post a patch-loop announcement
-- **AND** any later outbound announcement is an explicitly selected workflow with its own narrow authority and receipt
+- **WHEN** a generic effect opens a same-repository pull request or a deployment/main push completes
+- **THEN** TinyAssets does not implicitly enroll the pull request for merge or automatically compose and post a patch-loop announcement
+- **AND** any later merge or outbound announcement is an explicitly selected workflow with its own narrow capability, exact-target authorization, and receipt
+
+### Requirement: Explicit User Request Routing Survives Without A Product Writer Policy
+
+Generic request submission SHALL NOT inject a platform-selected writer family,
+opposite-family checker, free/paid daemon claim set, patch meaning, or other
+`request_classification` policy. Legacy pending classifications SHALL be
+ignored and stripped during migration rather than treated as execution or
+effect authority.
+
+Explicit requester pickup incentives and directed-daemon selections MAY remain
+only as bounded pickup signals that cannot change acceptance, release, merge,
+or provider/effect authority. A user's soul-declared `loop_branch_def_id` and
+the gated soul-loop dispatcher SHALL remain available as the user-authored
+automation path; retirement SHALL NOT redirect it into a platform workflow.
+
+#### Scenario: Generic request has no hidden writer team
+
+- **WHEN** an authorized user submits a generic request
+- **THEN** the stored request/task contains no hard-coded `code_writer_gate`, `checker_gate`, `claimable_by`, or product `request_classification`
+- **AND** dispatcher eligibility comes only from ordinary request, identity, authority, and explicitly selected workflow rules
+
+#### Scenario: Explicit pickup signal remains non-authorizing
+
+- **WHEN** a requester supplies a pickup incentive or authorized directed-daemon selection
+- **THEN** it may affect only bounded pickup ordering
+- **AND** it cannot grant acceptance, release, merge, provider, credential, or effect authority
+
+#### Scenario: User soul loop remains user-authored
+
+- **WHEN** a universe owner explicitly declares a `loop_branch_def_id` and enables the soul-loop dispatch gate
+- **THEN** the runtime may resolve that exact user-owned branch through the generic execution path
+- **AND** retirement neither deletes it nor substitutes a platform-owned investigation/shipping loop
 
 ### Requirement: Retired Request Classes Fail Closed Before Generic Execution
 

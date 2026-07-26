@@ -60,7 +60,19 @@
   hold non-runnable, and perform no queue CAS or authority release. Block
   runtime replacement unless every legacy worker is quiesced and a locked
   preflight proves there is no retired v1 `running` or v2
-  `running`/`cancel_requested` row.
+  `running`/`cancel_requested` row. Preserve #1803's
+  `manual_resolution_required` action for ambiguity beyond the autonomous
+  reconciliation window; resolution requires authoritative evidence and never
+  retries retired work.
+- [ ] 2.6 Remove `classify_patch_request`, its hard-coded free/paid claimant,
+  Claude/Codex writer, opposite-family checker, meaning, and persisted
+  `request_classification` policy from `tinyassets/api/market.py`,
+  `tinyassets/api/universe.py`, `tinyassets/work_targets.py`, plugin mirrors,
+  and tests. Ignore/strip pending legacy classification metadata. Rename
+  surviving pickup-only constants/normalizers generically while preserving
+  explicit requester pickup incentives, authorized directed-daemon selection,
+  `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and user-owned
+  soul `loop_branch_def_id` execution under their independent authority.
 
 ## 3. Remove Auto-Ship Product Automation
 
@@ -83,19 +95,22 @@
   evidence without adding a runtime migration reader.
 - [ ] 3.5 Delete the push/deploy-triggered
   `.github/workflows/announce-patch.yml` and its patch-loop announcement script
-  when no independent explicit consumer remains. Preserve generic
-  outbound-effect primitives. Preserve the independently owned
-  `.github/workflows/auto-enroll-merge.yml` maintainer integration, and prove it
-  neither consumes retired labels nor grants user workflows implicit merge
-  authority.
-- [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 27
+  when no independent explicit consumer remains. Delete
+  `.github/workflows/auto-enroll-merge.yml`, which escalates same-repository
+  PR-create authority into eventual merge without the separately required
+  merge capability, exact head SHA, and receipt. Preserve generic PR-create,
+  exact-head merge, and outbound-effect primitives for explicit
+  user/maintainer workflows.
+- [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 28
   exact retired definitions plus every labelled issue/PR (open and closed) into
   a digest-bound receipt; strip retired labels from open items without closing
   or rewriting them; publish one idempotent repository-wide notice; delete the
   definitions; and verify no workflow/script/site/runtime consumer remains.
   Preserve generic `daemon-request`, `request:*`, `payment:*`,
-  `gate-required`, `checker:*`, `writer:*`, `needs-human`,
-  `priority:primitive-*`, `merge-effector`, and `secure-merge` labels.
+  `gate-required`, `checker:*`, `writer:*`, `writer-pool:*`, `needs-human`,
+  `priority:primitive-*`, `patch_request`, `merge-effector`, and `secure-merge`
+  labels. Prove `patch_request` has no active routing consumer and cannot imply
+  writer/checker/daemon/merge/effect authority.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
@@ -155,7 +170,7 @@
   from shipped runtime, active configuration, current operator guidance,
   active specs/milestones/exec plans/wiki pages, website source/static/build,
   executable tests, workflows, and package output; all shipped/current scopes
-  must be clean. Query live GitHub labels and open items to prove the 27 retired
+  must be clean. Query live GitHub labels and open items to prove the 28 retired
   definitions and their routing/status consumption are absent while generic
   labels remain.
 - [ ] 6.5 Perform the final rendered-chatbot `ui-test` through
@@ -167,5 +182,6 @@
 - [ ] 6.7 Sync the coordination, daemon, graph, wiki, uptime, and website deltas; explicitly rewrite
   canonical `wiki-commons` Purpose prose that promises trigger receipts and
   `uptime-and-alarms` prose that names the neighboring patch loop; retire the
-  `community-patch-loop` main spec; archive this change with implementation;
-  and remove its STATUS row in the landing commit.
+  `community-patch-loop` main spec only after its stable completed-run reuse
+  guarantee is owned by `daemon-runtime-and-dispatch`; archive this change with
+  implementation; and remove its STATUS row in the landing commit.

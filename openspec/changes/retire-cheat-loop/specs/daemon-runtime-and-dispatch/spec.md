@@ -41,6 +41,13 @@ historical evidence. Every migration attempt SHALL emit bounded counts and
 identifiers/digests for prior/final state and retention action without
 reinterpreting or resubmitting work.
 
+When #1803's bounded autonomous reconciliation window cannot resolve a retired
+ambiguous receipt, the #1803 owner SHALL emit its
+`manual_resolution_required` operator action. Manual resolution may advance
+only from authoritative launch/result evidence to the matching conclusive
+authority terminal, after which retirement may finish its existing-state queue
+transition; it SHALL never authorize a retry or replacement execution.
+
 #### Scenario: Pre-1803 deployment cannot strand a live legacy worker
 
 - **WHEN** #1803 runtime authority is unavailable and any legacy worker is not quiesced or any retired v1/v2 claimed row exists
@@ -77,3 +84,30 @@ reinterpreting or resubmitting work.
 - **WHEN** migration encounters an already succeeded, failed, or cancelled retired row
 - **THEN** its existing status and evidence remain unchanged
 - **AND** replay and recovery cannot resubmit or reinterpret it
+
+#### Scenario: Retired ambiguity retains the operator action
+
+- **WHEN** bounded #1803 reconciliation cannot resolve a retired fenced receipt
+- **THEN** the work remains non-runnable and emits `manual_resolution_required`
+- **AND** only authoritative evidence may resolve the fence, never a rerun or compatibility execution
+
+### Requirement: Completed Branch Tasks Reuse Stable Durable Runs Without Product Writeback
+
+The daemon branch-task executor SHALL derive the stable run name
+`branch-task-<branch_task_id>` and reuse a matching completed durable run
+rather than execute it again. It SHALL return metadata containing the reused
+run id, status, actor, branch definition, and `reused_existing_run=true`; the
+stored output remains internal execution evidence. Generic reuse SHALL NOT
+inspect product packet field names or mutate a wiki/repository.
+
+#### Scenario: Completed durable run is reused after restart
+
+- **WHEN** a claimed branch task has a matching completed run under its stable run name
+- **THEN** the executor returns the exact reused-run metadata and does not invoke branch execution again
+- **AND** it performs no Patch Packet recovery or writeback
+
+#### Scenario: Nonmatching or incomplete run is not reused
+
+- **WHEN** no matching completed durable run exists for the stable task name
+- **THEN** the executor follows the ordinary authorized execution path
+- **AND** no stale or differently named run is treated as the task result

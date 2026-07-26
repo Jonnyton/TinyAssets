@@ -40,6 +40,9 @@ the primitives from which a user can build the same outcome explicitly.
 - Remove patch-loop/community-loop product presentation and fallback data from
   the public website while preserving truthful generic user-workflow activity.
 - Preserve generic composition and execution primitives.
+- Remove hard-coded patch-intake writer/checker/access policy while preserving
+  explicit requester pickup incentives, directed-daemon selection, and the
+  user's soul-declared loop dispatch as ordinary user-authored routing.
 - Move read-only uptime, deploy, clean-clone, and revert-rate observation to a
   generic uptime/alarm successor with no task-dispatch self-heal.
 
@@ -50,6 +53,13 @@ the primitives from which a user can build the same outcome explicitly.
   enqueue, or wiki write capabilities.
 - Removing generic evaluation or explicit GitHub-effect primitives from which a
   user may compose a reviewed shipping workflow.
+- Removing `_universe_loop_dispatch`,
+  `TINYASSETS_SOUL_LOOP_DISPATCH`, or a user's explicit
+  soul-declared `loop_branch_def_id`; those are the user-authored automation
+  path this retirement is meant to preserve.
+- Removing explicit requester pickup-incentive or directed-daemon inputs. They
+  remain bounded pickup signals and never imply acceptance, release, merge, or
+  a platform-selected writer/checker workflow.
 - Defining a new scheduler, bug-investigation workflow, or compatibility alias.
 - Rewriting historical plans and audits that are clearly identified as history.
 
@@ -208,6 +218,19 @@ control-station copy, current exec plans/specs/milestones, discoverable wiki
 plans, plugin mirrors, and behavior tests are updated or clearly archived so
 no current guidance promises the retired loop.
 
+The product-wired intake classifier also leaves.
+`tinyassets.api.market.classify_patch_request` currently injects
+`claimable_by=[free_daemon, paid_daemon]`,
+`code_writer_gate=claude_or_codex`, and
+`checker_gate=opposite_family_checker` into every submitted request, after
+which `tinyassets.api.universe` persists and queues that classification. This
+is the writer/checker team hidden in platform policy. Remove the classifier and
+the persisted `request_classification` field; pending legacy metadata is
+ignored/stripped rather than treated as authority. Rename the surviving
+pickup-only boundary/normalizer constants away from patch-loop vocabulary.
+Explicit requester incentives, directed-daemon assignments, and
+soul-declared loop dispatch remain under their independent authority owners.
+
 The active `loop-uptime-maintenance` agent skill and its catalog routes are
 retired, not left as an emergency backdoor. Its incident records may remain
 only as clearly historical evidence outside an active skill package. Website
@@ -215,24 +238,22 @@ editing guidance is rewritten around generic provenance-labelled workflow
 activity and separately sourced uptime evidence. Canonical `.agents/skills`
 changes are mirrored into `.claude/skills` with the normal sync gate.
 
-The push/deploy-triggered `announce-patch.yml` effect is a patch-loop
-composition and is deleted. A future public announcement must be an explicitly
-selected user/maintainer workflow with its own narrow authority and receipt;
-generic outbound-effect primitives remain available. The patch announcement
-script leaves when it has no independent explicit consumer.
-
-`auto-enroll-merge.yml` is classified separately and preserved: it is this
-repository's maintainer-authored integration workflow, guarded by same-repo,
-non-draft, main-target, branch-protection, and required-check policy. It is not
-installed into a TinyAssets universe, cannot act on user task/graph state, and
-grants no generic GitHub effect implicit merge authority. The generic
-`allow_auto_merge`/merge-effector primitives remain explicit inputs.
+The push/deploy-triggered `announce-patch.yml` effect and repository-wide
+`auto-enroll-merge.yml` standing merge instruction are deleted. Auto-enrollment
+turns an authorized generic PR-create effect into eventual merge without the
+separate merge capability, exact head SHA authorization, and receipt required
+by the existing GitHub merge contract; branch checks do not supply that
+missing authority. Future merge enrollment or public announcement must be an
+explicitly selected user/maintainer workflow with its own narrow authority and
+receipt. Generic PR-create, exact-head merge, and outbound-effect primitives
+remain available. The patch announcement script leaves when it has no
+independent explicit consumer.
 
 Live GitHub labels are executable routing/status vocabulary, not harmless
 documentation. Rollout snapshots every definition and every issue/PR bearing a
 retired label into a digest-bound migration receipt; removes the retired labels
 from open items without closing them or rewriting their content; publishes one
-repository-wide retirement notice linked to the receipt; then deletes these 27
+repository-wide retirement notice linked to the receipt; then deletes these 28
 definitions:
 
 `auto-bug`, `auto-change`, `auto-checker-dispatched`,
@@ -243,15 +264,23 @@ definitions:
 `auto-fix-pr-blocked`, `auto-fix-provider-exhausted`,
 `auto-fix-retries-1` through `auto-fix-retries-5`, `auto-fix-reviewed`,
 `auto-fix-stale-gate`, `auto-fix-superseded`, `auto-fix-writer-failed`,
-`community-loop-red`, `loop-consent`, and `priority:loop-discipline`.
+`community-loop-red`, `loop-consent`, `priority:loop-discipline`, and
+`ready_for_checker`.
 
 Closed item bodies remain historical; their former label association is
 recoverable from the receipt after definition deletion. Generic labels remain,
 including `daemon-request`, `request:*`, `payment:*`, `gate-required`,
 `checker:*`, `writer:*`, `writer-pool:*`, `needs-human`,
-`priority:primitive-*`, `merge-effector`, and `secure-merge`. No workflow,
-script, site fallback, or runtime consumer may continue matching a retired
-label.
+`priority:primitive-*`, `patch_request`, `merge-effector`, and `secure-merge`.
+The blank `patch_request` label remains only as generic filing/effect trace
+vocabulary and has no workflow/runtime consumer; it does not preserve a hidden
+request classifier or writer/checker route. No workflow, script, site fallback,
+or runtime consumer may continue matching a retired label.
+
+`ready_for_checker` is retired even though it has no current open association:
+its live definition advertises the loop's source, duplicate, stale-base, and
+scope-split pre-check policy, and its historical PR associations belong in the
+same receipt.
 
 Current loop-team souls and generated website snapshots are shipped prompt/data
 surfaces, not archival truth. The six shipped `docs/souls` loop-role souls and

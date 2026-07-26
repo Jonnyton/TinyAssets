@@ -2,7 +2,7 @@
 
 ### Requirement: Retired Loop Labels Are Migrated Without Losing Repository Work
 
-The repository SHALL remove the 27 product-loop label definitions:
+The repository SHALL remove the 28 product-loop label definitions:
 `auto-bug`, `auto-change`, `auto-checker-dispatched`,
 `auto-checker-failed`, `auto-fix-already-fixed`, `auto-fix-attempted`,
 `auto-fix-auth-expired`, `auto-fix-auth-missing`, `auto-fix-blocked`,
@@ -12,7 +12,8 @@ The repository SHALL remove the 27 product-loop label definitions:
 `auto-fix-retries-1`, `auto-fix-retries-2`, `auto-fix-retries-3`,
 `auto-fix-retries-4`, `auto-fix-retries-5`, `auto-fix-reviewed`,
 `auto-fix-stale-gate`, `auto-fix-superseded`, `auto-fix-writer-failed`,
-`community-loop-red`, `loop-consent`, and `priority:loop-discipline`.
+`community-loop-red`, `loop-consent`, `priority:loop-discipline`, and
+`ready_for_checker`.
 
 Before mutation, an idempotent dry-run/apply migrator SHALL snapshot each
 definition and every open or closed issue/PR association into a digest-bound
@@ -25,8 +26,11 @@ historical and their former associations remain recoverable from the receipt.
 The migration SHALL preserve generic coordination vocabulary including
 `daemon-request`, `request:*`, `payment:*`, `gate-required`, `checker:*`,
 `writer:*`, `writer-pool:*`, `needs-human`, `priority:primitive-*`,
-`merge-effector`, and `secure-merge`. After cutover, no active workflow,
-script, website fallback, runtime, or agent skill may consume a retired label.
+`patch_request`, `merge-effector`, and `secure-merge`. `patch_request` SHALL
+remain non-routing generic filing/effect trace vocabulary and SHALL NOT imply a
+writer, checker, daemon, merge, or effect authority. After cutover, no active
+workflow, script, website fallback, runtime, or agent skill may consume a
+retired label.
 
 #### Scenario: Dry run changes no repository state
 
@@ -43,7 +47,7 @@ script, website fallback, runtime, or agent skill may consume a retired label.
 #### Scenario: Definitions leave only after migration
 
 - **WHEN** every affected open item is migrated and the repository-wide notice is recorded idempotently
-- **THEN** apply deletes all 27 retired label definitions
+- **THEN** apply deletes all 28 retired label definitions
 - **AND** a partial item/notice failure leaves remaining definitions intact for safe retry
 
 #### Scenario: Generic labels survive

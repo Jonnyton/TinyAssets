@@ -16,6 +16,11 @@ public primitives, not a product-specific hidden loop.
 - **BREAKING** Remove the dedicated `bug_investigation` request type, payload
   adapter, handler resolution, execution special cases, and automatic Patch
   Packet write-back from shipped runtime and tests.
+- **BREAKING** Remove the platform `classify_patch_request` policy and its
+  hard-coded free/paid claimant, Claude/Codex writer, opposite-family checker,
+  and persisted `request_classification` metadata. Preserve explicit requester
+  pickup incentives, directed-daemon selection, and user soul-loop dispatch as
+  bounded user-authored routing under their independent authority owners.
 - **BREAKING** Remove `validate_ship_packet`, `open_auto_ship_pr`, the
   `auto_ship` validator/ledger/PR modules and storage, all auto-ship
   configuration, and `get_status.auto_ship_health`. The `get_status` handle
@@ -30,10 +35,11 @@ public primitives, not a product-specific hidden loop.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
-- Snapshot and remove the 27 live GitHub label definitions that encode retired
+- Snapshot and remove the 28 live GitHub label definitions that encode retired
   loop routing/status, strip them from open issues/PRs without closing or
   rewriting user content, preserve generic request/gate/checker/payment labels,
-  and publish an idempotent migration receipt plus repository-wide notice.
+  including non-routing `patch_request` filing/effect trace vocabulary, and
+  publish an idempotent migration receipt plus repository-wide notice.
 - Remove the public website's privileged patch-loop route/status fallback,
   checked-in community-loop JSON, workflow/label assumptions, and fine-print
   branding. Preserve a generic user-workflow activity view only when it has
@@ -82,7 +88,8 @@ The implementation slice removes cheat-loop consumers from
 `fantasy_daemon/__main__.py`, `tinyassets/auto_ship*.py`,
 `tinyassets/api/auto_ship_actions.py`, extension/auth action registration,
 `get_status`, dispatcher/compiler comments and defaults, queued legacy request
-state, coding-packet auto-ship aliases/config/rubrics, merge-readiness branding,
+state, hard-coded patch-request classification and downstream metadata,
+coding-packet auto-ship aliases/config/rubrics, merge-readiness branding,
 public prompts/control-station copy, active plans/wiki guidance,
 `tinyassets/wiki/trigger_receipts.py`, `scripts/community_loop_watch.py`,
 `.github/workflows/community-loop-watch.yml`, production configuration, the
@@ -90,11 +97,12 @@ canonical Svelte website and legacy React mirror, checked-in website status
 JSON, the external `AUTO_FIX_DISABLED` repository variable, active agent
 skills and loop souls, automatic patch-announcement workflow, current
 "auto-fix loop" wording, generated Claude plugin runtime mirror, and tests that
-assert the retired behavior. The independently owned repository auto-enrollment
-workflow remains maintainer integration, not user-task authority. Historical
-design/audit records may retain clearly marked history; current operator
-guidance, configuration, build outputs, behavioral specs, and agent
-instructions must not advertise or exercise the retired path or capability.
+assert the retired behavior. The repository auto-enrollment workflow also
+leaves because it escalates generic PR creation into merge without the
+separately required merge authority and receipt. Historical design/audit
+records may retain clearly marked history; current operator guidance,
+configuration, build outputs, behavioral specs, and agent instructions must
+not advertise or exercise the retired path or capability.
 
 Existing generic primitives are not replaced or aliased. Users who want bug
 investigation, patch generation, PR effects, scheduled work, or similar
