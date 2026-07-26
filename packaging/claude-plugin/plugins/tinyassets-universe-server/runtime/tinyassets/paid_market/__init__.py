@@ -20,6 +20,17 @@ from tinyassets.paid_market.ceiling import (  # noqa: F401
     ceiling_for_capability,
     parse_models_payload,
 )
+from tinyassets.paid_market.descriptors import (  # noqa: F401
+    ConstructedDescriptor,
+    DescriptorError,
+    ProfileSchemaValidator,
+    construct_descriptor,
+    lane_fields,
+    match_descriptor,
+    project_market_class,
+    validate_descriptor,
+    verify_canonical_descriptor,
+)
 from tinyassets.paid_market.fabrication import (  # noqa: F401
     FabricationError,
     SellerOffer,
@@ -83,6 +94,13 @@ from tinyassets.paid_market.pool import (  # noqa: F401
     apportion_exact,
     distribute_revenue,
     settle_pool_funding,
+)
+from tinyassets.paid_market.scope import (  # noqa: F401
+    SCOPE_DOMAIN,
+    ScopeError,
+    ScopeRevision,
+    derive_public_scope_dimensions,
+    validate_scope_dimensions,
 )
 from tinyassets.paid_market.shuttle import (  # noqa: F401
     ShuttleError,

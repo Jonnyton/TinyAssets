@@ -12,6 +12,8 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Mapping, Protocol
 
+from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
+
 
 class QuoteError(ValueError):
     """A quote is malformed, stale, unverified, or economically incomplete."""
@@ -122,6 +124,9 @@ class ValidatedQuote:
     executable: bool
     capacity_remaining: int | None
     canonical_bytes: bytes
+    schema_version: int = 1
+    market_scope_revision: str | None = None
+    public_scope_dimensions: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -136,7 +141,7 @@ class FxBinding:
     approved: bool
 
 
-_QUOTE_FIELDS = {
+_QUOTE_FIELDS_V1 = {
     "schema_version",
     "quote_id",
     "authority_class",
@@ -169,6 +174,15 @@ _QUOTE_FIELDS = {
     "capacity_grant",
 }
 
+# Scope provenance arrives at the v2 boundary only: a v1 signature covers v1
+# bytes under the v1 domain and can never authorize either new scope field.
+_QUOTE_SCOPE_FIELDS = {"market_scope_revision", "public_scope_dimensions"}
+_QUOTE_FIELDS_V2 = _QUOTE_FIELDS_V1 | _QUOTE_SCOPE_FIELDS
+_QUOTE_SCHEMAS: dict[int, tuple[set[str], str]] = {
+    1: (_QUOTE_FIELDS_V1, "tinyassets.paid-market.quote.v1"),
+    2: (_QUOTE_FIELDS_V2, "tinyassets.paid-market.quote.v2"),
+}
+
 _REQUIRED_COMPONENTS = {
     "inference": frozenset({"input", "output", "platform_fee"}),
     "training": frozenset({"accelerator", "platform_fee"}),
@@ -181,9 +195,22 @@ _REQUIRED_COMPONENTS = {
 
 def quote_signing_bytes(raw: Mapping[str, object]) -> bytes:
     """Validate and serialize every authority-bearing field except signature."""
-    _require_exact_fields(raw, _QUOTE_FIELDS, "quote")
-    if raw["schema_version"] != 1:
+    schema_version = raw.get("schema_version")
+    # `True == 1` in Python, so a bool must never select the v1 schema.
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in _QUOTE_SCHEMAS
+    ):
         raise QuoteError("unsupported quote schema_version")
+    fields, signing_domain = _QUOTE_SCHEMAS[schema_version]
+    _require_exact_fields(raw, fields, "quote")
+    if schema_version == 2:
+        _require_text(raw["market_scope_revision"], "market_scope_revision")
+        try:
+            validate_scope_dimensions(raw["public_scope_dimensions"])
+        except ScopeError as exc:
+            raise QuoteError("public_scope_dimensions_invalid") from exc
     if raw["descriptor_version"] != 1:
         raise QuoteError("unsupported descriptor_version")
 
@@ -247,10 +274,15 @@ def quote_signing_bytes(raw: Mapping[str, object]) -> bytes:
     else:
         raise QuoteError("unsupported quote authority_class")
 
-    body = {name: raw[name] for name in sorted(_QUOTE_FIELDS - {"signature"})}
-    body["domain"] = "tinyassets.paid-market.quote.v1"
+    body = {name: raw[name] for name in sorted(fields - {"signature"})}
+    body["domain"] = signing_domain
     if isinstance(body["capacity_grant"], CapacityGrant):
         body["capacity_grant"] = body["capacity_grant"].as_dict()
+    if schema_version == 2:
+        # Canonical scope bytes sign as their exact ASCII text.
+        body["public_scope_dimensions"] = bytes(
+            body["public_scope_dimensions"]  # type: ignore[arg-type]
+        ).decode("ascii")
     try:
         return json.dumps(
             body,
@@ -307,6 +339,12 @@ def validated_quote_from_mapping(
         capacity_remaining = grant.remaining_quantity
         executable = True
 
+    schema_version = int(raw["schema_version"])  # type: ignore[arg-type]
+    scope_bytes = (
+        bytes(raw["public_scope_dimensions"])  # type: ignore[arg-type]
+        if schema_version == 2
+        else None
+    )
     return ValidatedQuote(
         quote_id=str(raw["quote_id"]),
         authority_class=authority_class,
@@ -319,6 +357,11 @@ def validated_quote_from_mapping(
         executable=executable,
         capacity_remaining=capacity_remaining,
         canonical_bytes=payload,
+        schema_version=schema_version,
+        market_scope_revision=(
+            str(raw["market_scope_revision"]) if schema_version == 2 else None
+        ),
+        public_scope_dimensions=scope_bytes,
     )
 
 
