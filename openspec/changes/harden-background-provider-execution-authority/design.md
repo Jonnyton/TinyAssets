@@ -212,7 +212,9 @@ changes the tuple and makes the reset fail; recovery must restart from a fresh
 authority proof. The proof alone grants no provider or queue authority.
 Startup may also reclaim provably-dead predecessor and leaseless rows; the hot
 dispatcher-pick sweep considers expired leases only. Both apply the same V2
-authority proof/CAS when a provider-capable row is eligible.
+authority proof/CAS when a provider-capable row is eligible. After confirmed
+child death, graceful-drain release of the supervisor's own orphaned leases
+uses that same proof/fence/CAS before any provider-capable row resets.
 Lease expiry alone never proves death. Before proof issuance, recovery must
 either prove the old owner dead or atomically invalidate the old execution
 claim generation under the authority store. Claim invalidation serializes
@@ -242,17 +244,18 @@ receipt generation, runtime instance, worker, process/task identity, work
 item, and lease. Heartbeat may extend the claim only for that exact owner and
 never extends the receipt’s absolute lifetime or budget.
 
-If a worker is provably dead and the receipt has no reservation, or every
-reservation has a durable conclusive state (`cancelled_before_launch`,
-`succeeded`, or `failed`), the server may expire the claim and issue a new
-claim generation for the remaining authorized work. Consumed terminal slots
+If a worker is provably dead or its execution-claim generation was atomically
+invalidated, and the receipt has no reservation or every reservation has a
+durable conclusive state (`cancelled_before_launch`, `succeeded`, or
+`failed`), the server may expire the claim and issue a new claim generation
+for the remaining authorized work. Consumed terminal slots
 and budgets remain consumed only for launched `succeeded` or `failed`
 reservations; `cancelled_before_launch` releases its full reserved authority.
-A dead-owner `reserved` reservation is provably pre-arm under the durable
-ordering below, so reconciliation atomically cancels it before launch and may
-then reclaim. An unclosed `launch_started` or `indeterminate` reservation is
-ambiguous and fences. Every stale object/envelope from the old generation
-then fails.
+A dead/invalidated-owner `reserved` reservation is provably pre-arm under the
+durable ordering below, so reconciliation atomically cancels it before launch
+and may then reclaim. An unclosed `launch_started` or `indeterminate`
+reservation is ambiguous and fences. Every stale object/envelope from the old
+generation then fails.
 
 If any reservation may have launched but lacks a conclusive result, the
 receipt becomes `fenced_indeterminate`. It cannot be reclaimed or retried

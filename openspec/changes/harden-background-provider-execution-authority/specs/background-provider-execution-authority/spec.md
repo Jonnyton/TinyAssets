@@ -105,13 +105,13 @@ The system SHALL permit at most one active `ProviderWorkExecutionClaim` for a re
 - **THEN** the authority store atomically invalidates and advances the old execution-claim generation or reports the newer competing state
 - **AND** every reservation operation from the invalidated owner fails active-generation validation
 
-#### Scenario: Provably dead owner with conclusive reservations is reclaimable
-- **WHEN** the current claim owner is provably dead and the receipt has no reservation or every reservation is durably `cancelled_before_launch`, `succeeded`, or `failed`
+#### Scenario: Dead or invalidated owner with conclusive reservations is reclaimable
+- **WHEN** the current claim owner is provably dead or its execution-claim generation was atomically invalidated, and the receipt has no reservation or every reservation is durably `cancelled_before_launch`, `succeeded`, or `failed`
 - **THEN** the system may atomically expire the old claim and issue a bounded replacement claim for remaining authorized work
 - **AND** `succeeded` and `failed` invocation and budget amounts remain consumed while `cancelled_before_launch` authority is released
 
-#### Scenario: Dead owner reserved before arming is cancellable
-- **WHEN** the current claim owner is provably dead and a reservation remains durably `reserved`
+#### Scenario: Dead or invalidated owner reserved before arming is cancellable
+- **WHEN** the current claim owner is provably dead or its execution-claim generation was atomically invalidated, and a reservation remains durably `reserved`
 - **THEN** the system atomically transitions it to `cancelled_before_launch`, releases its full invocation, token, and cost reservation, and may reclaim remaining work
 
 #### Scenario: Ambiguous launch is fenced

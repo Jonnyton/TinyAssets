@@ -17,7 +17,7 @@ All branch-task queue mutations (`tinyassets.branch_tasks`) SHALL execute under 
 - **THEN** it raises rather than corrupting the row
 
 ### Requirement: Startup recovery is lease-aware and worker-scoped, never a blanket reset
-At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. Startup SHALL consider rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled). The dispatcher SHALL skip predecessor reclaim when the worker id is blank or the shared host default. Before every dispatcher claim/pick, the hot sweep SHALL call only `reclaim_expired_leases` with leaseless reclaim disabled and SHALL NOT perform predecessor reclaim. Under the effective provider-authority V2 gate, both startup and hot-pick expired-lease resets SHALL apply the same provider-authority guard: lease expiry alone SHALL NOT prove owner death; `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and monotonic lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Non-provider-capable rows retain the respective shipped startup or hot-pick lease rule under V2, and dark provider behavior retains the same shipped rules. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
+At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. Startup SHALL consider rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled). `reclaim_predecessor_tasks` SHALL no-op on a blank worker id; every caller SHALL pass only a uniquely-assigned id and SHALL skip the shared host default. Before every dispatcher claim/pick, the hot sweep SHALL call only `reclaim_expired_leases` with leaseless reclaim disabled and SHALL NOT perform predecessor reclaim. Under the effective provider-authority V2 gate, both startup and hot-pick expired-lease resets SHALL apply the same provider-authority guard: lease expiry alone SHALL NOT prove owner death; `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and monotonic lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Non-provider-capable rows retain the respective shipped startup or hot-pick lease rule under V2, and dark provider behavior retains the same shipped rules. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
 
 #### Scenario: an expired-lease orphan with conclusive authority is reclaimed
 - **WHEN** startup recovery finds an expired provider-capable row, proves its owner dead or atomically invalidates the old claim generation, and finds no reservation or only reservations durably `cancelled_before_launch`, `succeeded`, or `failed`
@@ -45,7 +45,7 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 
 #### Scenario: a non-unique worker id skips predecessor reclaim
 - **WHEN** the worker id is blank or equal to the shared host default
-- **THEN** the dispatcher skips predecessor reclaim and the lease TTL remains the only fallback
+- **THEN** the helper no-ops on blank and every caller skips the shared host default, leaving the lease TTL as the only fallback
 
 #### Scenario: lease renewal defeats stale recovery proof
 - **WHEN** a worker heartbeat or lease renewal changes the queue row after authority proof but before reset
@@ -120,15 +120,20 @@ The daemon and dispatch system SHALL obtain a fresh server-issued provider-work 
 - **AND** existing authority-ledger records cannot be discarded or bypassed
 
 ### Requirement: Daemon recovery respects receipt launch fences
-The daemon and dispatch system SHALL reconcile execution claims and provider invocation reservations before redispatching provider-capable work after worker death, restart, lease loss, or ambiguous transport outcome. This requirement is subject to the effective provider-authority V2 gate; while dark it SHALL preserve shipped recovery behavior.
+The daemon and dispatch system SHALL reconcile execution claims and provider invocation reservations before redispatching provider-capable work after worker death, restart, lease loss, graceful-drain release of the worker's own orphaned leases, or ambiguous transport outcome. Graceful drain SHALL apply the same owner invalidation, reservation reconciliation, fence, monotonic lease-generation, and queue compare-and-swap guard before resetting any provider-capable row. This requirement is subject to the effective provider-authority V2 gate; while dark it SHALL preserve shipped recovery behavior for work with no authority-ledger record.
 
 #### Scenario: Dead worker before launch can be redispatched
-- **WHEN** the authority store proves the old worker is dead and the receipt has no reservation or only reservations durably `cancelled_before_launch`, `succeeded`, or `failed`
+- **WHEN** the authority store proves the old worker dead or atomically invalidates its claim generation, and the receipt has no reservation or only reservations durably `cancelled_before_launch`, `succeeded`, or `failed`
 - **THEN** the daemon may redispatch under a freshly claimed no-broader receipt
 
 #### Scenario: Dead worker reserved before arming is cancelled
-- **WHEN** the old worker is provably dead with a durable `reserved` reservation
+- **WHEN** the old worker is provably dead or its claim generation was atomically invalidated, with a durable `reserved` reservation
 - **THEN** recovery atomically cancels it before launch, releases its full authority, and may then redispatch under a no-broader receipt
+
+#### Scenario: Graceful drain reconciles before releasing an orphaned lease
+- **WHEN** the supervisor confirms child death and releases its own orphaned provider-capable task lease
+- **THEN** it applies the same authority reconciliation and queue compare-and-swap as startup recovery before resetting the row
+- **AND** an unclosed armed or indeterminate reservation remains fenced and non-claimable
 
 #### Scenario: Ambiguous launch prevents automatic redispatch
 - **WHEN** the authority store cannot prove that the old attempt remained pre-launch
