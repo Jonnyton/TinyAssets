@@ -64,8 +64,8 @@ No test or lint rule was weakened to manufacture a green result.
 - PR #1763 is already merged, but its head was
   `coord/control-station-claim`, not this branch.
 - `gh pr list --head codex/osx-control-station --state all` returns no PR.
-- The resolved merge/report commit will be pushed to
-  `origin/codex/osx-control-station` for inspection.
+- Resolved merge commit `fab5e7c2` was pushed to
+  `origin/codex/osx-control-station`.
 - No new PR or auto-merge was opened/armed because the requested gate set is
   demonstrably red. Arming a known-red public-surface change would violate the
   verification gate.
