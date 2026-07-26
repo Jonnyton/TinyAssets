@@ -50,6 +50,7 @@ def _seed_branch(
     visibility: str = "public",
     name: str | None = None,
     fork_from: str | None = None,
+    parent_def_id: str | None = None,
     node_ids: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     from tinyassets.daemon_server import save_branch_definition
@@ -77,6 +78,7 @@ def _seed_branch(
             "domain_id": "workflow",
             "visibility": visibility,
             "fork_from": fork_from,
+            "parent_def_id": parent_def_id,
             "node_defs": node_defs,
             "graph_nodes": [
                 {"id": node_id, "node_def_id": node_id, "position": index}
@@ -387,6 +389,7 @@ def test_unreadable_fork_pointer_and_ancestor_are_omitted(
         branch_def_id="public-child",
         author="alice",
         fork_from=parent_version,
+        parent_def_id="private-parent",
         node_ids=("child_node",),
     )
     authenticate("alice")
@@ -396,10 +399,17 @@ def test_unreadable_fork_pointer_and_ancestor_are_omitted(
     lineage = _call("fork_tree", branch_def_id="public-child")
 
     assert "fork_from" not in got
+    assert "parent_def_id" not in got
     assert "fork_from" not in described
+    assert "parent_def_id" not in described
     assert lineage["fork_from"] is None
     assert lineage["ancestors"] == []
     assert "private-parent" not in json.dumps(lineage)
+
+    authenticate("bob")
+    parent_owner_view = _call("get_branch", branch_def_id="public-child")
+    assert parent_owner_view["fork_from"] == parent_version
+    assert parent_owner_view["parent_def_id"] == "private-parent"
 
 
 def test_descendant_projection_includes_public_and_owner_private_only(

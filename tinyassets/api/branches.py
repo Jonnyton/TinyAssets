@@ -527,12 +527,19 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
     if resolved is None:
         return _branch_not_found(selector)
     bid, branch = resolved
+    branch = dict(branch)
     fork_from = branch.get("fork_from")
     if fork_from and _resolve_readable_version(
         fork_from,
         str(_base_path()),
     ) is None:
         branch.pop("fork_from", None)
+    parent_def_id = (branch.get("parent_def_id") or "").strip()
+    if parent_def_id and _resolve_readable_branch(
+        parent_def_id,
+        str(_base_path()),
+    ) is None:
+        branch.pop("parent_def_id", None)
     # Phase 6.4: non-retracted claims for this Branch across all
     # Goals. Flag-gated placeholder when GATES_ENABLED=0 so UIs
     # render "gates off" distinct from "no claims yet."
