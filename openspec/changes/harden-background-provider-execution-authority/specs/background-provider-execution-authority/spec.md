@@ -46,6 +46,11 @@ The system SHALL mint a short-lived `ProviderWorkAuthorityReceipt` for one logic
 - **THEN** the authority store atomically transfers invocation, token, and cost ceilings from the parent's remaining authority before each child becomes claimable
 - **AND** concurrent children cannot receive more aggregate authority than the parent's prior remaining ceiling
 
+#### Scenario: Unused child authority returns exactly once
+- **WHEN** a child closes conclusively with proven unused authority
+- **THEN** the store returns that authority exactly once only if the same parent receipt and generation remain active
+- **AND** otherwise the unused authority expires without crediting any parent
+
 ### Requirement: Fresh issuance revalidates durable authority
 The system SHALL mint each provider-work receipt just in time from a current binding only after atomically revalidating binding state and digest, principal and actor authority, work lineage, physical work location, provider assignment, revocation state, remaining budget, and eligible runtime.
 
@@ -61,6 +66,11 @@ The system SHALL mint each provider-work receipt just in time from a current bin
 #### Scenario: Binding revocation blocks future attempts
 - **WHEN** a binding is revoked, expired, or superseded
 - **THEN** the system mints no new receipts from it even if an older task, lease, or process later resumes
+
+#### Scenario: Existing fence blocks fresh issuance for the work item
+- **WHEN** any prior receipt for the exact physical work-item key is `fenced_indeterminate` or contains a `reserved`, unclosed `launch_started`, or `indeterminate` reservation
+- **THEN** the authority store issues no fresh receipt for that work item regardless of binding state, queue/run status, projected error text, or current rollout gate
+- **AND** issuance becomes eligible only after ledger reconciliation makes every prior reservation conclusive
 
 ### Requirement: Cross-process receipt transfer is an atomic server claim
 The system SHALL keep provider-work authority in a server-owned `ProviderWorkAuthorityStore` and SHALL use only an opaque receipt identifier, one-use claim nonce, worker and runtime audience, and expiry for process handoff.
@@ -179,9 +189,14 @@ The system SHALL maintain monotonic binding, receipt, claim, and reservation sta
 - **THEN** it preserves the evidence, fences or holds the work, and does not retry or delete it
 
 #### Scenario: Autonomous reconciliation resolves a fence
-- **WHEN** provider launch-handle, attempt-receipt, outbound-proxy, child-process, or durable result evidence conclusively proves non-launch, success, or failure
+- **WHEN** durable launch-record, outbound-proxy, provider-side idempotency/status, child-process wrapper journal, or durable result evidence conclusively proves non-launch, success, or failure after restart
 - **THEN** the reconciler advances the indeterminate reservation once to `cancelled_before_launch`, `succeeded`, or `failed` respectively
 - **AND** it reclaims remaining authorized work only after every reservation is conclusive
+
+#### Scenario: Transient attempt receipt is same-process evidence only
+- **WHEN** same-process reconciliation inspects a transient provider-attempt receipt
+- **THEN** it may use that receipt without persisting it
+- **AND** restart reconciliation does not depend on or create a durable sink for the transient receipt
 
 #### Scenario: Ambiguity exceeds the reconciliation window
 - **WHEN** bounded autonomous reconciliation cannot obtain conclusive evidence
@@ -215,7 +230,7 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 #### Scenario: Ordinary V2 routing keeps the non-completion auth ladder
 - **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
 - **THEN** it retains the shipped read-only subscription-auth presence and freshness ladder exactly
-- **AND** codex yields `not_logged_in` only for a missing `auth.json`, while an existing empty, corrupt, stale, or cache-miss file with probing disabled remains eligible with presence or inconclusive evidence
+- **AND** codex yields `not_logged_in` for a missing `auth.json` or a cached positive `not_logged_in` verdict, while an existing empty, corrupt, stale, or cache-miss file with no positive dead verdict and probing disabled remains eligible with presence or inconclusive evidence
 - **AND** claude-code first accepts a non-empty `CLAUDE_CODE_OAUTH_TOKEN` regardless of config-directory state, and only without that token yields `not_logged_in` for an absent, empty, or unreadable config directory
 - **AND** the viability-probe kill switch retains its shipped eligible verdict and router unknown/inconclusive results remain eligible
 - **AND** it cannot launch the `_AUTH_PROBE_PROMPT` completion, borrow the universe receipt for that completion, dereference maintainer credentials, or start the maintainer CLI

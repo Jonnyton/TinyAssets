@@ -146,7 +146,9 @@ server-owned transitions:
   authority from parent to child, debiting the parent before making the child
   claimable; concurrent children can never receive more in aggregate than the
   parent's remaining ceiling. Child authority is replacement/narrowing, never
-  union, and returned unused authority follows one explicit settlement rule.
+  union. On conclusive child close, the store returns proven unused authority
+  exactly once only if the parent receipt and generation remain active;
+  otherwise the unused authority expires and is never double-credited.
 - **Maintainer maintenance:** local operator configuration creates a separate
   host/operator-owned binding for the one fixed private viability operation.
 
@@ -167,6 +169,12 @@ Before issuing `universe_work`, the authority service revalidates:
   digest are current;
 - remaining receipt/work budget is non-zero; and
 - runtime/worker identity is eligible for the target execution class.
+
+The store also queries authority records by the exact physical work-item key.
+Issuance fails while any prior receipt for that work item is
+`fenced_indeterminate` or has a `reserved`, unclosed `launch_started`, or
+`indeterminate` reservation. Queue/run status and the flat run-error sentinel
+are diagnostic projections of this ledger truth, never issuance gates.
 
 Failure creates no receipt and performs no provider, credential,
 outbound-proxy, auth-health, or quota access. A previously issued receipt is
@@ -193,7 +201,10 @@ settlement occurs only after assignment admission is released.
 
 Cross-store recovery uses a short-lived non-authorizing reconciliation proof
 bound to the exact authority generation, queue task, claim owner, and lease
-generation. Queue reset then performs a file-locked compare-and-swap against
+generation. BranchTask internal queue state gains a monotonic
+`lease_generation` incremented on claim, heartbeat/renewal, release, and
+reclaim; timestamps remain observability, not CAS identity. Queue reset then
+performs a file-locked compare-and-swap against
 that exact task/claim/lease tuple. A concurrent heartbeat or lease renewal
 changes the tuple and makes the reset fail; recovery must restart from a fresh
 authority proof. The proof alone grants no provider or queue authority.
@@ -240,9 +251,11 @@ then fails.
 
 If any reservation may have launched but lacks a conclusive result, the
 receipt becomes `fenced_indeterminate`. It cannot be reclaimed or retried
-automatically. An autonomous reconciler first consumes provider launch-handle,
-attempt-receipt, outbound-proxy, child-process, and durable result evidence to
-resolve proven absence, success, or failure. If evidence remains ambiguous
+automatically. Same-process reconciliation may inspect a transient
+provider-attempt receipt. Restart reconciliation uses only the durable launch
+record, outbound-proxy ledger, provider-side idempotency/status, child-process
+wrapper result journal, or durable result record to resolve proven absence,
+success, or failure. If evidence remains ambiguous
 after the bounded reconciliation window, the work stays non-runnable and
 emits the smallest explicit `manual_resolution_required` operator action;
 global cutover is prohibited for a transport that cannot surface that state.
@@ -308,8 +321,10 @@ Receipts are `issued`, `claimed`, `completed`, `failed`, `cancelled`,
 `expired`, or `fenced_indeterminate`. Transitions are monotonic.
 `fenced_indeterminate` is non-runnable but may advance only from authoritative
 evidence to the matching conclusive terminal; the first conclusive terminal
-wins. Terminal work cancellation revokes the active claim before downstream
-cleanup; stale task/run finalizers cannot reopen it.
+wins. Transient attempt receipts never become restart dependencies or acquire
+a durable sink through this change. Terminal work cancellation revokes the
+active claim before downstream cleanup; stale task/run finalizers cannot
+reopen it.
 
 Daemon-start and lazy first-use run reconciliation:
 
