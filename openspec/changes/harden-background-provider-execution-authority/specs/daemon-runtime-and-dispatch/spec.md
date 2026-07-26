@@ -17,7 +17,7 @@ All branch-task queue mutations (`tinyassets.branch_tasks`) SHALL execute under 
 - **THEN** it raises rather than corrupting the row
 
 ### Requirement: Startup recovery is lease-aware and worker-scoped, never a blanket reset
-At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. Startup SHALL consider rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled). `reclaim_predecessor_tasks` SHALL no-op on a blank worker id; every caller SHALL pass only a uniquely-assigned id and SHALL skip the shared host default. Before every dispatcher claim/pick, the hot sweep SHALL call only `reclaim_expired_leases` with leaseless reclaim disabled and SHALL NOT perform predecessor reclaim. Under the effective provider-authority V2 gate, both startup and hot-pick expired-lease resets SHALL apply the same provider-authority guard: lease expiry alone SHALL NOT prove owner death; `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and monotonic lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Non-provider-capable rows retain the respective shipped startup or hot-pick lease rule under V2, and dark provider behavior retains the same shipped rules. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
+At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. Startup SHALL consider rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled). `reclaim_predecessor_tasks` SHALL no-op on a blank worker id; every caller SHALL pass only a uniquely-assigned id and SHALL skip the shared host default. Before every dispatcher claim/pick, the hot sweep SHALL call only `reclaim_expired_leases` with leaseless reclaim disabled and SHALL NOT perform predecessor reclaim. Under the effective provider-authority V2 gate, every startup reclaim path and every hot-pick expired-lease reset SHALL apply the same provider-authority guard: lease expiry alone SHALL NOT prove owner death; `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and monotonic lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Non-provider-capable rows retain the respective shipped startup or hot-pick lease rule under V2, and dark provider behavior retains the same shipped rules. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
 
 #### Scenario: an expired-lease orphan with conclusive authority is reclaimed
 - **WHEN** startup recovery finds an expired provider-capable row, proves its owner dead or atomically invalidates the old claim generation, and finds no reservation or only reservations durably `cancelled_before_launch`, `succeeded`, or `failed`
@@ -33,6 +33,10 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 #### Scenario: a dead-owner reserved attempt is cancelled before reclaim
 - **WHEN** startup recovery proves the owner dead or invalidates its claim generation and finds a durable `reserved` reservation
 - **THEN** it atomically changes the reservation to `cancelled_before_launch`, releases its full authority, obtains a fresh reconciliation proof, and only then attempts the queue compare-and-swap
+
+#### Scenario: a fresh-lease predecessor orphan receives the authority guard
+- **WHEN** startup predecessor reclaim finds a provider-capable row owned by a provably-dead prior worker incarnation even though its lease has not expired
+- **THEN** recovery applies the same owner invalidation, reservation reconciliation, monotonic lease-generation, and queue compare-and-swap requirements before resetting the row
 
 #### Scenario: an expired lease with ambiguous provider launch is held
 - **WHEN** startup recovery finds an expired provider-capable row with an unclosed `launch_started`, `indeterminate`, or unreadable reservation
@@ -65,6 +69,27 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 #### Scenario: non-provider work retains lease recovery under V2
 - **WHEN** startup recovery under V2 finds an eligible non-provider-capable row with an expired lease
 - **THEN** the row is reset to `pending` with its claim and lease metadata cleared
+
+### Requirement: The supervisor keeps one daemon subprocess alive with backoff, producer restart, auth quarantine, and graceful drain
+The cloud-worker supervisor (`tinyassets.cloud_worker` run-supervisor loop) SHALL spawn the daemon subprocess, wait for its exit, and respawn it with exponential backoff — a shorter idle backoff after clean (no-work) exits and a longer crash backoff after non-zero exits — until a SIGTERM/SIGINT stop is requested. While a subprocess runs it SHALL poll for newly-queued branch tasks and restart the child so pending work is picked up, SHALL write a phase-tagged heartbeat file, and SHALL quarantine itself (skip the spawn, beat, back off, re-check) when the writer provider is unauthenticated so a dead-auth worker never claims-and-fails tasks. On a stop signal, once the child's death is CONFIRMED, it SHALL release that worker's own orphaned leases so a live peer can pick the work up immediately rather than waiting out the lease TTL. Under the effective provider-authority V2 gate, every provider-capable orphan SHALL first pass the same dead-or-invalidated-owner proof, reservation reconciliation, fence, and queue compare-and-swap requirements as startup recovery; an ambiguous launch remains fenced and non-claimable rather than being released. Non-provider-capable rows retain the shipped graceful-drain release under V2, and dark provider behavior retains that shipped rule for rows with no authority-ledger record; any existing authority-ledger record remains subject to reconciliation and fencing regardless of gate state.
+
+#### Scenario: backoff differs by exit kind
+- **WHEN** the subprocess exits cleanly versus crashing
+- **THEN** the supervisor sleeps an idle backoff after the clean exit and a crash backoff after the crash
+- **AND** consecutive exits of the same kind grow the backoff up to its ceiling
+
+#### Scenario: newly queued work restarts the child
+- **WHEN** a pending branch task appears while the subprocess is running and no branch task is already running
+- **THEN** the supervisor restarts the subprocess so the pending task is claimed on the next spawn
+
+#### Scenario: an unauthenticated writer quarantines the worker
+- **WHEN** the writer provider reports `not_logged_in` before a spawn
+- **THEN** the supervisor skips the spawn, writes an `auth_quarantined` heartbeat, and backs off without claiming any task
+
+#### Scenario: confirmed child death reconciles before releasing its leases
+- **WHEN** a stop signal terminates the child and its exit is confirmed
+- **THEN** the supervisor reconciles provider authority and releases only conclusively safe orphaned leases during graceful drain
+- **AND** an unclosed `launch_started`, `indeterminate`, or unreadable reservation remains fenced and non-claimable
 
 ### Requirement: Claimed-task heartbeats refresh only the current running lease
 
