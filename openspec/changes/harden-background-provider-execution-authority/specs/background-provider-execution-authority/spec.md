@@ -84,10 +84,14 @@ The system SHALL permit at most one active `ProviderWorkExecutionClaim` for a re
 #### Scenario: Provably dead owner with conclusive reservations is reclaimable
 - **WHEN** the current claim owner is provably dead and the receipt has no reservation or every reservation is durably `cancelled_before_launch`, `succeeded`, or `failed`
 - **THEN** the system may atomically expire the old claim and issue a bounded replacement claim for remaining authorized work
-- **AND** consumed terminal invocation and budget amounts remain consumed
+- **AND** `succeeded` and `failed` invocation and budget amounts remain consumed while `cancelled_before_launch` authority is released
+
+#### Scenario: Dead owner reserved before arming is cancellable
+- **WHEN** the current claim owner is provably dead and a reservation remains durably `reserved`
+- **THEN** the system atomically transitions it to `cancelled_before_launch`, releases its full invocation, token, and cost reservation, and may reclaim remaining work
 
 #### Scenario: Ambiguous launch is fenced
-- **WHEN** worker death leaves a `reserved`, unclosed `launch_started`, or `indeterminate` reservation
+- **WHEN** worker death leaves an unclosed `launch_started` or `indeterminate` reservation, or required authority evidence is unreadable
 - **THEN** the receipt enters `fenced_indeterminate`
 - **AND** the system performs no automatic retry, reclaim, or fallback from that receipt
 
@@ -115,6 +119,10 @@ The system SHALL reserve and durably arm a `ProviderInvocationReservation` befor
 #### Scenario: Launch consumes the slot
 - **WHEN** a reservation reaches `launch_started`
 - **THEN** the reservation remains consumed whether the provider succeeds, fails, times out, or returns an ambiguous result
+
+#### Scenario: Cancellation before arming releases authority
+- **WHEN** a reserved attempt is cancelled before `launch_started` commits
+- **THEN** it becomes `cancelled_before_launch` and releases its full invocation, token, and cost reservation
 
 #### Scenario: Proven unused budget settles after admission release
 - **WHEN** an authoritative terminal provider record proves actual token and cost usage below the reserved worst case
@@ -186,8 +194,9 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 
 #### Scenario: Ordinary V2 routing keeps the non-completion auth ladder
 - **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
-- **THEN** it may consume cached state and the canonical read-only subscription-auth presence and freshness ladder
-- **AND** absent or empty configuration yields `not_logged_in`, while unreadable or unresolved presence quarantines without assuming healthy
+- **THEN** it retains the shipped read-only subscription-auth presence and freshness ladder exactly
+- **AND** absent or empty configuration and other positive dead-auth signatures yield `not_logged_in`
+- **AND** stale, unreadable, cache-miss, unknown, or inconclusive checks keep the provider eligible and emit inconclusive evidence because only positive dead evidence quarantines
 - **AND** it cannot launch the `_AUTH_PROBE_PROMPT` completion, borrow the universe receipt for that completion, dereference maintainer credentials, or start the maintainer CLI
 
 ### Requirement: Enforcement rollout is server-owned and fail-closed

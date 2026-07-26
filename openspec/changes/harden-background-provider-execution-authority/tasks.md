@@ -8,10 +8,10 @@
 
 - [ ] 2.1 Add failing domain tests for the closed binding, receipt, execution-claim, invocation-reservation, and handoff types, including unknown variants and invalid state transitions.
 - [ ] 2.2 Implement `ProviderWorkBinding`, the two receipt variants, `ProviderWorkExecutionClaim`, `ProviderInvocationReservation`, and secret-free identifiers and errors with no provider behavior enabled.
-- [ ] 2.3 Add failing transactional tests for concurrent receipt claims, post-worker-selection one-use process handoffs, unique invocation ordinals, first-terminal-wins transitions, cancellation races, worst-case budget reservation/settlement, and budget exhaustion.
+- [ ] 2.3 Add failing transactional tests for concurrent receipt claims, post-worker-selection one-use process handoffs, unique invocation ordinals, first-terminal-wins transitions, cancellation races, full pre-arm authority release, worst-case budget reservation/settlement, and budget exhaustion.
 - [ ] 2.4 Implement the authority store's atomic issue, claim, heartbeat, reserve, launch-start, complete, cancel, revoke, expire, and fence operations until the transactional tests pass.
-- [ ] 2.5 Add crash/restart tests for live claims, dead claims with no reservation or only conclusive `cancelled_before_launch`/`succeeded`/`failed` reservations, dead-owner `reserved`/unclosed `launch_started`/`indeterminate`, expired receipts, unreadable evidence, and ambiguous launches; implement conservative reconciliation that preserves consumed budgets and fences only uncertainty.
-- [ ] 2.6 Implement bounded autonomous fence reconciliation from launch-handle, attempt-receipt, outbound-proxy, child-process, and durable result evidence; emit explicit `manual_resolution_required` operator state when ambiguity remains, create the smallest concrete `STATUS.md` host-action row for any unresolved production fence, and block cutover for transports that cannot surface it.
+- [ ] 2.5 Add crash/restart tests for live claims, dead claims with no reservation or only conclusive `cancelled_before_launch`/`succeeded`/`failed` reservations, dead-owner pre-arm `reserved` cancellation, unclosed `launch_started`/`indeterminate`, expired receipts, unreadable evidence, and ambiguous launches; implement conservative reconciliation that releases pre-arm authority, preserves launched budgets, and fences only uncertainty.
+- [ ] 2.6 Implement bounded autonomous fence reconciliation from launch-handle, attempt-receipt, outbound-proxy, child-process, and durable result evidence; emit explicit `manual_resolution_required` product operator state when ambiguity remains, require the implementation coordinator to record any observed unresolved production fence as the smallest concrete `STATUS.md` host-action row, and block cutover for transports that cannot surface it.
 
 ## 3. Binding and issuance roots
 
@@ -25,13 +25,13 @@
 
 - [ ] 4.1 Add failing sink tests proving every background route holds before provider, credential, outbound-proxy, auth-health, or quota access when its exact receipt, claim, operation, role, assignment, or reservation is absent or stale.
 - [ ] 4.2 Thread the non-serializable receipt and active claim into the existing provider carrier; reserve and durably arm `launch_started` before acquiring assignment admission, freeze receipt/claim/reservation/assignment/revocation generations, and validate only that carried tuple under admission without adding a second provider-routing sink.
-- [ ] 4.3 Add retry, fallback, cancellation, timeout, failure, dead-owner `reserved`, ambiguous-transport, revocation-before/after-arm, and reverse-lock-order tests proving arming wins only its single attempt, each armed attempt consumes its slot, and every later attempt needs a fresh valid slot.
+- [ ] 4.3 Add retry, fallback, cancellation, timeout, failure, dead-owner pre-arm `reserved` cancellation, ambiguous-transport, revocation-before/after-arm, and reverse-lock-order tests proving arming wins only its single attempt, pre-arm cancellation releases full authority, each armed attempt consumes its slot, and every later attempt needs a fresh valid slot.
 - [ ] 4.4 Convert judge-ensemble members from bare `BaseProvider.complete(...)` to the parent `ProviderInvocation`/`ProviderExecutor` sink; prove N launches reserve N ordinals and worst-case budgets atomically before fan-out, with all-or-none hold when authority cannot fund the full ensemble.
 - [ ] 4.5 Implement post-admission result settlement that refunds only proven unused token/cost budget and retains full reservation on absent or ambiguous usage, plus secret-free receipt, claim, reservation, hold, and fence observability.
 
 ## 5. Daemon and graph call-site closure
 
-- [ ] 5.1 Convert branch-task workers, schedules, subscriptions, run/resume, selectors, cloud workers, and autonomous daemon cycles to claim exact background receipts independently of queue claims and leases; wire run reconciliation into the shipped lazy first-use `_ensure_runs_recovery` guard, not a nonexistent startup hook.
+- [ ] 5.1 Convert branch-task workers, schedules, subscriptions, run/resume, selectors, cloud workers, and autonomous daemon cycles to claim exact background receipts independently of queue claims and leases; make branch-task reset compare-and-swap the exact claim/lease/authority proof, and make the shipped lazy first-use `_ensure_runs_recovery` guard synchronized, fail-closed, retryable, and publicly mark fenced runs `interrupted` rather than in flight.
 - [ ] 5.2 Convert universe intelligence, compiled provider nodes and routers, async judge-ensemble fan-out and its direct provider calls, editorial, ingestion, entity extraction, community evaluation, retrieval, RAPTOR, and reflexion paths to propagate the exact receipt through direct, task, and thread bridges.
 - [ ] 5.3 Implement atomic opaque process handoffs with one-use nonces and worker/runtime audiences; add replay, expiry, wrong-audience, worker-death, and cross-process load tests.
 - [ ] 5.4 Update the packaged Claude-plugin mirror for every affected provider bridge and make canonical/mirror authority parity part of the call-site closure gate.
@@ -40,7 +40,7 @@
 ## 6. Isolated maintenance authority
 
 - [ ] 6.1 Add failing tests for the exact `_AUTH_PROBE_PROMPT` digest, host/operator principal, invoking runtime/daemon, provider, executor/transport, opaque credential reference/digest, separate maintenance budget, ambient `CODEX_HOME`/PATH rejection, and rejection of user content, graph work, child work, or requester quota.
-- [ ] 6.2 Under V2, retain the canonical read-only subscription-auth presence/freshness ladder and cache-miss quarantine while preventing ordinary routing from launching the probe completion; implement the universe-less maintenance path through `ProviderExecutor`'s closed maintenance entrypoint without ordinary universe work, `call_provider`, ambient credential dereference, or a second provider sink.
+- [ ] 6.2 Under V2, retain the shipped read-only subscription-auth ladder exactly—only positive dead-auth evidence quarantines while stale/cache-miss/unknown/inconclusive checks stay eligible—while preventing ordinary routing from launching the probe completion; implement the universe-less maintenance path through `ProviderExecutor`'s closed maintenance entrypoint without ordinary universe work, `call_provider`, ambient credential dereference, or a second provider sink.
 - [ ] 6.3 Prove `get_status` and other public reads never launch the probe and that unavailable maintenance authority records a held health state without borrowing requester or universe authority.
 
 ## 7. Rollout and complete-system proof

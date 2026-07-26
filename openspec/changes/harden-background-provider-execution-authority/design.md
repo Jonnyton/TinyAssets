@@ -186,6 +186,13 @@ admission or a credential lock is held; reverse acquisition and untracked
 reentrancy fail loud. Result settlement occurs only after assignment
 admission is released.
 
+Cross-store recovery uses a short-lived non-authorizing reconciliation proof
+bound to the exact authority generation, queue task, claim owner, and lease
+generation. Queue reset then performs a file-locked compare-and-swap against
+that exact task/claim/lease tuple. A concurrent heartbeat or lease renewal
+changes the tuple and makes the reset fail; recovery must restart from a fresh
+authority proof. The proof alone grants no provider or queue authority.
+
 For task/thread handoff, code carries a non-serializable receipt object only
 inside the claimed execution scope. Queue records created before worker
 selection carry only a non-authorizing binding reference. After the queue
@@ -213,10 +220,13 @@ If a worker is provably dead and the receipt has no reservation, or every
 reservation has a durable conclusive state (`cancelled_before_launch`,
 `succeeded`, or `failed`), the server may expire the claim and issue a new
 claim generation for the remaining authorized work. Consumed terminal slots
-and budgets remain consumed. A `reserved`, unclosed `launch_started`, or
-`indeterminate` reservation owned by a dead worker is ambiguous and fences;
-it is never inferred to be pre-launch. Every stale object/envelope from the
-old generation then fails.
+and budgets remain consumed only for launched `succeeded` or `failed`
+reservations; `cancelled_before_launch` releases its full reserved authority.
+A dead-owner `reserved` reservation is provably pre-arm under the durable
+ordering below, so reconciliation atomically cancels it before launch and may
+then reclaim. An unclosed `launch_started` or `indeterminate` reservation is
+ambiguous and fences. Every stale object/envelope from the old generation
+then fails.
 
 If any reservation may have launched but lacks a conclusive result, the
 receipt becomes `fenced_indeterminate`. It cannot be reclaimed or retried
@@ -305,6 +315,13 @@ Daemon-start and lazy first-use run reconciliation:
 - preserves plus holds on unreadable authority/lineage stores rather than
   inferring absence or freshness.
 
+The lazy run guard is synchronized and fail-closed. It marks recovery done
+only after authority reconciliation and the run sweep both commit; exceptions
+leave it retryable and prevent provider-capable run operations from continuing
+past the guard. A fenced run is reported publicly as `interrupted` with a
+`provider_authority_fenced` marker, never as indefinitely `queued` or
+`running`; `resume_run` holds that marker until reconciliation resolves it.
+
 Ledger events contain secret-free IDs/digests, generations, state, reason,
 timestamps, and bounded classifications. They exclude prompts, model output,
 credentials, bearer tokens, claim nonces, and recoverable secret material.
@@ -315,13 +332,14 @@ Today ordinary provider routing can synchronously launch
 `_AUTH_PROBE_PROMPT` through `subscription_auth_health` and resolve
 `CODEX_HOME` plus the CLI from ambient process state. Dark mode preserves that
 shipped behavior. Under an effective V2 gate, ordinary universe/request
-routing may consume cached auth-health state and the parent's non-completion
-subscription-auth presence/freshness ladder, including the canonical
-absent/empty-config `not_logged_in` verdict. An unreadable or unresolved
-presence check quarantines as unknown/not logged in; it never assumes healthy.
-Ordinary routing MUST NOT launch the `_AUTH_PROBE_PROMPT` completion, borrow
-its universe receipt for that completion, dereference maintainer credentials,
-or start the maintainer CLI.
+routing retains the parent's shipped non-completion subscription-auth ladder
+exactly: an absent/empty configuration or other positive dead-auth signature
+quarantines as `not_logged_in`, while stale, unreadable, cache-miss, unknown,
+or inconclusive checks keep the provider eligible and emit inconclusive
+health evidence. Only positive dead evidence quarantines; false quarantine is
+worse than deferred verification. Ordinary routing MUST NOT launch the
+`_AUTH_PROBE_PROMPT` completion, borrow its universe receipt for that
+completion, dereference maintainer credentials, or start the maintainer CLI.
 
 The target probe owner instead validates the `maintainer_maintenance` receipt
 and separate maintenance binding/budget, reserves its one bounded invocation,
@@ -438,7 +456,7 @@ from its signature.
   candidate must preserve the fixed authority-store-before-assignment order
   and must not nest authority transactions under admission.
 - Which exact provider-capable call sites are live-request paths versus
-  background paths today? Task 3 inventory must classify every production
+  background paths today? Tasks 1.1 and 5.5 must classify every production
   caller, including injected callables and the packaged mirror.
 - What conservative fixed default invocation/token/cost ceilings apply per
   operation? Runtime implementation must select server-owned defaults before
