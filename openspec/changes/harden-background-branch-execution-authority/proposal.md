@@ -28,7 +28,8 @@ support private branches or prove who authorized unattended work.
 - Treat historical wiki `file_bug` investigation forward-triggers and
   `bug_investigation` rows only as inputs to `retire-cheat-loop` task 2.5;
   never issue, bind, backfill, drain, revive, or execute them as background
-  work. Current `file_bug` remains filing-only.
+  work. `retire-cheat-loop` makes `file_bug` filing-only; this change adds no
+  wiki issuance root.
 - **BREAKING**: retire the default compiled `universe_cycle` execution bypass;
   materialize it as a registered Branch and governed soul-loop binding before
   unattended execution.

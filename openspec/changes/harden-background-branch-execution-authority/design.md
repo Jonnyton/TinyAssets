@@ -1,6 +1,6 @@
 ## Context
 
-TinyAssets has at least twelve ways for branch work to outlive, detach from, or
+TinyAssets has at least eleven ways for branch work to outlive, detach from, or
 re-enter after the request that originally authorized it:
 
 1. cron/interval schedules;
@@ -512,8 +512,9 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
    records independently prove principal, universe ACL, exact target, source,
    and generation. Never infer from `owner_actor`, public visibility,
    `UNIVERSE_SERVER_USER`, queue possession, or daemon/worker identity.
-   Explicitly exclude every `bug_investigation` row and trigger receipt,
-   regardless of evidence; preserve them for the retirement migration.
+   Explicitly exclude every `bug_investigation` row, trigger receipt, and run,
+   branch task, or attempt derived from either, regardless of evidence;
+   preserve them for the retirement migration.
 6. **Hold ambiguous legacy work:** pause or mark
    `reauthorization_required`; preserve source definitions and history.
    Authenticated unpause/recreate/redeclare rotates a new binding. Legacy
