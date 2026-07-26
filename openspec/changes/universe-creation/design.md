@@ -1,226 +1,180 @@
 ## Context
 
-The canonical `identity-auth-and-access-control` and
-`universe-lifecycle-and-soul` specs now own the behavior that the original
-`universe-creation` proposal tried to define as a new capability. Verified
-runtime behavior already includes atomic serial creation, a seeded linked soul
-bundle, founder home binding, and first-contact birth/resolution on opening
-`converse`. `get_status` remains a pure read.
+Canonical `identity-auth-and-access-control` and
+`universe-lifecycle-and-soul` already contain the landed first-contact birth,
+serial-id, founder-home, and soul-bundle behavior. Opening authenticated
+`converse` may reserve, materialize, and bind one home without invoking a
+provider; `get_status` remains a pure read.
 
-Create scope is checked before reservation. An authenticated founder without
-create scope currently gets a structured home-create/load error with
-`auth_scope_required: true`; no phantom binding is written and this is not an
-awaiting card. Execution-resource authority is a separate post-resolution gate.
+Provider-backed speech is a later transition. The approved
+`constrain-set-engine-provider-authority` target (PR #1784, exact reviewed
+candidate `abdca5fe`) owns the server-derived request carrier, engine
+assignment, eligible-provider boundary, typed hold, migration, and surface
+readiness rules. Its published handoff requires this change to remove the
+caller-built authority bundle, raw BYOC/market promises, and provider receipt
+`authority_class` ownership. Named successors own requester-host activation and
+Tier-1 accepted-market remote execution; `provider-attempt-receipts` owns
+result-local provider evidence.
 
-The unresolved boundary begins after birth. The current first-contact path can
-reach provider routing without first proving that all resources needed by the
-workload belong to the requester or came from a market offer the requester
-accepted. That gap could consume a project maintainer's or platform operator's
-credentials, quota, auth home, hardware, or account. Provider-backed speech and
-learning extraction therefore remain unbuilt for this contract even though
-birth and routing are built.
-
-The old active change also retained requirements already canonicalized or now
-owned elsewhere: generic auth/ACL rules, visibility, Branch governance, mobile
-clients, the soul bundle shape, and reset semantics. Keeping those here would
-create overlapping spec truth.
+The residual `universe-creation` change therefore has one design job: finish
+the lifecycle migration and consume the provider owners' interfaces at the
+action boundary without becoming another authority issuer.
 
 ## Goals / Non-Goals
 
 **Goals:**
 
-- Separate zero-compute universe birth from provider-backed execution.
-- Define one complete, fail-closed authority bundle for first-contact execution.
-- Ensure provider selection and fallback cannot escape that bundle.
-- Apply the boundary to both reply generation and learning extraction.
-- Return an actionable structured hold when authority is missing or partial.
-- Leave an auditable receipt of which authorized resource class and provider
-  were used.
-- Retain only the unfinished lifecycle work: public HTTP create retirement,
-  public self-serialization, learned-name index projection, existing-root serial
-  migration, and existing-root cleanup.
+- Preserve the separation between zero-compute birth and provider execution.
+- Pass only canonical server-derived target universe/request lineage into the
+  provider-authority owner.
+- Preserve completed birth when provider execution holds and map the typed hold
+  to the canonical setup-required payload.
+- Relay a successful universe reply verbatim and carry the same opaque provider
+  request capability across model-backed learning extraction without widening
+  it.
+- Finish public self-serialization, learned-name index projection,
+  descriptive-root migration, reference verification, and safe legacy-root
+  cleanup.
 
 **Non-Goals:**
 
-- Re-specifying already-canonical birth, baseline soul-bundle, soul-edit, reset,
-  ACL, visibility, Branch, mobile, or personification behavior.
-- Supplying platform compute, model quota, credentials, accounts, or hardware to
-  a requester.
-- Defining market pricing, matching, settlement, or provider onboarding. This
-  change consumes an already accepted compute/model grant.
-- Implementing runtime or security-sensitive provider changes in this spec-only
-  reconciliation.
+- Constructing requester/market authority bundles or eligible provider sets.
+- Resolving BYOC, local host, subscription, hardware, or accepted-market
+  grants.
+- Isolating provider child processes or defining fallback.
+- Minting provider authority, extending credential authority enums, or creating
+  a parallel receipt.
+- Advertising raw API-key deposit or a setup route not proven live on the
+  current request surface.
+- Re-specifying canonical birth, soul, reset, ACL, visibility, Branch, mobile,
+  or personification behavior.
 
 ## Decisions
 
-### D1 - Modify the owning capabilities; do not create a third capability
+### D1 - Keep one lifecycle delta
 
-First-contact authority is an identity/access-control concern. Public birth and
-root migration are lifecycle concerns. Their delta specs therefore live under
-the existing capability names. The obsolete
-`specs/universe-creation/spec.md` is removed rather than synced.
+The obsolete broad `universe-creation` capability is gone. This change retains
+only its `universe-lifecycle-and-soul` delta. The duplicate
+`identity-auth-and-access-control` delta is removed because
+`constrain-set-engine-provider-authority` owns the canonical provider-hold and
+surface-readiness requirements.
 
-Alternative considered: keep a broad `universe-creation` capability. Rejected
-because it duplicates canonical requirements and obscures which module owns a
-security decision.
+### D2 - Birth and execution remain separate transitions
 
-### D2 - Birth and execution are separate state transitions
+Opening authenticated `converse` may complete the existing atomic
+founder-home birth transaction before provider authority is ready. Successful
+birth proves only that the universe exists and is bound; it does not imply that
+provider execution or a first-person reply succeeded. A hold preserves the
+materialized `universe_id`.
 
-An opening authenticated `converse` may reserve, materialize, and bind exactly
-one home universe before compute authority exists. That step writes local
-universe state but does not authorize any provider invocation. Only the next
-execution transition needs a complete authority bundle.
+### D3 - Universe creation consumes authority; it never issues it
 
-This preserves the built first-contact experience while ensuring missing
-compute never turns into a platform-paid call. The result can truthfully include
-the new `universe_id` even when execution is held.
+The universe action layer passes canonical target universe and request lineage
+to the provider-authority owner. It MUST NOT accept a caller-built authority
+bundle, derive an eligible provider set, scan ambient credentials, translate
+queue/host identity into provider permission, or mint a provider receipt.
 
-### D3 - Execution requires a complete authorized bundle
+`constrain-set-engine-provider-authority` owns
+`ProviderAuthorityHeldError`, `ProviderRequestCapability`, engine assignment,
+provider selection/fallback, and the rule that ordinary maintainer resources
+are never requester authority. Requester-host and connector-market successors
+own their distinct capability issuance and execution seams.
 
-The authority resolver constructs a request-scoped immutable bundle:
+### D4 - The action layer maps outcomes without inventing setup paths
 
-```
-compute = requester-owned compute OR requester-accepted market compute
-model   = requester-owned model access OR requester-accepted market model grant
-complete = compute AND (model when the workload requires separate model access)
-```
+When the provider owner returns a typed authority hold, the universe action
+layer preserves completed birth and maps it directly to the canonical
+`engine_setup_required_payload`. The result contains `status=held`,
+`reason=setup_required`, the materialized `universe_id`, typed missing
+elements, and only setup paths the owning successor proves live and completable
+for that surface. It MUST NOT require provider exhaustion or fabricate a
+universe reply.
 
-A provider credential can satisfy both compute and model access when that is
-the provider's actual execution contract. The credential must still be owned by
-the requester or conveyed by an accepted market grant. A maintainer/founder/
-platform-operator credential is not converted into requester authority merely
-because it is visible in the process environment.
+While the effective provider-authority V2 gate is dark, the provider owner
+preserves the shipped setup-path projection. After cutover, raw `byo_api_key`
+deposit is not advertised. Accepted-market setup appears only after
+`activate-connector-requester-authority` lands its connector-visible
+agreement/result and B2/B13 remote-dispatch path. Host/local setup appears only
+after `activate-requester-host-engines` lands its attested account-to-host
+capability. If neither is live, cutover stays blocked rather than replacing the
+shipped projection with a dead instruction.
 
-Alternative considered: treat any configured provider as eligible. Rejected
-because configuration visibility proves reachability, not payment or delegation
-authority.
+On success the chatbot relays the universe's reply verbatim. The same opaque
+provider request capability may cross reply generation and model-backed
+learning extraction according to the provider owner; the universe layer does
+not inspect or widen it. The setup-required payload uses
+`fulfillment_class=requester_owned|accepted_market`. Result-local provider
+evidence uses only fields defined by `provider-attempt-receipts`, including its
+separate credential `authority_class`; the universe layer does not relabel or
+extend that receipt.
 
-### D4 - Selection and fallback are constrained by the bundle
+### D5 - Lifecycle residuals are narrow
 
-Routing receives only eligible providers derived from the immutable authority
-bundle. Retries and fallbacks operate on that set; they do not rescan ambient
-environment variables, CLI auth homes, cloud metadata, platform accounts, or
-host hardware. Emptying the eligible set produces a hold, not a final attempt
-with a maintainer resource.
+The remaining lifecycle work is:
 
-The isolation boundary must default-deny inherited credential sources. The
-concrete runtime design remains gated on the security review and must cover
-provider-specific environment variables, cloud credential chains, home/profile
-directories, and local subscription auth.
-
-### D5 - Reply generation and learning extraction share one boundary
-
-The universe intelligence may generate the first-person reply only after the
-authority check succeeds. The chatbot forwards the founder's turn and
-relays/renders that reply verbatim. Any subsequent model-backed learning
-extraction uses the same request-scoped authority bundle; it cannot fall back to
-a broader ambient provider set. Reply generation and extraction may select
-different providers, provided each selected provider is admitted by that same
-authority boundary for its phase.
-
-If the approved bundle cannot cover both phases, each uncovered phase is held.
-Birth remains valid, but no uncovered provider invocation occurs.
-
-### D6 - Missing authority returns a structured hold
-
-Missing or partial authority returns a machine-readable envelope with:
-
-- `status: held`
-- `reason: setup_required`
-- the materialized `universe_id` when birth completed
-- `missing_authority`, identifying `compute`, `model_access`, or both
-- requester-facing setup paths for BYOC and accepted-market fulfillment
-
-The result is not classified as generic `provider_exhausted`, because no
-authorized provider pool existed to exhaust. No synthetic universe reply is
-fabricated.
-
-### D7 - Receipts identify the authority actually used
-
-Every provider invocation records the authority class (`requester_owned` or
-`accepted_market`) and provider identity/grant reference without recording a
-secret. Reply generation and learning extraction produce separate phase entries
-linked to the same request authority bundle. This makes enforcement testable and
-supports billing/audit without implying that TinyAssets supplied compute.
-
-### D8 - Lifecycle residuals are narrow
-
-The remaining lifecycle implementation has five parts:
-
-1. reject/remove public `POST /v1/universes` creation;
-2. ensure every public birth path self-generates its opaque serial and accepts
-   no caller-chosen `universe_id` (internal migration/dev tooling is separate);
+1. keep public HTTP creation absent;
+2. require every public birth path to self-generate an opaque serial while
+   preserving explicit internal migration tooling;
 3. keep the root index keyed by immutable id and project the learned name from
    `identity.md`;
-4. atomically move existing descriptive-id roots to generated serial roots and
-   update live references/bindings; and
-5. remove duplicate `self/`, `soul/`, and brain-archive directories plus empty
-   starter `notes.json`/`activity.log`, while preserving non-empty historical
-   runtime data until it has a typed destination.
+4. atomically move descriptive-id roots to generated serial roots and update
+   bindings/references with rollback evidence; and
+5. remove duplicate `self/`, `soul/`, brain-archive, and empty starter
+   artifacts while preserving non-empty historical data.
 
-No other requirement from the old monolithic change remains in this lane.
+### D6 - Dependency direction is explicit
 
-### D9 - Existing provider lanes are dependencies, not duplicate ownership
-
-The authority implementation consumes two separately tracked provider primitives:
-
-- **R2-1a** owns the engine/router rule that an assigned engine constrains
-  `allowed_providers`. This change supplies the request authority bundle's eligible set to that
-  boundary; it does not create a second provider-selection mechanism.
-- **R2-1b** owns the race-safe provider result/receipt path for both writer calls. This change extends
-  that same result object with phase and authority class (and accepted-grant linkage where applicable);
-  it does not use a process-global `_last_provider` or create a parallel receipt.
-
-This change owns requester BYOC resolution and accepted-market compute/model grant transport in tasks
-4.1 and 4.2; the bundle cannot be complete until those tasks land. All authority contract tests and
-runtime work remain blocked until the scheduled opposite-provider security review returns APPROVE,
-or every required ADAPT finding is incorporated and re-reviewed to acceptance.
+- `constrain-set-engine-provider-authority` syncs its provider-hold and request
+  carrier requirements before this change archives. This change removes its
+  duplicate identity header rather than relying on archive order.
+- `provider-attempt-receipts` owns result-local
+  `authority_held`/credential evidence; this change only consumes its published
+  fields and does not require receipt-side `fulfillment_class`.
+- `credential-vault` owns the default-empty universe-scoped provider child
+  environment and auth-home refusal; `outbound-boundary-layer` owns remote
+  credential blindness. STATUS P0 #1573 retains the unresolved runtime
+  isolation/fallback risk.
+- `activate-requester-host-engines` owns attested Tier-2/Tier-3/plugin local
+  execution and its setup path.
+- `activate-connector-requester-authority` owns Tier-1 accepted-market setup,
+  result, and pre-routing B2/B13 execution with no desktop or web-app
+  dependency.
+- Paid-market and distributed-execution own agreement, remote grant, execution,
+  and settlement. Universe creation does not duplicate them.
 
 ## Risks / Trade-offs
 
-- **Ambient credentials can bypass a superficial allowlist** -> Use an
-  allowlisted, default-deny child environment and isolated home/profile/cloud
-  config roots, then overlay only the approved bundle. Gate the concrete list on
-  opposite-provider security review and mutation tests.
-- **A market offer can be accepted but incomplete** -> Represent compute and
-  model grants separately and require the full workload-specific bundle before
-  invocation.
-- **Reply succeeds but extraction silently spends another account** -> Pass one
-  immutable authority bundle through both phases and assert phase receipts.
-- **A held response is mistaken for provider failure** -> Use `held` plus
-  `setup_required`, not `provider_exhausted`, and enumerate the missing elements.
-- **Existing-root migration can orphan bindings or lose data** -> Inventory all
-  references, stage and verify the serial root, update references atomically,
-  retain non-empty historical data, and keep a rollback manifest until proof is
-  complete.
-- **Public create removal can strand a client** -> Inventory live callers and
-  provide the canonical first-contact/chatbot route before removing HTTP.
+- **Provider authority drifts back into the universe layer** -> Tests reject
+  caller-built bundles, provider allowlists, raw setup deposits, and parallel
+  receipts at the action boundary.
+- **A truthful hold becomes a dead onboarding instruction** -> Advertise only
+  successor-proven routes; block cutover when no current surface route is
+  completable.
+- **Reply succeeds while learning widens authority** -> Carry the same opaque
+  provider request capability and verify result-local evidence without
+  inspecting or minting it.
+- **Root migration or cleanup loses data** -> Inventory first, stage and verify
+  the serial root, update references atomically, retain non-empty history, and
+  keep a rollback manifest until read/write/run/status probes pass.
 
 ## Migration Plan
 
-1. Land the spec-truth correction without runtime changes.
-2. Obtain opposite-provider APPROVE of the authority isolation boundary, or incorporate every
-   required ADAPT finding and have it re-reviewed to acceptance; tests and runtime implementation
-   remain blocked until that gate is satisfied.
-3. Land and absorb R2-1a's allowed-provider boundary and R2-1b's race-safe provider receipt.
-4. Implement this change's requester BYOC and accepted-market compute/model authority transport.
-5. Implement a default-deny requester/market authority resolver and red tests
-   proving ambient maintainer resources are ineligible.
-6. Thread the immutable bundle through provider selection, fallback, reply
-   generation, learning extraction, and receipts.
-7. Ship the structured held/setup response and verify it through the rendered
-   chatbot surface before enabling provider-backed first contact broadly.
-8. Inventory public HTTP create callers, remove/reject that route, and prove
-   public birth self-serializes.
-9. Run existing-root migration and cleanup with backup/rollback manifests,
-   reference-integrity checks, and post-migration read/write/status probes.
+1. Land this spec-truth correction with no runtime changes.
+2. Wait for the approved provider-authority target and the applicable
+   requester-host or connector successor to publish their interfaces.
+3. Integrate only canonical target/request lineage, typed hold mapping, verbatim
+   reply relay, and result consumption at the universe action boundary.
+4. Run the descriptive-root migration and cleanup through reviewed,
+   rollback-safe host operations.
+5. Verify success and setup-required paths in rendered Claude.ai and ChatGPT
+   connector conversations, then freshness-stamp real-user evidence or retain
+   an explicit watch item.
 
-Rollback never re-enables ambient maintainer authority. If execution causes
-unexpected failures, disable provider-backed first contact and retain the born,
-bound universe plus held/setup response.
+Rollback never restores ambient provider authority or raw setup deposit. If
+provider integration fails, birth remains valid and execution stays held.
 
 ## Open Questions
 
-- The authority invariant is settled. Provider-specific isolation details and
-  accepted-market grant transport remain implementation dependencies subject to
-  the scheduled opposite-provider security review.
+- Exact activation timing belongs to the provider-authority and successor
+  changes. This lane cannot declare a requester-host or connector-market route
+  ready on their behalf.
