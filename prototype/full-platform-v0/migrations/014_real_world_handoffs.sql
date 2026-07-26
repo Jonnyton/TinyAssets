@@ -194,6 +194,9 @@ CREATE INDEX IF NOT EXISTS idx_outcome_evidence_artifact
   ON public.outcome_evidence(normalized_external_ref);
 CREATE INDEX IF NOT EXISTS idx_outcome_evidence_handoff
   ON public.outcome_evidence(handoff_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_evidence_handoff
+  ON public.outcome_evidence(handoff_id)
+  WHERE handoff_id <> '';
 
 CREATE TABLE IF NOT EXISTS public.outcome_evidence_transition (
   transition_id   text PRIMARY KEY,

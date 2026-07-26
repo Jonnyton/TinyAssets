@@ -51,6 +51,13 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         ],
     ),
     (
+        "handoff-outcome-recovery-dedup",
+        "tinyassets/outcomes/schema.py",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_evidence_handoff",
+        "CREATE INDEX IF NOT EXISTS uq_outcome_evidence_handoff",
+        [f"{STORE_TEST}::test_handoff_outcome_link_is_unique_under_recovery_races"],
+    ),
+    (
         "handoff-transition-cas",
         "tinyassets/handoffs/store.py",
         "WHERE handoff_id = ? AND owner_id = ? AND state = ?",
@@ -203,6 +210,16 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         'adapter_reply = effect.get("result")',
         'adapter_reply = effect.get("adapter_reply_that_does_not_exist")',
         [f"{RECEIPTS_TEST}::TestLifecycleSeparation"],
+    ),
+    (
+        "accepted-replay-repairs-outcome",
+        "tinyassets/handoffs/service.py",
+        '    if target == "accepted":',
+        '    if target == "accepted" and not replay:',
+        [
+            f"{RECEIPTS_TEST}::TestExactlyOnce::"
+            "test_receipt_replay_repairs_a_missing_accepted_outcome"
+        ],
     ),
     (
         "submitted-is-not-accepted",

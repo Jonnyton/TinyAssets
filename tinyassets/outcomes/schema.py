@@ -104,6 +104,9 @@ CREATE INDEX IF NOT EXISTS idx_outcome_evidence_artifact
     ON outcome_evidence(normalized_external_ref);
 CREATE INDEX IF NOT EXISTS idx_outcome_evidence_handoff
     ON outcome_evidence(handoff_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_outcome_evidence_handoff
+    ON outcome_evidence(handoff_id)
+    WHERE handoff_id <> '';
 CREATE INDEX IF NOT EXISTS idx_outcome_evidence_state
     ON outcome_evidence(evidence_level, recorded_at DESC);
 

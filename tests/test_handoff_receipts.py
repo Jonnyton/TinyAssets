@@ -317,6 +317,34 @@ class TestExactlyOnce:
         evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
         assert evidence["summary"]["total_claims"] == 1
 
+    def test_receipt_replay_repairs_a_missing_accepted_outcome(
+        self, env, bind_adapter, monkeypatch
+    ):
+        """A crash after receipt finalization must not permanently lose linkage."""
+        from tinyassets.handoffs.store import HandoffStore
+
+        bind_adapter(_accepting(env))
+        original = HandoffStore.record_outcome_evidence
+        failed_once = False
+
+        def crash_once(store, **kwargs):
+            nonlocal failed_once
+            if not failed_once:
+                failed_once = True
+                raise RuntimeError("simulated crash after accepted receipt")
+            return original(store, **kwargs)
+
+        monkeypatch.setattr(HandoffStore, "record_outcome_evidence", crash_once)
+        with pytest.raises(RuntimeError, match="simulated crash"):
+            env.execute()
+
+        replay = env.execute()
+        assert replay["replay"] is True
+        assert replay["outcome"]["handoff_id"] == replay["handoff"]["handoff_id"]
+        assert len(env.calls) == 1
+        evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
+        assert evidence["summary"]["total_claims"] == 1
+
 
 # ── Uncertain and rejected replies ────────────────────────────────────────────
 

@@ -163,6 +163,24 @@ def test_handoff_store_scopes_reads_and_deduplicates_effect_identity(
         )
 
 
+def test_handoff_outcome_link_is_unique_under_recovery_races(tmp_path) -> None:
+    store = HandoffStore(tmp_path)
+    store.initialize()
+    kwargs = {
+        "account_id": "account-alice",
+        "outcome_kind": "published_paper",
+        "evidence_source": "provider",
+        "evidence_level": "externally_verified",
+        "run_id": "run-1",
+        "handoff_id": "ho-1",
+        "external_id": "provider-record-1",
+    }
+    store.record_outcome_evidence(**kwargs)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.record_outcome_evidence(**kwargs)
+
+
 def test_handoff_store_appends_compare_and_swap_transitions(tmp_path) -> None:
     store = HandoffStore(tmp_path)
     store.initialize()

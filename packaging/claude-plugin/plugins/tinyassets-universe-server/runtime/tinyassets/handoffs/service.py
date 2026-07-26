@@ -55,6 +55,7 @@ What this module deliberately does NOT do
 from __future__ import annotations
 
 import json
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -586,29 +587,42 @@ def _settle(
             # row is authoritative.
             fresh = store.get_handoff(fresh.handoff_id, actor_id=actor_id)
 
-    if target == "accepted" and not replay:
+    if target == "accepted":
         existing = store.list_outcome_evidence(
             account_id=actor_id, handoff_id=fresh.handoff_id, limit=1
         )
-        if not existing:
-            outcome = store.record_outcome_evidence(
-                account_id=actor_id,
-                outcome_kind=fresh.outcome_kind,
-                evidence_source="provider",
-                evidence_level="externally_verified",
-                run_id=fresh.run_id,
-                branch_def_id=fresh.branch_def_id,
-                branch_version_id=fresh.branch_version_id,
-                content_hash=fresh.content_hash,
-                output_field=fresh.output_field,
-                output_sha256=fresh.output_sha256,
-                handoff_id=fresh.handoff_id,
-                effect_key=effect_key,
-                sink=sink,
-                external_id=external_id,
-                payload={"provider_evidence": provider_evidence},
-                now=now,
-            )
+        if existing:
+            outcome = existing[0]
+        else:
+            try:
+                outcome = store.record_outcome_evidence(
+                    account_id=actor_id,
+                    outcome_kind=fresh.outcome_kind,
+                    evidence_source="provider",
+                    evidence_level="externally_verified",
+                    run_id=fresh.run_id,
+                    branch_def_id=fresh.branch_def_id,
+                    branch_version_id=fresh.branch_version_id,
+                    content_hash=fresh.content_hash,
+                    output_field=fresh.output_field,
+                    output_sha256=fresh.output_sha256,
+                    handoff_id=fresh.handoff_id,
+                    effect_key=effect_key,
+                    sink=sink,
+                    external_id=external_id,
+                    payload={"provider_evidence": provider_evidence},
+                    now=now,
+                )
+            except sqlite3.IntegrityError:
+                # Two recovery replays may observe the same missing linkage.
+                # The partial unique index elects one writer; the loser returns
+                # the shared authoritative evidence instead of failing.
+                shared = store.list_outcome_evidence(
+                    account_id=actor_id, handoff_id=fresh.handoff_id, limit=1
+                )
+                if not shared:  # pragma: no cover - unrelated integrity failure
+                    raise
+                outcome = shared[0]
 
     return {
         "status": fresh.state,
