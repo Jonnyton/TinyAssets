@@ -88,6 +88,9 @@ TINYASSETS_GOAL_POOL=off
 # Shared pool root used for daemon/worker goal-pool handoff. This path
 # intentionally lives under TINYASSETS_DATA_DIR so the non-root container
 # user can write it and both services see the same durable posts.
+# Load-bearing: the container has no `.git`, so unsetting this makes
+# `producers.goal_pool.repo_root_path()` raise `repo_root_not_resolvable`.
+# The directory need not pre-exist; pool writes mkdir parents.
 TINYASSETS_REPO_ROOT=/data/community-pool
 
 

@@ -22,9 +22,8 @@ Round-2 contract enforced here:
 * The effector NEVER silently swallows
   :class:`sqlite3.OperationalError`; it surfaces ``error_kind=
   receipt_store_locked`` so the operator can see the lock state.
-* Stale pending reservations (older than
-  ``STALE_PENDING_THRESHOLD_SECONDS``) can be reclaimed by a fresh
-  reservation attempt.
+* Pending reservations are never reclaimed by elapsed time alone; every
+  replay requires destination reconciliation.
 """
 
 from __future__ import annotations
@@ -47,6 +46,7 @@ from tinyassets.storage.effector_consents import grant_consent
 from tinyassets.storage.external_write_receipts import (
     STALE_PENDING_THRESHOLD_SECONDS,
     STATUS_FAILED,
+    STATUS_HELD,
     STATUS_PENDING,
     STATUS_SUCCEEDED,
     finalize_receipt,
@@ -245,9 +245,8 @@ def test_release_does_not_clobber_other_owner(universe_dir):
     assert row["run_id"] == "run-A"
 
 
-def test_stale_pending_can_be_reclaimed(universe_dir):
-    """A pending reservation older than STALE_PENDING_THRESHOLD_SECONDS
-    is auto-reclaimable by a fresh reserver."""
+def test_stale_pending_requires_destination_reconciliation(universe_dir):
+    """Elapsed time alone never grants permission to fire a second effect."""
     fake_now = 10_000.0
     try_reserve_receipt(
         universe_dir,
@@ -265,12 +264,11 @@ def test_stale_pending_can_be_reclaimed(universe_dir):
         run_id="run-B",
         now=later,
     )
-    assert res["status"] == "reserved_after_stale"
-    assert res["displaced_run_id"] == "run-A"
-    assert res["row"]["run_id"] == "run-B"
+    assert res["status"] == "reconciliation_required"
+    assert res["row"]["run_id"] == "run-A"
 
 
-def test_stale_threshold_respected_below_age(universe_dir):
+def test_fresh_pending_remains_in_flight(universe_dir):
     fake_now = 10_000.0
     try_reserve_receipt(
         universe_dir,
@@ -465,6 +463,32 @@ def test_concurrent_effector_calls_invoke_gh_exactly_once(gates_open):
     assert receipt["status"] == STATUS_SUCCEEDED
     assert receipt["evidence"]["pr_number"] == 4242
     assert receipt["run_id"] == "run-A"
+
+
+def test_stale_effector_intent_holds_with_actionable_reconciliation(gates_open):
+    universe = gates_open
+    packet = _make_packet(idempotency_hint="hint-stale")
+    try_reserve_receipt(
+        universe,
+        idempotency_hint="hint-stale",
+        sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+        run_id="run-crashed",
+        now=0.0,
+    )
+
+    with patch("tinyassets.effectors.github_pr.subprocess.run") as invoke:
+        result = run_github_pr_effector(
+            node_id="emit",
+            output_keys=["pr_packet"],
+            run_state={"pr_packet": packet},
+            base_path=universe,
+            run_id="run-replay",
+        )
+
+    invoke.assert_not_called()
+    assert result["status"] == STATUS_HELD
+    assert result["reason"] == "reconciliation_unavailable"
+    assert result["remediation"]["action"] == "inspect_destination_then_resolve"
 
 
 def test_concurrent_with_seeded_terminal_row_skips_gh(gates_open):
