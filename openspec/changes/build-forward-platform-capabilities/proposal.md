@@ -19,7 +19,7 @@ The full-platform architecture still calls for outbound connectivity, data and d
 ### New Capabilities
 
 - `data-commons`: Dataset assets, provenance, pricing, quality gates, contribution settlement, and Dataset Forge.
-- `demand-side`: Standing goals, binding onboarding outcomes, goal bounties, and the measured gate for later universe services.
+- `demand-side`: Goal bounties and the measured gate for later universe services. The standing-goal, timezone-scheduling, onboarding-outcome, and per-universe-metric half was released to `demand-side-signals` on 2026-07-25 (task 4.1) and is no longer specified here.
 - `hardware-creation`: Verified design-to-silicon and physical-fabrication product workflows.
 - `paid-market-training`: Training instruments, verification, checkpoint payment, gate integration, capability minting, and input provenance.
 - `pooled-training-ownership`: Persisted funding, frozen lineage ownership, refunds, and revenue distribution.
@@ -27,9 +27,12 @@ The full-platform architecture still calls for outbound connectivity, data and d
 
 ### Released Capabilities
 
-Each released delta has exactly one active successor owner. The umbrella keeps only the cross-slice invariants those successors must preserve: design decisions **D0–D8** and the slice dependency ledger. D9 is host-gated context recorded for provenance and imposes no successor obligation in either direction.
+**Ownership is one active owner per released *requirement* (convention amended 2026-07-25).** As originally written this read "each released delta has exactly one active successor owner", which was accurate while every release was whole-delta (tasks 1.1, 1.2, 2.1). Task 4.1 released only the non-monetary half of `demand-side`, so the convention is restated at the granularity that actually carries the invariant: **no requirement may have two active owners.** A delta may be split across owners provided the split is disjoint, both sides are named where a reader will look, and nothing is copied. Whole-delta release remains the default and the simpler case; a partial release must say so explicitly in this section, in the delta file itself, and in the originating task.
+
+The umbrella keeps only the cross-slice invariants those successors must preserve: design decisions **D0–D8** and the slice dependency ledger. D9 is host-gated context recorded for provenance and imposes no successor obligation in either direction.
 
 - `boundary-layer` → `outbound-boundary-layer` (released 2026-07-24, task 1.2).
+- `demand-side` **non-monetary half** → `demand-side-signals` (released 2026-07-25, task 4.1). This is the umbrella's first *partial* release, and the reason the ownership convention above was restated at requirement granularity. Two of the five `demand-side` requirements were physically moved to the successor; the three bounty/direct-service requirements stay here pending tasks 4.2 and 4.3. The split is disjoint and nothing was copied, so no requirement has two owners.
 - `paid-market-economy` transaction delta → `paid-market-track-e-wave-2-transport` (task 1.1).
 - `paid-market-price-index-and-forwards` delta → `paid-market-live-price-discovery` (task 2.1).
 

@@ -25,22 +25,14 @@ def _load_runner():
     return module
 
 
-def test_fixture_migration_ids_are_unique_gap_free_and_dependency_ordered():
+def test_fixture_migration_ids_match_the_migration_directory():
     runner = _load_runner()
     migrations = runner.discover_migrations(MIGRATIONS)
-    assert [migration.filename for migration in migrations] == [
-        "001_core_tables.sql",
-        "002_flags.sql",
-        "003_rls.sql",
-        "004_indexes.sql",
-        "005_seed.sql",
-        "006_discover_nodes.sql",
-        "007_token_normalization.sql",
-        "008_forwards.sql",
-        "009_market_ledger.sql",
-        "010_outbound_boundary.sql",
+    expected_filenames = sorted(path.name for path in MIGRATIONS.glob("*.sql"))
+    assert [migration.filename for migration in migrations] == expected_filenames
+    assert [migration.version for migration in migrations] == [
+        int(filename.partition("_")[0]) for filename in expected_filenames
     ]
-    assert [migration.version for migration in migrations] == list(range(1, 11))
 
 
 def test_fixture_checksum_uses_exact_file_bytes(tmp_path):
@@ -55,6 +47,19 @@ def test_fixture_checksum_uses_exact_file_bytes(tmp_path):
     second = runner.discover_migrations(tmp_path)[0]
     assert second.sha256 == hashlib.sha256(b"SELECT 1;\n").hexdigest()
     assert second.sha256 != first.sha256
+
+
+def test_fixture_discovery_accepts_reserved_version_when_present(tmp_path):
+    runner = _load_runner()
+    for version in range(1, 12):
+        (tmp_path / f"{version:03d}_migration.sql").write_text(
+            "SELECT 1;\n",
+            encoding="utf-8",
+        )
+
+    migrations = runner.discover_migrations(tmp_path)
+
+    assert [migration.version for migration in migrations] == list(range(1, 12))
 
 
 @pytest.mark.parametrize(
@@ -115,7 +120,8 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
         ).fetchall()
         assert rows == [
             (version, name, 64)
-            for version, name in enumerate(
+            for version, name in zip(
+                list(range(1, 14)),
                 [
                     "core_tables",
                     "flags",
@@ -127,8 +133,11 @@ def test_fresh_apply_replay_history_privileges_and_populated_baseline(
                     "forwards",
                     "market_ledger",
                     "outbound_boundary",
+                    "goal_canonicals",
+                    "authoring_sessions",
+                    "paid_market_workflow",
                 ],
-                start=1,
+                strict=True,
             )
         ]
         connection.execute("SET ROLE tinyassets_fixture_app")
@@ -213,7 +222,7 @@ def test_populated_baseline_is_independent_of_runner_role_name(
             )
             assert connection.execute(
                 "SELECT count(*) FROM public.schema_migrations"
-            ).fetchone() == (9,)
+            ).fetchone() == (13,)
     finally:
         with psycopg.connect(dsn, autocommit=True) as admin:
             admin.execute(
@@ -241,7 +250,7 @@ def test_failed_migration_rolls_back_and_resume_applies_once(
     runner = _load_runner()
     for migration in MIGRATIONS.glob("*.sql"):
         shutil.copy2(migration, tmp_path / migration.name)
-    failing = tmp_path / "011_failure_probe.sql"
+    failing = tmp_path / "014_failure_probe.sql"
     failing.write_text(
         "CREATE TABLE public.failure_probe (id integer);\nSELECT 1 / 0;\n",
         encoding="utf-8",
@@ -253,7 +262,7 @@ def test_failed_migration_rolls_back_and_resume_applies_once(
             "SELECT to_regclass('public.failure_probe')"
         ).fetchone() == (None,)
         assert connection.execute(
-            "SELECT count(*) FROM public.schema_migrations WHERE version = 11"
+            "SELECT count(*) FROM public.schema_migrations WHERE version = 14"
         ).fetchone() == (0,)
 
         failing.write_text(
@@ -263,7 +272,7 @@ def test_failed_migration_rolls_back_and_resume_applies_once(
         runner.run_migrations(connection, tmp_path)
         runner.run_migrations(connection, tmp_path)
         assert connection.execute(
-            "SELECT count(*) FROM public.schema_migrations WHERE version = 11"
+            "SELECT count(*) FROM public.schema_migrations WHERE version = 14"
         ).fetchone() == (1,)
 
 
@@ -330,7 +339,7 @@ def test_populated_baseline_history_is_recorded_atomically(
         )
         assert connection.execute(
             "SELECT count(*) FROM public.schema_migrations"
-        ).fetchone() == (9,)
+        ).fetchone() == (13,)
 
 
 def test_populated_baseline_rejects_lookalike_function_body(
@@ -390,7 +399,7 @@ def test_checksum_drift_lock_timeout_and_concurrent_runners(
         assert connection.execute(
             "SELECT array_agg(version ORDER BY version) "
             "FROM public.schema_migrations"
-        ).fetchone() == (list(range(1, 11)),)
+        ).fetchone() == (list(range(1, 14)),)
         first = tmp_path / "001_core_tables.sql"
         first.write_bytes(first.read_bytes() + b"\n")
         with pytest.raises(runner.MigrationError, match="checksum drift"):

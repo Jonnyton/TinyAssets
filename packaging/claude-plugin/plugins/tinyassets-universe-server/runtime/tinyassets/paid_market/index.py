@@ -3,7 +3,7 @@
 Track E Waves 3a/3b (spec: docs/exec-plans/active/
 2026-07-08-track-e-price-index-and-capacity-forwards.md §2).
 
-Computes the per-capability composite spot quote from settled trades.
+Computes the per-market-class composite spot quote from settled trades.
 All money is integer micros-per-Mtok; all intermediate arithmetic is
 exact (int / fractions.Fraction). No floats anywhere in the money path.
 
@@ -58,7 +58,7 @@ class IndexError_(ValueError):
 class SettledTrade:
     """One settled, dispute-window-cleared trade (a price observation)."""
 
-    capability_id: str
+    market_class_id: str
     price_micros_per_mtok: int  # unit price actually settled at
     tokens_out: int  # completion tokens delivered (VWAP weight)
     buyer_id: str
@@ -66,8 +66,8 @@ class SettledTrade:
     settled_at: int  # unix seconds, UTC
 
     def validate(self) -> None:
-        if not self.capability_id:
-            raise IndexError_("trade missing capability_id")
+        if not self.market_class_id:
+            raise IndexError_("trade missing market_class_id")
         if not isinstance(self.price_micros_per_mtok, int) or isinstance(
             self.price_micros_per_mtok, bool
         ):
@@ -92,9 +92,9 @@ class SettledTrade:
 
 @dataclass(frozen=True)
 class SpotQuote:
-    """Composite spot quote for one capability (spec §2)."""
+    """Composite spot quote for one market class (spec §2)."""
 
-    capability_id: str
+    market_class_id: str
     vwap_micros: int | None  # published (post-clamp) VWAP, None if too thin
     raw_vwap_micros: int | None  # pre-clamp VWAP (== vwap unless clamped)
     vwap_window: str | None  # '24h' | '7d' | None
@@ -192,13 +192,13 @@ def compute_vwap(
     """
     if not trades:
         raise IndexError_("compute_vwap requires at least one trade")
-    cap_id = trades[0].capability_id
+    market_class_id = trades[0].market_class_id
     pair_volumes: dict[tuple[str, str], int] = {}
     pair_value: dict[tuple[str, str], int] = {}  # sum(price * tokens) per pair
     for t in trades:
         t.validate()
-        if t.capability_id != cap_id:
-            raise IndexError_("compute_vwap trades must share one capability_id")
+        if t.market_class_id != market_class_id:
+            raise IndexError_("compute_vwap trades must share one market_class_id")
         pair_volumes[t.pair_key] = pair_volumes.get(t.pair_key, 0) + t.tokens_out
         pair_value[t.pair_key] = (
             pair_value.get(t.pair_key, 0) + t.price_micros_per_mtok * t.tokens_out
@@ -222,7 +222,7 @@ def compute_vwap(
 
 def compute_spot_quote(
     *,
-    capability_id: str,
+    market_class_id: str,
     trades: list[SettledTrade],
     now: int,
     best_ask_micros: int | None,
@@ -247,8 +247,8 @@ def compute_spot_quote(
 
     for t in trades:
         t.validate()
-        if t.capability_id != capability_id:
-            raise IndexError_("trade capability_id mismatch")
+        if t.market_class_id != market_class_id:
+            raise IndexError_("trade market_class_id mismatch")
         if t.settled_at > now:
             raise IndexError_("trade settled in the future")
 
@@ -277,7 +277,7 @@ def compute_spot_quote(
             above_ceiling = True
 
     return SpotQuote(
-        capability_id=capability_id,
+        market_class_id=market_class_id,
         vwap_micros=vwap,
         raw_vwap_micros=raw_vwap,
         vwap_window=window_label,
