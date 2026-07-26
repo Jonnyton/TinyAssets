@@ -160,10 +160,10 @@
   actions-write or task/repair authority.
 - [ ] 4.4 After every generic guarantee has moved to its surviving owner,
   verify the nine removal headings exactly match the nine remaining canonical
-  `community-patch-loop` requirements, then physically delete
-  `openspec/specs/community-patch-loop/`; never ask the normal sync path to
-  create an invalid zero-requirement spec, and leave no empty spec directory or
-  named shipped artifact.
+  `community-patch-loop` requirements and record their digest-bound removal
+  manifest. Do not create an empty canonical spec or delete the directory in a
+  separate intermediate state; task 6.7 owns the atomic canonical foldback and
+  physical deletion.
 
 ## 5. Remove Public Product Presentation
 
@@ -218,15 +218,16 @@
 - [ ] 6.6 Freshness-stamp production evidence for generic uptime/deploy
   observation and post-fix user filing; if no post-fix real-user use exists,
   leave the required short `STATUS.md` watch item rather than claiming clean use.
-- [ ] 6.7 Explicitly apply the coordination, daemon, graph, wiki, uptime, and
-  website deltas to their canonical specs; rewrite canonical `wiki-commons`
+- [ ] 6.7 In one canonical foldback commit, explicitly apply the coordination,
+  daemon, graph, wiki, uptime, and website deltas to their canonical specs;
+  rewrite canonical `wiki-commons`
   Purpose prose that promises trigger receipts, `uptime-and-alarms` prose that
   names the neighboring patch loop, and the `public-website-surface`
   historical-run scenario that requires patch-loop feed/community-watch
-  fallback. After task 4.4 has physically removed the canonical
-  `community-patch-loop` directory and its stable completed-run reuse guarantee
-  is owned by `daemon-runtime-and-dispatch`, strictly validate the complete
-  canonical tree and archive with
+  fallback. After task 4.4's exact-heading manifest is satisfied and the stable
+  completed-run reuse guarantee is owned by `daemon-runtime-and-dispatch`,
+  physically delete the canonical `community-patch-loop` directory in that same
+  commit, strictly validate the complete canonical tree, and archive with
   `openspec archive retire-cheat-loop --yes --skip-specs`. Before archive,
   prove the six canonical updates and physical capability deletion are already
   present; after archive, prove no empty or resurrected capability exists.
