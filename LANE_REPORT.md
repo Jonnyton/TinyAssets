@@ -356,37 +356,26 @@ replace the attributes around them.
 now fail closed (`test_party_and_delivery_evidence_fails_closed`,
 `test_a_bool_cannot_pass_as_the_influence_cap`). **Pushed** — `9d06ae93`.
 
-## B (critical) — cross-partition cap composition. NOT FIXED, recorded as open
+## B (critical) — cross-partition cap composition. FIXED
 
-Codex's claim: re-basing `_capped_scales` can weaken a correct cap. Verified
-numerically, and the finding is real but the framing needed one correction —
-**both** forms are wrong, in different partitions:
-
-| form | partition 1 (bound 50%) | partition 2 (bound 25%) |
-|---|---|---|
-| before re-basing | A 50%, B 50% — ok | E **50%** — violated |
-| after re-basing | A **75%** — violated | E 25% — ok |
-
-So re-basing moved the violation rather than introducing it; the pre-existing
-`min()`-of-scales composition does not solve the caps jointly. Re-basing *did*
-fix the strictly-worse single-identity-partition case (a partition with one
-identity returned a uniformly tiny scale that won every `min()` and erased every
-other cap), which now has its own test.
-
-**Not fixed, and not claimed as fixed.** The correct fix is a joint fixed point
-over one shared total — each group capped at `c * T` of the *final* weight rather
-than of its own partition — which is a real redesign of `capped_pair_weights`.
-The obvious iterative form was prototyped and **rejected**: with exact `Fraction`
-arithmetic it does not converge and the denominators explode (it failed to
-complete Codex's single 5-observation case in 120s). Guessing here, on a money
-path, immediately after shipping one incomplete fix in the same area, is exactly
-the failure the review exists to catch.
-
-Instead the counterexample is pinned as an executable known-limitation test,
-`test_known_limitation_cross_partition_caps_are_not_jointly_solved`, which
-asserts what the code *does* (and says so in its docstring) and goes red the
-moment the composition is fixed. It is not an `xfail` and weakens no existing
-assertion. Carried into `tasks.md` 2.5 as an OPEN residual.
+- **Red** — the pinned counterexample was converted from a known-limitation
+  assertion to the required behavior and extended across 2, 3, and 5 identity
+  partitions. The focused module produced 5 failures because no joint solver
+  existed (92 passed, 5 failed).
+- **Fix** — reshaped, not edge-patched. `_raw_vwap_field` now submits the pair,
+  buyer-root, seller-root, requester, and host-owner partitions to one exact
+  rational linear solver. Every group cap is expressed against the same final
+  settlement-weight total. The solver maximizes retained settled volume subject
+  to those joint constraints and the original observation quantities; a
+  structurally inconsistent partition set fails closed with
+  `joint_influence_cap_infeasible`.
+- **Green** — `tests/test_paid_market_manipulation_mutation.py` plus the directly
+  touched `tests/test_paid_market_price_surface.py`: 178 passed.
+- **Mutation** — `test_joint_partition_cap_is_load_bearing` forces the joint
+  solver open and the 5-partition split-volume guard goes red. The parameterized
+  2/3/5-partition probe proves adding partitions cannot restore admission.
+- **Pushed SHA** — pending implementation commit; recorded in the follow-up
+  evidence commit before branch push.
 
 ## Round-3 evidence
 

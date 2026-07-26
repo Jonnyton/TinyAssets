@@ -986,7 +986,7 @@ def test_missing_vwap_is_null_not_zero_and_zero_prices_fail_loud() -> None:
         _join(_binding(gross_micros=1_000), unit_price_micros=0)
 
 
-def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidence() -> None:
+def test_split_accounts_with_inconsistent_caps_are_refused_and_thin_market_is_low_confidence() -> None:
     observations = [
         _observation(
             price=1_000,
@@ -1018,32 +1018,30 @@ def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidenc
             ),
         ]
     )
-    surface = aggregate_price_surface(
-        market_class_id="sha256:market",
-        market_scope_revision=SCOPE_REVISION,
-        public_scope=SCOPE,
-        now=150,
-        observations=observations,
-        native_asks=[],
-        references=collect_references(
-            [],
-            ReferenceRequest(
-                market_class_id="sha256:market",
-                currency="tiny",
-                region="us",
-                required_components=frozenset({"usage"}),
-                terms_digest="sha256:terms",
-            ),
-            now=150,
+    references = collect_references(
+        [],
+        ReferenceRequest(
+            market_class_id="sha256:market",
+            currency="tiny",
+            region="us",
+            required_components=frozenset({"usage"}),
+            terms_digest="sha256:terms",
         ),
-        min_samples=3,
-        settlement_ttl=60,
-        principal_share_cap_ppm=250_000,
+        now=150,
     )
-
-    assert surface.raw_vwap.owner_count == 3
-    assert surface.raw_vwap.value_micros == 400
-    assert surface.raw_vwap.confidence == "normal"
+    with pytest.raises(PriceSurfaceError, match="joint_influence_cap_infeasible"):
+        aggregate_price_surface(
+            market_class_id="sha256:market",
+            market_scope_revision=SCOPE_REVISION,
+            public_scope=SCOPE,
+            now=150,
+            observations=observations,
+            native_asks=[],
+            references=references,
+            min_samples=3,
+            settlement_ttl=60,
+            principal_share_cap_ppm=250_000,
+        )
 
     thin = aggregate_price_surface(
         market_class_id="sha256:market",
@@ -1052,7 +1050,7 @@ def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidenc
         now=150,
         observations=observations[:3],
         native_asks=[],
-        references=surface.references,
+        references=references,
         min_samples=3,
         settlement_ttl=60,
     )

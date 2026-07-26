@@ -8,7 +8,7 @@ from fractions import Fraction
 from typing import Protocol, Sequence
 
 from tinyassets.paid_market.fee_schedule import FeeScheduleError, scheduled_fee_micros
-from tinyassets.paid_market.index import PPM, capped_pair_weights
+from tinyassets.paid_market.index import PPM
 from tinyassets.paid_market.quotes import ValidatedQuote
 from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
 
@@ -578,56 +578,36 @@ def _raw_vwap_field(
 ) -> PriceField:
     if len(observations) < min_samples:
         return _empty_field()
-    pair_volumes: dict[tuple[str, str], int] = {}
-    buyer_volumes: dict[tuple[str, str], int] = {}
-    seller_volumes: dict[tuple[str, str], int] = {}
-    requester_volumes: dict[tuple[str, str], int] = {}
-    host_volumes: dict[tuple[str, str], int] = {}
+    quantities: list[int] = []
+    pairs: list[tuple[str, str]] = []
+    buyers: list[str] = []
+    sellers: list[str] = []
+    requesters: list[str] = []
+    hosts: list[str] = []
     for observation in observations:
         pair = observation.principal_pair
         buyer = observation.buyer_principal_root
         seller = observation.seller_principal_root
         assert pair is not None and buyer is not None and seller is not None
-        pair_volumes[pair] = pair_volumes.get(pair, 0) + observation.quantity
-        buyer_key = (buyer, buyer)
-        seller_key = (seller, seller)
-        buyer_volumes[buyer_key] = (
-            buyer_volumes.get(buyer_key, 0) + observation.quantity
-        )
-        seller_volumes[seller_key] = (
-            seller_volumes.get(seller_key, 0) + observation.quantity
-        )
-        requester_key = _identity_key(observation.binding.requester_id)
-        host_key = _identity_key(observation.binding.host_owner_id)
-        requester_volumes[requester_key] = (
-            requester_volumes.get(requester_key, 0) + observation.quantity
-        )
-        host_volumes[host_key] = host_volumes.get(host_key, 0) + observation.quantity
-    pair_scales = _capped_scales(pair_volumes, principal_share_cap_ppm)
-    buyer_scales = _capped_scales(buyer_volumes, principal_share_cap_ppm)
-    seller_scales = _capped_scales(seller_volumes, principal_share_cap_ppm)
-    requester_scales = _capped_scales(requester_volumes, principal_share_cap_ppm)
-    host_scales = _capped_scales(host_volumes, principal_share_cap_ppm)
+        quantities.append(observation.quantity)
+        pairs.append(pair)
+        buyers.append(buyer)
+        sellers.append(seller)
+        requesters.append(observation.binding.requester_id)
+        hosts.append(observation.binding.host_owner_id)
+    weights = _joint_capped_weights(
+        quantities,
+        (pairs, buyers, sellers, requesters, hosts),
+        principal_share_cap_ppm,
+    )
     numerator = Fraction(0)
     denominator = Fraction(0)
-    for observation in observations:
-        pair = observation.principal_pair
-        buyer = observation.buyer_principal_root
-        seller = observation.seller_principal_root
-        assert pair is not None and buyer is not None and seller is not None
-        # The strongest applicable dampening wins. Structurally infeasible
-        # overlaps retain capped_pair_weights' volume-invariant equal weighting.
-        weight = observation.quantity * min(
-            pair_scales[pair],
-            buyer_scales[(buyer, buyer)],
-            seller_scales[(seller, seller)],
-            _settlement_identity_scale(observation, requester_scales, host_scales),
-        )
+    for observation, weight in zip(observations, weights, strict=True):
         numerator += observation.unit_price_micros * weight
         denominator += weight
     value = int(numerator / denominator)
     latest = max(observation.observed_at for observation in observations)
-    owner_count = min(len(buyer_volumes), len(seller_volumes))
+    owner_count = min(len(set(buyers)), len(set(sellers)))
     return PriceField(
         value_micros=value,
         observed_at=latest,
@@ -644,52 +624,161 @@ def _raw_vwap_field(
     )
 
 
-def _capped_scales(
-    volumes: dict[tuple[str, str], int], principal_share_cap_ppm: int
-) -> dict[tuple[str, str], Fraction]:
-    """Per-identity dampening for one partition, expressed *relatively*.
+def _joint_capped_weights(
+    quantities: Sequence[int],
+    partitions: Sequence[Sequence[object]],
+    principal_share_cap_ppm: int,
+) -> tuple[Fraction, ...]:
+    """Maximize retained settlement weight under every identity cap jointly.
 
-    Scales from different identity partitions compose through ``min()``, so
-    each partition must be re-based on its own least-dampened member.  The
-    water-filling branch already returns 1 for every uncapped key, but the
-    infeasible-cap branch returns equal weights — whose raw ratio is
-    ``1 / volume``.  Left absolute, a partition holding a single identity (or
-    simply more total volume) would return a uniformly tiny ratio that wins
-    every ``min()`` and erases the caps the other partitions computed.
-    Re-basing keeps the intended reading: 1 means "not dampened here".
+    Every group constraint is expressed against the same final weight total.
+    A partition with too few groups for the configured cap uses the existing
+    volume-invariant fallback ``1 / n``.  If overlapping partitions make those
+    bounds mutually inconsistent, no observation is silently discarded: the
+    aggregate fails closed.
     """
-    weights = capped_pair_weights(volumes, principal_share_cap_ppm)
-    scales = {key: weight / volumes[key] for key, weight in weights.items()}
-    if not scales:
-        return scales
-    ceiling = max(scales.values())
-    return {key: scale / ceiling for key, scale in scales.items()}
+    if not quantities:
+        return ()
+    if any(
+        not isinstance(quantity, int)
+        or isinstance(quantity, bool)
+        or quantity <= 0
+        for quantity in quantities
+    ):
+        raise PriceSurfaceError("joint influence quantities must be positive integers")
+    if any(len(partition) != len(quantities) for partition in partitions):
+        raise PriceSurfaceError("joint influence partitions must align")
 
+    count = len(quantities)
+    total_index = count
+    variable_count = count + 1
+    constraints: list[list[Fraction]] = []
+    limits: list[Fraction] = []
 
-def _identity_key(identity: str) -> tuple[str, str]:
-    """One settlement identity as a self-pair, so it shares the cap solver."""
-    return (identity, identity)
+    def add_constraint(coefficients: dict[int, Fraction], limit: Fraction) -> None:
+        row = [Fraction(0) for _ in range(variable_count)]
+        for index, coefficient in coefficients.items():
+            row[index] = coefficient
+        constraints.append(row)
+        limits.append(limit)
 
-
-def _settlement_identity_scale(
-    observation: PaidObservation,
-    requester_scales: dict[tuple[str, str], Fraction],
-    host_scales: dict[tuple[str, str], Fraction],
-) -> Fraction:
-    """Manipulation control: dampen by settlement identity, not by call count.
-
-    Principal roots are attested per settlement, so an operator running split
-    accounts can present each wash print with a fresh, unrelated pair of roots
-    and slip under every root- and pair-level bucket.  The requester and host
-    owner are the identities all three authorities already bound, so capping
-    their aggregate volume too removes the split-account lever: influence is
-    bounded by whichever identity partition is most concentrated.
-    """
-    binding = observation.binding
-    return min(
-        requester_scales[_identity_key(binding.requester_id)],
-        host_scales[_identity_key(binding.host_owner_id)],
+    # T == sum(weights), represented as two <= constraints.
+    add_constraint(
+        {**{index: Fraction(1) for index in range(count)}, total_index: Fraction(-1)},
+        Fraction(0),
     )
+    add_constraint(
+        {**{index: Fraction(-1) for index in range(count)}, total_index: Fraction(1)},
+        Fraction(0),
+    )
+
+    cap = Fraction(principal_share_cap_ppm, PPM)
+    for partition in partitions:
+        groups: dict[object, list[int]] = {}
+        for index, identity in enumerate(partition):
+            groups.setdefault(identity, []).append(index)
+        if len(groups) <= 1:
+            continue
+        bound = max(cap, Fraction(1, len(groups)))
+        for members in groups.values():
+            coefficients = {index: Fraction(1) for index in members}
+            coefficients[total_index] = -bound
+            add_constraint(coefficients, Fraction(0))
+
+    for index, quantity in enumerate(quantities):
+        add_constraint({index: Fraction(1)}, Fraction(quantity))
+
+    objective = [Fraction(1) for _ in range(count)] + [Fraction(0)]
+    solution = _simplex_maximize(constraints, limits, objective)
+    weights = tuple(solution[:count])
+    total = sum(weights, Fraction(0))
+    if total <= 0:
+        raise PriceSurfaceError("joint_influence_cap_infeasible")
+
+    for partition in partitions:
+        groups: dict[object, Fraction] = {}
+        for identity, weight in zip(partition, weights, strict=True):
+            groups[identity] = groups.get(identity, Fraction(0)) + weight
+        bound = max(cap, Fraction(1, len(groups)))
+        if any(group_weight > bound * total for group_weight in groups.values()):
+            raise PriceSurfaceError("joint_influence_cap_infeasible")
+    return weights
+
+
+def _simplex_maximize(
+    constraints: Sequence[Sequence[Fraction]],
+    limits: Sequence[Fraction],
+    objective: Sequence[Fraction],
+) -> list[Fraction]:
+    """Exact Bland-rule simplex for ``A*x <= b, x >= 0`` with ``b >= 0``."""
+    row_count = len(constraints)
+    variable_count = len(objective)
+    width = variable_count + row_count + 1
+    tableau: list[list[Fraction]] = []
+    basis: list[int] = []
+    for row_index, (constraint, limit) in enumerate(
+        zip(constraints, limits, strict=True)
+    ):
+        if limit < 0:
+            raise PriceSurfaceError("joint influence solver received a negative limit")
+        row = [Fraction(value) for value in constraint]
+        row.extend(
+            Fraction(1 if index == row_index else 0)
+            for index in range(row_count)
+        )
+        row.append(Fraction(limit))
+        tableau.append(row)
+        basis.append(variable_count + row_index)
+    tableau.append(
+        [-Fraction(value) for value in objective]
+        + [Fraction(0) for _ in range(row_count + 1)]
+    )
+
+    objective_row = row_count
+    pivot_limit = max(1_000, row_count * width * 4)
+    for _ in range(pivot_limit):
+        entering = next(
+            (
+                column
+                for column in range(width - 1)
+                if tableau[objective_row][column] < 0
+            ),
+            None,
+        )
+        if entering is None:
+            solution = [Fraction(0) for _ in range(variable_count)]
+            for row_index, basic_variable in enumerate(basis):
+                if basic_variable < variable_count:
+                    solution[basic_variable] = tableau[row_index][-1]
+            return solution
+
+        candidates = [
+            (
+                tableau[row_index][-1] / tableau[row_index][entering],
+                basis[row_index],
+                row_index,
+            )
+            for row_index in range(row_count)
+            if tableau[row_index][entering] > 0
+        ]
+        if not candidates:
+            raise PriceSurfaceError("joint_influence_cap_unbounded")
+        _, _, leaving = min(candidates)
+        pivot = tableau[leaving][entering]
+        tableau[leaving] = [value / pivot for value in tableau[leaving]]
+        for row_index in range(row_count + 1):
+            if row_index == leaving:
+                continue
+            factor = tableau[row_index][entering]
+            if factor:
+                tableau[row_index] = [
+                    value - factor * pivot_value
+                    for value, pivot_value in zip(
+                        tableau[row_index], tableau[leaving], strict=True
+                    )
+                ]
+        basis[leaving] = entering
+    raise PriceSurfaceError("joint_influence_cap_solver_limit")
 
 
 def _require_unique_settlements(observations: Sequence[PaidObservation]) -> None:

@@ -11,7 +11,7 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 | 2.2 | unblocked -> built | Same #1679 landing. `descriptors.py` derives both ids; `capability_id` stayed purged. Payload/credential/price/routing/reservation/execution remain absent. |
 | 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
 | 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
-| 2.5 | unblocked -> built, one OPEN residual (2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Thirteen manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. The first six proved a weight cap only — price and delivered quantity are now both settlement evidence, the canonical fee is schedule-derived, and quote attributes are re-read from signed bytes. **Residual:** cross-partition cap composition is not jointly solved (round-2 finding B); pinned by an executable known-limitation test and needs its own lane. |
+| 2.5 | built; finding B closed (2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Fourteen manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. Price and delivered quantity are settlement evidence, the canonical fee is schedule-derived, quote attributes are re-read from signed bytes, and all identity partitions now share one exact capped-weight total. Inconsistent cross-partition constraints fail closed. |
 | 3.1 | built (join repaired 2026-07-25) | Fail-closed observation joins and independently fresh price fields use fixture receipts only. The join was reopened after Codex's money review: it agreed three receipt copies and then accepted every other price-index input from its caller. Identity/scope now derive from the quote and the price from the settled gross. |
 | 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
 | 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
@@ -96,8 +96,8 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 - [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
 - [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
 - [x] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
-  - Evidence (2026-07-25; `tests/test_paid_market_manipulation_mutation.py` 91 passed).
-    Eleven mutation probes each force one control open and assert the guard goes red:
+  - Evidence (2026-07-25; `tests/test_paid_market_manipulation_mutation.py` 97 passed).
+    Fourteen mutation probes each force one control open and assert the guard goes red:
     index eligibility / self-trade / linked-party / unknown-linkage
     (`_index_eligible`, `:250`), per-principal influence cap (`_capped_scales`,
     `:296`), settlement-derived unit price (`_require_settlement_derived_price`,
@@ -107,7 +107,8 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     (`_require_canonical_fee`, `:536`), canonical fee schedule
     (`_fee_matches_schedule`, `:559`), raw native-truth isolation (`_raw_vwap_field`,
     `:644`), composite ceiling clamp (`_composite_field`, `:660`), and the
-    substitutability gate (`descriptors._compare`, `:736`). Properties: no nominal
+    substitutability gate (`descriptors._compare`, `:736`), and joint cross-partition
+    settlement weights (`_joint_capped_weights`, finding-B probe). Properties: no nominal
     price clears any non-price rejection across 7 prices x 7 defects; a changed
     descriptor is a different supply identity and is never silently substituted;
     stale fields never become executable and a fresh field never refreshes a stale
@@ -125,23 +126,15 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     `ValidatedQuote` dataclass. Beyond the monkeypatch probes, a source-mutant run
     removed each new control from `price_surface.py` directly: all 21 new-control
     tests went red and no other test did.
-  - **OPEN — cross-partition cap composition is not a joint solution.** Round-2
-    finding B, not fixed and not claimed as fixed. `_raw_vwap_field` composes each
-    identity partition's cap through `min()` of per-partition scales, which does
-    not solve the caps jointly: an identity can exceed its partition's achievable
-    bound `max(cap, 1/n)`. Codex's counterexample is pinned as an executable test
-    (`tests/test_paid_market_manipulation_mutation.py::
-    test_known_limitation_cross_partition_caps_are_not_jointly_solved`) and that
-    test goes red when the composition is fixed. Both the pre- and post-re-basing
-    forms violate the bound, in different partitions, so this predates the
-    re-basing change rather than being introduced by it; re-basing did fix the
-    strictly-worse single-identity-partition case, which has its own test. A
-    correct fix is a joint fixed point over one shared total (each group capped at
-    `c * T` of the *final* weight, not of its own partition) — a real redesign of
-    `capped_pair_weights`. The obvious iterative form was prototyped and rejected:
-    with exact `Fraction` arithmetic it does not converge and the denominators
-    explode. This needs its own lane before the index is treated as
-    manipulation-safe.
+  - **CLOSED — cross-partition cap composition.** `_raw_vwap_field` now sends the
+    pair, buyer-root, seller-root, requester, and host-owner partitions to one exact
+    rational joint solver. Every group is constrained against the same final total;
+    the solver maximizes retained settled volume without exceeding the original
+    observation quantity. Mutually inconsistent partition constraints have no
+    positive solution and fail closed with `joint_influence_cap_infeasible`.
+    The pinned two-partition counterexample is now a green refusal test, extended
+    across 2/3/5 partitions, with a mutation probe that forces the joint solver open
+    and proves split volume would otherwise be admitted.
 
 ## 3. Price surfaces and reference adapters
 
