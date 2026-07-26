@@ -18,7 +18,12 @@ the original branch-definition fallback:
 3. dedicated `bug_investigation` queue/execution/write-back behavior;
 4. auto-ship validator, PR action, ledger, status, and configuration;
 5. community-loop named runtime, workflow, artifact, label, package, and test
-   surfaces.
+   surfaces;
+6. active loop skills, catalog routes, and shipped loop-team souls;
+7. repository-wide implicit auto-merge and automatic patch-announcement
+   compositions; and
+8. generated website/plugin snapshots or prompts that can resurrect the
+   retired behavior.
 
 TinyAssets retains the domain-agnostic pieces from which a user may build these
 outcomes: Goal canonicals, requests, BranchTasks, graph execution, node enqueue,
@@ -39,12 +44,18 @@ rg -n -i --glob '!openspec/changes/archive/**' "cheat[ _-]?loop|CHEAT_LOOP|cheat
 rg -n "TINYASSETS_BUG_INVESTIGATION_(GOAL_ID|BRANCH_DEF_ID)|_maybe_enqueue_investigation|_resolve_investigation_handler|enqueue_investigation_request" .
 rg -n -i "community[_ -]loop|auto[_ -]ship|TINYASSETS_AUTO_SHIP" tinyassets fantasy_daemon scripts .github deploy packaging/claude-plugin tests docs/ops
 rg -n "bug_investigation|attach_patch_packet|trigger_receipt" tinyassets fantasy_daemon packaging/claude-plugin tests deploy .github docs/ops
+rg -n -i "loop-uptime|community[_ -]loop|auto[_ -]fix|patch[_ -]loop" .agents/skills .claude/skills .github/workflows docs/souls WebSite/site/src/lib/content WebSite/site-react/lib
+gh variable list --repo Jonnyton/TinyAssets
 openspec validate retire-cheat-loop --strict
 ```
 
 The last command passed on 2026-07-26 after all proposal artifacts were
 complete. These searches are diagnostic inventory, not proof of implementation;
 the runtime is still unchanged in this target-only lane.
+
+The authenticated repository-variable read on 2026-07-26 returned
+`AUTO_FIX_DISABLED=true` (last updated 2026-06-06) and
+`WORKOS_REQUIRE_AUTH=0`; only the former belongs to this retirement.
 
 ## Current Shipped Consumers
 
@@ -98,11 +109,16 @@ is allowed.
 Current `origin/main` also carries
 `harden-background-provider-execution-authority` (#1803), whose graph delta
 adds a lazy first-use recovery coordinator and provider-authority
-reconciliation. The retirement migration is an earlier ordered stage of that
-same startup/first-use boundary: it classifies, fences, and terminalizes every
-retired row before #1803 may reconcile or sweep ordinary provider-capable or
-non-provider work. #1803 must never issue/recover authority for, resume, or
-reinterpret a retired `bug_investigation` row.
+reconciliation. Retirement must first make the class non-admissible and
+non-claimable, but must not blanket-cancel or terminalize a running row before
+consulting the authority ledger. Its migration consumes #1803's
+authority-store-first protocol: prove death or invalidate the claim generation;
+release only `reserved`-before-launch authority; preserve conclusive consumed
+authority; fence readable `launch_started`/`indeterminate` state without
+release or retry; preserve and hold on unreadable authority without queue
+mutation; then queue-CAS the exact task/claim/lease generation only after a
+successful reconciliation proof. #1803 must never issue new authority for,
+resume, or sweep the retired class as ordinary work.
 
 ### Auto-ship composition
 
@@ -128,6 +144,56 @@ The public extension actions are `validate_ship_packet` and
 `open_auto_ship_pr`; the public status residue is `auto_ship_health`. All leave.
 The `get_status` handle remains. Existing `auto_ship_attempts.jsonl` files become
 historical operator data; the runtime receives no compatibility reader.
+
+The live GitHub repository also retains the external
+`AUTO_FIX_DISABLED` variable. A disabled flag still advertises a dormant
+platform product, so rollout deletes the variable and records its absence.
+Current generic provider-chain diagnostics in `tinyassets/graph_compiler.py`,
+its generated plugin mirror, and their behavior tests still promise visibility
+to an "auto-fix loop"; those references are rewritten to name only their
+independent consumers (for example chatbots and run events). Website
+`auto-fix` queue/label fallbacks leave with the retired presentation. Generic
+mojibake auto-fix tooling and accurately historical documents are unrelated.
+The current universe guidance string and provider-source/plugin comments that
+describe "latest auto-fix runs" or credentials "used by auto-fix" are also
+rewritten around their actual generic diagnostic consumers.
+
+### Active agent and repository automations
+
+The retirement scan must include active control-plane instructions, not just
+Python runtime:
+
+- `.agents/skills/loop-uptime-maintenance/` and its `.claude` mirror instruct
+  agents to drive `chatbot -> file_bug -> loop investigates -> ships`, create
+  synthetic filing canaries, and write new incidents under the active skill;
+- `using-agent-skills` routes agents into that loop skill, while
+  `website-editing` treats a GitHub community-loop monitor as a live fallback;
+- `.github/workflows/auto-enroll-merge.yml` gives every eligible same-repository
+  PR a standing implicit merge instruction with content/PR write authority;
+- `.github/workflows/announce-patch.yml` automatically reacts to main/deploy
+  events and contains an outbound X-post path; its configured
+  `scripts/social/patch_announcement.py` path is already stale relative to the
+  shipped `scripts/patch_announcement.py`.
+
+These are privileged compositions, not generic primitives. The active loop
+skill/catalog routes, implicit auto-merge workflow, automatic patch
+announcement workflow, and orphaned patch-announcement script leave. Historical
+incident records may remain only outside an active skill package with explicit
+historical labeling.
+
+### Shipped prompt and snapshot residues
+
+`docs/souls/community-loop-core-team-v1.md` and the Ada, Elias, Mira, Noor,
+Soren, and Vera loop-role souls are active prompt assets and leave. Generated
+canonical/legacy website snapshots also retain the patch-loop area, automatic
+post-`file_bug` branch promise, and retired tags:
+
+- `WebSite/site/src/lib/content/mcp-snapshot.json`
+- `WebSite/site/src/lib/content/repo-snapshot.json`
+- `WebSite/site-react/lib/mcp-snapshot.json`
+
+They are regenerated from the clean source or removed with an unshipped mirror;
+checked-in generated data cannot serve as a compatibility backdoor.
 
 Generic evaluation code or explicit GitHub-effect authority may remain only
 where it has an independent owner and does not preserve an auto-ship action,

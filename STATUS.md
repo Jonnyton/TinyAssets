@@ -56,5 +56,4 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
 ## Next
-1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
-2. **No-shims-ever** + **platform responsibility/scoping model** — if X composes from primitives, do not offer a new platform primitive; probe public surfaces after DNS/tunnel/Worker/connector changes (canonical: https://tinyassets.io/mcp).
+1. **No-shims-ever** + **platform responsibility/scoping model** — if X composes from primitives, do not offer a new platform primitive; probe public surfaces after DNS/tunnel/Worker/connector changes (canonical: https://tinyassets.io/mcp).

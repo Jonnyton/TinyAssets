@@ -1,6 +1,6 @@
 ## 0. Target And Review Gates
 
-- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, tests, and the Claude plugin mirror; distinguish generic primitives and historical records.
+- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, active skills/souls, implicit merge/announcement effects, generated website snapshots, tests, and the Claude plugin mirror; distinguish generic primitives and historical records.
 - [x] 0.2 Write the target proposal, design, five capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
 - [ ] 0.3 Obtain exact-head independent architecture/spec/diff review and fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [ ] 0.4 Record the host's standing 2026-07-26 acceptance only after reviewers agree the complete removal boundary is fully figured out; stop if any unresolved host design choice remains.
@@ -23,7 +23,10 @@
   modules, imports, environment keys, extension registrations,
   `community-loop` named executable/build/website artifacts, active
   specs/milestones/exec plans/wiki guidance, public prompt/control-station
-  promises, stale site mirrors, or stale plugin copies.
+  promises, the `AUTO_FIX_DISABLED` repository variable, current "auto-fix
+  loop" runtime/plugin/test/website wording, active `.agents`/`.claude` skill
+  routes, loop souls, implicit merge/announcement workflows, stale site
+  snapshots, or stale plugin copies.
 
 ## 2. Remove Privileged Bug-Investigation Automation
 
@@ -38,15 +41,19 @@
   generic completed-run reuse and branch execution.
 - [ ] 2.4 Remove the two investigation environment keys, cloud request-type
   defaults, deploy workflow writes, current runbook instructions, dispatcher
-  examples, prompts, and comments without adding no-op aliases.
+  examples, prompts, and comments without adding no-op aliases. Delete the
+  external `AUTO_FIX_DISABLED` GitHub repository variable and record absence.
 - [ ] 2.5 Add and run an idempotent pre-worker migration for all v1/v2
   `bug_investigation` rows and trigger receipts: terminally refuse/quarantine
-  pending rows, fence/cancel claimed or running rows before lease recovery,
-  retain completed history immutably, record counts/ids/digests/prior-final
-  states/retention, and make dispatcher admission plus claim fail closed with
-  no generic reinterpretation or replay execution. Make this the first ordered
-  startup/first-use stage, completing before #1803 provider-authority
-  reconciliation or ordinary run recovery for the applicable store.
+  pending rows; make claimed/running rows non-admissible; use #1803's
+  authority-store-first reconciliation and exact task/claim/lease CAS before
+  their queue transition; release only reserved-before-launch authority;
+  retain readable ambiguous authority as fenced-indeterminate, hold unreadable
+  authority without queue mutation, and keep conclusive consumed authority
+  plus completed history immutable; record
+  counts/ids/digests/prior-final states/retention; and prevent generic
+  reinterpretation or replay. Retirement classification precedes ordinary
+  recovery, but #1803 reconciliation remains mandatory before terminalization.
 
 ## 3. Remove Auto-Ship Product Automation
 
@@ -67,6 +74,13 @@
 - [ ] 3.4 Inspect production data/configuration for obsolete auto-ship ledgers
   and keys, archive or delete them under operator retention policy, and record
   evidence without adding a runtime migration reader.
+- [ ] 3.5 Delete `.github/workflows/auto-enroll-merge.yml` so same-repository
+  PRs receive no standing implicit merge instruction. Delete the
+  push/deploy-triggered `.github/workflows/announce-patch.yml` and its
+  patch-loop announcement script when no independent explicit consumer
+  remains. Preserve generic GitHub/outbound-effect primitives only; a future
+  user/maintainer workflow must be explicitly selected and separately
+  authorized.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
@@ -98,7 +112,11 @@
 - [ ] 5.2 Remove or update the legacy React mirror, its fine print, tests, and
   build artifacts; delete it if non-shipped, otherwise prove parity and absence
   of every retired website reference.
-- [ ] 5.3 Build/test the canonical site and any retained mirror; prove platform
+- [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
+  souls from `docs/souls`; regenerate canonical and legacy MCP/repository
+  snapshots so no retired branch, area, role, or automatic filing promise
+  remains.
+- [ ] 5.4 Build/test the canonical site and any retained mirror; prove platform
   uptime evidence is separately labeled and never presented as privileged task
   loop activity.
 
@@ -108,22 +126,28 @@
   removed modules, actions, imports, environment names, status fields, request
   special cases, rubric aliases, prompt/control-station promises, or
   community-loop executable names.
-- [ ] 6.2 Run focused wiki, dispatcher/executor/migration, extension/auth,
+- [ ] 6.2 Retire `.agents/skills/loop-uptime-maintenance` and its active catalog
+  routes, preserve incident records only as clearly historical non-skill
+  evidence if needed, rewrite website-editing guidance around generic
+  provenance-labelled workflow activity and separate uptime evidence, run the
+  skill sync, and prove `.agents`/`.claude` contain no privileged loop
+  instruction.
+- [ ] 6.3 Run focused wiki, dispatcher/executor/migration, extension/auth,
   status, uptime,
   deploy-workflow, reset, and plugin tests plus ruff, plugin probe/build,
   `git diff --check`, and strict validation for this change and all OpenSpec.
-- [ ] 6.3 Run repository scans that distinguish clearly marked historical docs
+- [ ] 6.4 Run repository scans that distinguish clearly marked historical docs
   from shipped runtime, active configuration, current operator guidance,
   active specs/milestones/exec plans/wiki pages, website source/static/build,
   executable tests, workflows, and package output; all shipped/current scopes
   must be clean.
-- [ ] 6.4 Perform the final rendered-chatbot `ui-test` through
+- [ ] 6.5 Perform the final rendered-chatbot `ui-test` through
   `https://tinyassets.io/mcp`: file a page and inspect status, proving filing has
   no hidden automation/routing claim and status has no cheat-specific projection.
-- [ ] 6.5 Freshness-stamp production evidence for generic uptime/deploy
+- [ ] 6.6 Freshness-stamp production evidence for generic uptime/deploy
   observation and post-fix user filing; if no post-fix real-user use exists,
   leave the required short `STATUS.md` watch item rather than claiming clean use.
-- [ ] 6.6 Sync the graph, wiki, uptime, and website deltas; explicitly rewrite
+- [ ] 6.7 Sync the graph, wiki, uptime, and website deltas; explicitly rewrite
   canonical `wiki-commons` Purpose prose that promises trigger receipts and
   `uptime-and-alarms` prose that names the neighboring patch loop; retire the
   `community-patch-loop` main spec; archive this change with implementation;

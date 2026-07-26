@@ -23,6 +23,10 @@ public primitives, not a product-specific hidden loop.
 - Remove both `TINYASSETS_BUG_INVESTIGATION_GOAL_ID` and
   `TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID` from runtime configuration,
   production deployment, runbooks, and the Claude plugin runtime mirror.
+- Delete the obsolete external `AUTO_FIX_DISABLED` GitHub repository variable
+  and remove current runtime/plugin/test/website promises and labels that call
+  generic provider diagnostics or workflow activity an "auto-fix loop." Do
+  not replace the variable with another disable flag or no-op alias.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
@@ -73,10 +77,13 @@ public prompts/control-station copy, active plans/wiki guidance,
 `tinyassets/wiki/trigger_receipts.py`, `scripts/community_loop_watch.py`,
 `.github/workflows/community-loop-watch.yml`, production configuration, the
 canonical Svelte website and legacy React mirror, checked-in website status
-JSON, generated Claude plugin runtime mirror, and tests that assert the retired
-behavior. Historical design/audit records may retain clearly marked history;
-current operator guidance, configuration, build outputs, and behavioral specs
-must not advertise or exercise the retired path or capability.
+JSON, the external `AUTO_FIX_DISABLED` repository variable, active agent
+skills and loop souls, implicit auto-merge and automatic patch-announcement
+workflows, current "auto-fix loop" wording, generated Claude plugin runtime
+mirror, and tests that assert the retired behavior. Historical design/audit
+records may retain clearly marked history; current operator guidance,
+configuration, build outputs, behavioral specs, and agent instructions must
+not advertise or exercise the retired path or capability.
 
 Existing generic primitives are not replaced or aliased. Users who want bug
 investigation, patch generation, PR effects, scheduled work, or similar

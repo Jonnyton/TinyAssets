@@ -152,16 +152,35 @@ accepts otherwise unknown request classes. At upgrade, an idempotent
 pre-worker migration SHALL atomically identify every v1/v2
 `bug_investigation` row and trigger receipt. Pending/queued rows become
 terminally refused or quarantined with an immutable retirement reason.
-Claimed/running rows are fenced, cancelled, and quarantined before lease
-recovery can enter generic execution. Completed rows remain immutable history
-and replay/read paths cannot resubmit them.
 
-This migration is the first ordered stage of the startup/first-use recovery
-boundary owned by `harden-background-provider-execution-authority` (#1803).
-It SHALL finish for the applicable store before #1803 reconciles authority or
-sweeps provider-capable or non-provider runs. #1803 cannot issue or recover a
-provider receipt for, resume, sweep as ordinary work, or otherwise reinterpret
-a retired row.
+Claimed/running rows first become non-admissible and non-claimable. The
+retirement coordinator then consumes the
+`harden-background-provider-execution-authority` (#1803) authority-store-first
+protocol before changing queue state:
+
+- prove the old owner dead or atomically invalidate its execution-claim
+  generation;
+- with no reservation, produce the exact non-authorizing reconciliation proof;
+- atomically cancel and release only a `reserved`-before-launch reservation;
+- preserve consumed authority for conclusive `succeeded`/`failed` work; and
+- convert a readable `launch_started` or `indeterminate` receipt to
+  `fenced_indeterminate`, with no release, retry, resume, or inferred outcome;
+  an unreadable authority store preserves the existing row/receipt and holds
+  the retirement attempt without queue mutation.
+
+Only after that authority transaction releases may the coordinator take the
+queue lock and CAS the exact task/claim/lease generation into its matching
+retired terminal or fenced state. A concurrent heartbeat or lease change makes
+the CAS fail and restarts reconciliation. Ambiguous work remains non-runnable
+until authoritative evidence makes it conclusive, after which the same
+retirement transition finishes without re-execution. Completed rows remain
+immutable history and replay/read paths cannot resubmit them.
+
+This retirement gate is the first *classification and admission* stage of the
+startup/first-use boundary: #1803 SHALL NOT issue new authority for or sweep a
+retired row as ordinary provider-capable/non-provider work. Its
+authority-store reconciliation invariants remain the required sub-protocol
+before queue terminalization, not a later blanket recovery pass.
 
 After cutover, dispatcher admission and claim both fail closed on the retired
 request class before branch-run or universe-cycle execution. No compatibility
@@ -186,11 +205,35 @@ control-station copy, current exec plans/specs/milestones, discoverable wiki
 plans, plugin mirrors, and behavior tests are updated or clearly archived so
 no current guidance promises the retired loop.
 
+The active `loop-uptime-maintenance` agent skill and its catalog routes are
+retired, not left as an emergency backdoor. Its incident records may remain
+only as clearly historical evidence outside an active skill package. Website
+editing guidance is rewritten around generic provenance-labelled workflow
+activity and separately sourced uptime evidence. Canonical `.agents/skills`
+changes are mirrored into `.claude/skills` with the normal sync gate.
+
+The repository-wide `auto-enroll-merge.yml` standing merge instruction and
+the push/deploy-triggered `announce-patch.yml` effect are also privileged task
+automations. They are deleted. Any future merge enrollment or public
+announcement must be an explicitly selected user/maintainer workflow with its
+own narrow authority and receipt; generic GitHub and outbound-effect primitives
+remain available without an implicit composition. The patch announcement
+script leaves when it has no independent explicit consumer.
+
+Current loop-team souls and generated website snapshots are shipped prompt/data
+surfaces, not archival truth. The seven `docs/souls` loop roles and their core
+team manifest are removed, and canonical/legacy snapshots are regenerated so
+they cannot resurrect the retired branch, area, roles, or automatic filing
+promise.
+
 ## Risks / Trade-offs
 
 - **Existing host configuration expects automatic investigations** -> Remove the
   variables from deployment and current runbooks in the same change; do not
   silently redirect them. Filing remains successful and explicit.
+- **An obsolete external flag implies a dormant product loop** -> Delete the
+  `AUTO_FIX_DISABLED` GitHub repository variable during rollout and record its
+  absence. Never substitute another disabled/no-op flag.
 - **Broad deletion accidentally damages generic execution** -> Keep canonical
   dispatcher and general queue tests, and add negative tests proving only the
   product-specific request type/path disappeared.
@@ -203,10 +246,10 @@ no current guidance promises the retired loop.
   gates to shipped runtime, active deployment/configuration, current runbooks,
   plugin payloads, and executable tests. Historical artifacts may retain
   accurately labeled history.
-- **Queued legacy `bug_investigation` rows exist at deployment** -> Run the
-  idempotent pre-worker quarantine/cancellation migration, fence claimed/running
-  rows, retain immutable completed history, and fail closed at both admission
-  and claim. Never clear ambiguously or add a compatibility consumer.
+- **Queued legacy `bug_investigation` rows exist at deployment** -> Fail closed
+  at admission/claim, reconcile claimed/running authority under #1803 before
+  queue CAS, preserve ambiguous work fenced without release, retain immutable
+  completed history, and never add a compatibility consumer.
 
 ## Migration Plan
 
@@ -224,10 +267,11 @@ no current guidance promises the retired loop.
 6. Remove website patch-loop/community-loop presentation and snapshots, retain
    only provenance-correct generic workflow activity, and build both canonical
    site and any retained mirror.
-7. Before workers or #1803 first-use recovery start, migrate/quarantine legacy
-   queued/running rows and receipts; preserve completed history and activate
-   fail-closed admission. Only after this stage succeeds may provider-authority
-   reconciliation and ordinary run recovery proceed.
+7. Before workers or ordinary #1803 recovery start, activate fail-closed
+   admission for the retired class, classify legacy rows, and reconcile any
+   authority-store record under #1803's lock ordering. Then CAS the exact queue
+   generation into its retired terminal/fenced state; preserve ambiguous
+   launches as `fenced_indeterminate` and completed history as non-executable.
 8. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
 9. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
