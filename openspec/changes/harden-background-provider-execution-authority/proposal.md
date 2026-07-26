@@ -26,9 +26,11 @@ server-owned background authority contract exists.
   it.
 - Define the closed universe-less maintenance path required by the shipped
   fixed private `_AUTH_PROBE_PROMPT`: host/operator principal, exact provider
-  and operation, private-prompt digest, separate maintenance binding/budget,
-  and no universe, run, branch, requester identity, requester content, or
-  requester quota.
+  and operation, opaque credential binding/digest, private-prompt digest,
+  invoking runtime/daemon identity, separate maintenance binding/budget, and
+  no universe, run, branch, requester identity, requester content, or
+  requester quota. Under V2 the ordinary router consumes cached auth-health
+  state but cannot launch the probe from a universe receipt.
 - Require deferred/task-augmented connector work, graph/run/resume/schedule
   execution, daemon loops, retrieval/reflexion, ingestion/evaluation, and
   mirrored Claude-plugin provider bridges to carry the exact server-issued
@@ -65,7 +67,11 @@ the existing provider carrier seam. The change consumes the active
 `constrain-set-engine-provider-authority` assignment/sink contract,
 `ProviderAssignmentAdmission`, outbound credential-blind proxy, authenticated
 request subject, daemon/runtime identity, and existing run/branch/universe
-authorization; it does not duplicate those owners. Focused tests must cover
+authorization; schedule/subscription issuance additionally remains inactive
+until `harden-background-branch-execution-authority` supplies its
+server-bound principal and target-authorization record. It does not trust the
+shipped caller-controlled `owner_actor` seam or duplicate those owners.
+Focused tests must cover
 forgery, stale/revoked lineage, cross-process replay, concurrent claims,
 budget exhaustion, cancellation, ambiguous launch, crash recovery, dark-mode
 compatibility, mirrored runtime parity, and the applicable complete-system

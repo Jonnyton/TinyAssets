@@ -96,7 +96,9 @@ queue lifecycle semantics.
    - issuer, opaque receipt ID, and revocation generation.
 2. `maintainer_maintenance`
    - host/operator principal;
-   - exact provider and operation;
+   - exact provider, operation, invoking runtime/daemon identity, and
+     executor/transport identity;
+   - opaque credential reference plus current credential-record digest;
    - fixed private prompt digest;
    - separate maintenance binding/budget;
    - bounded lifetime and exactly bounded invocation count;
@@ -112,13 +114,21 @@ would erase who authorized the work and what it may spend.
 The owner creates or refreshes a `ProviderWorkBinding` only at one of these
 server-owned transitions:
 
-- **Deferred/task-augmented request:** while the current authenticated message
-  and target authorization are still live, the server records the durable
-  binding transactionally with the deferred work item. The later worker mints
-  no request capability.
-- **Schedule/subscription:** authorized creation records principal, target,
-  operation, and limits. Each trigger revalidates the binding; the schedule
-  row or trigger event alone is not authority.
+- **Deferred/task-augmented request:** TinyAssets-owned
+  `Middleware.on_call_tool` creates an inert, single-message binding draft
+  after it reads `request_ctx.get().request`, re-derives bearer identity, and
+  authorizes the exact target, but before it structurally awaits `call_next`
+  or any dispatch augmentation. Only a registered background-capable
+  operation may consume that draft transactionally with its deferred work
+  item. The later worker mints no request capability. Work that becomes
+  deferred before this boundary has no issuance root and holds.
+- **Schedule/subscription:** the background-branch authority owner records the
+  authenticated principal, target authorization, operation, and limits at
+  authorized creation. This change consumes that server-owned record; it does
+  not read `owner_actor`, caller kwargs, or another synthetic actor. Until
+  `harden-background-branch-execution-authority` lands that record, this
+  issuance root remains inactive. Each trigger revalidates the binding; the
+  schedule row or trigger event alone is not authority.
 - **Run/resume/daemon activation:** an authorized run or daemon activation
   records its durable binding. Resume/cycle issuance revalidates ownership,
   target visibility/authorization, non-cancelled state, and current daemon
@@ -157,15 +167,26 @@ authorization, cancellation, or revocation generation changes.
 
 The authoritative binding/receipt/claim/reservation ledger lives behind one
 control-plane `ProviderWorkAuthorityStore`, not in BranchTask JSON, run input,
-MCP payload, environment, or provider config. The current implementation uses
-the platform transactional store with atomic transactions/CAS and a stable
-interface; workers never open or mutate the ledger directly.
+MCP payload, environment, or provider config. Implementation must select an
+existing platform transactional store and expose atomic transactions/CAS
+through this one stable interface; workers never open or mutate the ledger
+directly.
+
+Authority-store transactions are short and complete before
+`ProviderAssignmentAdmission` acquisition. The global acquisition order is
+authority store, then assignment admission, then credential index/keyring.
+No authority-store transaction or lock may be acquired while assignment
+admission or a credential lock is held; reverse acquisition and untracked
+reentrancy fail loud. Result settlement occurs only after assignment
+admission is released.
 
 For task/thread handoff, code carries a non-serializable receipt object only
-inside the claimed execution scope. For process handoff, the server emits an
-internal envelope containing an opaque receipt ID, one-use claim nonce,
-intended runtime/worker audience, and expiry. The receiving worker must
-atomically claim that exact envelope against current server state. The ID,
+inside the claimed execution scope. Queue records created before worker
+selection carry only a non-authorizing binding reference. After the queue
+owner atomically selects a worker, the server emits an internal process
+envelope containing an opaque receipt ID, one-use claim nonce, that exact
+runtime/worker audience, and expiry. The receiving worker must atomically
+claim that exact envelope against current server state. The ID,
 nonce, worker ID, signature/MAC, or envelope alone cannot authorize a provider
 call after claim, expiry, revocation, or audience mismatch; the provider
 carrier contains the reconstructed non-serializable receipt plus active claim
@@ -182,10 +203,12 @@ receipt generation, runtime instance, worker, process/task identity, work
 item, and lease. Heartbeat may extend the claim only for that exact owner and
 never extends the receipt’s absolute lifetime or budget.
 
-If a worker is provably dead and no invocation reservation reached
-`launch_started`, the server may expire the claim and issue a new claim
-generation for the same logical receipt. Every stale object/envelope from the
-old generation then fails.
+If a worker is provably dead and the receipt has no reservation, or every
+reservation is durably `cancelled_before_launch`, the server may expire the
+claim and issue a new claim generation for the same logical receipt. A
+`reserved` reservation owned by a dead worker is ambiguous and fences; it is
+never inferred to be pre-launch. Every stale object/envelope from the old
+generation then fails.
 
 If any reservation may have launched but lacks a terminal result, the receipt
 becomes `fenced_indeterminate`. It cannot be reclaimed or retried
@@ -195,19 +218,36 @@ duplicate cost/effects disguised as recovery.
 
 ### 7. Provider launches consume atomic receipt reservations
 
-Immediately before the provider sink mints `ProviderInvocation`, the authority
-service atomically reserves the next invocation ordinal under the active
-claim. It verifies remaining invocation/token/cost/time budget, operation and
-role membership, current claim/receipt/binding state, and the fresh provider
-assignment tuple. Dynamic provider routing may narrow afterward but cannot
-refund or widen authority.
+Before acquiring `ProviderAssignmentAdmission`, the authority service
+atomically reserves the next invocation ordinal under the active claim. It
+verifies remaining invocation/token/cost/time budget, operation and role
+membership, current claim/receipt/binding state, and an expected provider
+assignment tuple. The authority transaction then durably transitions the
+reservation to `launch_started` and closes before assignment admission is
+acquired. `launch_started` means the irreversible launch fence is armed, not
+that transport is known to have started. The parent provider-routing sequence
+revalidates that exact expected tuple and armed reservation under assignment
+admission before minting `ProviderInvocation`. A later admission or launch
+failure consumes the armed slot conservatively; no authority-store lock is
+reacquired under admission. Dynamic provider routing may narrow afterward but
+cannot refund or widen authority.
 
 Reservation states are `reserved`, `launch_started`, `succeeded`, `failed`,
 `cancelled_before_launch`, and `indeterminate`. A reservation cancelled before
-launch may be released according to the fixed budget policy. Once
-`launch_started`, it remains consumed regardless of provider outcome. Provider
-fallback/retry creates another reservation and must fit the same receipt
-limits.
+the launch fence is armed releases its full invocation, token, and cost
+reservation. Once `launch_started`, the invocation slot remains consumed
+regardless of provider outcome. Token and cost authority reserve the
+server-owned worst case derived from the resolved provider/model price
+ceiling and `ModelConfig` token cap. An authoritative terminal usage record
+may refund only the proven unused portion after admission release; absent or
+ambiguous usage retains the full reservation. Provider fallback/retry creates
+another reservation and must fit the same receipt limits.
+
+Judge-ensemble fan-out resolves its exact N providers/configs and atomically
+reserves all N ordinals plus their worst-case budgets before any member
+launches. If the receipt cannot fund the complete ensemble, the whole
+ensemble holds; partial fan-out is forbidden. Each member arms its own launch
+fence before its direct `complete(...)` call and reconciles independently.
 
 This is not billing or requester quota. It is an authority ceiling. Existing
 quota and outbound-grant owners apply their own narrower checks afterward.
@@ -224,7 +264,10 @@ Startup reconciliation:
 
 - expires elapsed unclaimed receipts;
 - preserves valid active claims whose owner/lease remains live;
-- reclaims only pre-launch claims with provably dead owners;
+- reclaims only dead-owner claims with no reservation or only durably
+  `cancelled_before_launch` reservations;
+- fences dead-owner `reserved` reservations because absence of launch is not
+  provable;
 - fences any claim with ambiguous launch state;
 - revokes receipts whose binding/target/assignment is provably stale; and
 - preserves plus holds on unreadable authority/lineage stores rather than
@@ -234,13 +277,24 @@ Ledger events contain secret-free IDs/digests, generations, state, reason,
 timestamps, and bounded classifications. They exclude prompts, model output,
 credentials, bearer tokens, claim nonces, and recoverable secret material.
 
-### 9. Maintenance completion is a separate closed route
+### 9. Maintenance completion is a separate closed target route
 
-The shipped `_AUTH_PROBE_PROMPT` completion never enters `call_provider`,
-universe role/policy routing, request authority, or requester quota. Its owner
-validates the `maintainer_maintenance` receipt and separate maintenance
-binding/budget, reserves its one bounded invocation, and passes the exact
-receipt to the provider sink’s closed maintenance route.
+Today ordinary provider routing can synchronously launch
+`_AUTH_PROBE_PROMPT` through `subscription_auth_health` and resolve
+`CODEX_HOME` plus the CLI from ambient process state. Dark mode preserves that
+shipped behavior. Under an effective V2 gate, ordinary universe/request
+routing may consume only cached auth-health state and MUST NOT launch the
+probe, borrow its universe receipt, or reread ambient maintainer credentials.
+
+The target probe owner instead validates the `maintainer_maintenance` receipt
+and separate maintenance binding/budget, reserves its one bounded invocation,
+and passes the exact receipt to `ProviderExecutor`'s closed maintenance
+entrypoint. That entrypoint bypasses `call_provider`, universe role/policy
+routing, request authority, and requester quota, but retains the parent's
+single provider sink, opaque-binding dereference, executable/transport
+validation, launch handle, and no-ambient-reread rules. The maintenance
+binding's opaque credential reference/digest, provider, executor/transport,
+runtime/daemon, and operation must all remain current.
 
 The prompt is compiled from a fixed private constant and compared by digest;
 request/universe/branch content cannot influence it. The result may update
@@ -261,17 +315,20 @@ Unlisted universes preserve shipped behavior byte-for-byte.
 
 Universe-less maintenance enforcement applies when global V2 is true or when
 a server-owned default-empty maintenance-canary set contains the exact fixed
-operation. Caller input, environment-derived request data, or receipt payload
-cannot populate the set. The canary uses an isolated maintenance budget and
-cleans up its receipt/binding records. Global cutover requires the universe
-and maintenance paths to pass together.
+operation plus invoking runtime/daemon identity. Caller input,
+environment-derived request data, or receipt payload cannot populate the set.
+The canary runtime uses an isolated credential binding and maintenance budget
+and cleans up its receipt/binding records; enabling it does not affect other
+production probe callers. Global cutover requires the universe and maintenance
+paths to pass together.
 
 ### 11. Call-site closure is a build and CI gate
 
 Inventory classifies every live provider bridge, including:
 
 - `universe_intelligence` live converse/intelligence calls;
-- compiled provider nodes and router thread-pool closure;
+- compiled provider nodes, router thread-pool closure, and the async
+  judge-ensemble `gather` plus its direct `provider.complete(...)` members;
 - branch run/resume/version/child execution;
 - schedules, subscriptions, daemon cycles, selectors, and cloud workers;
 - editorial evaluation and ingestion extraction/synthesis;
@@ -281,7 +338,11 @@ Inventory classifies every live provider bridge, including:
 
 Each bridge is exactly one of: live request-carried, attested host-request
 carried, background-receipted, closed maintenance, remote accepted-market, or
-proven non-provider/mock. Unclassified bridges and direct provider
+proven non-provider/mock. Attested host-request and remote accepted-market
+remain empty fail-closed classifications until
+`activate-requester-host-engines` and
+`activate-connector-requester-authority` respectively land their owners.
+Unclassified bridges and direct provider
 `complete(...)` bypasses fail CI. A function that accepts injected
 `provider_call` is classified by every production caller, not assumed safe
 from its signature.
@@ -294,8 +355,9 @@ from its signature.
 - **[Long receipts become durable bearer tokens]** → Server-side state,
   bounded lifetime/budget, one active claim, current-state revalidation, and
   non-authorizing IDs/envelopes.
-- **[Crash recovery duplicates provider spend]** → Reclaim only when no
-  irreversible launch occurred; ambiguous launches fence.
+- **[Crash recovery duplicates provider spend]** → Arm the durable launch
+  fence before assignment admission or transport; dead-owner `reserved` and
+  any other ambiguous state fences.
 - **[Authorization revocation races an in-flight launch]** → Revalidate under
   atomic reservation immediately before invocation; launch thereafter uses
   the frozen tuple and cannot reread ambient state.
@@ -313,15 +375,17 @@ from its signature.
 
 1. Land this target spec active/unsynced and publish one-way handoffs to the
    run/background authority owners. Keep runtime unchanged.
-2. Inventory/classify every provider bridge and choose exact store/lock
-   integration points without broadening claimed runtime files.
+2. Inventory/classify every provider bridge, choose the existing store behind
+   the interface, and verify the authority-store-before-assignment global lock
+   order without broadening claimed runtime files.
 3. Add the binding/receipt/claim/reservation ledger and non-authorizing dark
    diagnostics; preserve shipped behavior with both gates dark.
 4. Add RED tests for issuance roots, forgery/replay, stale lineage,
    cancellation, concurrency, budget, crash, ambiguous launch, maintenance,
    and mirrored runtime.
-5. Implement server issuance/claim/reconciliation, then thread the exact
-   receipt through background call sites into the existing provider carrier.
+5. Land or consume the background-branch principal/target owner, implement
+   server issuance/claim/reconciliation, then thread the exact receipt through
+   background call sites into the existing provider carrier.
 6. Exercise isolated universe and maintenance canaries, including real
    cross-process worker and §14 concurrent claim/launch proof.
 7. Land dependent run/background owners, prove every 24/7 loop stays live or
@@ -332,13 +396,13 @@ from its signature.
 
 ## Open Questions
 
-- Which current transactional store/lock implementation best hosts the
-  authority ledger without coupling it to BranchTask JSON? Resolve during
-  inventory before implementation; the interface and invariants above do not
-  vary by backend.
+- Which existing transactional backend best hosts the authority ledger
+  without coupling it to BranchTask JSON? Resolve during inventory; every
+  candidate must preserve the fixed authority-store-before-assignment order
+  and must not nest authority transactions under admission.
 - Which exact provider-capable call sites are live-request paths versus
   background paths today? Task 3 inventory must classify every production
   caller, including injected callables and the packaged mirror.
-- What fixed default invocation/token/cost ceilings apply per operation?
-  Runtime implementation must choose conservative server-owned values and
-  make widening an operator configuration change, never caller input.
+- What conservative fixed default invocation/token/cost ceilings apply per
+  operation? Runtime implementation must select server-owned defaults before
+  build; widening is an operator configuration change, never caller input.

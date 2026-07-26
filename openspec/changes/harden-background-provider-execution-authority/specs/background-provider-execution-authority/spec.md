@@ -8,9 +8,18 @@ The system SHALL represent authorization for later provider-capable work as a se
 - **THEN** the system holds before every provider authority sink
 
 #### Scenario: Deferred request records intent while request authority is live
-- **WHEN** an authenticated connector request authorizes work that will execute after request middleware returns
-- **THEN** the system records the bounded work binding transactionally while the current request subject and target authorization are still available
+- **WHEN** an authenticated connector message authorizes a registered background-capable operation that will execute after request middleware returns
+- **THEN** TinyAssets middleware creates an inert single-message binding draft after reading the exact current `request_ctx.get().request` and authorizing the target but before awaiting the tool or dispatch augmentation
+- **AND** the operation consumes that draft transactionally with the deferred work item
 - **AND** the deferred worker receives no inherited or snapshotted request capability
+
+#### Scenario: Deferred work misses the recording boundary
+- **WHEN** work becomes deferred before the current-message middleware can create and consume the authorized binding draft
+- **THEN** the work has no provider issuance root and holds before every provider authority sink
+
+#### Scenario: Synthetic schedule actor cannot create a binding
+- **WHEN** a schedule or subscription supplies `owner_actor`, caller kwargs, or another synthetic principal without the server-owned record from `harden-background-branch-execution-authority`
+- **THEN** the provider-work binding is not created and the provider-capable trigger remains inactive
 
 ### Requirement: Provider work receipts form a closed bounded union
 The system SHALL mint a short-lived `ProviderWorkAuthorityReceipt` for one logical work attempt as exactly one of `universe_work` or `maintainer_maintenance`, with server-owned lifetime, operation, provider-role, invocation, token, and cost ceilings.
@@ -47,8 +56,13 @@ The system SHALL mint each provider-work receipt just in time from a current bin
 The system SHALL keep provider-work authority in a server-owned `ProviderWorkAuthorityStore` and SHALL use only an opaque receipt identifier, one-use claim nonce, worker and runtime audience, and expiry for process handoff.
 
 #### Scenario: Authorized worker claims once
-- **WHEN** the intended worker presents the unexpired opaque handoff to the authority store
+- **WHEN** the queue owner has selected an exact worker and that worker presents the resulting unexpired opaque handoff to the authority store
 - **THEN** the store atomically consumes the nonce, establishes the execution claim, and reconstructs a non-serializable receipt inside the claimed scope
+
+#### Scenario: Pre-claim queue data carries no worker envelope
+- **WHEN** provider-capable work is queued before a worker is selected
+- **THEN** the queue carries only a non-authorizing binding reference
+- **AND** no claim nonce or worker-audienced envelope is minted until after atomic worker selection
 
 #### Scenario: Replay or wrong audience fails closed
 - **WHEN** a handoff is replayed, expired, or presented by a different worker or runtime audience
@@ -66,25 +80,36 @@ The system SHALL permit at most one active `ProviderWorkExecutionClaim` for a re
 - **THEN** exactly one claim succeeds atomically
 - **AND** the loser cannot reserve or launch a provider invocation
 
-#### Scenario: Provably dead pre-launch owner is reclaimable
-- **WHEN** the current claim owner is provably dead and no invocation for the receipt reached `launch_started`
+#### Scenario: Provably dead owner with proven absence is reclaimable
+- **WHEN** the current claim owner is provably dead and the receipt has no reservation or only reservations durably `cancelled_before_launch`
 - **THEN** the system may atomically expire the old claim and issue a bounded replacement claim
 
 #### Scenario: Ambiguous launch is fenced
-- **WHEN** worker death or transport ambiguity prevents proof that a reserved invocation remained pre-launch
+- **WHEN** worker death leaves a `reserved` reservation or transport ambiguity prevents proof that an invocation remained pre-launch
 - **THEN** the receipt enters `fenced_indeterminate`
 - **AND** the system performs no automatic retry, reclaim, or fallback from that receipt
 
 ### Requirement: Provider launches consume atomic invocation reservations
-The system SHALL reserve a `ProviderInvocationReservation` immediately before the existing provider authority sink can launch, after verifying the active claim, current binding and assignment, permitted operation and role, and all remaining ceilings.
+The system SHALL reserve and durably arm a `ProviderInvocationReservation` before acquiring `ProviderAssignmentAdmission`, after verifying the active claim, current binding and expected assignment tuple, permitted operation and role, and all remaining ceilings.
 
 #### Scenario: Reservation establishes a unique ordinal
 - **WHEN** a valid claimed receipt reserves an invocation
-- **THEN** the authority store atomically assigns the next unique ordinal and decrements the receipt's available invocation and budget ceilings
+- **THEN** the authority store atomically assigns the next unique ordinal and reserves the receipt's invocation plus worst-case token and cost ceilings derived from the resolved `ModelConfig` token cap and server-owned provider/model price ceiling
+
+#### Scenario: Launch fence commits before admission and transport
+- **WHEN** a reserved provider attempt is ready to enter the parent provider-routing sequence
+- **THEN** the authority store durably commits `launch_started` and closes its transaction before assignment admission is acquired
+- **AND** the parent sequence revalidates the exact expected assignment tuple and armed reservation before minting the invocation
+- **AND** no authority-store lock is acquired while assignment admission or a credential lock is held
 
 #### Scenario: Launch consumes the slot
 - **WHEN** a reservation reaches `launch_started`
 - **THEN** the reservation remains consumed whether the provider succeeds, fails, times out, or returns an ambiguous result
+
+#### Scenario: Proven unused budget settles after admission release
+- **WHEN** an authoritative terminal provider record proves actual token and cost usage below the reserved worst case
+- **THEN** the system may refund only the proven unused token and cost portion after assignment admission is released
+- **AND** absent or ambiguous usage retains the full reservation
 
 #### Scenario: Retry needs another slot
 - **WHEN** provider fallback or retry is attempted after a launch
@@ -93,6 +118,11 @@ The system SHALL reserve a `ProviderInvocationReservation` immediately before th
 #### Scenario: Exhausted budget blocks before launch
 - **WHEN** a receipt lacks an invocation, token, cost, operation, or role allowance required by the proposed call
 - **THEN** reservation fails before credentials, outbound transport, provider auth health, requester quota, or provider execution is reached
+
+#### Scenario: Judge ensemble reserves atomically
+- **WHEN** one logical judge operation resolves an ensemble of N direct provider launches
+- **THEN** the system atomically reserves N unique ordinals and every member's worst-case budget before any member launches
+- **AND** insufficient authority holds the entire ensemble without partial fan-out
 
 ### Requirement: Authority lifecycle and restart reconciliation are monotonic
 The system SHALL maintain monotonic binding, receipt, claim, and reservation states; terminal state transitions SHALL be first-writer-wins and SHALL preserve evidence needed to reconcile crashes safely.
@@ -114,19 +144,21 @@ The system SHALL maintain monotonic binding, receipt, claim, and reservation sta
 - **THEN** no later reservation or launch is allowed for that receipt
 
 ### Requirement: Universe-less maintenance authority is isolated
-The system SHALL authorize the shipped fixed private `_AUTH_PROBE_PROMPT` only through a `maintainer_maintenance` receipt bound to a host or operator principal, exact provider and operation, fixed private-prompt digest, separate maintenance binding and budget, and bounded lifetime and invocation count.
+The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only through a `maintainer_maintenance` receipt bound to a host or operator principal, exact provider and operation, invoking runtime or daemon, executor or transport, opaque credential reference and current digest, fixed private-prompt digest, separate maintenance binding and budget, and bounded lifetime and invocation count.
 
 #### Scenario: Fixed probe runs without requester authority
 - **WHEN** an authorized maintainer operation invokes the exact fixed private probe under its effective maintenance canary
 - **THEN** the system may issue a maintenance receipt without universe, branch, run, requester identity, requester content, or requester quota
+- **AND** the closed maintenance executor dereferences only the receipt's current opaque credential binding and never ambient `CODEX_HOME`, PATH, or process identity
 
 #### Scenario: Maintenance receipt cannot process user work
 - **WHEN** a maintenance receipt is presented with user content, a different prompt digest, graph work, child work, or a different provider operation
 - **THEN** the system rejects it before the provider authority sink
 
-#### Scenario: Status reads never trigger a probe
-- **WHEN** a user or operator calls `get_status`
-- **THEN** the system reports existing health state without launching `_AUTH_PROBE_PROMPT` or any other provider call
+#### Scenario: Ordinary V2 routing cannot launch the probe
+- **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
+- **THEN** it consumes cached auth-health state only
+- **AND** it cannot launch `_AUTH_PROBE_PROMPT`, borrow the universe receipt, or resolve maintainer credentials from ambient process state
 
 ### Requirement: Enforcement rollout is server-owned and fail-closed
 The system SHALL preserve shipped behavior while provider-authority V2 is dark and SHALL enable receipt enforcement only through server-owned gates that caller payloads cannot widen or select.
@@ -137,7 +169,8 @@ The system SHALL preserve shipped behavior while provider-authority V2 is dark a
 
 #### Scenario: Maintenance canary is exact and default-empty
 - **WHEN** the global V2 gate is dark
-- **THEN** only an exact operation in the server-owned default-empty maintenance canary set may use maintenance receipt enforcement
+- **THEN** only an exact operation and invoking runtime or daemon identity in the server-owned default-empty maintenance canary set may use maintenance receipt enforcement
+- **AND** the canary uses an isolated credential binding and budget that affect no other production probe caller
 
 #### Scenario: Global cutover requires both canaries
 - **WHEN** an operator attempts global provider-authority V2 cutover

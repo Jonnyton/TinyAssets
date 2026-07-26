@@ -1,3 +1,29 @@
+## MODIFIED Requirements
+
+### Requirement: Startup recovery is lease-aware and worker-scoped, never a blanket reset
+At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. It SHALL consider only rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled), so a live peer holding a fresh lease is never reclaimed. Predecessor reclaim SHALL be a no-op when the worker id is blank or the shared host default, because a non-unique id could belong to a live twin. For provider-capable work, an eligible row SHALL be reset to `pending` only after `ProviderWorkAuthorityStore` proves that the prior receipt has no reservation or only reservations durably `cancelled_before_launch`; a dead-owner `reserved` reservation, unreadable evidence, or any possibly launched reservation SHALL hold the row non-claimable and fence the receipt instead of resetting it. As-built limitation: this replaces the cure half of the 2026-06-25 double-claim wedge only under the effective provider-authority V2 gate; while dark, shipped lease recovery remains unchanged.
+
+#### Scenario: an expired-lease orphan with proven launch absence is reclaimed
+- **WHEN** startup recovery runs and finds a provider-capable `running` row whose lease has expired and whose receipt has no reservation or only reservations durably `cancelled_before_launch`
+- **THEN** the row is reset to `pending` with its claim and lease metadata cleared
+
+#### Scenario: an expired lease with ambiguous provider launch is held
+- **WHEN** startup recovery finds an expired provider-capable row with a dead-owner `reserved` reservation, unreadable authority evidence, or a reservation that may have launched
+- **THEN** the row is not reset to `pending`
+- **AND** its provider receipt is held as `fenced_indeterminate` without automatic retry
+
+#### Scenario: a healthy peer's fresh-lease task is untouched
+- **WHEN** startup recovery runs while another worker holds a `running` task with a fresh lease
+- **THEN** that task is left `running` and unclaimed by recovery
+
+#### Scenario: a non-unique worker id skips predecessor reclaim
+- **WHEN** the worker id is blank or equal to the shared host default
+- **THEN** `reclaim_predecessor_tasks` reclaims nothing and the lease TTL remains the only queue-level fallback
+
+#### Scenario: dark mode preserves shipped lease recovery
+- **WHEN** the effective provider-authority V2 gate is dark
+- **THEN** startup recovery retains the canonical shipped lease-aware behavior without a new provider-authority precondition
+
 ## ADDED Requirements
 
 ### Requirement: Background dispatch obtains authority independently of work identity
@@ -26,7 +52,7 @@ The daemon and dispatch system SHALL obtain a fresh server-issued provider-work 
 The daemon and dispatch system SHALL reconcile execution claims and provider invocation reservations before redispatching provider-capable work after worker death, restart, lease loss, or ambiguous transport outcome.
 
 #### Scenario: Dead worker before launch can be redispatched
-- **WHEN** the authority store proves the old worker is dead and every reservation remained before `launch_started`
+- **WHEN** the authority store proves the old worker is dead and the receipt has no reservation or only reservations durably `cancelled_before_launch`
 - **THEN** the daemon may redispatch under a freshly claimed no-broader receipt
 
 #### Scenario: Ambiguous launch prevents automatic redispatch
@@ -35,11 +61,11 @@ The daemon and dispatch system SHALL reconcile execution claims and provider inv
 - **AND** it does not automatically retry, fall back, or renew authority
 
 ### Requirement: Daemon maintenance probes use dedicated authority
-The daemon SHALL run `_AUTH_PROBE_PROMPT` only as the exact authorized maintainer-maintenance operation and SHALL keep it outside ordinary universe work, requester quota, and public status reads.
+The daemon SHALL run `_AUTH_PROBE_PROMPT` under V2 only as the exact authorized maintainer-maintenance operation bound to its invoking runtime or daemon and current opaque credential record, and SHALL keep it outside ordinary universe work, requester quota, and public status reads.
 
 #### Scenario: Periodic auth health probe is authorized
 - **WHEN** the daemon's server-owned maintenance schedule invokes the fixed private probe
-- **THEN** it obtains a bounded maintenance receipt from the separate maintenance binding and budget before provider launch
+- **THEN** it obtains a bounded maintenance receipt from the separate runtime-bound credential binding and budget before provider launch
 
 #### Scenario: Probe authority unavailable
 - **WHEN** the maintenance binding is absent, revoked, exhausted, or outside its effective gate
