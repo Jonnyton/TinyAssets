@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Protocol, Sequence
@@ -10,6 +11,9 @@ from tinyassets.paid_market.fee_schedule import FeeScheduleError, scheduled_fee_
 from tinyassets.paid_market.index import PPM, capped_pair_weights
 from tinyassets.paid_market.quotes import ValidatedQuote
 from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
+
+# The only signing domain whose bytes can stand behind a public observation.
+_QUOTE_V2_DOMAIN = "tinyassets.paid-market.quote.v2"
 
 
 class PriceSurfaceError(ValueError):
@@ -40,6 +44,11 @@ class SettlementBinding:
     net_micros: int
     fee_micros: int
     fee_schedule_version: str
+    # Delivery evidence, not a caller declaration: bounding `price * quantity`
+    # against the gross does not bound the price unless the quantity is also
+    # authoritative — otherwise one settled gross can be re-declared as any
+    # (price, quantity) pair whose product matches.
+    delivered_quantity: int = 0
     buyer_principal_root: str | None = None
     seller_principal_root: str | None = None
     linked_party: bool = False
@@ -181,17 +190,17 @@ def join_paid_observation(
     *,
     quote: ValidatedQuote,
     unit_price_micros: int,
-    quantity: int,
     observed_at: int,
 ) -> PaidObservation:
     """Join existing authority receipts without creating settlement truth.
 
     Nothing price-bearing is accepted from the caller.  *Identity and scope*
     are derived from the signed v2 quote that the settlement already bound;
-    *money and parties* come from the binding the three receipts agree on; and
-    the declared unit price is admitted only when it exactly reconstructs the
-    settled gross.  The one caller value that survives is a declaration the
-    join then refuses unless authoritative evidence already implies it.
+    *money, delivered quantity, and parties* come from the binding the three
+    receipts agree on.  The declared unit price is the only surviving caller
+    value, and it is admitted only when it exactly reconstructs the settled
+    gross over the delivered quantity — both of which are settlement evidence,
+    so the price is fully determined rather than merely constrained.
     """
     if accounting.binding != acceptance.binding or accounting.binding != chain.binding:
         raise PriceSurfaceError("receipt_binding_mismatch")
@@ -201,7 +210,7 @@ def join_paid_observation(
         raise PriceSurfaceError("domain_not_accepted")
     if chain.finality_status != "final" or chain.reorged:
         raise PriceSurfaceError("chain_not_final")
-    _require_quote_binding(binding, quote)
+    public_scope = _require_quote_binding(binding, quote)
     for value, label in (
         (accounting.transaction_id, "transaction_id"),
         (acceptance.evidence_digest, "evidence_digest"),
@@ -212,9 +221,8 @@ def join_paid_observation(
     ):
         if not value:
             raise PriceSurfaceError(f"{label} is required")
-    public_scope = _canonical_scope(quote.public_scope_dimensions)
-    _positive_int(quantity, "quantity")
-    _require_settlement_derived_price(binding, unit_price_micros, quantity)
+    quantity = binding.delivered_quantity
+    _require_settlement_derived_price(binding, unit_price_micros)
     _nonnegative_int(observed_at, "observed_at")
 
     return PaidObservation(
@@ -239,7 +247,7 @@ def join_paid_observation(
 
 def _require_quote_binding(
     binding: SettlementBinding, quote: ValidatedQuote
-) -> None:
+) -> bytes:
     """Manipulation control: the observation inherits one signed identity.
 
     A validated quote signs its exact descriptor, market class, scope revision,
@@ -247,6 +255,12 @@ def _require_quote_binding(
     match means an aggregator cannot pick a different class or scope bucket
     after seeing the price, and a v1 quote — whose signature never spanned a
     scope binding — can never stand behind a public observation.
+
+    ``ValidatedQuote`` is an ordinary public dataclass, so *holding* one proves
+    nothing: its attributes can be constructed or replaced while keeping the
+    ``canonical_bytes`` of a genuinely signed quote.  The signed bytes are the
+    authority and the attributes are only a view of them, so every identity
+    field is re-read out of ``canonical_bytes`` here.
     """
     if (
         quote.schema_version != 2
@@ -254,29 +268,61 @@ def _require_quote_binding(
         or quote.public_scope_dimensions is None
     ):
         raise PriceSurfaceError("quote_scope_unsigned")
+    public_scope = _canonical_scope(quote.public_scope_dimensions)
+    _require_attributes_match_signed_bytes(quote, public_scope)
     if quote.descriptor_id != binding.descriptor_id:
         raise PriceSurfaceError("descriptor_binding_mismatch")
     if quote.settlement_currency != binding.currency:
         raise PriceSurfaceError("currency_binding_mismatch")
     if quote.fee_schedule_version != binding.fee_schedule_version:
         raise PriceSurfaceError("fee_version_binding_mismatch")
+    return public_scope
+
+
+def _require_attributes_match_signed_bytes(
+    quote: ValidatedQuote, public_scope: bytes
+) -> None:
+    """Re-read every identity field from the bytes the issuer actually signed."""
+    try:
+        signed = json.loads(bytes(quote.canonical_bytes).decode("ascii"))
+    except (AttributeError, TypeError, ValueError, UnicodeDecodeError) as exc:
+        raise PriceSurfaceError("quote_bytes_unreadable") from exc
+    if not isinstance(signed, dict):
+        raise PriceSurfaceError("quote_bytes_unreadable")
+    if signed.get("domain") != _QUOTE_V2_DOMAIN or signed.get("schema_version") != 2:
+        raise PriceSurfaceError("quote_scope_unsigned")
+    expected = (
+        ("quote_id", quote.quote_id),
+        ("descriptor_id", quote.descriptor_id),
+        ("market_class_id", quote.market_class_id),
+        ("market_scope_revision", quote.market_scope_revision),
+        ("settlement_currency", quote.settlement_currency),
+        ("fee_schedule_version", quote.fee_schedule_version),
+        ("public_scope_dimensions", public_scope.decode("ascii")),
+    )
+    for name, attribute in expected:
+        if signed.get(name) != attribute:
+            raise PriceSurfaceError("quote_attributes_not_signed")
 
 
 def _require_settlement_derived_price(
-    binding: SettlementBinding, unit_price_micros: object, quantity: int
+    binding: SettlementBinding, unit_price_micros: object
 ) -> None:
     """Manipulation control: the price is authoritative money, not a claim.
 
     A positive fixed weight times an unbounded caller-provided price is still
-    unbounded, so the price is bounded here rather than downstream: it must
-    exactly reconstruct the gross the three authorities settled.  Publishing a
-    10^18-micro print therefore costs 10^18 * quantity micros of real money
-    plus its canonical fee, and a settlement whose gross does not divide
-    exactly by the delivered quantity fails loud instead of rounding into the
-    index.  Integer micros only.
+    unbounded, so the price is bounded here rather than downstream.  Both
+    factors are settlement evidence — the gross the three authorities settled
+    and the quantity they attested delivered — so the unit price is fully
+    determined, not merely constrained: bounding the *product* alone would let
+    one settled gross be re-declared as any (price, quantity) pair whose
+    product matches.  Publishing a 10^18-micro print therefore costs
+    10^18 * delivered_quantity micros of real money plus its canonical fee,
+    and a gross that does not divide exactly by the delivered quantity fails
+    loud instead of rounding into the index.  Integer micros only.
     """
     _positive_int(unit_price_micros, "unit_price_micros")
-    if unit_price_micros * quantity != binding.gross_micros:  # type: ignore[operator]
+    if unit_price_micros * binding.delivered_quantity != binding.gross_micros:  # type: ignore[operator]
         raise PriceSurfaceError("unit_price_not_settlement_derived")
 
 
@@ -288,11 +334,16 @@ def _index_eligible(binding: SettlementBinding) -> bool:
     claim unrelated roots to escape these exclusions.  Exclusion here changes
     index eligibility only; it never creates a settlement-fee exemption (see
     :func:`_require_canonical_fee`).
+
+    Unknown never reads as benign: an absent *or empty* root is unknown
+    linkage, which is not eligible.  ``linked_party`` is validated as a real
+    bool in :func:`_validate_binding`, so ``None`` can never arrive here
+    meaning "not linked".
     """
     buyer_principal_root = binding.buyer_principal_root
     seller_principal_root = binding.seller_principal_root
     same_owner = binding.requester_id == binding.host_owner_id
-    known_roots = buyer_principal_root is not None and seller_principal_root is not None
+    known_roots = bool(buyer_principal_root) and bool(seller_principal_root)
     same_principal = known_roots and buyer_principal_root == seller_principal_root
     return (
         known_roots
@@ -368,7 +419,11 @@ def aggregate_price_surface(
     public_scope = _canonical_scope(public_scope)
     _positive_int(min_samples, "min_samples")
     _positive_int(settlement_ttl, "settlement_ttl")
-    if not (0 < principal_share_cap_ppm <= PPM):
+    if (
+        not isinstance(principal_share_cap_ppm, int)
+        or isinstance(principal_share_cap_ppm, bool)  # `True == 1` is not a 1-ppm cap
+        or not (0 < principal_share_cap_ppm <= PPM)
+    ):
         raise PriceSurfaceError("principal_share_cap_ppm is invalid")
     _require_unique_settlements(observations)
 
@@ -434,6 +489,17 @@ def _validate_binding(binding: SettlementBinding) -> None:
     _positive_int(binding.gross_micros, "gross_micros")
     _nonnegative_int(binding.net_micros, "net_micros")
     _nonnegative_int(binding.fee_micros, "fee_micros")
+    _positive_int(binding.delivered_quantity, "delivered_quantity")
+    # `None` is not "unlinked" and `0`/`1`/`"false"` are not booleans: an
+    # unstated relationship must fail closed, never default to arm's length.
+    if not isinstance(binding.linked_party, bool):
+        raise PriceSurfaceError("linked_party must be an explicit boolean")
+    for root, name in (
+        (binding.buyer_principal_root, "buyer_principal_root"),
+        (binding.seller_principal_root, "seller_principal_root"),
+    ):
+        if root is not None and (not isinstance(root, str) or not root):
+            raise PriceSurfaceError(f"{name} must be non-empty text or None")
     if binding.net_micros + binding.fee_micros != binding.gross_micros:
         raise PriceSurfaceError("settlement_conservation_mismatch")
     _require_canonical_fee(binding)

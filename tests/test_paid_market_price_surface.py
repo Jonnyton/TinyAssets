@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -71,12 +72,34 @@ def _binding(**changes: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "delivered_quantity": 10,
         "buyer_principal_root": "principal:buyer",
         "seller_principal_root": "principal:seller",
         "linked_party": False,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
+
+
+def _signed_bytes(values: dict[str, object]) -> bytes:
+    """The bytes an issuer would actually have signed for these field values."""
+    scope = values["public_scope_dimensions"]
+    body = {
+        "domain": "tinyassets.paid-market.quote.v2",
+        "schema_version": 2,
+        "quote_id": values["quote_id"],
+        "descriptor_id": values["descriptor_id"],
+        "market_class_id": values["market_class_id"],
+        "market_scope_revision": values["market_scope_revision"],
+        "settlement_currency": values["settlement_currency"],
+        "fee_schedule_version": values["fee_schedule_version"],
+        "public_scope_dimensions": (
+            bytes(scope).decode("ascii")  # type: ignore[arg-type]
+            if isinstance(scope, (bytes, bytearray))
+            else scope
+        ),
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
 def _quote(**changes: object) -> ValidatedQuote:
@@ -92,12 +115,15 @@ def _quote(**changes: object) -> ValidatedQuote:
         "expires_at": 200,
         "executable": True,
         "capacity_remaining": 100,
-        "canonical_bytes": b'{"domain":"tinyassets.paid-market.quote.v2"}',
         "schema_version": 2,
         "market_scope_revision": SCOPE_REVISION,
         "public_scope_dimensions": SCOPE,
     }
     values.update(changes)
+    # Unless a test is deliberately forging one, the signed bytes agree with
+    # the attributes — a `ValidatedQuote` whose fields drift from its own
+    # canonical bytes is exactly the attack the join must refuse.
+    values.setdefault("canonical_bytes", _signed_bytes(values))
     return ValidatedQuote(**values)  # type: ignore[arg-type]
 
 
@@ -125,12 +151,14 @@ def _receipts(binding: SettlementBinding, source: str = "tx-1"):
 
 def _join(binding: SettlementBinding, **overrides: object):
     """Join one settlement whose declared price reconstructs its gross."""
-    quantity = int(overrides.pop("quantity", 10))  # type: ignore[arg-type]
     source = str(overrides.pop("source", "tx-1"))
+    delivered = binding.delivered_quantity
+    # A malformed delivered_quantity must reach the runtime's own validation
+    # rather than blowing up here, so the fixture falls back instead of dividing.
+    usable = isinstance(delivered, int) and not isinstance(delivered, bool) and delivered > 0
     kwargs: dict[str, object] = {
         "quote": _quote(),
-        "unit_price_micros": binding.gross_micros // quantity,
-        "quantity": quantity,
+        "unit_price_micros": binding.gross_micros // delivered if usable else 100,
         "observed_at": 100,
     }
     kwargs.update(overrides)
@@ -155,17 +183,18 @@ def _observation(
         requester_id=requester_id,
         host_owner_id=host_owner_id,
         gross_micros=price * quantity,
+        delivered_quantity=quantity,
         buyer_principal_root=buyer_root,
         seller_principal_root=seller_root,
         linked_party=linked_party,
     )
-    return _join(binding, quantity=quantity, observed_at=observed_at, source=source)
+    return _join(binding, observed_at=observed_at, source=source)
 
 
 def test_paid_observation_requires_three_exact_matching_final_receipts() -> None:
     binding = _binding()
 
-    observation = _join(binding, unit_price_micros=100, quantity=10)
+    observation = _join(binding, unit_price_micros=100)
 
     assert observation.binding is binding
     assert observation.index_eligible is True
@@ -219,7 +248,6 @@ def test_any_receipt_binding_mismatch_fails_closed(field: str, value: object) ->
             ),
             quote=_quote(),
             unit_price_micros=100,
-            quantity=10,
             observed_at=100,
         )
 
@@ -258,7 +286,6 @@ def test_nonaccepted_nonfinal_or_reorg_receipt_never_becomes_price(
             ),
             quote=_quote(),
             unit_price_micros=100,
-            quantity=10,
             observed_at=100,
         )
 
@@ -290,7 +317,33 @@ def test_positive_gross_requires_fee_even_when_same_owner_or_linked() -> None:
 
     no_fee = _binding(net_micros=1_000, fee_micros=0)
     with pytest.raises(PriceSurfaceError, match="canonical_fee_required"):
-        _join(no_fee, unit_price_micros=100, quantity=10)
+        _join(no_fee, unit_price_micros=100)
+
+
+def test_quantity_is_settlement_evidence_not_a_caller_declaration() -> None:
+    """Codex round-2 finding A: bounding `price * quantity` does not bound price.
+
+    A settlement that moved 1,000,000 micros for 1,000 delivered units has a
+    true unit price of 1,000.  Declaring `quantity=1` satisfies the product
+    equality exactly while publishing a 1,000x fabricated unit price, so the
+    delivered quantity has to be settlement evidence too.
+    """
+    settled = _binding(gross_micros=1_000_000, delivered_quantity=1_000)
+
+    with pytest.raises(PriceSurfaceError, match="unit_price_not_settlement_derived"):
+        _join(settled, unit_price_micros=1_000_000)
+
+    assert _join(settled, unit_price_micros=1_000).unit_price_micros == 1_000
+    assert _join(settled, unit_price_micros=1_000).quantity == 1_000
+
+
+def test_the_join_takes_no_quantity_argument_at_all() -> None:
+    """The strongest form of "not caller-supplied" is "not a parameter"."""
+    import inspect
+
+    parameters = inspect.signature(join_paid_observation).parameters
+    assert "quantity" not in parameters
+    assert "delivered_quantity" in SettlementBinding.__dataclass_fields__
 
 
 def test_unit_price_must_reconstruct_the_settled_gross() -> None:
@@ -306,9 +359,9 @@ def test_unit_price_must_reconstruct_the_settled_gross() -> None:
         with pytest.raises(
             PriceSurfaceError, match="unit_price_not_settlement_derived"
         ):
-            _join(settled, unit_price_micros=out_of_band, quantity=10)
+            _join(settled, unit_price_micros=out_of_band)
 
-    assert _join(settled, unit_price_micros=100, quantity=10).unit_price_micros == 100
+    assert _join(settled, unit_price_micros=100).unit_price_micros == 100
 
 
 def test_an_unbounded_price_cannot_reach_the_published_index() -> None:
@@ -332,7 +385,6 @@ def test_an_unbounded_price_cannot_reach_the_published_index() -> None:
         _join(
             _binding(settlement_id="attack", gross_micros=1_000),
             unit_price_micros=10**18,
-            quantity=10,
         )
 
     surface = aggregate_price_surface(
@@ -424,6 +476,48 @@ def test_the_same_settlement_cannot_be_observed_twice() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("linked_party", None),
+        ("linked_party", 0),
+        ("linked_party", 1),
+        ("linked_party", "false"),
+        ("buyer_principal_root", ""),
+        ("seller_principal_root", ""),
+        ("buyer_principal_root", 7),
+        ("delivered_quantity", True),
+        ("delivered_quantity", 0),
+        ("delivered_quantity", -5),
+    ],
+)
+def test_party_and_delivery_evidence_fails_closed(field: str, value: object) -> None:
+    """Codex round-2 finding D: unknown must never read as benign.
+
+    `None` is not "unlinked", an empty root is not a "known" root, and
+    `True` is not a delivered quantity of 1.
+    """
+    with pytest.raises(PriceSurfaceError):
+        _join(_binding(**{field: value}))
+
+
+def test_a_bool_cannot_pass_as_the_influence_cap() -> None:
+    """`True == 1` in Python; a bool must not become a 1-ppm cap."""
+    with pytest.raises(PriceSurfaceError, match="principal_share_cap_ppm"):
+        aggregate_price_surface(
+            market_class_id="sha256:market",
+            market_scope_revision=SCOPE_REVISION,
+            public_scope=SCOPE,
+            now=150,
+            observations=[],
+            native_asks=[],
+            references=_empty_batch(),
+            min_samples=1,
+            settlement_ttl=3_600,
+            principal_share_cap_ppm=True,  # type: ignore[arg-type]
+        )
+
+
 def test_observation_identity_comes_from_the_quote_not_the_caller() -> None:
     """Scope, market class, and descriptor are derived from the signed quote."""
     observation = _join(_binding())
@@ -456,6 +550,58 @@ def test_a_quote_that_does_not_bind_this_settlement_fails_closed(
 ) -> None:
     with pytest.raises(PriceSurfaceError, match=message):
         _join(_binding(), quote=_quote(**{field: value}))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("quote_id", "quote-stolen"),
+        ("descriptor_id", DESCRIPTOR_ID),
+        ("market_class_id", "sha256:market"),
+        ("market_scope_revision", SCOPE_REVISION),
+        ("settlement_currency", "tiny"),
+        ("fee_schedule_version", CANONICAL_FEE_SCHEDULE_VERSION),
+        ("public_scope_dimensions", SCOPE),
+    ],
+)
+def test_quote_attributes_must_match_the_bytes_the_issuer_signed(
+    field: str, value: object
+) -> None:
+    """Codex round-2 finding C: holding a `ValidatedQuote` proves nothing.
+
+    It is an ordinary public dataclass, so an attacker can keep the
+    `canonical_bytes` of a genuinely signed quote and replace the attributes
+    around them.  Here a quote is signed for *some other* identity and then
+    has each attribute swapped back to the one this settlement expects — the
+    bytes are real, the attributes are a lie, and the join must refuse it.
+    """
+    honest = _quote()
+    foreign = _quote(
+        quote_id="quote-foreign",
+        descriptor_id="sha256:foreign-descriptor",
+        market_class_id="sha256:foreign-market",
+        market_scope_revision="msr:foreign:0001",
+        settlement_currency="usd",
+        fee_schedule_version="tinyassets.paid-market.fee.v9",
+        public_scope_dimensions=derive_public_scope_dimensions(
+            _SCOPE_CONTRACT, {"execution_region_bucket": "eu", "slo_bucket": "batch"}
+        ),
+    )
+    forged = replace(foreign, **{field: value}, canonical_bytes=foreign.canonical_bytes)
+
+    with pytest.raises(PriceSurfaceError, match="quote_attributes_not_signed"):
+        _join(_binding(), quote=forged)
+
+    # The same swap against a quote whose bytes really do cover it is fine.
+    assert _join(_binding(), quote=honest).quote_id == "quote-1"
+
+
+@pytest.mark.parametrize(
+    "candidate", [b"", b"not-json", b"[]", b'"text"', b'{"domain":"other"}', None, 7]
+)
+def test_unreadable_or_foreign_signed_bytes_fail_closed(candidate: object) -> None:
+    with pytest.raises(PriceSurfaceError):
+        _join(_binding(), quote=_quote(canonical_bytes=candidate))
 
 
 def test_the_join_revalidates_the_quote_scope_bytes() -> None:
@@ -837,7 +983,7 @@ def test_missing_vwap_is_null_not_zero_and_zero_prices_fail_loud() -> None:
 
     # A zero price fails loud rather than entering the index as "free".
     with pytest.raises(PriceSurfaceError, match="unit_price_micros"):
-        _join(_binding(gross_micros=1_000), unit_price_micros=0, quantity=10)
+        _join(_binding(gross_micros=1_000), unit_price_micros=0)
 
 
 def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidence() -> None:

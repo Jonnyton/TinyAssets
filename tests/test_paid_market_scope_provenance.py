@@ -415,6 +415,7 @@ def _binding(**overrides: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "delivered_quantity": 10,
         "buyer_principal_root": "root-buyer",
         "seller_principal_root": "root-seller",
         "linked_party": False,
@@ -441,11 +442,12 @@ def _signed_quote(**changes: object) -> ValidatedQuote:
     return _validate(raw)
 
 
-def _unsigned_quote(**changes: object) -> ValidatedQuote:
-    """A `ValidatedQuote` value assembled directly, skipping verification.
+def _unverified_quote(**changes: object) -> ValidatedQuote:
+    """A `ValidatedQuote` assembled directly, skipping signature verification.
 
-    Used only to prove the join re-checks what the quote carries instead of
-    treating the dataclass itself as authority.
+    Its `canonical_bytes` still agree with its attributes, so it exercises the
+    join's own checks rather than tripping the drift guard.  Deliberate
+    attribute/bytes drift is its own test below.
     """
     values: dict[str, object] = {
         "quote_id": "quote-1",
@@ -458,16 +460,38 @@ def _unsigned_quote(**changes: object) -> ValidatedQuote:
         "expires_at": 200,
         "executable": True,
         "capacity_remaining": 300,
-        "canonical_bytes": b"{}",
         "schema_version": 2,
         "market_scope_revision": SCOPE_REVISION,
         "public_scope_dimensions": _dimensions(),
     }
     values.update(changes)
+    scope = values["public_scope_dimensions"]
+    values.setdefault(
+        "canonical_bytes",
+        json.dumps(
+            {
+                "domain": "tinyassets.paid-market.quote.v2",
+                "schema_version": 2,
+                "quote_id": values["quote_id"],
+                "descriptor_id": values["descriptor_id"],
+                "market_class_id": values["market_class_id"],
+                "market_scope_revision": values["market_scope_revision"],
+                "settlement_currency": values["settlement_currency"],
+                "fee_schedule_version": values["fee_schedule_version"],
+                "public_scope_dimensions": (
+                    bytes(scope).decode("ascii")  # type: ignore[arg-type]
+                    if isinstance(scope, (bytes, bytearray))
+                    else scope
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("ascii"),
+    )
     return ValidatedQuote(**values)  # type: ignore[arg-type]
 
 
-_JOIN_FIELDS = frozenset({"unit_price_micros", "quantity", "observed_at"})
+_JOIN_FIELDS = frozenset({"unit_price_micros", "observed_at"})
 
 
 def _observation(*, quote: ValidatedQuote | None = None, **overrides: object):
@@ -479,8 +503,7 @@ def _observation(*, quote: ValidatedQuote | None = None, **overrides: object):
         **{k: v for k, v in overrides.items() if k in _BINDING_FIELDS}
     )
     kwargs: dict[str, object] = {
-        "unit_price_micros": binding.gross_micros // 10,
-        "quantity": 10,
+        "unit_price_micros": binding.gross_micros // binding.delivered_quantity,
         "observed_at": 1_000,
     }
     kwargs.update({k: v for k, v in overrides.items() if k in kwargs})
@@ -571,7 +594,7 @@ def test_the_settlement_must_match_the_quote_it_claims() -> None:
         ),
     ):
         with pytest.raises(PriceSurfaceError, match=message):
-            _observation(quote=_unsigned_quote(**changes))
+            _observation(quote=_unverified_quote(**changes))
 
 
 @pytest.mark.parametrize(
@@ -580,12 +603,12 @@ def test_the_settlement_must_match_the_quote_it_claims() -> None:
 def test_observation_refuses_non_canonical_scope(candidate: object) -> None:
     """A `ValidatedQuote` value is not a licence to skip scope canonicality."""
     with pytest.raises(PriceSurfaceError):
-        _observation(quote=_unsigned_quote(public_scope_dimensions=candidate))
+        _observation(quote=_unverified_quote(public_scope_dimensions=candidate))
 
 
 def test_observation_requires_a_bound_scope_revision() -> None:
     with pytest.raises(PriceSurfaceError):
-        _observation(quote=_unsigned_quote(market_scope_revision=""))
+        _observation(quote=_unverified_quote(market_scope_revision=""))
 
 
 def test_aggregate_key_is_the_full_class_revision_dimensions_triple() -> None:

@@ -16,6 +16,7 @@ price evidence *and* still pays the fee.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 
 import pytest
@@ -107,12 +108,34 @@ def _binding(**changes: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "delivered_quantity": 10,
         "buyer_principal_root": "principal:buyer",
         "seller_principal_root": "principal:seller",
         "linked_party": False,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
+
+
+def _signed_bytes(values: dict[str, object]) -> bytes:
+    """The bytes an issuer would actually have signed for these field values."""
+    scope = values["public_scope_dimensions"]
+    body = {
+        "domain": "tinyassets.paid-market.quote.v2",
+        "schema_version": 2,
+        "quote_id": values["quote_id"],
+        "descriptor_id": values["descriptor_id"],
+        "market_class_id": values["market_class_id"],
+        "market_scope_revision": values["market_scope_revision"],
+        "settlement_currency": values["settlement_currency"],
+        "fee_schedule_version": values["fee_schedule_version"],
+        "public_scope_dimensions": (
+            bytes(scope).decode("ascii")  # type: ignore[arg-type]
+            if isinstance(scope, (bytes, bytearray))
+            else scope
+        ),
+    }
+    return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("ascii")
 
 
 def _quote(**changes: object) -> ValidatedQuote:
@@ -127,12 +150,15 @@ def _quote(**changes: object) -> ValidatedQuote:
         "expires_at": 200,
         "executable": True,
         "capacity_remaining": 100,
-        "canonical_bytes": b'{"domain":"tinyassets.paid-market.quote.v2"}',
         "schema_version": 2,
         "market_scope_revision": SCOPE_REVISION,
         "public_scope_dimensions": SCOPE,
     }
     values.update(changes)
+    # Unless a test is deliberately forging one, the signed bytes agree with
+    # the attributes — a `ValidatedQuote` whose fields drift from its own
+    # canonical bytes is exactly the attack the join must refuse.
+    values.setdefault("canonical_bytes", _signed_bytes(values))
     return ValidatedQuote(**values)  # type: ignore[arg-type]
 
 
@@ -155,6 +181,7 @@ def _observation(
         requester_id=requester_id,
         host_owner_id=host_owner_id,
         gross_micros=price * quantity,
+        delivered_quantity=quantity,
         buyer_principal_root=buyer_root,
         seller_principal_root=seller_root,
         linked_party=linked_party,
@@ -175,7 +202,6 @@ def _observation(
         ),
         quote=_quote(),
         unit_price_micros=price,
-        quantity=quantity,
         observed_at=observed_at,
     )
 
@@ -466,7 +492,6 @@ def _guard_a_foreign_quote_cannot_bind_this_settlement() -> None:
                 ),
                 quote=_quote(**changes),
                 unit_price_micros=100,
-                quantity=10,
                 observed_at=100,
             )
         except PriceSurfaceError as exc:
@@ -477,8 +502,58 @@ def _guard_a_foreign_quote_cannot_bind_this_settlement() -> None:
 def test_quote_binding_control_is_load_bearing(monkeypatch) -> None:
     _guard_a_foreign_quote_cannot_bind_this_settlement()
 
-    monkeypatch.setattr(price_surface, "_require_quote_binding", lambda *a, **k: None)
+    monkeypatch.setattr(
+        price_surface, "_require_quote_binding", lambda binding, quote: SCOPE
+    )
     assert_control_is_load_bearing(_guard_a_foreign_quote_cannot_bind_this_settlement)
+
+
+def _guard_forged_quote_attributes_are_refused() -> None:
+    """Real signed bytes plus swapped-in attributes is still a forgery."""
+    foreign = _quote(
+        quote_id="quote-foreign",
+        descriptor_id="sha256:foreign-descriptor",
+        market_class_id="sha256:foreign-market",
+    )
+    forged = replace(
+        foreign,
+        descriptor_id=DESCRIPTOR_ID,
+        market_class_id="sha256:market",
+        canonical_bytes=foreign.canonical_bytes,
+    )
+    bound = _binding(settlement_id="forged")
+    raised = False
+    try:
+        join_paid_observation(
+            AccountingReceipt(binding=bound, transaction_id="tx:forged"),
+            DomainAcceptanceReceipt(
+                binding=bound,
+                evidence_digest="sha256:evidence",
+                accepted=True,
+                disputed=False,
+            ),
+            ChainReceipt(
+                binding=bound,
+                receipt_digest="sha256:chain",
+                finality_status="final",
+                reorged=False,
+            ),
+            quote=forged,
+            unit_price_micros=100,
+            observed_at=100,
+        )
+    except PriceSurfaceError as exc:
+        raised = "quote_attributes_not_signed" in str(exc)
+    assert raised, "quote attributes must be re-read from the signed bytes"
+
+
+def test_signed_bytes_reverification_is_load_bearing(monkeypatch) -> None:
+    _guard_forged_quote_attributes_are_refused()
+
+    monkeypatch.setattr(
+        price_surface, "_require_attributes_match_signed_bytes", lambda *a, **k: None
+    )
+    assert_control_is_load_bearing(_guard_forged_quote_attributes_are_refused)
 
 
 def test_raw_native_price_is_immutable_under_the_cap() -> None:
@@ -936,7 +1011,10 @@ def test_settlements_outside_the_ttl_window_leave_the_index(observed_at: int) ->
 def test_settlement_values_are_exact_integer_micros(gross: int) -> None:
     """The scheduled fee is an exact integer at every scale — no float, no drift."""
     observation = _observation(
-        price=gross, quantity=1, source="exact", binding=_binding(gross_micros=gross)
+        price=gross,
+        quantity=1,
+        source="exact",
+        binding=_binding(gross_micros=gross, delivered_quantity=1),
     )
 
     assert observation.binding.net_micros + observation.binding.fee_micros == gross
