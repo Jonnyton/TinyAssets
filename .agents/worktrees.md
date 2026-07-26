@@ -1308,3 +1308,18 @@ Notes:
 - Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
 - Idea feed refs: none
 - Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
+
+## 2026-07-25 - reconcile-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/reconcile-provider-authority
+- Lane state: claimed; current-main spec-only replacement for draft PR #1691
+- Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
+- STATUS/Issue/PR: STATUS Work row; draft PR #1784
+- PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
+- Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md
+- Memory refs: draft PR #1691 is source-only
+- Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
+- Idea feed refs: none
+- Ship/abandon: ship only after strict OpenSpec validation, exact-revision Opus 5 approval, and published sibling handoffs
