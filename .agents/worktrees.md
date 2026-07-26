@@ -1402,7 +1402,7 @@ Notes:
 - Branch: codex/retire-cheat-loop-final-20260726
 - Lane state: claimed; target/audit only
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final
-- STATUS/Issue/PR: retire-cheat-loop-fallback; draft PR expected
+- STATUS/Issue/PR: retire-cheat-loop; draft PR expected
 - PLAN refs: §1 Minimal primitives; §2 Community-build over platform-build
 - Purpose: remove the historical privileged wiki-bug investigation automation, its env selectors, special execution path, and auto-writeback from every shipped surface; preserve generic primitives so recurring automation stays user-authored and remixable.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final\_PURPOSE.md
