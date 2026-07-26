@@ -142,15 +142,15 @@ def _render_leaderboard_text(board: dict[str, Any]) -> str:
         err = board.get("error", "")
         return (
             f"Selector failed for {goal_label} (`{err_kind}`): {err}. "
-            "Operator action: rebind a working selector via "
-            "`goals action=set_selector branch_version_id=…` or "
-            "unbind to fall back to the platform default."
+            "Selector binding is not exposed by the advertised handles; an "
+            "operator must rebind or unbind it through the internal admin "
+            "surface."
         )
     if not entries:
         return (
             f"No Branches are currently bound to {goal_label}. "
-            "Use `extensions action=build_branch goal_id=...` to "
-            "create the first entry."
+            "New-workflow creation and Goal binding are not exposed by the "
+            "advertised handles."
         )
 
     lines: list[str] = [
@@ -186,9 +186,8 @@ def _render_leaderboard_text(board: dict[str, Any]) -> str:
         lines.append(f"… and {len(entries) - 15} more entries.")
     lines.append("")
     lines.append(
-        "_Best-effort v1 ranking. Use "
-        "`extensions action=recommended_parent_for_fork goal_id=…` "
-        "for the top entry plus a rationale._"
+        "_Best-effort v1 ranking. Recommended-parent lookup is not exposed "
+        "by the advertised handles._"
     )
     return "\n".join(lines)
 

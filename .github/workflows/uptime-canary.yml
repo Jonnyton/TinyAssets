@@ -185,28 +185,26 @@ jobs:
           echo "=== revert-loop canary (${PROBE_URL}) exit=$code ==="
           echo "$output"
 
-      # Layer-1e — wiki gate + read canary (PROBE-003, reworked post-#1441).
-      # Anonymous writes are rejected by design since the server-side
-      # write gate, so the old anonymous write-then-read roundtrip is
-      # impossible. The probe now asserts BOTH halves of the policy:
-      # write_page must REJECT anonymously (silent-accept = gate
-      # regression = security red) and read_page must return the
-      # persisted canary draft (reads stay open; catches wiki-read /
-      # storage-mount breakage, e.g. the readonly-volume class).
+      # Layer-1e — wiki write-roundtrip canary (PROBE-003).
+      # The scoped service token can write only the reserved canary
+      # draft, restoring persisted write/read evidence without reopening
+      # anonymous writes. If the secret is unavailable, the script keeps
+      # the post-#1441 anonymous gate + persisted-read policy assertion,
+      # so missing credential availability alone never makes uptime red.
       # BUG-028 context: a slug bug once silently broke bug filing while
       # every probe above stayed green — the read half keeps that cover.
-      # Authenticated write-path coverage is a tracked follow-up
-      # (STATUS.md — canary needs a service credential).
       #
       # Runs only when handshake + tool are green; the wiki probe is
       # meaningless when MCP itself is down. Does NOT require activity
       # or revert green — the wiki surface is independent of node execution.
-      - name: Wiki gate + read canary (auto-heal pipeline 24/7)
+      - name: Wiki write-roundtrip canary (auto-heal pipeline 24/7)
         id: wiki_probe
         continue-on-error: true
         if: >
           steps.probe.outputs.handshake_status == '0' &&
           steps.tool_probe.outputs.tool_status == '0'
+        env:
+          TINYASSETS_WIKI_CANARY_TOKEN: ${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}
         run: |
           set +e
           output=$(python scripts/wiki_canary.py \

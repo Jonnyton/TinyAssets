@@ -1298,14 +1298,59 @@ Notes:
 
 - Provider: codex-gpt56-full-vision
 - Branch: codex/full-product-vision-audit-20260725
-- Lane state: host-review; read-only evidence audit
+- Lane state: claimed; current-main refresh of draft PR #1779
 - Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
-- STATUS/Issue/PR: STATUS Work row; draft PR #1779
+- STATUS/Issue/PR: claimed STATUS Work row; draft PR #1779
 - PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
 - Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
 - Memory refs: Handoff #1582; historical 2026-07-21 implications reports
 - Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
 - Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
-- Ship/abandon: ship a freshness-stamped evidence matrix after independent review; no implementation authority or runtime edits
-- Foldback: branch pushed; draft PR #1779 open; promote gaps through separate OpenSpec/STATUS claims only
+- Ship/abandon: ship a freshness-stamped current-main matrix only after Opus 5 review; no implementation authority or runtime edits
+- Foldback: refresh draft PR #1779; promote gaps through separate OpenSpec/STATUS claims only
+
+## 2026-07-25 - harden-branch-access-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-branch-access-authority
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-first-next
+- STATUS/Issue/PR: STATUS Work rows; PR pending
+- PLAN refs: API & MCP Interface; connector users are first-class
+- Purpose: specify one authenticated-subject branch authority boundary across reads, projections, reuse, lineage, mutation, and deletion
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-first-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
+- Idea feed refs: none
+- Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
+
+## 2026-07-25 - reconcile-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/reconcile-provider-authority
+- Lane state: landed in main as #1784 / `620fed5a`; supersedes draft PR #1691
+- Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
+- STATUS/Issue/PR: merged PR #1784; STATUS Work row retired
+- PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
+- Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md
+- Memory refs: draft PR #1691 is source-only
+- Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
+- Idea feed refs: none
+- Ship/abandon: shipped after strict 51/51 validation, exact-revision Opus 5 approval, and published sibling handoffs
+
+## 2026-07-25 - provider-authority-foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-foldback
+- Lane state: claimed; merged-lane coordination cleanup only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-foldback
+- STATUS/Issue/PR: retire #1784 Work row; close superseded draft PR #1691; follow-up PR
+- PLAN refs: Provider Integration; §14 concurrency/load proof
+- Purpose: mark task 1.35, retire the landed STATUS claim, and preserve the target active/unsynced.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-foldback\_PURPOSE.md
+- Memory refs: #1784 exact-head Opus approval
+- Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
+- Idea feed refs: none
+- Ship/abandon: merge only if no other foldback already performed all cleanup

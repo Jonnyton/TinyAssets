@@ -481,9 +481,9 @@ class TestPollChildRunStatus:
         assert outcome.status == RUN_STATUS_INTERRUPTED
         assert outcome.output["selected_child_status"] == "child_invocation_receipt_waiting"
         assert outcome.output["child_invocation_receipt_gate"]["child_run_id"] == child_run_id
-        assert outcome.output["child_invocation_receipt_gate"]["reclaim_action"] == (
-            "attach_existing_child_run"
-        )
+        gate = outcome.output["child_invocation_receipt_gate"]
+        assert gate["reclaim_action"] is None
+        assert "not exposed by the advertised handles" in gate["reclaim_gap"]
 
         parent = get_run(tmp_path, outcome.run_id)
         assert parent is not None
@@ -492,7 +492,11 @@ class TestPollChildRunStatus:
 
         recent = list_recent_runs(tmp_path, limit=1)
         assert recent[0]["failure_class"] == "child_receipt_waiting"
-        assert "attach_existing_child_run" in recent[0]["suggested_action"]
+        assert (
+            "not exposed by the advertised handles"
+            in recent[0]["suggested_action"]
+        )
+        assert "attach_existing_child_run" not in recent[0]["suggested_action"]
 
 
 # ─── Phase A item 5 (Task #76a) — invoke_branch_version_spec validation ──────
