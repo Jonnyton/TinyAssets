@@ -209,3 +209,7 @@ Opus 5 comparison approve that merged tree: market match/claim is not provider
 execution authority, outbound effects have no ambient maintainer fallback, and
 scoped reset supplies owner-adoption inputs rather than impersonating the V1
 cleanup receipt. Combined-tree strict OpenSpec validation passes 49/49.
+
+Published for host review as draft PR #1792. The draft is review authority
+only; it does not authorize apply, archive, runtime implementation, or live
+traffic.
