@@ -85,8 +85,10 @@ After gated migration, every newborn begins with
 `engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
 `allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
 require `[]`. Non-empty is necessary but not sufficient: a ready ceiling must
-intersect every canonical `writer`, `judge`, `extract`, and `embed` chain and
-carry one current provider-specific binding entry for every destination.
+intersect every canonical role with a live provider call site and carry one
+current provider-specific binding entry for every destination. Startup/CI
+inventory owns the live-role set. Dormant `embed` does not block readiness,
+but its first caller holds until its chain is covered.
 
 Before migration, optional assignment fields remain absent and
 `TINYASSETS_PROVIDER_AUTHORITY_V2` defaults false. `_DEFAULT_ENGINE_SOURCE`
@@ -134,10 +136,12 @@ The resolver is total over both the shipped source domain and target values:
 | `self_hosted_endpoint` | held intent | `activate-requester-host-engines`; never ready before endpoint and account-to-host proof |
 | `market_rented` | remote-only intent | always `[]` in ordinary routing; B2+B13 own execution |
 | `host_daemon` | legacy read/migration name | rename to `founder_hosted_daemon` only through the host successor; otherwise held |
-| `requester_local` + `anthropic` | target custody source | cloud binding + writer preference only; remains `held + []` until a separately authorized role supplement makes the ceiling role-complete |
-| `requester_local` + `openai` | target custody source | cloud binding + writer preference only; remains `held + []` until a separately authorized role supplement makes the ceiling role-complete |
+| `requester_local` + `anthropic` | target custody source | cloud binding + writer preference only; remains `held + []` until a separately authorized role supplement covers live judge/extract |
+| `requester_local` + `openai` | target custody source | Codex covers current live writer/judge/extract and may be ready from its own valid cloud binding |
 | `local_model` + `ollama` | target zero-cloud source | `["ollama-local"]`; `activate-requester-host-engines` emits source + attested host binding |
 | `founder_hosted_daemon` | target hosted source | successor-selected ceiling after stable authenticated account-to-host binding |
+| `accepted_market` | target remote grant | no ordinary ceiling; connector successor dispatches `converse` through B2/B13 before routing |
+| other legacy BYOC services | no target mapping | gated migration holds/fails deny-all; credential-custody retirement owns remediation/refusal |
 
 An omitted writer is derived; a supplied writer must match exactly. Aliases,
 unknown values, mismatches, missing opaque binding references, and unsupported
@@ -164,8 +168,15 @@ as authority. It is the sole writer of ready `local_model` and
 requester-owned `ollama-local` binding to a requester-local cloud assignment
 through the same admission transaction; only the atomic compositor may then
 publish the role-complete cloud-plus-local ceiling. Maintainer compute never
-supplies this supplement. `market_rented` remains held permanently in the
-ordinary router.
+supplies this supplement. Its binding carries the requester endpoint and
+executor-host identity; executor-local launch constructs transport solely from
+that endpoint. A process default, ambient `OLLAMA_HOST`, or loopback without a
+matching attested requester host holds. `market_rented` remains held
+permanently in the ordinary router.
+
+`accepted_market` is separate from legacy `market_rented`. Its B2/B13 grant
+dispatches through the connector successor's pre-routing remote seam, so the
+next `converse` never enters ordinary role chains or loops back into setup.
 
 ### 3. Assignment and custody share one exported admission primitive
 
@@ -212,12 +223,16 @@ the ASGI request task does not parent the synchronous tool worker: FastMCP's
 long-lived session task creates a per-message task, and FastMCP 3.2 dispatches
 the registered synchronous wrapper through `anyio.to_thread.run_sync`.
 
-For each `tools/call`, TinyAssets FastMCP `Middleware.on_call_tool` uses
-`fastmcp.server.dependencies.get_http_request()` to inspect the current
-message's HTTP request, resolves its bearer through the configured TinyAssets
-auth provider, and refuses anonymous/invalid identity. This deliberately
-avoids the copied initialize-request Context that stateful sessions otherwise
-retain. Before `call_next`, it registers one opaque dispatch reserve
+For each non-deferred `tools/call`, TinyAssets FastMCP
+`Middleware.on_call_tool` reads the current HTTP message strictly from
+`mcp.server.lowlevel.server.request_ctx.get().request`, resolves its bearer
+through the configured TinyAssets auth provider, and refuses
+anonymous/invalid identity. It fails closed when that per-message request is
+absent. FastMCP's `get_http_request()` is intentionally not used here because
+its three-branch behavior may return the current per-message request, an
+inherited `_current_http_request`, or a synthetic request rebuilt from
+`_task_http_headers`; the latter two do not prove current-message authority.
+Before `call_next`, the middleware registers one opaque dispatch reserve
 containing:
 
 - opaque request nonce;
@@ -278,11 +293,16 @@ Background/resumed/scheduled work cannot reuse this capability.
 `harden-background-provider-execution-authority` owns the durable
 `ProviderWorkAuthorityReceipt` for graph pools, resumed/versioned runs,
 schedules, daemon loops, and every provider call whose request middleware has
-already returned. The receipt is server-issued, names exact
-principal/actor/run/branch/universe/operation, carries assignment
-generation/digest and a bounded lifetime, and is reloaded plus revalidated
-from server state rather than accepted from caller payload. Before that
-successor lands, every such path holds. Accepted-market and
+already returned. It defines two closed server-issued variants. Universe work
+names exact principal/actor/run/branch/universe/operation, assignment
+generation/digest, and bounded lifetime. Universe-less maintainer maintenance
+names the host/operator principal, exact operation, fixed private prompt
+digest, and bounded lifetime while carrying no universe, run, branch,
+requester identity, requester quota, or requester content. Both variants are
+reloaded plus revalidated from server state rather than accepted from caller
+payload. Before that successor lands, every such path holds. A task-augmented or otherwise deferred
+`tools/call` mints no request capability and follows this background-receipt
+rule rather than FastMCP's snapshotted-header fallback. Accepted-market and
 volunteered-capacity work use distributed execution. Missing capability or
 receipt, anonymous identity, wrong current capability, stale generation, wrong
 principal/universe/provider/host, or invalid binding state fails held before
@@ -323,7 +343,9 @@ prompt, mutates no universe/branch, and cannot produce a
 inspection only. The shipped `_AUTH_PROBE_PROMPT` refresh-viability completion
 is a background maintenance provider call, not a host-local probe. It holds
 until `harden-background-provider-execution-authority` issues its exact
-bounded maintenance receipt or a proven zero-output replacement lands; ambient
+host/operator-scoped, operation-bound, fixed-private-prompt, bounded
+maintenance receipt or a proven zero-output replacement lands. The receipt
+contains no universe/run/branch/requester data, quota, or content; ambient
 maintainer authentication is never enough. The capability is
 bootstrap-minted after local operator configuration, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and absent
@@ -338,6 +360,11 @@ substituted on request lineage authorize nothing.
 
 `fresh assignment ceiling` after request-capability/receipt and binding checks.
 
+This is the ordinary universe-routing term. Accepted-market execution
+dispatches before it through the successor-owned remote seam. The closed
+universe-less maintenance probe uses its host/operator receipt and maintenance
+binding without entering universe role/policy routing.
+
 An empty authority set raises `ProviderAuthorityHeldError` before dynamic
 routing. Subscription-only policy, role-chain membership, `llm_policy`,
 registration, auth health, cooldown, and quota are applied afterward and may
@@ -351,8 +378,8 @@ authority is held; an authorized pin that is unavailable is exhaustion.
 Under shared admission, the router resolves:
 
 - request capability or owner-defined background receipt;
-- target universe and authenticated principal;
-- canonical provider and assignment generation;
+- authenticated principal and canonical provider;
+- target universe and assignment generation for universe/host work;
 - opaque credential binding reference and digest when required;
 - credential/auth provenance;
 - exact `credential_kind` and `authority_class` fields;
@@ -362,6 +389,11 @@ Under shared admission, the router resolves:
 Immutable `ProviderInvocation` contains those values and no native API key,
 OAuth token, decrypted/base64 secret, subscription-file bytes, or other
 recoverable material.
+
+The universe-less maintenance variant is minted only by its background owner,
+contains no target universe or assignment generation, and revalidates a
+separate host/operator-owned provider/operation/private-prompt/budget binding
+instead of entering shared universe admission, role chains, or policy routing.
 
 The launch interface layered above the canonical provider interface is:
 

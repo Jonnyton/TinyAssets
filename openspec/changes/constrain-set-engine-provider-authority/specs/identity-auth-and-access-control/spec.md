@@ -35,12 +35,22 @@ state and the effective per-universe gate.
 The outer ASGI `AuthContextMiddleware` SHALL retain OAuth challenge,
 invalid-token, and anonymous-write pre-dispatch behavior, but its task-local
 identity and `finally` lifetime SHALL NOT mint or prove provider authority.
-For every `tools/call`, a TinyAssets-owned FastMCP `Middleware.on_call_tool`
-hook SHALL re-derive the bearer and non-anonymous principal from the current
-HTTP message through `fastmcp.server.dependencies.get_http_request()` and the
-configured TinyAssets auth provider. It SHALL NOT trust the session
-initialize request's copied `ContextVar`, prior message identity, MCP
+For every non-deferred `tools/call`, a TinyAssets-owned FastMCP
+`Middleware.on_call_tool` hook SHALL read the current HTTP message strictly
+from `mcp.server.lowlevel.server.request_ctx.get().request`, re-derive its
+bearer and non-anonymous principal through the configured TinyAssets auth
+provider, and fail closed without minting a reserve when that per-message
+request is absent. It SHALL NOT use
+`fastmcp.server.dependencies.get_http_request()` because that helper may fall
+back to `_current_http_request` or `_task_http_headers`. The hook SHALL NOT
+trust those fallback branches, the session initialize request's copied
+`ContextVar`, a snapshotted header request, prior message identity, MCP
 arguments, client-supplied principal, or ambient session state.
+
+A task-augmented or otherwise deferred `tools/call` SHALL mint no
+`ProviderRequestCapability`. Its provider work SHALL hold until
+`harden-background-provider-execution-authority` issues and revalidates the
+separate durable `ProviderWorkAuthorityReceipt`.
 
 The per-message hook SHALL reserve one opaque, non-serializable dispatch token
 before `call_next(context)`. The reserve SHALL bind an opaque message nonce,
@@ -100,6 +110,16 @@ provider-routing sink SHALL bind those dimensions from fresh server state.
 - **WHEN** current-message credentials are absent, invalid, or resolve anonymous
 - **THEN** no provider request capability is minted
 - **AND** caller data cannot substitute one
+
+#### Scenario: inherited or snapshotted request fallback is not current-message authority
+- **WHEN** per-message `request_ctx` has no current HTTP request but an inherited `_current_http_request` or snapshotted `_task_http_headers` source contains a valid bearer
+- **THEN** the hook fails closed and mints no reserve or provider request capability
+- **AND** the FastMCP fallback helper and its synthetic request are not consulted
+
+#### Scenario: deferred tool call cannot reuse request authority
+- **WHEN** a task-augmented or otherwise deferred tool call would execute after the message middleware returns
+- **THEN** it mints no `ProviderRequestCapability` and provider work holds
+- **AND** only the background owner's separately issued durable receipt may authorize that work
 
 #### Scenario: unauthenticated stdio and SSE transports mint no request capability
 - **WHEN** a stdio or SSE server shell lacks a reviewed authenticated per-message transport identity
@@ -208,7 +228,7 @@ authority enforcement and newborn deny-all cutover SHALL remain blocked.
 #### Scenario: chatbot founder completes accepted market setup
 - **WHEN** an authenticated Tier-1 founder accepts a valid market offer through the live connector
 - **THEN** the named successor produces the B2/B13-bound remote execution grant for that universe
-- **AND** the next `converse` can execute without maintainer or desktop resources
+- **AND** the next `converse` executes through that successor's pre-routing remote-execution seam, not the ordinary provider ceiling, without maintainer or desktop resources
 
 #### Scenario: absent connector activation owner blocks cutover
 - **WHEN** paid-market, B2/B13, or the connector-visible setup step is unavailable

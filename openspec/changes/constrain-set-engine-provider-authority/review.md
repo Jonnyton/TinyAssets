@@ -480,3 +480,60 @@ stale messages, and caller-supplied identities cannot claim the server lease.
 
 Final disposition remains pending exact-head Opus 5 approval, strict
 validation, and refreshed handoff evidence.
+
+## Eleventh exact-revision Opus 5 review — 2026-07-25
+
+Opus 5 reviewed exact commit `73d3f9d7`, including the message-dispatch and
+role-complete adaptations. It verified the four exact handoffs, current
+provider chains and ten BYOC services, zero-output sandbox probe, dark
+compatibility, FastMCP one-shot delegation, advisory admission, canary
+reaping, and absence of a Village/web dependency. It returned `ADAPT` on four
+remaining boundaries:
+
+1. requester-owned `ollama-local` needed its endpoint and executor-host
+   identity to select transport, rather than the process-global maintainer
+   instance;
+2. readiness needed to cover roles with live call sites, not dormant `embed`,
+   so Tier-1 and cloud-only Codex did not acquire a desktop prerequisite;
+3. accepted-market setup needed target source `accepted_market` and a named
+   successor-owned pre-routing B2/B13 remote-dispatch seam; and
+4. `_AUTH_PROBE_PROMPT` needed a closed universe-less maintenance receipt
+   bound to host/operator principal, exact operation, fixed private prompt,
+   and bounded lifetime.
+
+The adaptation derives local transport only from the attested requester
+endpoint, inventories live roles at startup/CI, holds the first dormant-role
+caller until covered, routes accepted-market `converse` outside ordinary
+provider chains, and defines the maintenance receipt without universe, run,
+branch, requester identity, requester quota, or requester content. Startup
+canary reaping now requires provable universe absence; unreadable state holds
+and preserves the entry. Residual BYOC services remain explicitly owned by
+custody retirement, and the extract proof names
+`tinyassets/ingestion/indexer.py`.
+
+Final disposition remains pending strict validation, four refreshed
+exact-head handoffs, and Opus 5 approval of task 1.30.
+
+## Twelfth exact-revision Opus 5 review — 2026-07-25
+
+Opus 5 measured the installed FastMCP 3.2 request helper against exact pushed
+commit `87a553fe` and returned `ADAPT`: `get_http_request()` can fall back from
+the per-message MCP request to an inherited `_current_http_request` or to a
+synthetic request reconstructed from `_task_http_headers`. That fallback is
+not current-message authority even when its bearer is valid. Task-augmented
+calls can also run after middleware revocation and must not inherit request
+authority.
+
+The target now reads only
+`mcp.server.lowlevel.server.request_ctx.get().request`, mints nothing when it
+is absent, explicitly forbids both FastMCP fallback branches, and holds every
+task-augmented/deferred call until the separate background owner issues a
+durable receipt.
+
+The earlier parallel-review wording about preserving a host-local live
+subscription probe is superseded by the ninth and tenth normative adaptation:
+completion-based `_AUTH_PROBE_PROMPT` is background maintenance and cannot use
+`HostLocalProviderCapability`.
+
+Final disposition remains pending current-main merge, strict validation,
+refreshed exact-head handoffs, and a fresh Opus 5 approval.

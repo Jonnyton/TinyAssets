@@ -99,10 +99,28 @@
   claim it against the actual worker in the TinyAssets registered wrapper on
   entry. Preserve stateful HTTP while forbidding initialize/prior-message
   Context authority.
-- [ ] 1.26 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
-  approval of the exact adapted artifacts; resolve every Critical and
+- [x] 1.26 Obtain the exact-`73d3f9d7` Opus 5 review. It verified the dark
+  gate, message carrier, handoffs, no-Village dependency, service inventory,
+  and current call chains, then returned `ADAPT` on endpoint-bound local
+  execution, live-role readiness, accepted-market dispatch, and the
+  universe-less maintenance receipt.
+- [x] 1.27 Fold that `ADAPT`: derive local transport only from the attested
+  requester endpoint; inventory roles with live callers; keep dormant embed
+  from imposing a desktop prerequisite; add target `accepted_market` plus the
+  successor-owned pre-routing remote seam; and define the closed
+  host/operator-scoped maintenance-receipt variant.
+- [x] 1.28 Obtain the exact-`87a553fe` Opus 5 review. It accepted the measured
+  worker-claim seam and returned `ADAPT`: FastMCP's `get_http_request()` can
+  fall back to inherited/snapshotted request sources, and deferred tool calls
+  cannot retain request authority after middleware revocation.
+- [x] 1.29 Fold that `ADAPT`: read only the low-level per-message
+  `request_ctx.get().request`, fail closed without either FastMCP fallback,
+  and require the separate background receipt for task-augmented/deferred
+  calls.
+- [ ] 1.30 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
+  approval of the exact current-main artifacts; resolve every Critical and
   Important finding.
-- [ ] 1.27 Run strict target/full-tree validation and land this target active
+- [ ] 1.31 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -192,10 +210,14 @@
   non-anonymous current `tools/call` message receives one
   non-copyable/non-serializable `ProviderRequestCapability`. Prove the outer
   ASGI task and stateful-session initialize Context authorize nothing; each
-  later message (including refreshed bearer) re-derives identity through
-  `get_http_request()`, reserves a distinct session/request/tool token, and
-  the TinyAssets wrapper claims it only against the actual AnyIO worker on
-  entry. `call_provider` explicitly carries that exact object through
+  later message (including refreshed bearer) reads only
+  `request_ctx.get().request`, reserves a distinct session/request/tool token,
+  and the TinyAssets wrapper claims it only against the actual AnyIO worker
+  on entry. Prove an absent per-message request mints nothing even when
+  `_current_http_request` or `_task_http_headers` contains a valid bearer;
+  never consult `get_http_request()` fallbacks. Prove task-augmented/deferred
+  calls mint no request capability and hold until the background owner issues
+  a durable receipt. `call_provider` explicitly carries that exact object through
   `call_sync`, `call_with_policy_sync`, retry/judge branches, and the router
   pool closure. Reject prior-message replay, lookalikes, copied reserves,
   second claims, detached/nested workers, and inherited child contexts before
@@ -220,11 +242,15 @@
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact cloud binding entry,
   generation increment, inferred/matching writer, and byte-exact zero
-  mutation on invalid route under the effective gate. Prove cloud custody
-  alone stays `held + []`; an atomic cloud-plus-attested-requester-local
-  supplement publishes one per-provider binding map and a ceiling whose
-  intersection with writer/judge/extract/embed is non-empty. Maintainer-owned
-  local compute and any non-role-complete mapping remain held. Prove
+  mutation on invalid route under the effective gate. Prove OpenAI/Codex may
+  be ready because it covers every current live role, while Anthropic/Claude
+  custody alone stays `held + []`. An atomic
+  cloud-plus-attested-requester-local supplement publishes one per-provider
+  binding map and a ceiling covering every live role. Local transport must be
+  constructed from the binding's requester endpoint inside the matching
+  attested executor-host scope; process-default localhost, ambient
+  `OLLAMA_HOST`, maintainer compute, and any non-role-complete mapping remain
+  held. Prove
   with the global flag false and empty canary state that all four shipped
   `set_engine` sources, all ten accepted BYOC services, config/readiness
   results, provider destination behavior, and `allowed_providers=None` no-op
@@ -233,7 +259,8 @@
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
   `unassigned`, `requester_local`, `local_model`, and
-  `founder_hosted_daemon`. Prove newborn source is `unassigned`, each maps
+  `founder_hosted_daemon`, plus remote-only `accepted_market`. Prove newborn
+  source is `unassigned`, each maps
   through its named writer or to held/failed deny-all, raw-secret refusal stays
   custody-owned, and attested local model yields only `ollama-local`.
 - [ ] 4.7 Add failure/crash injection at quarantine, reference update,
@@ -257,11 +284,15 @@
 - [ ] 5.1 Implement `ProviderRequestCapability` and request-local mint/reset
   in `tinyassets/auth/middleware.py`, the TinyAssets FastMCP
   `Middleware.on_call_tool` hook, and `_register_structured_tool`. Re-derive
-  current-message bearer identity, reserve the one-shot
+  current-message bearer identity strictly from
+  `request_ctx.get().request`, fail closed without using FastMCP's inherited
+  or snapshotted request fallbacks, and reserve the one-shot
   principal/session/request/tool token in the owning message task, claim it
   against the actual synchronous worker on wrapper entry (or owning async
   handler), and revoke in both wrapper and message `finally` before result
-  release. Implement exact nonce/mechanism/issuer/identity token, thread-safe
+  release. Refuse request capability for task-augmented/deferred calls until
+  the background receipt owner lands. Implement exact
+  nonce/mechanism/issuer/identity token, thread-safe
   registry, second-claim/replay refusal, and inherited-context non-authority.
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
   canonical `engine_setup_required_payload`, surface-live `setup_paths`,
@@ -276,17 +307,23 @@
   flag/default and enable `engine_source=unassigned` plus newborn deny-all
   atomically. Make the secret-free generated-ID canary registry durable across
   process restart, remove failed-birth entries before returning error,
-  reconcile orphan IDs with no living universe at startup before routing, and
-  remove registry state during bounded-test cleanup. Document the three provider-authority
-  V2 environment variables and their default-dark/caller-non-authority
+  reap registry IDs at startup only when universe absence is provable; preserve
+  the entry, hold routing, and diagnose when the store is unreadable, and
+  remove registry state during bounded-test cleanup. Document the three
+  provider-authority V2 environment variables and their
+  default-dark/caller-non-authority
   semantics in `docs/reference/environment-variables.md`.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing cloud binding entry and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
   attested local/host target mappings only under the effective gate. Persist a
-  non-secret per-provider binding map; keep cloud-only assignments held and
-  atomically publish ready only after a requester-owned role supplement makes
-  every canonical role reachable. While dark, keep every legacy
+  non-secret per-provider binding map; publish ready only when every live role
+  is covered (Codex currently may qualify alone; Claude requires a role
+  supplement). Construct local transport only from the binding's requester
+  endpoint inside its matching attested executor-host scope; process defaults
+  and ambient/unauthenticated loopback hold. Recognize `accepted_market` as
+  remote-only and hand it to the connector successor's pre-routing B2/B13
+  dispatch seam without consulting ordinary chains. While dark, keep every legacy
   source/service/config/readiness/destination behavior unchanged. Refuse
   target migration/assignment before mutation if existing config is
   unparseable so fallback-empty merge cannot drop unrelated keys.
@@ -330,8 +367,10 @@
   prove its closed set is exactly three zero-output/non-completion probes.
   The host-local subscription probe performs credential inspection only. Prove
   `_AUTH_PROBE_PROMPT` completion is rejected without the background owner's
-  exact maintenance receipt, cannot use ambient maintainer auth, and no
-  requester prompt/quota, universe mutation, or ordinary provider route
+  exact host/operator-principal, operation, fixed-private-prompt-digest, and
+  lifetime-bound maintenance receipt; prove that variant carries no
+  universe/run/branch/requester identity, requester quota, or requester
+  content, cannot use ambient maintainer auth, and no ordinary provider route
   becomes reachable.
 - [ ] 6.6 Add provider parity tests proving every CLI/local/HTTP/in-process
   invocation is reference-only and only `ProviderExecutor.start()`
@@ -355,17 +394,23 @@
   request capability or owner-defined background receipt, fresh
   assignment/binding tuple, and authority-derived provider set before dynamic
   filters. Keep enforcement observational/non-authorizing while the
-  effective V2 gate does not apply to the routed universe.
+  effective V2 gate does not apply to the routed universe. For the closed
+  universe-less maintenance variant, validate its host/operator
+  provider/operation/private-prompt/budget binding without entering universe
+  admission, role chains, or policy routing.
 - [ ] 7.2 Implement sole provider-layer propagation through every inventoried
   request call site and router pool closure; integrate the separate background
   owner's receipt and host successor's local request capability at the same
   sink; add only the three closed zero-output host-local probes; move the
   completion-based subscription refresh-viability caller behind its bounded
-  background-maintenance receipt or replace it with a zero-output probe.
+  universe-less host/operator maintenance receipt or replace it with a
+  zero-output probe. Route target `accepted_market` through the connector
+  successor's pre-routing B2/B13 seam before ordinary provider routing.
 - [ ] 7.3 Implement immutable router-minted `ProviderInvocation` with request
-  capability/receipt, target/principal, provider, generation, opaque
-  reference/digest, provenance, classifications, call inputs, and launch
-  token—never native secret material.
+  capability/receipt, principal, provider, opaque reference/digest,
+  provenance, classifications, call inputs, and launch token; include target
+  universe/generation for universe/host work and omit both for the closed
+  maintenance variant—never native secret material.
 - [ ] 7.4 Replace direct one-phase provider execution with
   `ProviderExecutor.start() -> ProviderLaunchHandle -> result()`,
   executor-local dereference followed by canonical provider `complete()`,
@@ -412,11 +457,14 @@
   Caller data cannot opt in and existing user universes cannot be migrated for
   proof. A fully held surface fails this gate. Stop before flag/default flip,
   newborn deny-all, or legacy-writer quiescence if any fails. For every ready
-  ceiling, prove writer, judge, extract, and embed each have at least one
-  currently registered, executable, bound authorized provider; exercise the
-  live editorial `role="judge"` and ingestion `role="extract"` call sites. If
-  only an absent `ollama-local` remains or any role intersection is empty,
-  keep the assignment held and fail the readiness gate without widening. On
+  ceiling, inventory every live `role=` call site and prove each live role has
+  a currently registered, executable, bound authorized provider; exercise
+  `tinyassets/evaluation/editorial.py` `role="judge"`,
+  `tinyassets/ingestion/indexer.py` `role="extract"`, and live writer paths.
+  Dormant `embed` does not block readiness, but its first live caller MUST hold
+  until covered and fail CI inventory until added to this proof. If only an
+  absent/unattested `ollama-local` remains or any live-role intersection is
+  empty, keep the assignment held and fail without widening. On
   the canonical stateful `/mcp` app, initialize a session, issue later
   authenticated tool calls (including a refreshed bearer), and prove each
   uses only its current per-message identity/capability while the initialize

@@ -47,12 +47,17 @@ deny-all.
   successors; task 8.1 migrates all legacy `allowed_providers=None` records.
   This exact owner/timing replaces the unsafe pre-cutover shortcut.
 - Requester-owned cloud custody publishes only its cloud binding entry and
-  writer preference; by itself it remains held. A ready assignment must be
-  role-complete across writer/judge/extract/embed and carry one
-  provider-specific opaque binding entry per authorized destination. The host
-  successor may add an attested requester-owned `ollama-local` supplement;
-  only the atomic compositor then publishes the cloud-plus-local ceiling.
-  Maintainer compute never supplies it. Legacy `byo_api_key` is
+  writer preference. A ready assignment must cover every role with a live
+  provider call site and carry one provider-specific opaque binding entry per
+  authorized destination. Current Codex coverage may satisfy the live-role
+  set; current Claude coverage remains held until the host successor adds an
+  attested requester-owned `ollama-local` supplement. Its binding carries the
+  requester endpoint and executor-host identity, and executor launch constructs
+  transport solely from that endpoint. Process defaults, ambient
+  `OLLAMA_HOST`, unauthenticated loopback, and maintainer compute never supply
+  it. A dormant role does not block readiness, but its first live caller holds
+  until covered. Only the atomic compositor publishes a multi-provider
+  ceiling. Legacy `byo_api_key` is
   read/migration-only and converts only through the custody-owned
   post-binding writer; otherwise it fails deny-all. Unknown services, aliases,
   mismatches, and partial state fail before mutation. Raw-secret
@@ -82,15 +87,22 @@ deny-all.
 - `harden-background-provider-execution-authority` owns a durable
   `ProviderWorkAuthorityReceipt` for post-response graph/run/resume/schedule,
   daemon, retrieval, and other task/thread/process provider work. Those paths
-  remain held before that owner lands. Remote execution uses its separate
-  signed distributed authority and never reuses either request carrier.
+  remain held before that owner lands. It also owns the closed universe-less
+  maintainer-maintenance receipt for the fixed private completion auth probe,
+  bound to host/operator principal, exact operation, prompt digest, and
+  lifetime without universe/run/branch/requester data or quota. Remote
+  execution uses its separate signed distributed authority and never reuses
+  either request carrier.
 - `activate-connector-requester-authority` owns the Tier-1
   streamable-HTTP accepted-market path across identity, paid market,
   distributed execution, and the live connector. No Tier-1 cutover occurs
   until its OpenSpec names an action carried by one of the seven canonical
   live connector handles and proves that path completable without raw secret
   deposit or desktop/web-app prerequisites. It cannot depend on the
-  deprecated `universe` handle.
+  deprecated `universe` handle. It persists target source `accepted_market`
+  plus the B2/B13 grant and dispatches the next `converse` through its
+  pre-routing remote-execution seam; ordinary provider ceilings and role
+  chains are not consulted.
 - This change is the sole owner of provider-authority propagation into the
   provider layer. It defines the frozen invocation/launch boundary and
   exhaustive call-site threading; no separate

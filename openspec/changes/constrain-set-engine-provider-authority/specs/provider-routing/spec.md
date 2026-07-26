@@ -80,8 +80,12 @@ bounded canary may the global flag flip. For every effectively gated universe,
 runtime, creation, and assignment SHALL persist state, generation, and
 `allowed_providers` and SHALL use `[]` for
 `unassigned`, `pending`, `held`, and `failed`, and a non-empty canonical list
-only for `ready`. A ready ceiling MUST be role-complete: its intersection with
-each canonical `writer`, `judge`, `extract`, and `embed` chain is non-empty.
+only for `ready`. A ready ceiling MUST be role-complete over every role with a
+live provider call site: its intersection with each such canonical chain is
+non-empty. Startup/CI inventory SHALL enumerate live `role=` call sites and
+fail closed if any live role is outside the enforced set. A canonical role
+with no live call site (currently `embed`) SHALL NOT block readiness; its first
+live caller SHALL hold until its chain is covered.
 Every provider in the ceiling SHALL have its own current entry in a non-secret
 `provider_authority_bindings` map containing the provider-specific opaque
 binding reference/digest and provenance required at the sink. Assignment
@@ -94,15 +98,16 @@ provider or credential access. Legacy
 to target `requester_local` only after
 `retire-mcp-provider-secret-deposit` creates an opaque binding and atomically
 writes the new source, service, cloud-provider binding entry, and
-generation/digest. A cloud binding alone remains `held + []`; it MUST NOT
-publish ready authority until the same assignment transaction has enough
-separately authorized provider bindings for role completeness. Otherwise it
+generation/digest. A cloud binding MUST NOT publish ready authority until its
+same assignment transaction has enough separately authorized provider
+bindings for every live role. Otherwise it
 becomes `failed + []` only during the gated migration, never merely because
 optional assignment fields are absent. `requester_local` service `anthropic`
 maps writer preference to `claude-code`; service `openai` maps writer
-preference to `codex`. Against the shipped role chains neither cloud provider
-alone is role-complete (`claude-code` lacks judge/extract/embed; `codex` lacks
-embed).
+preference to `codex`. Against current live call sites, `claude-code` alone is
+not role-complete because it lacks judge/extract, while `codex` covers
+writer/judge/extract and may be ready from its own valid cloud binding. The
+dormant `embed` chain does not block either assignment until it gains a caller.
 
 Legacy `host_daemon` migrates only through
 `activate-requester-host-engines` to `founder_hosted_daemon`.
@@ -115,20 +120,33 @@ writer for target `local_model`/`ollama`, which maps to
 It may also publish an attested requester-owned `ollama-local` binding as the
 role supplement for a requester-local cloud assignment through the same
 `ProviderAssignmentAdmission`; the atomic compositor then publishes
-`["claude-code", "ollama-local"]` or `["codex", "ollama-local"]` only when
-every provider has its own valid binding and all four canonical roles remain
-reachable. Maintainer-owned local compute is never a supplement.
+`["claude-code", "ollama-local"]` only when every provider has its own valid
+binding and every live role remains reachable. The local binding SHALL carry
+its attested requester-host endpoint and execution-host identity.
+`ProviderExecutor.start()` SHALL construct/select local transport solely from
+that endpoint inside the matching requester-host execution scope. A
+process-registered default, ambient `OLLAMA_HOST`, or loopback endpoint without
+proof that the executor is the attested requester host SHALL fail held.
+Maintainer-owned local compute is never a supplement.
 `market_rented` remains held/deny-all in the ordinary router for its entire
 lifecycle.
+
+Target source `accepted_market` is remote-dispatch-only. It stores a separately
+proven B2/B13 grant and no ordinary provider ceiling. Ordinary role chains
+MUST NOT be consulted for it.
+`activate-connector-requester-authority` SHALL own the pre-routing dispatch
+seam that converts the grant into remote execution for `converse`; provider
+routing holds only when that seam or grant is absent.
 
 Omitted writer is derived. Unknown/aliased/mismatched service or writer,
 missing binding/host reference, and unsupported assignment fields fail before
 mutation. This capability does not define raw-secret ingress; custody owns its
 refusal and requester-local writer.
 
-`effective_provider_authority` SHALL mean only the fresh assignment ceiling
+`effective_provider_authority` SHALL mean only the fresh ordinary assignment ceiling
 after the exact live request capability or owner-defined background receipt
 and binding tuple pass. Dynamic routing filters are not part of this term.
+Accepted-market remote dispatch occurs before and outside this ordinary term.
 An empty authority set raises `ProviderAuthorityHeldError`; dynamic exhaustion
 after a non-empty authority set retains canonical
 `AllProvidersExhaustedError`, chain-drain, retry, explicit fallback,
@@ -155,14 +173,24 @@ policy-fallback, and judge behavior.
 - **AND** only remaining providers in the same authorized chain may follow
 
 #### Scenario: cloud-only requester-local assignment stays held
-- **WHEN** an authenticated requester assigns canonical `anthropic` or `openai` with a valid opaque binding reference
+- **WHEN** an authenticated requester assigns canonical `anthropic` with only its valid cloud binding
 - **THEN** the cloud binding and writer preference may persist, but state remains `held` with `allowed_providers=[]`
-- **AND** the assignment cannot become ready while any canonical role chain has no bound authorized destination
+- **AND** the assignment cannot become ready while any live role has no bound authorized destination
+
+#### Scenario: OpenAI cloud binding covers current live roles
+- **WHEN** an authenticated requester assigns canonical `openai` with a current valid Codex binding
+- **THEN** it may become ready because Codex covers current live writer, judge, and extract call sites
+- **AND** dormant embed does not block readiness but its first live caller holds until covered
 
 #### Scenario: requester-owned role supplement makes cloud assignment ready
 - **WHEN** the same universe has a valid cloud binding plus an attested requester-owned `ollama-local` binding
 - **THEN** one atomic assignment publishes the matching cloud-plus-local ceiling and per-provider binding map
-- **AND** writer, judge, extract, and embed each retain at least one bound authorized destination
+- **AND** every live role retains at least one bound authorized destination
+
+#### Scenario: process-default local provider cannot supplement
+- **WHEN** a proposed local binding lacks a requester endpoint or matching attested executor-host identity
+- **THEN** assignment remains `held` with `allowed_providers=[]`
+- **AND** process-default localhost, ambient `OLLAMA_HOST`, and maintainer compute are not invoked
 
 #### Scenario: ceiling without complete provider bindings stays held
 - **WHEN** a proposed ceiling contains any provider without its own current matching binding entry
@@ -173,6 +201,11 @@ policy-fallback, and judge behavior.
 - **WHEN** the host successor validates target `local_model` service `ollama` and its stable account-to-host binding
 - **THEN** state is `ready` with `allowed_providers=["ollama-local"]`
 - **AND** canonical role chains can terminate at the authorized local model
+
+#### Scenario: accepted market dispatch bypasses ordinary chains
+- **WHEN** a Tier-1 connector universe has a valid accepted-market B2/B13 grant
+- **THEN** the successor-owned pre-routing seam dispatches `converse` remotely without an ordinary ceiling
+- **AND** missing seam/grant holds rather than falling through to maintainer or desktop resources
 
 #### Scenario: every shipped source has an explicit migration or hold
 - **WHEN** source is `byo_api_key`, `self_hosted_endpoint`, `market_rented`, or `host_daemon`
@@ -328,13 +361,19 @@ The provider layer SHALL add immutable non-serializable
 `ProviderAuthorityCarrier`, `ProviderInvocation`, and
 `ProviderLaunchHandle`, plus an executor-local `ProviderExecutor`.
 
-For a live HTTP request, the TinyAssets-owned FastMCP
-`Middleware.on_call_tool` hook SHALL re-derive current-message bearer identity
-from `fastmcp.server.dependencies.get_http_request()`, reserve one opaque
-dispatch token bound to the authenticated principal, MCP session/request/tool,
-and owning message task, and structurally await `call_next`. The outer ASGI
-middleware's task-local Context and the stateful session initialize Context
-MUST NOT mint or prove provider authority.
+For a live non-deferred HTTP request, the TinyAssets-owned FastMCP
+`Middleware.on_call_tool` hook SHALL read the current message strictly from
+`mcp.server.lowlevel.server.request_ctx.get().request`, re-derive its bearer
+identity, reserve one opaque dispatch token bound to the authenticated
+principal, MCP session/request/tool, and owning message task, and structurally
+await `call_next`. It SHALL fail closed when that per-message request is
+absent and SHALL NOT use `get_http_request()` because its inherited
+`_current_http_request` and snapshotted `_task_http_headers` fallbacks do not
+prove current-message authority. The outer ASGI middleware's task-local
+Context and the stateful session initialize Context MUST NOT mint or prove
+provider authority. A task-augmented or otherwise deferred tool call SHALL
+mint no request capability and SHALL hold until the background owner issues a
+durable receipt.
 
 The TinyAssets wrapper created by `_register_structured_tool` SHALL claim the
 reserve atomically on synchronous worker entry, after AnyIO selects the actual
@@ -363,11 +402,15 @@ populate the carrier.
 Background, resumed, scheduled, daemon, RAPTOR, reflexion, retrieval, and
 post-response graph work SHALL supply a server-owned
 `ProviderWorkAuthorityReceipt` defined by
-`harden-background-provider-execution-authority`. That owner SHALL bind the
-receipt to principal/actor/run/branch/universe/operation,
-generation/digest, and bounded lifetime across thread/task/process bridges.
-Before that owner lands, those paths SHALL hold. This change remains the sole
-provider-layer carrier/sink owner.
+`harden-background-provider-execution-authority`. That owner SHALL define two
+closed receipt variants. Universe work binds
+principal/actor/run/branch/universe/operation, generation/digest, and bounded
+lifetime across thread/task/process bridges. Universe-less maintainer
+maintenance binds host/operator principal, exact operation, fixed private
+prompt digest, and bounded lifetime; it carries no universe, run, branch,
+requester identity, requester quota, or requester content. Before that owner
+lands, those paths SHALL hold. This change remains the sole provider-layer
+carrier/sink owner.
 
 All target carrier/sink enforcement SHALL remain dark while the effective V2
 gate (global flag or server-owned isolated-canary listing) does not apply to
@@ -394,10 +437,21 @@ Before each attempt, the router SHALL:
    unexpired, non-tombstoned, non-revoked state; and
 5. mint a router-token-bound `ProviderInvocation`.
 
+Universe-less maintainer maintenance is a closed exception to the
+universe-assignment fields in steps 1, 2, and 4, not to sink validation. It
+MUST NOT enter `call_provider`, policy routing, role chains, or a universe
+assignment. Its owner SHALL instead revalidate the receipt against a separate
+host/operator-owned maintenance binding for the exact provider, operation,
+private-prompt digest, and maintenance budget immediately before minting the
+invocation. Missing or stale receipt/binding holds before auth access or
+completion.
+
 Invocation SHALL contain exactly one HTTP request capability, attested
-host-request capability, or owner-defined background receipt; target universe,
-authenticated principal, admitted provider,
-assignment generation, opaque binding reference/digest, credential/auth
+host-request capability, or owner-defined background receipt; authenticated
+principal and admitted provider;
+target universe and assignment generation for universe/host work, or neither
+field for the closed universe-less maintenance variant; opaque binding
+reference/digest, credential/auth
 provenance, `credential_kind`, `authority_class`, immutable call inputs, and
 router-only launch token. It MUST NOT contain native or recoverable
 secret material.
@@ -433,9 +487,11 @@ credential inspection.
 The shipped completion-based refresh-viability probe using
 `_AUTH_PROBE_PROMPT` is not host-local. It SHALL hold until
 `harden-background-provider-execution-authority` issues a bounded maintenance
-`ProviderWorkAuthorityReceipt` for that exact operation or it is replaced by
-a proven zero-output probe. It MUST NOT run on ambient maintainer
-authentication outside that receipt.
+`ProviderWorkAuthorityReceipt` bound to the host/operator principal, exact
+operation, fixed private prompt digest, and bounded lifetime, or it is
+replaced by a proven zero-output probe. The receipt SHALL contain no universe,
+run, branch, requester identity, requester quota, or requester content. The
+probe MUST NOT run on ambient maintainer authentication outside that receipt.
 The host-local capability is bootstrap-minted, identity-validated,
 non-serializable, mutually exclusive with request/work authority, and
 unavailable through API/MCP, config/state, environment-derived request input,
@@ -467,8 +523,13 @@ operation exists.
 
 #### Scenario: stateful HTTP session derives current message authority
 - **WHEN** a streamable-HTTP session processes initialize and later tool calls in its long-lived server task
-- **THEN** each `tools/call` re-derives identity from its current HTTP request and receives a distinct session/request/tool-bound reserve
+- **THEN** each non-deferred `tools/call` re-derives identity strictly from its per-message `request_ctx` HTTP request and receives a distinct session/request/tool-bound reserve
 - **AND** the initialize or prior-message Context snapshot and revoked lease authorize nothing
+
+#### Scenario: request fallback and deferred dispatch hold
+- **WHEN** per-message request context is absent, inherited/snapshotted headers remain, or tool execution is task-augmented/deferred
+- **THEN** no request capability or carrier is minted
+- **AND** provider work holds unless the background owner separately issues and revalidates its durable receipt
 
 #### Scenario: synchronous MCP tool dispatch claims on worker entry
 - **WHEN** per-message middleware reserves authority and FastMCP invokes the TinyAssets registered wrapper through AnyIO
@@ -506,7 +567,7 @@ operation exists.
 #### Scenario: completion-based auth viability is background maintenance
 - **WHEN** the shipped `_AUTH_PROBE_PROMPT` refresh-viability completion is requested
 - **THEN** a host-local capability cannot run it
-- **AND** it requires the background owner's exact bounded maintenance receipt or a zero-output replacement
+- **AND** it requires the background owner's exact universe-less host/operator, operation, private-prompt-digest, and lifetime-bound maintenance receipt or a zero-output replacement
 
 #### Scenario: invocation is reference-only
 - **WHEN** requester-local authority succeeds
@@ -676,8 +737,10 @@ registry durably before target birth initialization or visibility. The
 secret-free registry SHALL reload across process restart. After birth,
 enforcement keys only on the registered universe ID, not on principal alone.
 A registration whose birth transaction does not commit SHALL be removed
-durably before the failure returns. Startup reconciliation SHALL remove any
-registered ID that has no corresponding living universe.
+durably before the failure returns. Startup reconciliation SHALL remove a
+registered ID only when the corresponding universe is provably absent. An
+unreadable or unavailable universe store SHALL preserve the entry, hold
+routing, and emit an operator diagnostic rather than infer absence.
 
 Target enforcement is active for a universe only when the global flag is true
 or its canonical ID is in configured/registered server-owned canary state.
