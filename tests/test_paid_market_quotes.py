@@ -292,9 +292,17 @@ def test_missing_lane_component_unknown_fields_and_versions_fail_loud() -> None:
     with pytest.raises(QuoteError, match="unknown component field"):
         quote_signing_bytes(quote)
 
+    # v2 is the scope-provenance schema and is now supported; anything outside
+    # the closed {1, 2} set still fails loud.  A v2 body without its scope
+    # fields is a missing-field error, proven in test_paid_market_scope_provenance.
+    quote = _indicative_quote()
+    quote["schema_version"] = 3
+    with pytest.raises(QuoteError, match="unsupported quote schema_version"):
+        quote_signing_bytes(quote)
+
     quote = _indicative_quote()
     quote["schema_version"] = 2
-    with pytest.raises(QuoteError, match="unsupported quote schema_version"):
+    with pytest.raises(QuoteError, match="missing quote field"):
         quote_signing_bytes(quote)
 
     quote = _indicative_quote()
