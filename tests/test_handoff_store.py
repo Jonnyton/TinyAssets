@@ -11,7 +11,7 @@ from tinyassets.handoffs.models import (
     HandoffRecord,
 )
 from tinyassets.handoffs.store import HandoffStore
-from tinyassets.outcomes.schema import migrate_outcome_schema
+from tinyassets.outcomes.schema import OUTCOME_EVIDENCE_LEVELS, migrate_outcome_schema
 
 MIGRATION = (
     Path(__file__).parents[1]
@@ -66,6 +66,16 @@ def test_outcome_schema_owner_creates_evidence_lifecycle_tables() -> None:
         "outcome_artifact",
         "outcome_artifact_source",
     } <= tables
+    assert OUTCOME_EVIDENCE_LEVELS == {
+        "user_attested",
+        "submitted",
+        "accepted",
+        "externally_verified",
+        "disputed",
+        "rejected",
+        "orphaned",
+        "retracted",
+    }
 
 
 def test_outcome_schema_backfills_existing_events_as_user_attested() -> None:

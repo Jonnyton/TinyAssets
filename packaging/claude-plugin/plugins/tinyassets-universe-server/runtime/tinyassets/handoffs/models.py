@@ -288,9 +288,13 @@ def confirmation_fingerprint(
 ) -> str:
     """Bind a confirmation to exactly what the user reviewed.
 
-    Includes the source version AND its content hash, so a confirmation issued
-    against version N cannot authorize an effect initiated from a later version
-    — the stale-confirmation scenario in the capability spec.
+    The stale-confirmation refusal (version N's token cannot authorize an effect
+    initiated from version N+1) is *enforced* by ``effect_key``, which already
+    derives from the source version and its content hash and is matched in the
+    consume query's WHERE clause. The version, hash, and summary fields here are
+    defence in depth plus a human-readable record of what was reviewed — a
+    mutation probe confirmed that removing them alone does not weaken the
+    refusal, so do not read them as the mechanism.
     """
     return hashlib.sha256(
         canonical_json({
