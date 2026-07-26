@@ -42,7 +42,7 @@
   pre-migration engine/read-failure/bare-exhaustion fail-safe behind a
   default-false flag; name the Tier-1 connector authority successor; and add
   universe archive/sync precedence to STATUS.
-- [ ] 1.12 Refresh final-SHA handoffs for the migration-compatible contract.
+- [x] 1.12 Refresh final-SHA handoffs for the migration-compatible contract.
 - [ ] 1.13 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
   resolve every Critical and Important finding.
 - [ ] 1.14 Run strict target/full-tree validation and land this target active

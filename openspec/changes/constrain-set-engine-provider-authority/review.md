@@ -187,6 +187,9 @@ The next adaptation:
 Final disposition remains pending validation, refreshed exact-SHA handoffs,
 and Opus 5 approval.
 
+The three existing handoff comments were updated in place to normative
+candidate `76fa46e4`; IDs remain unchanged.
+
 The existing durable handoff comments were updated in place to normative
 candidate `0e213775`; their IDs remain:
 
