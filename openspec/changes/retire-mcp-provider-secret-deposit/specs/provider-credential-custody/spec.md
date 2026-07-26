@@ -103,7 +103,11 @@ rotation resumes only with fresh current-generation proof.
 
 Terminal-principal retirement/compare-delete MAY instead use same-subject
 step-up recovery or a separately authorized internal exact-tuple cleanup
-consumer under exclusive `ProviderAssignmentAdmission`. That path SHALL be
+consumer under exclusive `ProviderAssignmentAdmission`. Before mutation, that
+consumer SHALL read trusted host-principal state and prove that the exact bound
+principal is terminal because it is revoked, expired, or superseded by
+same-subject lost-key recovery. Active, unknown, mismatched-subject, or
+unprovably terminal state SHALL refuse cleanup. The admitted path SHALL be
 tombstone/delete-only and SHALL NOT dereference, transfer, rebind, or launch
 with the secret. Only then MAY the applicable operation acquire
 the narrower local
@@ -269,10 +273,20 @@ from its attested requester endpoint and executor-host identity.
 A shared universe SHALL NOT own or copy provider API-key material, and a
 universe ACL `admin` grant SHALL NOT confer authority to attach, resolve,
 rotate, delete, replace, or use a credential binding owned by another
-principal. Every binding mutation and use SHALL require an exact current
-credential-owner principal/host/provider/universe/scope/generation match in
-addition to universe and fulfillment-class authority; otherwise the universe
-SHALL remain held.
+principal. Every secret-enabling binding mutation and every use SHALL require
+an exact current credential-owner
+principal/host/provider/universe/scope/generation match in addition to
+universe and fulfillment-class authority; otherwise the universe SHALL remain
+held. The sole mismatch exception is the tombstone/delete-only
+terminal-principal cleanup path defined above, after trusted state proves the
+exact bound principal terminal and same-subject step-up or internal exact-tuple
+cleanup authority. It grants no credential use or cross-principal
+administration.
+
+#### Scenario: active principal cannot be deleted through terminal cleanup
+- **WHEN** same-subject step-up or an internal cleanup consumer targets a binding whose exact host principal remains active, is unknown, or cannot be proven terminal
+- **THEN** tombstone/delete cleanup is refused before binding, native-store, or assignment mutation
+- **AND** the cleanup authority cannot dereference, transfer, rebind, or launch with the secret
 
 #### Scenario: second admin cannot attach or use founder binding
 - **WHEN** a second principal holding `admin` submits or encounters a binding owned by the founder

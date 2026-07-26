@@ -125,6 +125,10 @@ host-principal state. In-place key rotation keeps the same
 the new generation to keep using the binding. Revocation, expiry, and
 lost-key recovery terminate the old principal; recovery creates a new
 principal ID and therefore requires a new provider binding.
+An active principal renewed before expiry keeps the same ID/generation and may
+continue after fresh proof and extended-expiry checks. Missing that renewal
+window makes expiry terminal; a later host principal requires fresh provider
+enrollment rather than reactivating the expired binding.
 
 The unversioned `.credential-vault.json` SHALL NOT be authoritative binding
 state; it may contain display-only non-secret metadata that is safe to lose,
@@ -145,8 +149,11 @@ consumers fail closed; same-ID in-place rotation resumes only with fresh
 current-generation proof. Terminal-principal retirement/compare-delete may
 instead use same-subject step-up recovery or a separately authorized internal
 exact-tuple cleanup consumer, under the same exclusive assignment admission,
-but that path can only tombstone/delete and can never dereference, transfer,
-rebind, or launch with the secret. Only then
+only after trusted host-principal state proves the exact bound principal
+revoked, expired, or recovery-superseded. Active, unknown,
+mismatched-subject, or unprovably terminal state refuses cleanup. The admitted
+path can only tombstone/delete and can never dereference, transfer, rebind, or
+launch with the secret. Only then
 may it acquire the narrower local pending-index/keyring
 locks. Reverse acquisition and untracked reentrancy fail loud. A local
 pending-index/keyring lock is released before any control-plane CAS or other
@@ -219,8 +226,9 @@ fulfillment class, not an empty capability ceiling or fake-only D0 record.
 
 For requester-owned CLI/local/in-process invocation,
 `ProviderExecutor.start()` validates destination, credential-owner principal
-from verified request/assignment authority, active `host_principal_id` plus
-`host_principal_generation`, provider-assignment generation, and
+from verified request/assignment authority, stable `host_principal_id`, fresh
+presented host proof at the current active `host_principal_generation`,
+provider-assignment generation, and
 the provider-authority owner's shared
 `ProviderAssignmentAdmission`. Only then may the selected executor resolve the
 binding once inside provider child/request memory. The secret is never placed
