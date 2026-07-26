@@ -18,19 +18,19 @@ substantial; shared transactional authority, requester-owned execution,
 distributed supply, live market activation, organization, compliance, and
 end-to-end acceptance are not complete.
 
-Recomputed against current main, the 34 audited outcomes still classify as:
+Recomputed against current main, the 36 audited outcomes classify as:
 
 | State | Count | Meaning |
 |---|---:|---|
 | `PROVEN` | 1 | Current intended public path and fresh production evidence exist |
-| `IMPLEMENTED-NOT-PROVEN` | 9 | User-reachable meaningful runtime exists, but production/user/load proof is incomplete |
+| `IMPLEMENTED-NOT-PROVEN` | 10 | User-reachable meaningful runtime exists, but production/user/load proof is incomplete |
 | `IMPLEMENTED-DARK` | 1 | Meaningful runtime exists, but no intended non-test call path activates it |
 | `SPECIFIED-NOT-BUILT` | 9 | Binding target exists; required runtime or acceptance does not |
-| `PARTIAL-CONTRADICTED` | 9 | Some pieces exist, but a known gap or contradictory path defeats the promise |
+| `PARTIAL-CONTRADICTED` | 10 | Some pieces exist, but a known gap or contradictory path defeats the promise |
 | `MISSING` | 5 | No accepted end-to-end capability contract or implementation exists |
 
 This count is deliberately unweighted. It is not a claim that the product is
-`1/34` complete by engineering effort: several implemented foundations support
+`1/36` complete by engineering effort: several implemented foundations support
 many outcomes, while several missing outcomes are large programs. It does show
 why a high completion percentage would be misleading.
 
@@ -106,6 +106,8 @@ Fresh evidence collected for this audit:
 |---|---|---|---|
 | Exact product identity `TinyAssets`, canonical endpoint `https://tinyassets.io/mcp`, retired `/mcp-directory*` absent | `PROVEN` | PLAN Distribution module, live connector spec, live exact-name/seven-handle canary, four live `404` probes | External client registrations still need replacement/registration under the exact identity |
 | Public MCP remains available while the founder PC is off | `IMPLEMENTED-NOT-PROVEN` | Cloud-hosted endpoint, host-independent GitHub Actions and a successful full DR drill prove founder-PC independence | Scheduled run `30186819560` saw an edge `502` before a full green retry about one minute later; root cause/recurrence, fingerprint recovery and a sustained zero-downtime window remain |
+| Tier-3 OSS contributor can `git clone` and run cleanly | `IMPLEMENTED-NOT-PROVEN` | Exact-then-main clean-clone run `30184858938` passed at `15f47bdf`; recent nightly runs are green | No exact-`b759682f` clean-clone result or broader contributor clean-use evidence |
+| Tier-2 host can one-click install, bind the correct account and reach useful hosting in under five minutes | `PARTIAL-CONTRADICTED` | PR #1736 landed the cross-platform buildable tray/onboarding/updater core with focused tests | No signed clean-machine acceptance; onboarding can silently rebind an existing installation to a different subject and currently conflates binding with capability registration; draft #1753 and the subject-pinned `bound`-not-`online` delta remain |
 | Rendered chatbot use plus clean organic-user evidence | `MISSING` | Acceptance requirements exist; `output/user_sim_session.md` is absent on the audit base | Register the ChatGPT connector and run provider-free OAuth/read/write conversations now; BYOC proof remains separately blocked on requester authority, then watch real use |
 | Friendly first contact creates/binds the user’s home and explains unavailable execution before spending | `PARTIAL-CONTRADICTED` | Founder-home birth/binding and actionable `held/setup_required` replies are implemented and tested; #1784 now defines the request-scoped provider-authority target | The three provider-authority successor changes do not exist yet; universe-creation authority tasks remain; current setup guidance still follows a provider attempt rather than gating dispatch, and accepted-market success is absent |
 | Conversational node/evaluator authoring with inspect, edit, test, dry effects, publish | `IMPLEMENTED-NOT-PROVEN` | `tinyassets/authoring/`, canonical-handle actions, authoring tests and scale tests landed in PR #1770 and are in the live release | No complete rendered chatbot authoring transcript or post-fix organic-use proof |
