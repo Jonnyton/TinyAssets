@@ -1383,6 +1383,21 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: merge only if no other foldback already performed all cleanup
 
+## 2026-07-25 - background-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-successors
+- Lane state: claimed; OpenSpec planning only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: split provider-authority successor bundle; claim background receipt contract
+- PLAN refs: Daemon Platform; Providers; API & MCP Interface; Uptime & Alarms
+- Purpose: specify durable provider work authority across post-response task/thread/process bridges without runtime edits.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge 620fed5a / exact-head Opus approval
+- Related implications: run/background branch authority; provider-attempt receipts; outbound boundary
+- Idea feed refs: none
+- Ship/abandon: planning PR after exact current-main Opus review; no Village/web dependency
+
 ## 2026-07-26 - refresh PostgreSQL transactional control-plane authority
 
 - Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review approved
