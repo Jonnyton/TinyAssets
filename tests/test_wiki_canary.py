@@ -32,12 +32,22 @@ class ScriptedPost:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def __call__(self, url, sid, payload, timeout, *, step_code):
+    def __call__(
+        self,
+        url,
+        sid,
+        payload,
+        timeout,
+        *,
+        step_code,
+        bearer_token=None,
+    ):
         self.calls.append({
             "url": url, "sid": sid,
             "method": payload.get("method"),
             "payload": payload,
             "step_code": step_code,
+            "bearer_token": bearer_token,
         })
         if not self._responses:
             raise AssertionError(
@@ -122,9 +132,12 @@ def _tool_error_with_cause(code: int, cause: Exception) -> ToolCanaryError:
     return error
 
 
-def _wiki_write_accepted_resp(sid: str = "sess-wiki") -> tuple[dict, str]:
+def _wiki_write_accepted_resp(
+    sid: str = "sess-wiki",
+    raw_text: str | None = None,
+) -> tuple[dict, str]:
     # Pre-#1441 shape: anonymous write persisting. Now a gate REGRESSION.
-    body = json.dumps({
+    body = raw_text or json.dumps({
         "status": "drafted",
         "path": f"drafts/{wc._CANARY_CATEGORY}/{wc._CANARY_FILENAME}.md",
     })
@@ -173,11 +186,184 @@ def _happy_scripted() -> ScriptedPost:
     ])
 
 
+def _credentialed_happy_scripted() -> ScriptedPost:
+    return ScriptedPost([
+        _init_resp(),
+        _notif_resp(),
+        _wiki_write_accepted_resp(),
+        _wiki_read_ok_resp(),
+    ])
+
+
 # ---- happy path ------------------------------------------------------------
 
 
 def test_happy_path_run_canary_no_raise():
     wc.run_canary("https://fake/mcp", 5.0, post_fn=_happy_scripted())
+
+
+def test_credentialed_canary_writes_then_reads_reserved_page():
+    token = "service-token-" + "x" * 32
+    scripted = _credentialed_happy_scripted()
+
+    wc.run_canary(
+        "https://fake/mcp",
+        5.0,
+        post_fn=scripted,
+        service_token=token,
+    )
+
+    assert len(scripted.calls) == 4
+    assert scripted.calls[0]["bearer_token"] is None
+    assert scripted.calls[1]["bearer_token"] is None
+    assert scripted.calls[2]["bearer_token"] == token
+    assert scripted.calls[3]["bearer_token"] is None
+    assert (
+        scripted.calls[2]["payload"]["params"]["arguments"]
+        == {
+            "filename": "uptime-probe",
+            "category": "notes",
+            "content": wc._CANARY_CONTENT,
+            "dry_run": False,
+        }
+    )
+    assert (
+        scripted.calls[3]["payload"]["params"]["arguments"]
+        == {"page": "uptime-probe"}
+    )
+
+
+def test_credentialed_canary_rejects_non_reserved_write_response_path():
+    token = "service-token-" + "x" * 32
+    wrong_path = _wiki_write_accepted_resp(
+        raw_text=json.dumps({
+            "status": "updated",
+            "path": "drafts/notes/uptime-probe-neighbor.md",
+        }),
+    )
+    scripted = ScriptedPost([_init_resp(), _notif_resp(), wrong_path])
+
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary(
+            "https://fake/mcp",
+            5.0,
+            post_fn=scripted,
+            service_token=token,
+        )
+
+    assert ei.value.code == 6
+    assert "reserved path" in ei.value.msg
+
+
+def test_credentialed_canary_rejects_non_reserved_read_response_path():
+    wrong_read = _wiki_read_ok_resp(
+        raw_text=json.dumps({
+            "path": "pages/notes/uptime-probe.md",
+            "content": wc._CANARY_CONTENT,
+        }),
+    )
+    scripted = ScriptedPost([
+        _init_resp(),
+        _notif_resp(),
+        _wiki_write_accepted_resp(),
+        wrong_read,
+    ])
+
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary(
+            "https://fake/mcp",
+            5.0,
+            post_fn=scripted,
+            service_token="service-token-" + "x" * 32,
+        )
+
+    assert ei.value.code == 7
+    assert "reserved path" in ei.value.msg
+
+
+def test_credentialed_canary_cannot_use_probe_specific_filename():
+    with pytest.raises(ToolCanaryError) as ei:
+        wc.run_canary(
+            "https://fake/mcp",
+            5.0,
+            post_fn=ScriptedPost([_init_resp(), _notif_resp()]),
+            service_token="service-token-" + "x" * 32,
+            canary_filename="uptime-probe-bisect",
+        )
+
+    assert ei.value.code == 6
+    assert "reserved filename" in ei.value.msg
+
+
+def test_run_probe_uses_environment_token_when_present(monkeypatch):
+    token = "service-token-" + "x" * 32
+    scripted = _credentialed_happy_scripted()
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", token)
+    monkeypatch.setattr(wc, "_fresh_canary_content", lambda: wc._CANARY_CONTENT)
+
+    with patch("wiki_canary._append_log"):
+        rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
+
+    assert rc == 0
+    assert scripted.calls[2]["bearer_token"] == token
+
+
+def test_run_probe_missing_environment_token_keeps_gate_read_fallback(monkeypatch):
+    scripted = _happy_scripted()
+    monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+
+    with patch("wiki_canary._append_log"):
+        rc = wc.run_probe("https://fake/mcp", 5.0, post_fn=scripted)
+
+    assert rc == 0
+    assert all(call["bearer_token"] is None for call in scripted.calls)
+
+
+def test_credentialed_run_probe_writes_fresh_content_each_time(monkeypatch):
+    class EchoRoundtripPost:
+        def __init__(self):
+            self.calls = 0
+            self.written_content = ""
+
+        def __call__(
+            self,
+            url,
+            sid,
+            payload,
+            timeout,
+            *,
+            step_code,
+            bearer_token=None,
+        ):
+            self.calls += 1
+            if self.calls == 1:
+                return _init_resp()
+            if self.calls == 2:
+                return _notif_resp()
+            if self.calls == 3:
+                self.written_content = payload["params"]["arguments"]["content"]
+                return _wiki_write_accepted_resp()
+            read_body = json.dumps({
+                "path": wc._CANARY_RELATIVE_PATH,
+                "is_draft": True,
+                "content": self.written_content,
+            })
+            return _wiki_read_ok_resp(raw_text=read_body)
+
+    monkeypatch.setenv(
+        "TINYASSETS_WIKI_CANARY_TOKEN",
+        "service-token-" + "x" * 32,
+    )
+    first = EchoRoundtripPost()
+    second = EchoRoundtripPost()
+
+    with patch("wiki_canary._append_log"):
+        assert wc.run_probe("https://fake/mcp", 5.0, post_fn=first) == 0
+        assert wc.run_probe("https://fake/mcp", 5.0, post_fn=second) == 0
+
+    assert first.written_content.startswith(wc._CANARY_CONTENT)
+    assert second.written_content.startswith(wc._CANARY_CONTENT)
+    assert first.written_content != second.written_content
 
 
 def test_exit_6_when_old_json_rejection_envelope_is_dispatched():
