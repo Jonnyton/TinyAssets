@@ -141,3 +141,12 @@ The next adaptation adds:
 Fresh Windows strict validation after these edits: target valid; full tree
 48 passed, 0 failed. Final disposition remains pending final-SHA handoffs and
 another Opus 5 review.
+
+Final candidate `1a2262b9` handoffs:
+
+- exact-SHA custody acceptance: PR #1746 comment
+  `issuecomment-5081341084`;
+- typed-held setup mapping plus universe archive/sync precedence: PR #1759
+  comment `issuecomment-5081342047`; and
+- receipt exception carve-out plus archive/sync precedence: PR #1756 comment
+  `issuecomment-5081343125`.

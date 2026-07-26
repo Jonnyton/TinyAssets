@@ -29,7 +29,7 @@
   setup mapper, a durable host/local successor lane, archive/sync precedence,
   auth-health MODIFIED behavior, server-checkable request liveness, explicit
   newborn source, and exact field naming.
-- [ ] 1.8 Republish final-SHA custody acceptance and merged-change
+- [x] 1.8 Republish final-SHA custody acceptance and merged-change
   archive/sync precedence, explicitly carving `ProviderAuthorityHeldError`
   out of receipt `error/provider_error`.
 - [ ] 1.9 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
