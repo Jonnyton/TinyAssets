@@ -27,6 +27,12 @@ deny-all.
   exact legacy semantics until the manifest is complete and the deployment
   flag flips. Post-cutover new, unassigned, pending, held, and failed states
   use `allowed_providers=[]`.
+- Before that full cutover, the existing authenticated founder
+  `set_engine` write closes the originating leak immediately: a successful
+  explicit raw-BYOC assignment atomically replaces `allowed_providers` with
+  the singleton canonical destination (`anthropic -> claude-code`,
+  `openai -> codex`). Unsupported or mismatched explicit assignments fail
+  before mutation; existing records and newborn defaults remain untouched.
 - Requester-owned local assignments publish a singleton canonical provider
   ceiling only after their assignment and opaque credential binding reference
   are ready. Legacy `byo_api_key` is read/migration-only and converts only
@@ -59,8 +65,10 @@ deny-all.
 - `activate-connector-requester-authority` owns the Tier-1
   streamable-HTTP accepted-market path across identity, paid market,
   distributed execution, and the live connector. No Tier-1 cutover occurs
-  until that existing coarse connector action path is completable without raw
-  secret deposit or desktop/web-app prerequisites.
+  until its OpenSpec names an action carried by one of the seven canonical
+  live connector handles and proves that path completable without raw secret
+  deposit or desktop/web-app prerequisites. It cannot depend on the
+  deprecated `universe` handle.
 - This change is the sole owner of provider-authority propagation into the
   provider layer. It defines the frozen invocation/launch boundary and
   exhaustive call-site threading; no separate

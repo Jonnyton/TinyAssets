@@ -43,9 +43,15 @@
   default-false flag; name the Tier-1 connector authority successor; and add
   universe archive/sync precedence to STATUS.
 - [x] 1.12 Refresh final-SHA handoffs for the migration-compatible contract.
-- [ ] 1.13 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
+- [x] 1.13 Fold the fifth exact-revision Opus 5 `ADAPT`: gate newborn target
+  fields while dark; state one global no-partial-enforcement gate; close the
+  live leak with an immediate explicit pre-cutover `set_engine` singleton
+  write; make connector action ownership exact; and remove contradictory
+  current-SHA records.
+- [ ] 1.14 Refresh final-SHA handoffs and obtain Claude Opus 5 re-review of
+  the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.14 Run strict target/full-tree validation and land this target active
+- [ ] 1.15 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -101,6 +107,9 @@
   RAPTOR, reflexion, agentic retrieval, background work, and maintenance.
   Name `_DEFAULT_ENGINE_SOURCE`, `universe_has_assigned_engine`, every
   `engine_setup_required_payload` branch, and per-transport auth middleware.
+  Record that the shipped setup envelope advertises deprecated
+  `universe action=set_engine` even though `universe` is not one of the seven
+  live handles; do not carry that dead path into target setup.
 - [ ] 3.3 Compare draft #1606 lock/transaction/migration/deploy-fence commits
   to current main; select only still-applicable pieces and record why every
   other piece is obsolete or owned elsewhere.
@@ -137,7 +146,11 @@
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
-  byte-exact zero mutation on invalid route.
+  byte-exact zero mutation on invalid route. Separately prove that while the
+  full gate is false, a successful authenticated founder legacy `set_engine`
+  raw-BYOC write atomically stores the matching singleton ceiling, cannot
+  fall through to another provider, does not rewrite existing records or
+  newborn defaults, and rejects unsupported/mismatched sources pre-mutation.
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
   `unassigned`, `requester_local`, `local_model`, and
@@ -178,7 +191,10 @@
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
-  attested local/host target mappings.
+  attested local/host target mappings. First land the flag-independent narrow
+  compatibility slice that makes an authenticated explicit legacy
+  `set_engine` raw-BYOC mutation publish the matching singleton ceiling
+  atomically; keep all other target authority/carrier enforcement dark.
 - [ ] 5.4 Implement assignment generation, exclusive transaction, secret-free
   journal, pending quarantine, coherent atomic publication, failed deny-all
   recovery, and startup cleanup.

@@ -142,7 +142,7 @@ Fresh Windows strict validation after these edits: target valid; full tree
 48 passed, 0 failed. Final disposition remains pending final-SHA handoffs and
 another Opus 5 review.
 
-Final candidate `1a2262b9` handoffs:
+Historical `1a2262b9` review-base handoffs (superseded):
 
 - exact-SHA custody acceptance: PR #1746 comment
   `issuecomment-5081341084`;
@@ -187,16 +187,9 @@ The next adaptation:
 Final disposition remains pending validation, refreshed exact-SHA handoffs,
 and Opus 5 approval.
 
-The three existing handoff comments were updated in place to normative
-candidate `76fa46e4`; IDs remain unchanged.
-
-The existing durable handoff comments were updated in place to normative
-candidate `0e213775`; their IDs remain:
-
-- custody acceptance: `issuecomment-5081341084`;
-- unified setup contract / universe archive-sync precedence:
-  `issuecomment-5081342047`; and
-- receipt archive-sync precedence: `issuecomment-5081343125`.
+The durable handoff comment IDs remained stable through subsequent revisions;
+earlier SHA references in this document are historical review bases, not the
+current acceptance binding.
 
 ## Fourth exact-revision Opus 5 re-review — 2026-07-25
 
@@ -231,3 +224,48 @@ The next adaptation:
 
 Final disposition remains pending validation, refreshed exact-SHA handoffs,
 and Opus 5 approval.
+
+## Fifth exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `3f57a82f` and returned `ADAPT`. Critical: the
+universe-lifecycle delta still required target unassigned/empty-ceiling birth
+fields before the global cutover, which would break legacy readiness and bare
+exhaustion behavior.
+
+Important findings:
+
+- target enforcement needed one global default-false qualifier so individual
+  routing requirements could not partially activate;
+- the originating live `set_engine` fallback leak needed a safe narrow fix
+  before the three full-authority successors and migration were ready; and
+- review artifacts contained multiple historical SHAs without clearly
+  separating them from the current acceptance binding.
+
+The next adaptation:
+
+- gates every target birth field on
+  `TINYASSETS_PROVIDER_AUTHORITY_V2=true` and adds explicit pre-cutover birth
+  preservation;
+- states one global dark gate across authority, carriers, assignment state,
+  holds, routing, launch, birth, and setup;
+- allows only an authenticated explicit legacy raw-BYOC `set_engine`
+  assignment to narrow atomically to its canonical singleton destination
+  while the full gate remains false; existing records and newborns remain
+  untouched; and
+- makes the connector successor name an action carried by one of the seven
+  canonical live handles in its own OpenSpec, records the currently advertised
+  deprecated setup path, and clarifies that the three successor directories do
+  not yet exist.
+
+Current exact-revision authority lives in the bodies of these three durable
+handoff comments, which task 1.14 requires to match the final PR head before
+merge:
+
+- custody acceptance: `issuecomment-5081341084`;
+- unified setup contract / universe archive-sync precedence:
+  `issuecomment-5081342047`; and
+- receipt archive-sync precedence: `issuecomment-5081343125`.
+
+Historical SHA mentions above identify only the artifacts reviewed in that
+round. Final disposition remains pending strict validation, exact-head handoff
+refresh, and Opus 5 approval.

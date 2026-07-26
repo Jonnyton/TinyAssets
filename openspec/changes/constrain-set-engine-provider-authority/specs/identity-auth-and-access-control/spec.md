@@ -129,9 +129,10 @@ streamable-HTTP path across `identity-auth-and-access-control`,
 `live-mcp-connector-surface`. It SHALL compose the authenticated requester,
 accepted paid-market agreement, B2 signed remote execution, B13 production
 composition root, bounded spend, and target universe into one connector-
-completable accepted-market grant. It SHALL use the existing coarse connector
-action surface and MUST NOT reintroduce raw secret deposit or require a
-desktop/web-app prerequisite.
+completable accepted-market grant. Its own OpenSpec SHALL name an action
+carried by one of the seven canonical live connector handles before its
+`applyRequires` gate clears; it MUST NOT use the deprecated `universe` handle,
+reintroduce raw secret deposit, or require a desktop/web-app prerequisite.
 
 The successor SHALL own the connector-visible setup step, typed result,
 authorization/visibility, idempotency, and rendered acceptance. Until its
@@ -179,9 +180,10 @@ each advertise and complete their own live host/local path. If a surface has
 no completable path, cutover SHALL stop rather than render a dead instruction.
 
 Migration SHALL add optional assignment state/generation fields without
-changing legacy classification. While either field is absent or the
-`TINYASSETS_PROVIDER_AUTHORITY_V2` deployment gate is false,
-`_DEFAULT_ENGINE_SOURCE` SHALL remain `byo_api_key` and
+changing legacy classification. While
+`TINYASSETS_PROVIDER_AUTHORITY_V2` is false,
+`_DEFAULT_ENGINE_SOURCE` SHALL remain `byo_api_key`. While the gate is false
+or either optional assignment field is absent,
 `universe_has_assigned_engine` SHALL preserve every shipped fail-safe:
 unreadable/unparseable vault or config returns true; any LLM credential
 returns true; an explicit non-default legacy source returns true; only a

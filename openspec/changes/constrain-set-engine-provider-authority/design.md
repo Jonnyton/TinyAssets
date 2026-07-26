@@ -90,6 +90,14 @@ Before migration, optional assignment fields remain absent and
 `TINYASSETS_PROVIDER_AUTHORITY_V2` defaults false. `_DEFAULT_ENGINE_SOURCE`
 stays `byo_api_key`; `universe_has_assigned_engine` retains its shipped vault
 credential, explicit non-default source, and unreadable-state fail-safes.
+One deliberately narrower compatibility fix remains active while the flag is
+false: an authenticated founder's explicit legacy `set_engine` write for a
+raw BYOC source atomically replaces `allowed_providers` with the singleton
+canonical destination (`anthropic -> claude-code`, `openai -> codex`) in the
+same successful mutation. Unsupported, mismatched, or non-executable sources
+fail before mutation. This closes the originating cross-provider fallback
+leak for explicit assignments without rewriting existing records, changing
+newborn defaults, or activating the target authority carrier.
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
 `unassigned + []` alone is engine-less; ready/nonempty or a proven remote
@@ -369,7 +377,9 @@ surface has an end-to-end ready and advertised path:
 
 1. a newborn Tier-1 streamable-HTTP chatbot user can accept market execution
    through `activate-connector-requester-authority` after paid-market
-   agreement and distributed-execution B2/B13 are live;
+   agreement and distributed-execution B2/B13 are live; that successor's own
+   OpenSpec must name an action carried by one of the seven canonical live
+   connector handles and must not depend on the deprecated `universe` handle;
 2. Tier-2 tray, Tier-3 OSS stdio, and mirrored Claude-plugin local runtime can
    mint `ProviderHostRequestCapability` through
    `activate-requester-host-engines` and complete attested requester-host or
@@ -425,25 +435,28 @@ replacement change and exact accepted SHA before #1691 closes.
 ## Migration Plan
 
 1. Land target specs and one-way sibling handoffs; keep runtime dark.
-2. Add request capability plus the explicit internal thread-pool carrier,
+2. Land the narrow compatibility fix: an authenticated explicit legacy
+   `set_engine` raw-BYOC write atomically publishes its singleton destination
+   ceiling. Do not rewrite existing records or newborn defaults.
+3. Add request capability plus the explicit internal thread-pool carrier,
    assignment generation/admission, reference-only launch, and the rendered
    held/`setup_required` envelope behind
    `TINYASSETS_PROVIDER_AUTHORITY_V2=false`; preserve every shipped helper,
    default, fail-safe, and bare-exhaustion behavior.
-3. Land `harden-background-provider-execution-authority`,
+4. Land `harden-background-provider-execution-authority`,
    `activate-requester-host-engines`, and
    `activate-connector-requester-authority`; classify every provider bridge
    and make connector/local setup paths live.
-4. With the flag still false, inventory every legacy universe; preserve
+5. With the flag still false, inventory every legacy universe; preserve
    credentialed/non-default sources, fail-safe unreadable state, and convert
    verified custody/host/local/remote sources into explicit assignment state.
-5. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
+6. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
    gates pass.
-6. Only then flip the flag/default, enable newborn deny-all initialization,
+7. Only then flip the flag/default, enable newborn deny-all initialization,
    and prove typed holds render setup while bare infrastructure exhaustion
    remains loud.
-7. Run race/crash/security suites and real connector load proof.
-8. Quiesce legacy writers only after request and background ready-path gates;
+8. Run race/crash/security suites and real connector load proof.
+9. Quiesce legacy writers only after request and background ready-path gates;
    convert, canary, render chatbot acceptance, and inspect post-fix clean use.
 
 Rollback before cutover restores code/config artifacts while deny-all state

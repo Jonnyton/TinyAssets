@@ -9,6 +9,8 @@ defined by this change. Only providers inside its non-empty
 be attempted when outside that set. Roles with no explicit chain SHALL default
 to the `writer` chain. The system SHALL only stop for provider unavailability
 when the authorized local model itself is also unavailable.
+These new authority clauses are subject to the global default-false dark gate
+defined below; while dark, canonical role chains run unchanged.
 
 After authority succeeds, subscription-only policy, role membership,
 `llm_policy`, registration, auth health, cooldown, and quota retain their
@@ -40,6 +42,8 @@ authority that is unavailable or fails SHALL raise
 `AllProvidersExhaustedError` without fallback. Non-writer roles remain
 unchanged except for their own authority gate. Every pin exhaustion error
 SHALL name the pinned provider and explain how to clear the pin.
+The new authority check is subject to the global dark gate; while dark,
+canonical pin behavior remains unchanged.
 
 #### Scenario: pinned writer runs alone
 - **WHEN** the pinned writer is authorized and dynamically eligible
@@ -181,6 +185,8 @@ policy attempt orders, and judge ensemble only after the non-empty provider
 authority ceiling is established. The gate SHALL remain conservative:
 `unknown` and `ok` stay and a probe exception means keep. When no probe is
 injected, the gate SHALL remain an as-built no-op that quarantines nothing.
+Authority intersection is subject to the global dark gate; while dark, the
+canonical auth-health gate runs without target authority.
 
 An authorized pinned writer with dead login SHALL fail loud rather than route
 elsewhere. An authorized chain MAY fall through to `ollama-local` only when
@@ -222,6 +228,8 @@ After a non-empty authority intersection, an empty policy or dynamically
 exhausted policy SHALL retain canonical fall-through to role-based `call()`,
 which re-applies the same authority and dynamic gates. The method SHALL retain
 its canonical `(response_text, provider_name_used, call_meta)` result.
+The authority intersection/hold clauses are subject to the global dark gate;
+while dark, canonical policy fall-through remains unchanged.
 
 #### Scenario: preferred policy provider is tried first
 - **WHEN** policy names an authorized, healthy preferred provider
@@ -255,6 +263,8 @@ provider twice, and SHALL return one response per provider that responds. A
 non-empty authorized set with no healthy registered judge retains canonical
 empty/degraded behavior. Authority-derived emptiness raises
 `ProviderAuthorityHeldError`.
+Authority intersection/hold clauses are subject to the global dark gate;
+while dark, canonical judge behavior remains unchanged.
 
 #### Scenario: fan-out returns authorized responses
 - **WHEN** multiple healthy registered judges are authorized
@@ -476,6 +486,8 @@ exceptions. After failure or when no router exists, it SHALL return the
 caller-supplied fallback response when present and otherwise re-raise the
 original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion
 or a missing router, rather than synthesize empty prose.
+`ProviderAuthorityHeldError` handling is subject to the global dark gate;
+while dark, the canonical bridge never receives that new authority error.
 
 #### Scenario: transient exhaustion clears
 - **WHEN** an authorized dynamic chain exhausts and later succeeds within the bounded policy
@@ -577,6 +589,64 @@ Bubblewrap failure is not guaranteed to retain the sandbox-specific type.
 - **AND** the sandbox recognizer does not retroactively replace that type
 
 ## ADDED Requirements
+
+### Requirement: Target provider authority enforcement has one global dark gate
+`TINYASSETS_PROVIDER_AUTHORITY_V2` SHALL default false. While false, every new
+authority, carrier, assignment-state, hold, retry, pin, policy, judge,
+auth-health, launch, birth, and setup clause in this change SHALL remain
+observational/non-authorizing and preserve shipped runtime behavior, except
+the explicitly assigned `set_engine` singleton narrowing defined below.
+Requirements in this delta MUST NOT be read independently as enabling target
+enforcement while the global gate is dark.
+
+The flag SHALL flip only after the complete legacy manifest, all three named
+successors, every provider-bridge classification, and Tier-1/Tier-2/Tier-3/
+plugin acceptance gates pass. Flip, post-cutover defaults, newborn deny-all,
+and target enforcement SHALL deploy atomically with a rollback receipt.
+
+#### Scenario: dark target preserves existing calls and births
+- **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false`
+- **THEN** existing provider calls, defaults, births, helpers, exceptions, retries, fallbacks, pins, policy, judges, and auth health retain shipped results
+- **AND** target carrier/assignment diagnostics grant no authority
+
+#### Scenario: full enforcement cannot partially flip
+- **WHEN** any migration, successor, bridge inventory, or surface acceptance gate is incomplete
+- **THEN** the flag remains false and target defaults/enforcement remain dark
+- **AND** no individual requirement enables a partial cutover
+
+### Requirement: Explicit legacy set_engine assignment narrows immediately
+Before full cutover, authenticated founder `set_engine` SHALL close the
+originating provider-destination leak for explicitly assigned universes only.
+While legacy raw-key ingress remains enabled, canonical
+`byo_api_key + anthropic` SHALL atomically write
+`preferred_writer=claude-code` and `allowed_providers=["claude-code"]`;
+canonical `byo_api_key + openai` SHALL atomically write
+`preferred_writer=codex` and `allowed_providers=["codex"]`. A supplied writer
+must match. The singleton ceiling SHALL be written in the same successful
+transaction as the existing explicit source/preference/credential update, so
+failure cannot leave a preference without its ceiling.
+
+Unknown, aliased, mismatched, or currently non-executable
+`self_hosted_endpoint`, `market_rented`, or `host_daemon` setup SHALL fail
+before mutation with typed `setup_required` rather than write an unrestricted
+preference. Existing legacy records are not reclassified by this narrow
+slice. If secret-custody retirement has already disabled raw ingress, that
+stricter refusal wins.
+
+#### Scenario: explicit Anthropic assignment cannot fall through
+- **WHEN** an authenticated founder successfully assigns canonical legacy Anthropic through `set_engine`
+- **THEN** preference and `allowed_providers=["claude-code"]` commit atomically
+- **AND** failure of `claude-code` cannot route to Codex, local, or API-key fallback
+
+#### Scenario: invalid or unsupported explicit assignment has zero mutation
+- **WHEN** pre-cutover `set_engine` receives a mismatched writer or non-executable source
+- **THEN** it returns typed setup-required/refusal before vault, config, or ledger mutation
+- **AND** no unrestricted preference is stored
+
+#### Scenario: newborns are unaffected by the narrow slice
+- **WHEN** a universe is born without an explicit successful `set_engine`
+- **THEN** this pre-cutover exception writes no allowlist or assignment state
+- **AND** shipped newborn behavior remains unchanged
 
 ### Requirement: Provider assignment admission is one exported cross-capability primitive
 Provider routing SHALL export one `ProviderAssignmentAdmission` keyed by
