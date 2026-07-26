@@ -63,12 +63,18 @@ non-request paths. A live request/universe call SHALL NOT use process-global
 fallback as authority.
 
 `preferred_writer` and `preferred_judge` SHALL reorder only providers already
-inside the authorized and dynamically eligible chain. Every universe SHALL
-persist `engine_assignment_state`, `engine_assignment_generation`, and
-`allowed_providers`. `None` SHALL be accepted only by an offline pre-cutover
-reader. Runtime, creation, and assignment SHALL use `[]` for `unassigned`,
-`pending`, `held`, and `failed`, and a non-empty canonical list only for
-`ready`. Assignment replaces rather than unions the prior ceiling.
+inside the authorized and dynamically eligible chain. Migration SHALL add
+optional `engine_assignment_state` and `engine_assignment_generation`.
+While either is absent or `TINYASSETS_PROVIDER_AUTHORITY_V2` is false, runtime
+SHALL preserve shipped vault/source/read-failure classification,
+`allowed_providers=None` no-op semantics, bare-exhaustion behavior, and
+provider routing; it SHALL NOT enforce the target authority gate.
+
+Only after the migration manifest and every surface gate pass may the flag
+flip. Post-cutover every universe SHALL persist assignment state, generation,
+and `allowed_providers`; runtime, creation, and assignment SHALL use `[]` for
+`unassigned`, `pending`, `held`, and `failed`, and a non-empty canonical list
+only for `ready`. Assignment replaces rather than unions the prior ceiling.
 
 Source resolution SHALL be total over shipped and target domains. Target
 newborn/setup source `unassigned` SHALL remain `unassigned + []` with no
@@ -77,7 +83,8 @@ provider or credential access. Legacy
 to target `requester_local` only after
 `retire-mcp-provider-secret-deposit` creates an opaque binding and atomically
 writes the new source, service, reference, generation/digest, and singleton
-ceiling; otherwise it becomes `failed + []`. `requester_local` service
+ceiling; otherwise it becomes `failed + []` only during the gated migration,
+never merely because optional assignment fields are absent. `requester_local` service
 `anthropic` maps to `claude-code`/`["claude-code"]`; service `openai` maps to
 `codex`/`["codex"]`.
 
@@ -304,6 +311,11 @@ receipt to principal/actor/run/branch/universe/operation,
 generation/digest, and bounded lifetime across thread/task/process bridges.
 Before that owner lands, those paths SHALL hold. This change remains the sole
 provider-layer carrier/sink owner.
+
+All target carrier/sink enforcement SHALL remain dark while
+`TINYASSETS_PROVIDER_AUTHORITY_V2` is false. Dark-mode code MAY mint, validate,
+inventory, and emit non-authorizing diagnostics, but MUST preserve every
+shipped provider call, helper, default, exception, and fallback result.
 
 Before each attempt, the router SHALL:
 
@@ -633,7 +645,8 @@ Self-hosted/host-daemon/local-model activation SHALL require
 source-specific provider routing. That successor SHALL mint the separate
 attested `ProviderHostRequestCapability` for interactive local stdio/SSE.
 No live cutover or legacy conversion may begin until a Tier-1 chatbot user can
-complete an advertised accepted-market path through the connector; Tier-2
+complete an advertised accepted-market path through
+`activate-connector-requester-authority`; Tier-2
 tray, Tier-3 OSS stdio, and Claude-plugin users can mint local host-request
 authority and complete host/local execution; the typed held payload advertises
 only surface-live paths; and every background/run/scheduled/daemon provider

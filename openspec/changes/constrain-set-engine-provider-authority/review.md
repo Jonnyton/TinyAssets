@@ -194,3 +194,37 @@ candidate `0e213775`; their IDs remain:
 - unified setup contract / universe archive-sync precedence:
   `issuecomment-5081342047`; and
 - receipt archive-sync precedence: `issuecomment-5081343125`.
+
+## Fourth exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `2b5f7a00` and returned `ADAPT`. Critical: the
+post-migration engine-readiness rule had no compatibility mode, so landing
+optional fields/default changes ahead of migration could classify every
+credentialed universe as engine-less and could swallow bare policy/pin/router
+faults into onboarding.
+
+Important findings:
+
+- the Tier-1 accepted-market connector gate had no named change owner;
+- the merged-active universe change's same-named setup requirement had no
+  visible STATUS archive/sync dependency; and
+- setup classifier/enforcement tasks did not explicitly bind to a dark
+  default-false deployment gate.
+
+The next adaptation:
+
+- adds optional assignment fields plus
+  `TINYASSETS_PROVIDER_AUTHORITY_V2=false`; while dark it preserves the shipped
+  LLM-vault route, explicit non-default sources, unreadable-state fail-safe
+  true, `_DEFAULT_ENGINE_SOURCE=byo_api_key`, and the null-chain bare
+  exhaustion carve-out;
+- flips defaults/newborn deny-all only after a complete migration manifest and
+  every surface gate;
+- names `activate-connector-requester-authority` across identity, paid market,
+  distributed execution, and the live connector, with an exact-files STATUS
+  successor claim; and
+- adds `#1784 setup precedence` directly to the active universe-creation
+  STATUS row.
+
+Final disposition remains pending validation, refreshed exact-SHA handoffs,
+and Opus 5 approval.

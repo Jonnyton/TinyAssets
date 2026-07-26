@@ -121,6 +121,33 @@ pass cutover as merely "safe."
 - **THEN** a zero-output `HostLocalProviderCapability` cannot authorize it
 - **AND** only the exact live host-request capability may enter the provider carrier
 
+### Requirement: Connector requester authority has a named activation owner
+
+`activate-connector-requester-authority` SHALL own the Tier-1
+streamable-HTTP path across `identity-auth-and-access-control`,
+`paid-market-economy`, `distributed-execution`, and
+`live-mcp-connector-surface`. It SHALL compose the authenticated requester,
+accepted paid-market agreement, B2 signed remote execution, B13 production
+composition root, bounded spend, and target universe into one connector-
+completable accepted-market grant. It SHALL use the existing coarse connector
+action surface and MUST NOT reintroduce raw secret deposit or require a
+desktop/web-app prerequisite.
+
+The successor SHALL own the connector-visible setup step, typed result,
+authorization/visibility, idempotency, and rendered acceptance. Until its
+change is implemented and the end-to-end path passes, Tier-1 provider-
+authority enforcement and newborn deny-all cutover SHALL remain blocked.
+
+#### Scenario: chatbot founder completes accepted market setup
+- **WHEN** an authenticated Tier-1 founder accepts a valid market offer through the live connector
+- **THEN** the named successor produces the B2/B13-bound remote execution grant for that universe
+- **AND** the next `converse` can execute without maintainer or desktop resources
+
+#### Scenario: absent connector activation owner blocks cutover
+- **WHEN** paid-market, B2/B13, or the connector-visible setup step is unavailable
+- **THEN** no accepted-market path is advertised as completable
+- **AND** Tier-1 deny-all enforcement does not cut over
+
 ### Requirement: Missing or partial authority holds execution after birth
 
 Universe birth and founder-home binding SHALL complete without provider
@@ -139,7 +166,8 @@ completable for that requester's actual surface. It SHALL use
 `fulfillment_class=requester_owned|accepted_market`, never overload credential
 `authority_class`. Raw `byo_api_key` deposit MUST NOT be advertised.
 Accepted-market setup may appear only after paid-market agreement plus
-distributed-execution B2/B13 and its connector action path are live;
+distributed-execution B2/B13 and
+`activate-connector-requester-authority` are live;
 requester-host/local setup may appear only after its host successor and
 surface-specific capability are live.
 
@@ -150,13 +178,31 @@ prerequisite. Tier-2 tray, Tier-3 OSS stdio, and Claude-plugin surfaces SHALL
 each advertise and complete their own live host/local path. If a surface has
 no completable path, cutover SHALL stop rather than render a dead instruction.
 
-`_DEFAULT_ENGINE_SOURCE` SHALL become `unassigned`.
-`universe_has_assigned_engine` SHALL derive readiness from
-`engine_assignment_state="ready"` plus a non-empty ordinary provider ceiling,
-or a separately proven accepted remote execution grant; it MUST NOT infer
-assignment from `engine_source != "byo_api_key"`. Legacy
-`AllProvidersExhaustedError` for an unassigned universe SHALL still map to the
-same setup payload rather than generic prose.
+Migration SHALL add optional assignment state/generation fields without
+changing legacy classification. While either field is absent or the
+`TINYASSETS_PROVIDER_AUTHORITY_V2` deployment gate is false,
+`_DEFAULT_ENGINE_SOURCE` SHALL remain `byo_api_key` and
+`universe_has_assigned_engine` SHALL preserve every shipped fail-safe:
+unreadable/unparseable vault or config returns true; any LLM credential
+returns true; an explicit non-default legacy source returns true; only a
+readable default source with no LLM credential returns false.
+
+Only after the migration manifest proves every universe classified and all
+surface gates pass may the deployment flip
+`TINYASSETS_PROVIDER_AUTHORITY_V2`, set
+`_DEFAULT_ENGINE_SOURCE=unassigned` for new births, and use assignment state.
+For migrated state, unreadable evidence remains true/fail-safe;
+`unassigned + []` is false; `ready + nonempty ceiling` or a separately proven
+accepted remote grant is true; and pending/held/failed/inconsistent state is
+true for the legacy exhaustion classifier so a real fault is not retold as
+"no engine." Typed `ProviderAuthorityHeldError` still maps directly to the
+precise setup envelope.
+
+The legacy `AllProvidersExhaustedError` path SHALL retain its non-null
+`chain_state` requirement and call the migration-aware helper. A bare
+policy/pin/no-router exhaustion SHALL return no setup envelope and preserve its
+own error. New deny-all uses `ProviderAuthorityHeldError`; it MUST NOT broaden
+the legacy exhaustion mapper.
 
 This requirement supersedes the merged-active `universe-creation` requirement
 of the same name before that change archives/syncs: its unconditional raw BYOC
@@ -169,10 +215,25 @@ and its receipt naming uses `fulfillment_class` rather than
 - **THEN** the action returns the canonical setup-required payload without requiring chain state
 - **AND** `converse` relays that structured hold rather than generic failure prose
 
-#### Scenario: legacy exhaustion still recognizes an unassigned universe
-- **WHEN** an unassigned newborn reaches the legacy `AllProvidersExhaustedError` path
-- **THEN** `universe_has_assigned_engine` is false and setup-required renders
-- **AND** the founder does not receive generic provider-unreachable prose
+#### Scenario: unmigrated credentialed universe preserves its real fault
+- **WHEN** assignment fields are absent and a readable vault contains an LLM credential or an explicit non-default legacy source
+- **THEN** `universe_has_assigned_engine` remains true
+- **AND** exhaustion is not retold as no-engine onboarding
+
+#### Scenario: unreadable legacy state stays fail-safe
+- **WHEN** an unmigrated or migrated vault/config is unreadable or unparseable
+- **THEN** the helper returns true and logs the read failure
+- **AND** setup instructions do not hide corrupt state
+
+#### Scenario: bare exhaustion remains a hard failure
+- **WHEN** `AllProvidersExhaustedError` has no `chain_state` because of policy, pin, or missing router
+- **THEN** the setup mapper returns no payload
+- **AND** the original error message remains visible
+
+#### Scenario: migrated unassigned authority uses the typed hold path
+- **WHEN** a migrated newborn has `unassigned + []`
+- **THEN** provider routing raises `ProviderAuthorityHeldError`
+- **AND** the typed mapper renders setup without widening bare exhaustion
 
 #### Scenario: connector advertises only a completable first-class path
 - **WHEN** a Tier-1 chatbot founder receives setup-required after cutover

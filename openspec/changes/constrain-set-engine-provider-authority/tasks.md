@@ -38,9 +38,14 @@
   source/readiness predicate; and require surface-completable setup paths.
 - [x] 1.10 Refresh exact-SHA custody acceptance plus universe/receipt
   archive-sync handoffs for the unified setup contract.
-- [ ] 1.11 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
+- [x] 1.11 Fold the fourth exact-revision Opus 5 `ADAPT`: preserve every
+  pre-migration engine/read-failure/bare-exhaustion fail-safe behind a
+  default-false flag; name the Tier-1 connector authority successor; and add
+  universe archive/sync precedence to STATUS.
+- [ ] 1.12 Refresh final-SHA handoffs for the migration-compatible contract.
+- [ ] 1.13 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.12 Run strict target/full-tree validation and land this target active
+- [ ] 1.14 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -74,6 +79,10 @@
 - `harden-background-provider-execution-authority` is a separate successor
   that owns durable receipts for post-response graph/run/resume/schedule,
   daemon, retrieval, and every task/thread/process provider bridge.
+- `activate-connector-requester-authority` is a separate successor across
+  identity/auth, paid market, distributed execution, and the live MCP
+  connector. It owns the Tier-1 accepted-market setup/result path without raw
+  secret deposit or desktop/web-app dependency.
 - Paid-market/distributed ownership remains: accepted agreement in
   paid-market-economy; signed remote execution through B2 and B13 task 5.13;
   V6 only market selection/escrow/verification/settlement/reputation; D0
@@ -98,10 +107,11 @@
 - [ ] 3.4 Prove at least one target-ready source can be deployed before
   cutover: requester-local opaque custody, requester-host, or attested
   `local_model`. Prove Tier-1 connector users can complete accepted-market
-  setup, Tier-2 tray/Tier-3 OSS/Claude-plugin local users can mint host-request
-  authority, every background/run/scheduled/daemon bridge has its owner
-  receipt, and record the live founder home's current source/credential
-  evidence without reading or exposing secret material.
+  setup through `activate-connector-requester-authority`, Tier-2 tray/Tier-3
+  OSS/Claude-plugin local users can mint host-request authority, every
+  background/run/scheduled/daemon bridge has its owner receipt, and record the
+  live founder home's current source/credential evidence without reading or
+  exposing secret material.
 
 ## 4. RED tests — request capability, birth, and assignment
 
@@ -119,10 +129,11 @@
   provider, host, generation, digest, expired, tombstoned, or revoked state;
   prove failure precedes credential/provider access.
 - [ ] 4.4 Add failing newborn tests across public, first-contact, internal
-  migration, and dev paths for source/state `unassigned`, generation `0`, and
-  `[]` before index/home/living visibility; `_DEFAULT_ENGINE_SOURCE` and
-  `universe_has_assigned_engine` must report not ready; failure rolls back the
-  directory.
+  migration, and dev paths. Pre-cutover proves optional assignment fields and
+  flag=false preserve `_DEFAULT_ENGINE_SOURCE=byo_api_key`, LLM-vault and
+  explicit-source readiness, unreadable-state fail-safe true, and the bare
+  exhaustion carve-out. Post-cutover proves source/state `unassigned`,
+  generation `0`, and `[]` before visibility; failure rolls back the directory.
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
@@ -142,10 +153,11 @@
 - [ ] 4.9 Add failing first-contact/converse tests proving a pre-provider
   `ProviderAuthorityHeldError` maps to canonical
   `engine_setup_required_payload` without exhaustion or chain state, preserves
-  completed birth/home, and never becomes generic error prose. Cover the
-  legacy bare `AllProvidersExhaustedError` branch for an unassigned newborn,
-  assert raw BYOC is absent, and prove every advertised setup path is
-  completable on the tested connector/tray/stdio/plugin surface.
+  completed birth/home, and never becomes generic error prose. Prove bare
+  `AllProvidersExhaustedError` with null chain state retains no setup envelope;
+  unmigrated credentialed/non-default and unreadable universes are never
+  retold as engine-less; raw BYOC is absent; and every advertised setup path
+  is completable on the tested connector/tray/stdio/plugin surface.
 - [ ] 4.10 Capture the request/birth/assignment RED evidence.
 
 ## 5. GREEN implementation — request capability, birth, and assignment
@@ -156,11 +168,13 @@
   synchronous revocation, and inherited-context refusal invariants.
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
   canonical `engine_setup_required_payload`, surface-live `setup_paths`,
-  `_DEFAULT_ENGINE_SOURCE=unassigned`, and readiness-derived
-  `universe_has_assigned_engine`; then, only after Tier-1 connector and local
-  surfaces have their required completable paths, implement
-  `engine_source=unassigned` plus independent newborn deny-all initialization
-  in the atomic birth transaction for every entry path.
+  optional assignment fields, and migration-aware
+  `universe_has_assigned_engine` behind
+  `TINYASSETS_PROVIDER_AUTHORITY_V2=false`. Preserve the shipped default,
+  vault/source/read-failure routes, and bare-exhaustion behavior while dark.
+  Only after manifest plus Tier-1 connector and local surface gates pass, flip
+  the flag/default and enable `engine_source=unassigned` plus newborn deny-all
+  atomically.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
@@ -219,14 +233,15 @@
 
 ## 7. GREEN implementation — propagation and launch
 
-- [ ] 7.1 Implement sink validation for exact current request capability or
-  exact explicitly carried request capability or owner-defined background
-  receipt, fresh assignment/binding tuple, and authority-derived provider set
-  before dynamic filters.
+- [ ] 7.1 Implement sink validation for exact explicitly carried HTTP/host
+  request capability or owner-defined background receipt, fresh
+  assignment/binding tuple, and authority-derived provider set before dynamic
+  filters. Keep enforcement observational/non-authorizing while the
+  default-false deployment flag is dark.
 - [ ] 7.2 Implement sole provider-layer propagation through every inventoried
   request call site and router pool closure; integrate the separate background
-  owner's receipt at the same sink; add only the three closed zero-output
-  host-local probes.
+  owner's receipt and host successor's local request capability at the same
+  sink; add only the three closed zero-output host-local probes.
 - [ ] 7.3 Implement immutable router-minted `ProviderInvocation` with request
   capability/receipt, target/principal, provider, generation, opaque
   reference/digest, provenance, classifications, call inputs, and launch
@@ -240,29 +255,33 @@
 - [ ] 7.6 Preserve canonical dynamic exhaustion, retry, fallback,
   chain-drain, policy, pin, judge, preference, and context behavior after the
   authority gate.
-- [ ] 7.7 Emit same-call credential-kind, credential-authority, and held
+- [ ] 7.7 Emit same-call `credential_kind`, `authority_class`, and held
   evidence to `ProviderResponse` without adding receipt persistence.
 - [ ] 7.8 Run focused tests GREEN and commit this reviewable slice.
 
 ## 8. Cutover and complete-system proof
 
-- [ ] 8.1 Build a secret-free legacy manifest. Raw-key-only current records
-  have no opaque reference and map to `failed + []`, never ready. A retained
-  subscription maps ready only with complete current principal/universe/
-  provider/host/generation/custody evidence. Non-executable intent maps held;
-  unreadable/ambiguous state fails.
+- [ ] 8.1 Build a secret-free legacy manifest while the flag remains false.
+  Existing LLM credentials and explicit non-default sources retain assigned
+  classification; unreadable vault/config stays fail-safe and blocks
+  conversion. Raw-key-only records map to `failed + []` only inside the gated
+  migration. A retained subscription maps ready only with complete current
+  principal/universe/provider/host/generation/custody evidence.
 - [ ] 8.2 Prove conversion locked, durable, idempotent, resumable, preserves
   unrelated credential bytes, leaves no unclassified universe or post-cutover
-  `None`, and cannot restore wider authority.
+  `None`, and cannot restore wider authority. Do not flip the flag/default
+  until the manifest and 8.3 surface gates both pass.
 - [ ] 8.3 Block cutover unless a Tier-1 streamable-HTTP chatbot user can
-  complete an advertised accepted-market path through the live connector;
+  complete an advertised accepted-market path through
+  `activate-connector-requester-authority`;
   Tier-2 tray, Tier-3 OSS stdio, and Claude-plugin local users can mint
   `ProviderHostRequestCapability` and complete host/local execution; every
   background/run/scheduled/daemon bridge carries its owner receipt; and the
   live founder home has a reviewed ready mapping or explicit replacement. The
-  typed `ProviderAuthorityHeldError` and legacy unassigned-exhaustion branches
-  must render only surface-live setup paths. A fully held surface fails this
-  gate. Stop before newborn deny-all or legacy-writer quiescence if any fails.
+  typed `ProviderAuthorityHeldError` and legacy non-null-chain/no-engine branch
+  must render only surface-live setup paths, while bare exhaustion remains
+  loud. A fully held surface fails this gate. Stop before flag/default flip,
+  newborn deny-all, or legacy-writer quiescence if any fails.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.

@@ -23,8 +23,10 @@ deny-all.
 ## What Changes
 
 - **BREAKING:** Every universe publishes an explicit provider-destination
-  ceiling. `None` is a legacy pre-cutover encoding only. New, unassigned,
-  pending, held, and failed states use `allowed_providers=[]`.
+  ceiling after gated migration. `None` and absent assignment fields retain
+  exact legacy semantics until the manifest is complete and the deployment
+  flag flips. Post-cutover new, unassigned, pending, held, and failed states
+  use `allowed_providers=[]`.
 - Requester-owned local assignments publish a singleton canonical provider
   ceiling only after their assignment and opaque credential binding reference
   are ready. Legacy `byo_api_key` is read/migration-only and converts only
@@ -54,6 +56,11 @@ deny-all.
   daemon, retrieval, and other task/thread/process provider work. Those paths
   remain held before that owner lands. Remote execution uses its separate
   signed distributed authority and never reuses either request carrier.
+- `activate-connector-requester-authority` owns the Tier-1
+  streamable-HTTP accepted-market path across identity, paid market,
+  distributed execution, and the live connector. No Tier-1 cutover occurs
+  until that existing coarse connector action path is completable without raw
+  secret deposit or desktop/web-app prerequisites.
 - This change is the sole owner of provider-authority propagation into the
   provider layer. It defines the frozen invocation/launch boundary and
   exhaustive call-site threading; no separate
@@ -87,8 +94,8 @@ deny-all.
   `ProviderHostRequestCapability`. Cutover is forbidden until Tier-1 connector
   market setup and Tier-2/Tier-3/plugin local setup are each completable,
   the exact typed authority hold renders only live setup paths, and every
-  background/daemon authority bridge is live. Both future owners have durable
-  STATUS lanes.
+  background/daemon authority bridge is live. All three successors have one
+  durable exact-files STATUS lane.
 - Draft PR #1606 remains source-only retained work. Its assignment lock,
   transaction, migration, and deployment-fence pieces may be selectively
   ported after current-main review; it does not merge as an authority owner.

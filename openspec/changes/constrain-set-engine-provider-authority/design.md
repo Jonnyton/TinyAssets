@@ -32,6 +32,9 @@ Capability ownership is explicit:
 - `daemon-identity-and-host-pool`, `desktop-host-runtime`,
   `identity-auth-and-access-control`, and `provider-routing`: requester-host,
   local-model, stdio, and local-SSE activation through the named successor;
+- `identity-auth-and-access-control`, `paid-market-economy`,
+  `distributed-execution`, and `live-mcp-connector-surface`: Tier-1 accepted
+  market activation through `activate-connector-requester-authority`; and
 - `paid-market-economy` plus `distributed-execution`: accepted remote work.
 
 ## Goals / Non-Goals
@@ -77,16 +80,23 @@ Assignment replaces rather than unions the ceiling and increments an immutable
 generation. Preference, policy, pin, registration, auth health, quota,
 fallback, and retry may never add a provider.
 
-Every newborn begins with `engine_source="unassigned"`,
+After gated migration, every newborn begins with
+`engine_source="unassigned"`,
 `engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
 `allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
 require `[]`.
 
-`_DEFAULT_ENGINE_SOURCE` becomes `unassigned`.
-`universe_has_assigned_engine` stops comparing source strings and instead
-requires `ready` plus a non-empty ordinary ceiling or separately proven
-accepted remote execution grant. This keeps both typed authority holds and
-legacy exhaustion on the canonical setup-required path.
+Before migration, optional assignment fields remain absent and
+`TINYASSETS_PROVIDER_AUTHORITY_V2` defaults false. `_DEFAULT_ENGINE_SOURCE`
+stays `byo_api_key`; `universe_has_assigned_engine` retains its shipped vault
+credential, explicit non-default source, and unreadable-state fail-safes.
+Only after every universe has a manifest classification and all surface gates
+pass does cutover flip the flag/default for new births. Post-migration,
+`unassigned + []` alone is engine-less; ready/nonempty or a proven remote
+grant is ready; unreadable, pending, held, failed, and inconsistent state stay
+fail-safe true for the legacy exhaustion classifier. Typed authority holds
+map directly to precise setup. Bare policy/pin/no-router exhaustion preserves
+its current no-envelope carve-out.
 
 ### 2. Source resolution is strict and held sources stay deny-all
 
@@ -358,8 +368,8 @@ No runtime enforcement or legacy conversion may begin until each affected
 surface has an end-to-end ready and advertised path:
 
 1. a newborn Tier-1 streamable-HTTP chatbot user can accept market execution
-   through the live connector after paid-market agreement and
-   distributed-execution B2/B13 are live;
+   through `activate-connector-requester-authority` after paid-market
+   agreement and distributed-execution B2/B13 are live;
 2. Tier-2 tray, Tier-3 OSS stdio, and mirrored Claude-plugin local runtime can
    mint `ProviderHostRequestCapability` through
    `activate-requester-host-engines` and complete attested requester-host or
@@ -417,15 +427,21 @@ replacement change and exact accepted SHA before #1691 closes.
 1. Land target specs and one-way sibling handoffs; keep runtime dark.
 2. Add request capability plus the explicit internal thread-pool carrier,
    assignment generation/admission, reference-only launch, and the rendered
-   held/`setup_required` envelope behind dark gates.
-3. Land `harden-background-provider-execution-authority` and classify every
-   task/thread/process provider bridge; unowned paths stay held.
-4. Make at least one requester-local, requester-host, or attested local-model
-   source live-ready.
-5. Only after steps 2-4 are live, enable newborn deny-all initialization and
-   prove first contact renders setup rather than generic failure.
-6. Inventory legacy universes; convert verified custody/host/local sources and
-   treat raw-key-only assignments as non-ready.
+   held/`setup_required` envelope behind
+   `TINYASSETS_PROVIDER_AUTHORITY_V2=false`; preserve every shipped helper,
+   default, fail-safe, and bare-exhaustion behavior.
+3. Land `harden-background-provider-execution-authority`,
+   `activate-requester-host-engines`, and
+   `activate-connector-requester-authority`; classify every provider bridge
+   and make connector/local setup paths live.
+4. With the flag still false, inventory every legacy universe; preserve
+   credentialed/non-default sources, fail-safe unreadable state, and convert
+   verified custody/host/local/remote sources into explicit assignment state.
+5. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
+   gates pass.
+6. Only then flip the flag/default, enable newborn deny-all initialization,
+   and prove typed holds render setup while bare infrastructure exhaustion
+   remains loud.
 7. Run race/crash/security suites and real connector load proof.
 8. Quiesce legacy writers only after request and background ready-path gates;
    convert, canary, render chatbot acceptance, and inspect post-fix clean use.
