@@ -34,10 +34,13 @@ hex characters. `currency` SHALL equal the rehydrated current
 characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`.
 `request_version`, `quote_version`, `fulfillment_descriptor_version`,
 `deadline`, `budget_micros`, and `spend_cap_micros` SHALL be strict JSON
-integers within positive signed 64-bit range; Boolean, float, decimal string,
-overflow, zero, and negative coercions SHALL fail. The paid-market agreement
-owner's published `canonical_market_max_micros` SHALL be positive and no
-greater than signed 64-bit range, with
+integers from `1` through `9007199254740991` (`2^53 - 1`); Boolean, float,
+decimal string, overflow, zero, and negative coercions SHALL fail. This
+JSON-safe-integer ceiling is required because these values participate in the
+RFC 8785/JCS replay projection and distinct accepted integers MUST NOT
+canonicalize to the same IEEE-754 number. The connector SHALL consume the
+paid-market agreement owner's published `canonical_market_max_micros`, which
+is positive and no greater than `9007199254740991`, with
 `0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
 `quote_expires_at` SHALL be the deterministic public rendering of the current
 `ValidatedQuote.expires_at` integer Unix epoch seconds as whole-second UTC

@@ -36,6 +36,12 @@ inferred from request contents.
 The public `quote_expires_at` SHALL map deterministically to the current
 `ValidatedQuote.expires_at` integer Unix epoch seconds and compare equal to
 that raw owner value before acceptance.
+The paid-market agreement owner SHALL publish
+`canonical_market_max_micros` for `accepted-market-activation/v1` as a strict
+positive JSON integer no greater than `9007199254740991` (`2^53 - 1`) and SHALL
+reject any accepted agreement whose budget or per-job spend cap exceeds it.
+The maximum is owner configuration, never caller input; changing its wire
+bound requires a new activation schema version.
 
 #### Scenario: current bounded terms become an accepted agreement
 

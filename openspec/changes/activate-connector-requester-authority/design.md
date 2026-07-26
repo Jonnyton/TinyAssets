@@ -176,9 +176,12 @@ matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Only `request_version`,
 `quote_version`, `fulfillment_descriptor_version`, `deadline`,
 `budget_micros`, and `spend_cap_micros` are strict JSON integers (Boolean,
 float, decimal string, overflow, zero where positive is required, and negative
-values are rejected) not exceeding signed 64-bit range. The paid-market
-agreement owner's published `canonical_market_max_micros` is positive and no
-greater than that range, and the invariant is
+values are rejected) from `1` through `9007199254740991` (`2^53 - 1`). That
+JSON-safe-integer ceiling is mandatory because RFC 8785/JCS serializes numbers
+through IEEE-754 semantics; without it distinct accepted integers could share
+one replay digest. The paid-market agreement owner is normatively required by
+its own capability delta to publish `canonical_market_max_micros` as a
+positive integer no greater than that ceiling, and the invariant is
 `0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
 `quote_expires_at` is deterministically rendered from the current
 `ValidatedQuote.expires_at` integer Unix epoch seconds as whole-second UTC

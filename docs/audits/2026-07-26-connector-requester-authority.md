@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-26
 
-**Audited base:** `origin/main` `cf30da16e020db19d8374e6568c9d4eeb2689bc8`
+**Audited base:** `origin/main` `ba273312484d8717eaa12f2cd66e6629458aa36b`
 
 **Change:** `activate-connector-requester-authority`
 
@@ -117,6 +117,10 @@ integer-micros budget and per-job spend cap, current
 `ValidatedQuote.settlement_currency`, deterministic RFC3339-Z rendering of
 integer `ValidatedQuote.expires_at`,
 fee-schedule and settlement-policy versions, deadline, and acceptance policy.
+Every integer in the RFC 8785 replay projection is capped at `2^53 - 1`, and
+the paid-market agreement owner itself publishes and enforces
+`canonical_market_max_micros` within that ceiling, so distinct accepted
+integer bodies cannot collapse to one IEEE-754/JCS digest.
 
 The server derives or reloads the actor, tenant, target universe, canonical request's
 capability/payload/bid-window/policy/visibility/fanout fields, descriptor,
