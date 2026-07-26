@@ -2,7 +2,8 @@
 
 **Date:** 2026-07-25
 
-**Status:** preliminary independent review; `ADAPT`; not an implementation approval
+**Status:** exact candidate `4deb9ff9` approved for this spec-only
+supersession; not an implementation approval
 
 **Scope:** PR #1573 and the smallest spec-only in-place supersession of
 `openspec/changes/engine-os-sandbox/`
@@ -11,9 +12,10 @@
 
 ## Executive verdict
 
-PR #1573 must not merge in its current form. Retain the change ID
-`engine-os-sandbox`, but replace its Bubblewrap-specific proposal in place with
-a backend-neutral execution-admission contract.
+PR #1573's original Bubblewrap-specific proposal must not merge. Exact
+candidate `4deb9ff9` retains the change ID `engine-os-sandbox` and replaces that
+proposal in place with the reviewed backend-neutral execution-admission
+contract.
 
 The current runtime has several distinct failures that the draft collapses into
 one:
@@ -319,7 +321,8 @@ These are future gates, not work authorized by this audit:
 
 ## Final classification
 
-**Preliminary Opus 5 disposition: `ADAPT`.**
+**Exact-candidate Opus 5 disposition: `APPROVE` for the spec-only
+supersession. Runtime authority remains `none`.**
 
 ### Exact-candidate review round
 
@@ -341,31 +344,42 @@ The same Opus 5 pass also found that the reversed canonical
 MODIFIED body must preserve shipped default/round-trip, diagnostic-warning,
 and `runnable` behavior.
 
-The successor candidate addresses those findings by using owner-native sealed
+The successor candidate addressed those findings by using owner-native sealed
 bindings of one logical requirement; a distributed-execution-owned outer
 capsule keyed to the frozen inner `job_id`; property-set inclusion for
 isolation; shared closed `ExecutionAdmissionError` semantics across
 provider/runner/B2 paths; opaque owner-defined credential/egress references;
-an explicit source-heading rename; and restored advisory behavior. A fresh
-exact-head Opus 5 verdict remains required.
+an explicit source-heading rename; and restored advisory behavior.
 
 Candidate `b0ba1d60` then separated pre-launch admission from post-launch
 validation of evidence for the actual execution. Independent verification
 found one remaining wording contradiction: it still said pre-launch
 capability/self-test evidence proved the *complete* guarantee set even though
 that set includes actual launch, enforcement, cleanup, and result evidence.
-The current successor therefore limits pre-launch proof to backend capability,
+Exact candidate `4deb9ff9` therefore limits pre-launch proof to backend capability,
 exact planned configuration, and a protocol commitment to return bound launch
 evidence. Post-launch validation alone proves the complete guarantee set for
 the exact execution before any output can become success or fallback input.
-This correction is being restacked on current main `bc1227ee`; a fresh
-exact-head Opus 5 verdict and independent verification remain required.
+It is a linear descendant of current main `bc1227ee`.
+
+Fresh exact-head evidence on 2026-07-25:
+
+- Claude Opus 5: `APPROVE`; target and full strict OpenSpec validation passed
+  1/1 and 53/53; exact headings, owner boundaries, frozen wire, advisory
+  preservation, terminal semantics, and two-phase proof split verified.
+- Opus's adversarial read-only Codex cross-check: `APPROVE`, blockers `NONE`.
+- Independent Codex security/domain, structural/diff, and owner-boundary
+  reviewers: three `APPROVE` verdicts.
+- `git diff --check` clean; `STATUS.md` exactly 60 lines; no runtime, test,
+  provider-routing delta, distributed-execution delta, canonical sync, archive,
+  deploy, or MCP-action change.
 
 C1 and C2 are structural blockers. C3, C4, C6, C7, and C8 are required
 corrections. C5's security requirement remains valid, but its proposed owner
 boundary is corrected by current-main evidence: do not create a second
 provider-routing delta.
 
-This document is diagnostic evidence only. It does **not** approve an OpenSpec
-rewrite, runtime implementation, backend build, test write, commit, push,
-merge, sync, archive, deployment, or live acceptance claim.
+This document approves only the reviewed OpenSpec supersession and its
+coordination/audit foldback. It does **not** approve runtime implementation,
+backend build, test write, canonical sync, archive, deployment, rollout, or
+live acceptance.

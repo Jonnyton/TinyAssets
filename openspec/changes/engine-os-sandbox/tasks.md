@@ -1,8 +1,8 @@
 ## 1. Contract review gates
 
-- [ ] 1.1 Re-check the RENAMED source heading's `FROM` plus the two unchanged MODIFIED headings by exact match against canonical specs, verify the `TO` heading is internally consistent, and run `openspec validate engine-os-sandbox --strict`.
-- [ ] 1.2 Obtain opposite-provider review of the closed workload/profile/guarantee vocabulary, owner-defined references, owner-native carrier split, sealed outer-capsule requirement, shared admission-error taxonomy, and #1784/B2/B13 consumption boundaries.
-- [ ] 1.3 Reconcile every blocking review finding without adding a distributed-execution delta or restating provider authority.
+- [x] 1.1 Re-check the RENAMED source heading's `FROM` plus the two unchanged MODIFIED headings by exact match against canonical specs, verify the `TO` heading is internally consistent, and run `openspec validate engine-os-sandbox --strict`.
+- [x] 1.2 Obtain opposite-provider review of the closed workload/profile/guarantee vocabulary, owner-defined references, owner-native carrier split, sealed outer-capsule requirement, shared admission-error taxonomy, and #1784/B2/B13 consumption boundaries.
+- [x] 1.3 Reconcile every blocking review finding without adding a distributed-execution delta or restating provider authority.
 
 ## 2. Owner handoffs
 
