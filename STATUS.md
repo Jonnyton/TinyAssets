@@ -1,6 +1,7 @@
 # Status
 Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; substantive work lives in the MCP brain (`PR-###`/`BUG-###` + dispatcher + auto-change loop), while coordination without a wiki home stays here; check both.
 ## Concerns
+- **[P0 filed:2026-07-25 verified:2026-07-25]** Uptime run 30186819560 saw edge HTTP 502; full retry 30186841153 passed ~1m later. Root cause and recurrence risk unknown.
 - **[P1 filed:2026-07-23 verified:2026-07-23]** Watch deploy/P0 failure truth: #1645 has structural/CI proof only; no post-fix real pre/post-image repair-failure event yet.
 - [filed:2026-07-25] retire-legacy 4.2/4.4 must lockstep-migrate the require_action_scope registry (auth/provider.py): it fails CLOSED on row removal (2.3-F fail-open REFUTED vs prod sha 0603aae1), but dropping only write/costly classifications while actions default to read could fail open — needs a missing-metadata-denies + mutating-action-non-read regression test.
 - **[P0 filed:2026-07-22 verified:2026-07-25]** Newborn contact has no BYOC/market authority path; never use maintainer quota. Host 2026-07-25: no authority until BYOC + friendly onboarding reply; fix lane in flight. See #1582.
@@ -52,9 +53,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Provision `TINYASSETS_IDENTITY_FINGERPRINT_KEY` (secrets catalog), then `--assert-handles` canary + rendered `ui-test` for the identity-evidence surface | deployment env | test-identity landing | host-action |
 | Supabase infra for market workflow — live read access + prod migration-home decision (transport 2.5/2.6); prod-shaped Realtime env (5.3); isolated launch-region project (5.4) | Supabase account | - | host-action |
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
-| Raise the Claude Code monthly-spend ceiling; Opus 5 CLI is rejected before inference despite the model-rate reset | Claude account usage settings | - | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
 2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
 3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude Opus 5 reset 2026-07-24; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.
+4. **Capacity/context** — Claude Opus 5 available 2026-07-25; opposite-provider reviews resumed; brain sweep `.claude/agent-memory/navigator/wiki_sweep_cursor.md`; PR-129/131/139; Meridian Ashes / Etsy Printify v2 / Markovic.
