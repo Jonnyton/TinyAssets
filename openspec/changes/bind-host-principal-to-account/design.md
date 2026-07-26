@@ -5,7 +5,7 @@ Current main has two host-shaped identities:
 1. `tinyassets/host_pool/client.py` posts a caller-supplied `owner_user_id`.
    The canonical host-pool spec requires repeated registration to create
    distinct rows. These rows are availability/capability sessions.
-2. PR #1736's `tinyassets/desktop/onboarding.py` creates and persists a local
+2. Merged PR #1736's `tinyassets/desktop/onboarding.py` creates and persists a local
    `host-{uuid}` and passes it to `OriginClient.register_host`. The client-side
    authorization state machine and native account refresh-token custody exist,
    but `OriginClient` remains a Protocol and the PR explicitly leaves the
@@ -34,7 +34,8 @@ identity without conflating it with a liveness row.
 - A new MCP verb, chatbot-visible secret setup route, or second account.
 - Hardware attestation, device fingerprinting, geolocation, or private user
   content in the control plane.
-- Account refresh-token storage or edits to PR #1736 desktop files.
+- Account refresh-token storage or edits to the packaged-tray desktop files
+  owned by merged #1736.
 - Provider-secret/native-reference custody or assignment-state ownership.
 - Host-pool scheduling, capability pricing, provider routing, execution grants,
   market leases, settlement, or payment authority.
@@ -88,7 +89,7 @@ grants cannot create or advance that time; a stale/missing claim forces a new
 interactive reauthentication. The service refuses to start writers when the dedicated
 resource is absent or audience validation has been disabled, including
 `WORKOS_ALLOW_NO_AUDIENCE`, and never changes or reuses the global MCP
-provider. The PR #1736 owner must send the RFC 8707 resource indicator during
+provider. The merged #1736 packaged-tray owner must send the RFC 8707 resource indicator during
 authorization/token/refresh, validate the returned audience, and adapt
 `OAuthConfig`, `OriginClient`, and onboarding state to the
 challenge/proof/principal response protocol. It must initiate WorkOS
@@ -113,7 +114,7 @@ principal, session, or audit mutation.
 ### 3. Device proof is challenge-bound and replay-safe
 
 The v1 policy is exactly Ed25519. A client generates a separate key for each
-WorkOS subject and stores the private key through PR #1736's approved native
+WorkOS subject and stores the private key through merged #1736's approved native
 secret-store seam. The server accepts only a valid RFC 8037 public JWK with
 exactly `kty=OKP`, `crv=Ed25519`, and `x`; `x` is canonical unpadded
 base64url that decodes and round-trips to exactly 32 bytes. Signatures are
@@ -245,7 +246,7 @@ The closed intent variants are:
 Unknown fields, operations, enum values, and schema versions fail closed.
 Challenge/completion route constants are signed exactly as the literal matrix
 strings; `{id}` is also bound separately by the typed intent and must equal the
-request path value. PR #1736 may share these versioned DTO definitions but may
+request path value. The merged #1736 owner may share these versioned DTO definitions but may
 not depend on server-private serializers.
 
 Inventory accepts only `cursor` and `limit` query fields and returns
@@ -459,13 +460,13 @@ model, or compute use.
   step-up, narrow scopes, rate limits, owner inventory, and recovery reduce the
   window but do not make the bearer proof-of-possession. OAuth DPoP remains an
   explicit non-goal; this residual risk is visible in the security review.
-- **This duplicates PR #1736:** its owner adapts the client protocol and
+- **This duplicates merged #1736:** its owner adapts the client protocol and
   native-store-owned onboarding state; this lane implements only the server
   contract and requires owner acceptance before runtime claims.
 
 ## Migration Plan
 
-1. Obtain PR #1736 owner acceptance to adapt `OAuthConfig`, authorization and
+1. Obtain the merged #1736 owner's acceptance to adapt `OAuthConfig`, authorization and
    refresh resource-indicator handling, `OriginClient`, and onboarding state
    to the dedicated audience/challenge/proof/principal response while this lane
    does not edit its desktop files.
@@ -475,7 +476,7 @@ model, or compute use.
    challenge verification, bounded self-inventory, exact reads,
    revocation/rotation, and session linkage behind disabled writers.
 4. Deploy readers/storage first and prove legacy rows remain unattested.
-5. Adapt the PR #1736 client owner to device proof and the server-issued
+5. Adapt the merged #1736 client owner to device proof and the server-issued
    principal response; do not copy account tokens or private keys.
 6. Run focused security/concurrency tests and the named
    `docs/design-notes/2026-04-18-full-platform-architecture.md` §14 scale proof.

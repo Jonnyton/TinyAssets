@@ -1,8 +1,9 @@
 ## Why
 
-The packaged-tray lane has a real client-side `OriginClient` protocol and
-native account-token custody, but TinyAssets has no authenticated production
-route that binds the verified platform account to a stable host principal.
+Merged PR #1736 gives the packaged-tray lane a real client-side `OriginClient`
+protocol and native account-token custody, but TinyAssets has no authenticated
+production route that binds the verified platform account to a stable host
+principal.
 The two identifiers available today are unsuitable: the host-pool API accepts
 a caller-supplied owner and intentionally inserts a new session row on every
 registration, while the tray's local `host-{uuid}` value is self-asserted.
@@ -36,8 +37,9 @@ prove which verified account owns the stable host.
 - Expose narrow subject-scoped self-inventory, exact read/revoke/rotate
   operations, and exact-tuple internal reads for authorized control-plane
   consumers such as provider-custody reconciliation.
-- Keep account refresh-token storage, native backend policy, and the
-  client-side `OriginClient` implementation in PR #1736. Its owner must adapt
+- Keep account refresh-token storage, native backend policy, subject-pinned
+  `bound`-not-`online` state, and the client-side `OriginClient` implementation
+  in the packaged-tray owner established by merged #1736. That owner must adapt
   that protocol and onboarding state to request challenges, sign exact
   envelopes, and receive `host_principal_id` plus generation; this change
   defines the server contract and does not claim its desktop files.
@@ -63,15 +65,19 @@ prove which verified account owns the stable host.
 
 ## Impact
 
-This lane is specification/review-only. Future implementation is expected to
+This lane is specification/review-only. The active packaged-tray target owns
+the local subject pin, loopback safety, provider-free binding, and
+`bound`-not-`online` contract; this change consumes that client boundary rather
+than creating a third identity capability. Future implementation is expected to
 touch a narrow authenticated origin module under `tinyassets/api/` or
 `tinyassets/auth/`, host-principal storage/migrations, the host-pool
 registration adapter, packaged mirrors, and focused identity/concurrency
-tests. Exact runtime files must be re-claimed after PR #1736 and active
+tests. Exact runtime files must be re-claimed after the merged #1736 owner and active
 identity/host-pool owners accept the split.
 
-Dependencies are PR #1736's `OriginClient`/desktop ownership and accepted
-protocol adaptation, a dedicated `WORKOS_HOST_BINDING_RESOURCE` plus
+Dependencies are merged #1736's `OriginClient`/desktop owner accepting the
+protocol adaptation, a WorkOS native/public client and exact loopback redirect
+configuration, a dedicated `WORKOS_HOST_BINDING_RESOURCE` plus
 step-up/scoped WorkOS token contract, draft PR #1746's custody consumer, and
 the current host-pool session contract. This change grants no provider,
 credential, compute, market, lease, settlement, payment, universe, or

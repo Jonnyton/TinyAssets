@@ -2,10 +2,9 @@
 
 **Date:** 2026-07-25
 **Environment:** Windows worktree `wf-host-principal-binding`, base
-`origin/main` initially `3f933caf`, then folded through `6cde7ef0`; PR #1736
-protocol inspected at `31d4bf9d` and rechecked at current head `dccbadba`
-(desktop diff empty); draft PR #1746 owner-resolution head inspected at
-`4c1c6eb5`.
+`origin/main` initially `3f933caf`, then folded through `6cde7ef0` and refreshed
+through merged full-product audit `b1acc2bc`; PR #1736 merged as `d2e3570c`;
+draft PR #1746 owner-resolution head inspected at `4c1c6eb5`.
 **Scope:** OpenSpec and ownership evidence only; no runtime, canonical-spec,
 production, or deployment mutation.
 
@@ -19,12 +18,12 @@ to a stable host principal:
 - `tinyassets/host_pool/client.py:200-220` accepts caller-supplied
   `owner_user_id`; `tinyassets/host_pool/registration.py:62-65` inserts a new
   session and returns its ID. Neither proves stable account ownership.
-- PR #1736 `tinyassets/desktop/onboarding.py:51-102` defines
+- Merged #1736 `tinyassets/desktop/onboarding.py:51-102` defines
   `OriginClient.register_host(access_token, host_id,
   capability_visibility) -> None`; its local `_host_id()` is `host-{uuid}`.
   The protocol cannot request a challenge, provide device proof, or return a
   server principal ID/generation.
-- PR #1736 authorization currently sends no RFC 8707 `resource` and its
+- Merged #1736 authorization currently sends no RFC 8707 `resource` and its
   `audience="tinyassets-desktop"` test value is not a production resource
   indicator.
 - Current WorkOS env names are `WORKOS_AUTHKIT_DOMAIN`,
@@ -53,11 +52,11 @@ to a stable host principal:
 
 It does not own:
 
-- PR #1736 desktop files, PKCE/token custody, or native-store policy. That
+- Merged #1736 desktop files, PKCE/token custody, or native-store policy. That
   owner must adapt `OAuthConfig`, RFC 8707 authorization/token/refresh,
   `OriginClient`, onboarding state, native device-key use, and the
   principal-bearing response.
-- PR #1746 provider secrets/references or #1691 provider assignment state.
+- PR #1746 provider secrets/references or #1784 provider-assignment authority.
 - host-pool scheduling/economics, distributed execution, market authority, an
   MCP tool, or a chatbot secret-deposit path.
 
@@ -114,7 +113,7 @@ rollback, restoration of the unrelated `workflow-voice` concern, and
 preservation of host Capacity/context steering. Those corrections are folded
 into the candidate artifact.
 
-Final exact review returned **APPROVE — spec/review-only** from Claude Opus 5
+The historical exact review returned **APPROVE — spec/review-only** from Claude Opus 5
 and three independent Codex reviewers at substantive artifact head
 `5905cc41` over current reviewed base `6cde7ef0`. Evidence was clean range
 `git diff --check`, strict target validity, all-item strict OpenSpec 42/42,
@@ -124,7 +123,17 @@ coordination commit; it was merged without changing the approved OpenSpec or
 audit content. Approval does not authorize runtime, sync/archive, deployment,
 or rollout.
 
-Runtime remains blocked until PR #1736, identity/auth, daemon/host-pool, and
+A refreshed current-main Opus 5 review returned **ADAPT** after #1736 merged.
+It confirmed the stable server principal in #1753 is the correct owner, but
+rejected a separate `desktop-account-binding` capability because the packaged
+tray already owns browser PKCE, native token custody, and local onboarding. It
+also confirmed a live different-subject silent-rebind defect in
+`desktop/onboarding.py`, the missing `bound`-not-`online` state, and the need
+for local single-use loopback handling with no provider-routing or maintainer
+quota. This branch now consumes those client requirements through the existing
+packaged-tray target; the historical approval is no longer an exact-head gate.
+
+Runtime remains blocked until the merged #1736 owner, identity/auth, daemon/host-pool, and
 draft #1746 owners accept the split; Opus 5 and latest Codex approve the same
 exact artifact; runtime files are freshly claimed; RED tests exist; and the
 named load proof passes. Canonical spec sync/archive and deployment are not

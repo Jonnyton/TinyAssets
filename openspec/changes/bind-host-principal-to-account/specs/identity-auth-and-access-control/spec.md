@@ -179,7 +179,7 @@ lost-key revoke SHALL accept that exact direct account intent only under recent
 
 #### Scenario: Client and server share one testable signing contract
 
-- **WHEN** PR #1736 requests a challenge for a closed v1 operation
+- **WHEN** the packaged-tray client owned by merged #1736 requests a challenge for a closed v1 operation
 - **THEN** the server returns the exact signing bytes and both sides use the same versioned DTO and literal route binding
 - **AND** neither side depends on server-private serialization or proxy headers
 
