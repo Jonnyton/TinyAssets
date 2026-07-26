@@ -45,6 +45,13 @@ the retired loop SHALL be archived or removed under recorded retention policy.
 No row, payload, receipt, or completed replay MAY be reinterpreted as a generic
 request, branch run, universe cycle, or user-authored workflow.
 
+The migration SHALL be the first ordered stage of the startup/first-use
+recovery boundary and SHALL complete for the applicable store before the
+`harden-background-provider-execution-authority` (#1803) coordinator performs
+provider-authority reconciliation or sweeps provider-capable or non-provider
+runs. That coordinator SHALL NOT issue or recover authority for, resume, sweep
+as ordinary work, or reinterpret a retired row.
+
 #### Scenario: Pending retired row cannot reach a worker
 
 - **WHEN** upgrade encounters a pending or queued `bug_investigation` row
@@ -55,6 +62,7 @@ request, branch run, universe cycle, or user-authored workflow.
 
 - **WHEN** upgrade encounters a claimed or running retired row or its lease later recovers
 - **THEN** migration fences and cancels it before generic execution can start or resume
+- **AND** migration completes before #1803 provider-authority reconciliation or ordinary run recovery begins for the applicable store
 - **AND** no branch, universe cycle, task, run, or wiki write-back is produced
 
 #### Scenario: Completed retired history is non-executable

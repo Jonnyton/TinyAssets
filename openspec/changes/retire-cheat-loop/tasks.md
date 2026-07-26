@@ -1,7 +1,7 @@
 ## 0. Target And Review Gates
 
 - [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, tests, and the Claude plugin mirror; distinguish generic primitives and historical records.
-- [x] 0.2 Write the target proposal, design, four capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
+- [x] 0.2 Write the target proposal, design, five capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
 - [ ] 0.3 Obtain exact-head independent architecture/spec/diff review and fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [ ] 0.4 Record the host's standing 2026-07-26 acceptance only after reviewers agree the complete removal boundary is fully figured out; stop if any unresolved host design choice remains.
 - [ ] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, and publish the target-only draft PR without runtime, deployment, or production mutation.
@@ -44,7 +44,9 @@
   pending rows, fence/cancel claimed or running rows before lease recovery,
   retain completed history immutably, record counts/ids/digests/prior-final
   states/retention, and make dispatcher admission plus claim fail closed with
-  no generic reinterpretation or replay execution.
+  no generic reinterpretation or replay execution. Make this the first ordered
+  startup/first-use stage, completing before #1803 provider-authority
+  reconciliation or ordinary run recovery for the applicable store.
 
 ## 3. Remove Auto-Ship Product Automation
 

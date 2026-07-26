@@ -156,6 +156,13 @@ Claimed/running rows are fenced, cancelled, and quarantined before lease
 recovery can enter generic execution. Completed rows remain immutable history
 and replay/read paths cannot resubmit them.
 
+This migration is the first ordered stage of the startup/first-use recovery
+boundary owned by `harden-background-provider-execution-authority` (#1803).
+It SHALL finish for the applicable store before #1803 reconciles authority or
+sweeps provider-capable or non-provider runs. #1803 cannot issue or recover a
+provider receipt for, resume, sweep as ordinary work, or otherwise reinterpret
+a retired row.
+
 After cutover, dispatcher admission and claim both fail closed on the retired
 request class before branch-run or universe-cycle execution. No compatibility
 consumer, generic reinterpretation, payload salvage, or automatic write-back
@@ -217,8 +224,10 @@ no current guidance promises the retired loop.
 6. Remove website patch-loop/community-loop presentation and snapshots, retain
    only provenance-correct generic workflow activity, and build both canonical
    site and any retained mirror.
-7. Before workers start, migrate/quarantine legacy queued/running rows and
-   receipts; preserve completed history and activate fail-closed admission.
+7. Before workers or #1803 first-use recovery start, migrate/quarantine legacy
+   queued/running rows and receipts; preserve completed history and activate
+   fail-closed admission. Only after this stage succeeds may provider-authority
+   reconciliation and ordinary run recovery proceed.
 8. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
 9. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.

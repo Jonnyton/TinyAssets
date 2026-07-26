@@ -2,8 +2,8 @@
 
 **Date:** 2026-07-26
 **Environment:** Windows worktree
-`C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final`, based on
-`origin/main` at lane creation
+`C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current`, based on exact
+`origin/main` `ba273312484d8717eaa12f2cd66e6629458aa36b`
 **Finding:** current shipped source contradicts the host-approved architecture;
 the cheat loop is disabled in some places but is not deleted from the build.
 **Target:** `openspec/changes/retire-cheat-loop/`
@@ -94,6 +94,15 @@ claimed/running rows before recovery, retains completed history immutably, and
 records ids/digests/prior-final states/retention. Admission and claim both deny
 the retired class afterward; no generic reinterpretation or replay execution
 is allowed.
+
+Current `origin/main` also carries
+`harden-background-provider-execution-authority` (#1803), whose graph delta
+adds a lazy first-use recovery coordinator and provider-authority
+reconciliation. The retirement migration is an earlier ordered stage of that
+same startup/first-use boundary: it classifies, fences, and terminalizes every
+retired row before #1803 may reconcile or sweep ordinary provider-capable or
+non-provider work. #1803 must never issue/recover authority for, resume, or
+reinterpret a retired `bug_investigation` row.
 
 ### Auto-ship composition
 
