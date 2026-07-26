@@ -36,7 +36,7 @@
   successor into identity/auth for attested stdio/plugin request authority;
   unify setup-required under the merged identity requirement; fix the default
   source/readiness predicate; and require surface-completable setup paths.
-- [ ] 1.10 Refresh exact-SHA custody acceptance plus universe/receipt
+- [x] 1.10 Refresh exact-SHA custody acceptance plus universe/receipt
   archive-sync handoffs for the unified setup contract.
 - [ ] 1.11 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
   resolve every Critical and Important finding.

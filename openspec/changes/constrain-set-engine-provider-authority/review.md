@@ -186,3 +186,11 @@ The next adaptation:
 
 Final disposition remains pending validation, refreshed exact-SHA handoffs,
 and Opus 5 approval.
+
+The existing durable handoff comments were updated in place to normative
+candidate `0e213775`; their IDs remain:
+
+- custody acceptance: `issuecomment-5081341084`;
+- unified setup contract / universe archive-sync precedence:
+  `issuecomment-5081342047`; and
+- receipt archive-sync precedence: `issuecomment-5081343125`.
