@@ -131,9 +131,11 @@ exact type, nullability, bound, ordering, uniqueness, digest, reference, and
 temporal rule. Registry history is one-way: the scenario registry pins only its
 accepted predecessor; the command registry pins the scenario-registry digest;
 the manifest and authorization pin both, avoiding a digest cycle.
-Each scenario entry also pins one accepted custody mode and backend-policy
-digest; every artifact leaf must match that mode and policy, so leaf
-self-declaration cannot substitute for owner-approved custody and retention.
+Each scenario entry pins one accepted custody mode and either an accepted
+backend-policy digest or a null policy only for a zero-leaf `not_run` blocked
+by missing access/store approval. Every retained artifact leaf must match the
+non-null scenario policy, so leaf self-declaration cannot substitute for
+owner-approved custody and retention.
 History-aware publication receives the prior registry before accepting a
 classification change. The manifest pins its bundle index, and the index
 defines exhaustive run membership without scanning unrelated global CAS

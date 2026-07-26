@@ -179,7 +179,10 @@ The adapted packet now:
 - distinguishes authenticated cleanup failure from missing/invalid proof.
 
 The adapted delta-spec SHA-256 is
-`9BC1A85E62643A4877F61F7C32E03E5B4FA87027C9659FD4961A2751143DB412`.
+`5C7454AA0609FAC44447B3A48987BBA826669511DEB832D0422E4C0BCE8DE1B8`.
+The final adaptation also makes missing backend policy legal only for a
+zero-leaf blocked `not_run` manifest and requires an explicit prior canonical
+manifest whose digest, schema, and run ID all match every supersession link.
 Strict validation passes 48/48. Fresh independent and literal Opus 5 approval
 of this exact adapted packet remains required before push or apply. No runtime
 or live traffic is authorized.
