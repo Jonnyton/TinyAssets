@@ -1,343 +1,210 @@
-# Lane report — o5-retire-inventory
+# Lane report — data-commons successor
 
-Branch `claude/o5-retire-inventory`. Tree analysed: `92d730bc` (`origin/main` = `d8ef3dea`;
-the 1-commit delta is STATUS.md-only and affects no finding). No runtime code changed; no `.py`
-touched, so ruff was not required.
-
----
-
-> **SUPERSEDED BY THE REWORK SECTION BELOW.** The Scope 1 block that follows is the **v1**
-> report. An opposite-provider review returned **reject** on it; its "6 wire callers" headline and
-> "176 Python bindings" labelling are wrong. Read §*Rework (v2)* for the corrected figures. The v1
-> text is kept verbatim so the correction is auditable.
-
-## Scope 1 — retire-legacy-live-mcp-tools tasks 2.1–2.3: DONE *(v1 — superseded)*
-
-Artifact: **`docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md`** (new).
-Tasks 2.1, 2.2, 2.3 checked off in `openspec/changes/retire-legacy-live-mcp-tools/tasks.md`,
-each with an inline evidence summary.
-
-**Premise verified:** `universe_server.py` registers 13 tools — 7 canonical + the 6 hidden
-(`_DEPRECATED_TOOL_NAMES`, line 1030), dropped from `tools/list` by `_DeprecatedToolVisibility`
-(line 1983) but still dispatchable via `on_call_tool`.
-
-### Inventory summary — counts per caller class
-
-| Caller class | Count | Breaks on unregistration? | Decision |
-|---|---|---|---|
-| `tests/` direct import (`from …universe_server import <legacy>`) | 57 bindings / 26 files | No | Preserve |
-| `tests/` module-attr call (`us.<legacy>(…)`) | 119 bindings / 41 files | No | Preserve |
-| **Production runtime Python callers (`tinyassets/` non-test)** | **0** | — | none exist |
-| Canonical→legacy delegation edges inside `universe_server.py` | **0** | — | none exist |
-| `scripts/` Python-API callers | 0 | — | none exist |
-| `fantasy_daemon/universe_server.py` (`import *`) | 1 | No | Preserve |
-| **Wire callers (MCP tool-name dispatch)** | **6 sites / 3 files** | **Yes** | **Migrate** |
-| Retired-tool metadata residue (conway panel JSON, market.py labels) | 8 refs / 2 files | No | Fix strings (task 4.5) |
-| Excluded false positives (website snapshot data, packaged mirror, logger names, hint prose) | — | No | Do not "fix" |
-
-**Union: 176 Python bindings across 67 files — every one under `tests/`.**
-
-### Key findings
-
-1. **2.3-A — zero production-runtime Python callers, zero canonical→legacy delegation.** Both
-   surfaces delegate independently to the same `tinyassets/api/*` impls. This confirms task 4.1's
-   default: remove the 6 registrations, keep the 6 `def`s. Deleting the wrapper bodies would break
-   67 test files for no benefit.
-2. **2.3-B (blocker) — `wiki action=list` has no canonical replacement.** `read_page` only ever
-   emits `read`/`search`/`since`. Two live scripts depend on it, including
-   `scripts/navigator_wiki_sweep.py`, which defaults to **`https://tinyassets.io/mcp`** and drives
-   the navigator's standing 30-min sweep cadence. Retirement must first extend `read_page` or
-   retire the cadence with host sign-off.
-3. **2.2-A — open PR #1467 would restore the retired `directory_server.py`.** It carries
-   `modified +30/-3` against a file `origin/main` deleted in `60f7f9f1` (#1718). Must be rebased
-   before merge — violates tasks 2.2 and 4.4 otherwise.
-4. **Action-reachability gap:** the 6 legacy tools are `action=` passthroughs exposing **187**
-   dispatchable actions; the canonical 7 are narrow target routers reaching **18**. **169 orphaned**
-   (`gates` = 20 of 20 — no canonical handle routes to it at all). Not 169 regressions — much of it
-   is deliberate surface reduction — but it makes retirement a ~90% action-surface cut, not a
-   rename. Two live STATUS.md rows already depend on orphaned actions (`goals action=bind/set_canonical`;
-   `wiki action=promote`).
-5. **2.3-C — precedent exists.** `scripts/last_activity_canary.py` already made this exact
-   migration (`universe action=inspect` → `read_graph target="graph"`) and documents that every
-   shape assertion stayed unchanged. The two `mcp_probe.py` universe sites can follow it verbatim today.
-6. **The public canary cannot see the hidden six** — it reads `tools/list`, which the middleware
-   already filters. A green `--assert-handles` run is not retirement evidence; hence task 3.1's
-   "listing middleware bypassed" requirement.
-
-**2.1 ownership:** of the nine PRs, 5 CLOSED; **4 OPEN and all edit `universe_server.py`** —
-#1493 `a4115dd3`, #1467 `5fb6d16a`, #1466 `4427d012`, #1465 `8eef71b8`. They are dependency edges
-for the implementation lane. `claim_check.py --check-files` on this lane's write-set: **CLEAR**.
-**2.2 boundary:** #1561 (`1a5d45af`) confirmed 3 files, stdio-only; `tinyassets/mcp_server.py`'s
-tool surface is disjoint from the six, so it is structurally unaffected.
-
-Scoped honestly in §7 of the artifact: this is repository-internal only and does **not** satisfy
-task 1.3 (external hidden-name call telemetry). No live probe was run.
+**Branch:** `claude/o5-data-commons` (folded in place and pushed; no PR opened)
+**Base:** fast-forwarded from `8a76a93d` to `origin/main` `e78a9605` before authoring (branch had no
+unique commits, so this was a clean ff, not a rewrite). Umbrella files verified unchanged between the
+two.
+**Mode:** spec-authoring only. No runtime code written.
+**Fold validation (2026-07-25 local):** `openspec validate data-commons-contribution --strict` valid;
+`openspec validate --all --strict` 43 passed, 0 failed.
+**Validation:** `openspec validate --all --strict` → **43 passed, 0 failed.**
 
 ---
 
-## Rework (v2) — after opposite-provider review returned `reject`
+## Change name
 
-Artifact reworked in place: **`docs/ops/2026-07-25-legacy-mcp-tool-caller-inventory.md`** (v2).
-Verdict source: `…/scratchpad/verdict-retire-inventory.md`. **Every count in the verdict was
-re-derived independently before folding; all reproduced exactly.**
+**`openspec/changes/data-commons-contribution/`** — the prompt's fallback.
 
-### What the review refuted
+Umbrella tasks 3.1 and 3.2 prescribe no change *name*; they name only the **capability** `data-commons`
+("no `data-commons` successor change exists"). Naming the change `data-commons` would collide with the
+capability its delta targets, so the fallback was used.
 
-1. **"6 wire callers" — refuted.** v1 missed an entire caller class: **38 legacy wire invocation
-   sites across 8 website JS/TS/Svelte/mjs files**. v1's six rows also mixed unlike things (4 real
-   wire calls, 1 panel metadata, 1 response-label residue v1 itself called "not dispatch calls").
-2. **"176 Python bindings … all under `tests/`" — mislabelled.** 176 is a **reference** count
-   (57 imports + 119 module-attr references), not a caller count. The row headed "module-attr
-   call" contains **17 non-call introspection** references. And "all under `tests/`" omits the
-   **non-test** `import *` at `fantasy_daemon/universe_server.py:2`.
-3. **`wiki action=list` caller scope — undercounted.** v1 said "2 live scripts"; the real set is
-   5 wire sites plus the public playground.
-4. **Additional missed classes** — packaged plugin skills instructing `universe` calls, the plugin
-   boot path, `bids/README.md`, and playground UI copy.
-5. **Limits section understated its blind spots** — it implied the static repo inventory was
-   complete when it covered only Python.
+On the nomination: task 3.2's text is what points at this slice — *"Forge cannot emit a manifest before
+the manifest contract exists"* — i.e. 3.2 nominates **3.1's manifest/validation contract** as its
+prerequisite. Task 3.3 makes training's mint invoke it, 4.4 lists it among hardware's direct edges, 5.1
+inherits transitively, and the slice dependency ledger calls it *"the admission gate every downstream
+training or hardware claim invokes."* Of the umbrella's unowned slices, that is the largest fan-out. The
+successor therefore owns **both** 3.1's non-monetary half and 3.2 (Forge moved whole), since Forge's
+intake/lineage substructure is explicitly non-monetary and would otherwise wait on a second successor.
 
-### What I re-verified myself (independent AST + language-aware scan)
+**Why it was undecidable before 2026-07-25:** task 3.1 carried a second blocker beyond D1 — the STATUS
+`host-decision` row, *"since manifest storage and private-data placement are two of the four positions
+that row is waiting on."* PR #1761 landed both, as two different **kinds** of answer:
+- **Manifest storage — decided.** Canonical storage is per-domain: commons bundle for commons knowledge,
+  Postgres for catalog/ledger/inbox/market, neither canonical for the other's domain.
+- **Private-data placement — decided to stay open.** Four custody modes, none ruled in or out; the lane
+  obligation is to *name and scope* its assumption, not to encode an answer.
 
-| Figure | v1 claim | Re-derived | Status |
-|---|---|---|---|
-| Python explicit imports | 57 / 26 files | **57 / 26** | reproduces |
-| Python module-attr references | 119 / 41 files, labelled "call" | **119 / 41**, of which **102 calls + 17 introspection** | arithmetic right, **label wrong** |
-| Reference union (57+119) | "176 bindings" | **176 references** across **67** files | **mislabelled** |
-| Actual Python call expressions | not reported | **376 across 62 files** (274 imported-name + 102 attr) | **missing from v1** |
-| Non-test Python binding | mentioned separately | `fantasy_daemon/universe_server.py:2` `import *` | **checkoff phrase unqualified** |
-| Website wire sites | **0 reported** | **38 across 8 files** — `wiki` 7, `goals` 9, `universe` 5, `community_change_context` 2, `extensions` 15 | **missed** |
-| Total literal wire sites | 6 | **42 across 10 files** (+1 dynamic, +1 registration-level test) | **refuted** |
-| `wiki action=list` dependents | 2 scripts | **5 wire sites + public playground** | **undercounted** |
-| Open-PR state (#1493/#1467/#1466/#1465/#1561) | pinned shas | re-queried 2026-07-25, **all unchanged** | confirmed |
+The manifest requirement takes the first; the promotion requirement is custody-agnostic under the second.
 
-Mechanism confirmed, not assumed: `live.ts:103` → `rpc('tools/call')`; `playground.ts:132`;
-`snapshot-mcp.mjs:210` (official MCP SDK). `fetchLive`/`fetchVitals` are imported and invoked by
-11 rendered page components across the two trees; `snapshot-mcp.mjs:25` hardcodes
-`https://tinyassets.io/mcp`. Both trees are deployable (`deploy-site.yml` / `deploy-site-react.yml`,
-both `workflow_dispatch`-only, sharing the `pages` concurrency group) and their headers
-**contradict each other** about which is live — so both are counted; `deploy-site.yml` is the
-documented rollback path.
+---
 
-### Two findings v2 adds beyond the verdict
+## Requirement inventory
 
-- **2.3-D — `extensions action=stream_run` is a second orphaned action with live callers.**
-  `read_graph` emits only `list/get/search/inspect/list_runs/get_run/get_branch`; `stream_run`
-  exists only in the legacy docstring (`universe_server.py:1413`). Both `live.ts` trees call it
-  from `fetchMcpPatchLoopFeed` (`live.ts:836`), reached from the rendered `/loop` page via the
-  **default** `source='mcp'` branch.
-- **2.3-E — task 4.4's mirror rebuild breaks four packaged slash commands.**
-  `runtime/server.py:39-40` boots the mirrored `universe_server`; `premise`/`progress`/`status`/
-  `steer` SKILL.md instruct `universe` calls, and three of the actions they name
-  (`get_activity`, `give_direction`, the premise verbs) have **no** canonical equivalent.
+### `specs/data-commons/spec.md` — ADDED (8 requirements)
 
-Also corrected: `callTool('loop', …)` (`live.ts:838`/`841`) is **not** a legacy caller — `loop` is
-not among the 13 registered tools at all. Correctly excluded from the 38; now logged in §4e so a
-later reader does not re-add it.
-
-### Final counts (v2)
-
-- **Python — unaffected by unregistration:** 57 imports / 26 files; 119 module-attr references /
-  41 files (102 calls + 17 introspection); **376 call expressions / 62 files**; 1 non-test
-  `import *`. Union of classes A+B = **67 files, all under `tests/`** — the star import is the
-  documented exception to "every repository import."
-- **Wire — broken by unregistration:** **42 literal sites / 10 files** = 4 Python
-  (`navigator_wiki_sweep.py:162`, `mcp_probe.py:139,146,155`) + **38 website / 8 files**; plus
-  1 dynamic dispatcher (`Playground.svelte:95`) and 1 registration-level test
-  (`test_universe_server_five_handles.py:127`).
-- **Of those 42, 9 have no canonical replacement:** `wiki action=list` ×5,
-  `community_change_context` ×2, `extensions action=stream_run` ×2. The other **33** are
-  straightforward migrations via the `last_activity_canary.py` precedent.
-- **Non-dispatch classes:** 3 metadata panels, 3 response labels, **8+ instruction surfaces**
-  (4 packaged skills, `bids/README.md:24`, playground copy, `api/universe.py:2540` hint).
-- Action-reachability gap unchanged and re-verified: **187 dispatchable actions → 18 canonical-
-  reachable → 169 orphaned** (`gates` 20 of 20).
-
-### Task checkoff reconciliation
-
-| Task | Now | Why |
+| # | Requirement | Origin |
 |---|---|---|
-| 2.1 | **`[x]` retained, qualified** | Deliverables done; PR state re-queried today. The "resolve **or depend**" half is now real: artifact §11 is stated as **binding preconditions**, and task 4.1 carries the dependency inline. Caveat recorded: raw scan output not retained, `origin/main` stamp decays. |
-| 2.2 | **`[x]` retained** | Unrefuted. #1561 `1a5d45af` re-queried (OPEN draft, 3 files, stdio-only); `mcp_server.py` disjoint; `directory_server.py` absent since `60f7f9f1`. |
-| 2.3 | **`[ ]` UNCHECKED** | Its contract ("**every** repository import and direct caller … preserve-or-explicitly-migrate decision") is not met: the wire half was wrong by 36 sites and its checkoff asserted three false statements. The Python half is complete and retained; 2.3 re-checks only after the class E/F/G/K migration decisions in §11 are recorded. |
+| 1 | Commons contribution and discovery ride the canonical page handles | New — the host's 2026-07-25 commons reframe, expressed as the contribution model |
+| 2 | A dataset contribution is an immutable content-addressed manifest entry that moves references, not bytes | Moved from umbrella; extended with the #1761 per-domain canonical-form split and immutability |
+| 3 | Manifest admission is a fail-closed gate consumers invoke rather than reimplement | Moved from umbrella; restrictive-license policy removed pending host decision |
+| 4 | Contamination, privacy, and quality gates precede gate-backed use | Moved from umbrella; extended with pass-and-fail provenance retention |
+| 5 | Every contributed example carries exactly one provenance class, and Forge is a remixable commons workflow | Moved from umbrella (task 3.2); complete source lineage, no license propagation |
+| 6 | Contribution lineage rides the existing ledgers without redefining their guarantees | New — consumes the attribution and generic remix owners, records no payout |
+| 7 | Promotion from private material into the commons is an explicit user act and custody-agnostic | New — Scoping Rule 4 compliance (1B) |
+| 8 | The contribution half of data-commons is non-monetary and carries no pricing surface | New — no pricing/share fields and no staged dataset-rights market |
 
-Task 4.1 also gained an inline block note naming the §11 preconditions — that is what makes 2.1's
-"depend on the owners" clause actually binding rather than advisory.
+### `specs/evaluation-outcomes-and-attribution/spec.md` — MODIFIED (1 requirement)
 
-**Still not established (unchanged):** task 1.3 external telemetry, live probes, installed-client
-and deployed-bundle state, which website tree is actually serving, adjudication of the 169 orphans.
-Class G (user-typed playground input) is not statically enumerable at all.
+Added **after** the first Codex review, then narrowed by the independent fold. Widens the attribution
+edge's endpoint kinds to admit the generic `commons-artifact` kind; keeps the set closed and enumerated;
+changes no clamp, cycle, depth, idempotency, or append-only semantics. `data-commons` may not sync without
+this owner delta.
 
----
+### `specs/wiki-commons/spec.md` — MODIFIED (1 requirement)
 
-## Scope 2 — BUG-018 closure: BLOCKED (false premise — page is not in this repo)
+Added by the independent fold. A freeform write targeting an existing immutable content-addressed page is
+refused on the write path with a mint-a-new-version instruction, while every other promoted-page write
+keeps the landed in-place overwrite behavior. This is a content-class target rule, not a review gate.
 
-**The BUG-018 page does not exist anywhere in this repository, and the wiki is not repo-managed.**
-The edit as specified could not be performed in-worktree. Evidence:
+### Split disposition — umbrella `data-commons` delta (6 → 4 moved, 2 retained)
 
-- `git ls-files | grep -i bug-018` → **0 tracked files**; repo-wide `BUG-018` hits are only
-  references (`STATUS.md`, `docs/ops/post-redeploy-wiki-migration.md`, `docs/audits/…`).
-- **Zero files tracked under `wiki/`**; no `.gitmodules`. The repo's `pages/bugs/` holds a
-  different, unrelated series (`bug-093`, `bug-095`).
-- `deploy-prod.yml:293` explicitly **strips** `TINYASSETS_WIKI_PATH` so `wiki_path()` falls back to
-  the platform default (`data_dir()/wiki`) — i.e. the **production host volume**. The wiki is live
-  service data, not source.
-- The only local copy is a stale 2026-06-24 snapshot at
-  `Projects/Workflow-live-data-snapshot/wiki/…`, outside this lane's worktree.
-
-**Live state confirmed** (read-only `read_page` against the production connector, 2026-07-25):
-page `pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md`,
-`is_draft: false`, `status: open`, `updated: 2026-04-22`, 3807 chars,
-`sha256 = 14d56d920a54bfb0f558837b891c0f5383f7e44a68fe92d86543a55c4c42c749`.
-
-**I did not perform the write.** It is a mutation of live production data, outside the lane's
-"work only inside this worktree" fence, and it cannot be captured in this lane's commit. The host
-decision authorises the content change, so this needs only a go-ahead — not a re-decision.
-
-Ready to run as-is (CAS-guarded; `write_page` exposes `patch` with `expected_sha256`, so the
-malformed filename is preserved and the surrounding body is untouched):
-
-```
-write_page action=patch
-  page="pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md"
-  expected_sha256="14d56d920a54bfb0f558837b891c0f5383f7e44a68fe92d86543a55c4c42c749"
-  old_text="status: open"
-  new_text="status: closed (superseded by feature-describe-branch-related-wiki-pages)"
-```
-
-then a second `patch` appending the body note (re-read for the new sha first):
-
-```
-old_text="## Related\n\n_none yet_"
-new_text="## Related\n\nClosed 2026-07-25 per host decision — see docs/ops/post-redeploy-wiki-migration.md §1.8."
-```
-
-Two notes for whoever runs it:
-- **Keep the filename.** Confirmed deliberate; renaming risks wikilink breakage for zero reader benefit.
-- The live body contains pre-existing malformed markup (stray `</observed>`,
-  `<parameter name="expected">` residue). Use `patch`, **not** a full-content `write` — a wholesale
-  rewrite would likely mangle it further. Unrelated to this closure, but worth a separate cleanup row.
-
-**Follow-up surfaced, not actioned** (outside this lane's claimed write-set): the STATUS.md
-`host-decision` row *"BUG-018 canonical filename trailing-hyphen — rename canonical, or `wiki
-action=promote` a draft over it?"* is now answered by the 2026-07-25 decision (keep the filename)
-and is ready to be deleted. I left STATUS.md untouched to stay inside the collision check I ran.
+**Moved (physically, not copied):** content-addressed manifests · fail-closed manifest validation ·
+contamination/privacy/quality gates · Dataset Forge.
+**Retained by umbrella:** dataset pricing modes · frozen contributor settlement.
+**Seam:** *admission is non-monetary; consideration is monetary* — nothing downstream needs pricing or
+settlement to **admit** a manifest, and this lane records none of those fields. Whether the retained
+requirements may create a second paid surface is an explicit host decision, not an inference made here.
 
 ---
 
-## Fold 2 (v3) — after opposite-provider round 2 returned `adapt`
+## Irreducibility calls (1C — no new top-level handle)
 
-Verdict source: `…/scratchpad/verdict-retire-inventory.md` §"Round 2" (reviewed v2 at `9bd88a07`,
-read-only static analysis + read-only GitHub PR queries). Artifact bumped **v2 → v3** in place.
+Recorded as a table in `design.md` D4. No irreducibility finding exists for anything here, so nothing ships
+as a handle.
 
-**Round 2 confirmed v2's substance.** It independently reproduced every headline count — 38 website
-sites / 8 files with the per-tool split 7/9/5/2/15; 42 literal wire sites / 10 files; 57 imports /
-26 files; 119 references / 41 files = 176; 376 calls / 62 files; 17 non-call references; the
-non-test star import — plus the `wiki action=list` no-equivalent analysis, both new blockers, and
-all three task-checkoff states. It named four corrections. **Every disputed number below was
-re-derived by me before folding, not taken from the verdict.**
-
-### Correction 1 — B2 file count: 4 → **5** (count 17 unchanged)
-
-Re-ran my binding-aware AST pass (module aliases resolved per-file, `Attribute` nodes classified by
-whether their `id()` is the `.func` of an enclosing `Call`):
-
-| File | Non-call refs |
-|---|---|
-| `tests/test_mcp_dispatch_docstring_parity.py` | 11 |
-| `tests/test_api_market.py` | 2 |
-| `tests/test_goals_discoverability.py` | 2 |
-| `tests/test_api_universe.py` | 1 |
-| `tests/test_validate_ship_packet_action.py` | 1 |
-| **Total** | **17 across 5 files** |
-
-Same run re-emitted `total module-attr refs: 119` / `of which calls: 102`, so classes B/B1 are
-unchanged and only the B2 **file** count was wrong. The verdict's 5-file list matches mine exactly.
-**Applied:** §4a row `4` → **`5`** plus an inline correction note naming all five files.
-
-### Correction 2 — blocker prose
-
-**2.3-D (`stream_run`).** v2 claimed it "appears in the repository only inside the legacy
-`extensions` docstring." I verified this myself and **v2 was false**: `_action_stream_run` at
-`tinyassets/api/runs.py:924`; dispatch entry `_RUN_ACTIONS["stream_run"]` at `:1891`; enumerated at
-`tinyassets/api/extensions.py:737`; and covered by real tests (`test_branch_runner.py:751,925,963`;
-`test_api_runs.py:37,65,96`). Re-ran my canonical-action AST extraction to confirm the blocker
-still holds — `read_graph` emits exactly `['get','get_branch','get_run','inspect','list',
-'list_runs','search']`, no `stream_run`. **Applied:** 2.3-D reframed as **canonical
-unreachability**, with the explicit note that retirement removes the only wire *route* to working,
-tested functionality — which makes restoring it a routing decision, not new feature work.
-
-I also swept for the same defect wherever else I had written "docstring-only," since the verdict
-named only `stream_run`. Same error found and fixed for `get_node_output`
-(`api/evaluation.py:394`, dispatch `:783`), and verified real for `get_activity`
-(`api/universe.py:6084`), `give_direction` (`:6088`), `read_premise` (`:6089`), `set_premise`
-(`:6090`), `submit_node_bid` (`:6109`). §5 now defines "orphaned" as *unreachable through the
-canonical seven*, never *unimplemented*.
-
-**2.3-E (packaged skills) — three sub-corrections, all verified:**
-
-| v2 said | Truth | How I verified |
+| Behavior that could read as a new tool | Call | Lands as |
 |---|---|---|
-| `get_premise` / `set_premise` | **`read_premise`** / `set_premise` | `premise/SKILL.md:13` reads `action="read_premise"`. `get_premise` is a tool on the *separate* stdio server `tinyassets/mcp_server.py` (artifact §3) — a different server entirely. |
-| "**three** of the five actions … no canonical equivalent" | **four** of five | Unique set across the 4 skills = {`read_premise`, `set_premise`, `inspect`, `get_activity`, `give_direction`}. Only `inspect` is emitted by `read_graph` (AST extraction above) ⇒ **4** unreachable. |
-| "the moment **4.1** lands" | breaks at **4.4** | The mirror is a checked-in copy carrying its own registrations — `runtime/tinyassets/universe_server.py:1030` still defines `_DEPRECATED_TOOL_NAMES`. `runtime/server.py:39-40` boots **the mirror**, so 4.1 (source-only) leaves the plugin working; the window opens when **4.4** regenerates it. |
+| Dataset registration (`register_dataset`) | Not irreducible — a manifest is a typed entry whose only required key is `type` | `write_page` + frontmatter |
+| Dataset registry / catalog surface | Not irreducible — this is what commons search + changed-since already are | `read_page`, existing default discovery scope |
+| `validate_manifest` | Not a handle, but manifest completeness/provenance binding is platform enforcement | Server-side fail-closed manifest-admission gate at the run/mint boundary; no caller-facing verb |
+| `validate_license` | Neither a handle nor behavior authorized in this lane; the host has not authorized a license-enforcement boundary | No implementation here; declared-identifier resolution/composition consumes `paid-market-economy` |
+| Dataset Forge as a platform service | Not irreducible; the corollary applies — many plausible shapes ⇒ user-buildable ⇒ commons | Forkable commons graph via `write_graph`/`run_graph`; replaceable seed set |
+| New contamination/dedup/quality evaluators | Not irreducible — gate evaluation is `constraint-evaluation`'s; dedup is ordinary node work | Existing gates + nodes; this change requires only the *binding* to an exact `manifest_hash` |
+| Dataset lineage / credit graph | Not irreducible **and it already exists** | `evaluation-outcomes-and-attribution` ledgers (widened in place, not duplicated) |
+| `promote_to_commons` | Not irreducible — promotion is a `write_page` of the named entry | `write_page` + existing draft-then-promote lifecycle; this change adds a *constraint*, not a mechanism |
 
-**Applied:** 2.3-E retitled to task 4.4, given a per-skill reachability table, and all three defects
-recorded inline. Precondition 5 in §11 restated with the 4.4 deadline. This one is a real
-sequencing fix, not cosmetic — v2 would have had the migration land against the wrong task.
+**1B compliance:** promotion is custody-agnostic (host machine / private brain / vault / platform-held all
+promote identically), never automatic (four named refusals: crawl, publish-on-run-completion, inference
+from adjacency/similarity/co-location/prior-sharing, promotion on a principal's behalf), and never assumes
+the platform holds the private source. The commons side is named explicitly — public-by-definition,
+platform-held as commons content, exportable — while the private side is left unanswered in both directions.
 
-### Correction 3 — new authorization/action-scope metadata class (**class L / Finding 2.3-F**)
-
-Verified `tinyassets/auth/provider.py:516-618`: five `_extend_scope_rows(..., tool=…)` calls keyed
-on `universe` `:516`, `wiki` `:525`, `extensions` `:580`, `gates` `:600`, `goals` `:610`, carrying
-`write_actions` / `costly_actions` / `admin_actions` — including the money-write set
-(`escrow_lock/release/refund/fund/set_wallet/withdraw`). I then traced **all six**
-`require_action_scope` call sites and confirmed each passes a hardcoded legacy tool-name literal.
-Five enforcement sites are on bodies canonical handles delegate into; the `gates` site is reached
-only from the hidden legacy dispatcher:
-`api/universe.py:6235`→`:6151`, `api/wiki.py:2789`→`:2651`, `api/extensions.py:399`→`:248`,
-`api/market.py:2595` (`"goals"`), `api/market.py:3936` (`"gates"`), `api/first_contact.py:50`
-(`"universe"`).
-
-**Why it matters:** task 4.2 is told to remove "the legacy-name set, and dead registration-only
-state." This table *looks* exactly like that and **is not** — it is load-bearing authorization and
-availability state. A missing row fails closed; the narrower risk is removing mutating
-classifications while leaving actions to default to `read` in resolve-always mode.
-**Applied:** new census row L, new §4f / Finding 2.3-F, new §11 precondition 10, and an inline
-scope guard on tasks 4.2/4.4 in `tasks.md` requiring them to state whether they preserved or
-lockstep-migrated the registry and mirror, gated by a two-part regression. Does **not** change the
-42-site count; `community_change_context` has no scope row (fixed single action).
-
-### Checkoff re-validation
-
-Re-checked against the corrected artifact — **no checkoff changes**, and this matches round 2's own
-finding 4 ("2.1 may remain checked … 2.2 may remain checked … 2.3 is correctly unchecked"):
-
-| Task | State | Still correct because |
-|---|---|---|
-| 2.1 | `[x]` | Unaffected by all three corrections. Round 2 independently re-queried #1493/#1467/#1466/#1465 and reproduced OPEN + matching head SHAs. |
-| 2.2 | `[x]` | Unaffected. Round 2 reproduced #1561 OPEN draft `1a5d45af`, exactly 3 files, six names disjoint, #1467's `directory_server.py` delta still present. |
-| 2.3 | `[ ]` | Still correctly unchecked. None of the three corrections clears a gate — 2.3-F *adds* a blocker, and 2.3-D/E tighten two existing ones. |
-
-`openspec validate retire-legacy-live-mcp-tools --strict` → **valid**. No `.py` touched, so ruff was
-not required.
+**Attribution:** referenced, not rebuilt. The contribution ledger needed no change; the attribution edge
+needed only a generic endpoint-domain widening, carried as a MODIFIED delta on the same table rather than
+a parallel store. Generic multi-parent semantics are consumed from `node-discovery-and-remix`.
 
 ---
 
-## Fold 3 (v4) — after opposite-provider round 3 returned `adapt`
+## Umbrella touchpoints (`build-forward-platform-capabilities`)
 
-Round 3 left B2 (**17 references / 5 files**), 2.3-D, and 2.3-E unchanged. It corrected Finding
-2.3-F's failure mode: `require_action_scope` fails closed when `action_scope_for` returns `None`,
-raising `PermissionError` before resolve-always's read exemption. This was reproduced in the local
-tree and at production source SHA `0603aae1`. The residual fail-open risk is narrower: removing
-only write/costly/admin classifications while leaving mutating actions in the registry defaults
-them to `read`, which resolve-always mode permits.
+- **`tasks.md` 3.1** — owner assigned for the non-monetary half; monetary half recorded as still unassigned;
+  both original blockers' resolution recorded; release contents listed; MODIFIED-delta note added.
+  **Left unchecked** — and noted as staying unchecked even after landing, since its monetary half remains.
+- **`tasks.md` 3.2** — owner assigned; Forge recorded as moved whole; downstream fan-out recorded.
+  **Left unchecked** (a successor-outcome tracker completes on its successor *landing*).
+- **`design.md`** — the `data-commons` ledger row split into two (contribution/admission half → successor;
+  pricing+settlement half → unassigned). Records **no** transaction-owner edge on the released half with the
+  D3 reconciliation stated explicitly, and a **`boundary-layer` edge scoped to Forge's corpus fetch only**
+  (restored per Codex finding 3).
+- **`proposal.md`** — `data-commons` New-Capabilities line narrowed; Released Capabilities entry added;
+  ownership convention amended from per-**delta** to per-**requirement**, with a concurrent-amendment note
+  naming `claude/o5-demand-side` / PR #1771 (which makes the same amendment from the same base — task 8.6
+  carries the reconciliation for whichever lands second).
+- **`specs/data-commons/spec.md`** — partial-release header added; four requirements physically removed; two
+  retained.
+- **Header count `19 tasks, 5 complete, 14 remaining`: unchanged** — nothing was checked (Codex confirmed
+  the count is exact).
 
-Applied across inventory §4f/§10/§11 and tasks 2.3/3.5/4.2/4.4: the registry is load-bearing
-authorization **and availability** state; source enforcement and the packaged mirror must be
-preserved or lockstep-migrated; and a regression must prove both missing-metadata denial and
-non-read classification for every mutating action. The §4f reachability row now agrees with §5:
-`gates` is **not** reached through a canonical handle (20 of 20 gate actions remain orphaned).
-Task 2.3 remains unchecked.
+---
 
-LANE_RESULT: done - folded round-3 ADAPT into inventory v4 and task gates: missing action-scope metadata fails closed, classification-only removal is the narrower resolve-always fail-open risk, `gates` has zero canonical routes, and tasks 4.2/4.4 now require lockstep source/mirror migration plus a two-part regression; B2 17/5 and 2.3-D/E remain unchanged.
+## Codex verdict
+
+**`VERDICT: adapt`** — Codex (gpt-5.x, read-only, 2026-07-25, ~164k tokens), dispatched in-lane via the
+stdin route (`codex exec --cd <win-path> --sandbox read-only - < ask.txt`), never argv. Six claims put up
+for refutation: **3 CONFIRMED, 3 REFUTED. All three refutations applied.**
+
+| Claim | Verdict | Disposition |
+|---|---|---|
+| 1 — split correctness / disjointness | CONFIRMED | No change |
+| 2 — "no MODIFIED delta needed" | **REFUTED** | **Applied** — see below |
+| 3 — irreducibility / no new handle | CONFIRMED | No change |
+| 4 — selector consumed-not-owned | **REFUTED** | **Applied** |
+| 5 — PLAN #1761 reading | CONFIRMED | No change |
+| 6 — umbrella touchpoints | **REFUTED** (partial) | **Applied** |
+
+**Finding 2 — the one that mattered.** The successor asserted manifest-to-manifest attribution while
+claiming existing ledger semantics sufficed. They do not. On verification the defect is *stronger* than
+Codex reported: `tinyassets/attribution/schema.py:33-47` constrains `parent_kind`/`child_kind` with
+`CHECK (… IN ('branch','node'))` and `tinyassets/api/market.py:898-975` writes them as the literal
+`'branch'` — so a manifest edge is **rejected by the schema**, not merely unwritten by the current call
+site. Now carried as a MODIFIED delta (endpoint set widened, kept closed and enumerated; all other
+guarantees restated unchanged), with a no-sync-without-both rule, a premise-verification task, and
+implementation/test tasks. The *contribution ledger* needed no delta — it already carries a generic
+`source_artifact_id`/`source_artifact_kind` with no closed set — so `Modified Capabilities: None` was half
+right, and is now exact rather than reversed.
+
+**Finding 4.** Selector ownership was misattributed. `reconcile-universe-personification-relay` 6.1/6.7 own
+the person-dossier anti-collision **restriction** on the commons write path — which presumes the path
+rather than delivering it — and neither task's write-set claims the routing. Ownership is now recorded as
+**UNRESOLVED**, with task 0.5 to establish it before §1 is built. The claim is re-anchored to code on
+`main` (`tinyassets/universe_server.py:771-793`: an authenticated freeform write with omitted `universe_id`
+resolves to the caller's home and returns `relay_to_universe`, so only `kind=` filings reach the commons)
+rather than to `docs/audits/2026-07-22-write-page-commons-residual.md`, which lives only on the unmerged
+branch `claude/write-page-commons-residual` and is itself partly stale — it found two `write_page`
+definitions where `main` now has one.
+
+**Finding 6.** Dropping the `boundary-layer` edge was unsound: Forge includes a grant-gated corpus fetch,
+and `boundary-layer` requires a source node to bind a declared, user-granted, revocable connection class.
+Restored, scoped to external corpus/storage access only (manifest movement still transfers references, not
+bytes), with a task forbidding a local fetcher that bypasses grant binding. Codex separately **confirmed**
+that no transaction-owner edge is needed and the header count is unchanged; since umbrella D3 names `data`
+among transaction consumers, the ledger row now states explicitly that the consumption is the *retained*
+pricing/settlement half.
+
+Re-validated after applying: `openspec validate --all --strict` → 43 passed, 0 failed.
+
+**Not done (out of scope, by instruction):** no PR opened; no runtime code; nothing synced to
+`openspec/specs/`; local review scratch files were not included in the fold commit.
+
+## Independent Codex fold — six findings
+
+The second independent review returned `adapt`. The fold disposition is explicit per finding:
+
+1. **Unauthorized restrictive-license position — OPEN QUESTION / host decision.** Removed the curated
+   registry ownership, no-derivatives rejection, restriction propagation, and license enforcement from
+   normative behavior. `design.md` now asks whether dataset content is outside the pinned CC0 default and,
+   if so, whether platform license enforcement is authorized. The lane does not answer either question.
+2. **Duplicate license-lattice owner — CONSUME LANDED OWNER.** `paid-market-economy` remains the single
+   owner of declared-identifier resolution and restriction composition. This lane owns only manifest
+   admission and carries no ownership-transfer delta or second registry.
+3. **Paid-surface leak — FIELDS REMOVED + OPEN QUESTION.** Removed pricing terms and contributor-share
+   fields from the manifest, tasks, and acceptance scenarios; removed dataset-market language. Whether a
+   dataset-rights paid surface is authorized is a host decision for the umbrella's retained monetary half,
+   not behavior staged by this lane.
+4. **Wiki overwrite collision — MODIFIED OWNER DELTA.** Added
+   `specs/wiki-commons/spec.md`: a freeform write to an existing immutable content-addressed entry refuses
+   on the write path and leaves body/frontmatter/index unchanged; ordinary promoted pages still overwrite.
+5. **Admission/curation contradiction — RESOLVED TO NON-BLOCKING ANNOTATION.** Curation and moderation are
+   post-hoc annotations on already-admitted entries. Authenticated commons writes have no pre-publication
+   review gate, matching the sibling collaboration contract.
+6. **Derivation overlap / dataset-specific kind — CONSUME OWNERS + MINIMAL MODIFIED DELTA.**
+   `data-commons` consumes the landed attribution guarantees and the generic N-parent
+   `node-discovery-and-remix` contract. The attribution-owner delta now adds only the generic
+   `commons-artifact` endpoint domain; no dataset-specific primitive or second derivation contract remains.
+
+Strict revalidation after the complete fold: the named change is valid and the all-spec run reports
+43 passed, 0 failed. The fold is spec-only; no task was checked, no as-built spec was synced, and no PR was
+opened.
+
+LANE_RESULT: done - folded all 6 independent-review findings into the spec artifacts and per-finding lane report; strict validation passes and the branch is pushed without a PR.

@@ -164,7 +164,7 @@ Request, bid, match, fan-out-slot, claim, transition-event, delivery-receipt, di
 ### Requirement: Bids and match decisions are versioned, authorized, and reproducible
 Only an authenticated, non-revoked host owner or a target/action/time-bounded on-behalf grant SHALL create or replace a bid. Each bid SHALL bind immutable request identity/version, bid identity/version, host and owner identities, capability descriptor/version, executable quantity, landed price and fee-policy version, delivery/acceptance terms, capacity fence, expiry, and canonical digest/signature where required. A persistent bid SHALL materialize exactly one immutable pure `BookOffer` for matching, with `offer_id = bid_id` and identical version, quantity, and economic terms; “offer” SHALL name only that pure adapter value, not a second persisted lifecycle. When price discovery selected a native firm quote, the bid SHALL additionally bind and revalidate its quote id/version/digest. One host-capacity slot SHALL expose at most one current bid version for a request; replacement, cancellation, expiry, capability revocation, capacity consumption, or owner/grant revocation SHALL make earlier versions ineligible without erasing history.
 
-Within one explicitly chosen paid request/path, the market SHALL resolve a bid window by invoking the canonical pure matcher over one versioned eligible bid snapshot. Cross-lane quote evaluation SHALL remain owned by `paid-market-live-price-discovery`; Wave 2 SHALL allocate only request-bound bidders/fan-out slots and SHALL NOT repeat or override that routing decision. It SHALL record an immutable match decision containing the request and selected bid versions, any linked quote versions, rejected bids with bounded reason codes, matcher/oracle version, hard constraints, requester-authorized objective and weights, deterministic tie-break inputs, fan-out slot assignment, and decision digest. Hidden platform preferences, maintainer capacity, provider credentials, or post-window bid mutation SHALL NOT affect selection. A later claim SHALL atomically revalidate and consume the exact recorded versions or recompute through the bounded contention path; a match decision alone SHALL authorize neither execution credentials nor money movement.
+Within one explicitly chosen paid request/path, the market SHALL resolve a bid window by invoking the canonical pure matcher over one versioned eligible bid snapshot. Before `bid_window_ends_at`, only the requester or its target/action/time-bounded grant SHALL record the match and thereby close the window early. At or after the window boundary, an eligible request-bound host MAY invoke the deterministic matcher, but the resulting total SHALL NOT exceed the requester's spend cap. Neither match nor claim SHALL proceed at or after the request deadline. Cross-lane quote evaluation SHALL remain owned by `paid-market-live-price-discovery`; Wave 2 SHALL allocate only request-bound bidders/fan-out slots and SHALL NOT repeat or override that routing decision. It SHALL record an immutable match decision containing the request and selected bid versions, any linked quote versions, rejected bids with bounded reason codes, matcher/oracle version, hard constraints, requester-authorized objective and weights, requester early-close authorization, deterministic tie-break inputs, fan-out slot assignment, and decision digest. Hidden platform preferences, maintainer capacity, provider credentials, or post-window bid mutation SHALL NOT affect selection. A later claim SHALL atomically revalidate the exact recorded versions, requester cap, early-close/window state, and deadline before consuming them or recomputing through the bounded contention path; a match decision alone SHALL authorize neither execution credentials nor money movement.
 
 #### Scenario: expired or revoked bid cannot win
 - **WHEN** a bid expires or its host, capability, capacity, owner, or grant authority is revoked before the match snapshot
@@ -178,8 +178,17 @@ Within one explicitly chosen paid request/path, the market SHALL resolve a bid w
 
 #### Scenario: match receipt binds the later claim
 - **WHEN** a host attempts to claim from a recorded match decision
-- **THEN** the claim rechecks the exact request, bid, capability, capacity, expiry, authority, and version bindings
+- **THEN** the claim rechecks the exact request, bid, capability, capacity, expiry, authority, version, spend-cap, bid-window, requester-early-close, and deadline bindings
 - **AND** any stale binding aborts the entire claim or enters the bounded recomputation path
+
+#### Scenario: host cannot race the requester at an unbounded price
+- **WHEN** an eligible host attempts to record or claim a match before the bid window closes or above the requester spend cap
+- **THEN** the command is refused unless a requester-authorized early-close receipt binds the selected match within cap
+- **AND** a cheaper bid, host timing, or caller-chosen quantity cannot turn host eligibility into unbounded self-selection
+
+#### Scenario: request deadline terminates matching and claiming
+- **WHEN** match or claim is attempted at or after the request deadline, including with a bid whose own expiry is later
+- **THEN** the command is refused before any request, bid, capacity, match, or claim mutation
 
 #### Scenario: fan-out allocates only declared slots
 - **WHEN** a request declares bounded `top_n` fan-out
@@ -192,7 +201,7 @@ Within one explicitly chosen paid request/path, the market SHALL resolve a bid w
 - **AND** provider credentials, execution leases, logical reservations, and real-fund effects still require their separate authoritative grants and receipts
 
 ### Requirement: Paid-market claims are narrow, exact, and atomic
-The Postgres paid-request claim transport SHALL claim only eligible bid work in one transaction. Every bid row SHALL carry a monotonic `version` used by compare-and-set and SHALL materialize one immutable pure `BookOffer`. A single-request claim SHALL lock only the addressed request/bid rows. A multi-bid allocation SHALL call `match.best_execution` on a versioned eligible bid snapshot, lock the selected bid IDs in canonical order, verify state and version, and transition all selected rows atomically. A stale selected bid SHALL roll back and permit at most three jittered recomputations; exhaustion SHALL return an honest contention result rather than a partial fill or retry storm. This claim domain SHALL NOT replace the separate repo-file node-bid claim path.
+The Postgres paid-request claim transport SHALL claim only eligible bid work in one transaction. Every bid row SHALL carry a monotonic `version` used by compare-and-set and SHALL materialize one immutable pure `BookOffer`. A single-request claim SHALL lock only the addressed request/bid rows. A multi-bid allocation SHALL call `match.best_execution` on a versioned eligible bid snapshot, lock the selected bid IDs in canonical order, verify state and version, and transition all selected rows atomically. Every request-state write SHALL pass through the canonical allowed-transition guard; an unlisted edge SHALL raise before mutation, and changing the transition table SHALL change command behavior rather than only enumeration output. A stale selected bid SHALL roll back and permit at most three jittered recomputations; exhaustion SHALL return an honest contention result rather than a partial fill or retry storm. This claim domain SHALL NOT replace the separate repo-file node-bid claim path.
 
 #### Scenario: exactly one claimer wins a paid request
 - **WHEN** multiple eligible actors concurrently claim the same offered paid request
@@ -208,6 +217,11 @@ The Postgres paid-request claim transport SHALL claim only eligible bid work in 
 - **WHEN** `best_execution` returns no covering set
 - **THEN** the transport records no claim
 - **AND** it does not silently accept a partial fill
+
+#### Scenario: transition table is runtime authority
+- **WHEN** a required claim edge is removed or a forbidden edge is added to the canonical transition table
+- **THEN** the corresponding command behavior changes before any state mutation
+- **AND** no caller-specific hardcoded source-state list bypasses or overrides the table
 
 ### Requirement: Paid delivery is fence-bound, replay-safe, and dispute-aware
 Only the host holding the current paid claim and distributed-execution lease SHALL advance a request to `running` or submit completion. Completion SHALL bind the exact `job_id:lease_fence:accepted_result_sha256` identity, request/claim/match versions, immutable deliverable artifact reference and digest, media/schema type, byte count, producer identity, execution receipt, declared domain acceptance gates and the domain owner's semantic verdict, and delivery ACL. The workflow SHALL store the deliverable receipt and `completed` transition atomically or store neither, but it SHALL NOT compute, replace, or upgrade the domain verdict. Progress messages and host self-attestation SHALL NOT constitute completion, acceptance, a paid observation, or settlement authority.
@@ -337,10 +351,10 @@ Ledger tables, sequences, raw apply functions, and drain helpers SHALL deny acce
 - **THEN** the wrapper rejects the request before ledger execution
 - **AND** no transaction, posting, or balance changes
 
-#### Scenario: public and user roles cannot invoke ledger writers
-- **WHEN** public, anonymous, authenticated, or ordinary application roles attempt direct table DML or raw ledger RPC execution
+#### Scenario: public, user, and wrapper-caller roles cannot invoke raw ledger writers
+- **WHEN** public, anonymous, authenticated, ordinary application, or settlement-wrapper caller roles attempt direct table DML or raw ledger RPC execution
 - **THEN** PostgreSQL denies the operation
-- **AND** only the dedicated internal settlement role can invoke the bounded wrapper
+- **AND** only the wrapper's non-login definer may invoke the raw ledger function while the dedicated settlement role can invoke only the bounded wrapper
 
 #### Scenario: privileged wrapper independently rechecks row authority
 - **WHEN** an internal caller submits command authority that does not match the tenant, actor, amount, accounts, or state on locked business rows
