@@ -8,6 +8,7 @@ from typing import Protocol, Sequence
 
 from tinyassets.paid_market.fee_schedule import FeeScheduleError, scheduled_fee_micros
 from tinyassets.paid_market.index import PPM, capped_pair_weights
+from tinyassets.paid_market.quotes import ValidatedQuote
 from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
 
 
@@ -17,12 +18,21 @@ class PriceSurfaceError(ValueError):
 
 @dataclass(frozen=True)
 class SettlementBinding:
+    """What all three settlement authorities must already agree on.
+
+    Everything a price observation is allowed to assert about *money* and
+    *parties* lives here, so no caller can supply it after the receipts agree.
+    Unknown linkage is the fail-closed default: a settlement with no attested
+    principal roots is never index-eligible.
+    """
+
     tenant_id: str
     universe_id: str
     settlement_id: str
     accepted_result_id: str
     requester_id: str
     host_owner_id: str
+    descriptor_id: str
     currency: str
     token: str
     chain: str
@@ -30,6 +40,9 @@ class SettlementBinding:
     net_micros: int
     fee_micros: int
     fee_schedule_version: str
+    buyer_principal_root: str | None = None
+    seller_principal_root: str | None = None
+    linked_party: bool = False
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,8 @@ class PaidObservation:
     accounting_transaction_id: str
     acceptance_evidence_digest: str
     chain_receipt_digest: str
+    quote_id: str
+    descriptor_id: str
     market_class_id: str
     market_scope_revision: str
     public_scope: bytes
@@ -148,6 +163,9 @@ class PriceSurface:
     market_class_id: str
     market_scope_revision: str
     public_scope: bytes
+    # Compatible supply headroom shares one demand class, and the aggregate
+    # still retains each source's exact descriptor id as evidence.
+    observation_descriptor_ids: tuple[str, ...]
     raw_vwap: PriceField
     native_ask: PriceField
     external_reference: PriceField
@@ -161,17 +179,20 @@ def join_paid_observation(
     acceptance: DomainAcceptanceReceipt,
     chain: ChainReceipt,
     *,
-    market_class_id: str,
-    market_scope_revision: str,
-    public_scope: bytes,
+    quote: ValidatedQuote,
     unit_price_micros: int,
     quantity: int,
     observed_at: int,
-    buyer_principal_root: str | None,
-    seller_principal_root: str | None,
-    linked_party: bool = False,
 ) -> PaidObservation:
-    """Join existing authority receipts without creating settlement truth."""
+    """Join existing authority receipts without creating settlement truth.
+
+    Nothing price-bearing is accepted from the caller.  *Identity and scope*
+    are derived from the signed v2 quote that the settlement already bound;
+    *money and parties* come from the binding the three receipts agree on; and
+    the declared unit price is admitted only when it exactly reconstructs the
+    settled gross.  The one caller value that survives is a declaration the
+    join then refuses unless authoritative evidence already implies it.
+    """
     if accounting.binding != acceptance.binding or accounting.binding != chain.binding:
         raise PriceSurfaceError("receipt_binding_mismatch")
     binding = accounting.binding
@@ -180,18 +201,20 @@ def join_paid_observation(
         raise PriceSurfaceError("domain_not_accepted")
     if chain.finality_status != "final" or chain.reorged:
         raise PriceSurfaceError("chain_not_final")
+    _require_quote_binding(binding, quote)
     for value, label in (
         (accounting.transaction_id, "transaction_id"),
         (acceptance.evidence_digest, "evidence_digest"),
         (chain.receipt_digest, "receipt_digest"),
-        (market_class_id, "market_class_id"),
-        (market_scope_revision, "market_scope_revision"),
+        (quote.quote_id, "quote_id"),
+        (quote.market_class_id, "market_class_id"),
+        (quote.market_scope_revision, "market_scope_revision"),
     ):
         if not value:
             raise PriceSurfaceError(f"{label} is required")
-    public_scope = _canonical_scope(public_scope)
-    _positive_int(unit_price_micros, "unit_price_micros")
+    public_scope = _canonical_scope(quote.public_scope_dimensions)
     _positive_int(quantity, "quantity")
+    _require_settlement_derived_price(binding, unit_price_micros, quantity)
     _nonnegative_int(observed_at, "observed_at")
 
     return PaidObservation(
@@ -199,41 +222,84 @@ def join_paid_observation(
         accounting_transaction_id=accounting.transaction_id,
         acceptance_evidence_digest=acceptance.evidence_digest,
         chain_receipt_digest=chain.receipt_digest,
-        market_class_id=market_class_id,
-        market_scope_revision=market_scope_revision,
+        quote_id=quote.quote_id,
+        descriptor_id=binding.descriptor_id,
+        market_class_id=quote.market_class_id,
+        market_scope_revision=str(quote.market_scope_revision),
         public_scope=public_scope,
         unit_price_micros=unit_price_micros,
         quantity=quantity,
         observed_at=observed_at,
-        buyer_principal_root=buyer_principal_root,
-        seller_principal_root=seller_principal_root,
-        linked_party=linked_party,
-        index_eligible=_index_eligible(
-            binding,
-            buyer_principal_root=buyer_principal_root,
-            seller_principal_root=seller_principal_root,
-            linked_party=linked_party,
-        ),
+        buyer_principal_root=binding.buyer_principal_root,
+        seller_principal_root=binding.seller_principal_root,
+        linked_party=binding.linked_party,
+        index_eligible=_index_eligible(binding),
     )
 
 
-def _index_eligible(
-    binding: SettlementBinding,
-    *,
-    buyer_principal_root: str | None,
-    seller_principal_root: str | None,
-    linked_party: bool,
-) -> bool:
+def _require_quote_binding(
+    binding: SettlementBinding, quote: ValidatedQuote
+) -> None:
+    """Manipulation control: the observation inherits one signed identity.
+
+    A validated quote signs its exact descriptor, market class, scope revision,
+    and scope dimensions under the v2 domain.  Requiring the settlement to
+    match means an aggregator cannot pick a different class or scope bucket
+    after seeing the price, and a v1 quote — whose signature never spanned a
+    scope binding — can never stand behind a public observation.
+    """
+    if (
+        quote.schema_version != 2
+        or quote.market_scope_revision is None
+        or quote.public_scope_dimensions is None
+    ):
+        raise PriceSurfaceError("quote_scope_unsigned")
+    if quote.descriptor_id != binding.descriptor_id:
+        raise PriceSurfaceError("descriptor_binding_mismatch")
+    if quote.settlement_currency != binding.currency:
+        raise PriceSurfaceError("currency_binding_mismatch")
+    if quote.fee_schedule_version != binding.fee_schedule_version:
+        raise PriceSurfaceError("fee_version_binding_mismatch")
+
+
+def _require_settlement_derived_price(
+    binding: SettlementBinding, unit_price_micros: object, quantity: int
+) -> None:
+    """Manipulation control: the price is authoritative money, not a claim.
+
+    A positive fixed weight times an unbounded caller-provided price is still
+    unbounded, so the price is bounded here rather than downstream: it must
+    exactly reconstruct the gross the three authorities settled.  Publishing a
+    10^18-micro print therefore costs 10^18 * quantity micros of real money
+    plus its canonical fee, and a settlement whose gross does not divide
+    exactly by the delivered quantity fails loud instead of rounding into the
+    index.  Integer micros only.
+    """
+    _positive_int(unit_price_micros, "unit_price_micros")
+    if unit_price_micros * quantity != binding.gross_micros:  # type: ignore[operator]
+        raise PriceSurfaceError("unit_price_not_settlement_derived")
+
+
+def _index_eligible(binding: SettlementBinding) -> bool:
     """Manipulation control: who may move trusted paid-market price evidence.
 
     Discovery consumes, never decides, the transaction owner's verified
-    identities.  Exclusion here changes index eligibility only — it never
-    creates a settlement-fee exemption (see :func:`_require_canonical_fee`).
+    identities — all of which are settlement authority, so a caller cannot
+    claim unrelated roots to escape these exclusions.  Exclusion here changes
+    index eligibility only; it never creates a settlement-fee exemption (see
+    :func:`_require_canonical_fee`).
     """
+    buyer_principal_root = binding.buyer_principal_root
+    seller_principal_root = binding.seller_principal_root
     same_owner = binding.requester_id == binding.host_owner_id
     known_roots = buyer_principal_root is not None and seller_principal_root is not None
     same_principal = known_roots and buyer_principal_root == seller_principal_root
-    return known_roots and not same_owner and not same_principal and not linked_party
+    return (
+        known_roots
+        and not same_owner
+        and not same_principal
+        and not binding.linked_party
+    )
 
 
 def collect_references(
@@ -304,6 +370,7 @@ def aggregate_price_surface(
     _positive_int(settlement_ttl, "settlement_ttl")
     if not (0 < principal_share_cap_ppm <= PPM):
         raise PriceSurfaceError("principal_share_cap_ppm is invalid")
+    _require_unique_settlements(observations)
 
     current = [
         observation
@@ -329,6 +396,9 @@ def aggregate_price_surface(
         market_class_id=market_class_id,
         market_scope_revision=market_scope_revision,
         public_scope=public_scope,
+        observation_descriptor_ids=tuple(
+            sorted({observation.descriptor_id for observation in current})
+        ),
         raw_vwap=raw,
         native_ask=native,
         external_reference=external,
@@ -445,6 +515,8 @@ def _raw_vwap_field(
     pair_volumes: dict[tuple[str, str], int] = {}
     buyer_volumes: dict[tuple[str, str], int] = {}
     seller_volumes: dict[tuple[str, str], int] = {}
+    requester_volumes: dict[tuple[str, str], int] = {}
+    host_volumes: dict[tuple[str, str], int] = {}
     for observation in observations:
         pair = observation.principal_pair
         buyer = observation.buyer_principal_root
@@ -459,9 +531,17 @@ def _raw_vwap_field(
         seller_volumes[seller_key] = (
             seller_volumes.get(seller_key, 0) + observation.quantity
         )
+        requester_key = _identity_key(observation.binding.requester_id)
+        host_key = _identity_key(observation.binding.host_owner_id)
+        requester_volumes[requester_key] = (
+            requester_volumes.get(requester_key, 0) + observation.quantity
+        )
+        host_volumes[host_key] = host_volumes.get(host_key, 0) + observation.quantity
     pair_scales = _capped_scales(pair_volumes, principal_share_cap_ppm)
     buyer_scales = _capped_scales(buyer_volumes, principal_share_cap_ppm)
     seller_scales = _capped_scales(seller_volumes, principal_share_cap_ppm)
+    requester_scales = _capped_scales(requester_volumes, principal_share_cap_ppm)
+    host_scales = _capped_scales(host_volumes, principal_share_cap_ppm)
     numerator = Fraction(0)
     denominator = Fraction(0)
     for observation in observations:
@@ -475,6 +555,7 @@ def _raw_vwap_field(
             pair_scales[pair],
             buyer_scales[(buyer, buyer)],
             seller_scales[(seller, seller)],
+            _settlement_identity_scale(observation, requester_scales, host_scales),
         )
         numerator += observation.unit_price_micros * weight
         denominator += weight
@@ -500,8 +581,63 @@ def _raw_vwap_field(
 def _capped_scales(
     volumes: dict[tuple[str, str], int], principal_share_cap_ppm: int
 ) -> dict[tuple[str, str], Fraction]:
+    """Per-identity dampening for one partition, expressed *relatively*.
+
+    Scales from different identity partitions compose through ``min()``, so
+    each partition must be re-based on its own least-dampened member.  The
+    water-filling branch already returns 1 for every uncapped key, but the
+    infeasible-cap branch returns equal weights — whose raw ratio is
+    ``1 / volume``.  Left absolute, a partition holding a single identity (or
+    simply more total volume) would return a uniformly tiny ratio that wins
+    every ``min()`` and erases the caps the other partitions computed.
+    Re-basing keeps the intended reading: 1 means "not dampened here".
+    """
     weights = capped_pair_weights(volumes, principal_share_cap_ppm)
-    return {key: weight / volumes[key] for key, weight in weights.items()}
+    scales = {key: weight / volumes[key] for key, weight in weights.items()}
+    if not scales:
+        return scales
+    ceiling = max(scales.values())
+    return {key: scale / ceiling for key, scale in scales.items()}
+
+
+def _identity_key(identity: str) -> tuple[str, str]:
+    """One settlement identity as a self-pair, so it shares the cap solver."""
+    return (identity, identity)
+
+
+def _settlement_identity_scale(
+    observation: PaidObservation,
+    requester_scales: dict[tuple[str, str], Fraction],
+    host_scales: dict[tuple[str, str], Fraction],
+) -> Fraction:
+    """Manipulation control: dampen by settlement identity, not by call count.
+
+    Principal roots are attested per settlement, so an operator running split
+    accounts can present each wash print with a fresh, unrelated pair of roots
+    and slip under every root- and pair-level bucket.  The requester and host
+    owner are the identities all three authorities already bound, so capping
+    their aggregate volume too removes the split-account lever: influence is
+    bounded by whichever identity partition is most concentrated.
+    """
+    binding = observation.binding
+    return min(
+        requester_scales[_identity_key(binding.requester_id)],
+        host_scales[_identity_key(binding.host_owner_id)],
+    )
+
+
+def _require_unique_settlements(observations: Sequence[PaidObservation]) -> None:
+    """Manipulation control: one settlement is one observation, forever.
+
+    Volume aggregates by settlement identity, never per call, so replaying the
+    same settled trade into the window cannot multiply its weight.
+    """
+    seen: set[str] = set()
+    for observation in observations:
+        settlement_id = observation.binding.settlement_id
+        if settlement_id in seen:
+            raise PriceSurfaceError("duplicate_settlement_observation")
+        seen.add(settlement_id)
 
 
 def _native_ask_field(

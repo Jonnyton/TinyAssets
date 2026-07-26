@@ -43,6 +43,7 @@ from tinyassets.paid_market.price_surface import (
     aggregate_price_surface,
     join_paid_observation,
 )
+from tinyassets.paid_market.quotes import ValidatedQuote
 from tinyassets.paid_market.routing import (
     RouteCandidate,
     RouteRequest,
@@ -85,6 +86,9 @@ def _canonical_fee(gross: int) -> int:
     )
 
 
+DESCRIPTOR_ID = "sha256:descriptor"
+
+
 def _binding(**changes: object) -> SettlementBinding:
     gross = int(changes.get("gross_micros", 1_000))  # type: ignore[arg-type]
     fee = int(changes.get("fee_micros", _canonical_fee(gross)))  # type: ignore[arg-type]
@@ -95,6 +99,7 @@ def _binding(**changes: object) -> SettlementBinding:
         "accepted_result_id": "job-1:7:sha256-result",
         "requester_id": "buyer-1",
         "host_owner_id": "seller-1",
+        "descriptor_id": DESCRIPTOR_ID,
         "currency": "tiny",
         "token": "tiny-test",
         "chain": "base-sepolia",
@@ -102,9 +107,33 @@ def _binding(**changes: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "buyer_principal_root": "principal:buyer",
+        "seller_principal_root": "principal:seller",
+        "linked_party": False,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
+
+
+def _quote(**changes: object) -> ValidatedQuote:
+    values: dict[str, object] = {
+        "quote_id": "quote-1",
+        "authority_class": "native_firm",
+        "descriptor_id": DESCRIPTOR_ID,
+        "market_class_id": "sha256:market",
+        "settlement_currency": "tiny",
+        "total_micros": 1_000,
+        "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "expires_at": 200,
+        "executable": True,
+        "capacity_remaining": 100,
+        "canonical_bytes": b'{"domain":"tinyassets.paid-market.quote.v2"}',
+        "schema_version": 2,
+        "market_scope_revision": SCOPE_REVISION,
+        "public_scope_dimensions": SCOPE,
+    }
+    values.update(changes)
+    return ValidatedQuote(**values)  # type: ignore[arg-type]
 
 
 def _observation(
@@ -120,8 +149,15 @@ def _observation(
     observed_at: int = 100,
     binding: SettlementBinding | None = None,
 ):
+    """Price and gross are one fact: the settlement moved ``price * quantity``."""
     bound = binding or _binding(
-        settlement_id=source, requester_id=requester_id, host_owner_id=host_owner_id
+        settlement_id=source,
+        requester_id=requester_id,
+        host_owner_id=host_owner_id,
+        gross_micros=price * quantity,
+        buyer_principal_root=buyer_root,
+        seller_principal_root=seller_root,
+        linked_party=linked_party,
     )
     return join_paid_observation(
         AccountingReceipt(binding=bound, transaction_id=f"tx:{source}"),
@@ -137,15 +173,10 @@ def _observation(
             finality_status="final",
             reorged=False,
         ),
-        market_class_id="sha256:market",
-        market_scope_revision=SCOPE_REVISION,
-        public_scope=SCOPE,
+        quote=_quote(),
         unit_price_micros=price,
         quantity=quantity,
         observed_at=observed_at,
-        buyer_principal_root=buyer_root,
-        seller_principal_root=seller_root,
-        linked_party=linked_party,
     )
 
 
@@ -273,6 +304,181 @@ def test_influence_cap_is_load_bearing(monkeypatch) -> None:
         lambda volumes, cap: {key: Fraction(1) for key in volumes},
     )
     assert_control_is_load_bearing(_guard_one_principal_cannot_dominate)
+
+
+# --------------------------------------------------------------------------
+# Mutation probe 2b — the price itself is bounded by authoritative money
+# --------------------------------------------------------------------------
+
+
+def _guard_an_unbounded_price_is_refused() -> None:
+    """A caller-declared price that its settlement did not move is refused."""
+    settled = _binding(settlement_id="unbounded", gross_micros=1_000)
+    for out_of_band in (10**18, 999_000_000, 1_001, 999):
+        raised = False
+        try:
+            _observation(
+                price=out_of_band,
+                quantity=10,
+                source="unbounded",
+                binding=settled,
+            )
+        except PriceSurfaceError as exc:
+            raised = "unit_price_not_settlement_derived" in str(exc)
+        assert raised, "an out-of-band price must not become price evidence"
+
+
+def test_settlement_derived_price_control_is_load_bearing(monkeypatch) -> None:
+    _guard_an_unbounded_price_is_refused()
+
+    monkeypatch.setattr(
+        price_surface, "_require_settlement_derived_price", lambda *a, **k: None
+    )
+    assert_control_is_load_bearing(_guard_an_unbounded_price_is_refused)
+
+
+def test_a_bounded_weight_on_an_unbounded_price_is_still_unbounded() -> None:
+    """Why the weight cap alone was not enough (Codex money review finding 1).
+
+    Three honest 100-micro prints plus one 10^18-micro print: the cap bounds
+    the *weight*, so without a price bound the published index still lands
+    astronomically far from every honest trade.  The settlement bound removes
+    the input rather than dampening it.
+    """
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            source=f"honest-{index}",
+            buyer_root=f"principal:b{index}",
+            seller_root=f"principal:s{index}",
+            requester_id=f"buyer-{index}",
+            host_owner_id=f"seller-{index}",
+        )
+        for index in range(3)
+    ]
+    with pytest.raises(PriceSurfaceError, match="unit_price_not_settlement_derived"):
+        _observation(
+            price=10**18,
+            quantity=10,
+            source="whale",
+            binding=_binding(settlement_id="whale", gross_micros=1_000),
+        )
+
+    assert _surface(honest).raw_vwap.value_micros == 100
+
+
+# --------------------------------------------------------------------------
+# Mutation probe 2c — settlement-identity dampening (split accounts)
+# --------------------------------------------------------------------------
+
+
+def _guard_split_accounts_cannot_dominate() -> None:
+    """Fresh roots per print, one settlement identity — still capped."""
+    wash = [
+        _observation(
+            price=1_000_000,
+            quantity=1_000,
+            source=f"split-{index}",
+            buyer_root=f"principal:sock-b{index}",
+            seller_root=f"principal:sock-s{index}",
+            requester_id="attacker",
+            host_owner_id=f"seller-{index}",
+        )
+        for index in range(6)
+    ]
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            source=f"honest-{index}",
+            buyer_root=f"principal:b{index}",
+            seller_root=f"principal:s{index}",
+            requester_id=f"buyer-h{index}",
+            host_owner_id=f"seller-h{index}",
+        )
+        for index in range(3)
+    ]
+
+    published = _surface(wash + honest).raw_vwap.value_micros
+    assert published is not None
+    assert published < 1_000_000 // 2
+
+
+def test_settlement_identity_dampening_is_load_bearing(monkeypatch) -> None:
+    _guard_split_accounts_cannot_dominate()
+
+    from fractions import Fraction
+
+    monkeypatch.setattr(
+        price_surface, "_settlement_identity_scale", lambda *a, **k: Fraction(1)
+    )
+    assert_control_is_load_bearing(_guard_split_accounts_cannot_dominate)
+
+
+def _guard_replayed_settlement_is_refused() -> None:
+    once = _observation(price=100, quantity=10, source="replayed")
+    raised = False
+    try:
+        _surface([once, once])
+    except PriceSurfaceError as exc:
+        raised = "duplicate_settlement_observation" in str(exc)
+    assert raised, "one settlement is one observation"
+
+
+def test_settlement_uniqueness_control_is_load_bearing(monkeypatch) -> None:
+    _guard_replayed_settlement_is_refused()
+
+    monkeypatch.setattr(
+        price_surface, "_require_unique_settlements", lambda observations: None
+    )
+    assert_control_is_load_bearing(_guard_replayed_settlement_is_refused)
+
+
+# --------------------------------------------------------------------------
+# Mutation probe 2d — the observation inherits one signed quote identity
+# --------------------------------------------------------------------------
+
+
+def _guard_a_foreign_quote_cannot_bind_this_settlement() -> None:
+    for changes, code in (
+        ({"descriptor_id": "sha256:foreign"}, "descriptor_binding_mismatch"),
+        ({"settlement_currency": "usd"}, "currency_binding_mismatch"),
+        ({"schema_version": 1}, "quote_scope_unsigned"),
+        ({"market_scope_revision": None}, "quote_scope_unsigned"),
+    ):
+        bound = _binding(settlement_id="foreign-quote")
+        raised = False
+        try:
+            join_paid_observation(
+                AccountingReceipt(binding=bound, transaction_id="tx:foreign"),
+                DomainAcceptanceReceipt(
+                    binding=bound,
+                    evidence_digest="sha256:evidence",
+                    accepted=True,
+                    disputed=False,
+                ),
+                ChainReceipt(
+                    binding=bound,
+                    receipt_digest="sha256:chain",
+                    finality_status="final",
+                    reorged=False,
+                ),
+                quote=_quote(**changes),
+                unit_price_micros=100,
+                quantity=10,
+                observed_at=100,
+            )
+        except PriceSurfaceError as exc:
+            raised = code in str(exc)
+        assert raised, f"a quote that does not bind this settlement must fail: {code}"
+
+
+def test_quote_binding_control_is_load_bearing(monkeypatch) -> None:
+    _guard_a_foreign_quote_cannot_bind_this_settlement()
+
+    monkeypatch.setattr(price_surface, "_require_quote_binding", lambda *a, **k: None)
+    assert_control_is_load_bearing(_guard_a_foreign_quote_cannot_bind_this_settlement)
 
 
 def test_raw_native_price_is_immutable_under_the_cap() -> None:

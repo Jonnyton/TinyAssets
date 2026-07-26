@@ -30,6 +30,7 @@ from tinyassets.paid_market.price_surface import (
 )
 from tinyassets.paid_market.quotes import (
     QuoteError,
+    ValidatedQuote,
     quote_signing_bytes,
     validated_quote_from_mapping,
 )
@@ -42,6 +43,10 @@ from tinyassets.paid_market.scope import (
 )
 
 SCOPE_REVISION = "msr:2026-07-25:aa11bb"
+DESCRIPTOR_ID = "sha256:descriptor"
+# The quote's fee version is the settlement's fee version: one canonical
+# schedule, bound at quote time and re-checked when the observation is joined.
+FEE_VERSION = CANONICAL_FEE_SCHEDULE_VERSION
 
 
 def _revision(**overrides: object) -> ScopeRevision:
@@ -235,7 +240,7 @@ def _v1_quote() -> dict[str, object]:
         ],
         "declared_total_micros": 1_213,
         "service_attributes": [["latency_ms", 250]],
-        "fee_schedule_version": "fee-v1",
+        "fee_schedule_version": FEE_VERSION,
         "observed_at": 100,
         "issued_at": 100,
         "expires_at": 200,
@@ -280,7 +285,7 @@ def test_v1_quote_stays_verifiable_as_its_original_closed_schema() -> None:
     validated = validated_quote_from_mapping(
         _v1_quote(),
         now=150,
-        expected_fee_version="fee-v1",
+        expected_fee_version=FEE_VERSION,
         settlement_currency="tiny",
         verifier=FakeIssuerVerifier(),
     )
@@ -304,7 +309,7 @@ def test_scope_provenance_requires_quote_schema_v2() -> None:
     validated = validated_quote_from_mapping(
         _v2_quote(),
         now=150,
-        expected_fee_version="fee-v1",
+        expected_fee_version=FEE_VERSION,
         settlement_currency="tiny",
         verifier=FakeIssuerVerifier(),
     )
@@ -327,7 +332,7 @@ def test_v1_signature_cannot_authorize_the_new_scope_fields() -> None:
         validated_quote_from_mapping(
             downgraded,
             now=150,
-            expected_fee_version="fee-v1",
+            expected_fee_version=FEE_VERSION,
             settlement_currency="tiny",
             verifier=FakeIssuerVerifier(),
         )
@@ -351,7 +356,7 @@ def test_changed_or_downgraded_scope_fails_verification_before_ranking(
         validated_quote_from_mapping(
             quote,
             now=150,
-            expected_fee_version="fee-v1",
+            expected_fee_version=FEE_VERSION,
             settlement_currency="tiny",
             verifier=FakeIssuerVerifier(),
         )
@@ -382,6 +387,9 @@ def test_tuple_scope_substitution_in_a_quote_is_refused() -> None:
 # --------------------------------------------------------------------------
 
 
+_BINDING_FIELDS = frozenset(SettlementBinding.__dataclass_fields__)
+
+
 def _binding(**overrides: object) -> SettlementBinding:
     gross = int(overrides.get("gross_micros", 40_000))  # type: ignore[arg-type]
     fee = int(  # type: ignore[arg-type]
@@ -399,6 +407,7 @@ def _binding(**overrides: object) -> SettlementBinding:
         "accepted_result_id": "job-1:7:sha256:result",
         "requester_id": "buyer-1",
         "host_owner_id": "seller-1",
+        "descriptor_id": DESCRIPTOR_ID,
         "currency": "tiny",
         "token": "tiny",
         "chain": "ledger",
@@ -406,22 +415,73 @@ def _binding(**overrides: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "buyer_principal_root": "root-buyer",
+        "seller_principal_root": "root-seller",
+        "linked_party": False,
     }
     kwargs.update(overrides)
     return SettlementBinding(**kwargs)  # type: ignore[arg-type]
 
 
-def _observation(**overrides: object) -> object:
-    binding = _binding(**{k: v for k, v in overrides.items() if k in _binding().__dict__})
-    kwargs: dict[str, object] = {
+def _validate(raw: dict[str, object]) -> ValidatedQuote:
+    return validated_quote_from_mapping(
+        raw,
+        now=150,
+        expected_fee_version=FEE_VERSION,
+        settlement_currency="tiny",
+        verifier=FakeIssuerVerifier(),
+    )
+
+
+def _signed_quote(**changes: object) -> ValidatedQuote:
+    """A genuinely re-signed v2 quote — the change is inside the signature."""
+    raw = _v2_quote()
+    raw.update(changes)
+    raw["signature"] = FakeIssuerVerifier().sign(raw)
+    return _validate(raw)
+
+
+def _unsigned_quote(**changes: object) -> ValidatedQuote:
+    """A `ValidatedQuote` value assembled directly, skipping verification.
+
+    Used only to prove the join re-checks what the quote carries instead of
+    treating the dataclass itself as authority.
+    """
+    values: dict[str, object] = {
+        "quote_id": "quote-1",
+        "authority_class": "native_firm",
+        "descriptor_id": DESCRIPTOR_ID,
         "market_class_id": "sha256:market-class",
+        "settlement_currency": "tiny",
+        "total_micros": 1_213,
+        "fee_schedule_version": FEE_VERSION,
+        "expires_at": 200,
+        "executable": True,
+        "capacity_remaining": 300,
+        "canonical_bytes": b"{}",
+        "schema_version": 2,
         "market_scope_revision": SCOPE_REVISION,
-        "public_scope": _dimensions(),
-        "unit_price_micros": 4_000,
+        "public_scope_dimensions": _dimensions(),
+    }
+    values.update(changes)
+    return ValidatedQuote(**values)  # type: ignore[arg-type]
+
+
+_JOIN_FIELDS = frozenset({"unit_price_micros", "quantity", "observed_at"})
+
+
+def _observation(*, quote: ValidatedQuote | None = None, **overrides: object):
+    """Join a settlement whose identity and scope come only from its quote."""
+    unknown = set(overrides) - _BINDING_FIELDS - _JOIN_FIELDS
+    if unknown:
+        raise AssertionError(f"scope now comes from the quote, not {sorted(unknown)}")
+    binding = _binding(
+        **{k: v for k, v in overrides.items() if k in _BINDING_FIELDS}
+    )
+    kwargs: dict[str, object] = {
+        "unit_price_micros": binding.gross_micros // 10,
         "quantity": 10,
         "observed_at": 1_000,
-        "buyer_principal_root": "root-buyer",
-        "seller_principal_root": "root-seller",
     }
     kwargs.update({k: v for k, v in overrides.items() if k in kwargs})
     return join_paid_observation(
@@ -438,6 +498,7 @@ def _observation(**overrides: object) -> object:
             finality_status="final",
             reorged=False,
         ),
+        quote=_signed_quote() if quote is None else quote,
         **kwargs,  # type: ignore[arg-type]
     )
 
@@ -449,28 +510,106 @@ def test_observation_binds_canonical_scope_bytes() -> None:
     assert observation.market_scope_revision == SCOPE_REVISION
 
 
+def test_the_observation_scope_is_the_signature_verified_quote_scope() -> None:
+    """The provenance join task 2.1 claims: signed scope *is* the aggregate key.
+
+    Not two disconnected facts — the same bytes that the issuer signature
+    covers are the bytes the observation carries, and nothing between the two
+    is caller-supplied.
+    """
+    signed = _signed_quote()
+    observation = _observation(quote=signed)
+
+    assert signed.public_scope_dimensions is not None
+    signed_body = json.loads(signed.canonical_bytes.decode("ascii"))
+    assert signed_body["domain"] == "tinyassets.paid-market.quote.v2"
+    assert signed_body["public_scope_dimensions"] == signed.public_scope_dimensions.decode(
+        "ascii"
+    )
+    assert signed_body["market_scope_revision"] == signed.market_scope_revision
+    assert signed_body["market_class_id"] == signed.market_class_id
+    assert signed_body["descriptor_id"] == signed.descriptor_id
+
+    assert observation.public_scope == signed.public_scope_dimensions
+    assert observation.market_scope_revision == signed.market_scope_revision
+    assert observation.market_class_id == signed.market_class_id
+    assert observation.descriptor_id == signed.descriptor_id
+    assert observation.quote_id == signed.quote_id
+
+
+def test_a_tampered_scope_produces_no_observation_at_all() -> None:
+    """Tamper -> the quote never validates -> the join has nothing to bind.
+
+    This is the join the review found missing: the signature check and the
+    observation are one path, so a mismatch cannot survive to the index.
+    """
+    tampered = _v2_quote()
+    tampered["public_scope_dimensions"] = derive_public_scope_dimensions(
+        _revision(), {"execution_region_bucket": "eu", "slo_bucket": "batch"}
+    )
+    # Signature still covers the *original* scope bytes.
+    with pytest.raises(QuoteError, match="signature_invalid"):
+        _validate(tampered)
+
+
+def test_a_v1_quote_can_never_stand_behind_a_public_observation() -> None:
+    """A v1 signature never spanned a scope binding, so it grants no scope."""
+    v1 = _validate(_v1_quote())
+
+    assert v1.schema_version == 1
+    with pytest.raises(PriceSurfaceError, match="quote_scope_unsigned"):
+        _observation(quote=v1)
+
+
+def test_the_settlement_must_match_the_quote_it_claims() -> None:
+    for changes, message in (
+        ({"descriptor_id": "sha256:other"}, "descriptor_binding_mismatch"),
+        ({"settlement_currency": "usd"}, "currency_binding_mismatch"),
+        (
+            {"fee_schedule_version": "tinyassets.paid-market.fee.v9"},
+            "fee_version_binding_mismatch",
+        ),
+    ):
+        with pytest.raises(PriceSurfaceError, match=message):
+            _observation(quote=_unsigned_quote(**changes))
+
+
 @pytest.mark.parametrize(
     "candidate", [("region:us", "batch"), ["us"], "us", b"not-json", b'["us"]']
 )
 def test_observation_refuses_non_canonical_scope(candidate: object) -> None:
+    """A `ValidatedQuote` value is not a licence to skip scope canonicality."""
     with pytest.raises(PriceSurfaceError):
-        _observation(public_scope=candidate)
+        _observation(quote=_unsigned_quote(public_scope_dimensions=candidate))
 
 
 def test_observation_requires_a_bound_scope_revision() -> None:
     with pytest.raises(PriceSurfaceError):
-        _observation(market_scope_revision="")
+        _observation(quote=_unsigned_quote(market_scope_revision=""))
 
 
 def test_aggregate_key_is_the_full_class_revision_dimensions_triple() -> None:
     other_scope = derive_public_scope_dimensions(
         _revision(), {"execution_region_bucket": "eu", "slo_bucket": "batch"}
     )
+    # Each sibling's bucket is decided by its own *signed* quote, so no
+    # aggregator can move an observation between buckets after the fact.
     us = _observation()
-    eu = _observation(public_scope=other_scope, settlement_id="settle-2")
-    other_revision = _observation(
-        market_scope_revision="msr:2026-07-25:next", settlement_id="settle-3"
+    eu = _observation(
+        quote=_signed_quote(public_scope_dimensions=other_scope),
+        settlement_id="settle-2",
+        requester_id="buyer-2",
+        buyer_principal_root="root-buyer-2",
     )
+    other_revision = _observation(
+        quote=_signed_quote(market_scope_revision="msr:2026-07-25:next"),
+        settlement_id="settle-3",
+        requester_id="buyer-3",
+        buyer_principal_root="root-buyer-3",
+    )
+
+    assert eu.public_scope == other_scope
+    assert other_revision.market_scope_revision == "msr:2026-07-25:next"
 
     surface = aggregate_price_surface(
         market_class_id="sha256:market-class",

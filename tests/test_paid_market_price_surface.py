@@ -18,6 +18,7 @@ from tinyassets.paid_market.price_surface import (
     PaidObservation,
     PriceSurface,
     PriceSurfaceError,
+    ReferenceBatch,
     ReferenceQuote,
     ReferenceRequest,
     SettlementBinding,
@@ -25,6 +26,7 @@ from tinyassets.paid_market.price_surface import (
     collect_references,
     join_paid_observation,
 )
+from tinyassets.paid_market.quotes import ValidatedQuote
 from tinyassets.paid_market.scope import ScopeRevision, derive_public_scope_dimensions
 
 SCOPE_REVISION = "msr:test:0001"
@@ -48,6 +50,9 @@ def _canonical_fee(gross: int) -> int:
     )
 
 
+DESCRIPTOR_ID = "sha256:descriptor"
+
+
 def _binding(**changes: object) -> SettlementBinding:
     gross = int(changes.get("gross_micros", 1_000))  # type: ignore[arg-type]
     fee = int(changes.get("fee_micros", _canonical_fee(gross)))  # type: ignore[arg-type]
@@ -58,6 +63,7 @@ def _binding(**changes: object) -> SettlementBinding:
         "accepted_result_id": "job-1:7:sha256-result",
         "requester_id": "buyer-1",
         "host_owner_id": "seller-1",
+        "descriptor_id": DESCRIPTOR_ID,
         "currency": "tiny",
         "token": "tiny-test",
         "chain": "base-sepolia",
@@ -65,9 +71,38 @@ def _binding(**changes: object) -> SettlementBinding:
         "net_micros": gross - fee,
         "fee_micros": fee,
         "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "buyer_principal_root": "principal:buyer",
+        "seller_principal_root": "principal:seller",
+        "linked_party": False,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
+
+
+def _quote(**changes: object) -> ValidatedQuote:
+    """A v2 quote whose signed scope is the observation's only scope authority."""
+    values: dict[str, object] = {
+        "quote_id": "quote-1",
+        "authority_class": "native_firm",
+        "descriptor_id": DESCRIPTOR_ID,
+        "market_class_id": "sha256:market",
+        "settlement_currency": "tiny",
+        "total_micros": 1_000,
+        "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
+        "expires_at": 200,
+        "executable": True,
+        "capacity_remaining": 100,
+        "canonical_bytes": b'{"domain":"tinyassets.paid-market.quote.v2"}',
+        "schema_version": 2,
+        "market_scope_revision": SCOPE_REVISION,
+        "public_scope_dimensions": SCOPE,
+    }
+    values.update(changes)
+    return ValidatedQuote(**values)  # type: ignore[arg-type]
+
+
+def _empty_batch() -> ReferenceBatch:
+    return ReferenceBatch((), (), None)
 
 
 def _receipts(binding: SettlementBinding, source: str = "tx-1"):
@@ -90,19 +125,16 @@ def _receipts(binding: SettlementBinding, source: str = "tx-1"):
 
 def _join(binding: SettlementBinding, **overrides: object):
     """Join one settlement whose declared price reconstructs its gross."""
-    quantity = int(overrides.pop("quantity", 10))
+    quantity = int(overrides.pop("quantity", 10))  # type: ignore[arg-type]
+    source = str(overrides.pop("source", "tx-1"))
     kwargs: dict[str, object] = {
-        "market_class_id": "sha256:market",
-        "market_scope_revision": SCOPE_REVISION,
-        "public_scope": SCOPE,
+        "quote": _quote(),
         "unit_price_micros": binding.gross_micros // quantity,
         "quantity": quantity,
         "observed_at": 100,
-        "buyer_principal_root": "principal:buyer",
-        "seller_principal_root": "principal:seller",
     }
     kwargs.update(overrides)
-    return join_paid_observation(*_receipts(binding), **kwargs)  # type: ignore[arg-type]
+    return join_paid_observation(*_receipts(binding, source), **kwargs)  # type: ignore[arg-type]
 
 
 def _observation(
@@ -117,63 +149,23 @@ def _observation(
     host_owner_id: str = "seller-1",
     linked_party: bool = False,
 ):
+    """An observation whose price is exactly what its settlement moved."""
     binding = _binding(
         settlement_id=source,
         requester_id=requester_id,
         host_owner_id=host_owner_id,
-    )
-    return join_paid_observation(
-        AccountingReceipt(binding=binding, transaction_id=f"tx:{source}"),
-        DomainAcceptanceReceipt(
-            binding=binding,
-            evidence_digest=f"sha256:evidence:{source}",
-            accepted=True,
-            disputed=False,
-        ),
-        ChainReceipt(
-            binding=binding,
-            receipt_digest=f"sha256:chain:{source}",
-            finality_status="final",
-            reorged=False,
-        ),
-        market_class_id="sha256:market",
-        market_scope_revision=SCOPE_REVISION,
-        public_scope=SCOPE,
-        unit_price_micros=price,
-        quantity=quantity,
-        observed_at=observed_at,
+        gross_micros=price * quantity,
         buyer_principal_root=buyer_root,
         seller_principal_root=seller_root,
         linked_party=linked_party,
     )
+    return _join(binding, quantity=quantity, observed_at=observed_at, source=source)
 
 
 def test_paid_observation_requires_three_exact_matching_final_receipts() -> None:
     binding = _binding()
 
-    observation = join_paid_observation(
-        AccountingReceipt(binding=binding, transaction_id="tx-1"),
-        DomainAcceptanceReceipt(
-            binding=binding,
-            evidence_digest="sha256:evidence",
-            accepted=True,
-            disputed=False,
-        ),
-        ChainReceipt(
-            binding=binding,
-            receipt_digest="sha256:chain",
-            finality_status="final",
-            reorged=False,
-        ),
-        market_class_id="sha256:market",
-        market_scope_revision=SCOPE_REVISION,
-        public_scope=SCOPE,
-        unit_price_micros=100,
-        quantity=10,
-        observed_at=100,
-        buyer_principal_root="principal:buyer",
-        seller_principal_root="principal:seller",
-    )
+    observation = _join(binding, unit_price_micros=100, quantity=10)
 
     assert observation.binding is binding
     assert observation.index_eligible is True
@@ -199,6 +191,11 @@ def test_paid_observation_requires_three_exact_matching_final_receipts() -> None
         ("gross_micros", 2_000),
         ("net_micros", 1_980),
         ("fee_micros", 20),
+        ("descriptor_id", "sha256:other-descriptor"),
+        ("fee_schedule_version", "tinyassets.paid-market.fee.v9"),
+        ("buyer_principal_root", "principal:other"),
+        ("seller_principal_root", None),
+        ("linked_party", True),
     ],
 )
 def test_any_receipt_binding_mismatch_fails_closed(field: str, value: object) -> None:
@@ -220,14 +217,10 @@ def test_any_receipt_binding_mismatch_fails_closed(field: str, value: object) ->
                 finality_status="final",
                 reorged=False,
             ),
-            market_class_id="sha256:market",
-            market_scope_revision=SCOPE_REVISION,
-            public_scope=SCOPE,
+            quote=_quote(),
             unit_price_micros=100,
             quantity=10,
             observed_at=100,
-            buyer_principal_root="principal:buyer",
-            seller_principal_root="principal:seller",
         )
 
 
@@ -263,14 +256,10 @@ def test_nonaccepted_nonfinal_or_reorg_receipt_never_becomes_price(
                 finality_status=finality,
                 reorged=reorged,
             ),
-            market_class_id="sha256:market",
-            market_scope_revision=SCOPE_REVISION,
-            public_scope=SCOPE,
+            quote=_quote(),
             unit_price_micros=100,
             quantity=10,
             observed_at=100,
-            buyer_principal_root="principal:buyer",
-            seller_principal_root="principal:seller",
         )
 
 
@@ -301,29 +290,223 @@ def test_positive_gross_requires_fee_even_when_same_owner_or_linked() -> None:
 
     no_fee = _binding(net_micros=1_000, fee_micros=0)
     with pytest.raises(PriceSurfaceError, match="canonical_fee_required"):
-        join_paid_observation(
-            AccountingReceipt(binding=no_fee, transaction_id="tx"),
-            DomainAcceptanceReceipt(
-                binding=no_fee,
-                evidence_digest="sha256:e",
-                accepted=True,
-                disputed=False,
-            ),
-            ChainReceipt(
-                binding=no_fee,
-                receipt_digest="sha256:c",
-                finality_status="final",
-                reorged=False,
-            ),
+        _join(no_fee, unit_price_micros=100, quantity=10)
+
+
+def test_unit_price_must_reconstruct_the_settled_gross() -> None:
+    """The price is bounded by authoritative money, not by a caller assertion.
+
+    Codex money review finding 1: a positive fixed weight times an unbounded
+    caller-provided price is still unbounded.  A settlement that moved 1,000
+    micros cannot claim a 10^18-micro unit price.
+    """
+    settled = _binding(gross_micros=1_000)
+
+    for out_of_band in (10**18, 999_000_000, 101, 99, 1):
+        with pytest.raises(
+            PriceSurfaceError, match="unit_price_not_settlement_derived"
+        ):
+            _join(settled, unit_price_micros=out_of_band, quantity=10)
+
+    assert _join(settled, unit_price_micros=100, quantity=10).unit_price_micros == 100
+
+
+def test_an_unbounded_price_cannot_reach_the_published_index() -> None:
+    """The reviewer's reproduction: 3 honest 100-micro prints + one 10^18 print."""
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            observed_at=100,
+            buyer_root=f"principal:b{index}",
+            seller_root=f"principal:s{index}",
+            source=f"honest-{index}",
+            requester_id=f"buyer-{index}",
+            host_owner_id=f"seller-{index}",
+        )
+        for index in range(3)
+    ]
+    # The attacker may only publish 10^18 by actually settling 10^18 * quantity
+    # micros of real money through all three authorities and paying its fee.
+    with pytest.raises(PriceSurfaceError, match="unit_price_not_settlement_derived"):
+        _join(
+            _binding(settlement_id="attack", gross_micros=1_000),
+            unit_price_micros=10**18,
+            quantity=10,
+        )
+
+    surface = aggregate_price_surface(
+        market_class_id="sha256:market",
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
+        now=150,
+        observations=honest,
+        native_asks=[],
+        references=_empty_batch(),
+        min_samples=1,
+        settlement_ttl=3_600,
+    )
+    assert surface.raw_vwap.value_micros == 100
+
+
+def test_split_account_volume_cannot_evade_the_influence_cap() -> None:
+    """One settlement identity, six fabricated principal pairs, still capped.
+
+    Every wash print carries a distinct buyer/seller root and a distinct host,
+    so no root- or pair-level bucket binds.  The one thing they share is the
+    settlement identity the three receipts agree on.
+    """
+    wash = [
+        _observation(
+            price=1_000_000,
+            quantity=1_000,
+            observed_at=100,
+            buyer_root=f"principal:sock-b{index}",
+            seller_root=f"principal:sock-s{index}",
+            source=f"wash-{index}",
+            requester_id="attacker",
+            host_owner_id=f"seller-{index}",
+        )
+        for index in range(6)
+    ]
+    honest = [
+        _observation(
+            price=100,
+            quantity=10,
+            observed_at=100,
+            buyer_root=f"principal:b{index}",
+            seller_root=f"principal:s{index}",
+            source=f"honest-{index}",
+            requester_id=f"buyer-h{index}",
+            host_owner_id=f"seller-h{index}",
+        )
+        for index in range(3)
+    ]
+
+    surface = aggregate_price_surface(
+        market_class_id="sha256:market",
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
+        now=150,
+        observations=wash + honest,
+        native_asks=[],
+        references=_empty_batch(),
+        min_samples=1,
+        settlement_ttl=3_600,
+    )
+
+    assert surface.raw_vwap.value_micros is not None
+    assert surface.raw_vwap.value_micros < 1_000_000 // 2
+
+
+def test_the_same_settlement_cannot_be_observed_twice() -> None:
+    """Aggregation is by settlement identity, never per call."""
+    once = _observation(
+        price=100,
+        quantity=10,
+        observed_at=100,
+        buyer_root="principal:b",
+        seller_root="principal:s",
+        source="settlement-x",
+    )
+
+    with pytest.raises(PriceSurfaceError, match="duplicate_settlement_observation"):
+        aggregate_price_surface(
             market_class_id="sha256:market",
             market_scope_revision=SCOPE_REVISION,
             public_scope=SCOPE,
-            unit_price_micros=100,
-            quantity=10,
-            observed_at=100,
-            buyer_principal_root="principal:a",
-            seller_principal_root="principal:a",
+            now=150,
+            observations=[once, once],
+            native_asks=[],
+            references=_empty_batch(),
+            min_samples=1,
+            settlement_ttl=3_600,
         )
+
+
+def test_observation_identity_comes_from_the_quote_not_the_caller() -> None:
+    """Scope, market class, and descriptor are derived from the signed quote."""
+    observation = _join(_binding())
+
+    assert observation.descriptor_id == DESCRIPTOR_ID
+    assert observation.quote_id == "quote-1"
+    assert observation.market_class_id == "sha256:market"
+    assert observation.market_scope_revision == SCOPE_REVISION
+    assert observation.public_scope == SCOPE
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("descriptor_id", "sha256:other-descriptor", "descriptor_binding_mismatch"),
+        ("settlement_currency", "usd", "currency_binding_mismatch"),
+        (
+            "fee_schedule_version",
+            "tinyassets.paid-market.fee.v9",
+            "fee_version_binding_mismatch",
+        ),
+        ("schema_version", 1, "quote_scope_unsigned"),
+        ("market_scope_revision", None, "quote_scope_unsigned"),
+        ("public_scope_dimensions", None, "quote_scope_unsigned"),
+        ("market_class_id", "", "market_class_id is required"),
+    ],
+)
+def test_a_quote_that_does_not_bind_this_settlement_fails_closed(
+    field: str, value: object, message: str
+) -> None:
+    with pytest.raises(PriceSurfaceError, match=message):
+        _join(_binding(), quote=_quote(**{field: value}))
+
+
+def test_the_join_revalidates_the_quote_scope_bytes() -> None:
+    """A `ValidatedQuote` value is still not a licence to skip scope canonicality."""
+    for candidate in (b"", b'["us","batch"]', b"not-json", ("region:us", "batch")):
+        with pytest.raises(PriceSurfaceError, match="public_scope_not_canonical"):
+            _join(_binding(), quote=_quote(public_scope_dimensions=candidate))
+
+
+def test_the_surface_retains_each_source_descriptor_id_as_evidence() -> None:
+    first = _observation(
+        price=100,
+        quantity=10,
+        observed_at=100,
+        buyer_root="principal:b1",
+        seller_root="principal:s1",
+        source="obs-1",
+        requester_id="buyer-1",
+        host_owner_id="seller-1",
+    )
+    other_descriptor = _binding(
+        settlement_id="obs-2",
+        requester_id="buyer-2",
+        host_owner_id="seller-2",
+        descriptor_id="sha256:sibling-descriptor",
+        gross_micros=1_200,
+        buyer_principal_root="principal:b2",
+        seller_principal_root="principal:s2",
+    )
+    second = _join(
+        other_descriptor,
+        source="obs-2",
+        quote=_quote(descriptor_id="sha256:sibling-descriptor"),
+    )
+
+    surface = aggregate_price_surface(
+        market_class_id="sha256:market",
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
+        now=150,
+        observations=[first, second],
+        native_asks=[],
+        references=_empty_batch(),
+        min_samples=1,
+        settlement_ttl=3_600,
+    )
+
+    assert surface.observation_descriptor_ids == (
+        "sha256:descriptor",
+        "sha256:sibling-descriptor",
+    )
 
 
 def test_positive_but_non_canonical_fee_is_refused() -> None:
@@ -652,15 +835,9 @@ def test_missing_vwap_is_null_not_zero_and_zero_prices_fail_loud() -> None:
     assert surface.external_reference.value_micros is None
     assert surface.composite_index.value_micros is None
 
+    # A zero price fails loud rather than entering the index as "free".
     with pytest.raises(PriceSurfaceError, match="unit_price_micros"):
-        _observation(
-            price=0,
-            quantity=10,
-            observed_at=100,
-            buyer_root="buyer",
-            seller_root="seller",
-            source="zero",
-        )
+        _join(_binding(gross_micros=1_000), unit_price_micros=0, quantity=10)
 
 
 def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidence() -> None:
