@@ -192,6 +192,11 @@ packet also makes validation error categories mutually exclusive and derives
 `traffic_started=yes|no|unknown` exactly. Lexical path errors, unacceptable
 roots, linked/reparse/escaped objects, and resolved non-regular leaves have
 disjoint reachable error codes.
-Strict validation passes 48/48. Fresh independent and literal Opus 5 approval
-of this exact adapted packet remains required before push or apply. No runtime
-or live traffic is authorized.
+Strict validation passes 48/48. Three independent Codex reviewers and literal
+Claude Opus 5 approve exact commit
+`a3cf2816815ff677354b2df4781928018ebb75ee` at the SHA above. Opus independently
+recomputed the digest from both worktree bytes and the git blob, confirmed the
+final root/path/link/non-regular error partition, and rechecked authority,
+timing, custody, cleanup, supersession, scope, and archive ordering. Publication
+of this review branch is approved; apply, archive, runtime, and live traffic
+remain separately gated.
