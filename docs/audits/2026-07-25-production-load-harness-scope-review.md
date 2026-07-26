@@ -192,7 +192,7 @@ packet also makes validation error categories mutually exclusive and derives
 `traffic_started=yes|no|unknown` exactly. Lexical path errors, unacceptable
 roots, linked/reparse/escaped objects, and resolved non-regular leaves have
 disjoint reachable error codes.
-Strict validation passes 48/48. Three independent Codex reviewers and literal
+Strict validation passed 48/48 on the reviewed base. Three independent Codex reviewers and literal
 Claude Opus 5 approve exact commit
 `a3cf2816815ff677354b2df4781928018ebb75ee` at the SHA above. Opus independently
 recomputed the digest from both worktree bytes and the git blob, confirmed the
@@ -200,3 +200,12 @@ final root/path/link/non-regular error partition, and rechecked authority,
 timing, custody, cleanup, supersession, scope, and archive ordering. Publication
 of this review branch is approved; apply, archive, runtime, and live traffic
 remain separately gated.
+
+Before publication, current `origin/main@15f47bdf` was merged at
+`e9fc8a41`. Its paid-market workflow, outbound boundary, plan-gated targets,
+and scoped-reset changes leave both production-load spec directories and the
+reviewed spec SHA unchanged. Three Codex implication reviews and a fresh literal
+Opus 5 comparison approve that merged tree: market match/claim is not provider
+execution authority, outbound effects have no ambient maintainer fallback, and
+scoped reset supplies owner-adoption inputs rather than impersonating the V1
+cleanup receipt. Combined-tree strict OpenSpec validation passes 49/49.
