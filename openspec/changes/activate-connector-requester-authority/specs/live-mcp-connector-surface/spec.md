@@ -21,6 +21,20 @@ unsupported schema versions SHALL fail before mutation.
 `demand_commitment_digest`, `acceptance_policy_digest`,
 `settlement_policy_version`, `deadline`, and `quote_expires_at`.
 
+All IDs and the top-level idempotency key SHALL be 1-128 ASCII characters
+matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; digests SHALL be exactly 64 lowercase
+hex characters; currency SHALL be the canonical request/quote code matching
+`[A-Z0-9][A-Z0-9._:-]{0,15}`. Versions, deadline, budget, and spend cap SHALL
+be strict JSON integers within positive signed 64-bit range; Boolean, float,
+decimal string, overflow, zero, and negative coercions SHALL fail. The
+owner-published `canonical_market_max_micros` SHALL be positive and no greater
+than signed 64-bit range, with
+`0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
+`quote_expires_at` SHALL be canonical whole-second UTC RFC 3339 ending `Z`;
+deadline and expiry SHALL exactly match current owner records, remain valid,
+and fit their owner-defined horizon. Any grammar, bound, unit, or time-encoding
+change requires a new schema version.
+
 #### Scenario: chatbot submits a well-shaped activation
 
 - **WHEN** an authenticated connector client calls `write_graph` with target `engine`, action `activate_accepted_market`, an exact graph ID, idempotency key, and the closed v1 market-acceptance object
@@ -43,6 +57,12 @@ NOT expose a raw signature, B2/B13 grant, lease capability, provider
 credential, secret, host address, wallet token, actor/tenant override, or
 internal authority carrier.
 
+Authorization and current-message liveness SHALL be checked before replay
+lookup. A replayed historical success SHALL identify its historical
+idempotency outcome separately from the re-derived current engine-assignment
+state; it MUST NOT render current `remote_ready` when the mandate is now held,
+expired, revoked, fenced, or cancelled, and MUST NOT reactivate it.
+
 Refusal SHALL distinguish malformed/stale acceptance, authorization failure,
 budget conflict, quote expiry, quote/fee/policy drift, cancellation,
 unavailable or oversubscribed capacity, unavailable requester funding,
@@ -57,6 +77,12 @@ connector.
 - **WHEN** activation commits successfully
 - **THEN** structured content and text agree on the exact universe, accepted quote/version, spend bound, remote-ready state, and idempotency outcome
 - **AND** neither representation contains a secret or positive-authority carrier
+
+#### Scenario: historical replay renders current truth
+
+- **WHEN** same-body replay finds a historical successful activation whose mandate or assignment is now held
+- **THEN** structured content and text report the historical replay plus current held/repair state rather than current remote-ready success
+- **AND** the replay creates no agreement, mandate, reservation, assignment, renewal, or execution side effect
 
 #### Scenario: invalid mandate or per-job authority renders repair without fallback
 

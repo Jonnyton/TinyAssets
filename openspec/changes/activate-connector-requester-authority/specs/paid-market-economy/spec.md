@@ -45,11 +45,13 @@ actor/tenant/universe scope. Caller-supplied expiry MUST NOT extend the
 canonical expiry, and stale or changed terms MUST require a newly explicit
 acceptance.
 
-The accepted agreement and current non-executable B13-bound bounded-market mandate
-SHALL either compose with the engine assignment in one atomic activation
-outcome or publish no activation state. A concrete later job still requires
-its own exact B2 grant. Market selection SHALL NOT silently move the user to a
-free, BYOC, maintainer, local, desktop, or differently priced lane.
+The accepted agreement and provisional non-executable B13-bound
+bounded-market mandate SHALL either compose through the provider-routing
+assignment owner's atomic activation transaction, which makes the mandate
+reference current, or publish no activation state/current mandate. A concrete
+later job still requires its own exact B2 grant. Market selection SHALL NOT
+silently move the user to a free, BYOC, maintainer, local, desktop, or
+differently priced lane.
 
 #### Scenario: terms change before commit
 
@@ -68,11 +70,18 @@ Accepted-market activation SHALL use a domain-separated
 `write_graph/engine/activate_accepted_market` idempotency namespace and then
 scope by authenticated actor, tenant, universe, and idempotency key. That
 namespace MUST NOT collide with request admission or another target/action.
+Current authenticated subject, tenant, exact-universe write/admin authority,
+current-message handler claim, and liveness SHALL be verified before any
+idempotency lookup. Authority loss SHALL return a non-enumerating denial that
+reveals neither key existence nor historical result.
 Replaying the same key with the same canonical acceptance body SHALL return
 the original outcome without
 duplicating an agreement, reservation, charge, grant request, or assignment.
 Reusing the key with a different canonical body MUST return a conflict.
 Concurrent first activations SHALL have one authoritative outcome.
+A historical success SHALL NOT reactivate or preserve expired, revoked,
+fenced, cancelled, or held authority. Replay output SHALL distinguish the
+historical idempotent commit from re-derived current assignment state.
 
 No platform, founder, or maintainer provider quota, credential, wallet, or
 compute SHALL satisfy, subsidize, retry, or backstop the accepted agreement.
@@ -84,54 +93,86 @@ remain with their owning market contracts.
 - **WHEN** a connector retries the same activation key and byte-equivalent canonical acceptance after an ambiguous response
 - **THEN** it receives the original typed outcome and no economic or engine side effect is duplicated
 
+#### Scenario: authorization precedes replay lookup
+
+- **WHEN** a subject loses tenant or exact-universe authority and supplies a key that may or may not have a historical activation result
+- **THEN** the owner returns the same non-enumerating denial before lookup and discloses no key or result existence
+
+#### Scenario: historical success cannot render stale current readiness
+
+- **WHEN** same-body replay finds a historical success but the committed mandate or assignment is now held, expired, revoked, fenced, or cancelled
+- **THEN** the result reports a historical idempotent commit plus the current held/repair state
+- **AND** replay performs no reactivation, renewal, spend, reservation, or execution mutation
+
 #### Scenario: maintainer resources cannot cover a failed market path
 
 - **WHEN** the accepted agreement cannot obtain or retain valid mandate, per-job market/funding/capacity, and B2 authority
 - **THEN** activation or execution holds without charging or invoking any maintainer credential, quota, wallet, or compute
 
-### Requirement: Every concrete job consumes fresh bounded market and requester-funding authority
+### Requirement: Every concrete job produces fresh logical market authority for cross-owner composition
 
 The paid-market owner SHALL treat activation as a non-executable bounded
-mandate, not a reusable firm quote or capacity reservation. After a later
-message establishes exact job demand and quantity, the owner SHALL obtain and
-verify a fresh executable firm quote under the accepted selection policy,
-revalidate its descriptor, demand, quantity, landed total, currency, fee
-schedule, service terms, expiry, and capacity fence, and atomically reserve or
-consume both conserved capacity and requester-owned or explicitly delegated
-funding within the mandate's remaining `budget_micros` and per-job
-`spend_cap_micros`. Those owner-native quote, capacity, funding, fee, and spend
-references/digests SHALL be available for sealing into the job capsule and B2
-derivation. A platform, maintainer, founder, provider, or mutable row MUST NOT
-substitute for requester funding or conserved capacity.
+mandate, not a reusable quote, market allocation, capacity reservation, or
+real-fund authority. After a later message establishes exact job demand and
+quantity, it SHALL consume the live-price/transport owner's fresh executable
+firm quote and exact request-bound bid, deterministic match, atomic paid
+claim/fan-out slot, selected host/owner, versions, digests, quote-to-bid link,
+and fences. It SHALL revalidate descriptor, demand, quantity, landed total,
+currency, fee schedule, service terms, expiry, and remaining
+`budget_micros`/`spend_cap_micros`, then atomically record only its
+job-bound logical budget reservation/accounting intent.
 
-The job economic identity SHALL bind activation, actor, tenant, universe, job,
-canonical demand/quantity, and idempotency key. Same-job retries SHALL reuse
-the original reservation/consumption outcome; changed-body reuse SHALL
-conflict. Concurrent jobs SHALL serialize against remaining mandate budget and
-capacity. Cancellation or failure before dispatch SHALL release both
-reservations exactly once. After dispatch, settlement SHALL charge only
-owner-verified accepted use and release or refund unused reserved value under
-the owning wallet/settlement contracts.
+The domain owner alone creates and fences capacity. The separately reviewed
+wallet/chain-effect successor required by
+`docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6 alone
+produces requester-owned or explicitly delegated real-fund
+reservation/receipt authority. `paid-market-economy` MUST NOT create, consume,
+release, settle, or refund either resource. B13 consumes and binds all
+owner-native results plus distributed-execution S14/B36; none may promote
+itself into execution authority.
 
-#### Scenario: exact job receives executable economic authority
+The cross-owner job identity SHALL bind activation, actor, tenant, universe,
+canonical request/bid/match/claim/slot, selected host, job, demand/quantity,
+lease fence, and idempotency key. Each owner SHALL serialize only its resource
+and expose body-bound idempotent prepare/commit/cancel results. Same-job retries
+reuse those results; changed-body reuse conflicts. No B2 becomes observable
+until every owner result is current.
 
-- **WHEN** a concrete job has a fresh executable quote matching its exact demand and quantity, current capacity, requester funding, and remaining mandate limits
-- **THEN** the market owner atomically records one job-bound capacity consumption and one requester-funded spend reservation
-- **AND** the returned references/digests grant no execution authority until B13 seals them into the exact capsule and B2 grant
+One owner-defined CAS/fence SHALL choose
+`reserved -> dispatch_committed` or
+`reserved -> cancelled_and_released`. If cancellation wins, B2 is absent or
+revoked and every owner releases its reservation exactly once. If dispatch
+wins, pre-dispatch release is forbidden. Later settlement/refund SHALL consume
+current platform-signed B2 terminal evidence plus domain acceptance bound to
+`job_id:lease_fence:accepted_result_sha256`; host self-attestation or generic
+accepted-use text is insufficient.
 
-#### Scenario: concurrent jobs cannot oversubscribe mandate or capacity
+#### Scenario: exact job composes owner-native authority without owner theft
 
-- **WHEN** two jobs concurrently contend for budget or capacity that can satisfy only one
-- **THEN** one atomic reservation wins and the loser holds before B2 creation
-- **AND** total reserved or settled value and capacity never exceed the mandate or conserved supply
+- **WHEN** the transport owner has a current request-bound quote/bid/match/paid-claim/slot and selected host, the domain owner has current fenced capacity, paid-market has one logical budget reservation, and the §18.6 successor has current requester real-fund authority for the same exact job identity
+- **THEN** B13 may seal those exact owner-native identities, versions, digests, fences, and S14/B36 identity into the capsule and B2 request
+- **AND** the B2 daemon/host equals the current paid claimant and none of the inputs grants execution authority by itself
 
-#### Scenario: retry cancellation and settlement are exactly-once
+#### Scenario: concurrent jobs cannot oversubscribe any owner
 
-- **WHEN** the same job retries after an ambiguous response, cancels before dispatch, or settles after verified execution
-- **THEN** it reuses the original reservation identity, never double-consumes capacity or funds, and releases, charges, or refunds each reserved unit exactly once
+- **WHEN** two jobs contend for a paid claim slot, logical budget, domain capacity, or requester funds that can satisfy only one
+- **THEN** each owning contract serializes its own resource, B13 observes at most one complete current result set, and the loser holds before B2 creation
+- **AND** paid-market never claims that its logical reservation proves conserved capacity or real-fund custody
 
-#### Scenario: price or funding drift requires repair
+#### Scenario: cancellation and dispatch have one fenced winner
 
-- **WHEN** the fresh job quote exceeds the accepted per-job or remaining budget policy, the fee/currency/policy changes, requester funding is unavailable, or capacity is no longer executable
-- **THEN** the job holds with a typed market repair or new-acceptance requirement and no B2 grant is created
+- **WHEN** cancellation races B2 creation or dispatch for a reserved job
+- **THEN** the owner-defined fence commits exactly one of `dispatch_committed` or `cancelled_and_released`
+- **AND** the losing path cannot release active work, dispatch cancelled work, double-consume, double-charge, or double-refund
+
+#### Scenario: settlement requires signed terminal and domain evidence
+
+- **WHEN** a dispatched job reaches settlement or refund
+- **THEN** the owning contracts require current platform-signed terminal evidence and domain acceptance for the exact `job_id:lease_fence:accepted_result_sha256`
+- **AND** a host claim, mutable row, or generic accepted-use assertion cannot move logical or real funds
+
+#### Scenario: allocation price capacity or funding drift requires repair
+
+- **WHEN** the quote-to-bid link, match, claim, slot, selected host, fee/currency/policy, logical budget, domain capacity, requester funding, or any current fence is absent or changed
+- **THEN** the job holds with a typed owner-specific repair or new-acceptance requirement and no B2 grant is created
 - **AND** no maintainer or alternative fulfillment lane silently substitutes
