@@ -68,8 +68,10 @@ Resolution: option (b) for the actual size assertion, strengthened with option
 
 ## PR and auto-merge
 
-- PR: pending creation after the first report-bearing push.
-- Squash auto-merge: pending.
+- PR: `#1794`
+  (`https://github.com/Jonnyton/TinyAssets/pull/1794`).
+- Squash auto-merge: armed with
+  `gh pr merge 1794 --auto --squash`.
 
 ## Deploy-time acceptance requirement
 
@@ -78,4 +80,4 @@ run `scripts/mcp_public_canary.py --assert-handles` against the deployed
 endpoint and complete a rendered chatbot conversation following `ui-test`.
 Local tests and direct MCP checks do not replace that acceptance evidence.
 
-LANE_RESULT: partial - all local branch gates are green; PR creation and squash auto-merge remain.
+LANE_RESULT: done - branch gates are green, PR #1794 is open, and squash auto-merge is armed.
