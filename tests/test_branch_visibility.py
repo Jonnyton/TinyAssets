@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
@@ -344,8 +345,13 @@ def test_private_branch_on_public_goal_is_visible_to_owner(
 # ─── MCP branch.create + branch.get ──────────────────────────────────
 
 
-def test_branch_create_accepts_visibility(base_path, monkeypatch):
+def test_branch_create_accepts_visibility(
+    base_path,
+    monkeypatch,
+    authenticate_request: Callable[[str | None], None],
+):
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    authenticate_request("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -359,7 +365,11 @@ def test_branch_create_accepts_visibility(base_path, monkeypatch):
     assert result["visibility"] == "private"
 
 
-def test_branch_get_hides_private_from_non_owner(base_path, monkeypatch):
+def test_branch_get_hides_private_from_non_owner(
+    base_path,
+    monkeypatch,
+    authenticate_request: Callable[[str | None], None],
+):
     from tinyassets.daemon_server import save_branch_definition
 
     save_branch_definition(
@@ -371,6 +381,7 @@ def test_branch_get_hides_private_from_non_owner(base_path, monkeypatch):
 
     # Alice probes for it.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "alice")
+    authenticate_request("alice")
     from tinyassets.api import branches as br
     from tinyassets.api import market as mkt
     importlib.reload(mkt)
@@ -382,6 +393,7 @@ def test_branch_get_hides_private_from_non_owner(base_path, monkeypatch):
 
     # Bob can see it.
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "bob")
+    authenticate_request("bob")
     importlib.reload(mkt)
     importlib.reload(br)
     result = json.loads(br._ext_branch_get({"branch_def_id": "b-hidden"}))

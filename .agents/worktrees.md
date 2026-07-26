@@ -1232,6 +1232,34 @@ Notes:
 - Ship/abandon: publish proof/task foldback only; no runtime changes
 - Foldback: proof complete and independently approved; PR #1747 merged
 
+## 2026-07-25 - bind authenticated host principal to account
+
+- Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
+- Branch: codex/host-principal-binding
+- Lane state: landed; PR #1753 merged at `d454a5c5`; runtime remains separately gated
+- Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
+- STATUS/Issue/PR: STATUS row retired; PR #1753 merged
+- PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
+- Purpose: preserve the stable server account-to-host authority and add the unowned subject-pinned `bound`-not-`online` tray contract without creating a competing identity primitive
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
+- Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
+- Review gate: exact-head Opus 5 and independent Codex approved; counterparty owner acceptance remains before runtime
+- Ship/abandon: current-main spec/audit PR only; runtime files remain unclaimed
+
+## 2026-07-25 - reconcile engine execution admission and isolation
+
+- Provider: codex-gpt5-desktop-full-product with Claude Opus 5 opposite review
+- Branch: `feat/converse-os-sandbox` via local `codex/reconcile-engine-os-sandbox-final-20260725`
+- Lane state: landed as PR #1573 / `c1f0d404`; spec/audit only, with no runtime or backend authority
+- Worktree: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final
+- STATUS/Issue/PR: PR #1573 merged; STATUS work row retired; P0 runtime concern remains
+- PLAN refs: Execution substrate; Provider routing; Distributed execution; zero-maintainer-authority invariant
+- Purpose: replace the obsolete Bubblewrap-only false-attestation contract with backend-neutral, non-downgradeable execution admission composed with #1784
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final\_PURPOSE.md
+- Memory refs: #1784; runner/v1; exact Opus 5 APPROVE; 2026-07-25 sandbox audit
+- Review gate: passed — exact-head Opus 5 plus independent security/domain/diff approvals; 53/53 strict OpenSpec
+- Ship/abandon: merged in place; runtime/backends remain unclaimed and require owner-specific lanes
+
 ## 2026-07-24 23:15 - repurpose release-reconcile-event
 
 - Provider: codex-gpt5-desktop-release-reconcile
@@ -1294,6 +1322,22 @@ Notes:
 - Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
 - Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
 
+## 2026-07-25 - full-product-vision-completion-audit
+
+- Provider: codex-gpt56-full-vision
+- Branch: codex/full-product-vision-audit-20260725
+- Lane state: landed as PR #1779 / `b1acc2bc`
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
+- STATUS/Issue/PR: merged PR #1779; STATUS Work row retired
+- PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
+- Memory refs: Handoff #1582; historical 2026-07-21 implications reports
+- Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
+- Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
+- Ship/abandon: shipped after exact-head Opus approval and 51/51 strict validation; no implementation authority or runtime edits
+- Foldback: gaps promoted through separate OpenSpec/STATUS claims only
+
 ## 2026-07-25 - harden-branch-access-authority
 
 - Provider: codex-gpt5-desktop-full-product
@@ -1353,3 +1397,17 @@ Notes:
 - Related implications: run/background branch authority; provider-attempt receipts; outbound boundary
 - Idea feed refs: none
 - Ship/abandon: planning PR after exact current-main Opus review; no Village/web dependency
+
+## 2026-07-26 - refresh PostgreSQL transactional control-plane authority
+
+- Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review approved
+- Branch: codex/postgres-control-plane-exact-main-20260726
+- Lane state: host-approved; landing current-main target OpenSpec/audit refresh only
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact
+- STATUS/Issue/PR: draft PR #1802; stale stacked draft PR #1670 closed as superseded
+- PLAN refs: per-domain canonical store; full-platform zero-host architecture; §14 load proof
+- Purpose: preserve PostgreSQL authority for catalog/ledger/inbox/market while reconciling current identity, custody, migration, load, market, and execution owners
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact\_PURPOSE.md
+- Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
+- Review gate: passed at semantic SHA `bc5fdcbb` — exact current-main Opus 5 plus three independent architecture/spec/verification approvals; host accepted the reconciled target boundary 2026-07-26
+- Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority
