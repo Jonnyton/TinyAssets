@@ -13,7 +13,7 @@
 - [ ] 2.2 Implement attempt persistence with unique logical keys, exact branch snapshot, source generation, executor audience, lineage, limits, and monotonic lifecycle transitions.
 - [ ] 2.3 Implement server-owned binding create/rotate/pause/revoke/exhaust transitions that reject stale generations and caller-controlled identity or authority fields.
 - [ ] 2.4 Implement just-in-time attempt issuance that revalidates principal, ACL, physical universe, branch, source, daemon/runtime eligibility, lineage, limits, and prior-attempt state before any downstream access.
-- [ ] 2.5 Implement single-winner attempt claim/renew/release/reclaim with audience and claim-generation fencing; dead/invalidated predecessor plus conclusive boundary autonomously reclaims the same attempt, while lease expiry alone proves nothing.
+- [ ] 2.5 Implement single-winner attempt claim/renew/release/reclaim with audience and claim-generation fencing across epoch-1 recovery helpers and `Epoch2BranchTaskAdapter.recover_expired`; dead/invalidated predecessor plus conclusive boundary autonomously reclaims the same attempt, while lease expiry alone proves nothing.
 - [ ] 2.6 Implement typed `target_authority_held` queue transitions, recovery-proven automatic and authenticated reauthorization exits, equivalent source-owned target holds, and non-secret projections for missing, stale, revoked, exhausted, unauthorized, source-mismatched, and indeterminate authority.
 - [ ] 2.7 Implement prepared-pair reconciliation for cross-store create/rotate/revoke operations using exact source/binding digests and idempotent recovery.
 - [ ] 2.8 Add model/store tests for malformed records, replay, unique-key concurrency, stale CAS, generation fences, bounded reads, and crash recovery.
@@ -74,6 +74,7 @@
 - [ ] 6.8 Persist an exact durable root-run binding before every live/version async execution path, including selector/leaderboard/market delegates, and make `resume_run` derive one single-winner target attempt from canonical request principal, run ACL/owner, checkpoint, stored branch version, cancellation, and resume generation.
 - [ ] 6.9 Make `recover_in_flight_runs` fence stale execution and mark interruption without minting resume authority; provide resumed graph child delegation only from the claimed resume attempt.
 - [ ] 6.10 Add concurrent resume, stored-actor spoof, ACL revocation, version/checkpoint mismatch, startup recovery, resume-plus-child-enqueue, and crash-boundary tests.
+- [ ] 6.11 Make cloud-worker graceful drain reconcile provider reservations and target irreversible boundaries under exact generations before releasing orphaned leases; conclusive state reclaims the same attempt and indeterminate state stays held.
 
 ## 7. Legacy Migration and Rollout Controls
 
@@ -96,4 +97,4 @@
 - [ ] 8.6 Deploy dark mode, verify metrics and rollback, then activate one source class at a time only after its focused evidence passes.
 - [ ] 8.7 Run public connector canaries and a rendered chatbot conversation that creates and observes unattended work with correct authorizer/executor provenance; save `output/user_sim_session.md` and trace/screenshot evidence.
 - [ ] 8.8 Check fresh production traces for clean post-fix real-user use; if absent, add a dated `STATUS.md` watch item instead of claiming proven adoption.
-- [ ] 8.9 After `demand-side-signals`, `harden-background-provider-execution-authority`, `operator-request-trigger-contract`, universe/run owners, and the accepted paid-market contract owner have synced their dependencies, sync this change's five merged capability deltas second, archive it, retire its `STATUS.md` row, and record the landing in git history only after every gate passes.
+- [ ] 8.9 After `demand-side-signals`, `harden-background-provider-execution-authority`, `operator-request-trigger-contract`, universe/run owners, and the accepted paid-market contract owner have synced their dependencies, verify the scheduler, startup, supervisor-drain, and interrupted-resume requirements are complete merged copies; then sync this change's five deltas second, archive it, retire its `STATUS.md` row, and record the landing only after every gate passes.

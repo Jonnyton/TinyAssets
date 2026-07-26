@@ -1,9 +1,20 @@
+> Sync-order note. `harden-background-provider-execution-authority` also
+> modifies the resume requirement below. That provider change MUST sync first;
+> this complete merged provider-plus-target block MUST sync second. Task 8.9
+> enforces the order so neither authority protocol is deleted.
+
 ## MODIFIED Requirements
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
-`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when the canonical authenticated request principal owns/can administer the run and retains universe/branch access, the run is `interrupted`, a checkpoint exists for its `thread_id`, the exact branch version still resolves, the run is not cancelled, and its mandatory durable initial-run binding generation revalidates. Caller or stored `actor` strings MUST NOT satisfy ownership. A run already `resumed` SHALL idempotently return the same outcome; another status raises `not_interrupted`, a missing checkpoint raises `no_checkpoint`, and a mismatched version raises `branch_version_mismatch`.
+`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when the canonical authenticated request principal owns/can administer the run and retains universe/branch access, the run is `interrupted`, a checkpoint exists for its `thread_id`, the exact branch version still resolves, the run is not cancelled, and its mandatory durable initial-run target binding generation revalidates. Caller or stored `actor` strings MUST NOT satisfy ownership. A run already `resumed` SHALL idempotently return the same outcome; another status raises `not_interrupted`, a missing checkpoint raises `no_checkpoint`, and a mismatched version raises `branch_version_mismatch`.
 
-One conditional resume generation MUST create or follow one exact `BackgroundBranchAttempt` bound to the run, checkpoint, stored branch version/content digest, canonical principal, and executor before background re-invocation with `None` inputs. The resume transaction MUST link that attempt and child-delegation source before marking the run `resumed`; crash recovery resumes, terminates, or holds that exact generation rather than minting another. At server startup `recover_in_flight_runs` SHALL sweep `queued` or `running` rows to `interrupted` and fence stale execution, but MUST NOT mint resume authority. Background-target clauses introduced by this change MUST remain dark/non-authorizing until the live-activation requirement and store-owner decision are satisfied.
+One conditional durable resume-attempt idempotency record MUST coordinate both authority domains against the expected `interrupted` status. Only its winner may create/follow one exact `BackgroundBranchAttempt` bound to the run, checkpoint, stored branch version/content digest, canonical principal, and executor, then idempotently issue a provider-work receipt from the current server-owned run binding when the run is provider-capable. A losing concurrent caller MUST attach to the same resume attempt and return its eventual outcome or exact authority hold without issuing, submitting, or invoking again. Provider-work issuance MUST validate the active target attempt; neither receipt substitutes for the other.
+
+The public run MUST remain `interrupted` until the winner links every applicable target/provider receipt and conditionally commits `resumed`. `resume_run` MUST query current ledger truth for the exact work item: an active provider ledger fence raises `ResumeError` reason `provider_authority_fenced`, an active target ledger fence raises reason `target_authority_fenced`, and flat error sentinels alone are diagnostic and cannot block after their ledger fence resolves. Fence resolution MUST clear or replace the corresponding sentinel with a conclusive diagnostic projection. A crash MUST resume, revoke, or hold that exact resume attempt and MUST NOT mint a second target attempt or provider receipt. For every live, dark, provider-capable, and non-provider-capable path, the run MUST be marked `resumed` before background re-invocation with `None` inputs and the resumed graph MUST receive child delegation only from the claimed target attempt.
+
+Under the effective authority gates, the lazy first-use recovery coordinator and `recover_in_flight_runs` SHALL sweep a provider/target-capable `queued` or `running` row to `interrupted` only after every applicable authority domain reconciles. Provider reconciliation MUST prove no reservation exists or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; succeeded/failed slots and budgets remain consumed while cancelled-before-launch authority is released. A dead/invalidated-owner `reserved` reservation MUST first be atomically cancelled before launch. Target reconciliation MUST prove the prior attempt never crossed an irreversible boundary or is durably conclusive. Recovery MUST prove the old process owner dead or atomically invalidate/advance every applicable execution-claim generation before cancellation or sweep.
+
+An unclosed provider `launch_started`, `indeterminate`, or unreadable reservation MUST fence its receipt and set the stable `provider_authority_fenced` diagnostic. An indeterminate target boundary MUST fence its attempt and set `target_authority_fenced`. The public run becomes/remains `interrupted` but non-runnable until authoritative reconciliation resolves every fence. The shipped process-global recovery boolean MUST become a synchronized per-universe state machine: a universe becomes done only after all applicable reconciliation and sweep work succeeds; an effective-gate universe failure remains retryable and fails closed only affected run operations for that universe; dark/unlisted universes complete the shipped sweep independently unless a row already has an authority record, which remains subject to reconciliation/fencing regardless of gate state. As-built limitations retained until implementation: the `recover_in_flight_runs` docstring incorrectly says `interrupted` is terminal and checkpoint resume is unavailable, and dark-mode `resume_run` retains the shipped non-CAS read/write race that can submit two concurrent resumes. Background-target clauses introduced here MUST remain dark/non-authorizing until the live-activation requirement and store-owner decision are satisfied.
 
 #### Scenario: a non-owner cannot resume
 - **WHEN** a caller-supplied actor matches the stored run actor but the canonical authenticated principal lacks run/universe authority
@@ -15,16 +26,70 @@ One conditional resume generation MUST create or follow one exact `BackgroundBra
 
 #### Scenario: a second resume is idempotent
 - **WHEN** `resume_run` is called on a run already marked `resumed`
-- **THEN** it returns the same run/resume-attempt outcome without launching another resume
+- **THEN** it returns the same run and linked target/provider attempt outcome without launching another resume
 
-#### Scenario: concurrent resume has one target attempt
-- **WHEN** two authorized callers race to resume the same interrupted checkpoint/binding generation
-- **THEN** exactly one conditional resume generation and target attempt wins and both callers observe that outcome
+#### Scenario: every resume commits status before invocation
+- **WHEN** any dark, live, provider-capable, or non-provider-capable resume passes its applicable guards
+- **THEN** the run is marked `resumed` before background re-invocation with `None` inputs
 
-#### Scenario: startup sweeps in-flight runs without minting authority
-- **WHEN** `recover_in_flight_runs` finds rows left queued or running by a crash
-- **THEN** it marks them interrupted and fences stale execution
-- **AND** no target attempt exists until an authorized resume transition
+#### Scenario: concurrent resume callers share one attempt
+- **WHEN** two authorized callers concurrently resume the same interrupted checkpoint/binding generation
+- **THEN** exactly one conditional resume-attempt claim succeeds and creates/follows one exact target attempt
+- **AND** only that winner may issue/link one provider receipt when applicable
+- **AND** the loser follows the same attempt and outcome without a second submission
+
+#### Scenario: target authority failure preserves resumability
+- **WHEN** the winning resume attempt cannot create or claim a valid exact target attempt
+- **THEN** no invocation or provider issuance starts and the public run remains `interrupted`
+- **AND** reconciliation revokes, safely retries, or holds that exact resume attempt
+
+#### Scenario: provider authority failure preserves resumability
+- **WHEN** a valid target attempt exists but the winning provider-capable resume cannot issue or link provider authority
+- **THEN** no provider-capable invocation starts
+- **AND** reconciliation revokes or safely retries that exact resume attempt while the public run remains `interrupted`
+
+#### Scenario: first-use recovery interrupts work with conclusive authority
+- **WHEN** `_ensure_runs_recovery` first invokes `recover_in_flight_runs` for rows whose provider reservations and target boundaries are all absent or durably conclusive
+- **THEN** those rows become `interrupted` with a restart message and the count is returned
+- **AND** succeeded/failed provider budgets remain consumed, cancelled-before-launch authority is released, and no new target attempt is minted
+
+#### Scenario: first-use recovery cancels a dead-owner reservation
+- **WHEN** recovery proves the owner dead or invalidates its claim generation and finds a durable provider `reserved` reservation
+- **THEN** it transitions the reservation to `cancelled_before_launch`, releases provider authority, and then performs the interrupted sweep
+
+#### Scenario: unprovable run owner is invalidated before sweep
+- **WHEN** first-use recovery cannot prove the old run worker dead
+- **THEN** the authority stores atomically advance every applicable old execution-claim generation before cancellation or sweep
+- **AND** later provider reservations or target claims from that stale process fail validation
+
+#### Scenario: first-use recovery fences ambiguous provider work
+- **WHEN** recovery finds an unclosed provider `launch_started`, `indeterminate`, or unreadable reservation
+- **THEN** the receipt becomes `fenced_indeterminate` and the run becomes `interrupted` with `provider_authority_fenced`
+- **AND** it remains non-runnable until authoritative reconciliation resolves the fence
+
+#### Scenario: first-use recovery fences ambiguous target work
+- **WHEN** recovery finds an indeterminate target irreversible boundary
+- **THEN** the target attempt is fenced and the run becomes `interrupted` with `target_authority_fenced`
+- **AND** no resume or provider issuance starts until reconciliation resolves it
+
+#### Scenario: resolved fences update diagnostic projections
+- **WHEN** ledger reconciliation makes every prior provider reservation and target boundary conclusive and clears the work-item fences
+- **THEN** the run remains or becomes `interrupted` with stale fence sentinels cleared or replaced by conclusive diagnostics
+- **AND** `resume_run` may claim its one coordinated attempt instead of being blocked by stale text
+
+#### Scenario: failed first-use reconciliation is isolated and retryable
+- **WHEN** authority reconciliation or run sweep raises for one effective-gate universe
+- **THEN** the coordinator does not mark that universe done and a later use retries it
+- **AND** affected run operations fail closed only for that universe while independent universes remain live
+
+#### Scenario: non-provider runs retain target-aware first-use recovery
+- **WHEN** first-use recovery finds a non-provider-capable row left queued or running
+- **THEN** provider authority adds no precondition while applicable target reconciliation still completes before the interrupted sweep
+
+#### Scenario: dark mode retains the shipped first-use sweep
+- **WHEN** effective authority gates are dark and recovery finds rows with no authority-ledger record left queued or running
+- **THEN** those rows receive the shipped interrupted sweep and count
+- **AND** any existing provider or target record is reconciled and fenced regardless of gate state
 
 ### Requirement: Live child invocation maps state and supports blocking or async execution
 

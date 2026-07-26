@@ -5,8 +5,8 @@
 > first and this change MUST sync second; reversing or independently syncing
 > either delta would delete one side of the merged requirement.
 > `harden-background-provider-execution-authority` also modifies startup
-> recovery below. That provider change MUST sync first; this change's complete
-> merged recovery block MUST sync second.
+> recovery and supervisor graceful drain below. That provider change MUST sync
+> first; this change's complete merged blocks MUST sync second.
 
 ## MODIFIED Requirements
 
@@ -15,7 +15,7 @@ At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook
 
 Under the effective provider-authority V2 gate, every startup reclaim path and hot-pick expired-lease reset SHALL apply the same provider-authority guard. Lease expiry alone MUST NOT prove owner death; `ProviderWorkAuthorityStore` MUST prove the owner dead or atomically invalidate/advance the old execution-claim generation, and reservation creation MUST validate that exact current generation. The store MUST prove the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation MUST first be atomically cancelled before launch, while unclosed `launch_started`, `indeterminate`, or unreadable state holds the row non-claimable and fences the receipt.
 
-Under the effective background-target gate, every target-bound row SHALL additionally prove the prior attempt-claim owner dead or atomically invalidate/advance that claim generation and prove that the target attempt never crossed an irreversible boundary or is durably conclusive. Conclusive recovery SHALL reclaim the same target attempt and reset the task to `pending`, including a generation-checked recovery-proven `target_authority_held` to `pending` transition, without rotating the binding or requiring a user. An indeterminate target boundary SHALL remain `target_authority_held`. The authority proofs MUST bind the exact task, provider/target claim generations, claim owner, and monotonic lease generation; queue reset MUST compare-and-swap that unchanged tuple, and any concurrent heartbeat, renewal, or authority change forces fresh reconciliation.
+Under the effective background-target gate, every target-bound row SHALL additionally prove the prior attempt-claim owner dead or atomically invalidate/advance that claim generation and prove that the target attempt never crossed an irreversible boundary or is durably conclusive. Conclusive recovery SHALL reclaim the same target attempt and reset the task to `pending`, including a generation-checked recovery-proven `target_authority_held` to `pending` transition, without rotating the binding or requiring a user. An indeterminate target boundary SHALL remain `target_authority_held`. The authority proofs MUST bind the exact task, provider/target claim generations, claim owner, and monotonic lease generation; timestamps are observability only and MUST NOT serve as compare-and-swap identity. Queue reset MUST compare-and-swap the unchanged authoritative tuple, and any concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Epoch-2 `Epoch2BranchTaskAdapter.recover_expired` MUST apply the same applicable authority proof/fence contract as the epoch-1 startup and hot sweeps.
 
 Non-provider-capable rows retain their provider-independent recovery rule. Dark provider/target behavior retains shipped lease recovery only for work with no corresponding authority-ledger record; any existing provider or target record remains subject to reconciliation and fencing regardless of gate state. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart. Background-target recovery clauses introduced by this change MUST remain non-authorizing until the live-activation requirement and store-owner decision are satisfied.
 
@@ -41,6 +41,7 @@ Non-provider-capable rows retain their provider-independent recovery rule. Dark 
 #### Scenario: an ambiguous provider or target boundary is held
 - **WHEN** recovery finds an unclosed provider `launch_started`/`indeterminate` reservation or an indeterminate target irreversible boundary
 - **THEN** the row is not reset to pending and remains non-claimable under its domain-specific fence
+- **AND** an ambiguous provider receipt is specifically `fenced_indeterminate` without automatic retry
 
 #### Scenario: a healthy peer's fresh-lease task is untouched
 - **WHEN** startup recovery runs while another worker holds a running task with a fresh lease
@@ -67,6 +68,34 @@ Non-provider-capable rows retain their provider-independent recovery rule. Dark 
 #### Scenario: work outside an authority domain retains its recovery rule
 - **WHEN** an eligible row is non-provider-capable or has no background target domain under the effective live gates
 - **THEN** that inapplicable domain adds no new recovery precondition while every applicable domain still reconciles
+
+### Requirement: The supervisor keeps one daemon subprocess alive with backoff, producer restart, auth quarantine, and graceful drain
+The cloud-worker supervisor (`tinyassets.cloud_worker` run-supervisor loop) SHALL spawn the daemon subprocess, wait for its exit, and respawn it with exponential backoff — a shorter idle backoff after clean (no-work) exits and a longer crash backoff after non-zero exits — until a SIGTERM/SIGINT stop is requested. While a subprocess runs it SHALL poll for newly queued branch tasks and restart the child so pending work is picked up, SHALL write a phase-tagged heartbeat file, and SHALL quarantine itself (skip spawn, beat, back off, re-check) when the writer provider is unauthenticated so a dead-auth worker never claims-and-fails tasks. Under the effective provider-authority V2 gate it SHALL also quarantine before spawn or claim when maintenance authority is unavailable and records `auth_unknown`; while dark, it SHALL retain the shipped rule that quarantines only on `not_logged_in`.
+
+On a stop signal, once child death is CONFIRMED, graceful drain SHALL release that worker's orphaned leases only after every applicable authority domain passes the same proof, reconciliation, fence, monotonic generation, and queue compare-and-swap rules as startup recovery. A provider-capable orphan MUST pass dead-or-invalidated-owner and reservation reconciliation; an unclosed `launch_started`, `indeterminate`, or unreadable reservation remains fenced/non-claimable. A target-bound orphan MUST pass dead-or-invalidated-owner and irreversible-boundary reconciliation; conclusive state advances/reclaims the same target-attempt generation for a peer, while an indeterminate boundary moves/remains `target_authority_held`. Non-provider/non-target rows retain shipped graceful-drain release. Dark behavior retains shipped release only for rows with no applicable authority record; every existing record reconciles regardless of gate state. Background-target drain clauses MUST remain dark until live-activation prerequisites pass.
+
+#### Scenario: backoff differs by exit kind
+- **WHEN** the subprocess exits cleanly versus crashing
+- **THEN** the supervisor sleeps an idle backoff after the clean exit and a crash backoff after the crash
+- **AND** consecutive exits of the same kind grow up to the configured ceiling
+
+#### Scenario: newly queued work restarts the child
+- **WHEN** a pending branch task appears while the subprocess is running and no branch task is already running
+- **THEN** the supervisor restarts the subprocess so the pending task is claimed on the next spawn
+
+#### Scenario: an unauthenticated writer quarantines the worker
+- **WHEN** the writer provider reports `not_logged_in` before a spawn
+- **THEN** the supervisor skips spawn, writes an `auth_quarantined` heartbeat, and backs off without claiming a task
+
+#### Scenario: unavailable V2 maintenance authority quarantines provider work
+- **WHEN** the effective worker/provider V2 gate is active and maintenance authority lacks fresh conclusive health evidence
+- **THEN** the supervisor records `auth_unknown`, skips spawn, and backs off without claiming provider-capable work
+- **AND** ordinary router unknown health is not reinterpreted as `not_logged_in`
+
+#### Scenario: confirmed child death reconciles every authority domain
+- **WHEN** a stop signal terminates the child and its exit is confirmed
+- **THEN** graceful drain releases only leases whose provider reservations and target irreversible boundaries are conclusive under exact generation proofs
+- **AND** ambiguous provider state remains fenced and ambiguous target state remains `target_authority_held` without peer execution
 
 ### Requirement: Scheduled and event-triggered invocation is persisted and restart-recoverable
 Scheduled and event-triggered branch invocation (`tinyassets.scheduler`) SHALL persist cron and interval schedules and event subscriptions in the universe's as-built runs SQLite database so they survive daemon restart, with the tick loop reading durable state each tick and processing due schedules. Every persisted cron-class schedule MUST record a resolvable IANA timezone, and registration without one MUST fail rather than use the daemon's local zone. Each schedule MUST declare `skip`, `fire_once`, or `backfill_bounded(n)` missed-tick policy and persist the applied policy plus skipped/replayed counts after downtime. `skip` SHALL create no period identity or attempt; `fire_once` SHALL use exactly the most recent missed period's identity; and bounded backfill SHALL process the most recent `n` identities in chronological order and record discarded periods. A nonexistent DST local time MUST fire once at the next valid instant with its nominal identity; an ambiguous local time MUST fire once on the first UTC occurrence with one identity.
@@ -158,6 +187,10 @@ The branch-task garbage collector SHALL, under the queue file lock, move only te
 #### Scenario: Cancelled held work moves to the archive
 - **WHEN** a formerly held task is terminally cancelled and has a parseable `queued_at` before the cutoff
 - **THEN** it is appended to the archive and removed from the live queue while retaining one lifetime-lineage charge
+
+#### Scenario: Old ordinary terminal work moves to the archive
+- **WHEN** any succeeded, failed, or cancelled task has a parseable `queued_at` before the cutoff
+- **THEN** it is appended to the archive and removed from the live queue
 
 #### Scenario: Interrupted collection converges without archive duplication
 - **WHEN** an identified terminal task is already archived but remains in the live queue after an interrupted collection
