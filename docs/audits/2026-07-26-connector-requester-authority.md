@@ -97,7 +97,7 @@ epoch-2 BranchTask intake contract.
 | Capability | This successor owns | It must not steal |
 |---|---|---|
 | `identity-auth-and-access-control` | #1784 TinyAssets current-message reserve, actual handler claim/liveness, OAuth requester, tenant, exact universe, message/session/tool/action binding, revocation before result | Outer ContextVar/FastMCP snapshot/prior-message/copied-worker authority, caller actor/tenant, `ProviderRequestCapability` substitution, durable replay |
-| `paid-market-economy` | Internal tenant-scoped `paid_market.accept_agreement_v1` over canonical request/quote with exact requester-subject/tenant/universe equality; bounded mandate; logical budget/accounting intent | Treating submission/match/claim as acceptance; creating domain capacity, real-fund/wallet/chain authority, selected-host authority, settlement finality, or execution authority |
+| `paid-market-economy` | Internal tenant-scoped `paid_market.accept_agreement_v1` over canonical request/quote with exact requester-subject/tenant equality and a separately server-derived target-universe binding; bounded mandate; logical budget/accounting intent | Inventing a request-universe field; treating submission/match/claim as acceptance; creating domain capacity, real-fund/wallet/chain authority, selected-host authority, settlement finality, or execution authority |
 | `distributed-execution` | B13 provisional non-executable mandate and sole cross-owner per-job composition of allocation/claim, domain capacity, logical accounting, §18.6 real-fund, S14/B36, and exact B2 plus Engine OS admission | Writing another owner's records, pre-minting future-job B2, or promoting request/match/claim/row/receipt/reservation evidence |
 | `live-mcp-connector-surface` | Exact action/input/result, rendered confirmation, refusal, repair, and renewal | New MCP handle, raw grant/secret/payment carrier, deprecated handle, or desktop prerequisite |
 | `provider-routing` (#1784 reconciliation) | Assignment transaction stores agreement plus current non-executable mandate refs for `remote_ready + []`; each concrete job delegates to B13 for fresh B2; ordinary bypass/held state | Never store/require a speculative future-job B2 or convert the activation mandate directly into execution |
@@ -116,7 +116,7 @@ receipt identity and digest, firm quote identity/version/digest, accepted
 integer-micros budget and per-job spend cap, settlement currency,
 fee-schedule and settlement-policy versions, deadline, and acceptance policy.
 
-The server derives or reloads the actor, tenant, universe, canonical request's
+The server derives or reloads the actor, tenant, target universe, canonical request's
 capability/payload/bid-window/policy/visibility/fanout fields, descriptor,
 demand commitment, quote contents, issuer/capacity evidence, host,
 domain-capacity result, wallet/chain receipt, and B13 market-mandate authority. Caller-supplied
@@ -141,10 +141,13 @@ allowed_providers=[]
 ```
 
 Any failure leaves no `remote_ready` mutation and authorizes no execution or
-maintainer spend. Same-key/same-body replay returns the original typed result;
-same-key/different-body reuse conflicts after current actor and universe
-authorization is rechecked. The activation idempotency namespace is
-domain-separated from request admission and every other target/action. A
+maintainer spend. Same-key/same-body replay means the exact RFC 8785
+projection of target, action, graph, and the closed v1 acceptance object under
+the `tinyassets/connector-market-activation/v1` SHA-256 domain; it returns the
+original typed result. Same-key/different-digest reuse conflicts after current
+actor and universe authorization is rechecked. The activation idempotency
+namespace is domain-separated from request admission and every other
+target/action. A
 provisional B13 mandate becomes current only through the committed activation
 reference; failed commits revoke or expire it idempotently, and retries cannot
 accumulate mandate authority.
@@ -157,11 +160,13 @@ capacity fence, §18.6 real-fund receipt, fee/spend ledger, S14/B36
 `job_id:lease_fence:accepted_result_sha256`, demand, quantity, daemon/host,
 capsule, and lease identities into B2. The daemon/host must equal the current
 paid claimant. Each owner serializes its own resource; B13 writes none of
-them. One fenced CAS chooses `dispatch_committed` or
+them. The B13 production composition root's one global dispatch/cancel CAS
+chooses `dispatch_committed` or
 `cancelled_and_released`. The cancel winner prevents/revokes B2 and releases
 once; the dispatch winner forbids pre-dispatch release. Settlement/refund
-requires current platform-signed B2 terminal evidence plus domain acceptance,
-never host self-attestation.
+requires the current platform-signed `ExecutionTerminalV1`, its current
+generation/fence and distributed-execution owner-CAS completion proof, plus
+domain acceptance, never host self-attestation.
 An activation, quote, reservation, or mutable database row is never itself
 executable authority. Missing, expired, revoked, fenced, overspent, consumed,
 or inconsistent state maps to held repair/renewal and never to maintainer,

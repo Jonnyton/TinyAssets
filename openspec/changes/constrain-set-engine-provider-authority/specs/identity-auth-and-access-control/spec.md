@@ -223,9 +223,12 @@ pass cutover as merely "safe."
 streamable-HTTP path across `identity-auth-and-access-control`,
 `paid-market-economy`, `distributed-execution`, and
 `live-mcp-connector-surface`. It SHALL compose the authenticated requester,
-accepted paid-market agreement, B2 signed remote execution, B13 production
-composition root, bounded spend, and target universe into one connector-
-completable accepted-market grant. Its own OpenSpec SHALL name an action
+accepted paid-market agreement, a revocable non-executable B13 activation
+mandate, bounded spend, and target universe into one connector-completable
+accepted-market assignment. It SHALL NOT create or store a B2 before the
+later concrete job and capsule exist; only the B13 production composition
+root may create that job's exact B2 after every named owner-native result is
+current. Its own OpenSpec SHALL name an action
 carried by one of the seven canonical live connector handles before its
 `applyRequires` gate clears; it MUST NOT use the deprecated `universe` handle,
 reintroduce raw secret deposit, or require a desktop/web-app prerequisite.
@@ -237,16 +240,16 @@ authority enforcement and newborn deny-all cutover SHALL remain blocked.
 
 #### Scenario: chatbot founder completes accepted market setup
 - **WHEN** an authenticated Tier-1 founder accepts a valid market offer through the live connector
-- **THEN** the named successor produces the B2/B13-bound remote execution grant and atomically publishes `engine_source="accepted_market"`, `engine_assignment_state="remote_ready"`, and `allowed_providers=[]`
-- **AND** the next `converse` executes through that successor's pre-routing remote-execution seam, not the ordinary provider ceiling, without maintainer or desktop resources
+- **THEN** the named successor atomically commits the accepted agreement plus current non-executable B13 activation-mandate reference and publishes `engine_source="accepted_market"`, `engine_assignment_state="remote_ready"`, and `allowed_providers=[]`
+- **AND** the next `converse` executes only after B13 composes fresh per-job market, capacity, funding, settlement, execution-admission, capsule, and exact B2 authority through the successor's pre-routing remote-execution seam, not the ordinary provider ceiling, without maintainer or desktop resources
 
-#### Scenario: invalid accepted-market grant maps to repair, not engine-less
-- **WHEN** an accepted-market grant is absent, expired, revoked, or inconsistent
+#### Scenario: invalid accepted-market mandate maps to repair, not engine-less
+- **WHEN** an accepted agreement or activation mandate is absent, expired, revoked, cancelled, fenced, or inconsistent
 - **THEN** `universe_has_assigned_engine` remains fail-safe true while execution holds and the successor-owned setup mapper offers accepted-market repair or renewal
 - **AND** no ordinary provider, maintainer resource, desktop prerequisite, or generic engine-less envelope substitutes
 
 #### Scenario: absent connector activation owner blocks cutover
-- **WHEN** paid-market, B2/B13, or the connector-visible setup step is unavailable
+- **WHEN** paid-market, the B13 activation/per-job composition path, per-job B2, or the connector-visible setup step is unavailable
 - **THEN** no accepted-market path is advertised as completable
 - **AND** Tier-1 deny-all enforcement does not cut over
 

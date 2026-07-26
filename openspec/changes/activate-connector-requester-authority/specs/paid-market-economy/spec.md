@@ -19,14 +19,18 @@ fulfillment descriptor ID/version/digest, currency, positive
 `budget_micros`, positive `spend_cap_micros` not exceeding that budget,
 fee-schedule version, demand-commitment digest, acceptance-policy digest,
 settlement-policy version, deadline, quote expiry, authenticated actor, tenant,
-and exact universe. The producer SHALL rehydrate the canonical request's
+and exact target universe derived from the current authorized activation
+scope. The producer SHALL rehydrate the canonical request's
 capability digest, payload digest, bid-window close, acceptance policy,
 settlement policy, visibility, and fanout. The caller's acceptance object is a
 confirmation commitment, not a source of canonical market facts.
 The canonical request's `requester_user_id` MUST equal the current
-authenticated OAuth subject; its tenant and universe MUST equal the current
-authorized activation scope. Delegation requires a separately verified owner
-grant and cannot be inferred from request contents.
+authenticated OAuth subject and its `tenant_id` MUST equal the current
+authorized tenant. `MarketRequest` has no universe field: the accepted
+agreement SHALL bind the target universe separately from the server-derived
+current activation authority and MUST NOT infer universe scope from request
+contents. Delegation requires a separately verified owner grant and cannot be
+inferred from request contents.
 
 #### Scenario: current bounded terms become an accepted agreement
 
@@ -41,7 +45,7 @@ grant and cannot be inferred from request contents.
 
 #### Scenario: canonical requester must equal current authenticated subject
 
-- **WHEN** the canonical request's requester user, tenant, or universe differs from the current authenticated activation subject and exact authorized scope
+- **WHEN** the canonical request's requester user or tenant differs from the current authenticated subject/tenant, or the target universe differs from the server-derived exact authorized activation scope
 - **THEN** `paid_market.accept_agreement_v1` refuses before agreement or assignment mutation
 - **AND** request contents, a match, or caller-supplied identity cannot impersonate the requester
 
@@ -81,11 +85,22 @@ Accepted-market activation SHALL use a domain-separated
 `write_graph/engine/activate_accepted_market` idempotency namespace and then
 scope by authenticated actor, tenant, universe, and idempotency key. That
 namespace MUST NOT collide with request admission or another target/action.
+The owner SHALL compute `activation_body_digest` as lowercase SHA-256 over
+`UTF8("tinyassets/connector-market-activation/v1\0")` followed by the RFC 8785
+JSON Canonicalization Scheme bytes for the exact closed projection
+`{"target":"engine","action":"activate_accepted_market","graph_id":graph_id,
+"market_acceptance":market_acceptance}`. `market_acceptance` in that projection
+contains exactly the v1 fields named by the connector-surface requirement; the
+top-level `idempotency_key` is excluded from the body projection because it is
+bound separately in the idempotency identity. No transport envelope,
+authorization header, omitted/defaulted field, rendering, or unknown field
+participates. A new projection, algorithm, or domain requires a new activation
+schema version.
 Current authenticated subject, tenant, exact-universe write/admin authority,
 current-message handler claim, and liveness SHALL be verified before any
 idempotency lookup. Authority loss SHALL return a non-enumerating denial that
 reveals neither key existence nor historical result.
-Replaying the same key with the same canonical acceptance body SHALL return
+Replaying the same key with the same `activation_body_digest` SHALL return
 the original outcome without
 duplicating an agreement, reservation, charge, grant request, or assignment.
 Reusing the key with a different canonical body MUST return a conflict.
@@ -101,7 +116,7 @@ remain with their owning market contracts.
 
 #### Scenario: identical retry is side-effect stable
 
-- **WHEN** a connector retries the same activation key and byte-equivalent canonical acceptance after an ambiguous response
+- **WHEN** a connector retries the same activation key with an RFC-8785-equivalent exact activation-body projection after an ambiguous response
 - **THEN** it receives the original typed outcome and no economic or engine side effect is duplicated
 
 #### Scenario: authorization precedes replay lookup
@@ -149,14 +164,16 @@ and expose body-bound idempotent prepare/commit/cancel results. Same-job retries
 reuse those results; changed-body reuse conflicts. No B2 becomes observable
 until every owner result is current.
 
-One owner-defined CAS/fence SHALL choose
+The distributed-execution B13 production composition root SHALL own the one
+global dispatch/cancel CAS/fence that chooses
 `reserved -> dispatch_committed` or
 `reserved -> cancelled_and_released`. If cancellation wins, B2 is absent or
 revoked and every owner releases its reservation exactly once. If dispatch
 wins, pre-dispatch release is forbidden. Later settlement/refund SHALL consume
-current platform-signed B2 terminal evidence plus domain acceptance bound to
-`job_id:lease_fence:accepted_result_sha256`; host self-attestation or generic
-accepted-use text is insufficient.
+the current platform-signed `ExecutionTerminalV1`, including its current
+generation/fence and distributed-execution owner-CAS completion proof, plus
+domain acceptance bound to `job_id:lease_fence:accepted_result_sha256`; host
+self-attestation or generic accepted-use text is insufficient.
 
 #### Scenario: exact job composes owner-native authority without owner theft
 
@@ -173,13 +190,13 @@ accepted-use text is insufficient.
 #### Scenario: cancellation and dispatch have one fenced winner
 
 - **WHEN** cancellation races B2 creation or dispatch for a reserved job
-- **THEN** the owner-defined fence commits exactly one of `dispatch_committed` or `cancelled_and_released`
+- **THEN** the B13-owned global dispatch/cancel fence commits exactly one of `dispatch_committed` or `cancelled_and_released`
 - **AND** the losing path cannot release active work, dispatch cancelled work, double-consume, double-charge, or double-refund
 
 #### Scenario: settlement requires signed terminal and domain evidence
 
 - **WHEN** a dispatched job reaches settlement or refund
-- **THEN** the owning contracts require current platform-signed terminal evidence and domain acceptance for the exact `job_id:lease_fence:accepted_result_sha256`
+- **THEN** the owning contracts require the current platform-signed `ExecutionTerminalV1`, its current generation/fence and distributed-execution owner-CAS completion proof, and domain acceptance for the exact `job_id:lease_fence:accepted_result_sha256`
 - **AND** a host claim, mutable row, or generic accepted-use assertion cannot move logical or real funds
 
 #### Scenario: allocation price capacity or funding drift requires repair

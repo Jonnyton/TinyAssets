@@ -21,14 +21,20 @@ unsupported schema versions SHALL fail before mutation.
 `demand_commitment_digest`, `acceptance_policy_digest`,
 `settlement_policy_version`, `deadline`, and `quote_expires_at`.
 
-All IDs and the top-level idempotency key SHALL be 1-128 ASCII characters
-matching `[A-Za-z0-9][A-Za-z0-9._:-]*`; digests SHALL be exactly 64 lowercase
+All IDs inside `market_acceptance` SHALL be 1-128 ASCII characters matching
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. The top-level idempotency key SHALL
+retain `write_graph`'s 16-128 ASCII-character bound and match
+`[A-Za-z0-9][A-Za-z0-9._:-]{15,127}`. Digests SHALL be exactly 64 lowercase
 hex characters; currency SHALL be the canonical request/quote code matching
-`[A-Z0-9][A-Z0-9._:-]{0,15}`. Versions, deadline, budget, and spend cap SHALL
-be strict JSON integers within positive signed 64-bit range; Boolean, float,
-decimal string, overflow, zero, and negative coercions SHALL fail. The
-owner-published `canonical_market_max_micros` SHALL be positive and no greater
-than signed 64-bit range, with
+`[A-Z0-9][A-Z0-9._:-]{0,15}`. `fee_schedule_version` and
+`settlement_policy_version` SHALL be owner-native ASCII strings of 1-128
+characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`.
+`request_version`, `quote_version`, `fulfillment_descriptor_version`,
+`deadline`, `budget_micros`, and `spend_cap_micros` SHALL be strict JSON
+integers within positive signed 64-bit range; Boolean, float, decimal string,
+overflow, zero, and negative coercions SHALL fail. The paid-market agreement
+owner's published `canonical_market_max_micros` SHALL be positive and no
+greater than signed 64-bit range, with
 `0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
 `quote_expires_at` SHALL be canonical whole-second UTC RFC 3339 ending `Z`;
 deadline and expiry SHALL exactly match current owner records, remain valid,

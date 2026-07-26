@@ -149,26 +149,34 @@ that policy requires a new explicit acceptance.
 
 The server re-resolves the canonical request, selection receipt, quote, and
 descriptor and compares their current canonical versions and digests. From the
-request it rehydrates and verifies the capability digest, payload digest,
-budget, spend cap, bid-window close, deadline, acceptance policy, settlement
-policy, visibility, and fanout rather than trusting caller-authored copies. It
-verifies that the selected route is still the explicitly accepted paid lane,
-that the quote is unexpired, uncancelled, available to the
-actor/tenant/universe, within the stated micros-denominated bounds, and backed
-by a still-acceptable market state. Copying a deadline or expiry into the
-request cannot extend the canonical value. Unknown fields and numeric
-coercion fail closed.
+request it rehydrates and verifies the requester, tenant, capability digest,
+payload digest, budget, spend cap, bid-window close, deadline, acceptance
+policy, settlement policy, visibility, and fanout rather than trusting
+caller-authored copies. The canonical `MarketRequest` has no universe field:
+the agreement binds the exact target universe separately from the
+server-derived current activation authority and never infers universe scope
+from request contents. It verifies that the selected route is still the
+explicitly accepted paid lane, that the quote is unexpired, uncancelled,
+available to the actor/tenant and exact authorized target universe, within the
+stated micros-denominated bounds, and backed by a still-acceptable market
+state. Copying a deadline or expiry into the request cannot extend the
+canonical value. Unknown fields and numeric coercion fail closed.
 
 The v1 schema fixes its wire bounds rather than relying on language coercion:
-all IDs and the top-level idempotency key are ASCII
-`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; every digest is exactly 64 lowercase hex
+all IDs inside `market_acceptance` are 1-128 ASCII characters matching
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; the top-level idempotency key retains
+`write_graph`'s 16-128 ASCII-character bound and matches
+`[A-Za-z0-9][A-Za-z0-9._:-]{15,127}`; every digest is exactly 64 lowercase hex
 characters; currency is the canonical request/quote code and matches
-`[A-Z0-9][A-Z0-9._:-]{0,15}`; versions, `deadline`, `budget_micros`, and
-`spend_cap_micros` are strict JSON integers (Boolean, float, decimal string,
-overflow, zero where positive is required, and negative values are rejected)
-not exceeding signed 64-bit range. The owner-published
-`canonical_market_max_micros` is positive and no greater than that range, and
-the invariant is
+`[A-Z0-9][A-Z0-9._:-]{0,15}`. `fee_schedule_version` and
+`settlement_policy_version` are owner-native ASCII strings of 1-128 characters
+matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Only `request_version`,
+`quote_version`, `fulfillment_descriptor_version`, `deadline`,
+`budget_micros`, and `spend_cap_micros` are strict JSON integers (Boolean,
+float, decimal string, overflow, zero where positive is required, and negative
+values are rejected) not exceeding signed 64-bit range. The paid-market
+agreement owner's published `canonical_market_max_micros` is positive and no
+greater than that range, and the invariant is
 `0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
 `quote_expires_at` is canonical UTC RFC 3339 with whole seconds and `Z`;
 deadline and expiry must equal their owner records, remain future-valid, and
@@ -249,12 +257,21 @@ identity and can never accumulate active mandates.
 The idempotency identity is domain-separated by the canonical tool, target,
 and action, then binds the authenticated actor, tenant, universe, and
 `idempotency_key`: `write_graph/engine/activate_accepted_market`. It cannot
-collide with request admission or another `write_graph` action. A replay with
-the same canonical body returns the original typed result. Reusing the key
-within that namespace with a different body is a conflict. Concurrent first
-activations have one winner; losers observe that winner or a typed conflict.
-Cancellation, quote expiry, capacity loss, or mandate revocation that wins
-before commit prevents activation.
+collide with request admission or another `write_graph` action. Independently,
+the owner computes `activation_body_digest` as lowercase SHA-256 over
+`UTF8("tinyassets/connector-market-activation/v1\0")` followed by the RFC 8785
+JSON Canonicalization Scheme bytes for exactly
+`{"target":"engine","action":"activate_accepted_market","graph_id":graph_id,
+"market_acceptance":market_acceptance}`. `market_acceptance` contains exactly
+the closed v1 field set; the top-level idempotency key is excluded because it
+is bound separately in the identity. Transport envelopes, authorization
+headers, renderings, omitted/defaulted fields, and unknown fields never enter
+the projection. Any projection, algorithm, or domain change requires a new
+activation schema version. A replay with the same digest returns the original
+typed result. Reusing the key within that namespace with a different digest is
+a conflict. Concurrent first activations have one winner; losers observe that
+winner or a typed conflict. Cancellation, quote expiry, capacity loss, or
+mandate revocation that wins before commit prevents activation.
 
 Current authenticated subject, tenant, exact-universe write/admin authority,
 current-message claim, and liveness are rechecked before every idempotency
@@ -307,14 +324,17 @@ releases or cancels each prepared owner result exactly once.
 Only that exact B2 grant may enter the distributed-execution seam. Concurrent
 jobs serialize independently at the claim slot, logical budget, domain
 capacity, and real-fund owners; a loser holds before B2. Same-job retries reuse
-the same owner-native results and B2. One owner-defined CAS/fence chooses
+the same owner-native results and B2. The B13 production composition root owns
+the one global dispatch/cancel CAS/fence that chooses
 `reserved -> dispatch_committed` or
 `reserved -> cancelled_and_released`. If cancellation wins, B2 is absent or
 revoked and every reservation releases once. If dispatch wins, pre-dispatch
-release is forbidden. Later settlement/refund consumes current
-platform-signed B2 terminal evidence plus domain acceptance bound to
-`job_id:lease_fence:accepted_result_sha256`; host self-attestation or generic
-"accepted use" is insufficient. The connector never invents those effects.
+release is forbidden. Later settlement/refund consumes the current
+platform-signed `ExecutionTerminalV1`, its current generation/fence and
+distributed-execution owner-CAS completion proof, plus domain acceptance
+bound to `job_id:lease_fence:accepted_result_sha256`; host self-attestation or
+generic "accepted use" is insufficient. The connector never invents those
+effects.
 
 The ordinary provider router is never consulted for this source. If authority
 is absent, expired, revoked, fenced, cancelled, inconsistent, or cannot be

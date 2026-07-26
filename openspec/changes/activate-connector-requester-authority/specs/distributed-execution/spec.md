@@ -80,15 +80,16 @@ providers.
 
 ### Requirement: Cancellation and dispatch have one fenced winner
 
-Before B2 becomes observable, the B13 coordinator SHALL require one
-owner-defined CAS/fence transition from `reserved` to exactly one of
+Before B2 becomes observable, the B13 production composition root SHALL own
+and require one global dispatch/cancel CAS/fence transition from `reserved` to exactly one of
 `dispatch_committed` or `cancelled_and_released`. If cancellation wins, B2
 SHALL be absent or revoked and each owning contract SHALL release its prepared
 result exactly once. If dispatch wins, pre-dispatch release SHALL be forbidden
-and later settlement/refund SHALL require current platform-signed B2 terminal
-evidence plus domain acceptance bound to
-`job_id:lease_fence:accepted_result_sha256`. Host self-attestation and generic
-accepted-use text MUST NOT satisfy settlement.
+and later settlement/refund SHALL require the current platform-signed
+`ExecutionTerminalV1`, including its current generation/fence and
+distributed-execution owner-CAS completion proof, plus domain acceptance
+bound to `job_id:lease_fence:accepted_result_sha256`. Host self-attestation
+and generic accepted-use text MUST NOT satisfy settlement.
 
 #### Scenario: cancellation wins before dispatch
 

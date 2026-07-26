@@ -210,12 +210,12 @@ policy-fallback, and judge behavior.
 - **AND** canonical role chains can terminate at the authorized local model
 
 #### Scenario: accepted market dispatch bypasses ordinary chains
-- **WHEN** a Tier-1 connector universe has a valid accepted-market B2/B13 grant
-- **THEN** assignment is `remote_ready + []` and the successor-owned pre-routing seam dispatches `converse` remotely without an ordinary ceiling
-- **AND** missing seam/grant holds rather than falling through to maintainer or desktop resources
+- **WHEN** a Tier-1 connector universe has a current accepted agreement and current non-executable B13 activation mandate
+- **THEN** assignment is `remote_ready + []`, while each concrete `converse` job still requires B13 to compose fresh owner-native market, capacity, funding, settlement, and execution-admission results into that job's exact B2
+- **AND** the successor-owned pre-routing seam dispatches only that exact B2 without an ordinary ceiling; missing seam, mandate, owner result, or per-job B2 holds rather than falling through to maintainer or desktop resources
 
-#### Scenario: revoked accepted market grant is not engine-less
-- **WHEN** `accepted_market` state has an absent, expired, revoked, or inconsistent B2/B13 grant
+#### Scenario: revoked accepted market mandate is not engine-less
+- **WHEN** `accepted_market` state has an absent, expired, revoked, cancelled, fenced, or inconsistent accepted agreement or non-executable B13 activation mandate
 - **THEN** remote dispatch holds, the setup mapper offers accepted-market repair/renewal, and the owner downgrades it to `held + []`
 - **AND** the fail-safe assigned-engine classifier stays true and no ordinary provider or generic engine-less path is used
 
