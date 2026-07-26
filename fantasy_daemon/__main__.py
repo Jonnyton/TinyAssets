@@ -2922,7 +2922,7 @@ def _run_tray_mode(args: argparse.Namespace) -> None:
         tray.stop()
 
 
-def main() -> None:
+def _main_unfenced() -> None:
     parser = argparse.ArgumentParser(
         prog="fantasy-author",
         description="Fantasy Author -- autonomous fiction generation daemon",
@@ -3209,6 +3209,35 @@ def main() -> None:
         signal.signal(signal.SIGTERM, _signal_handler)
 
     controller.start()
+
+
+def _writer_root_from_argv(argv: list[str]) -> Path:
+    universe = "output/default-universe"
+    for index, argument in enumerate(argv):
+        if argument == "--universe" and index + 1 < len(argv):
+            universe = argv[index + 1]
+            break
+        if argument.startswith("--universe="):
+            universe = argument.split("=", 1)[1]
+            break
+    universe_path = Path(universe).absolute()
+    if "--serve" in argv or "--universe-server" in argv:
+        return universe_path
+    return universe_path.parent
+
+
+def main() -> None:
+    """Fence every legacy daemon/API command for its full writer lifetime."""
+
+    from tinyassets.scoped_reset import prepare_service_writer_barrier
+
+    writer_barrier = prepare_service_writer_barrier(
+        _writer_root_from_argv(sys.argv[1:])
+    )
+    try:
+        _main_unfenced()
+    finally:
+        writer_barrier.release()
 
 
 if __name__ == "__main__":

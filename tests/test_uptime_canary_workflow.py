@@ -198,6 +198,9 @@ def test_wiki_probe_uses_gha_output_mode_and_preserves_diagnostic() -> None:
     )
     run = step["run"]
 
+    assert step["env"]["TINYASSETS_WIKI_CANARY_TOKEN"] == (
+        "${{ secrets.TINYASSETS_WIKI_CANARY_TOKEN }}"
+    )
     assert "python scripts/wiki_canary.py" in run
     assert "--verbose" in run
     assert "--format gha" in run

@@ -492,3 +492,16 @@ fresh-host rollback edges found later.
   first-class experience; an experimental operator view should receive only
   minimum containment until mature platform primitives reveal whether it has a
   durable role at all.
+
+## 2026-07-25 - branch authority capability boundary
+
+- **What surprised me:** the first security draft correctly found cross-surface
+  leaks but incorrectly made one graph change own requirements that already
+  belonged to run, evaluation, goals, and paid-market capabilities.
+- **Pattern worth capturing:** an umbrella audit may discover the whole failure
+  chain, but each normative delta should live with the capability whose
+  as-built requirement it replaces; sibling changes can remain explicit,
+  non-blocking successors.
+- **What I would do differently:** inventory both runtime call sites and
+  existing OpenSpec requirement ownership before drafting the first delta,
+  then separate the core shared helper boundary from dependent surfaces.

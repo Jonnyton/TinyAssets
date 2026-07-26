@@ -1357,15 +1357,21 @@ def main(argv: list[str] | None = None) -> int:
         socket.gethostname(), universe, _cloud_host_user(),
     )
 
-    state = run_supervisor(
-        universe,
-        idle_backoff=args.idle_backoff,
-        crash_backoff=args.crash_backoff,
-        max_backoff=args.max_backoff,
-        producer_poll_interval=args.producer_poll_interval,
-        max_iterations=args.max_iterations,
-        daemon_args=["--provider", args.provider] if args.provider else None,
-    )
+    from tinyassets.scoped_reset import prepare_service_writer_barrier
+
+    writer_barrier = prepare_service_writer_barrier(universe.resolve().parent)
+    try:
+        state = run_supervisor(
+            universe,
+            idle_backoff=args.idle_backoff,
+            crash_backoff=args.crash_backoff,
+            max_backoff=args.max_backoff,
+            producer_poll_interval=args.producer_poll_interval,
+            max_iterations=args.max_iterations,
+            daemon_args=["--provider", args.provider] if args.provider else None,
+        )
+    finally:
+        writer_barrier.release()
     logger.info("cloud_worker: supervisor exited; %s", state.summary())
     return 0
 
