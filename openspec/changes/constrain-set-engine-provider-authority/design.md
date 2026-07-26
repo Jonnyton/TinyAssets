@@ -91,13 +91,26 @@ Before migration, optional assignment fields remain absent and
 stays `byo_api_key`; `universe_has_assigned_engine` retains its shipped vault
 credential, explicit non-default source, and unreadable-state fail-safes.
 One deliberately narrower compatibility fix remains active while the flag is
-false: an authenticated founder's explicit legacy `set_engine` write for a
-raw BYOC source atomically replaces `allowed_providers` with the singleton
-canonical destination (`anthropic -> claude-code`, `openai -> codex`) in the
-same successful mutation. Unsupported, mismatched, or non-executable sources
-fail before mutation. This closes the originating cross-provider fallback
-leak for explicit assignments without rewriting existing records, changing
-newborn defaults, or activating the target authority carrier.
+false: an authenticated caller holding `universe:admin` plus the universe
+write ACL can use reachable legacy `set_engine` to remove cross-cloud fallback
+for canonical Anthropic/OpenAI assignments. Their role-complete ceilings are
+respectively `["claude-code", "ollama-local"]` and
+`["codex", "ollama-local"]`; the local destination keeps judge, extract, and
+embed representable until target role-specific authority can narrow further.
+Claude/Claude-Code and Codex aliases normalize first. Other accepted cloud
+services retain shipped no-ceiling behavior and the STATUS Q6.3 residual until
+gated migration. Unsupported, mismatched, or non-executable sources fail
+before mutation. This narrows the originating leak for canonical
+Anthropic/OpenAI assignments without rewriting existing records, changing
+newborn defaults, or activating the target authority carrier. The credential
+deposit remains a preceding non-transactional write until task 5.4; source,
+preference, and ceiling share one config write.
+Because `universe` is hidden from the seven canonical live handles, this slice
+helps only signed-in raw-MCP, Tier-2/Tier-3 stdio, and Claude-plugin callers
+that can still invoke the legacy action directly. It is not Tier-1 onboarding.
+`retire-legacy-live-mcp-tools` must preserve or replace the narrowing before
+removing the action; `activate-connector-requester-authority` owns the chatbot
+path.
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
 `unassigned + []` alone is engine-less; ready/nonempty or a proven remote
@@ -372,6 +385,15 @@ acceptance.
 
 ### 10. Cutover preserves a completable path on every first-class surface
 
+The global gate cannot be validated by observing shipped behavior while it is
+dark. A server-owned, default-empty canary set may enable the complete target
+contract for named isolated acceptance-test universes whose manifests and
+ready paths are already complete. Caller data cannot populate it. Unlisted
+universes retain shipped behavior; existing user universes are never migrated
+just to obtain proof. Global flip requires the same Tier-1/Tier-2/Tier-3/plugin
+acceptance under this bounded post-flip-equivalent mode, followed by canary
+cleanup.
+
 No runtime enforcement or legacy conversion may begin until each affected
 surface has an end-to-end ready and advertised path:
 
@@ -435,9 +457,11 @@ replacement change and exact accepted SHA before #1691 closes.
 ## Migration Plan
 
 1. Land target specs and one-way sibling handoffs; keep runtime dark.
-2. Land the narrow compatibility fix: an authenticated explicit legacy
-   `set_engine` raw-BYOC write atomically publishes its singleton destination
-   ceiling. Do not rewrite existing records or newborn defaults.
+2. Land the narrow compatibility fix on surfaces that can still reach legacy
+   `set_engine`: normalize supported Anthropic/OpenAI aliases, publish the
+   role-complete cloud-plus-`ollama-local` ceiling in the same config write as
+   source/preference, and leave other cloud services tracked as the Q6.3
+   residual. Do not rewrite existing records or newborn defaults.
 3. Add request capability plus the explicit internal thread-pool carrier,
    assignment generation/admission, reference-only launch, and the rendered
    held/`setup_required` envelope behind
@@ -451,7 +475,8 @@ replacement change and exact accepted SHA before #1691 closes.
    credentialed/non-default sources, fail-safe unreadable state, and convert
    verified custody/host/local/remote sources into explicit assignment state.
 6. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
-   gates pass.
+   gates pass under the server-owned isolated-universe canary; prove unlisted
+   universes remain on shipped behavior and clean up canary universes/IDs.
 7. Only then flip the flag/default, enable newborn deny-all initialization,
    and prove typed holds render setup while bare infrastructure exhaustion
    remains loud.

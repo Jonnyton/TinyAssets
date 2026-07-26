@@ -27,12 +27,22 @@ deny-all.
   exact legacy semantics until the manifest is complete and the deployment
   flag flips. Post-cutover new, unassigned, pending, held, and failed states
   use `allowed_providers=[]`.
-- Before that full cutover, the existing authenticated founder
-  `set_engine` write closes the originating leak immediately: a successful
-  explicit raw-BYOC assignment atomically replaces `allowed_providers` with
-  the singleton canonical destination (`anthropic -> claude-code`,
-  `openai -> codex`). Unsupported or mismatched explicit assignments fail
-  before mutation; existing records and newborn defaults remain untouched.
+- A server-owned, default-empty set of isolated acceptance-test universes
+  enables the complete post-flip-equivalent contract before the global flip.
+  Caller data cannot opt in, unlisted universes preserve shipped behavior, and
+  existing user universes are never migrated merely to obtain proof.
+- Before that full cutover, an authenticated caller holding
+  `universe:admin` plus the universe write ACL narrows the originating leak
+  immediately on surfaces that can still reach legacy `set_engine`: signed-in
+  raw-MCP callers, Tier-2/Tier-3 stdio, and Claude-plugin runtime. Canonical
+  Anthropic/OpenAI assignments remove cross-cloud fallback while retaining
+  `ollama-local` so writer/judge/extract/embed chains remain representable.
+  Tier-1 chatbot users cannot reach this hidden legacy action; their fix stays
+  owned by `activate-connector-requester-authority`. Supported aliases
+  normalize; other accepted cloud services retain shipped behavior and the
+  STATUS Q6.3 residual until gated migration. Unsupported or mismatched
+  assignments fail before mutation; existing records and newborn defaults
+  remain untouched.
 - Requester-owned local assignments publish a singleton canonical provider
   ceiling only after their assignment and opaque credential binding reference
   are ready. Legacy `byo_api_key` is read/migration-only and converts only
@@ -146,7 +156,9 @@ None.
   `llm_api_key` ingress refusal and OS custody; `provider-attempt-receipts`
   owns immutable result-local evidence; credential-vault owns ambient
   credential isolation; paid-market/distributed-execution own remote market
-  execution.
+  execution. `retire-legacy-live-mcp-tools` owns removal of hidden
+  `universe/set_engine` and must preserve or explicitly replace its narrow
+  pre-cutover ceiling before retirement; it does not make that path Tier-1.
 - Supersession: this current-main change replaces draft PR #1691 after Opus 5
   approval. PR #1617 remains closed/source-only; merged #1727 is the durable
   opposite-provider disposition.

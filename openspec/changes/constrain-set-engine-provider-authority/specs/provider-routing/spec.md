@@ -69,14 +69,16 @@ fallback as authority.
 `preferred_writer` and `preferred_judge` SHALL reorder only providers already
 inside the authorized and dynamically eligible chain. Migration SHALL add
 optional `engine_assignment_state` and `engine_assignment_generation`.
-While either is absent or `TINYASSETS_PROVIDER_AUTHORITY_V2` is false, runtime
+While either is absent or the effective per-universe V2 gate (global or
+server-owned canary) is false, runtime
 SHALL preserve shipped vault/source/read-failure classification,
 `allowed_providers=None` no-op semantics, bare-exhaustion behavior, and
 provider routing; it SHALL NOT enforce the target authority gate.
 
-Only after the migration manifest and every surface gate pass may the flag
-flip. Post-cutover every universe SHALL persist assignment state, generation,
-and `allowed_providers`; runtime, creation, and assignment SHALL use `[]` for
+Only after the migration manifest and every surface gate pass under the
+bounded canary may the global flag flip. For every effectively gated universe,
+runtime, creation, and assignment SHALL persist state, generation, and
+`allowed_providers` and SHALL use `[]` for
 `unassigned`, `pending`, `held`, and `failed`, and a non-empty canonical list
 only for `ready`. Assignment replaces rather than unions the prior ceiling.
 
@@ -591,40 +593,72 @@ Bubblewrap failure is not guaranteed to retain the sandbox-specific type.
 ## ADDED Requirements
 
 ### Requirement: Target provider authority enforcement has one global dark gate
-`TINYASSETS_PROVIDER_AUTHORITY_V2` SHALL default false. While false, every new
+`TINYASSETS_PROVIDER_AUTHORITY_V2` SHALL default false. A server-owned
+`TINYASSETS_PROVIDER_AUTHORITY_V2_CANARY_UNIVERSES` set SHALL default empty
+and SHALL contain only isolated acceptance-test universe IDs with a complete
+migration manifest and ready surface path. Target enforcement is active for a
+universe only when the global flag is true or its canonical ID is in that
+server-owned canary set. Request, actor, universe config, MCP input, or other
+caller data MUST NOT populate or widen the set.
+
+While neither gate applies to a universe, every new
 authority, carrier, assignment-state, hold, retry, pin, policy, judge,
 auth-health, launch, birth, and setup clause in this change SHALL remain
 observational/non-authorizing and preserve shipped runtime behavior, except
-the explicitly assigned `set_engine` singleton narrowing defined below.
+the explicitly assigned legacy `set_engine` role-complete narrowing defined
+below.
 Requirements in this delta MUST NOT be read independently as enabling target
 enforcement while the global gate is dark.
 
 The flag SHALL flip only after the complete legacy manifest, all three named
 successors, every provider-bridge classification, and Tier-1/Tier-2/Tier-3/
-plugin acceptance gates pass. Flip, post-cutover defaults, newborn deny-all,
-and target enforcement SHALL deploy atomically with a rollback receipt.
+plugin acceptance gates pass under the bounded canary. Flip, post-cutover
+defaults, newborn deny-all, and target enforcement SHALL deploy atomically
+with a rollback receipt. Canary cleanup SHALL remove the isolated test
+universes and their IDs; it MUST NOT migrate an existing user universe merely
+to obtain pre-flip proof.
 
 #### Scenario: dark target preserves existing calls and births
-- **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false`
+- **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false` and the universe is absent from the server-owned canary set
 - **THEN** existing provider calls, defaults, births, helpers, exceptions, retries, fallbacks, pins, policy, judges, and auth health retain shipped results
 - **AND** target carrier/assignment diagnostics grant no authority
 
 #### Scenario: full enforcement cannot partially flip
 - **WHEN** any migration, successor, bridge inventory, or surface acceptance gate is incomplete
 - **THEN** the flag remains false and target defaults/enforcement remain dark
-- **AND** no individual requirement enables a partial cutover
+- **AND** no individual requirement enables a partial cutover outside an explicitly listed isolated canary universe
+
+#### Scenario: bounded canary proves post-flip behavior
+- **WHEN** a canonical isolated test universe with a complete manifest and ready path is listed by server-owned canary configuration
+- **THEN** every target clause applies coherently to that universe as it would after the global flip
+- **AND** unlisted universes retain shipped behavior and cannot opt themselves in
 
 ### Requirement: Explicit legacy set_engine assignment narrows immediately
-Before full cutover, authenticated founder `set_engine` SHALL close the
-originating provider-destination leak for explicitly assigned universes only.
-While legacy raw-key ingress remains enabled, canonical
-`byo_api_key + anthropic` SHALL atomically write
-`preferred_writer=claude-code` and `allowed_providers=["claude-code"]`;
-canonical `byo_api_key + openai` SHALL atomically write
-`preferred_writer=codex` and `allowed_providers=["codex"]`. A supplied writer
-must match. The singleton ceiling SHALL be written in the same successful
-transaction as the existing explicit source/preference/credential update, so
-failure cannot leave a preference without its ceiling.
+An authorized legacy `set_engine` caller SHALL narrow the pre-cutover
+provider-destination leak for canonical Anthropic/OpenAI assignments on
+surfaces that can still reach the action. The caller must be authenticated,
+hold `universe:admin`, and pass the universe write ACL. While raw-key ingress
+remains enabled, canonical
+`byo_api_key + anthropic` SHALL write `preferred_writer=claude-code` and
+`allowed_providers=["claude-code", "ollama-local"]`; canonical
+`byo_api_key + openai` SHALL write `preferred_writer=codex` and
+`allowed_providers=["codex", "ollama-local"]`. The pre-cutover ceiling SHALL
+retain `ollama-local` so canonical judge, extract, and embed chains remain
+non-empty; narrowing to a bare singleton is target-only and remains behind the
+effective V2 gate. A supplied writer MUST match.
+
+Accepted aliases SHALL normalize before mapping: `claude` and `claude-code`
+map to `anthropic`, while `codex` maps to `openai`, and receive the same
+ceiling. Accepted non-canonical cloud services `gemini`, `google`, `groq`,
+`xai`, and `grok` retain shipped no-ceiling behavior in this narrow slice; the
+residual leak remains tracked by the STATUS Q6.3 Concern until gated
+migration.
+
+The ceiling SHALL be written in the same `write_universe_config_fields` call
+as source and preference so failure cannot leave a preference without its
+ceiling. The existing credential deposit precedes that config call and is not
+rolled back on config failure until the full assignment transaction in task
+5.4 lands.
 
 Unknown, aliased, mismatched, or currently non-executable
 `self_hosted_endpoint`, `market_rented`, or `host_daemon` setup SHALL fail
@@ -633,10 +667,15 @@ preference. Existing legacy records are not reclassified by this narrow
 slice. If secret-custody retirement has already disabled raw ingress, that
 stricter refusal wins.
 
-#### Scenario: explicit Anthropic assignment cannot fall through
-- **WHEN** an authenticated founder successfully assigns canonical legacy Anthropic through `set_engine`
-- **THEN** preference and `allowed_providers=["claude-code"]` commit atomically
-- **AND** failure of `claude-code` cannot route to Codex, local, or API-key fallback
+#### Scenario: explicit Anthropic assignment cannot cross cloud providers
+- **WHEN** an authorized caller successfully assigns canonical legacy Anthropic through `set_engine`
+- **THEN** preference and `allowed_providers=["claude-code", "ollama-local"]` commit in one config write
+- **AND** failure of `claude-code` cannot route to Codex or another cloud provider
+
+#### Scenario: every canonical role stays representable pre-cutover
+- **WHEN** a canonical pre-cutover Anthropic or OpenAI assignment commits
+- **THEN** writer, judge, extract, and embed each retain at least one destination in their authority-bounded chain
+- **AND** no cross-provider cloud fallback remains
 
 #### Scenario: invalid or unsupported explicit assignment has zero mutation
 - **WHEN** pre-cutover `set_engine` receives a mismatched writer or non-executable source

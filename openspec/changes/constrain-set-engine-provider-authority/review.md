@@ -142,7 +142,8 @@ Fresh Windows strict validation after these edits: target valid; full tree
 48 passed, 0 failed. Final disposition remains pending final-SHA handoffs and
 another Opus 5 review.
 
-Historical `1a2262b9` review-base handoffs (superseded):
+Handoffs first published at review base `1a2262b9`; the stable comment bodies
+remain the current exact-revision binding:
 
 - exact-SHA custody acceptance: PR #1746 comment
   `issuecomment-5081341084`;
@@ -269,3 +270,39 @@ merge:
 Historical SHA mentions above identify only the artifacts reviewed in that
 round. Final disposition remains pending strict validation, exact-head handoff
 refresh, and Opus 5 approval.
+
+## Sixth exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `caa5e6b4` and returned `ADAPT`. Critical: the
+pre-cutover bare singleton ceiling governed every role, not only writer, so an
+Anthropic assignment would empty judge/extract/embed chains; accepted service
+aliases and five other cloud services were also unspecified.
+
+Important findings:
+
+- the config write can atomically bind source/preference/ceiling, but the
+  preceding credential deposit is not rolled back before the later transaction
+  task lands;
+- identity/auth target clauses needed their own explicit effective-gate
+  qualifier;
+- surface acceptance under wholly dark enforcement could not prove post-flip
+  behavior; and
+- hidden legacy `set_engine` is unreachable to Tier-1 chatbot users and needs
+  an explicit handoff to the legacy-tool retirement owner.
+
+The next adaptation:
+
+- uses role-complete pre-cutover ceilings
+  `["claude-code", "ollama-local"]` and
+  `["codex", "ollama-local"]`, normalizes Claude/Codex aliases, and leaves
+  other accepted cloud services on disclosed shipped behavior/Q6.3 residual;
+- states the credential/config transaction boundary exactly;
+- qualifies identity/auth with the same effective gate;
+- adds a server-owned, default-empty, isolated-universe canary set that applies
+  the complete post-flip contract before global cutover without allowing
+  caller opt-in or migrating existing user universes; and
+- names the hidden action's retirement handoff while retaining the Tier-1
+  connector successor as the only chatbot-ready owner.
+
+Final disposition remains pending strict validation, refreshed exact-head
+handoffs, and Opus 5 approval.

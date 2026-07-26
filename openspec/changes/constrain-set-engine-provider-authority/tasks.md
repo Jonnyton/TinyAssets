@@ -45,13 +45,17 @@
 - [x] 1.12 Refresh final-SHA handoffs for the migration-compatible contract.
 - [x] 1.13 Fold the fifth exact-revision Opus 5 `ADAPT`: gate newborn target
   fields while dark; state one global no-partial-enforcement gate; close the
-  live leak with an immediate explicit pre-cutover `set_engine` singleton
+  live leak with an immediate explicit pre-cutover `set_engine` narrow
   write; make connector action ownership exact; and remove contradictory
   current-SHA records.
-- [ ] 1.14 Refresh final-SHA handoffs and obtain Claude Opus 5 re-review of
+- [x] 1.14 Fold the sixth exact-revision Opus 5 `ADAPT`: make the pre-cutover
+  ceiling role-complete with local fallback; normalize aliases and disclose
+  residual services; gate identity clauses; add a bounded post-flip-equivalent
+  canary; and hand legacy-action ownership to its retirement lane.
+- [ ] 1.15 Refresh final-SHA handoffs and obtain Claude Opus 5 re-review of
   the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.15 Run strict target/full-tree validation and land this target active
+- [ ] 1.16 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -89,6 +93,10 @@
   identity/auth, paid market, distributed execution, and the live MCP
   connector. It owns the Tier-1 accepted-market setup/result path without raw
   secret deposit or desktop/web-app dependency.
+- `retire-legacy-live-mcp-tools` owns retirement of the hidden `universe`
+  action. It MUST preserve or explicitly replace the pre-cutover
+  Anthropic/OpenAI ceiling narrowing before removing direct `set_engine`;
+  Tier-1 chatbot setup remains successor-owned and does not revive the handle.
 - Paid-market/distributed ownership remains: accepted agreement in
   paid-market-economy; signed remote execution through B2 and B13 task 5.13;
   V6 only market selection/escrow/verification/settlement/reputation; D0
@@ -147,10 +155,15 @@
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
   byte-exact zero mutation on invalid route. Separately prove that while the
-  full gate is false, a successful authenticated founder legacy `set_engine`
-  raw-BYOC write atomically stores the matching singleton ceiling, cannot
-  fall through to another provider, does not rewrite existing records or
-  newborn defaults, and rejects unsupported/mismatched sources pre-mutation.
+  effective V2 gate is dark, an authorized legacy `set_engine` write
+  normalizes Anthropic/OpenAI aliases and writes its role-complete
+  cloud-plus-`ollama-local` ceiling in the same config call as
+  source/preference. Assert writer/judge/extract/embed each retain a
+  destination, no other cloud provider is reachable, other accepted cloud
+  services keep shipped behavior/Q6.3 residual, existing records and newborn
+  defaults are untouched, and unsupported/mismatched sources fail
+  pre-mutation. Record that credential deposit remains outside this atomic
+  config write until task 5.4.
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
   `unassigned`, `requester_local`, `local_model`, and
@@ -192,9 +205,11 @@
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
   attested local/host target mappings. First land the flag-independent narrow
-  compatibility slice that makes an authenticated explicit legacy
-  `set_engine` raw-BYOC mutation publish the matching singleton ceiling
-  atomically; keep all other target authority/carrier enforcement dark.
+  compatibility slice for authorized reachable legacy `set_engine`: normalize
+  Anthropic/OpenAI aliases and publish the matching cloud-plus-`ollama-local`
+  ceiling in the same config write as source/preference; keep other accepted
+  cloud services unchanged and all other target authority/carrier enforcement
+  dark.
 - [ ] 5.4 Implement assignment generation, exclusive transaction, secret-free
   journal, pending quarantine, coherent atomic publication, failed deny-all
   recovery, and startup cleanup.
@@ -296,7 +311,12 @@
   live founder home has a reviewed ready mapping or explicit replacement. The
   typed `ProviderAuthorityHeldError` and legacy non-null-chain/no-engine branch
   must render only surface-live setup paths, while bare exhaustion remains
-  loud. A fully held surface fails this gate. Stop before flag/default flip,
+  loud. Run this proof with the global flag false and each canonical isolated
+  test universe named in the server-owned canary set, proving the full
+  post-flip-equivalent contract plus unchanged behavior for unlisted
+  universes; remove the test universes and canary IDs afterward. Caller data
+  cannot opt in and existing user universes cannot be migrated for proof. A
+  fully held surface fails this gate. Stop before flag/default flip,
   newborn deny-all, or legacy-writer quiescence if any fails.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict

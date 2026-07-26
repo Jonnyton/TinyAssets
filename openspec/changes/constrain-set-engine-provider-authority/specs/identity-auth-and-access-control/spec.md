@@ -1,5 +1,24 @@
 ## ADDED Requirements
 
+### Requirement: Provider authority identity clauses share the effective V2 gate
+
+All target clauses in this capability SHALL use the effective default-false
+`TINYASSETS_PROVIDER_AUTHORITY_V2` gate defined by `provider-routing`. While
+neither the global flag nor the server-owned isolated-canary opt-in applies,
+they SHALL remain observational/non-authorizing: shipped stdio/dev transport
+behavior and shipped `setup_paths`, including raw `byo_api_key`, remain
+unchanged.
+
+#### Scenario: dark identity target preserves shipped surfaces
+- **WHEN** the global flag is false and a universe is absent from the server-owned canary set
+- **THEN** target request capabilities, holds, and setup filtering grant no authority and change no shipped result
+- **AND** stdio/dev provider behavior plus shipped setup paths remain unchanged
+
+#### Scenario: isolated canary uses the complete identity target
+- **WHEN** an isolated acceptance-test universe is named in the server-owned canary set
+- **THEN** every target identity capability, hold, and setup clause applies coherently for that universe
+- **AND** no request or caller-controlled value can opt another universe in
+
 ### Requirement: Authenticated transport mints one request-scoped provider capability
 
 Authenticated transport middleware SHALL mint one
@@ -176,14 +195,17 @@ Before provider-authority enforcement or newborn deny-all can cut over, a
 Tier-1 streamable-HTTP chatbot user SHALL be able to complete at least one
 advertised path end-to-end through the live connector without a desktop-only
 prerequisite. Tier-2 tray, Tier-3 OSS stdio, and Claude-plugin surfaces SHALL
-each advertise and complete their own live host/local path. If a surface has
-no completable path, cutover SHALL stop rather than render a dead instruction.
+each advertise and complete their own live host/local path under the
+server-owned isolated-universe canary while the global flag remains false. If
+a surface has no completable path, cutover SHALL stop rather than render a
+dead instruction.
 
 Migration SHALL add optional assignment state/generation fields without
 changing legacy classification. While
 `TINYASSETS_PROVIDER_AUTHORITY_V2` is false,
 `_DEFAULT_ENGINE_SOURCE` SHALL remain `byo_api_key`. While the gate is false
-or either optional assignment field is absent,
+for a universe (neither global nor canary) or either optional assignment field
+is absent,
 `universe_has_assigned_engine` SHALL preserve every shipped fail-safe:
 unreadable/unparseable vault or config returns true; any LLM credential
 returns true; an explicit non-default legacy source returns true; only a
