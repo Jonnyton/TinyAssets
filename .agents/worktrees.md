@@ -1404,7 +1404,7 @@ Notes:
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final
 - STATUS/Issue/PR: retire-cheat-loop-fallback; draft PR expected
 - PLAN refs: §1 Minimal primitives; §2 Community-build over platform-build
-- Purpose: remove the historical privileged task-loop fallback from every shipped surface; recurring automation stays user-authored and remixable.
+- Purpose: remove the historical privileged wiki-bug investigation automation, its env selectors, special execution path, and auto-writeback from every shipped surface; preserve generic primitives so recurring automation stays user-authored and remixable.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final\_PURPOSE.md
 - Review gate: exact-head Claude Opus 5 opposite-provider review
 - Ship/abandon: ship target after strict validation/review; runtime waits for collision-free source/test claims
