@@ -1,8 +1,8 @@
 # ship.ps1 — push the prepared website-ship.bundle to GitHub.
 # Run from Windows PowerShell. Uses YOUR git credentials.
 #
-# Current bundle: branch website/fix-live-crashes (one commit beyond main).
-# Fixes the live-state crashes found by the post-deploy crawl.
+# This helper transfers the prepared branch. It does not build or deploy the
+# current React production site or the retained Svelte rollback site.
 
 $ErrorActionPreference = 'Stop'
 $bundle = Join-Path $PSScriptRoot 'website-ship.bundle'
@@ -38,6 +38,7 @@ Write-Host ""
 Write-Host "Or open a PR:"
 Write-Host "     https://github.com/Jonnyton/TinyAssets/compare/main...website/fix-live-crashes?expand=1"
 Write-Host ""
-Write-Host "After merge, .github/workflows/deploy-site.yml redeploys to GitHub Pages"
-Write-Host "and tinyassets.io serves the patched site (/wiki, /graph fixed; favicon.ico"
-Write-Host "200; no more hydration warnings)."
+Write-Host "Merge/push does not deploy tinyassets.io."
+Write-Host "Build React first, verify Svelte rollback parity, then manually run"
+Write-Host ".github/workflows/deploy-site-react.yml with confirm=deploy."
+Write-Host ".github/workflows/deploy-site.yml is dispatch-only Svelte rollback."

@@ -1,17 +1,26 @@
 ---
 name: website-editing
-description: "Conventions for editing the TinyAssets site (WebSite/site/, deploys to tinyassets.io). Use when you make any change to the site: copy, components, routes, content, styling, captures of real chatbot conversations, deploy. Covers the preview loop, transparent-capture conventions, build/ship pipeline, FUSE quirks for Cowork, and auto-iteration on recurring failures."
+description: "Conventions for editing the TinyAssets production React/Next site and retained Svelte rollback site. Use for website copy, components, routes, content, styling, captures of real chatbot conversations, preview, or deploy. Covers production-first parity, preview loops, transparent-capture conventions, build/ship pipeline, FUSE quirks for Cowork, and auto-iteration on recurring failures."
 ---
 
 # Website editing
 
-Conventions for the SvelteKit static site at `WebSite/site/` that deploys to `tinyassets.io`. These are project-level website rules — they apply equally to every provider (Codex, Cursor, Aider, Claude Code, Cowork), but the detailed rules live here so `AGENTS.md` can stay lean. When in doubt, add website conventions to this skill and keep provider-specific files as pointers or harness notes.
+`WebSite/site-react/` is the current React/Next production source for
+`tinyassets.io`; it deploys manually through `deploy-site-react.yml`.
+`WebSite/site/` is the retained Svelte rollback source and deploys only through
+an explicit dispatch of `deploy-site.yml`. These are project-level website
+rules — they apply equally to every provider (Codex, Cursor, Aider, Claude Code,
+Cowork), but the detailed rules live here so `AGENTS.md` can stay lean. When in
+doubt, add website conventions to this skill and keep provider-specific files
+as pointers or harness notes.
 
 ## Before you edit anything
 
-1. **Read `WebSite/PREVIEW.md`** — the canonical preview loop. Default URL is `http://localhost:5173/`, hard-pinned. Jonathan double-clicks `WebSite/preview.bat` once per boot; from then on every edit you make to `WebSite/site/src/**` hot-reloads automatically.
-2. **Read `WebSite/DEPLOY.md`** if you might ship — covers `ship.ps1`, fast-forward to main, the GitHub Actions deploy, and the playwright verify against the live URL.
-3. **Read `WebSite/HOOKS_FUSE_QUIRKS.md`** if you're in Cowork — Edit/Write silently truncate on the FUSE mount; **for any existing file, use bash heredoc**:
+1. **Read `WebSite/PREVIEW.md`** — the canonical two-tree preview loop.
+2. **Edit and build React first.** Preview `WebSite/site-react/` at `http://localhost:3000/`; use `WebSite/site-react/PREVIEW.md` for the production-exact and hosted paths.
+3. **Preserve Svelte rollback parity.** Mirror the intended user-visible behavior into `WebSite/site/` and preview it at the hard-pinned `http://localhost:5173/` through `WebSite/preview.bat`.
+4. **Read `WebSite/DEPLOY.md`** if you might ship — it covers the prepared-branch helper, manual React deployment, dispatch-only Svelte rollback, and live verification.
+5. **Read `WebSite/HOOKS_FUSE_QUIRKS.md`** if you're in Cowork — Edit/Write silently truncate on the FUSE mount; **for any existing file, use bash heredoc**:
    ```bash
    cat > "/full/path/to/file" << 'FILE_EOF'
    ... full file content ...
@@ -21,16 +30,20 @@ Conventions for the SvelteKit static site at `WebSite/site/` that deploys to `ti
 
 ## The iteration loop
 
-Once `preview.bat` is up and Jonathan has the tab open at `localhost:5173/`:
+Once the React dev server is up and Jonathan has the tab open at
+`localhost:3000/`:
 
 ```
 Jonathan:  "the hero subline is too long"
-Agent:     [edits Hero.svelte]
+Agent:     [edits the React production component, then mirrors Svelte parity]
 Jonathan:  [tab updates by itself]   ← HMR, no F5 needed
 Jonathan:  "yeah that's better"
 ```
 
-You do **not** rebuild or redeploy to show a change. Vite's HMR pushes the patch over a websocket. Every browser tab open to `localhost:5173/` (Jonathan's, your playwright tab, anyone else's) receives the same update simultaneously — multi-agent / multi-tab sync is free.
+You do **not** rebuild or redeploy to show a development change. The React dev
+server pushes updates to tabs on port 3000; Vite pushes Svelte rollback updates
+to tabs on port 5173. Each tree has its own preview. Review React first, then
+the Svelte parity result.
 
 If F5 is ever needed, that's a signal HMR misfired — **investigate**, don't normalize the workaround. The intended state is "edit a file, tab updates, no input from the user."
 
@@ -71,22 +84,37 @@ Required when capturing a real conversation for the site:
 
 ## Build + ship
 
-- `WebSite/site/` is SvelteKit + adapter-static. **`src/routes/+layout.ts` has `export const prerender = true;`** — this is required; without it the static adapter outputs only assets, no HTML.
-- `svelte.config.js` `prerender.entries` lists every route. Add new routes here.
-- New static asset: drop in `WebSite/site/static/`. Reference via absolute `/foo.png`.
-- Live MCP fetch in dev: vite proxies `/mcp-live → tinyassets.io/mcp` (see `vite.config.js`). In prod, the cloudflare worker handles `/mcp` directly.
-- **Shipping**: `WebSite/ship.ps1` from Windows PowerShell. It clones a fresh `main` to `$env:TEMP\wf-ship`, fetches the bundle Cowork prepared, pushes the branch. Then fast-forward main. Watch the GitHub Actions `deploy-site` workflow. Run the playwright verify in `WebSite/DEPLOY.md` against the live URL.
+- **Production React/Next:** build `WebSite/site-react/` first with `npm ci`
+  and `npm run build`. The static export is `out/`. A merge does not publish
+  it; a host manually runs `deploy-site-react.yml` with `confirm: deploy`.
+- **Retained Svelte rollback:** mirror user-visible parity into
+  `WebSite/site/`, then run `npm ci`, `npm run check`, and `npm run build`.
+  `src/routes/+layout.ts` must retain `export const prerender = true;`, and
+  `svelte.config.js` must list every route. Its static output is `build/`.
+- New assets and route configuration belong in both trees when the production
+  change requires rollback parity.
+- **Shipping helper:** `WebSite/ship.ps1` clones a fresh `main`, fetches the
+  prepared bundle, and pushes its branch. It does not build or deploy either
+  tree. After review and merge, follow `WebSite/DEPLOY.md` for the manual React
+  deployment and rendered live verification.
+- `deploy-site.yml` is dispatch-only Svelte rollback. Never add push or cron
+  triggers or treat it as a second production pipeline.
 
 ## Verification before shipping
 
 Before declaring a website edit "done":
 
-1. **Local build**: `cd WebSite/site && npm run build` — must end with `✔ done` and produce `build/<route>.html` for every route.
-2. **Playwright sweep**: hit every route via a local http server, assert `errs: 0`, `warns: 0`, key elements present (H1, expected text, expected counts).
-3. **For live-data controls**: click the real refresh button and assert the page renders meaningful data, not just a successful HTTP response or a changed source label. A pass requires the user-visible content to contain current, human-readable records or an explicit empty-state reason. Reject raw placeholders such as `{}`, `[]`, `undefined`, numeric epoch timestamps, stuck disabled buttons, or a green source label with no populated rows. For `/loop`, click `Refresh MCP` and `Refresh GitHub`; verify the visible showcase is operationally current. A stale terminal MCP run must not pass as "working" or "current patch run" just because it has readable text. If MCP has no active/current loop run, the page must say that plainly and either show the GitHub community-loop monitor as the live source or show an explicit empty-state reason.
-4. **For workflow rails**: measure rendered stage tiles in Playwright on desktop and mobile. Empty or lightly populated stages must not become tall vertical strips just because a neighboring event stream is tall, and long failure text must not force a tile to hundreds of pixels high. Verify stage text is visible without internal scrolling; verbose details belong in the current-run card or selected-stage panel. Click every 1-N stage control and assert a clear, nearby visible state change beyond a subtle border, such as a full-width selected-stage panel changing title, purpose, event count, live signals, source, run IDs, or node IDs.
-5. **For chat-capture pages**: assert defaults match the source's collapsed state (chips closed, long thoughts truncated). Then click and re-assert each disclosure layer.
-6. **For HMR-sensitive changes** (vite config, `+layout.ts`, prerender entries): rebuild from scratch (`rm -rf build` first) — stale `.svelte-kit/` artifacts can mask real failures.
+1. **Production build first**: `cd WebSite/site-react && npm run build` must
+   produce the expected static routes in `out/`.
+2. **Rollback parity build**: `cd WebSite/site && npm run check && npm run build`
+   must produce `build/<route>.html` for the retained Svelte routes.
+3. **Playwright sweep**: hit every affected route in the React preview first,
+   then the corresponding Svelte rollback route. Assert `errs: 0`, `warns: 0`,
+   and the key rendered elements.
+4. **For live-data controls**: click the real refresh button and assert the page renders meaningful data, not just a successful HTTP response or a changed source label. A pass requires the user-visible content to contain current, human-readable records or an explicit empty-state reason. Reject raw placeholders such as `{}`, `[]`, `undefined`, numeric epoch timestamps, stuck disabled buttons, or a green source label with no populated rows. Workflow activity must be provenance-labeled as ordinary user-workflow activity. If no current activity is available, show an explicit empty-state reason; never substitute community-watch or platform-uptime evidence. Uptime evidence is a separate, explicitly labeled surface.
+5. **For workflow rails**: measure rendered stage tiles in Playwright on desktop and mobile. Empty or lightly populated stages must not become tall vertical strips just because a neighboring event stream is tall, and long failure text must not force a tile to hundreds of pixels high. Verify stage text is visible without internal scrolling; verbose details belong in the current-run card or selected-stage panel. Click every 1-N stage control and assert a clear, nearby visible state change beyond a subtle border, such as a full-width selected-stage panel changing title, purpose, event count, live signals, source, run IDs, or node IDs.
+6. **For chat-capture pages**: assert defaults match the source's collapsed state (chips closed, long thoughts truncated). Then click and re-assert each disclosure layer.
+7. **For HMR-sensitive Svelte changes** (vite config, `+layout.ts`, prerender entries): rebuild from scratch (`rm -rf build` first) — stale `.svelte-kit/` artifacts can mask real failures.
 
 ## Auto-iterate on recurring website failures
 
@@ -104,25 +132,27 @@ Concrete examples that have already ratcheted:
 - **FUSE truncation** → atomic temp+rename in snapshot script → PostToolUse hook on Write+Edit → standing rule in CLAUDE.md/AGENTS.md/memory. Ladder: `WebSite/HOOKS_FUSE_QUIRKS.md`.
 - **Cross-provider drift** → AGENTS.md rule → `scripts/check_cross_provider_drift.py` → `.claude/hooks/cross_provider_drift_guard.py` PostToolUse. Ladder: `AGENTS.md` § *Where new conventions live*.
 - **Build outputs no HTML** → noticed when `build/` had only static assets; root cause was missing `prerender = true` in `+layout.ts`. The "verification before shipping" rule above (assert `build/<route>.html` exists) prevents recurrence.
-- **Live-data false positive** → `/loop` refresh verification passed on button/source/no console errors while the actual event stream rendered `{}` details and raw epoch timestamps. The live-data control rule above prevents declaring success until the populated records are readable.
-- **Stretched workflow rail** → `/loop` 1-6 stage buttons stretched to the full event-stream height, creating tall vertical strips where sparse text sat far from the visible top. The workflow-rail verification above requires bounding-box checks on desktop and mobile.
-- **Invisible stage click result** → `/loop` 1-6 stage buttons updated selection state but the page appeared unchanged to users. The workflow-rail verification above now requires clicking every stage and asserting a visible content change.
-- **Stale failed loop accepted as working** → `/loop` rendered a readable Apr 29 failed bootstrap run and was incorrectly declared fixed. The live-data rule above now requires freshness/operational checks: historical terminal runs are source evidence, not the current showcase.
+- **Live-data false positive** → a workflow-activity refresh passed on button/source/no console errors while the event stream rendered `{}` details and raw epoch timestamps. The live-data control rule above prevents declaring success until the populated records are readable.
+- **Stretched workflow rail** → a 1-6 stage rail stretched to the full event-stream height, creating tall vertical strips where sparse text sat far from the visible top. The workflow-rail verification above requires bounding-box checks on desktop and mobile.
+- **Invisible stage click result** → stage buttons updated selection state but the page appeared unchanged to users. The workflow-rail verification above now requires clicking every stage and asserting a visible content change.
+- **Stale workflow accepted as current** → a readable historical terminal run was incorrectly treated as current activity. The live-data rule above requires freshness checks and an explicit empty state; uptime evidence stays separately labeled and never substitutes for user-workflow activity.
 
 ## Files involved
 
 | File                                          | What it is                                     |
 |-----------------------------------------------|------------------------------------------------|
-| `WebSite/preview.bat`                         | Hidden + persistent + idempotent dev launcher  |
-| `WebSite/preview-stop.bat`                    | Kill the background vite server                |
-| `WebSite/PREVIEW.md`                          | Full preview-loop reference                    |
-| `WebSite/ship.ps1`                            | Push the prepared bundle to GitHub             |
-| `WebSite/website-ship.bundle`                 | Generated by Cowork; one push away from live   |
-| `WebSite/DEPLOY.md`                           | Deploy-day playbook + Claude Code verify prompt |
+| `WebSite/site-react/`                         | Current production React/Next source           |
+| `WebSite/site-react/PREVIEW.md`               | React local and hosted preview details         |
+| `WebSite/site/`                               | Retained Svelte rollback source                |
+| `WebSite/preview.bat`                         | Svelte rollback preview launcher               |
+| `WebSite/preview-stop.bat`                    | Stops the Svelte Vite server                   |
+| `WebSite/PREVIEW.md`                          | Canonical two-tree preview loop                |
+| `WebSite/ship.ps1`                            | Pushes the prepared branch; does not deploy    |
+| `WebSite/website-ship.bundle`                 | Prepared branch bundle                         |
+| `WebSite/DEPLOY.md`                           | React deploy and Svelte rollback playbook      |
+| `.github/workflows/deploy-site-react.yml`     | Manual current-production deployment           |
+| `.github/workflows/deploy-site.yml`           | Dispatch-only Svelte rollback                  |
 | `WebSite/HOOKS_FUSE_QUIRKS.md`                | Why heredoc, not Edit/Write, on Cowork's FUSE  |
-| `WebSite/site/src/routes/`                    | All page routes                                |
-| `WebSite/site/src/lib/components/`            | Shared components                              |
-| `WebSite/site/src/lib/content/*.json`         | Content (mcp-snapshot, patterns, legal-info, …) |
-| `WebSite/site/src/routes/+layout.ts`          | Sets `prerender = true` — DO NOT delete        |
-| `WebSite/site/svelte.config.js`               | adapter-static, prerender entries              |
-| `WebSite/site/vite.config.js`                 | Dev proxy for `/mcp-live`, HMR overlay         |
+| `WebSite/site/src/routes/+layout.ts`          | Svelte prerender invariant — do not delete     |
+| `WebSite/site/svelte.config.js`               | Svelte adapter-static prerender entries        |
+| `WebSite/site/vite.config.js`                 | Svelte dev proxy and HMR overlay               |
