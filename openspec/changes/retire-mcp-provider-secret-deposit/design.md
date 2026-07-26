@@ -112,8 +112,9 @@ provider entry whose custody-side opaque-reference field is named
 `credential_binding_ref`. That reference is:
 
 - opaque, random, non-secret, and not a key-derivation input;
-- bound to canonical provider, universe, principal, host/daemon, scope,
-  assignment generation, issue time, and expiry;
+- bound to canonical provider, universe, credential-owner principal,
+  `host_principal_id`, current active `host_principal_generation`, scope,
+  provider-assignment generation, issue time, and expiry;
 - a locator only, never a bearer grant.
 
 The unversioned `.credential-vault.json` SHALL NOT be authoritative binding
@@ -126,7 +127,11 @@ Enrollment is a two-store commit-token protocol, not a cross-store CAS. Every
 enrollment, rotation, retirement, and compare-delete operation first acquires
 exclusive `ProviderAssignmentAdmission` for the canonical universe and
 validates expected assignment generation plus affected provider-binding
-digest. Only then may it acquire the narrower local pending-index/keyring
+digest. It also reads trusted host-principal state and requires the exact
+principal to remain active at the binding's `host_principal_generation`
+immediately before protected work starts or commits. Revoked, expired, rotated,
+lost-key-recovered, or stale-generation host principals fail closed. Only then
+may it acquire the narrower local pending-index/keyring
 locks. Reverse acquisition and untracked reentrancy fail loud. A local
 pending-index/keyring lock is released before any control-plane CAS or other
 operation that could reacquire admission; the outer assignment admission
@@ -194,7 +199,8 @@ fulfillment class, not an empty capability ceiling or fake-only D0 record.
 
 For requester-owned CLI/local/in-process invocation,
 `ProviderExecutor.start()` validates destination, credential-owner principal
-from verified request/assignment authority, host, assignment generation, and
+from verified request/assignment authority, active `host_principal_id` plus
+`host_principal_generation`, provider-assignment generation, and
 the provider-authority owner's shared
 `ProviderAssignmentAdmission`. Only then may the selected executor resolve the
 binding once inside provider child/request memory. The secret is never placed
@@ -215,6 +221,11 @@ outbound grant/proxy authority holds before provider, credential, or network
 access. This change creates no second outbound ledger, grant, proxy, secret
 path, or ambient fallback.
 
+The keyless `ollama-local` supplement is outside this `llm_api_key` custody
+rule: it has no `credential_binding_ref`, and the planned
+`activate-requester-host-engines` owner selects transport solely from its
+attested requester endpoint and executor-host identity.
+
 Accepted-market remote execution SHALL use its separately accepted B2
 authority and SHALL NOT receive a requester-local secret merely because
 `runner/v1` carries a locator.
@@ -233,6 +244,15 @@ universe ACL as the credential principal.
 Rotation/removal fences new launches. In-flight launches either drain under the
 captured generation or are cancelled by the explicit compromise policy before
 the old native reference is deleted.
+
+Host-principal rotation, revocation, expiry, or lost-key recovery is a separate
+fence from provider-assignment rotation. `ProviderExecutor.start()` rechecks
+both trusted generations immediately before irreversible launch; every
+custody/assignment commit rechecks both again. A superseded or revoked host
+principal cannot dereference a new secret, start a new launch, or commit an
+in-flight result/cutover under its prior generation; the transport is
+cancelled where possible and otherwise its result is discarded and recorded
+held.
 
 ### 6. Retirement is a monotonic saga
 
@@ -407,6 +427,13 @@ is enrolled.
 - Will distributed-execution/B2 owners accept the remaining
   accepted-market side of the requester-local/accepted-market authority split
   while D0 remains fake-only/production-denied and the runner stays opaque?
+- Will `outbound-boundary-layer` classify requester-owned provider model calls
+  as quota-consuming connection actions under its unprompted-action cap? It
+  must either define confirmation, request-lineage idempotency,
+  journal-before-fire, ambiguous-outcome reconciliation, terminal receipt,
+  and batch-hold composition for this non-goal/schedule-shaped call class, or
+  explicitly carve the class out without creating a second outbound
+  authority/receipt system.
 - What provider-revocation attestations are machine-verifiable per provider,
   and which require explicitly labeled owner attestation?
 - Which later capability will own organization-pooled credential delegation?

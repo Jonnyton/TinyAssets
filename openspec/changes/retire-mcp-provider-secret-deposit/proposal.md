@@ -16,7 +16,10 @@ deputy for another principal's provider authority.
 - Store requester-supplied provider API keys only in the
   requester-controlled executor's native OS
   secret store; keep only an opaque, non-derivable, host/principal/universe/
-  provider/generation-bound reference in control-plane state.
+  provider/generation-bound reference in control-plane state. Bind and
+  independently recheck both current active `host_principal_generation` and
+  provider-assignment generation immediately before protected launch or
+  custody commit.
 - Resolve the secret only at the transport-owned boundary behind the merged
   `constrain-set-engine-provider-authority` change's
   `ProviderAssignmentAdmission` and frozen
@@ -54,7 +57,8 @@ deputy for another principal's provider authority.
   its stable account-token namespace, native-backend allowlisting, and its
   client-side onboarding protocol. Provider-secret references and lifecycle
   stay in this change; the missing authenticated production principal-to-host
-  binding belongs to a separate `bind-host-principal-to-account` successor.
+  binding belongs to the existing active `bind-host-principal-to-account`
+  successor.
 - Record structured `write_graph(target=universe)` mutation as the preferred
   successor candidate, not existing behavior. The universe/interface owners
   must accept, specify, and land its typed operation, authorization,
@@ -101,7 +105,7 @@ deputy for another principal's provider authority.
   `620fed5a`) for assignment, `ProviderAssignmentAdmission`, reference-only
   `ProviderInvocation`, and generic `setup_required/held`; PR
   #1736 for native account-token storage/backend policy and its existing
-  `OriginClient` protocol; proposed `bind-host-principal-to-account` for the
+  `OriginClient` protocol; active `bind-host-principal-to-account` for the
   authenticated server-side production principal-to-host route;
   `openspec/changes/outbound-boundary-layer/` for acceptance of the
   requester-host-local credential-blind proxy's provider-custody native

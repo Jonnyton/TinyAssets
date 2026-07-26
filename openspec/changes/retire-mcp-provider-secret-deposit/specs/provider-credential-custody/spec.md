@@ -47,10 +47,12 @@ selected provider's entry in
 `constrain-set-engine-provider-authority`'s versioned
 `provider_authority_bindings` map. The
 reference SHALL be random, non-derivable, and bound to exact credential-owner
-principal, universe, canonical provider, host or daemon, scope, assignment
-generation, issue time, and expiry. It SHALL NOT contain or derive secret
-material, SHALL NOT be a bearer grant, and SHALL NOT resolve for another
-principal, universe, provider, host, stale generation, expired host, or
+principal, universe, canonical provider, `host_principal_id`, current active
+`host_principal_generation`, scope, provider-assignment generation, issue time,
+and expiry. It SHALL NOT contain or derive secret material, SHALL NOT be a
+bearer grant, and SHALL NOT resolve for another principal, universe, provider,
+host principal, revoked/expired host principal, stale host-principal
+generation, stale provider-assignment generation, expired host attestation, or
 tombstoned reference.
 
 The unversioned `.credential-vault.json` MAY retain non-authoritative,
@@ -68,7 +70,7 @@ binding or generation state.
 - **AND** no broader universe grant, ACL admin role, empty capability ceiling, or opaque reference upgrades that scope
 
 #### Scenario: stale or tombstoned reference cannot reactivate
-- **WHEN** a reference's generation is stale, its host attestation expired, or its identifier is tombstoned
+- **WHEN** a reference's host-principal generation or provider-assignment generation is stale, its host principal is revoked/expired, its host attestation expired, or its identifier is tombstoned
 - **THEN** new launches return the existing setup-required hold with zero provider calls
 - **AND** reusing the identifier cannot reactivate the retired binding
 
@@ -76,7 +78,12 @@ binding or generation state.
 Every enrollment, rotation, retirement, and compare-delete operation SHALL
 first acquire exclusive `ProviderAssignmentAdmission` for the canonical
 universe and validate expected assignment generation plus the affected
-provider-binding digest. Only then MAY it acquire the narrower local
+provider-binding digest. It SHALL independently read trusted host-principal
+state and require the exact principal to remain active at the binding's
+`host_principal_generation` immediately before starting or committing
+protected work. Revoked, expired, rotated, lost-key-recovered, or
+stale-generation host principals SHALL fail closed. Only then MAY it acquire
+the narrower local
 pending-index/keyring locks. Reverse acquisition and untracked reentrancy
 SHALL fail loud. No local pending-index/keyring lock SHALL remain held across
 a control-plane CAS or any operation that could reacquire assignment
@@ -146,9 +153,11 @@ that binding.
 ### Requirement: Provider API-key dereference occurs only at the authorized local launch boundary
 A provider API key SHALL be dereferenced exactly once by the selected
 requester-controlled executor after `ProviderExecutor.start()` validates
-provider destination, persisted credential-owner principal, universe, host,
-scope, assignment generation, binding digest, expiry, and tombstone state and
-crosses shared `ProviderAssignmentAdmission` and the
+provider destination, persisted credential-owner principal, universe,
+`host_principal_id`, current active `host_principal_generation`, scope,
+provider-assignment generation, binding digest, expiry, and tombstone state
+from trusted control-plane state and crosses shared
+`ProviderAssignmentAdmission` and the
 `ProviderInvocation -> ProviderLaunchHandle` barrier. The secret MAY enter
 provider-child memory or an ephemeral child environment only for that
 requester-owned CLI/local/in-process launch and SHALL NOT enter process
@@ -184,6 +193,11 @@ runner carries a locator.
 - **THEN** shared `ProviderAssignmentAdmission` admits no new requester-owned launch with the retired generation
 - **AND** the old native reference is deleted only after captured-generation launches drain or are explicitly cancelled
 
+#### Scenario: host-principal rotation or recovery fences consumers independently
+- **WHEN** device-key rotation advances `host_principal_generation`, or revocation/lost-key recovery terminates the old host principal while a launch or custody cutover is pending
+- **THEN** `ProviderExecutor.start()` and every protected commit recheck trusted host-principal state and provider-assignment state independently
+- **AND** the prior-generation or revoked principal cannot dereference a new secret, start a new launch, or commit an in-flight result/cutover; the transport is cancelled where possible and otherwise its result is discarded and recorded held
+
 ### Requirement: Remote HTTP secret resolution belongs only to the outbound boundary
 For requester-owned remote HTTP, `ProviderExecutor.start()` SHALL validate the
 complete assignment and binding tuple under shared
@@ -206,6 +220,11 @@ A missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe
 outbound grant/proxy SHALL hold before provider, credential, or network
 access. This custody capability SHALL NOT create a second outbound ledger,
 grant, proxy, secret path, or ambient fallback.
+
+This `llm_api_key` requirement SHALL NOT apply to the keyless
+`ollama-local` supplement, which has no `credential_binding_ref`; the planned
+`activate-requester-host-engines` owner SHALL select that transport solely
+from its attested requester endpoint and executor-host identity.
 
 #### Scenario: authorized remote HTTP uses only the outbound proxy
 - **WHEN** requester-owned remote HTTP passes assignment, binding, and outbound-grant validation
