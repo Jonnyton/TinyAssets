@@ -46,7 +46,7 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 
 - [x] 2.1 Add failing unit/property tests for the exact bounded ASCII canonical grammar; normalized structured construction versus strict canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches.
   - Evidence (2026-07-25; `tests/test_paid_market_descriptors.py` 71 passed,
-    `tests/test_paid_market_scope_provenance.py` 31 passed). In
+    `tests/test_paid_market_scope_provenance.py` 39 passed). In
     `tests/test_paid_market_descriptors.py`: golden domain-separated identities
     re-derived from hand-written envelopes plus pinned literals `:146-260`;
     caller `profile_id`/`descriptor_id`/`profiles`/`direction`/inclusivity refused
@@ -68,8 +68,12 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     `_ENVELOPE_FIELDS:135` refuses a caller-supplied `descriptor_id`. The per-call
     injected validator attests one immutable content-addressed revision with no
     process-global or mutable registry (`_check_validator:405`), and receives a deep
-    copy so it cannot rewrite the hashed profile. `capability_id` is absent
-    repo-wide. Payload, credential, price, routing, reservation, and execution fields
+    copy so it cannot rewrite the hashed profile. `capability_id` is absent from
+    `tinyassets/paid_market/` entirely, so the retired supply-identity field is not
+    reintroduced; the surviving repo-wide uses are the unrelated pre-existing
+    `host_pool` bid-matching field and the `public.capabilities` Postgres column,
+    neither of which this lane touches. Payload, credential, price, routing,
+    reservation, and execution fields
     have no home in either envelope; private demand equality stays on the existing
     tenant-keyed HMAC commitments in `tinyassets/paid_market/routing.py:209-223`.
     Quote-bound scope provenance lands at schema v2 in
