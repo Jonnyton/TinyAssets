@@ -90,6 +90,11 @@ The system SHALL permit at most one active `ProviderWorkExecutionClaim` for a re
 - **THEN** exactly one claim succeeds atomically
 - **AND** the loser cannot reserve or launch a provider invocation
 
+#### Scenario: Recovery invalidates an unprovable stale owner
+- **WHEN** queue recovery cannot prove an expired-lease owner dead but presents the exact current task, owner, lease, receipt, and claim generations
+- **THEN** the authority store atomically invalidates and advances the old execution-claim generation or reports the newer competing state
+- **AND** every reservation operation from the invalidated owner fails active-generation validation
+
 #### Scenario: Provably dead owner with conclusive reservations is reclaimable
 - **WHEN** the current claim owner is provably dead and the receipt has no reservation or every reservation is durably `cancelled_before_launch`, `succeeded`, or `failed`
 - **THEN** the system may atomically expire the old claim and issue a bounded replacement claim for remaining authorized work
@@ -109,7 +114,7 @@ The system SHALL reserve and durably arm a `ProviderInvocationReservation` befor
 
 #### Scenario: Reservation establishes a unique ordinal
 - **WHEN** a valid claimed receipt reserves an invocation
-- **THEN** the authority store atomically assigns the next unique ordinal and reserves the receipt's invocation plus worst-case token and cost ceilings derived from the resolved finite `ModelConfig` token cap and server-owned provider/model price ceiling
+- **THEN** the authority store first validates the exact active execution-claim generation, atomically assigns the next unique ordinal, and reserves the receipt's invocation plus worst-case token and cost ceilings derived from the resolved finite `ModelConfig` token cap and server-owned provider/model price ceiling
 - **AND** a null token cap is replaced by a finite conservative server-owned provider/model/role ceiling or the attempt holds
 - **AND** a subscription CLI provider reserves one server-defined subscription-invocation cost unit instead of fabricated per-token currency
 
@@ -118,7 +123,13 @@ The system SHALL reserve and durably arm a `ProviderInvocationReservation` befor
 - **THEN** the authority store durably commits `launch_started` and closes its transaction before assignment admission is acquired
 - **AND** the carrier freezes the receipt generation, claim generation, reservation ordinal and digest, expected assignment tuple, and revocation or cancellation generation
 - **AND** the parent sequence validates that carried frozen tuple under admission without acquiring the authority store before minting the invocation
-- **AND** no authority-store lock is acquired while assignment admission or a credential lock is held
+- **AND** no authority-store lock is acquired while a queue-file, assignment-admission, or credential lock is held
+- **AND** queue-file and assignment-admission locks never nest
+
+#### Scenario: Recovery lock order closes authority before queue CAS
+- **WHEN** recovery obtains an authority reconciliation proof and resets a branch-task row
+- **THEN** the authority transaction closes before the queue file lock is acquired
+- **AND** no authority-store operation occurs while that queue lock is held
 
 #### Scenario: Arming chooses the revocation race winner
 - **WHEN** revocation or cancellation commits before `launch_started`
@@ -205,12 +216,17 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 - **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
 - **THEN** it retains the shipped read-only subscription-auth presence and freshness ladder exactly
 - **AND** codex yields `not_logged_in` only for a missing `auth.json`, while an existing empty, corrupt, stale, or cache-miss file with probing disabled remains eligible with presence or inconclusive evidence
-- **AND** claude-code yields `not_logged_in` for an absent, empty, or unreadable config directory
+- **AND** claude-code first accepts a non-empty `CLAUDE_CODE_OAUTH_TOKEN` regardless of config-directory state, and only without that token yields `not_logged_in` for an absent, empty, or unreadable config directory
 - **AND** the viability-probe kill switch retains its shipped eligible verdict and router unknown/inconclusive results remain eligible
 - **AND** it cannot launch the `_AUTH_PROBE_PROMPT` completion, borrow the universe receipt for that completion, dereference maintainer credentials, or start the maintainer CLI
 
 ### Requirement: Enforcement rollout is server-owned and fail-closed
-The system SHALL preserve shipped behavior while provider-authority V2 is dark and SHALL enable receipt enforcement only through server-owned gates that caller payloads cannot widen or select.
+The system SHALL preserve shipped behavior while provider-authority V2 is dark and SHALL enable new receipt issuance/enforcement only through server-owned gates that caller payloads cannot widen or select; every authority-ledger record created while a gate was effective SHALL continue lifecycle reconciliation and fencing regardless of later gate state.
+
+#### Scenario: Darkening a gate preserves existing fences
+- **WHEN** rollback, canary removal, or maintenance-evidence expiry makes a gate dark while a binding, receipt, claim, or reservation remains in the authority ledger
+- **THEN** the system reconciles and fences that record under the authority lifecycle requirements
+- **AND** dark shipped recovery applies only to work with no authority-ledger record
 
 #### Scenario: Universe work follows its effective gate
 - **WHEN** provider-capable universe work executes

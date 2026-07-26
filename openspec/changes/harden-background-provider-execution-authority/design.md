@@ -333,9 +333,10 @@ authority reconciliation and run sweep both commit. A V2-universe failure
 remains retryable and fails closed only provider-capable run operations for
 that universe; dark/unlisted universes complete the shipped sweep and remain
 live independently. A fenced run is reported publicly as `interrupted` with
-`error.reason = provider_authority_fenced`, never as indefinitely `queued` or
-`running`; `resume_run` raises that exact reason until reconciliation resolves
-it.
+the stable sentinel `provider_authority_fenced` in the existing flat
+`runs.error` text field, never as indefinitely `queued` or `running`;
+`resume_run` raises that exact sentinel until reconciliation resolves it. No
+public run-record shape is added.
 
 Ledger events contain secret-free IDs/digests, generations, state, reason,
 timestamps, and bounded classifications. They exclude prompts, model output,
@@ -350,11 +351,13 @@ shipped behavior. Under an effective V2 gate, ordinary universe/request
 routing retains the parent's shipped non-completion subscription-auth ladder
 exactly. Codex quarantines when `auth.json` is missing, but an existing empty,
 corrupt, stale, or cache-miss file with probing disabled remains eligible with
-presence/inconclusive evidence. Claude-code quarantines an absent, empty, or
-unreadable config directory. The viability-probe kill switch preserves the
-shipped unconditional eligible verdict. Router `unknown`/inconclusive results
-remain eligible; only each provider's shipped positive dead signature
-quarantines. Ordinary routing MUST NOT launch the
+presence/inconclusive evidence. Claude-code first accepts a non-empty
+`CLAUDE_CODE_OAUTH_TOKEN` regardless of config-directory state; only without
+that token does an absent, empty, or unreadable config directory quarantine.
+The viability-probe kill switch preserves the shipped unconditional eligible
+verdict. Router `unknown`/inconclusive results remain eligible; only each
+provider's shipped positive dead signature quarantines. Ordinary routing MUST
+NOT launch the
 `_AUTH_PROBE_PROMPT` completion, borrow its universe receipt for that
 completion, dereference maintainer credentials, or start the maintainer CLI.
 
@@ -381,8 +384,13 @@ OpenSpec change. Until then, classifying the completion as a zero-output
 ### 10. Enforcement composes with the existing V2 gate
 
 The owner may create, validate, inventory, and emit non-authorizing
-diagnostics while provider-authority V2 is dark, but universe receipt
-enforcement applies only when the exact universe’s effective V2 gate applies.
+diagnostics while provider-authority V2 is dark, but new universe receipt
+issuance/enforcement applies only when the exact universe’s effective V2 gate
+applies. Any binding, receipt, claim, or reservation already present in the
+authority ledger remains subject to lifecycle reconciliation, cancellation,
+and fencing regardless of the current gate. Dark-mode shipped recovery applies
+only to work with no authority-ledger record; rollback or canary de-listing
+never makes armed work reclaimable.
 That gate cannot become effective for a worker/provider until its maintenance
 canary has produced current conclusive viability evidence and the supervisor
 has proven both authenticated spawn and unauthenticated/unknown quarantine.

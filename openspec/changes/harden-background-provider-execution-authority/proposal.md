@@ -43,7 +43,8 @@ server-owned background authority contract exists.
   server-owned isolated maintenance canary may exercise the fixed probe before
   cutover; a universe gate cannot become effective for a worker/provider until
   maintenance viability and supervisor quarantine are proven, and caller data
-  cannot opt in.
+  cannot opt in. Darkening a gate stops new issuance but never disables
+  reconciliation or fences for authority records already in the ledger.
 
 ## Capabilities
 
