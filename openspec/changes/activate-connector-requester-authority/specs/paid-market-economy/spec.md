@@ -2,10 +2,11 @@
 
 ### Requirement: Explicit accepted agreement is the only market input to engine activation
 
-The paid-market owner SHALL expose an explicit accepted-agreement producer
-that converts a current canonical request plus current explicitly accepted
-quote into an immutable accepted-agreement result before engine activation may
-commit. This producer SHALL be distinct from request submission, bidding,
+The paid-market owner SHALL expose the internal tenant-scoped
+`paid_market.accept_agreement_v1` producer, which converts a current canonical
+request plus current explicitly accepted quote into an immutable
+accepted-agreement result before engine activation may commit. It is not an
+MCP action. This producer SHALL be distinct from request submission, bidding,
 matching, claiming, and delivery and MUST NOT resubmit or reinterpret any of
 those operations as explicit acceptance.
 Quote discovery, live-price ranking, a bid, match, claim, reservation,
@@ -22,6 +23,10 @@ and exact universe. The producer SHALL rehydrate the canonical request's
 capability digest, payload digest, bid-window close, acceptance policy,
 settlement policy, visibility, and fanout. The caller's acceptance object is a
 confirmation commitment, not a source of canonical market facts.
+The canonical request's `requester_user_id` MUST equal the current
+authenticated OAuth subject; its tenant and universe MUST equal the current
+authorized activation scope. Delegation requires a separately verified owner
+grant and cannot be inferred from request contents.
 
 #### Scenario: current bounded terms become an accepted agreement
 
@@ -33,6 +38,12 @@ confirmation commitment, not a source of canonical market facts.
 
 - **WHEN** the system has a ranked quote, bid, match, claim, payment intent, or scheduling record but no explicit current accepted agreement
 - **THEN** accepted-market engine activation is refused with no assignment mutation
+
+#### Scenario: canonical requester must equal current authenticated subject
+
+- **WHEN** the canonical request's requester user, tenant, or universe differs from the current authenticated activation subject and exact authorized scope
+- **THEN** `paid_market.accept_agreement_v1` refuses before agreement or assignment mutation
+- **AND** request contents, a match, or caller-supplied identity cannot impersonate the requester
 
 ### Requirement: Acceptance is revalidated at the atomic activation boundary
 

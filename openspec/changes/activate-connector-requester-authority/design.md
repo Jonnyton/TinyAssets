@@ -225,8 +225,9 @@ storage transaction. Inside its coordinator, the server:
    cap, fee schedule, demand commitment, acceptance/settlement policy,
    deadline, expiry, cancellation, and capacity;
 3. asks the paid-market owner's explicit accepted-agreement producer to
-   consume the current canonical request, quote, and explicit confirmation
-   without resubmitting or mutating the original market request;
+   invoke the internal tenant-scoped `paid_market.accept_agreement_v1`
+   interface over the current canonical request, quote, and explicit
+   confirmation without resubmitting or mutating the original market request;
 4. asks the distributed-execution B13 root for a bounded, revocable,
    non-executable provisional mandate bound to that agreement, target
    universe, accepted selection/pricing policy, budget and per-job spend
@@ -400,8 +401,8 @@ desktop. Post-fix clean-use evidence remains a separate release gate.
    preserving the seven-handle catalog and the independent request-target
    contract.
 3. Land and integrate the paid-market accepted-agreement producer and current
-   transport; do not reinterpret request submission or matching as agreement
-   acceptance.
+   transport as internal `paid_market.accept_agreement_v1`; do not reinterpret
+   request submission or matching as agreement acceptance.
 4. Integrate the B2 signed protocol and B13 sole production composition root,
    plus execution-admission and sandbox enforcement.
 5. Add the dark activation transaction, pre-routing dispatch, typed connector

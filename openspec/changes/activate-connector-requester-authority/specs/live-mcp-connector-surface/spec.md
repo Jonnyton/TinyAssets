@@ -43,7 +43,7 @@ change requires a new schema version.
 
 #### Scenario: ambiguous or authority-bearing input is rejected
 
-- **WHEN** activation uses free-form text, an unknown field, a deprecated target, an actor/tenant/provider/host/credential/wallet/grant field, or a non-integer spend cap
+- **WHEN** activation uses free-form text, an unknown field, a wrong live target, a legacy handle, an actor/tenant/provider/host/credential/wallet/grant field, or a non-integer spend cap
 - **THEN** the connector returns a typed validation refusal and performs no activation mutation
 
 ### Requirement: Connector activation results are typed, faithful, and credential-blind
