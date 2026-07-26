@@ -1,130 +1,149 @@
-# Paid-market Wave 2 workflow lane report
+# Outbound Boundary Layer — Waves 1–3 Lane Report
 
-Date: 2026-07-25 PT
-Branch: `codex/osx-market-workflow`
-Base: `origin/main` at `92d730bc9f667f4ccedda75413ac72f176fee38b`
-Implementation commits: `bfb31b1d` (`feat: add dark paid-market workflow spine`), `be0e7509` (`fix: enforce paid-market match authority`)
-Push: `origin/codex/osx-market-workflow`
+Date: 2026-07-25
+Branch: `codex/osx-outbound-boundary`
+Base: `6cde7ef0`
+Pushed commits:
 
-## Delivered
+- `19e0a709` — `feat: add outbound connection grant ledger`
+- `ec95a40f` — `feat: enforce outbound action caps`
+- `20656d23` — `feat: make outbound effects replay safe`
 
-- Added `tinyassets/payments/market_workflow.py`: immutable commands/results, injected store/realtime/delivery/ledger boundaries, a thread-safe reference store, body-bound replay, append-only lifecycle history, requester-authorized early close, cap/window/deadline enforcement, runtime transition-table enforcement, selected-host claim authority, capacity/version fences, and bounded three-attempt oracle recomputation.
-- Added `tinyassets/payments/market_realtime.py`: privacy-minimal announcements, subscribe/buffer/snapshot/watermark/outbox reconciliation, bounded multi-page catch-up, compaction/retry-exhaustion fallback, dedupe/coalescing, and fair bounded output.
-- Added fixture-only `prototype/full-platform-v0/migrations/013_paid_market_workflow.sql`: dark workflow tables, command log, exact-result replay metadata, durable outbox, RLS, non-login command ownership, logical settlement wrapper, and zero-host status.
-- Extended the fixture migration runner's exact baseline verification and catalog fingerprint.
-- Rebuilt the Claude plugin runtime mirror.
-- Did not create `market_delivery.py`; did not add delivery receipt, acceptance, or dispute tables; did not add `lease_fence` or `accepted_result_sha256`.
+## Per-task summary
 
-## Per-task result
+- **1.1** Added SQLite connection/grant persistence with owner, class, scopes, provider, destination, per-universe binding, connection/grant revocation, and PostgreSQL migration `010_outbound_boundary.sql`.
+- **1.2** Added exact-grant scoped proxy resolution. Absent, revoked, and ambiguous grants fail closed. The adapter API accepts no dispatcher, factory, config, ledger path, credential path, or ambient fallback. Trusted broker construction occurs in a spawned child bound to the already-resolved ledger and grant.
+- **1.3** Kept raw credentials out of proxy state, metadata, errors, audit records, artifacts, and environment observations. Credential resolution occurs only in the trusted child; production defaults fail closed. Test-only transports and credential sources require explicit trusted-ledger opt-in.
+- **1.4** Added attributed connector-definition and MCP-client-config artifacts with remix ancestry and secret-material rejection.
+- **2.1** Added machine-readable caps with name, finite non-negative maximum, unit, and an independent `unprompted_action` authority axis. Action units must match cap units.
+- **2.2** Added automatic below-cap execution and above-cap held receipts with zero funds/quota consumption. Owner confirmation is grant-bound; execution acquisition, retries, and terminal replay are journaled atomically.
+- **2.3** Added actionable held-effect remediation naming the cap and effect key. At-cap execution, owner denial, grant/proxy mismatch, concurrent confirmation, failure retry, and ambiguous outcomes are covered.
+- **3.1** Added deterministic effect keys from goal ID, schedule period, and item fingerprint. Intent is reserved before fire and every replay consults the journal.
+- **3.2** Added destination reconciliation with terminal success/failure/hold persistence. Wiki write-back reconciles against its deterministic destination marker; unsupported adapters declare the limitation and hold visibly.
+- **3.3** Added whole-batch admission and explicit per-item outcomes. Later items do not fire after failure, and already-terminal effects are reported as not reversed.
+- **3.4** Migrated GitHub PR, Twitter post, wiki write-back, and Windows desktop effectors behind legacy/dual/system identity modes. Dual mode writes and finalizes both keys; system mode cannot flip until a non-empty cohort of every alias is terminal and equal.
+- **3.5** Removed time-only pending-row reclamation. Aged pending intents require destination reconciliation or become actionable terminal holds. Receipt-finalization races also persist a remediation hold.
 
-- 3.5 — complete. The fixture wrapper locks the accepted request, exact winning match, and exact winning bid/version; requires `gross == immutable match total <= spend cap`; independently verifies requester/host/grant/account authority; invokes the landed fee-bearing settlement; asserts logical escrow drain; and commits the settlement transition atomically. The settlement caller role is denied the raw ledger function; only the wrapper's non-login definer retains it. Failure rolls back ledger and workflow effects. It confers no wallet-funding or chain authority.
-- 3.6 — complete. Randomized persistent transactions are checked account-for-account against pure `Ledger`, including replay/conflict, residual escrow rollback, same-owner settlement, and native/external supply. Every positive settlement has a positive treasury fee.
-- 3.7 — partial, left unchecked. Tenant/actor derivation, mixed-tenant rejection, signed/account/amount/time/generation-bound and revoked grants, server hashes, composite keys, coalescing, and fee invariance are covered. A production-shaped global cross-family lock/deadlock proof was not available.
-- 4.1 — partial, left unchecked. The complete delta-spec graph, body-bound request replay, forbidden edges, authority, cancellation/claim races, fan-out bounds, original-result replay, and append-only history are covered. Canonical API-router delegation and fence-dependent later transition implementations remain absent.
-- 4.2 — partial, left unchecked. Immutable non-delivery commands/results and all four requested injection protocols exist without psycopg/Supabase imports. A delivery command was not stubbed because its fence/hash authority is externally owned.
-- 4.3 — partial, left unchecked. Migration 013 contains request, bid, match, match-bid, fan-out-slot, claim, event, outbox, grant, and command-log rows with denial/RLS/ownership/search-path proofs. Delivery receipt, dispute, and acceptance rows are intentionally absent.
-- 4.4 — complete. Realtime tests cover atomic outbox append, post-commit announcement, cancellation tombstones, privacy-minimal envelopes, eligibility errors, snapshot/watermark/catch-up/buffer merge, multi-page replay, exhaustion refusal, compacted-watermark fallback, duplicate/out-of-order frames, coalescing, bounds, fairness, and degraded freshness without global polling.
-- 4.5 — complete. Bid tests cover exact host/grant authority, immutable monotonic versions, quote id/version/digest binding, one bid to one landed `BookOffer`, replacement/cancellation/expiry/revocation, capacity fences, deterministic oracle selection, requester-only early close, host matching only after the window and within spend cap, hard request deadline, bounded rejection receipts, persisted match decisions, and cross-request capacity exclusion.
-- 4.6 — complete for the buildable dark spine. Claims use landed `best_execution`, canonical request/slot/bid lock identity, exact version/capacity/cap/window/deadline rechecks, requester early-close receipts, selected-host authority, the canonical runtime transition guard, stale atomic rejection, three bounded attempts with jitter, and honest insufficient/contention results. Cross-owner aggregate claims fail closed pending independently fenced host slots.
-- 5.1 — partial, left unchecked. Zero-or-one recovery is covered around request/outbox/notification/bid/match/claim and fixture ledger/drain/database/replay boundaries. Completion, acceptance/dispute, and delivery-response faults were not stubbed.
-- 5.2 — complete as local code evidence. One hundred simultaneous selected-host claim attempts produce one applied claim and one capacity consumption matching the pure oracle. A separate two-request race proves one capacity grant cannot sell twice. This is not a production §14 load proof.
-- 5.5 — untouched. Its task text does not separate a code half from a legal artifact, so the user's conditional authorization did not apply.
-- 5.6 — complete as fixture evidence. With no daemon/tray host, database-owned reads preserve honest pending state, fabricate no settlement, and report settlement unavailable.
+Tasks 1.1–1.4, 2.1–2.3, and 3.1–3.5 are checked in `tasks.md`.
 
 ## Red/green evidence
 
-- Initial RED: workflow, bid, claim, realtime, fault, and PostgreSQL tests failed on missing modules/migration and missing command behavior.
-- PostgreSQL RED included missing paid-market workflow migration, hostile-path/runtime errors, absent grant/account bounds, and absent settlement rollback/binding behavior.
-- Independent-review RED regressions reproduced one-page catch-up, mutable replay meaning, missing cancellation invalidation, requester-owned claims, cross-request capacity double-sell, tenant-wide RLS reads, and settlement amount under-binding.
-- Final regression RED reproduced retry-budget partial convergence, cross-owner aggregate claiming, and spend-cap-versus-match-total confusion.
-- GREEN: `406 passed in 15.73s` across all 15 `tests/test_paid_market_*.py` files using local PostgreSQL 15 (`pgvector/pgvector:pg15`) on 2026-07-25 PT.
-- GREEN: focused `ruff check` passed for every touched Python source/test.
-- GREEN: `py_compile` passed for the two new modules and migration runner.
-- GREEN: `openspec validate paid-market-track-e-wave-2-transport --strict`.
-- GREEN: plugin build import probe passed; mirror parity reported all 268 canonical files matched.
-- REVIEW: the prior independent approval was superseded by the Opus 5 REJECT. The four blocking manipulation/enforcement findings are folded below with fresh behavioral and mutation evidence.
+TDD reds observed before implementation included missing ledger/proxy/cap/effect-key APIs, stale pending rows being reclaimed, absent reconciliation/batch helpers, alias-only parity, missing connection revocation, replaying confirmed actions twice, arbitrary confirmation identity, non-finite/unit cap bypass, and wiki stale-intent hold despite a readable marker.
 
-## Opus 5 money-review fold
+Required mutation checks:
 
-### F1 - eligible-host self-match was unbounded
+- **Permit gate forced open:** temporarily disabled the ambiguous-grant cardinality check. `test_resolve_scoped_proxy_fails_closed_without_fallback[ambiguous]` went red instead of returning the required `GrantResolutionError`. The gate was immediately restored; restored permit cases passed.
+- **Cap gate forced open:** temporarily disabled the above-cap hold branch. `test_above_cap_holds_without_execution_or_consumption_until_confirmation` went red: expected `held`, observed `executed`. The gate was immediately restored; the restored test passed.
 
-- RED: the reviewer-shaped test placed a 100-micros cheap but insufficient bid beside the attacker's 99,900,000-micros/Mtok bid. At the window boundary the eligible attacker recorded a 999,000,000-micros match against a 1,000,000-micros requester cap; the test failed because the command returned `Applied`.
-- FIX: a requester or bounded requester grant may close early. After the window, an eligible host may invoke only the deterministic full-snapshot matcher, and both `record_match` and `claim_match` reject a recorded total above `spend_cap_micros`. The early-close authority bit is persisted and included in the decision digest.
-- GREEN: both the 999,000x price repro and the corrupted over-cap decision claim return `Conflict("match_spend_cap_exceeded")`; neither mutates request, bid, capacity, match, or claim state.
-- MUTATION: temporarily removing the record and claim cap guards made both focused tests fail (`2 failed`); restoring them returned the nine-finding focused set to `9 passed`.
+Final verification on Windows / Python 3.14 after the rejection fold:
 
-### F2 - bid window and request deadline were decorative
+- Full touched test files: **108 passed, 7 skipped**. The skips require an external PostgreSQL DSN.
+- Ruff on every touched canonical, plugin-mirror, and test Python file: **clean**.
+- `python packaging/claude-plugin/build_plugin.py`: **passed**, including `probe-ok`.
+- Canonical/plugin SHA-256 parity for the rejection fold: **3/3 files matched**.
+- `openspec validate outbound-boundary-layer --strict`: **valid**.
+- `openspec validate --all --strict`: **41 passed, 0 failed**.
+- Secret scan: **clean**.
+- Opus 5 and Codex independently returned **REJECT** before this fold; all four
+  requested authority/security findings are reproduced and folded below.
+- `git diff --check 6cde7ef0..HEAD`: **clean**.
 
-- RED: a host recorded before `bid_window_ends_at`, a requester recorded at `deadline`, and a host claimed at `deadline` from a bid expiring later; all three boundary tests failed because the unsafe commands proceeded.
-- FIX: hosts cannot record before the window; a requester-authorized match may close early and lets only its selected host claim. Record and claim both reject `now >= deadline`, even when bid expiry is later.
-- GREEN: early host match returns `bid_window_open`; record and claim at the deadline return `request_deadline_elapsed`; requester early-close plus selected-host claim remains green.
-- MUTATION: temporarily removing the window/deadline guards made all three boundary tests fail (`3 failed`), proving the tests exercise the comparisons rather than stored fields.
+## Rejection fold: red -> fix -> green -> mutation
 
-### F3 - `_ALLOWED_TRANSITIONS` was declarative only
+### Finding 1 — confirmation was not bound to the reviewed decision
 
-- RED: deleting `("bidding", "claimed")` still let claim apply, while opening the table to all 169 pairs still could not drive a formerly forbidden command because a separate `allowed_sources` list overrode the table.
-- FIX: `_enforce_transition` raises on every unlisted request-state edge. Generic request transitions and claim call it before mutation, and the divergent caller-supplied source-state list was removed.
-- GREEN: deleting the claim edge now returns `state_transition_forbidden` with the request still bidding; opening all 169 pairs changes the repeated-cancel command from conflict to applied.
-- MUTATION: the two behavioral table-mutation tests pass together (`2 passed`); they inspect command/state outcomes, not set equality.
+- **Red:** Added the reviewer replay exactly: hold and confirm
+  `create_issue` with the benign request at value `5`, then reuse the same
+  effect key for `delete_repo` against `acme/production` at value
+  `10_000_000`. The test failed because the second call did not raise, and the
+  confirmation result had no `held_decision`.
+- **Fix:** Held evidence now contains the canonical redacted JSON decision
+  `{verb, request, action_value, action_unit, cap}`. Confirmation stores a
+  SHA-256 binding to that decision and returns the held payload for review.
+  Every confirmed activation/retry, including terminal replay, must match the
+  stored decision byte-for-byte under canonical JSON or fail closed.
+- **Green:** `test_confirmed_hold_refuses_a_later_different_decision` passed.
+- **Mutation:** Temporarily disabled the stored/current decision comparison.
+  The reviewer replay went red with `DID NOT RAISE PermissionError`. Restoring
+  the comparison returned the test to green.
 
-### Task 3.5 - settlement role retained the raw ledger grant
+### Finding 2 — caller-supplied owner identity was accepted as authority
 
-- RED: migration 013 contained no revoke, and live PostgreSQL reported `(True, True)` for raw `market.apply_settlement` privilege on the settlement role and workflow owner.
-- FIX: migration 013 revokes raw execution from `tinyassets_fixture_settlement` and leaves it only with `tinyassets_fixture_workflow_owner`, the bounded wrapper's non-login definer. Raw-ledger tests execute under that owner; settlement-role tests require an actual PostgreSQL privilege error.
-- GREEN: source and live-role tests pass; the live privilege tuple is `(False, True)`, direct raw invocation as the settlement role is denied, and fee-bearing wrapper settlement remains green.
-- MUTATION: temporarily removing the revoke made both the source assertion and live privilege repro fail (`2 failed`), restoring the bypass exactly.
+- **Red:** Added forged-owner reproductions for both proxy resolution and held
+  confirmation. Both failed because caller-supplied `owner_user_id` /
+  `authorized_by` strings were accepted.
+- **Fix:** Removed both identity parameters. Authority-bearing ledger
+  operations call a required `AuthenticatedPrincipalVerifier` installed at
+  trusted ledger construction; absence, verifier failure, anonymous identity,
+  non-string identity, and authenticated non-owner identity all fail closed.
+  `execute_capped_action` also re-verifies the current authenticated owner at
+  execution time rather than relying only on an earlier proxy resolution.
+- **Green:** The forged-owner, missing-verifier, and authenticated-non-owner
+  tests passed.
+- **Mutation:** Temporarily disabled the authenticated-owner comparison in
+  confirmation. The non-owner reproduction went red with
+  `DID NOT RAISE PermissionError`. Restoring it returned the test to green.
 
-## State-machine coverage map
+Authenticated-principal seam contract: the daemon-authenticated request
+boundary constructs `ConnectionLedger` with
+`verify_authenticated_principal: Callable[[], str]`. The callback must resolve
+the fresh request-local principal from server-owned authentication context; it
+must never be sourced from a universe, action payload, request field, grant
+record, or caller-provided identity string. The primitive has no ambient,
+anonymous, or caller-string fallback, and no production call site is wired yet.
 
-| Source | Allowed targets covered by the graph test | Implemented command in this lane |
-|---|---|---|
-| pending | bidding, cancelled, expired | open bidding; cancel |
-| bidding | claimed, cancelled, expired | selected-host claim; cancel |
-| claimed | running, failed | graph only; external execution authority pending |
-| running | completed, failed | graph only; delivery fence/hash pending |
-| completed | accepted, auto_accepted, disputed | graph only; acceptance/domain authority pending |
-| disputed | accepted, refunded, running | graph only; dispute/correction authority pending |
-| accepted | settled | fixture accounting wrapper |
-| auto_accepted | settled | fixture accounting wrapper |
-| failed | refunded | graph only |
+### Finding 3 — credential material leaked through ambiguous errors
 
-Every other ordered pair among the declared states is rejected by `allowed_transition`. Graph enumeration is not represented as an implementation of the externally gated delivery/acceptance/dispute commands.
+- **Red:** Added an induced `AmbiguousProxyOutcome` whose message contains
+  `Authorization: Bearer transport-echoed-bearer-secret`; the secret appeared
+  in the raised adapter-visible exception.
+- **Fix:** The broker now replaces ambiguous transport exceptions with a
+  constant secret-free exception, and the spawned worker maps every known
+  adapter-visible error class to constant text instead of forwarding
+  `str(exc)`.
+- **Green:** `test_ambiguous_transport_error_cannot_leak_credential_material`
+  passed; the full credential-blindness tests also passed.
+- **Mutation:** Temporarily restored the bare `raise`. The test went red with
+  the secret present in the exception. Restoring the scrub returned it to
+  green.
 
-## Honest remainder
+### Finding 6 — wiki reconciliation trusted attacker-controlled body text
 
-- No production-shaped Supabase Realtime/load run, one-million-transfer run, or cross-family deadlock proof was performed; §14 production uptime/load completion is not claimed.
-- The fixture migration is not a production Supabase migration or live rollout.
-- Canonical API-router delegation remains for 4.1.
-- Delivery commands/storage, completion receipts, acceptance, dispute, correction, and refund execution remain gated on the distributed-execution owner of `job_id:lease_fence:accepted_result_sha256`.
-- Multi-owner matches are reproducible, but aggregate claiming fails closed until independently fenced per-host slots are implemented.
-- 2.5, 2.6, 5.3, 5.4, 6.4, 4.7, and 5.7 were not touched.
+- **Red:** Added the reviewer victim-effect reproduction: a stale pending
+  victim receipt plus attacker-controlled sentinel comments in the wiki body
+  reconciled as `succeeded`.
+- **Fix:** Payload bodies containing reserved effect-marker syntax are
+  rejected. After a real page write, the trusted effector records an exact
+  effect-key/destination/page-hash marker in server-side wiki metadata.
+  Reconciliation consults only that metadata, never page body text. A receipt
+  finalization or marker-record failure returns successful destination
+  evidence with `receipt_finalize_failed=true` and
+  `reconciliation_required=true`, leaves the receipt pending, and a stale
+  replay reconciles from the trusted marker.
+- **Green:** The attacker-marker refusal, trusted-marker reconciliation, and
+  receipt-finalize-failure reconciliation tests passed.
+- **Mutation:** Temporarily restored body-sentinel reconciliation. The victim
+  reproduction went red (`succeeded` instead of `held`). Restoring trusted-only
+  reconciliation returned it to green.
+
+## Files touched
+
+- Storage/boundary: `tinyassets/storage/outbound_connections.py`, `tinyassets/storage/external_write_receipts.py`, `prototype/full-platform-v0/migrations/010_outbound_boundary.sql`
+- Identity/boundary effectors: `tinyassets/idempotency.py`, `tinyassets/effectors/outbound_boundary.py`
+- Migrated effectors: `tinyassets/effectors/github_pr.py`, `twitter_post.py`, `wiki_write_back.py`, `windows_desktop.py`
+- Tests: `test_outbound_connection_ledger.py`, `test_outbound_effect_boundary.py`, `test_external_write_phase_2_atomicity.py`, `test_idempotency.py`, `test_paid_market_migrations.py`, `test_wiki_write_back_effector.py`
+- OpenSpec checklist: `openspec/changes/outbound-boundary-layer/tasks.md`
+- Generated Claude plugin mirrors for all changed canonical plugin-shipped files
+
+## Deliberate omissions and notes
+
+- Section 4.x and later sections were not implemented.
+- No value-moving, settlement, payment, wallet, price, or accounting behavior was added.
+- No requirement or framing was taken from the unapproved open-production-commons reframe.
+- `tinyassets/api/universe.py` and `tinyassets/universe_server.py` were not touched.
+- Provider/router wiring owned by those other lanes was not changed. Unregistered production credential/transport schemes fail closed; test fixtures require explicit opt-in.
+- Migration number **010** was used as directed. No `010` collision exists on this branch; the known parallel lane remains on `011`. If integration creates a `010` collision, it must be resolved at land time rather than by unilateral renumbering here.
 - No PR was opened.
+- This report is committed with the rejection fold.
 
-## Migration renumber closeout
-
-### Files touched
-
-- The paid-market workflow migration was renamed with `git mv` from 010 to `prototype/full-platform-v0/migrations/013_paid_market_workflow.sql`; its header now says 013.
-- `prototype/full-platform-v0/migrate.py` reserves the absent outbound-boundary 010, accepts that reservation both absent now and present later, and carries the recomputed catalog fingerprint.
-- `prototype/full-platform-v0/migrations/011_goal_canonicals.sql` conditionally backfills from the parallel 010-owned `public.goals`, allowing the required partial chain to apply cleanly before outbound 010 lands.
-- `tests/test_paid_market_migrations.py`, `tests/test_paid_market_workflow_postgres.py`, and `tests/test_goal_canonicals_migration.py` cover the exact filename/order/history, future 010 presence, conditional 011 backfill, and PostgreSQL workflow migration.
-- `openspec/changes/paid-market-track-e-wave-2-transport/tasks.md` and `openspec/changes/paid-market-live-price-discovery/tasks.md` now reference migration 013.
-- `LANE_REPORT.md` records this closeout.
-
-### Fingerprint and ordering evidence
-
-- Catalog SHA-256 was recomputed from a fresh PostgreSQL 15 apply: `7e73321e15701fdee8d29c0d8788994afee2bff3f1698833148cb9e86c42dc0d` → `56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473`.
-- Independent clean-database probe returned `ORDER=001,002,003,004,005,006,007,008,009,011,012,013`; `public.schema_migrations` recorded those exact versions and names; computed and expected fingerprints both returned `56937c99d9467b10b7862a50601ddd2c199529901283da83bd37825504f0b473`.
-- Exactly one migration occupies 013. No stale paid-market 010 filename reference remains. Generic migration-010 references remain only where they explicitly identify the outbound-boundary lane.
-
-### Renumber verification
-
-- GREEN: `13 passed in 3.01s` for `tests/test_paid_market_migrations.py` with PostgreSQL enabled.
-- GREEN: `407 passed in 13.09s` across all 15 `tests/test_paid_market_*.py` files with PostgreSQL enabled.
-- GREEN: `9 passed in 3.56s` for the goal-canonical static contract plus paid-workflow PostgreSQL tests.
-- GREEN: Ruff on every touched Python file; `git diff --check`; strict OpenSpec validation for both touched paid-market changes.
-- GREEN: canonical/plugin runtime mirror parity, all 280 paired files matched.
-- Independent review: no code-correctness findings after stale-reference and future-010 regression fixes.
-- Repository-wide baseline is not green independently of this diff: fail-fast stopped at `tests/test_attribution_calc.py::TestComputePayoutShares::test_distributable_remainder_after_fee` after `784 passed, 1 skipped`; both the failing test and `tinyassets/attribution/calc.py` are identical to `origin/main`. Repository-wide Ruff likewise reports 120 existing E501 failures, none in the renumber-touched Python files.
-
-LANE_RESULT: done - paid-market workflow renumbered 010->013, fingerprint regenerated, and all migration/paid-market gates green
+LANE_RESULT: done - Four rejected authority/security findings folded with red-green-mutation evidence; verified, committed, and pushed.
