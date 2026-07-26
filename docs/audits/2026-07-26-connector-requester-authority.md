@@ -97,7 +97,7 @@ epoch-2 BranchTask intake contract.
 | Capability | This successor owns | It must not steal |
 |---|---|---|
 | `identity-auth-and-access-control` | Current OAuth requester, tenant, exact universe, request/session/tool binding, revocation generation | Environment actor, caller-supplied actor/tenant, durable replay of the one-message request capability |
-| `paid-market-economy` | Explicit paid mandate, accepted economic agreement, canonical tenant workflow, body-bound idempotency | Quote ranking, host authority, wallet/chain authority, settlement finality, or execution authority |
+| `paid-market-economy` | Explicit accepted-agreement producer over the canonical request and quote, bounded economic mandate, tenant workflow, domain-separated body-bound idempotency | Treating submission/match/claim as acceptance, quote ranking, host authority, wallet/chain authority, settlement finality, or execution authority |
 | `distributed-execution` | A non-executable B13-bound bounded-market mandate, then fresh firm quote, capacity consumption, requester-funding reservation, and one exact B2 grant after each concrete job/capsule exists, plus Engine OS admission evidence | Pre-minting/storing a future-job B2 or promoting request, match, claim, row, receipt, reservation, or provider-attempt evidence |
 | `live-mcp-connector-surface` | Exact action/input/result, rendered confirmation, refusal, repair, and renewal | New MCP handle, raw grant/secret/payment carrier, deprecated handle, or desktop prerequisite |
 | `provider-routing` (#1784) | Existing owner: `accepted_market + remote_ready + []`, pre-router seam, ordinary-chain bypass, held state | No delta in this successor |
@@ -109,17 +109,20 @@ BYOC, local-model, stdio, tray, and plugin activation belong exclusively to
 ## Required Acceptance Boundary
 
 The connector supplies only server-verifiable references and explicit user
-limits: the selection/evaluation receipt identity and digest, firm quote
-identity/version/digest, accepted maximum total and settlement currency,
-fee-schedule version, bounded spend/deadline, and acceptance policy.
+limits: canonical request identity/version/digest, selection/evaluation
+receipt identity and digest, firm quote identity/version/digest, accepted
+integer-micros budget and per-job spend cap, settlement currency,
+fee-schedule and settlement-policy versions, deadline, and acceptance policy.
 
-The server derives or reloads the actor, tenant, universe, descriptor, demand
-commitment, quote contents, issuer/capacity evidence, host, wallet/chain
-receipt, and B13 market-mandate authority. Caller-supplied versions of those
-authority objects are rejected. The mandate is ongoing but bounded by the
-accepted total spend and selection policy; it is neither a reservation nor
-job authority. Because B2 binds a concrete job/capsule, it is not created
-during activation. After the later message and job exist, `converse` obtains a
+The server derives or reloads the actor, tenant, universe, canonical request's
+capability/payload/bid-window/policy/visibility/fanout fields, descriptor,
+demand commitment, quote contents, issuer/capacity evidence, host,
+wallet/chain receipt, and B13 market-mandate authority. Caller-supplied
+versions of those authority objects are rejected. The mandate is ongoing but
+bounded by the accepted budget, per-job spend cap, and selection policy; it is
+neither a reservation nor job authority. Because B2 binds a concrete
+job/capsule, it is not created during activation. After the later message and
+job exist, `converse` obtains a
 fresh executable firm quote for their exact demand and quantity, revalidates
 fees, currency, service policy, capacity, and remaining budget, atomically
 consumes capacity and reserves requester-owned or explicitly delegated
@@ -138,7 +141,11 @@ allowed_providers=[]
 Any failure leaves no `remote_ready` mutation and authorizes no execution or
 maintainer spend. Same-key/same-body replay returns the original typed result;
 same-key/different-body reuse conflicts after current actor and universe
-authorization is rechecked.
+authorization is rechecked. The activation idempotency namespace is
+domain-separated from request admission and every other target/action. A
+provisional B13 mandate becomes current only through the committed activation
+reference; failed commits revoke or expire it idempotently, and retries cannot
+accumulate mandate authority.
 
 Each later `converse` authenticates its own message and revalidates the
 durable bounded-market mandate. For the exact job it obtains a fresh
@@ -165,6 +172,8 @@ local, BYOC, free, or ordinary provider fallback.
 - `paid-market-track-e-wave-2-transport` production baseline/migrations,
   canonical router delegation, delivery/fence integration, and concurrency
   evidence.
+- A paid-market accepted-agreement producer distinct from request submission,
+  bidding, matching, claiming, and delivery.
 - Distributed-execution B13 production composition, trust/custody, per-job
   firm-quote/capacity/funding consumption, settlement integration, and live
   B2 proof.
@@ -202,7 +211,8 @@ Before cutover the implementation successor must add focused authorization,
 schema/idempotency, quote/fee/spend, atomicity/fault, per-job
 budget/capacity/funding oversubscription, retry/cancel/release/refund,
 B2/B13, expiry/revocation/fence, pre-router refusal, and
-no-maintainer-fallback tests; run the PLAN §14 concurrent load proof; pass
-public canaries; complete a rendered chatbot conversation through
+no-maintainer-fallback tests; run the full-platform architecture §14
+concurrent load proof; pass public canaries; complete a rendered chatbot
+conversation through
 `https://tinyassets.io/mcp`; and record post-fix clean-user evidence or a
 dated watch item.
