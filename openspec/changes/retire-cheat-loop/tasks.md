@@ -236,8 +236,9 @@
 - [ ] 6.7 In one canonical foldback commit, explicitly apply the coordination,
   daemon, graph, wiki, uptime, and website deltas to their canonical specs;
   require final canonical `wiki-commons`
-  Purpose prose that promises trigger receipts, `uptime-and-alarms` prose that
-  names the neighboring patch loop, and the `public-website-surface`
+  Purpose prose to no longer promise trigger receipts, `uptime-and-alarms`
+  Purpose prose to no longer name the neighboring patch loop, and the
+  `public-website-surface`
   historical-run scenario to no longer require patch-loop
   feed/community-watch fallback. After task 4.4's exact-heading manifest is
   satisfied and the stable
