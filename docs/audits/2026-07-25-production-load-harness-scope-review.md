@@ -179,14 +179,17 @@ The adapted packet now:
 - distinguishes authenticated cleanup failure from missing/invalid proof.
 
 The adapted delta-spec SHA-256 is
-`4B26E5C33D5480511014F34639CE8090ED763E90CAC40FBDD10732B9F99F55F6`.
+`85EE23FE0968AADA19D2D9A7AB475FAF28B42587DBCF69E33A2B2B2ECE0EEB5E`.
 The final adaptation also makes missing backend policy legal only for a
 zero-leaf blocked `not_run` manifest and requires an explicit prior canonical
 manifest whose digest, schema, and run ID all match every supersession link.
 An Opus 5 re-review then caught one last failure-evidence ambiguity: a
 provider-free run that actually touches a provider is now explicitly a
 conforming unauthorized-attempt failure, not a malformed receipt that discards
-the authenticated violation evidence.
+the authenticated violation evidence; provider-free count algebra requires
+authorized count zero and unauthorized count equal total attempts. The final
+packet also makes validation error categories mutually exclusive and derives
+`traffic_started=yes|no|unknown` exactly.
 Strict validation passes 48/48. Fresh independent and literal Opus 5 approval
 of this exact adapted packet remains required before push or apply. No runtime
 or live traffic is authorized.
