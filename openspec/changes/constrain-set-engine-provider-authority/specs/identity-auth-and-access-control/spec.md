@@ -52,6 +52,11 @@ A task-augmented or otherwise deferred `tools/call` SHALL mint no
 `harden-background-provider-execution-authority` issues and revalidates the
 separate durable `ProviderWorkAuthorityReceipt`.
 
+The special anonymous wiki-canary bearer and
+`_WikiCanaryExecutionAuthority` SHALL remain canary-only. Provider middleware
+SHALL compose with that middleware without treating its token, anonymous
+principal, or narrow canary authority as provider identity or capability.
+
 The per-message hook SHALL reserve one opaque, non-serializable dispatch token
 before `call_next(context)`. The reserve SHALL bind an opaque message nonce,
 authenticated principal ID, current MCP session ID and request ID, exact tool
@@ -120,6 +125,11 @@ provider-routing sink SHALL bind those dimensions from fresh server state.
 - **WHEN** a task-augmented or otherwise deferred tool call would execute after the message middleware returns
 - **THEN** it mints no `ProviderRequestCapability` and provider work holds
 - **AND** only the background owner's separately issued durable receipt may authorize that work
+
+#### Scenario: wiki canary authority never becomes provider authority
+- **WHEN** the special anonymous wiki-canary bearer authorizes its narrow canary operation on the shared FastMCP app
+- **THEN** provider middleware mints no reserve, provider request capability, or carrier
+- **AND** it preserves the canary middleware's independent narrow behavior without widening it
 
 #### Scenario: unauthenticated stdio and SSE transports mint no request capability
 - **WHEN** a stdio or SSE server shell lacks a reviewed authenticated per-message transport identity
@@ -227,8 +237,13 @@ authority enforcement and newborn deny-all cutover SHALL remain blocked.
 
 #### Scenario: chatbot founder completes accepted market setup
 - **WHEN** an authenticated Tier-1 founder accepts a valid market offer through the live connector
-- **THEN** the named successor produces the B2/B13-bound remote execution grant for that universe
+- **THEN** the named successor produces the B2/B13-bound remote execution grant and atomically publishes `engine_source="accepted_market"`, `engine_assignment_state="remote_ready"`, and `allowed_providers=[]`
 - **AND** the next `converse` executes through that successor's pre-routing remote-execution seam, not the ordinary provider ceiling, without maintainer or desktop resources
+
+#### Scenario: invalid accepted-market grant maps to repair, not engine-less
+- **WHEN** an accepted-market grant is absent, expired, revoked, or inconsistent
+- **THEN** `universe_has_assigned_engine` remains fail-safe true while execution holds and the successor-owned setup mapper offers accepted-market repair or renewal
+- **AND** no ordinary provider, maintainer resource, desktop prerequisite, or generic engine-less envelope substitutes
 
 #### Scenario: absent connector activation owner blocks cutover
 - **WHEN** paid-market, B2/B13, or the connector-visible setup step is unavailable

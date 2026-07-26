@@ -83,8 +83,11 @@ fallback, and retry may never add a provider.
 After gated migration, every newborn begins with
 `engine_source="unassigned"`,
 `engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
-`allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
-require `[]`. Non-empty is necessary but not sufficient: a ready ceiling must
+`allowed_providers=[]`. Ordinary `ready` requires a non-empty ceiling.
+Remote-only `remote_ready` requires `engine_source="accepted_market"`,
+`allowed_providers=[]`, and a current successor-issued B2/B13 grant.
+`unassigned`, `pending`, `held`, and `failed` also require `[]`. Non-empty is
+necessary but not sufficient for ordinary readiness: a ready ceiling must
 intersect every canonical role with a live provider call site and carry one
 current provider-specific binding entry for every destination. Startup/CI
 inventory owns the live-role set. Dormant `embed` does not block readiness,
@@ -119,11 +122,16 @@ then depend on `activate-requester-host-engines`; Tier-1 setup remains owned by
 `activate-connector-requester-authority`.
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
-`unassigned + []` alone is engine-less; ready/nonempty or a proven remote
-grant is ready; unreadable, pending, held, failed, and inconsistent state stay
-fail-safe true for the legacy exhaustion classifier. Typed authority holds
-map directly to precise setup. Bare policy/pin/no-router exhaustion preserves
-its current no-envelope carve-out.
+`unassigned + []` alone is engine-less. Ordinary `ready + nonempty` is local
+provider-ready. A current accepted-market grant is encoded as
+`remote_ready + []` and is remote-ready. If that grant is absent, expired,
+revoked, or inconsistent, execution holds and the successor-owned setup
+mapper offers accepted-market repair/renewal; the legacy
+`universe_has_assigned_engine` classifier remains fail-safe true rather than
+mislabeling it engine-less, even before the owner atomically downgrades it to
+`held + []`. Unreadable, pending, held, failed, and inconsistent state likewise
+stay fail-safe true. Bare policy/pin/no-router exhaustion preserves its
+current no-envelope carve-out.
 
 ### 2. Source resolution is strict and held sources stay deny-all
 
@@ -140,7 +148,7 @@ The resolver is total over both the shipped source domain and target values:
 | `requester_local` + `openai` | target custody source | Codex covers current live writer/judge/extract and may be ready from its own valid cloud binding |
 | `local_model` + `ollama` | target zero-cloud source | `["ollama-local"]`; `activate-requester-host-engines` emits source + attested host binding |
 | `founder_hosted_daemon` | target hosted source | successor-selected ceiling after stable authenticated account-to-host binding |
-| `accepted_market` | target remote grant | no ordinary ceiling; connector successor dispatches `converse` through B2/B13 before routing |
+| `accepted_market` | target remote grant | current grant publishes `remote_ready + []`; connector successor dispatches `converse` through B2/B13 before routing; missing/revoked grant is held + setup repair |
 | other legacy BYOC services | no target mapping | gated migration holds/fails deny-all; credential-custody retirement owns remediation/refusal |
 
 An omitted writer is derived; a supplied writer must match exactly. Aliases,
@@ -151,7 +159,9 @@ opaque binding reference/digest and provenance. #1746 alone owns
 raw/recoverable `llm_api_key` ingress refusal, cloud binding custody, legacy
 retirement, and the atomic post-custody writer that emits
 `engine_source=requester_local`, service, the cloud binding entry, and writer
-preference. Cloud custody alone remains held.
+preference. Cloud custody publishes ordinary `ready` only when its binding and
+current live-role coverage are complete; current Anthropic alone remains
+held, while current OpenAI/Codex may satisfy that invariant.
 
 `self_hosted_endpoint`, `host_daemon`, `local_model`, and
 `founder_hosted_daemon` remain held until
@@ -177,6 +187,10 @@ permanently in the ordinary router.
 `accepted_market` is separate from legacy `market_rented`. Its B2/B13 grant
 dispatches through the connector successor's pre-routing remote seam, so the
 next `converse` never enters ordinary role chains or loops back into setup.
+The successor atomically publishes `remote_ready + []` only with a current
+grant. A missing, expired, revoked, or inconsistent grant holds, maps to the
+accepted-market repair/renewal path, and cannot fall through to maintainer or
+desktop compute.
 
 ### 3. Assignment and custody share one exported admission primitive
 
@@ -307,6 +321,19 @@ volunteered-capacity work use distributed execution. Missing capability or
 receipt, anonymous identity, wrong current capability, stale generation, wrong
 principal/universe/provider/host, or invalid binding state fails held before
 provider, credential, auth-health, or quota access.
+
+The existing anonymous wiki-canary bearer is a closed special case owned by
+`_WikiCanaryExecutionAuthority`. Provider middleware composes with that
+FastMCP middleware but treats its anonymous principal and canary token as
+non-authority, leaving the canary's own narrow execution behavior unchanged.
+
+For a remote HTTP provider, `provider_authority_bindings` names the
+provider/custody fact but does not create a second outbound grant or secret
+path. Launch also requires the current user-owned, per-universe connection
+grant and credential-blind daemon-side proxy from `outbound-boundary-layer`.
+The proxy/custody owners perform secret resolution and network execution;
+missing or revoked outbound authority holds without host, maintainer, or
+ambient fallback.
 
 The dependency direction is one-way: provider routing publishes this contract
 and does not require sibling acceptance before the target spec lands. Custody

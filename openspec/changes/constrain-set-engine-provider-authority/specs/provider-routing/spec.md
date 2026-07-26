@@ -78,10 +78,12 @@ provider routing; it SHALL NOT enforce the target authority gate.
 Only after the migration manifest and every surface gate pass under the
 bounded canary may the global flag flip. For every effectively gated universe,
 runtime, creation, and assignment SHALL persist state, generation, and
-`allowed_providers` and SHALL use `[]` for
-`unassigned`, `pending`, `held`, and `failed`, and a non-empty canonical list
-only for `ready`. A ready ceiling MUST be role-complete over every role with a
-live provider call site: its intersection with each such canonical chain is
+`allowed_providers`. It SHALL use `[]` for `unassigned`, `pending`, `held`,
+`failed`, and remote-only `remote_ready`; only ordinary `ready` SHALL carry a
+non-empty canonical list. `remote_ready` SHALL be valid only with
+`engine_source="accepted_market"` and a current successor-issued B2/B13 grant.
+An ordinary ready ceiling MUST be role-complete over every role with a live
+provider call site: its intersection with each such canonical chain is
 non-empty. Startup/CI inventory SHALL enumerate live `role=` call sites and
 fail closed if any live role is outside the enforced set. A canonical role
 with no live call site (currently `embed`) SHALL NOT block readiness; its first
@@ -132,11 +134,16 @@ Maintainer-owned local compute is never a supplement.
 lifecycle.
 
 Target source `accepted_market` is remote-dispatch-only. It stores a separately
-proven B2/B13 grant and no ordinary provider ceiling. Ordinary role chains
-MUST NOT be consulted for it.
+proven B2/B13 grant, publishes `engine_assignment_state="remote_ready"` with
+`allowed_providers=[]`, and has no ordinary provider ceiling. Ordinary role
+chains MUST NOT be consulted for it.
 `activate-connector-requester-authority` SHALL own the pre-routing dispatch
 seam that converts the grant into remote execution for `converse`; provider
-routing holds only when that seam or grant is absent.
+routing holds when that seam or grant is absent, expired, revoked, or
+inconsistent. Such a hold SHALL map to the successor's accepted-market
+repair/renewal path. `universe_has_assigned_engine` SHALL remain fail-safe true
+rather than classify the universe as engine-less, even before the owner
+atomically downgrades stale `remote_ready` state to `held + []`.
 
 Omitted writer is derived. Unknown/aliased/mismatched service or writer,
 missing binding/host reference, and unsupported assignment fields fail before
@@ -204,8 +211,13 @@ policy-fallback, and judge behavior.
 
 #### Scenario: accepted market dispatch bypasses ordinary chains
 - **WHEN** a Tier-1 connector universe has a valid accepted-market B2/B13 grant
-- **THEN** the successor-owned pre-routing seam dispatches `converse` remotely without an ordinary ceiling
+- **THEN** assignment is `remote_ready + []` and the successor-owned pre-routing seam dispatches `converse` remotely without an ordinary ceiling
 - **AND** missing seam/grant holds rather than falling through to maintainer or desktop resources
+
+#### Scenario: revoked accepted market grant is not engine-less
+- **WHEN** `accepted_market` state has an absent, expired, revoked, or inconsistent B2/B13 grant
+- **THEN** remote dispatch holds, the setup mapper offers accepted-market repair/renewal, and the owner downgrades it to `held + []`
+- **AND** the fail-safe assigned-engine classifier stays true and no ordinary provider or generic engine-less path is used
 
 #### Scenario: every shipped source has an explicit migration or hold
 - **WHEN** source is `byo_api_key`, `self_hosted_endpoint`, `market_rented`, or `host_daemon`
@@ -375,6 +387,11 @@ provider authority. A task-augmented or otherwise deferred tool call SHALL
 mint no request capability and SHALL hold until the background owner issues a
 durable receipt.
 
+The special anonymous wiki-canary bearer and
+`_WikiCanaryExecutionAuthority` SHALL compose on the same FastMCP app without
+minting provider request authority. Their anonymous principal, canary token,
+and narrow operation SHALL NOT satisfy provider identity or carrier checks.
+
 The TinyAssets wrapper created by `_register_structured_tool` SHALL claim the
 reserve atomically on synchronous worker entry, after AnyIO selects the actual
 thread, and bind one active message lease to that worker and exact invocation.
@@ -398,6 +415,13 @@ ContextVars SHALL NOT extend the lease or pass the message/claim check.
 API/MCP schemas, caller kwargs, request/universe
 payloads, serialized state, and ambient worker context MUST NOT construct or
 populate the carrier.
+
+For remote HTTP providers, a provider binding SHALL NOT substitute for or
+duplicate outbound authority. `ProviderExecutor.start()` SHALL also consume
+the current user-owned, per-universe connection grant and credential-blind
+daemon-side proxy owned by `outbound-boundary-layer`. Missing, expired,
+revoked, or ambiguous outbound authority SHALL hold before provider or
+credential access without host, maintainer, or ambient fallback.
 
 Background, resumed, scheduled, daemon, RAPTOR, reflexion, retrieval, and
 post-response graph work SHALL supply a server-owned

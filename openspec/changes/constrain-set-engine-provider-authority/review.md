@@ -537,3 +537,24 @@ completion-based `_AUTH_PROBE_PROMPT` is background maintenance and cannot use
 
 Final disposition remains pending current-main merge, strict validation,
 refreshed exact-head handoffs, and a fresh Opus 5 approval.
+
+## Post-twelfth independent and current-main review — 2026-07-25
+
+An independent Codex reviewer found three remaining contract contradictions:
+the proposal still said every tool call minted request authority, the design
+still said every cloud-only binding held despite current Codex live-role
+coverage, and accepted-market readiness had no legal assignment-state
+encoding. A current-main merge audit also found two new composition duties:
+main's anonymous wiki-canary authority must remain canary-only, and remote
+HTTP provider binding must consume rather than duplicate the outbound
+connection grant/credential-blind proxy.
+
+The adaptation adds closed `remote_ready + []` state for a current
+`accepted_market` B2/B13 grant, exact invalid-grant repair/renewal behavior,
+non-deferred-only request minting, conditional cloud readiness, explicit
+wiki-canary non-authority, and an outbound-ledger/proxy handoff. The market
+path remains target-only behind its successor; no ordinary chain or runtime
+activation is added here.
+
+Final disposition remains pending merge to current main, strict validation,
+refreshed exact-head handoffs, and fresh Opus 5 approval.

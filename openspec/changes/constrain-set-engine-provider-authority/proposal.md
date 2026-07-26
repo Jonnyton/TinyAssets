@@ -68,13 +68,17 @@ deny-all.
   deny-all in the ordinary provider router.
 - Assignment becomes one cross-process, per-universe transaction: validate,
   publish deny-all quarantine, update source/per-provider binding state, then
-  atomically publish one coherent role-complete ready or held assignment.
+  atomically publish one coherent role-complete `ready`, remote-only
+  `remote_ready`, or deny-all held assignment.
 - Each live request provider attempt intersects the fresh assignment ceiling
   with a server-minted, request-scoped `ProviderRequestCapability` owned by
-  `identity-auth-and-access-control`. For every `tools/call`, TinyAssets-owned
-  FastMCP message middleware re-derives current HTTP bearer identity and
-  reserves a session/request/tool-bound one-shot token; stateful-session
-  initialize Context never authorizes later messages. The TinyAssets
+  `identity-auth-and-access-control`. For every non-deferred `tools/call`,
+  TinyAssets-owned FastMCP message middleware reads only the low-level current
+  per-message HTTP request, re-derives its bearer identity, and reserves a
+  session/request/tool-bound one-shot token; inherited/snapshotted fallback
+  requests and stateful-session initialize Context never authorize later
+  messages. Task-augmented/deferred calls mint no request capability and hold
+  until the background owner issues a durable receipt. The TinyAssets
   registered-tool wrapper claims the reserve against the actual synchronous
   worker on entry after AnyIO selects it, and wrapper/message `finally`
   revokes the lease before result release. Detached, nested, copied, stale,
@@ -103,6 +107,14 @@ deny-all.
   plus the B2/B13 grant and dispatches the next `converse` through its
   pre-routing remote-execution seam; ordinary provider ceilings and role
   chains are not consulted.
+- Main's anonymous wiki-canary bearer and
+  `_WikiCanaryExecutionAuthority` remain canary-only. They never mint provider
+  authority even while provider middleware composes on the same FastMCP app.
+- Provider bindings do not create a parallel outbound-connection ledger. For
+  remote HTTP providers, the binding consumes the current user/per-universe
+  grant and credential-blind daemon-side proxy owned by
+  `outbound-boundary-layer`; a missing/revoked grant holds without ambient
+  fallback.
 - This change is the sole owner of provider-authority propagation into the
   provider layer. It defines the frozen invocation/launch boundary and
   exhaustive call-site threading; no separate
