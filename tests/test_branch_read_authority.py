@@ -133,7 +133,14 @@ def _seed_branch(
                 {"id": node_id, "node_def_id": node_id, "position": index}
                 for index, node_id in enumerate(node_ids)
             ],
-            "edges": [],
+            "edges": (
+                [
+                    {"from_node": "START", "to_node": node_ids[0]},
+                    {"from_node": node_ids[0], "to_node": "END"},
+                ]
+                if node_ids
+                else []
+            ),
             "conditional_edges": [],
             "state_schema": [],
             "entry_point": node_ids[0] if node_ids else "",
@@ -479,3 +486,365 @@ def test_descendant_projection_includes_public_and_owner_private_only(
         "owner-private-descendant",
     }
     assert lineage["descendant_count"] == 2
+
+
+def _seed_source_code_branch(
+    base: Path,
+    *,
+    branch_def_id: str,
+    author: str,
+    visibility: str,
+    node_author: str,
+) -> dict[str, Any]:
+    from hashlib import sha256
+
+    from tinyassets.daemon_server import save_branch_definition
+
+    source_code = "def run(state):\n    return {'secret': state}\n"
+    return save_branch_definition(
+        base,
+        branch_def={
+            "branch_def_id": branch_def_id,
+            "name": branch_def_id,
+            "author": author,
+            "domain_id": "workflow",
+            "visibility": visibility,
+            "entry_point": "source_node",
+            "node_defs": [{
+                "node_id": "source_node",
+                "display_name": "Source Node",
+                "description": "private source description",
+                "phase": "custom",
+                "input_keys": ["state"],
+                "output_keys": ["secret"],
+                "tools_allowed": ["wiki"],
+                "source_code": source_code,
+                "prompt_template": "",
+                "author": node_author,
+                "approved": True,
+                "approved_by": "credential-approver",
+                "approved_at": "2026-07-25T00:00:00+00:00",
+                "approved_source_hash": sha256(
+                    source_code.encode("utf-8"),
+                ).hexdigest(),
+                "approval_reason": "reviewed",
+            }],
+            "graph_nodes": [{
+                "id": "source_node",
+                "node_def_id": "source_node",
+                "position": 0,
+            }],
+            "edges": [
+                {"from_node": "START", "to_node": "source_node"},
+                {"from_node": "source_node", "to_node": "END"},
+            ],
+            "conditional_edges": [],
+            "state_schema": [],
+        },
+    )
+
+
+def _stored_branch_bytes(base: Path, branch_def_id: str) -> bytes:
+    from tinyassets.daemon_server import get_branch_definition
+
+    return json.dumps(
+        get_branch_definition(base, branch_def_id=branch_def_id),
+        sort_keys=True,
+        default=str,
+    ).encode()
+
+
+def test_foreign_private_and_missing_node_ref_are_identical_and_copy_nothing(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    _seed_branch(
+        base,
+        branch_def_id="copy-destination",
+        author="alice",
+        node_ids=("destination_node",),
+    )
+    _seed_source_code_branch(
+        base,
+        branch_def_id="private-copy-source",
+        author="bob",
+        visibility="private",
+        node_author="original-node-author",
+    )
+    authenticate("alice")
+    before = _stored_branch_bytes(base, "copy-destination")
+
+    denied = _call_raw(
+        "add_node",
+        branch_def_id="copy-destination",
+        node_id="copied_node",
+        display_name="Copied Node",
+        node_ref={
+            "source": "private-copy-source",
+            "node_id": "source_node",
+        },
+    )
+
+    from tinyassets.daemon_server import delete_branch_definition
+
+    assert _stored_branch_bytes(base, "copy-destination") == before
+    assert delete_branch_definition(
+        base,
+        branch_def_id="private-copy-source",
+    )
+    missing = _call_raw(
+        "add_node",
+        branch_def_id="copy-destination",
+        node_id="copied_node",
+        display_name="Copied Node",
+        node_ref={
+            "source": "private-copy-source",
+            "node_id": "source_node",
+        },
+    )
+
+    expected = json.dumps({
+        "error": "Branch 'private-copy-source' not found.",
+    })
+    assert denied == missing == expected
+    assert _stored_branch_bytes(base, "copy-destination") == before
+    encoded = denied + missing + _stored_branch_bytes(
+        base,
+        "copy-destination",
+    ).decode()
+    assert "private source description" not in encoded
+    assert "credential-approver" not in encoded
+    assert "tools_allowed" not in denied + missing
+    assert "source_code" not in denied + missing
+
+
+@pytest.mark.parametrize(
+    ("source_visibility", "source_author"),
+    [("public", "bob"), ("private", "alice")],
+)
+def test_authorized_node_ref_preserves_copied_source_provenance(
+    source_visibility: str,
+    source_author: str,
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    _seed_branch(
+        base,
+        branch_def_id="authorized-copy-destination",
+        author="alice",
+        node_ids=("destination_node",),
+    )
+    _seed_source_code_branch(
+        base,
+        branch_def_id="authorized-copy-source",
+        author=source_author,
+        visibility=source_visibility,
+        node_author="original-node-author",
+    )
+    authenticate("alice")
+
+    response = _call(
+        "add_node",
+        branch_def_id="authorized-copy-destination",
+        node_id="copied_node",
+        display_name="Copied Node",
+        author="caller-forge",
+        node_ref={
+            "source": "authorized-copy-source",
+            "node_id": "source_node",
+        },
+    )
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(
+        base,
+        branch_def_id="authorized-copy-destination",
+    )
+    copied = next(
+        node for node in stored["node_defs"]
+        if node["node_id"] == response["node_id"]
+    )
+    assert copied["author"] == "original-node-author"
+    assert copied["approved"] is True
+    assert copied["approved_by"] == "credential-approver"
+    assert copied["approval_reason"] == "reviewed"
+    assert copied["source_code"].startswith("def run")
+    assert copied["tools_allowed"] == ["wiki"]
+    assert "caller-forge" not in json.dumps(copied)
+
+
+def test_foreign_private_and_missing_clone_version_are_identical_and_atomic(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    private_parent = _seed_source_code_branch(
+        base,
+        branch_def_id="private-clone-parent",
+        author="bob",
+        visibility="private",
+        node_author="original-node-author",
+    )
+    private_version = _publish(base, private_parent, publisher="bob")
+    authenticate("alice")
+    before_rows = _call("list_branches", scope="all")
+    spec = json.dumps({
+        "name": "denied-clone",
+        "fork_from": private_version,
+    })
+
+    denied = _call_raw("build_branch", spec_json=spec)
+
+    from tinyassets.daemon_server import delete_branch_definition
+
+    assert delete_branch_definition(
+        base,
+        branch_def_id="private-clone-parent",
+    )
+    missing = _call_raw("build_branch", spec_json=spec)
+
+    expected = json.dumps({
+        "error": f"Branch version '{private_version}' not found.",
+    })
+    assert denied == missing == expected
+    assert _call("list_branches", scope="all") == before_rows
+
+
+@pytest.mark.parametrize(
+    ("source_visibility", "source_author"),
+    [("public", "bob"), ("private", "alice")],
+)
+def test_authorized_public_and_owner_private_clone_preserves_source_nodes(
+    source_visibility: str,
+    source_author: str,
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    parent = _seed_source_code_branch(
+        base,
+        branch_def_id="authorized-clone-parent",
+        author=source_author,
+        visibility=source_visibility,
+        node_author="original-node-author",
+    )
+    version_id = _publish(base, parent, publisher=source_author)
+    authenticate("alice")
+
+    built = _call(
+        "build_branch",
+        spec_json=json.dumps({
+            "name": "authorized-clone",
+            "fork_from": version_id,
+        }),
+    )
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(
+        base,
+        branch_def_id=built["branch_def_id"],
+    )
+    assert built["status"] == "built"
+    assert stored["author"] == "alice"
+    assert stored["fork_from"] == version_id
+    assert stored["node_defs"][0]["author"] == "original-node-author"
+    assert stored["node_defs"][0]["approved_by"] == "credential-approver"
+
+
+def test_foreign_private_and_missing_set_fork_from_are_identical_and_atomic(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    _seed_branch(
+        base,
+        branch_def_id="lineage-destination",
+        author="alice",
+        node_ids=("destination_node",),
+    )
+    private_parent = _seed_branch(
+        base,
+        branch_def_id="private-lineage-parent",
+        author="bob",
+        visibility="private",
+        node_ids=("parent_node",),
+    )
+    private_version = _publish(base, private_parent, publisher="bob")
+    authenticate("alice")
+    before = _stored_branch_bytes(base, "lineage-destination")
+    changes = json.dumps([{
+        "op": "set_fork_from",
+        "branch_version_id": private_version,
+    }])
+
+    denied = _call_raw(
+        "patch_branch",
+        branch_def_id="lineage-destination",
+        changes_json=changes,
+    )
+
+    from tinyassets.branch_versions import list_branch_versions
+    from tinyassets.daemon_server import delete_branch_definition
+
+    assert _stored_branch_bytes(base, "lineage-destination") == before
+    assert list_branch_versions(base, "lineage-destination") == []
+    assert delete_branch_definition(
+        base,
+        branch_def_id="private-lineage-parent",
+    )
+    missing = _call_raw(
+        "patch_branch",
+        branch_def_id="lineage-destination",
+        changes_json=changes,
+    )
+
+    expected = json.dumps({
+        "error": f"Branch version '{private_version}' not found.",
+    })
+    assert denied == missing == expected
+    assert _stored_branch_bytes(base, "lineage-destination") == before
+    assert list_branch_versions(base, "lineage-destination") == []
+
+
+@pytest.mark.parametrize(
+    ("source_visibility", "source_author"),
+    [("public", "bob"), ("private", "alice")],
+)
+def test_authorized_set_fork_from_accepts_public_and_owner_private_parent(
+    source_visibility: str,
+    source_author: str,
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    base, authenticate = branch_authority_env
+    _seed_branch(
+        base,
+        branch_def_id="authorized-lineage-destination",
+        author="alice",
+        node_ids=("destination_node",),
+    )
+    parent = _seed_branch(
+        base,
+        branch_def_id="authorized-lineage-parent",
+        author=source_author,
+        visibility=source_visibility,
+        node_ids=("parent_node",),
+    )
+    version_id = _publish(base, parent, publisher=source_author)
+    authenticate("alice")
+
+    patched = _call(
+        "patch_branch",
+        branch_def_id="authorized-lineage-destination",
+        changes_json=json.dumps([{
+            "op": "set_fork_from",
+            "branch_version_id": version_id,
+        }]),
+    )
+
+    from tinyassets.daemon_server import get_branch_definition
+
+    stored = get_branch_definition(
+        base,
+        branch_def_id="authorized-lineage-destination",
+    )
+    assert patched["status"] == "patched"
+    assert stored["fork_from"] == version_id

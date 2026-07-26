@@ -423,12 +423,20 @@ def _request_branch_actor() -> str | None:
     return actor
 
 
+def _branch_not_found_message(selector: str) -> str:
+    return f"Branch '{selector}' not found."
+
+
 def _branch_not_found(selector: str) -> str:
-    return json.dumps({"error": f"Branch '{selector}' not found."})
+    return json.dumps({"error": _branch_not_found_message(selector)})
+
+
+def _branch_version_not_found_message(selector: str) -> str:
+    return f"Branch version '{selector}' not found."
 
 
 def _branch_version_not_found(selector: str) -> str:
-    return json.dumps({"error": f"Branch version '{selector}' not found."})
+    return json.dumps({"error": _branch_version_not_found_message(selector)})
 
 
 def _resolve_readable_branch(
@@ -1535,6 +1543,14 @@ def _resolve_node_spec(
         ref_nid = (node_ref.get("node_id") or nid).strip()
         if not ref_source or not ref_nid:
             return None, "node_ref requires 'source' and 'node_id'."
+        if ref_source != "standalone":
+            resolved_source = _resolve_readable_branch(
+                ref_source,
+                str(_base_path()),
+            )
+            if resolved_source is None:
+                return None, _branch_not_found_message(ref_source)
+            ref_source = resolved_source[0]
         resolved, err = _lookup_node_body(ref_source, ref_nid)
         if err:
             return None, err
@@ -2159,6 +2175,8 @@ def _apply_node_updates(
 
 def _staged_branch_from_spec(
     spec: dict[str, Any],
+    *,
+    fork_version: dict[str, Any] | None = None,
 ) -> tuple[Any, list[str]]:
     from tinyassets.branches import BranchDefinition, normalize_branch_skill_snapshots
 
@@ -2204,11 +2222,8 @@ def _staged_branch_from_spec(
         )
 
     if branch.fork_from:
-        from tinyassets.branch_versions import get_branch_version
-
-        parent_version = get_branch_version(_base_path(), branch.fork_from)
-        if parent_version is not None:
-            parent = BranchDefinition.from_dict(parent_version.snapshot)
+        if fork_version is not None:
+            parent = BranchDefinition.from_dict(fork_version["snapshot"])
             parent_copy = BranchDefinition.from_dict(parent.to_dict())
             parent_skills = parent_copy.skills
             if not parent_skills and parent.branch_def_id:
@@ -2344,11 +2359,25 @@ def _ext_branch_build(kwargs: dict[str, Any]) -> str:
             }],
         })
 
+    fork_version: dict[str, Any] | None = None
+    fork_selector = (spec.get("fork_from") or "").strip()
+    if fork_selector:
+        resolved_fork = _resolve_readable_version(
+            fork_selector,
+            str(_base_path()),
+        )
+        if resolved_fork is None:
+            return _branch_version_not_found(fork_selector)
+        _, fork_version = resolved_fork
+
     top_level_goal_id = (kwargs.get("goal_id") or "").strip()
     if top_level_goal_id:
         spec = {**spec, "goal_id": top_level_goal_id}
 
-    branch, staging_errors = _staged_branch_from_spec(spec)
+    branch, staging_errors = _staged_branch_from_spec(
+        spec,
+        fork_version=fork_version,
+    )
     validation_errors = branch.validate()
     errors = staging_errors + validation_errors
 
@@ -2625,12 +2654,8 @@ def _apply_patch_op(branch: Any, op: dict[str, Any]) -> str:
                 f"set_fork_from: fork_from is already set to '{branch.fork_from}' "
                 "and is immutable after set."
             )
-        from tinyassets.branch_versions import get_branch_version
-        if get_branch_version(_base_path(), bvid) is None:
-            return (
-                f"set_fork_from: '{bvid}' is not a known branch_version_id. "
-                "Pass a published branch_version_id, not a branch_def_id."
-            )
+        if _resolve_readable_version(bvid, str(_base_path())) is None:
+            return _branch_version_not_found_message(bvid)
         branch.fork_from = bvid
         return ""
     return f"unknown op '{name}'"
@@ -2722,6 +2747,13 @@ def _ext_branch_patch(kwargs: dict[str, Any]) -> str:
             continue
         err = _apply_patch_op(staging, op)
         if err:
+            if (
+                (op.get("op") or "").strip().lower() == "set_fork_from"
+                and err == _branch_version_not_found_message(
+                    (op.get("branch_version_id") or "").strip(),
+                )
+            ):
+                return json.dumps({"error": err})
             per_op_errors.append({
                 "op_index": idx, "op": op, "error": err,
             })
