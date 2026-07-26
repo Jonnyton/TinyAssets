@@ -96,7 +96,7 @@ historical source vocabulary.
 | Surface | Current behavior | Retirement |
 |---|---|---|
 | `tinyassets/api/wiki.py:2430-2570` | `file_bug` imports `bug_investigation` and `trigger_receipts`, creates a pending receipt, reads a retired env key, enqueues, appends `## Investigation`, and returns `investigation`/`trigger` blocks | Remove the entire post-filing automation block; filing returns filing metadata only |
-| `tinyassets/wiki/trigger_receipts.py` | Dedicated mutable receipt store for the filed-page auto-trigger | Delete when the filing trigger is removed |
+| `tinyassets/wiki/trigger_receipts.py` | Dedicated mutable receipt store for the filed-page auto-trigger | Stop writes in the filing-only deployment; retain the reader/store/data until every old writer is drained or fenced and task 2.5 completes its locked inventory, authority-safe migration, retention record, and final rescan; only then delete the unused implementation |
 | `tinyassets/bug_investigation.py` | Product module for payload mapping, request creation, handler selection, comment formatting, and Patch Packet wiki mutation | Delete, not disable |
 | `tinyassets/api/wiki.py:2343-2453,2572-2576` | Filing also publishes fast-lane, carrier-review, navigator-triage, and daemon-pickup claims even without proving a separate route owner | Remove automatic routing/triage claims; preserve only inert independently owned filing-incentive metadata |
 
@@ -522,9 +522,10 @@ Implementation is not complete until all of the following are fresh and green:
 2. plugin rebuild/probe plus source/package absence scan;
 3. strict validation of this change and all OpenSpec;
 4. production env/queue/receipt/ledger quarantine and cleanup evidence;
-   trigger-receipt creation stops before runtime deletion, while its reader and
-   persisted data remain until every record has authority-safe migration and
-   recorded retention evidence;
+   a filing-only/no-enqueue deployment stops trigger-receipt creation while its
+   reader/store/data remain; every old writer is drained/fenced before a locked
+   final inventory, authority-safe migration, recorded retention, and final
+   rescan; only then may the reader/store implementation be removed;
 5. `retire-legacy-live-mcp-tools` task 4.1 cutover evidence plus absence of the
    internal `community_change_context` action/callers;
 6. receipt-backed live-label and auto-merge enrollment migrations, with zero

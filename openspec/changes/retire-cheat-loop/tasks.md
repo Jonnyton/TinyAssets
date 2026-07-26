@@ -34,16 +34,21 @@
 ## 2. Remove Privileged Bug-Investigation Automation
 
 - [ ] 2.1 Remove the `file_bug` trigger-receipt/enqueue/Investigation response
-  block so no new retired receipt is created. Retain the dedicated receipt
-  reader and persisted data until task 2.5 has inventoried every record,
-  completed the authority-safe migration, and recorded retention evidence;
-  only then delete the store implementation when no generic consumer remains.
-- [ ] 2.2 Delete `tinyassets/bug_investigation.py` and remove its handler
-  selection, payload mapping, dedicated request type, queue creation, formatting,
-  and Patch Packet write-back consumers.
-- [ ] 2.3 Remove `bug_investigation` direct-execution and completed-run packet
-  recovery/write-back special cases from `fantasy_daemon/__main__.py`, retaining
-  generic completed-run reuse and branch execution.
+  block and first deploy filing-only/no-enqueue behavior so no new retired
+  receipt is created. Retain the dedicated receipt reader, store
+  implementation, and persisted data through task 2.5. Before task 2.5 may
+  inventory, prove every old API/worker instance capable of creating a receipt
+  is drained or fenced; uncertainty stops the cutover. This stop-writer task is
+  complete once the filing-only deployment and writer-drain proof are recorded;
+  task 2.5 exclusively owns the later reader/store deletion.
+- [ ] 2.2 After task 2.5's locked migration and final rescan succeed, delete
+  `tinyassets/bug_investigation.py` and remove its handler selection, payload
+  mapping, dedicated request type, queue creation, formatting, and Patch Packet
+  write-back consumers.
+- [ ] 2.3 After task 2.5's locked migration and final rescan succeed, remove
+  `bug_investigation` direct-execution and completed-run packet
+  recovery/write-back special cases from `fantasy_daemon/__main__.py`,
+  retaining generic completed-run reuse and branch execution.
 - [ ] 2.4 Remove the two investigation environment keys, cloud request-type
   defaults, deploy workflow writes, current runbook instructions, dispatcher
   examples, prompts, and comments without adding no-op aliases. Delete the
@@ -68,10 +73,15 @@
   `running`/`cancel_requested` row. Preserve #1803's
   `manual_resolution_required` action for ambiguity beyond the autonomous
   reconciliation window; resolution requires authoritative evidence and never
-  retries retired work. After every receipt is accounted for and retention is
-  durably recorded, task 2.5 authorizes task 2.1's final unused store-reader
-  deletion; persisted evidence follows the recorded retention policy and is
-  never deleted merely because its runtime consumer was removed.
+  retries retired work. Run only after task 2.1's filing-only deployment and
+  proof that every old receipt-writing instance is drained/fenced. Acquire a
+  cutover barrier over receipt and queue migration; under that barrier take the
+  final inventory, migrate, record retention, and rescan to prove no late
+  receipt or row escaped. Keep the no-create runtime active throughout. Only
+  after the locked rescan succeeds does task 2.5 delete the unused reader/store
+  implementation, while tasks 2.2-2.3 delete the executor and module in the
+  final runtime deployment. Persisted evidence follows the recorded retention
+  policy and is never deleted merely because its runtime consumer was removed.
 - [ ] 2.6 Remove `classify_patch_request`, its hard-coded free/paid claimant,
   Claude/Codex writer, opposite-family checker, meaning, and persisted
   `request_classification` policy from `tinyassets/api/market.py`,
@@ -236,14 +246,19 @@
   label/auto-merge/data migrations, #1803 authority gates, rendered/public
   acceptance, and every audit Release Gate are complete, and task inspection
   proves exactly 6.7 remains unchecked. Before archive, strictly validate and
-  invoke the installed OpenSpec `applySpecs` engine path (or its
-  version-equivalent supported sync command) for the six surviving deltas.
-  Require the reviewed operation counts: daemon `added=2`, coordination
-  `added=2`, graph `added=4`, website `renamed=1, modified=2`, uptime
-  `added=1`, and wiki `added=1, removed=1`. Prove a scoped working-tree/index
-  diff contains only those six engine-generated canonical updates, physical
-  capability deletion, and this foldback's coordination edits, with no
-  unrelated change. Then run
+  use the installed OpenSpec engine's exported selective sequence:
+  `findSpecUpdates` MUST discover exactly the reviewed six-capability allowlist
+  plus exact `community-patch-loop`; isolate the community removal delta for
+  the physical-delete audit and never write its zero-requirement rebuild;
+  `buildUpdatedSpec` all six survivors; validate every rebuilt spec with
+  `Validator.validateSpecContent`; require counts daemon `added=2`,
+  coordination `added=2`, graph `added=4`, website `renamed=1, modified=2`,
+  uptime `added=1`, and wiki `added=1, removed=1`; only after every build,
+  validation, and count check succeeds may `writeUpdatedSpec` write those exact
+  six. Never use `skipValidation`, and fail on a missing or extra capability.
+  Prove a scoped working-tree/index diff contains only those six
+  engine-generated canonical updates, physical capability deletion, and this
+  foldback's coordination edits, with no unrelated change. Then run
   `openspec archive retire-cheat-loop --yes --skip-specs`, mark 6.7 complete in
   the archived task record, remove the STATUS row, prove no empty or
   resurrected capability exists, strictly validate all OpenSpec again, and
