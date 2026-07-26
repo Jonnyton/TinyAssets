@@ -7,6 +7,7 @@ from fractions import Fraction
 from typing import Protocol, Sequence
 
 from tinyassets.paid_market.index import PPM, capped_pair_weights
+from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
 
 
 class PriceSurfaceError(ValueError):
@@ -58,7 +59,8 @@ class PaidObservation:
     acceptance_evidence_digest: str
     chain_receipt_digest: str
     market_class_id: str
-    public_scope: tuple[str, ...]
+    market_scope_revision: str
+    public_scope: bytes
     unit_price_micros: int
     quantity: int
     observed_at: int
@@ -142,7 +144,8 @@ class PriceField:
 @dataclass(frozen=True)
 class PriceSurface:
     market_class_id: str
-    public_scope: tuple[str, ...]
+    market_scope_revision: str
+    public_scope: bytes
     raw_vwap: PriceField
     native_ask: PriceField
     external_reference: PriceField
@@ -157,7 +160,8 @@ def join_paid_observation(
     chain: ChainReceipt,
     *,
     market_class_id: str,
-    public_scope: tuple[str, ...],
+    market_scope_revision: str,
+    public_scope: bytes,
     unit_price_micros: int,
     quantity: int,
     observed_at: int,
@@ -179,26 +183,22 @@ def join_paid_observation(
         (acceptance.evidence_digest, "evidence_digest"),
         (chain.receipt_digest, "receipt_digest"),
         (market_class_id, "market_class_id"),
+        (market_scope_revision, "market_scope_revision"),
     ):
         if not value:
             raise PriceSurfaceError(f"{label} is required")
-    if not public_scope or any(not item for item in public_scope):
-        raise PriceSurfaceError("public_scope is required")
+    public_scope = _canonical_scope(public_scope)
     _positive_int(unit_price_micros, "unit_price_micros")
     _positive_int(quantity, "quantity")
     _nonnegative_int(observed_at, "observed_at")
 
-    same_owner = binding.requester_id == binding.host_owner_id
-    known_roots = (
-        buyer_principal_root is not None and seller_principal_root is not None
-    )
-    same_principal = known_roots and buyer_principal_root == seller_principal_root
     return PaidObservation(
         binding=binding,
         accounting_transaction_id=accounting.transaction_id,
         acceptance_evidence_digest=acceptance.evidence_digest,
         chain_receipt_digest=chain.receipt_digest,
         market_class_id=market_class_id,
+        market_scope_revision=market_scope_revision,
         public_scope=public_scope,
         unit_price_micros=unit_price_micros,
         quantity=quantity,
@@ -206,10 +206,32 @@ def join_paid_observation(
         buyer_principal_root=buyer_principal_root,
         seller_principal_root=seller_principal_root,
         linked_party=linked_party,
-        index_eligible=(
-            known_roots and not same_owner and not same_principal and not linked_party
+        index_eligible=_index_eligible(
+            binding,
+            buyer_principal_root=buyer_principal_root,
+            seller_principal_root=seller_principal_root,
+            linked_party=linked_party,
         ),
     )
+
+
+def _index_eligible(
+    binding: SettlementBinding,
+    *,
+    buyer_principal_root: str | None,
+    seller_principal_root: str | None,
+    linked_party: bool,
+) -> bool:
+    """Manipulation control: who may move trusted paid-market price evidence.
+
+    Discovery consumes, never decides, the transaction owner's verified
+    identities.  Exclusion here changes index eligibility only — it never
+    creates a settlement-fee exemption (see :func:`_require_canonical_fee`).
+    """
+    same_owner = binding.requester_id == binding.host_owner_id
+    known_roots = buyer_principal_root is not None and seller_principal_root is not None
+    same_principal = known_roots and buyer_principal_root == seller_principal_root
+    return known_roots and not same_owner and not same_principal and not linked_party
 
 
 def collect_references(
@@ -263,7 +285,8 @@ def collect_references(
 def aggregate_price_surface(
     *,
     market_class_id: str,
-    public_scope: tuple[str, ...],
+    market_scope_revision: str,
+    public_scope: bytes,
     now: int,
     observations: Sequence[PaidObservation],
     native_asks: Sequence[NativeAsk],
@@ -272,8 +295,9 @@ def aggregate_price_surface(
     settlement_ttl: int,
     principal_share_cap_ppm: int = 250_000,
 ) -> PriceSurface:
-    if not market_class_id or not public_scope:
-        raise PriceSurfaceError("market_class_id and public_scope are required")
+    if not market_class_id or not market_scope_revision:
+        raise PriceSurfaceError("market_class_id and market_scope_revision are required")
+    public_scope = _canonical_scope(public_scope)
     _positive_int(min_samples, "min_samples")
     _positive_int(settlement_ttl, "settlement_ttl")
     if not (0 < principal_share_cap_ppm <= PPM):
@@ -283,6 +307,7 @@ def aggregate_price_surface(
         observation
         for observation in observations
         if observation.market_class_id == market_class_id
+        and observation.market_scope_revision == market_scope_revision
         and observation.public_scope == public_scope
         and observation.index_eligible
         and observation.seller_principal_root is not None
@@ -300,6 +325,7 @@ def aggregate_price_surface(
     composite, clamped = _composite_field(raw, references.top_line_reference)
     return PriceSurface(
         market_class_id=market_class_id,
+        market_scope_revision=market_scope_revision,
         public_scope=public_scope,
         raw_vwap=raw,
         native_ask=native,
@@ -308,6 +334,14 @@ def aggregate_price_surface(
         composite_clamped=clamped,
         references=references,
     )
+
+
+def _canonical_scope(public_scope: object) -> bytes:
+    """Scope authority is canonical object bytes, never an ordered tuple."""
+    try:
+        return validate_scope_dimensions(public_scope)
+    except ScopeError as exc:
+        raise PriceSurfaceError("public_scope_not_canonical") from exc
 
 
 def _validate_binding(binding: SettlementBinding) -> None:
@@ -329,6 +363,15 @@ def _validate_binding(binding: SettlementBinding) -> None:
     _nonnegative_int(binding.fee_micros, "fee_micros")
     if binding.net_micros + binding.fee_micros != binding.gross_micros:
         raise PriceSurfaceError("settlement_conservation_mismatch")
+    _require_canonical_fee(binding)
+
+
+def _require_canonical_fee(binding: SettlementBinding) -> None:
+    """Every positive-gross settlement retains the canonical fee.
+
+    Same-owner, linked-party, connected, and external supply never create a
+    fee exemption; only index eligibility differs.
+    """
     if binding.fee_micros <= 0:
         raise PriceSurfaceError("canonical_fee_required")
 

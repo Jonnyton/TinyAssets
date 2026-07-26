@@ -20,6 +20,21 @@ from tinyassets.paid_market.price_surface import (
     collect_references,
     join_paid_observation,
 )
+from tinyassets.paid_market.scope import ScopeRevision, derive_public_scope_dimensions
+
+SCOPE_REVISION = "msr:test:0001"
+_SCOPE_CONTRACT = ScopeRevision(
+    revision_id=SCOPE_REVISION,
+    dimensions=("execution_region_bucket", "slo_bucket"),
+    allowed_values={
+        "execution_region_bucket": frozenset({"us", "eu"}),
+        "slo_bucket": frozenset({"batch", "interactive"}),
+    },
+)
+# Scope authority is canonical object bytes, not an ordered tuple of strings.
+SCOPE = derive_public_scope_dimensions(
+    _SCOPE_CONTRACT, {"execution_region_bucket": "us", "slo_bucket": "batch"}
+)
 
 
 def _binding(**changes: object) -> SettlementBinding:
@@ -73,7 +88,8 @@ def _observation(
             reorged=False,
         ),
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         unit_price_micros=price,
         quantity=quantity,
         observed_at=observed_at,
@@ -101,7 +117,8 @@ def test_paid_observation_requires_three_exact_matching_final_receipts() -> None
             reorged=False,
         ),
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         unit_price_micros=100,
         quantity=10,
         observed_at=100,
@@ -155,7 +172,8 @@ def test_any_receipt_binding_mismatch_fails_closed(field: str, value: object) ->
                 reorged=False,
             ),
             market_class_id="sha256:market",
-            public_scope=("batch",),
+            market_scope_revision=SCOPE_REVISION,
+            public_scope=SCOPE,
             unit_price_micros=100,
             quantity=10,
             observed_at=100,
@@ -197,7 +215,8 @@ def test_nonaccepted_nonfinal_or_reorg_receipt_never_becomes_price(
                 reorged=reorged,
             ),
             market_class_id="sha256:market",
-            public_scope=("batch",),
+            market_scope_revision=SCOPE_REVISION,
+            public_scope=SCOPE,
             unit_price_micros=100,
             quantity=10,
             observed_at=100,
@@ -248,7 +267,8 @@ def test_positive_gross_requires_fee_even_when_same_owner_or_linked() -> None:
                 reorged=False,
             ),
             market_class_id="sha256:market",
-            public_scope=("batch",),
+            market_scope_revision=SCOPE_REVISION,
+            public_scope=SCOPE,
             unit_price_micros=100,
             quantity=10,
             observed_at=100,
@@ -422,7 +442,8 @@ def test_price_fields_are_independently_fresh_and_only_composite_clamps() -> Non
 
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=observations,
         native_asks=asks,
@@ -494,7 +515,8 @@ def test_partial_or_stale_external_reference_never_clamps() -> None:
     )
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=observations,
         native_asks=[],
@@ -513,7 +535,8 @@ def test_partial_or_stale_external_reference_never_clamps() -> None:
 def test_missing_vwap_is_null_not_zero_and_zero_prices_fail_loud() -> None:
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=[],
         native_asks=[],
@@ -581,7 +604,8 @@ def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidenc
     )
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=observations,
         native_asks=[],
@@ -607,7 +631,8 @@ def test_split_accounts_share_one_principal_cap_and_thin_market_is_low_confidenc
 
     thin = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=observations[:3],
         native_asks=[],
@@ -655,7 +680,8 @@ def test_principal_root_self_trade_cannot_move_trusted_vwap() -> None:
 
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=[*honest, self_trade],
         native_asks=[],
@@ -708,7 +734,8 @@ def test_buyer_side_wash_volume_beyond_cap_cannot_move_trusted_vwap() -> None:
     def aggregate(observations: list[PaidObservation]) -> PriceSurface:
         return aggregate_price_surface(
             market_class_id="sha256:market",
-            public_scope=("region:us", "batch"),
+            market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
             now=150,
             observations=observations,
             native_asks=[],
@@ -776,7 +803,8 @@ def test_principal_vwap_matches_canonical_oracle_without_caps() -> None:
     )
     surface = aggregate_price_surface(
         market_class_id="sha256:market",
-        public_scope=("region:us", "batch"),
+        market_scope_revision=SCOPE_REVISION,
+        public_scope=SCOPE,
         now=150,
         observations=observations,
         native_asks=[],

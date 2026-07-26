@@ -7,11 +7,11 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 | Task | Classification | Evidence / boundary |
 |---|---|---|
 | 1.3 | built | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
-| 2.1 | blocked-domain-owner | Draft PR #1679 owns the amended descriptor grammar and requires opposite-provider re-review before 2.1/2.2. |
-| 2.2 | blocked-domain-owner | Same #1679 gate; do not implement its moving descriptor/market-class contract here. |
+| 2.1 | unblocked -> built | #1679 landed (`01e7ced7`) and 1.5's re-review returned APPROVE, so the amended grammar is fixed contract. Descriptor/market-class identity, grammar, precedence, and quote-bound scope provenance are covered. |
+| 2.2 | unblocked -> built | Same #1679 landing. `descriptors.py` derives both ids; `capability_id` stayed purged. Payload/credential/price/routing/reservation/execution remain absent. |
 | 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
 | 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
-| 2.5 | blocked-domain-owner (standalone subset built) | Quote-field mutation coverage is built; facet/substitutability coverage waits for #1679. |
+| 2.5 | unblocked -> built | Facet/substitutability coverage landed with the #1679 grammar. Six manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. |
 | 3.1 | built | Fail-closed observation joins and independently fresh price fields use fixture receipts only. |
 | 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
 | 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
@@ -44,11 +44,54 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 
 ## 2. Pure descriptors, quotes, and evaluation
 
-- [ ] 2.1 Add failing unit/property tests for the exact bounded ASCII canonical grammar; normalized structured construction versus strict canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches.
-- [ ] 2.2 Implement pure immutable descriptor and public market-class projection values outside provider/domain execution code with an explicitly injected per-call validator that attests one immutable profile-schema revision and no mutable registry; derive rather than accept both ids; keep private demand commitments tenant-keyed and keep payloads, credentials, prices, routing, reservation, and execution absent.
+- [x] 2.1 Add failing unit/property tests for the exact bounded ASCII canonical grammar; normalized structured construction versus strict canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches.
+  - Evidence (2026-07-25; `tests/test_paid_market_descriptors.py` 71 passed,
+    `tests/test_paid_market_scope_provenance.py` 31 passed). In
+    `tests/test_paid_market_descriptors.py`: golden domain-separated identities
+    re-derived from hand-written envelopes plus pinned literals `:146-260`;
+    caller `profile_id`/`descriptor_id`/`profiles`/`direction`/inclusivity refused
+    `:271-318`; four closed lane schemas `:385-400`; bounded ASCII grammar, sets,
+    ranges, identifiers, integers `:407-484`; fail-closed policy defaults `:491-535`;
+    schema-owned direction and required-subset comparison `:542-619`; injected
+    validator attestation / unavailable / unsupported-revision / revision-mismatch /
+    refusal `:626-686`; decoder-vs-constructor split with `not_canonical` emitted only
+    by the decoder `:697-716`, plus byte-length, non-ASCII, duplicate-key, depth, and
+    NaN gates `:744-786`, and structure-before-validator precedence `:788-796`;
+    headroom collapsing to one market class and private demand staying outside public
+    identity `:803-880`. Quote-bound observation-scope provenance is in
+    `tests/test_paid_market_scope_provenance.py:180-330`.
+- [x] 2.2 Implement pure immutable descriptor and public market-class projection values outside provider/domain execution code with an explicitly injected per-call validator that attests one immutable profile-schema revision and no mutable registry; derive rather than accept both ids; keep private demand commitments tenant-keyed and keep payloads, credentials, prices, routing, reservation, and execution absent.
+  - Evidence (2026-07-25): `tinyassets/paid_market/descriptors.py` is a pure value
+    module with no provider/domain execution import. `construct_descriptor:235`
+    derives `descriptor_id`; `project_market_class:647` separately derives
+    `market_class_id` from demand — both are derived, never accepted, and the closed
+    `_ENVELOPE_FIELDS:135` refuses a caller-supplied `descriptor_id`. The per-call
+    injected validator attests one immutable content-addressed revision with no
+    process-global or mutable registry (`_check_validator:405`), and receives a deep
+    copy so it cannot rewrite the hashed profile. `capability_id` is absent
+    repo-wide. Payload, credential, price, routing, reservation, and execution fields
+    have no home in either envelope; private demand equality stays on the existing
+    tenant-keyed HMAC commitments in `tinyassets/paid_market/routing.py:209-223`.
+    Quote-bound scope provenance lands at schema v2 in
+    `tinyassets/paid_market/quotes.py:186-206` with the trusted projector in
+    `tinyassets/paid_market/scope.py`.
 - [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
 - [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
-- [ ] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
+- [x] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
+  - Evidence (2026-07-25; `tests/test_paid_market_manipulation_mutation.py` 84 passed).
+    Six mutation probes each force one control open and assert the guard goes red:
+    index eligibility / self-trade / linked-party / unknown-linkage
+    (`_index_eligible`, `:206`), per-principal influence cap (`_capped_scales`,
+    `:252`), canonical settlement fee (`_require_canonical_fee`, `:317`), raw
+    native-truth isolation (`_raw_vwap_field`, `:394`), composite ceiling clamp
+    (`_composite_field`, `:410`), and the substitutability gate
+    (`descriptors._compare`, `:486`). Properties: no nominal price clears any
+    non-price rejection across 7 prices x 7 defects (`:566-604`); a changed
+    descriptor is a different supply identity and is never silently substituted
+    (`:496-519`); stale fields never become executable and a fresh field never
+    refreshes a stale one (`:630-676`). Fee-on-every-settlement holds identically for
+    self-trade, linked-party, and arm's-length (`:291-345`) — no self/linked-party fee
+    exemption is encoded anywhere.
 
 ## 3. Price surfaces and reference adapters
 

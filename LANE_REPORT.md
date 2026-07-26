@@ -1,210 +1,189 @@
-# Lane report — data-commons successor
+# Lane report — paid-market-live-price-discovery 2.1 / 2.2 / 2.5
 
-**Branch:** `claude/o5-data-commons` (folded in place and pushed; no PR opened)
-**Base:** fast-forwarded from `8a76a93d` to `origin/main` `e78a9605` before authoring (branch had no
-unique commits, so this was a clean ff, not a rewrite). Umbrella files verified unchanged between the
-two.
-**Mode:** spec-authoring only. No runtime code written.
-**Fold validation (2026-07-25 local):** `openspec validate data-commons-contribution --strict` valid;
-`openspec validate --all --strict` 43 passed, 0 failed.
-**Validation:** `openspec validate --all --strict` → **43 passed, 0 failed.**
+Branch `claude/o5-live-price-runtime` off `origin/main` `f7142a57`.
+Unblocked by the #1679 landing (`01e7ced7`) plus task 1.5's round-2 APPROVE.
 
----
+(This file previously held the `claude/o5-data-commons` lane report, committed at
+`f7142a57`; that content remains recoverable from git history.)
 
-## Change name
-
-**`openspec/changes/data-commons-contribution/`** — the prompt's fallback.
-
-Umbrella tasks 3.1 and 3.2 prescribe no change *name*; they name only the **capability** `data-commons`
-("no `data-commons` successor change exists"). Naming the change `data-commons` would collide with the
-capability its delta targets, so the fallback was used.
-
-On the nomination: task 3.2's text is what points at this slice — *"Forge cannot emit a manifest before
-the manifest contract exists"* — i.e. 3.2 nominates **3.1's manifest/validation contract** as its
-prerequisite. Task 3.3 makes training's mint invoke it, 4.4 lists it among hardware's direct edges, 5.1
-inherits transitively, and the slice dependency ledger calls it *"the admission gate every downstream
-training or hardware claim invokes."* Of the umbrella's unowned slices, that is the largest fan-out. The
-successor therefore owns **both** 3.1's non-monetary half and 3.2 (Forge moved whole), since Forge's
-intake/lineage substructure is explicitly non-monetary and would otherwise wait on a second successor.
-
-**Why it was undecidable before 2026-07-25:** task 3.1 carried a second blocker beyond D1 — the STATUS
-`host-decision` row, *"since manifest storage and private-data placement are two of the four positions
-that row is waiting on."* PR #1761 landed both, as two different **kinds** of answer:
-- **Manifest storage — decided.** Canonical storage is per-domain: commons bundle for commons knowledge,
-  Postgres for catalog/ledger/inbox/market, neither canonical for the other's domain.
-- **Private-data placement — decided to stay open.** Four custody modes, none ruled in or out; the lane
-  obligation is to *name and scope* its assumption, not to encode an answer.
-
-The manifest requirement takes the first; the promotion requirement is custody-agnostic under the second.
+Runtime lives in `tinyassets/paid_market/` (not `tinyassets/payments/` — the brief's
+path was stale; `payments/` holds the Wave-2 transport spine, `paid_market/` holds
+the pure live-price core named in the brief: `quotes.py`, `match.py`, `routing.py`,
+`instruments.py`, `price_surface.py`).
 
 ---
 
-## Requirement inventory
+## Task 2.2 — descriptor + market-class implementation
 
-### `specs/data-commons/spec.md` — ADDED (8 requirements)
+**New: `tinyassets/paid_market/descriptors.py`** (770 lines). Pure values; imports
+nothing from provider or domain execution code.
 
-| # | Requirement | Origin |
+- **Two identities, derived not accepted.** `construct_descriptor` derives
+  `descriptor_id` from the library-built `tinyassets.capability-descriptor` envelope;
+  `project_market_class` separately derives `market_class_id` from the
+  `tinyassets.market-class` envelope. Domain separation is proven by test, not
+  asserted. `capability_id` was already purged by #1679 and is not reintroduced —
+  it is absent repo-wide.
+- **No caller-supplied identity or direction.** `_ENVELOPE_FIELDS` /
+  `_DESCRIPTOR_FIELDS` are closed sets, so `profile_id`, `descriptor_id`, `profiles`,
+  `direction`, `min_inclusive`, and `max_inclusive` all return `unknown_field` with a
+  non-echoing `<parent>/<?>` path.
+- **Injected per-call validator, no mutable registry.** `_check_validator` selects by
+  exact `(schema_version, lane, profile_schema_revision)` and separates the four
+  failure codes: `domain_validator_unavailable` / `unsupported_profile_schema_revision`
+  / `domain_validator_revision_mismatch` / `domain_validation_failed`. The validator
+  receives a deep copy, so a rewriting validator cannot influence the digest.
+- **Decoder vs constructor split.** `verify_canonical_descriptor` is the only path
+  that emits `not_canonical`; it enforces byte-length → ASCII → guarded parse
+  (depth/member/array/scalar limits, duplicate-key detection, NaN/Infinity refusal)
+  → root → domain/version → structure → canonical byte comparison → validator.
+- **Comparison direction is schema-owned.** `_LANE_FIELDS` tags every field
+  `identifier` / `range_contains` / `range_at_least` / `range_at_most` / `set_subset`;
+  callers cannot supply it.
+- **Market class is demand-shaped.** Threshold buckets, required subsets, and coarse
+  region/privacy/reliability class tables come from the revision-owned validator, so
+  supply headroom and extra set members never enter the public class.
+
+**New: `tinyassets/paid_market/scope.py`** — the trusted scope projector that produces
+the canonical ASCII dimension object bytes. A scope revision may not reuse a
+descriptor/market-class facet name without declaring a single canonical projection
+from the already-bound facet.
+
+**Changed: `tinyassets/paid_market/quotes.py`** — quote schema v1 → v2. v1 stays
+verifiable as its original closed schema under `tinyassets.paid-market.quote.v1`;
+v2 adds `market_scope_revision` + `public_scope_dimensions` under
+`tinyassets.paid-market.quote.v2`, so a v1 signature can never span a scope binding.
+
+**Changed: `tinyassets/paid_market/price_surface.py`** — `public_scope` widened from
+`tuple[str, ...]` to canonical ASCII object bytes, and `market_scope_revision` added
+so the aggregate key is the full `(market_class_id, market_scope_revision,
+public_scope_dimensions)` triple.
+
+---
+
+## Task 2.1 — grammar, identity, precedence, and scope-provenance tests
+
+**New: `tests/test_paid_market_descriptors.py`** (71 tests) and
+**`tests/test_paid_market_scope_provenance.py`** (39 tests).
+
+Golden identities are proven twice over: each test rebuilds the expected envelope
+**by hand** and re-derives the `sha256:` value independently, and a separate test
+pins the literal digest. A library-side envelope drift fails both; a drift in the
+test helper still fails the pin.
+
+- descriptor golden: `sha256:498e7165475c83778f49fc1f761bcf50618e3c49c69cadca18a3899c84a158b9`
+- market-class golden: `sha256:8b4492afdba19dd1efc3c8c59c78ad2e94ab2662d1e9cf32dff9a8497584a656`
+
+Also covered: four closed lane schemas; bounded ASCII grammar (identifier regex,
+integer bounds, inverted ranges, empty/duplicate sets, `scale >= 1`); fail-closed
+`unspecified` / `public_only` / `best_effort_unverified` defaults that never mean
+"any"; schema-owned numeric direction and set-subset comparison; unit mismatch before
+value comparison; validator attestation; decoder limits and precedence; headroom
+collapsing to one market class; private demand kept out of public identity (and
+raising `DescriptorError` rather than silently classifying); and no entry point
+mutating its inputs.
+
+---
+
+## Task 2.5 — mutation and property proof
+
+**New: `tests/test_paid_market_manipulation_mutation.py`** (84 tests).
+
+Six controls carry a **mutation probe**: the guard runs green normally, then its
+control is forced open and the probe asserts the guard goes **red**. A monkeypatch
+that never reached the code path would leave the guard green and fail the probe, so
+these also prove the patches are wired to the real call sites.
+
+| Control | Seam forced open | Guard that goes red |
 |---|---|---|
-| 1 | Commons contribution and discovery ride the canonical page handles | New — the host's 2026-07-25 commons reframe, expressed as the contribution model |
-| 2 | A dataset contribution is an immutable content-addressed manifest entry that moves references, not bytes | Moved from umbrella; extended with the #1761 per-domain canonical-form split and immutability |
-| 3 | Manifest admission is a fail-closed gate consumers invoke rather than reimplement | Moved from umbrella; restrictive-license policy removed pending host decision |
-| 4 | Contamination, privacy, and quality gates precede gate-backed use | Moved from umbrella; extended with pass-and-fail provenance retention |
-| 5 | Every contributed example carries exactly one provenance class, and Forge is a remixable commons workflow | Moved from umbrella (task 3.2); complete source lineage, no license propagation |
-| 6 | Contribution lineage rides the existing ledgers without redefining their guarantees | New — consumes the attribution and generic remix owners, records no payout |
-| 7 | Promotion from private material into the commons is an explicit user act and custody-agnostic | New — Scoping Rule 4 compliance (1B) |
-| 8 | The contribution half of data-commons is non-monetary and carries no pricing surface | New — no pricing/share fields and no staged dataset-rights market |
+| Self-trade / linked-party / unknown-linkage exclusion | `price_surface._index_eligible` | excluded volume re-enters trusted VWAP |
+| Per-principal influence cap (unbounded price) | `price_surface._capped_scales` | one principal's 1M-micro prints dominate |
+| Canonical settlement fee | `price_surface._require_canonical_fee` | a zero-fee positive-gross settlement is accepted |
+| Raw native-truth isolation | `price_surface._raw_vwap_field` | the external reference reaches raw VWAP |
+| Composite ceiling clamp | `price_surface._composite_field` | a complete all-in ceiling stops bounding the composite |
+| Substitutability gate | `descriptors._compare` | an unsupported facet is silently substituted |
 
-### `specs/evaluation-outcomes-and-attribution/spec.md` — MODIFIED (1 requirement)
+One mutant was rejected during development for being **semantically equivalent** to
+the original (it re-implemented `_composite_field`'s own behaviour, so the guard
+stayed green). It was replaced with a mutant that actually opens the boundary.
 
-Added **after** the first Codex review, then narrowed by the independent fold. Widens the attribution
-edge's endpoint kinds to admit the generic `commons-artifact` kind; keeps the set closed and enumerated;
-changes no clamp, cycle, depth, idempotency, or append-only semantics. `data-commons` may not sync without
-this owner delta.
+Properties: no nominal price clears a non-price rejection (7 prices × 7 defects, all
+`no_route`); price only orders already-eligible candidates; a changed descriptor is a
+different supply identity and matching never returns an identity it did not derive;
+stale native asks never become executable and a fresh field never refreshes a stale
+one; settlements outside the TTL leave the index.
 
-### `specs/wiki-commons/spec.md` — MODIFIED (1 requirement)
+**No fee exemption is encoded.** Index eligibility and the canonical fee are separate
+controls, proven together: a self-trade is excluded from trusted price evidence *and*
+still carries its fee; the same holds for linked-party and arm's-length settlements.
 
-Added by the independent fold. A freeform write targeting an existing immutable content-addressed page is
-refused on the write path with a mint-a-new-version instruction, while every other promoted-page write
-keeps the landed in-place overwrite behavior. This is a content-class target rule, not a review gate.
-
-### Split disposition — umbrella `data-commons` delta (6 → 4 moved, 2 retained)
-
-**Moved (physically, not copied):** content-addressed manifests · fail-closed manifest validation ·
-contamination/privacy/quality gates · Dataset Forge.
-**Retained by umbrella:** dataset pricing modes · frozen contributor settlement.
-**Seam:** *admission is non-monetary; consideration is monetary* — nothing downstream needs pricing or
-settlement to **admit** a manifest, and this lane records none of those fields. Whether the retained
-requirements may create a second paid surface is an explicit host decision, not an inference made here.
+**Money path:** integer micros only. `Fraction` is used for weighting (exact rational,
+already the landed pattern), never float. Conservation (`net + fee == gross`) is
+asserted, non-conserving settlements fail loud, and VWAP is proven to be an integer
+inside the observed price range.
 
 ---
 
-## Irreducibility calls (1C — no new top-level handle)
+## Evidence
 
-Recorded as a table in `design.md` D4. No irreducibility finding exists for anything here, so nothing ships
-as a handle.
+| Check | Result |
+|---|---|
+| `tests/test_paid_market_descriptors.py` | 71 passed |
+| `tests/test_paid_market_scope_provenance.py` | 39 passed |
+| `tests/test_paid_market_manipulation_mutation.py` | 84 passed |
+| Touched paid-market test modules (10 files) | 506 passed |
+| Full `pytest tests/` | PENDING_FULL |
+| `ruff check tinyassets/paid_market/ tests/test_paid_market_*.py` | All checks passed |
+| `packaging/claude-plugin/build_plugin.py` | 287 files staged, import probe ok |
+| Cross-family review (Codex, refute-5-claims gate) | PENDING_CODEX |
 
-| Behavior that could read as a new tool | Call | Lands as |
-|---|---|---|
-| Dataset registration (`register_dataset`) | Not irreducible — a manifest is a typed entry whose only required key is `type` | `write_page` + frontmatter |
-| Dataset registry / catalog surface | Not irreducible — this is what commons search + changed-since already are | `read_page`, existing default discovery scope |
-| `validate_manifest` | Not a handle, but manifest completeness/provenance binding is platform enforcement | Server-side fail-closed manifest-admission gate at the run/mint boundary; no caller-facing verb |
-| `validate_license` | Neither a handle nor behavior authorized in this lane; the host has not authorized a license-enforcement boundary | No implementation here; declared-identifier resolution/composition consumes `paid-market-economy` |
-| Dataset Forge as a platform service | Not irreducible; the corollary applies — many plausible shapes ⇒ user-buildable ⇒ commons | Forkable commons graph via `write_graph`/`run_graph`; replaceable seed set |
-| New contamination/dedup/quality evaluators | Not irreducible — gate evaluation is `constraint-evaluation`'s; dedup is ordinary node work | Existing gates + nodes; this change requires only the *binding* to an exact `manifest_hash` |
-| Dataset lineage / credit graph | Not irreducible **and it already exists** | `evaluation-outcomes-and-attribution` ledgers (widened in place, not duplicated) |
-| `promote_to_commons` | Not irreducible — promotion is a `write_page` of the named entry | `write_page` + existing draft-then-promote lifecycle; this change adds a *constraint*, not a mechanism |
+**Red-first evidence.** Each suite was written before its implementation and observed
+failing: `test_paid_market_descriptors.py` failed collection on
+`ModuleNotFoundError: tinyassets.paid_market.descriptors`;
+`test_paid_market_scope_provenance.py` failed on
+`ModuleNotFoundError: tinyassets.paid_market.scope`; the golden-pin test failed
+against a placeholder digest until the real value was derived and pinned.
 
-**1B compliance:** promotion is custody-agnostic (host machine / private brain / vault / platform-held all
-promote identically), never automatic (four named refusals: crawl, publish-on-run-completion, inference
-from adjacency/similarity/co-location/prior-sharing, promotion on a principal's behalf), and never assumes
-the platform holds the private source. The commons side is named explicitly — public-by-definition,
-platform-held as commons content, exportable — while the private side is left unanswered in both directions.
+## Files touched
 
-**Attribution:** referenced, not rebuilt. The contribution ledger needed no change; the attribution edge
-needed only a generic endpoint-domain widening, carried as a MODIFIED delta on the same table rather than
-a parallel store. Generic multi-parent semantics are consumed from `node-discovery-and-remix`.
+Runtime: `tinyassets/paid_market/descriptors.py` (new),
+`tinyassets/paid_market/scope.py` (new), `tinyassets/paid_market/quotes.py`,
+`tinyassets/paid_market/price_surface.py`, `tinyassets/paid_market/__init__.py`.
 
----
+Tests: `tests/test_paid_market_descriptors.py` (new),
+`tests/test_paid_market_scope_provenance.py` (new),
+`tests/test_paid_market_manipulation_mutation.py` (new),
+`tests/test_paid_market_price_surface.py`, `tests/test_paid_market_quotes.py`.
 
-## Umbrella touchpoints (`build-forward-platform-capabilities`)
+Spec: `openspec/changes/paid-market-live-price-discovery/tasks.md` (2.1/2.2/2.5
+checked off with evidence; premise rows flipped from `blocked-domain-owner`).
 
-- **`tasks.md` 3.1** — owner assigned for the non-monetary half; monetary half recorded as still unassigned;
-  both original blockers' resolution recorded; release contents listed; MODIFIED-delta note added.
-  **Left unchecked** — and noted as staying unchecked even after landing, since its monetary half remains.
-- **`tasks.md` 3.2** — owner assigned; Forge recorded as moved whole; downstream fan-out recorded.
-  **Left unchecked** (a successor-outcome tracker completes on its successor *landing*).
-- **`design.md`** — the `data-commons` ledger row split into two (contribution/admission half → successor;
-  pricing+settlement half → unassigned). Records **no** transaction-owner edge on the released half with the
-  D3 reconciliation stated explicitly, and a **`boundary-layer` edge scoped to Forge's corpus fetch only**
-  (restored per Codex finding 3).
-- **`proposal.md`** — `data-commons` New-Capabilities line narrowed; Released Capabilities entry added;
-  ownership convention amended from per-**delta** to per-**requirement**, with a concurrent-amendment note
-  naming `claude/o5-demand-side` / PR #1771 (which makes the same amendment from the same base — task 8.6
-  carries the reconciliation for whichever lands second).
-- **`specs/data-commons/spec.md`** — partial-release header added; four requirements physically removed; two
-  retained.
-- **Header count `19 tasks, 5 complete, 14 remaining`: unchanged** — nothing was checked (Codex confirmed
-  the count is exact).
+Mirror: `packaging/claude-plugin/.../runtime/tinyassets/paid_market/` (rebuilt).
 
----
+Not touched, per constraint: `tinyassets/api/branches.py`, permissions,
+`tinyassets/universe_server.py`.
 
-## Codex verdict
+### Two existing-test migrations (not weakened)
 
-**`VERDICT: adapt`** — Codex (gpt-5.x, read-only, 2026-07-25, ~164k tokens), dispatched in-lane via the
-stdin route (`codex exec --cd <win-path> --sandbox read-only - < ask.txt`), never argv. Six claims put up
-for refutation: **3 CONFIRMED, 3 REFUTED. All three refutations applied.**
+1. `tests/test_paid_market_price_surface.py` — 13 call sites moved from
+   `public_scope=("region:us", "batch")` to the canonical bytes plus
+   `market_scope_revision`. The spec requires this widening; every assertion is
+   preserved.
+2. `tests/test_paid_market_quotes.py` — an assertion that `schema_version = 2` is
+   *unsupported* is now obsolete, since v2 is the scope-provenance schema. It was
+   replaced by two stronger assertions (3 is unsupported; a v2 body missing its scope
+   fields is a missing-field error) and a new parametrized test covering
+   `True/False/1.0/"1"/None/0/3`, closing a `True == 1` type-confusion that would
+   otherwise have let a bool select the v1 closed schema.
 
-| Claim | Verdict | Disposition |
-|---|---|---|
-| 1 — split correctness / disjointness | CONFIRMED | No change |
-| 2 — "no MODIFIED delta needed" | **REFUTED** | **Applied** — see below |
-| 3 — irreducibility / no new handle | CONFIRMED | No change |
-| 4 — selector consumed-not-owned | **REFUTED** | **Applied** |
-| 5 — PLAN #1761 reading | CONFIRMED | No change |
-| 6 — umbrella touchpoints | **REFUTED** (partial) | **Applied** |
+## Gap found, deliberately not built (outside 2.1/2.2/2.5)
 
-**Finding 2 — the one that mattered.** The successor asserted manifest-to-manifest attribution while
-claiming existing ledger semantics sufficed. They do not. On verification the defect is *stronger* than
-Codex reported: `tinyassets/attribution/schema.py:33-47` constrains `parent_kind`/`child_kind` with
-`CHECK (… IN ('branch','node'))` and `tinyassets/api/market.py:898-975` writes them as the literal
-`'branch'` — so a manifest edge is **rejected by the schema**, not merely unwritten by the current call
-site. Now carried as a MODIFIED delta (endpoint set widened, kept closed and enumerated; all other
-guarantees restated unchanged), with a no-sync-without-both rule, a premise-verification task, and
-implementation/test tasks. The *contribution ledger* needed no delta — it already carries a generic
-`source_artifact_id`/`source_artifact_kind` with no closed set — so `Modified Capabilities: None` was half
-right, and is now exact rather than reversed.
+`PaidObservation` binds `market_class_id`, `market_scope_revision`, and
+`public_scope`, but **not** the exact `descriptor_id`. The spec's "Settlement records
+normalized delivery evidence" requirement and the scenario *"compatible supply
+headroom shares one demand class — AND the aggregate still retains each source's
+exact descriptor id as evidence"* both call for it. That belongs to task 3.1's
+observation-join surface (`tinyassets/paid_market/price_surface.py:55-75`), already
+marked built, so it is reported here rather than silently widened into this lane.
 
-**Finding 4.** Selector ownership was misattributed. `reconcile-universe-personification-relay` 6.1/6.7 own
-the person-dossier anti-collision **restriction** on the commons write path — which presumes the path
-rather than delivering it — and neither task's write-set claims the routing. Ownership is now recorded as
-**UNRESOLVED**, with task 0.5 to establish it before §1 is built. The claim is re-anchored to code on
-`main` (`tinyassets/universe_server.py:771-793`: an authenticated freeform write with omitted `universe_id`
-resolves to the caller's home and returns `relay_to_universe`, so only `kind=` filings reach the commons)
-rather than to `docs/audits/2026-07-22-write-page-commons-residual.md`, which lives only on the unmerged
-branch `claude/write-page-commons-residual` and is itself partly stale — it found two `write_page`
-definitions where `main` now has one.
-
-**Finding 6.** Dropping the `boundary-layer` edge was unsound: Forge includes a grant-gated corpus fetch,
-and `boundary-layer` requires a source node to bind a declared, user-granted, revocable connection class.
-Restored, scoped to external corpus/storage access only (manifest movement still transfers references, not
-bytes), with a task forbidding a local fetcher that bypasses grant binding. Codex separately **confirmed**
-that no transaction-owner edge is needed and the header count is unchanged; since umbrella D3 names `data`
-among transaction consumers, the ledger row now states explicitly that the consumption is the *retained*
-pricing/settlement half.
-
-Re-validated after applying: `openspec validate --all --strict` → 43 passed, 0 failed.
-
-**Not done (out of scope, by instruction):** no PR opened; no runtime code; nothing synced to
-`openspec/specs/`; local review scratch files were not included in the fold commit.
-
-## Independent Codex fold — six findings
-
-The second independent review returned `adapt`. The fold disposition is explicit per finding:
-
-1. **Unauthorized restrictive-license position — OPEN QUESTION / host decision.** Removed the curated
-   registry ownership, no-derivatives rejection, restriction propagation, and license enforcement from
-   normative behavior. `design.md` now asks whether dataset content is outside the pinned CC0 default and,
-   if so, whether platform license enforcement is authorized. The lane does not answer either question.
-2. **Duplicate license-lattice owner — CONSUME LANDED OWNER.** `paid-market-economy` remains the single
-   owner of declared-identifier resolution and restriction composition. This lane owns only manifest
-   admission and carries no ownership-transfer delta or second registry.
-3. **Paid-surface leak — FIELDS REMOVED + OPEN QUESTION.** Removed pricing terms and contributor-share
-   fields from the manifest, tasks, and acceptance scenarios; removed dataset-market language. Whether a
-   dataset-rights paid surface is authorized is a host decision for the umbrella's retained monetary half,
-   not behavior staged by this lane.
-4. **Wiki overwrite collision — MODIFIED OWNER DELTA.** Added
-   `specs/wiki-commons/spec.md`: a freeform write to an existing immutable content-addressed entry refuses
-   on the write path and leaves body/frontmatter/index unchanged; ordinary promoted pages still overwrite.
-5. **Admission/curation contradiction — RESOLVED TO NON-BLOCKING ANNOTATION.** Curation and moderation are
-   post-hoc annotations on already-admitted entries. Authenticated commons writes have no pre-publication
-   review gate, matching the sibling collaboration contract.
-6. **Derivation overlap / dataset-specific kind — CONSUME OWNERS + MINIMAL MODIFIED DELTA.**
-   `data-commons` consumes the landed attribution guarantees and the generic N-parent
-   `node-discovery-and-remix` contract. The attribution-owner delta now adds only the generic
-   `commons-artifact` endpoint domain; no dataset-specific primitive or second derivation contract remains.
-
-Strict revalidation after the complete fold: the named change is valid and the all-spec run reports
-43 passed, 0 failed. The fold is spec-only; no task was checked, no as-built spec was synced, and no PR was
-opened.
-
-LANE_RESULT: done - folded all 6 independent-review findings into the spec artifacts and per-finding lane report; strict validation passes and the branch is pushed without a PR.
+LANE_RESULT: PENDING
