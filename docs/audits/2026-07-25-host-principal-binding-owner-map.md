@@ -133,6 +133,14 @@ for local single-use loopback handling with no provider-routing or maintainer
 quota. This branch now consumes those client requirements through the existing
 packaged-tray target; the historical approval is no longer an exact-head gate.
 
+After the client/server ownership reconciliation and its two STATUS-only
+corrections, Claude Opus 5 and an independent latest-Codex verifier both
+returned **APPROVE** on exact current-main artifact `52e1af42` over
+`14ae6c35`. Target strict validation passed, the full tree passed 52/52,
+`git diff --check` was clean, STATUS remained exactly 60 lines, and the diff
+contained no runtime or canonical-spec files. This audit/task-only follow-up
+records those completed gates; it does not widen implementation authority.
+
 Runtime remains blocked until the merged #1736 owner, identity/auth, daemon/host-pool, and
 draft #1746 owners accept the split; Opus 5 and latest Codex approve the same
 exact artifact; runtime files are freshly claimed; RED tests exist; and the
