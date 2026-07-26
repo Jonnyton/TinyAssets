@@ -153,16 +153,21 @@ The selected universe's credential helper MAY overlay only `CODEX_HOME` and
 `CLAUDE_CODE_OAUTH_TOKEN`, and `ANTHROPIC_API_KEY` for `claude-code`. Existing
 `llm_subscription` resolution and materialization remain unchanged by this
 change. A legacy `llm_api_key` SHALL NOT be selected or decoded by that helper.
-For a requester-local API-key binding, the provider-authority-owned typed
-local-launch adapter SHALL validate the persisted credential-owner principal,
-universe, provider, host, scope, assignment generation, expiry, and tombstone
-state under shared `ProviderAssignmentAdmission` and cross the
-`ProviderInvocation -> ProviderLaunchHandle` barrier, then resolve the native
-secret exactly once into the permitted ephemeral API-key variable. The current
-D0 path is fake-only/production-denied and is not ordinary requester-provider
-authority. Accepted-market remote execution remains blocked on its
-owner-accepted production B2 authority and SHALL NOT receive this local
-secret. The control-plane vault helper SHALL receive no raw API key.
+For a requester-local API-key binding, `ProviderExecutor.start()` SHALL
+validate the persisted credential-owner principal, universe, provider, host,
+scope, assignment generation, binding digest, expiry, and tombstone state
+under shared `ProviderAssignmentAdmission` and cross the
+`ProviderInvocation -> ProviderLaunchHandle` barrier. For
+CLI/local/in-process transport, it may then resolve the native secret exactly
+once into permitted provider child/request memory. For remote HTTP, it SHALL
+obtain only `outbound-boundary-layer`'s non-serializable, per-universe
+grant-bound credential-blind proxy handle; that proxy alone resolves the
+reference and performs network I/O, and no API-key variable enters the child
+environment. The current D0 path is fake-only/production-denied and is not
+ordinary requester-provider authority. Accepted-market remote execution
+remains blocked on its owner-accepted production B2 authority and SHALL NOT
+receive this local secret. The control-plane vault helper SHALL receive no raw
+API key.
 
 After the helper returns, the builder SHALL revalidate the complete overlay and
 SHALL refuse an auth-home path that physically resolves outside the canonical
@@ -281,7 +286,7 @@ metadata-service and egress controls remain separate boundaries.
 
 - **WHEN** a canonical universe provider has neither a credential record nor a current requester-local API-key binding
 - **THEN** environment construction succeeds with a universe-owned empty runtime auth home
-- **AND** the accepted provider-authority launch adapter returns setup-required hold before provider invocation, with no maintainer/founder fallback
+- **AND** `ProviderExecutor.start()` returns setup-required hold before provider invocation, with no maintainer/founder fallback
 
 #### Scenario: Bring-your-own llm_api_key deposit is rejected
 
@@ -321,11 +326,23 @@ while an actual base64 or UTF-8 decoding exception SHALL be surfaced as
 
 For requester-local API-key use,
 `constrain-set-engine-provider-authority` SHALL select one exact opaque binding
-in its assignment transaction under `ProviderAssignmentAdmission`, and its
-typed local-launch adapter SHALL fail held on an empty, stale, wrong-provider,
+in its assignment transaction under `ProviderAssignmentAdmission`, and
+`ProviderExecutor.start()` SHALL fail held on an empty, stale, wrong-provider,
 wrong-principal, wrong-host, wrong-generation, expired, or tombstoned binding
 without scanning vault records, host homes, environment variables, or keyring
 entries.
+
+The canonical `Empty first BYO match shadows later records` resolution
+scenario is intentionally retired by this MODIFIED requirement. Ordinary
+resolution SHALL inspect no legacy `llm_api_key` record, so neither an empty
+first match nor any later match can yield provider authority; retirement
+inventory preserves every stored occurrence instead.
+
+#### Scenario: Legacy first-match BYO resolution is retired
+
+- **WHEN** one or more legacy `llm_api_key` records exist, including an empty first match followed by a populated matching record
+- **THEN** ordinary credential resolution returns no legacy API key from any occurrence
+- **AND** metadata-only retirement inventory preserves each occurrence, slot, order, and digest without decoding it
 
 #### Scenario: Normalized BYO aliases identify only a retirement slot
 
@@ -347,7 +364,7 @@ entries.
 #### Scenario: Current exact binding selects only local dereference
 
 - **WHEN** the provider assignment binding is current and exactly matches persisted credential-owner principal, universe, provider, host, scope, and generation and crosses shared `ProviderAssignmentAdmission`
-- **THEN** the local-launch adapter resolves only that opaque binding at native launch
+- **THEN** `ProviderExecutor.start()` resolves only that opaque binding at native CLI/local/in-process launch, or delegates remote HTTP resolution only to the outbound owner's credential-blind proxy
 - **AND** no `llm_api_key` secret is decoded or returned by the universe vault
 
 #### Scenario: First Claude subscription yields a direct or base64 secret
@@ -410,8 +427,9 @@ collapse aliases, decode fields, silently drop a record, or rewrite a legacy
 object. Retirement transitions and exact compare-delete SHALL use the same
 exclusive `ProviderAssignmentAdmission` writer, expected record digest, and
 assignment generation. Launch exclusion SHALL compose with its shared-reader
-`ProviderInvocation -> ProviderLaunchHandle` barrier for requester-owned local
-execution; accepted-market execution remains separately blocked on an
+`ProviderInvocation -> ProviderLaunchHandle` barrier for requester-owned
+execution, with transport-specific resolution governed above; accepted-market
+execution remains separately blocked on an
 owner-accepted production B2 authority contract. The provider-authority
 contract is merged in PR #1784; this change does not claim the B2 dependency
 is accepted.

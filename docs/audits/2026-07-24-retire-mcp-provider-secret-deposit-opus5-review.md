@@ -12,7 +12,7 @@ Verdict: **ADAPT**
 This file preserves the 2026-07-24 review record, so its references to draft
 PR #1691 remain historical evidence rather than current dependency truth.
 Merged PR #1784 (`constrain-set-engine-provider-authority`) superseded #1691
-at accepted head `0d7877b7` and merge `620fed5a`. It now owns
+at Opus-approved head `abdca5fe` and merge `620fed5a`. It now owns
 `ProviderAssignmentAdmission`, assignment-before-custody lock order,
 generation/digest validation, generic held/setup state, and the reference-only
 `ProviderInvocation -> ProviderLaunchHandle` boundary. The active custody

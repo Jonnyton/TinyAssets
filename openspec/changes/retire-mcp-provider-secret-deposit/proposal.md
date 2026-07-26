@@ -17,12 +17,16 @@ deputy for another principal's provider authority.
   requester-controlled executor's native OS
   secret store; keep only an opaque, non-derivable, host/principal/universe/
   provider/generation-bound reference in control-plane state.
-- Dereference the secret exactly at requester-owned local provider launch
-  behind the merged `constrain-set-engine-provider-authority` change's
+- Resolve the secret only at the transport-owned boundary behind the merged
+  `constrain-set-engine-provider-authority` change's
   `ProviderAssignmentAdmission` and frozen
-  `ProviderInvocation -> ProviderLaunchHandle`
-  barrier. `ProviderInvocation` carries a reference and provenance, never
-  secret material; there is no file, environment, host-home, or
+  `ProviderInvocation -> ProviderLaunchHandle` barrier.
+  `ProviderInvocation` carries a reference and provenance, never secret
+  material. CLI/local/in-process transports dereference only inside
+  executor child/request memory. Remote HTTP receives only the outbound
+  owner's non-serializable, grant-bound credential-blind proxy; that proxy
+  alone resolves the reference and performs network I/O. There is no file,
+  ambient environment, host-home, parallel outbound grant, or
   maintainer/founder fallback.
 - Retire legacy `llm_api_key` records through a metadata-only,
   owner-initiated, rotation/revocation-first, compare-and-delete saga that never
@@ -38,8 +42,8 @@ deputy for another principal's provider authority.
   B2/distributed-execution authority contract. The current D0
   fake-only/production-denied seam is not ordinary requester-provider
   authority; add no parallel authority system.
-- Consume merged PR #1784 (`constrain-set-engine-provider-authority`, accepted
-  head `0d7877b7`, merge `620fed5a`) as the sole owner of generic
+- Consume merged PR #1784 (`constrain-set-engine-provider-authority`,
+  Opus-approved head `abdca5fe`, merge `620fed5a`) as the sole owner of generic
   provider-destination ceilings, `setup_required`/held assignment state,
   `ProviderAssignmentAdmission`, assignment CAS/generation, and the frozen
   launch barrier. This change owns the `llm_api_key`-typed ingress
@@ -86,8 +90,13 @@ deputy for another principal's provider authority.
 - Future runtime owners: universe setup/prompt handling, local tray/native
   credential storage, provider launch, credential-vault retirement tooling, and
   canonical/plugin mirrors.
+- Surface successors remain separate: `activate-requester-host-engines` owns
+  completable Tier-2/Tier-3/plugin native-custody setup and attested local
+  request authority; `activate-connector-requester-authority` owns the
+  newborn Tier-1 accepted-market path without raw secret deposit or
+  desktop/web-app dependency. This custody lane grants neither path.
 - Exact dependency anchors: merged PR #1784
-  (`constrain-set-engine-provider-authority`, accepted head `0d7877b7`, merge
+  (`constrain-set-engine-provider-authority`, Opus-approved head `abdca5fe`, merge
   `620fed5a`) for assignment, `ProviderAssignmentAdmission`, reference-only
   `ProviderInvocation`, and generic `setup_required/held`; PR
   #1736 for native account-token storage/backend policy and its existing

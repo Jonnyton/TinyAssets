@@ -37,7 +37,9 @@ verdict is
   `ProviderAssignmentAdmission` and requester-local assignment/launch barrier,
   or an owner-accepted production B2 market
   authority path; keep `runner/v1` opaque and D0 fake-only/production-denied.
-- Dereference only at the selected local executor's provider-launch boundary.
+- Resolve only behind `ProviderExecutor.start()`: inside executor
+  child/request memory for CLI/local/in-process transports, or solely inside
+  the outbound owner's credential-blind proxy for remote HTTP.
 - Retire legacy recoverable records without decoding/exporting them.
 - Fail closed through enrollment, migration, rotation, deletion, host expiry,
   and every crash/retry point.
@@ -105,8 +107,9 @@ The native store creates a random, versioned `native_secret_ref` in a
 provider-secret namespace. It never overwrites or reuses #1736's predictable
 account-token reference.
 
-The control plane's versioned provider-assignment state stores a
-`credential_binding_ref` that is:
+The control plane's versioned `provider_authority_bindings` map stores one
+provider entry whose custody-side opaque-reference field is named
+`credential_binding_ref`. That reference is:
 
 - opaque, random, non-secret, and not a key-derivation input;
 - bound to canonical provider, universe, principal, host/daemon, scope,
@@ -119,11 +122,21 @@ but provider launch never trusts it. Only the bound host maps
 `credential_binding_ref` to `native_secret_ref`. Neither identifier is copied
 to another host or principal.
 
-Enrollment is a two-store commit-token protocol, not a cross-store CAS:
+Enrollment is a two-store commit-token protocol, not a cross-store CAS. Every
+enrollment, rotation, retirement, and compare-delete operation first acquires
+exclusive `ProviderAssignmentAdmission` for the canonical universe and
+validates expected assignment generation plus affected provider-binding
+digest. Only then may it acquire the narrower local pending-index/keyring
+locks. Reverse acquisition and untracked reentrancy fail loud. A local
+pending-index/keyring lock is released before any control-plane CAS or other
+operation that could reacquire admission; the outer assignment admission
+remains the serialization owner across the protocol.
 
-1. the local host atomically records a random `native_secret_ref`, enrollment
+1. under exclusive assignment admission, the local host atomically records a
+   random `native_secret_ref`, enrollment
    id, and one-use commit token as `pending` in a bounded local pending index,
-   then writes the exact secret under that native reference;
+   writes the exact secret under that native reference, and releases the
+   narrower local locks;
 2. the control plane compare-and-swaps a pending binding carrying that
    enrollment id and commit-token digest through
    `ProviderAssignmentAdmission` into the expected assignment generation;
@@ -147,8 +160,8 @@ state.
 
 ### 4. The owning authority path depends on fulfillment class
 
-Merged PR #1784 (`constrain-set-engine-provider-authority`, accepted head
-`0d7877b7`, merge `620fed5a`) owns requester-owned local assignment,
+Merged PR #1784 (`constrain-set-engine-provider-authority`, Opus-approved head
+`abdca5fe`, merge `620fed5a`) owns requester-owned local assignment,
 `ProviderAssignmentAdmission`, and its shared-reader
 `ProviderInvocation -> ProviderLaunchHandle` launch barrier. The shipped D0
 path is fake-only/production-denied and therefore cannot be required as
@@ -164,11 +177,12 @@ Consuming D0's landed `Verified[T]` and execution-record types is type reuse,
 not a D0 authority grant. It does not create a production D0 route, make D0
 live-acceptable, or upgrade an opaque locator into provider authority.
 
-For requester-owned local execution, the implementable seam is the
-provider-authority owner's typed local-launch adapter. It receives the frozen
-`ProviderInvocation` and exact `credential_binding_ref`, validates their
-complete tuple under shared `ProviderAssignmentAdmission`, and crosses the
-launch barrier before constructing a provider child. For accepted-market
+For requester-owned local execution, the implementable seam is
+`ProviderExecutor.start()`. It receives the frozen `ProviderInvocation` and
+exact `credential_binding_ref`, validates their complete tuple under shared
+`ProviderAssignmentAdmission`, and crosses the launch barrier before
+constructing a provider child or obtaining an outbound proxy. No separate
+adapter independently validates that tuple. For accepted-market
 remote execution, the binding may compose only with the future owner-accepted
 production B2 authority envelope. If either path later routes through
 `runner/v1`, its owning adapter may copy an already-validated opaque reference
@@ -176,21 +190,34 @@ into `credential_grant_ref`; the runner field remains a locator, never a bearer
 grant. Fail-closed is absence of the authority required by the selected
 fulfillment class, not an empty capability ceiling or fake-only D0 record.
 
-### 5. Dereference occurs at one local launch boundary
+### 5. Secret resolution is transport-owned behind one launch boundary
 
-For requester-owned local invocation, after destination, credential-owner
-principal from verified request/assignment authority, host, assignment
-generation, and the provider-authority owner's shared-reader
-`ProviderInvocation -> ProviderLaunchHandle` barrier validate, the selected
-executor resolves the binding once and injects the secret into provider-child
-memory/environment. Accepted-market remote execution SHALL use its separately
-accepted B2 authority and SHALL NOT receive a requester-local secret merely
-because `runner/v1` carries a locator. The secret is never placed in argv,
-persisted child config, logs, or server state.
+For requester-owned CLI/local/in-process invocation,
+`ProviderExecutor.start()` validates destination, credential-owner principal
+from verified request/assignment authority, host, assignment generation, and
+the provider-authority owner's shared
+`ProviderAssignmentAdmission`. Only then may the selected executor resolve the
+binding once inside provider child/request memory. The secret is never placed
+in argv, persisted child config, logs, or server state.
 
-For requester-owned local launch, `ProviderInvocation` carries only the opaque
-binding reference plus credential/auth provenance. It never carries resolved
-secret material. Only executor-local `start()` may resolve the native secret.
+For requester-owned remote HTTP, `ProviderExecutor.start()` obtains only the
+non-serializable, per-universe grant-bound credential-blind proxy handle owned
+by `outbound-boundary-layer`. The proxy alone resolves the credential
+reference and performs network I/O; provider/executor code sends only a
+redacted request through it. Missing, expired, revoked, ambiguous, or
+wrong-universe outbound grant/proxy authority holds before provider,
+credential, or network access. This change creates no second outbound ledger,
+grant, proxy, secret path, or ambient fallback.
+
+Accepted-market remote execution SHALL use its separately accepted B2
+authority and SHALL NOT receive a requester-local secret merely because
+`runner/v1` carries a locator.
+
+For every requester-owned launch, `ProviderInvocation` carries only the opaque
+binding reference/digest plus credential/auth provenance. It never carries
+resolved secret material. Only executor-local `start()` may resolve material
+for CLI/local/in-process transport; remote HTTP delegates resolution and I/O
+only to the outbound proxy.
 
 Background, resumed, retried, and scheduled launches derive the credential
 owner from that persisted verified authority. They never use an ambient HTTP
@@ -230,6 +257,14 @@ Invariants:
   rotation/revocation precede assignment cutover and deletion;
 - `cutover_committed` is a compare-and-swap of the provider assignment binding and
   generation; failure remains held and cannot delete the legacy record;
+- terminal assignment vocabulary remains provider-owner-defined:
+  `closed` publishes `engine_source=requester_local` through the atomic
+  post-custody writer and is `ready` only when the binding plus all live-role
+  coverage are complete, otherwise `held + []`;
+  `closed_without_replacement` retains `engine_source=byo_api_key` with
+  `engine_assignment_state=failed` and `allowed_providers=[]`; and
+  `held_ambiguous` likewise remains `byo_api_key`, `failed + []`, while
+  retaining the unclassifiable source record;
 - an owner who intentionally declines replacement may reach
   `closed_without_replacement` only through `discovered -> held -> notified ->
   rotation_required -> revoked_upstream -> artifacts_deleted ->
@@ -318,8 +353,8 @@ credential dereference.
 
 ## Migration Plan
 
-1. Consume merged PR #1784 (`constrain-set-engine-provider-authority`, accepted
-   head `0d7877b7`, merge `620fed5a`) for requester-owned local assignment
+1. Consume merged PR #1784 (`constrain-set-engine-provider-authority`,
+   Opus-approved head `abdca5fe`, merge `620fed5a`) for requester-owned local assignment
    admission and launch; obtain distributed-execution/B2 owner acceptance for
    accepted-market production authority; keep D0 fake-only/production-denied
    and the runner opaque.
@@ -347,8 +382,8 @@ credential dereference.
 6. Hold legacy assignments, notify owners, require upstream
    rotation/revocation, commit the replacement cutover, then delete only
    exact-owned artifacts and the digest-matched source record.
-7. Enable launch-time local dereference only in the provider-authority owner's
-   typed adapter, under shared `ProviderAssignmentAdmission`, for
+7. Enable launch-time local dereference only in `ProviderExecutor.start()`,
+   under shared `ProviderAssignmentAdmission`, for
    requester-owned execution. Keep accepted-market remote execution blocked
    until its production B2 authority owner accepts the composition.
 8. Complete local concurrency, parity, exact-seven `/mcp`, rendered-chatbot,

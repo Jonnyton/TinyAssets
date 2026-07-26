@@ -27,8 +27,9 @@ This nine-field runner seam does not contain universe, selected provider, host,
 or assignment-generation fields and SHALL NOT be treated as the validator for
 a provider credential binding. The shipped capability set does not become
 credential-bearing merely because the carrier field exists. Before any future
-provider invocation is converted to `runner/v1`, its owner-accepted adapter
-SHALL first validate the authority required by its fulfillment class.
+provider invocation is converted to `runner/v1`, `ProviderExecutor.start()`
+SHALL be the sole provider-layer tuple validator and launch coordinator for
+the authority required by its fulfillment class.
 Requester-owned local invocation SHALL use
 `constrain-set-engine-provider-authority`'s exported
 `ProviderAssignmentAdmission`, frozen
@@ -36,7 +37,7 @@ Requester-owned local invocation SHALL use
 Accepted-market remote execution SHALL use its owner-accepted production B2
 authority contract. The current D0 path is fake-only/production-denied and
 SHALL NOT be required or accepted as ordinary requester-provider authority.
-Only an owning adapter MAY copy an already-validated non-secret locator into
+Only the owning post-validation composition MAY copy an already-validated non-secret locator into
 `credential_grant_ref`. The field SHALL remain a locator rather than a bearer
 grant, and an empty capability ceiling SHALL NOT stand in for missing
 authority.
@@ -58,7 +59,7 @@ authority.
 
 #### Scenario: requester-owned local invocation uses provider assignment admission
 - **WHEN** an accepted requester-owned local invocation is later routed through `runner/v1`
-- **THEN** its provider-authority-owned adapter validates the frozen invocation and exact binding under shared `ProviderAssignmentAdmission` before constructing or dispatching the runner request
+- **THEN** `ProviderExecutor.start()` validates the frozen invocation and exact binding under shared `ProviderAssignmentAdmission` before the owning composition constructs or dispatches the runner request
 - **AND** fake-only D0 is neither required nor accepted as provider authority
 
 #### Scenario: accepted-market execution waits for production B2 authority

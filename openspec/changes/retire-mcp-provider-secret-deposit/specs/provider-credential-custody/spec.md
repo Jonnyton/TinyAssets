@@ -42,8 +42,10 @@ account-token references.
 
 ### Requirement: The control plane stores only an opaque bound credential reference
 The control plane SHALL store the authoritative opaque non-secret
-`credential_binding_ref` only in
-`constrain-set-engine-provider-authority`'s versioned assignment state. The
+`credential_binding_ref` only as the custody-side reference field of the
+selected provider's entry in
+`constrain-set-engine-provider-authority`'s versioned
+`provider_authority_bindings` map. The
 reference SHALL be random, non-derivable, and bound to exact credential-owner
 principal, universe, canonical provider, host or daemon, scope, assignment
 generation, issue time, and expiry. It SHALL NOT contain or derive secret
@@ -71,6 +73,15 @@ binding or generation state.
 - **AND** reusing the identifier cannot reactivate the retired binding
 
 ### Requirement: Local binding enrollment is a crash-safe two-store commit-token protocol
+Every enrollment, rotation, retirement, and compare-delete operation SHALL
+first acquire exclusive `ProviderAssignmentAdmission` for the canonical
+universe and validate expected assignment generation plus the affected
+provider-binding digest. Only then MAY it acquire the narrower local
+pending-index/keyring locks. Reverse acquisition and untracked reentrancy
+SHALL fail loud. No local pending-index/keyring lock SHALL remain held across
+a control-plane CAS or any operation that could reacquire assignment
+admission.
+
 The selected host SHALL create a random `native_secret_ref`, enrollment id, and
 one-use commit token in an atomically updated, secret-free bounded local
 pending index before writing the exact native secret and entering state
@@ -107,6 +118,11 @@ that binding.
 - **THEN** the local reference remains pending and cannot satisfy provider launch
 - **AND** bounded reconciliation tombstones it only after proving no authoritative binding exists
 
+#### Scenario: reverse lock order fails loud
+- **WHEN** code holding a pending-index or native-keyring lock attempts to acquire `ProviderAssignmentAdmission`
+- **THEN** acquisition fails before waiting or mutation
+- **AND** no enrollment, rotation, retirement, compare-delete, or launch state changes
+
 #### Scenario: local acknowledgement is required for use
 - **WHEN** the control-plane assignment carries the expected enrollment id and token digest but the host has not recorded its local acknowledgement
 - **THEN** the binding remains unusable and provider launch is held
@@ -129,15 +145,16 @@ that binding.
 
 ### Requirement: Provider API-key dereference occurs only at the authorized local launch boundary
 A provider API key SHALL be dereferenced exactly once by the selected
-requester-controlled executor after the provider-authority-owned typed
-local-launch adapter
-validates provider destination, persisted credential-owner principal,
-universe, host, scope, assignment generation, expiry, and tombstone state and
+requester-controlled executor after `ProviderExecutor.start()` validates
+provider destination, persisted credential-owner principal, universe, host,
+scope, assignment generation, binding digest, expiry, and tombstone state and
 crosses shared `ProviderAssignmentAdmission` and the
 `ProviderInvocation -> ProviderLaunchHandle` barrier. The secret MAY enter
 provider-child memory or an ephemeral child environment only for that
-requester-owned local launch and SHALL NOT enter process arguments, persisted
-child configuration, logs, traces, or control-plane state.
+requester-owned CLI/local/in-process launch and SHALL NOT enter process
+arguments, persisted child configuration, logs, traces, or control-plane
+state. No separate adapter SHALL independently validate or dereference the
+tuple outside `ProviderExecutor.start()`.
 
 `runner/v1`'s `credential_grant_ref` MAY carry the already-validated opaque
 reference only after this composition. `SandboxRunner` does not possess the
@@ -149,7 +166,7 @@ composition, and SHALL NOT receive a requester-local secret merely because the
 runner carries a locator.
 
 #### Scenario: validated launch resolves one coherent generation
-- **WHEN** a requester-owned provider invocation crosses shared `ProviderAssignmentAdmission` and the provider-authority launch barrier with a current exact binding
+- **WHEN** `ProviderExecutor.start()` crosses shared `ProviderAssignmentAdmission` and the provider-authority launch barrier with a current exact binding for a CLI/local/in-process transport
 - **THEN** the selected local executor resolves exactly that generation once and launches only the canonical selected provider
 
 #### Scenario: accepted-market execution does not borrow requester-local authority
@@ -166,6 +183,32 @@ runner carries a locator.
 - **WHEN** rotation or revocation advances the binding generation while launches are concurrent
 - **THEN** shared `ProviderAssignmentAdmission` admits no new requester-owned launch with the retired generation
 - **AND** the old native reference is deleted only after captured-generation launches drain or are explicitly cancelled
+
+### Requirement: Remote HTTP secret resolution belongs only to the outbound boundary
+For requester-owned remote HTTP, `ProviderExecutor.start()` SHALL validate the
+complete assignment and binding tuple under shared
+`ProviderAssignmentAdmission`, then obtain only the non-serializable,
+per-universe grant-bound credential-blind proxy handle owned by
+`outbound-boundary-layer`. Provider/executor code SHALL send only a redacted
+request through that handle. The outbound proxy alone SHALL resolve the
+credential reference and perform network I/O. Neither the executor nor an
+HTTP provider SHALL dereference native material into provider-child memory,
+environment, arguments, config, logs, traces, receipts, or server state.
+
+A missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe
+outbound grant/proxy SHALL hold before provider, credential, or network
+access. This custody capability SHALL NOT create a second outbound ledger,
+grant, proxy, secret path, or ambient fallback.
+
+#### Scenario: authorized remote HTTP uses only the outbound proxy
+- **WHEN** requester-owned remote HTTP passes assignment, binding, and outbound-grant validation
+- **THEN** `ProviderExecutor.start()` binds the redacted request to the outbound owner's non-serializable proxy handle
+- **AND** only that proxy resolves the credential reference and performs network I/O
+
+#### Scenario: invalid outbound authority holds before secret or network access
+- **WHEN** the outbound grant or proxy is missing, expired, revoked, ambiguous, wrong-principal, or wrong-universe
+- **THEN** remote HTTP remains held before provider, credential, or network access
+- **AND** no local dereference, ambient credential, alternate proxy, or maintainer route is attempted
 
 ### Requirement: Shared-universe administration does not confer credential use
 A shared universe SHALL NOT own or copy provider API-key material, and a
@@ -205,6 +248,17 @@ The only ordinary successful path SHALL be:
 replacement_verified -> rotation_required -> revoked_upstream ->
 cutover_committed -> artifacts_deleted -> record_deleted -> closed`.
 
+At terminal state, provider-assignment vocabulary SHALL remain owned by
+`constrain-set-engine-provider-authority`:
+
+- `closed` SHALL publish `engine_source=requester_local` through its atomic
+  post-custody writer and SHALL be `ready` only when the current binding plus
+  all live-role coverage are complete; otherwise it remains `held + []`;
+- `closed_without_replacement` SHALL retain `engine_source=byo_api_key` with
+  `engine_assignment_state=failed` and `allowed_providers=[]`; and
+- `held_ambiguous` SHALL likewise retain `engine_source=byo_api_key` with
+  `failed + []`, while preserving the unclassifiable source record.
+
 Unresolvable ownership at `discovered` SHALL transition only to terminal
 `held_ambiguous`, with no deletion. Any nonterminal state MAY carry a
 `failed_held(last_committed_state, sanitized_failure_class)` overlay without
@@ -243,7 +297,7 @@ owner-accepted production B2 authority.
 #### Scenario: explicit no-replacement retirement remains held
 - **WHEN** the authorized owner declines a replacement and positively attests upstream revocation
 - **THEN** exact cleanup may end in `closed_without_replacement`
-- **AND** the assignment remains setup-required and cannot launch with legacy, founder, maintainer, or alternate authority
+- **AND** the assignment remains `engine_source=byo_api_key`, `engine_assignment_state=failed`, and `allowed_providers=[]` and cannot launch with legacy, founder, maintainer, or alternate authority
 
 #### Scenario: concurrent record or assignment change aborts destructive work
 - **WHEN** the stored record digest or assignment generation changes after inventory
@@ -268,7 +322,7 @@ owner-accepted production B2 authority.
 #### Scenario: ambiguous owner remains terminally held
 - **WHEN** a legacy record cannot be attributed to an authorized owner
 - **THEN** migration enters `held_ambiguous` with no export or deletion
-- **AND** provider launch remains refused with no alternate credential fallback
+- **AND** provider launch remains refused as `engine_source=byo_api_key`, `engine_assignment_state=failed`, and `allowed_providers=[]`, with no alternate credential fallback
 
 #### Scenario: illegal transitions are refused
 - **WHEN** a caller attempts any transition outside the exact state graph, including deletion before revocation or cutover before replacement verification
@@ -284,4 +338,4 @@ owner-accepted production B2 authority.
 #### Scenario: multi-process custody race has one usable binding
 - **WHEN** concurrent pending enrollment, commit-token publication, local acknowledgement, local tombstone, late control-plane binding, split-brain compare-clear, rotation, dereference, revocation, deletion, retry, stale-host expiry, and provider-authority launch barriers target one universe/provider/host
 - **THEN** exactly one current binding and generation is usable or all paths remain held
-- **AND** no torn secret read, post-fence launch, lost rotation, deadlock, duplicate authority, orphaned active native reference, or tombstone resurrection occurs
+- **AND** assignment-before-custody lock order holds, reverse acquisition and untracked reentrancy fail loud, and no torn secret read, post-fence launch, lost rotation, deadlock, duplicate authority, orphaned active native reference, or tombstone resurrection occurs
