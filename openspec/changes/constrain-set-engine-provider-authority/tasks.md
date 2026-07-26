@@ -52,10 +52,20 @@
   ceiling role-complete with local fallback; normalize aliases and disclose
   residual services; gate identity clauses; add a bounded post-flip-equivalent
   canary; and hand legacy-action ownership to its retirement lane.
-- [ ] 1.15 Refresh final-SHA handoffs and obtain Claude Opus 5 re-review of
-  the exact adapted artifacts;
+- [x] 1.15 Refresh exact-SHA handoffs and obtain the seventh exact-revision
+  Opus 5 review; it returned `ADAPT` on one bare-global launch gate,
+  generated-ID birth canary coverage, dark non-BYOC compatibility, and an
+  unpublished/misframed retirement handoff.
+- [x] 1.16 Fold the seventh `ADAPT`: use the effective gate at every sink;
+  bootstrap generated-ID birth only from a preflight-clean isolated test
+  principal; preserve all non-BYOC source writes while dark; and reframe
+  legacy retirement around residual migration and replacement paths.
+- [x] 1.17 Publish the retirement handoff with the two exact residuals and
+  add its durable comment ID to the current binding set.
+- [ ] 1.18 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
+  approval of the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.16 Run strict target/full-tree validation and land this target active
+- [ ] 1.19 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -94,9 +104,12 @@
   connector. It owns the Tier-1 accepted-market setup/result path without raw
   secret deposit or desktop/web-app dependency.
 - `retire-legacy-live-mcp-tools` owns retirement of the hidden `universe`
-  action. It MUST preserve or explicitly replace the pre-cutover
-  Anthropic/OpenAI ceiling narrowing before removing direct `set_engine`;
-  Tier-1 chatbot setup remains successor-owned and does not revive the handle.
+  action; removing it strictly reduces new exposure and does not wait on
+  preserving the narrow writer. Its handoff records two residuals: pre-slice
+  records with `allowed_providers=None` require gated migration task 8.1, and
+  removal leaves Tier-2/Tier-3/plugin users without assignment until
+  `activate-requester-host-engines` supplies the replacement. Tier-1 chatbot
+  setup remains connector-successor-owned and does not revive the handle.
 - Paid-market/distributed ownership remains: accepted agreement in
   paid-market-economy; signed remote execution through B2 and B13 task 5.13;
   V6 only market selection/escrow/verification/settlement/reputation; D0
@@ -150,7 +163,11 @@
   flag=false preserve `_DEFAULT_ENGINE_SOURCE=byo_api_key`, LLM-vault and
   explicit-source readiness, unreadable-state fail-safe true, and the bare
   exhaustion carve-out. Post-cutover proves source/state `unassigned`,
-  generation `0`, and `[]` before visibility; failure rolls back the directory.
+  generation `0`, and `[]` before visibility; failure rolls back the
+  directory. With the global flag false, prove a server-listed isolated test
+  principal with no existing home/universe registers its generated public or
+  first-contact birth ID before target initialization, while any existing-home
+  principal and every caller-supplied opt-in fail before canary registration.
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
@@ -161,9 +178,14 @@
   source/preference. Assert writer/judge/extract/embed each retain a
   destination, no other cloud provider is reachable, other accepted cloud
   services keep shipped behavior/Q6.3 residual, existing records and newborn
-  defaults are untouched, and unsupported/mismatched sources fail
-  pre-mutation. Record that credential deposit remains outside this atomic
-  config write until task 5.4.
+  defaults are untouched, and invalid/mismatched BYOC input fails
+  pre-mutation. Assert dark self-hosted/market-rented/host-daemon intent keeps
+  its shipped `engine_set`, config, readiness, and no-ceiling behavior, while
+  the effectively gated form returns the universe-action-owned typed setup
+  refusal with byte-exact zero vault/config/ledger mutation. Require a
+  parseable existing config before the load-bearing config merge so fallback
+  rewrite cannot drop unrelated keys. Record that credential deposit remains
+  outside this atomic config write until task 5.4.
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
   `unassigned`, `requester_local`, `local_model`, and
@@ -195,12 +217,16 @@
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
   canonical `engine_setup_required_payload`, surface-live `setup_paths`,
   optional assignment fields, and migration-aware
-  `universe_has_assigned_engine` behind
-  `TINYASSETS_PROVIDER_AUTHORITY_V2=false`. Preserve the shipped default,
+  `universe_has_assigned_engine` with
+  `TINYASSETS_PROVIDER_AUTHORITY_V2` defaulting false and the effective
+  per-universe gate controlling target behavior. Preserve the shipped default,
   vault/source/read-failure routes, and bare-exhaustion behavior while dark.
-  Only after manifest plus Tier-1 connector and local surface gates pass, flip
-  the flag/default and enable `engine_source=unassigned` plus newborn deny-all
-  atomically.
+  Implement server-owned default-empty universe/principal canary state and
+  generated-ID registration before birth visibility. Only after manifest plus
+  canary-proven Tier-1 connector and local surface gates pass, flip the global
+  flag/default and enable `engine_source=unassigned` plus newborn deny-all
+  atomically. Make the secret-free generated-ID canary registry durable across
+  process restart and remove it during bounded-test cleanup.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
@@ -208,8 +234,10 @@
   compatibility slice for authorized reachable legacy `set_engine`: normalize
   Anthropic/OpenAI aliases and publish the matching cloud-plus-`ollama-local`
   ceiling in the same config write as source/preference; keep other accepted
-  cloud services unchanged and all other target authority/carrier enforcement
-  dark.
+  cloud services and every non-BYOC source branch unchanged while dark.
+  Refuse before credential/config mutation if existing config is unparseable
+  so the fallback-empty merge cannot drop unrelated keys; keep all other
+  target authority/carrier enforcement dark.
 - [ ] 5.4 Implement assignment generation, exclusive transaction, secret-free
   journal, pending quarantine, coherent atomic publication, failed deny-all
   recovery, and startup cleanup.
@@ -268,7 +296,7 @@
   request capability or owner-defined background receipt, fresh
   assignment/binding tuple, and authority-derived provider set before dynamic
   filters. Keep enforcement observational/non-authorizing while the
-  default-false deployment flag is dark.
+  effective V2 gate does not apply to the routed universe.
 - [ ] 7.2 Implement sole provider-layer propagation through every inventoried
   request call site and router pool closure; integrate the separate background
   owner's receipt and host successor's local request capability at the same
@@ -314,8 +342,12 @@
   loud. Run this proof with the global flag false and each canonical isolated
   test universe named in the server-owned canary set, proving the full
   post-flip-equivalent contract plus unchanged behavior for unlisted
-  universes; remove the test universes and canary IDs afterward. Caller data
-  cannot opt in and existing user universes cannot be migrated for proof. A
+  universes. For Tier-1 public/first-contact birth, use a server-listed
+  isolated test principal preflight-proven to have no existing home/universe;
+  prove the generated ID enters the private registry before target
+  initialization/visibility and later enforcement keys only on that ID.
+  Remove test universes, principal entries, and registered IDs afterward.
+  Caller data cannot opt in and existing user universes cannot be migrated for proof. A
   fully held surface fails this gate. Stop before flag/default flip,
   newborn deny-all, or legacy-writer quiescence if any fails.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash

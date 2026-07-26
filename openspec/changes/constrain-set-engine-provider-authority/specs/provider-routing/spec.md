@@ -9,7 +9,7 @@ defined by this change. Only providers inside its non-empty
 be attempted when outside that set. Roles with no explicit chain SHALL default
 to the `writer` chain. The system SHALL only stop for provider unavailability
 when the authorized local model itself is also unavailable.
-These new authority clauses are subject to the global default-false dark gate
+These new authority clauses are subject to the effective V2 gate
 defined below; while dark, canonical role chains run unchanged.
 
 After authority succeeds, subscription-only policy, role membership,
@@ -42,7 +42,7 @@ authority that is unavailable or fails SHALL raise
 `AllProvidersExhaustedError` without fallback. Non-writer roles remain
 unchanged except for their own authority gate. Every pin exhaustion error
 SHALL name the pinned provider and explain how to clear the pin.
-The new authority check is subject to the global dark gate; while dark,
+The new authority check is subject to the effective V2 gate; while dark,
 canonical pin behavior remains unchanged.
 
 #### Scenario: pinned writer runs alone
@@ -187,7 +187,7 @@ policy attempt orders, and judge ensemble only after the non-empty provider
 authority ceiling is established. The gate SHALL remain conservative:
 `unknown` and `ok` stay and a probe exception means keep. When no probe is
 injected, the gate SHALL remain an as-built no-op that quarantines nothing.
-Authority intersection is subject to the global dark gate; while dark, the
+Authority intersection is subject to the effective V2 gate; while dark, the
 canonical auth-health gate runs without target authority.
 
 An authorized pinned writer with dead login SHALL fail loud rather than route
@@ -230,7 +230,7 @@ After a non-empty authority intersection, an empty policy or dynamically
 exhausted policy SHALL retain canonical fall-through to role-based `call()`,
 which re-applies the same authority and dynamic gates. The method SHALL retain
 its canonical `(response_text, provider_name_used, call_meta)` result.
-The authority intersection/hold clauses are subject to the global dark gate;
+The authority intersection/hold clauses are subject to the effective V2 gate;
 while dark, canonical policy fall-through remains unchanged.
 
 #### Scenario: preferred policy provider is tried first
@@ -265,7 +265,7 @@ provider twice, and SHALL return one response per provider that responds. A
 non-empty authorized set with no healthy registered judge retains canonical
 empty/degraded behavior. Authority-derived emptiness raises
 `ProviderAuthorityHeldError`.
-Authority intersection/hold clauses are subject to the global dark gate;
+Authority intersection/hold clauses are subject to the effective V2 gate;
 while dark, canonical judge behavior remains unchanged.
 
 #### Scenario: fan-out returns authorized responses
@@ -324,10 +324,11 @@ generation/digest, and bounded lifetime across thread/task/process bridges.
 Before that owner lands, those paths SHALL hold. This change remains the sole
 provider-layer carrier/sink owner.
 
-All target carrier/sink enforcement SHALL remain dark while
-`TINYASSETS_PROVIDER_AUTHORITY_V2` is false. Dark-mode code MAY mint, validate,
-inventory, and emit non-authorizing diagnostics, but MUST preserve every
-shipped provider call, helper, default, exception, and fallback result.
+All target carrier/sink enforcement SHALL remain dark while the effective V2
+gate (global flag or server-owned isolated-canary listing) does not apply to
+the routed universe. Dark-mode code MAY mint, validate, inventory, and emit
+non-authorizing diagnostics, but MUST preserve every shipped provider call,
+helper, default, exception, and fallback result.
 
 Before each attempt, the router SHALL:
 
@@ -488,7 +489,7 @@ exceptions. After failure or when no router exists, it SHALL return the
 caller-supplied fallback response when present and otherwise re-raise the
 original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion
 or a missing router, rather than synthesize empty prose.
-`ProviderAuthorityHeldError` handling is subject to the global dark gate;
+`ProviderAuthorityHeldError` handling is subject to the effective V2 gate;
 while dark, the canonical bridge never receives that new authority error.
 
 #### Scenario: transient exhaustion clears
@@ -596,10 +597,19 @@ Bubblewrap failure is not guaranteed to retain the sandbox-specific type.
 `TINYASSETS_PROVIDER_AUTHORITY_V2` SHALL default false. A server-owned
 `TINYASSETS_PROVIDER_AUTHORITY_V2_CANARY_UNIVERSES` set SHALL default empty
 and SHALL contain only isolated acceptance-test universe IDs with a complete
-migration manifest and ready surface path. Target enforcement is active for a
-universe only when the global flag is true or its canonical ID is in that
-server-owned canary set. Request, actor, universe config, MCP input, or other
-caller data MUST NOT populate or widen the set.
+migration manifest and ready surface path. A separate server-owned
+`TINYASSETS_PROVIDER_AUTHORITY_V2_CANARY_PRINCIPALS` set SHALL default empty
+and contain only isolated test principals proven to have no existing home or
+universe. When such a principal performs public/first-contact birth, the
+server SHALL register the generated canonical universe ID in a private canary
+registry durably before target birth initialization or visibility. The
+secret-free registry SHALL reload across process restart. After birth,
+enforcement keys only on the registered universe ID, not on principal alone.
+
+Target enforcement is active for a universe only when the global flag is true
+or its canonical ID is in configured/registered server-owned canary state.
+Request, actor, universe config, MCP input, or other caller data MUST NOT
+populate or widen either canary set or the private registry.
 
 While neither gate applies to a universe, every new
 authority, carrier, assignment-state, hold, retry, pin, policy, judge,
@@ -615,23 +625,28 @@ successors, every provider-bridge classification, and Tier-1/Tier-2/Tier-3/
 plugin acceptance gates pass under the bounded canary. Flip, post-cutover
 defaults, newborn deny-all, and target enforcement SHALL deploy atomically
 with a rollback receipt. Canary cleanup SHALL remove the isolated test
-universes and their IDs; it MUST NOT migrate an existing user universe merely
-to obtain pre-flip proof.
+universes, principal entries, and registered IDs; it MUST NOT migrate an
+existing user universe merely to obtain pre-flip proof.
 
 #### Scenario: dark target preserves existing calls and births
-- **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false` and the universe is absent from the server-owned canary set
+- **WHEN** `TINYASSETS_PROVIDER_AUTHORITY_V2=false` and the universe is absent from configured/registered server-owned canary state
 - **THEN** existing provider calls, defaults, births, helpers, exceptions, retries, fallbacks, pins, policy, judges, and auth health retain shipped results
 - **AND** target carrier/assignment diagnostics grant no authority
 
 #### Scenario: full enforcement cannot partially flip
 - **WHEN** any migration, successor, bridge inventory, or surface acceptance gate is incomplete
 - **THEN** the flag remains false and target defaults/enforcement remain dark
-- **AND** no individual requirement enables a partial cutover outside an explicitly listed isolated canary universe
+- **AND** no individual requirement enables a partial cutover outside configured/registered isolated-canary state
 
 #### Scenario: bounded canary proves post-flip behavior
 - **WHEN** a canonical isolated test universe with a complete manifest and ready path is listed by server-owned canary configuration
 - **THEN** every target clause applies coherently to that universe as it would after the global flip
 - **AND** unlisted universes retain shipped behavior and cannot opt themselves in
+
+#### Scenario: isolated principal bootstraps generated-ID birth proof
+- **WHEN** a preflight-clean isolated test principal with no home or universe performs public or first-contact birth
+- **THEN** the server registers the generated ID before target initialization and visibility
+- **AND** the principal cannot opt an existing or caller-selected universe into canary enforcement
 
 ### Requirement: Explicit legacy set_engine assignment narrows immediately
 An authorized legacy `set_engine` caller SHALL narrow the pre-cutover
@@ -660,12 +675,17 @@ ceiling. The existing credential deposit precedes that config call and is not
 rolled back on config failure until the full assignment transaction in task
 5.4 lands.
 
-Unknown, aliased, mismatched, or currently non-executable
-`self_hosted_endpoint`, `market_rented`, or `host_daemon` setup SHALL fail
-before mutation with typed `setup_required` rather than write an unrestricted
-preference. Existing legacy records are not reclassified by this narrow
-slice. If secret-custody retirement has already disabled raw ingress, that
-stricter refusal wins.
+While the effective V2 gate is dark, shipped
+`self_hosted_endpoint`, `market_rented`, and `host_daemon` writes SHALL retain
+their current `status=engine_set`, config mutation, readiness classification,
+and no-ceiling behavior; this narrow BYOC slice does not change or endorse
+them. When the effective gate applies, a currently non-executable instance of
+those sources SHALL fail before mutation with the canonical typed
+`setup_required` response owned by the universe action layer and identity
+setup contract. Unknown or mismatched input likewise fails pre-mutation.
+Existing legacy records are not reclassified by the narrow slice. If
+secret-custody retirement has already disabled raw ingress, that stricter
+refusal wins.
 
 #### Scenario: explicit Anthropic assignment cannot cross cloud providers
 - **WHEN** an authorized caller successfully assigns canonical legacy Anthropic through `set_engine`
@@ -677,10 +697,15 @@ stricter refusal wins.
 - **THEN** writer, judge, extract, and embed each retain at least one destination in their authority-bounded chain
 - **AND** no cross-provider cloud fallback remains
 
-#### Scenario: invalid or unsupported explicit assignment has zero mutation
-- **WHEN** pre-cutover `set_engine` receives a mismatched writer or non-executable source
+#### Scenario: target-gated invalid or unsupported assignment has zero mutation
+- **WHEN** effectively gated `set_engine` receives a mismatched writer or non-executable source
 - **THEN** it returns typed setup-required/refusal before vault, config, or ledger mutation
 - **AND** no unrestricted preference is stored
+
+#### Scenario: dark non-BYOC sources preserve shipped writes
+- **WHEN** the effective V2 gate is dark and `set_engine` receives shipped self-hosted, market-rented, or host-daemon intent
+- **THEN** its current engine-set response, config write, and readiness classification remain unchanged
+- **AND** the narrow BYOC slice writes no target ceiling or assignment state for it
 
 #### Scenario: newborns are unaffected by the narrow slice
 - **WHEN** a universe is born without an explicit successful `set_engine`

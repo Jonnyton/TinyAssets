@@ -29,8 +29,12 @@ deny-all.
   use `allowed_providers=[]`.
 - A server-owned, default-empty set of isolated acceptance-test universes
   enables the complete post-flip-equivalent contract before the global flip.
-  Caller data cannot opt in, unlisted universes preserve shipped behavior, and
-  existing user universes are never migrated merely to obtain proof.
+  A separate default-empty set of isolated test principals with no existing
+  home/universe bootstraps generated-ID public/first-contact birth; the server
+  registers the generated ID before visibility and thereafter keys only on
+  that ID. Caller data cannot opt in, unlisted universes preserve shipped
+  behavior, and existing user universes are never migrated merely to obtain
+  proof.
 - Before that full cutover, an authenticated caller holding
   `universe:admin` plus the universe write ACL narrows the originating leak
   immediately on surfaces that can still reach legacy `set_engine`: signed-in
@@ -42,7 +46,11 @@ deny-all.
   normalize; other accepted cloud services retain shipped behavior and the
   STATUS Q6.3 residual until gated migration. Unsupported or mismatched
   assignments fail before mutation; existing records and newborn defaults
-  remain untouched.
+  remain untouched. While the effective gate is dark, shipped
+  self-hosted/market-rented/host-daemon intent keeps its current
+  `engine_set`, config, readiness, and no-ceiling behavior; only the target
+  canary/global contract converts a non-executable source to typed
+  pre-mutation setup refusal.
 - Requester-owned local assignments publish a singleton canonical provider
   ceiling only after their assignment and opaque credential binding reference
   are ready. Legacy `byo_api_key` is read/migration-only and converts only
@@ -157,8 +165,11 @@ None.
   owns immutable result-local evidence; credential-vault owns ambient
   credential isolation; paid-market/distributed-execution own remote market
   execution. `retire-legacy-live-mcp-tools` owns removal of hidden
-  `universe/set_engine` and must preserve or explicitly replace its narrow
-  pre-cutover ceiling before retirement; it does not make that path Tier-1.
+  `universe/set_engine`; removal strictly reduces new exposure and need not
+  preserve the narrow writer. Its handoff is instead that pre-slice
+  `allowed_providers=None` records require gated migration, and
+  Tier-2/Tier-3/plugin assignment needs the requester-host successor after
+  removal. It does not make that path Tier-1.
 - Supersession: this current-main change replaces draft PR #1691 after Opus 5
   approval. PR #1617 remains closed/source-only; merged #1727 is the durable
   opposite-provider disposition.

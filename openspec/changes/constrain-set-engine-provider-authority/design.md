@@ -108,9 +108,17 @@ preference, and ceiling share one config write.
 Because `universe` is hidden from the seven canonical live handles, this slice
 helps only signed-in raw-MCP, Tier-2/Tier-3 stdio, and Claude-plugin callers
 that can still invoke the legacy action directly. It is not Tier-1 onboarding.
-`retire-legacy-live-mcp-tools` must preserve or replace the narrowing before
-removing the action; `activate-connector-requester-authority` owns the chatbot
-path.
+`retire-legacy-live-mcp-tools` may remove the action without preserving the
+narrow writer because removal strictly reduces new exposure. Its handoff
+records that pre-slice `allowed_providers=None` records remain for gated
+migration and that local surfaces need `activate-requester-host-engines` as
+their replacement assignment path. `activate-connector-requester-authority`
+owns the chatbot path.
+The flag-independent slice changes no other source branch:
+`self_hosted_endpoint`, `market_rented`, and `host_daemon` keep their shipped
+`engine_set`, config write, readiness classification, and no-ceiling behavior
+while dark. Only an effectively gated canary/global request applies the target
+typed pre-mutation refusal for a non-executable source.
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
 `unassigned + []` alone is engine-less; ready/nonempty or a proven remote
@@ -388,11 +396,15 @@ acceptance.
 The global gate cannot be validated by observing shipped behavior while it is
 dark. A server-owned, default-empty canary set may enable the complete target
 contract for named isolated acceptance-test universes whose manifests and
-ready paths are already complete. Caller data cannot populate it. Unlisted
-universes retain shipped behavior; existing user universes are never migrated
-just to obtain proof. Global flip requires the same Tier-1/Tier-2/Tier-3/plugin
-acceptance under this bounded post-flip-equivalent mode, followed by canary
-cleanup.
+ready paths are already complete. A separate default-empty principal set
+solves generated-ID public/first-contact birth: only a preflight-clean
+isolated test principal with no existing home/universe may bootstrap a birth,
+and the server registers the generated ID before visibility. Later
+enforcement keys only on the registered ID. Caller data cannot populate either
+set. Unlisted universes retain shipped behavior; existing user universes are
+never migrated just to obtain proof. Global flip requires the same
+Tier-1/Tier-2/Tier-3/plugin acceptance under this bounded
+post-flip-equivalent mode, followed by canary cleanup.
 
 No runtime enforcement or legacy conversion may begin until each affected
 surface has an end-to-end ready and advertised path:
@@ -476,7 +488,8 @@ replacement change and exact accepted SHA before #1691 closes.
    verified custody/host/local/remote sources into explicit assignment state.
 6. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
    gates pass under the server-owned isolated-universe canary; prove unlisted
-   universes remain on shipped behavior and clean up canary universes/IDs.
+   universes remain on shipped behavior and clean up canary universes,
+   principal entries, and registered IDs.
 7. Only then flip the flag/default, enable newborn deny-all initialization,
    and prove typed holds render setup while bare infrastructure exhaustion
    remains loud.

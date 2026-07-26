@@ -188,9 +188,9 @@ The next adaptation:
 Final disposition remains pending validation, refreshed exact-SHA handoffs,
 and Opus 5 approval.
 
-The durable handoff comment IDs remained stable through subsequent revisions;
-earlier SHA references in this document are historical review bases, not the
-current acceptance binding.
+The durable handoff comment IDs used from the second exact-revision re-review
+onward remain stable; earlier SHA references and earlier comment triples are
+historical review bases, not the current acceptance binding.
 
 ## Fourth exact-revision Opus 5 re-review — 2026-07-25
 
@@ -258,14 +258,15 @@ The next adaptation:
   deprecated setup path, and clarifies that the three successor directories do
   not yet exist.
 
-Current exact-revision authority lives in the bodies of these three durable
-handoff comments, which task 1.14 requires to match the final PR head before
+Current exact-revision authority lives in the bodies of these four durable
+handoff comments, which task 1.18 requires to match the final PR head before
 merge:
 
 - custody acceptance: `issuecomment-5081341084`;
 - unified setup contract / universe archive-sync precedence:
-  `issuecomment-5081342047`; and
-- receipt archive-sync precedence: `issuecomment-5081343125`.
+  `issuecomment-5081342047`;
+- receipt archive-sync precedence: `issuecomment-5081343125`;
+- and hidden-action retirement residuals: `issuecomment-5081688386`.
 
 Historical SHA mentions above identify only the artifacts reviewed in that
 round. Final disposition remains pending strict validation, exact-head handoff
@@ -305,4 +306,39 @@ The next adaptation:
   connector successor as the only chatbot-ready owner.
 
 Final disposition remains pending strict validation, refreshed exact-head
+handoffs, and Opus 5 approval.
+
+## Seventh exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `89f69df5` and returned `ADAPT`. It approved the
+role-complete cloud-plus-local compatibility ceiling, alias/residual coverage,
+config-write boundary, identity gate, exact action authority, and current
+comment binding.
+
+Remaining findings:
+
+- one carrier/sink paragraph and task 7.1 still keyed on the bare global flag,
+  preventing isolated canaries from exercising the launch boundary;
+- universe-ID-only canary configuration could not pre-list generated public
+  and first-contact birth IDs;
+- the narrow exception accidentally changed three shipped non-BYOC source
+  writes while dark; and
+- the legacy-tool retirement obligation was unpublished and incorrectly
+  framed as preserving a writer whose removal strictly reduces exposure.
+
+The next adaptation:
+
+- replaces every bare/global dark qualifier with the effective per-universe
+  gate;
+- adds a default-empty server-owned isolated test-principal bootstrap:
+  preflight requires no existing home/universe, generated birth IDs register
+  before target initialization/visibility, and later enforcement keys only on
+  the registered ID;
+- preserves self-hosted, market-rented, and host-daemon writes/readiness while
+  dark, applying typed pre-mutation refusal only when effectively gated; and
+- reframes and publishes retirement residuals: pre-slice unrestricted records
+  remain task-8.1 migration work, while local surfaces need the host successor
+  after the hidden action disappears.
+
+Final disposition remains pending strict validation, four refreshed exact-head
 handoffs, and Opus 5 approval.

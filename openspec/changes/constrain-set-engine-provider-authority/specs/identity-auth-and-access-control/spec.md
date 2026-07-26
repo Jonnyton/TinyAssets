@@ -7,17 +7,25 @@ All target clauses in this capability SHALL use the effective default-false
 neither the global flag nor the server-owned isolated-canary opt-in applies,
 they SHALL remain observational/non-authorizing: shipped stdio/dev transport
 behavior and shipped `setup_paths`, including raw `byo_api_key`, remain
-unchanged.
+unchanged. A server-listed isolated test principal may bootstrap only a new
+public/first-contact birth after the server proves it has no existing
+home/universe; the generated universe ID is registered before visibility, and
+later enforcement keys on that ID rather than principal alone.
 
 #### Scenario: dark identity target preserves shipped surfaces
-- **WHEN** the global flag is false and a universe is absent from the server-owned canary set
+- **WHEN** the global flag is false and a universe is absent from configured/registered server-owned canary state
 - **THEN** target request capabilities, holds, and setup filtering grant no authority and change no shipped result
 - **AND** stdio/dev provider behavior plus shipped setup paths remain unchanged
 
 #### Scenario: isolated canary uses the complete identity target
-- **WHEN** an isolated acceptance-test universe is named in the server-owned canary set
+- **WHEN** an isolated acceptance-test universe is present in configured/registered server-owned canary state
 - **THEN** every target identity capability, hold, and setup clause applies coherently for that universe
 - **AND** no request or caller-controlled value can opt another universe in
+
+#### Scenario: canary principal cannot widen existing identity authority
+- **WHEN** a server-listed test principal has an existing home or universe
+- **THEN** canary birth preflight refuses before registering any ID
+- **AND** principal membership alone never enables target enforcement on an existing universe
 
 ### Requirement: Authenticated transport mints one request-scoped provider capability
 
@@ -214,7 +222,8 @@ readable default source with no LLM credential returns false.
 Only after the migration manifest proves every universe classified and all
 surface gates pass may the deployment flip
 `TINYASSETS_PROVIDER_AUTHORITY_V2`, set
-`_DEFAULT_ENGINE_SOURCE=unassigned` for new births, and use assignment state.
+`_DEFAULT_ENGINE_SOURCE=unassigned` for new births, and use assignment state
+globally outside the server-owned canary.
 For migrated state, unreadable evidence remains true/fail-safe;
 `unassigned + []` is false; `ready + nonempty ceiling` or a separately proven
 accepted remote grant is true; and pending/held/failed/inconsistent state is
