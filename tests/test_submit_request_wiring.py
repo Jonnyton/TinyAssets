@@ -676,8 +676,8 @@ def test_corrupt_requests_json_warns_and_returns_empty(
 def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
     """Task #22.2: 8 KiB cap on submit_request.text.
 
-    Prevents pasting full drafts into the request channel (add_canon is
-    the right tool for long prose). Cap is UTF-8 byte length.
+    Prevents pasting full drafts into the request channel; private long prose
+    routes through the canonical relay. Cap is UTF-8 byte length.
     """
     import importlib
 
@@ -705,7 +705,8 @@ def test_submit_request_rejects_oversize_text(tmp_path, monkeypatch):
         ))
         assert "error" in result
         assert "exceeds" in result["error"]
-        assert "add_canon" in result["error"]
+        assert "add_canon" not in result["error"]
+        assert "converse" in result["error"]
         # No file should be created on rejection.
         assert not (base / "test-universe" / "requests.json").exists()
     finally:
@@ -772,7 +773,7 @@ def test_submit_request_response_includes_queue_position(monkeypatch, tmp_path):
         assert first["queue_position"] == 1
         assert first["ahead_of_yours"] == 0
         assert "next in the daemon's queue" in first["what_happens_next"]
-        assert "inspect" in first["what_happens_next"]
+        assert 'read_graph target="graph"' in first["what_happens_next"]
 
         second = json.loads(us._action_submit_request(
             universe_id="test-universe", text="second", request_type="general"))

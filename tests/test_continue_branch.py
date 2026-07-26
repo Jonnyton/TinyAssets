@@ -24,9 +24,10 @@ def test_continue_branch_extensions_call_is_unknown(tmp_path, monkeypatch) -> No
     assert "run_branch" in result["available_actions"]
 
 
-def test_control_station_routes_continue_intent_to_run_branch_resume_from() -> None:
+def test_control_station_reports_resume_gap_after_reading_prior_run() -> None:
     from tinyassets.api.prompts import _CONTROL_STATION_PROMPT
 
-    assert "resume_from=<run_id>" in _CONTROL_STATION_PROMPT
-    assert "action=run_branch" in _CONTROL_STATION_PROMPT
+    assert 'read_graph target="runs"' in _CONTROL_STATION_PROMPT
+    assert 'read_graph target="run"' in _CONTROL_STATION_PROMPT
+    assert "Resume-from-run is not exposed" in _CONTROL_STATION_PROMPT
     assert "action=continue_branch" not in _CONTROL_STATION_PROMPT

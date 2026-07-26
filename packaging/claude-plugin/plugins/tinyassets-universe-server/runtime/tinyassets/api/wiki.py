@@ -69,10 +69,10 @@ _STOP_WORDS = frozenset(
 )
 
 _WIKI_SEARCH_COMPLETENESS_WARNING = (
-    "wiki action=search is lexical best-effort, not a complete discovery or "
-    "change-feed proof. For recent changes use wiki action=since with "
+    "read_page query search is lexical best-effort, not a complete discovery "
+    "or change-feed proof. For recent changes use read_page "
     "changed_since=<ISO timestamp>; for authoritative content read candidate "
-    "pages with action=read."
+    "pages with read_page page=<path>."
 )
 _WIKI_READ_DEFAULT_MAX_CHARS = 128_000
 _WIKI_READ_MAX_CHARS = 256_000
@@ -168,8 +168,8 @@ def _ensure_wiki_scaffold(wiki_root: Path) -> None:
         "WIKI.md": (
             f"---\ntitle: Wiki Schema\ntype: schema\nupdated: {today}\n---\n\n"
             "# Wiki Schema\n\nCategories, frontmatter conventions, and "
-            "lint rules. See AGENTS.md + the wiki tool docstring for the "
-            "live contract.\n"
+            "lint rules. See AGENTS.md plus the advertised read_page and "
+            "write_page descriptions for the live contract.\n"
         ),
         "log.md": (
             "# Wiki Log\n\n"
@@ -768,9 +768,8 @@ def _wiki_read(
     if truncated:
         marker = (
             "\n\n[WIKI READ TRUNCATED: showing chars "
-            f"{read_start}-{read_end} of {total_chars}. Continue with "
-            f"wiki(action=\"read\", page=\"{page}\", offset={read_end}, "
-            f"max_chars={read_limit}).]"
+            f"{read_start}-{read_end} of {total_chars}. Reading additional "
+            "chunks is not exposed by the advertised handles.]"
         )
         return json.dumps({
             "path": rel,
@@ -1145,7 +1144,7 @@ def _wiki_write(
             "status": "drafted" if is_new else "updated",
             "note": (
                 f"{'Drafted' if is_new else 'Updated draft'}: "
-                "call wiki promote to move to pages/."
+                "promotion to pages/ is not exposed by the advertised handles."
             ),
         })
     except OSError as exc:
@@ -1431,7 +1430,10 @@ def _wiki_promote(
     if not draft_path:
         return json.dumps({
             "error": f"Draft not found: {slug}.",
-            "hint": "Use wiki list to see available drafts.",
+            "hint": (
+                "Draft enumeration and promotion are not exposed by the "
+                "advertised handles."
+            ),
         })
 
     content = _read_text(draft_path)
@@ -1485,7 +1487,10 @@ def _wiki_ingest(
         return json.dumps({
             "path": f"raw/{target.name}",
             "status": "saved",
-            "note": "Saved to raw/. Now call wiki write to create a synthesis page in drafts/.",
+            "note": (
+                "Saved to raw/. Create a synthesis draft with write_page; "
+                "promotion to pages/ is not exposed by the advertised handles."
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to ingest: {exc}"})
@@ -1523,7 +1528,10 @@ def _wiki_supersede(
     if not new_exists:
         return json.dumps({
             "error": f"Replacement draft not found in drafts/: {new_slug}.",
-            "hint": "Write the replacement first with wiki write.",
+            "hint": (
+                "Creating replacement drafts and superseding pages are not "
+                "exposed by the advertised handles."
+            ),
         })
 
     try:
@@ -1563,7 +1571,10 @@ def _wiki_supersede(
             "status": "superseded",
             "old_page": old_slug,
             "new_draft": new_slug,
-            "note": f"Superseded {old_slug}. Now call wiki promote on {new_slug}.",
+            "note": (
+                f"Superseded {old_slug}. Promotion of {new_slug} is not exposed "
+                "by the advertised handles."
+            ),
         })
     except OSError as exc:
         return json.dumps({"error": f"Failed to supersede: {exc}"})
@@ -2285,8 +2296,9 @@ def _wiki_file_bug(
                 "(repro, observed, expected, workaround); content/body are not supported here."
             ),
             "hint": (
-                "Use wiki(action=\"file_bug\", title=..., component=..., severity=...) "
-                "and optionally repro/observed/expected/workaround."
+                "Use write_page kind=\"bug\" title=... component=... "
+                "severity=... and optionally "
+                "repro/observed/expected/workaround."
             ),
         })
     dropped_kwargs = sorted(
@@ -2374,9 +2386,9 @@ def _wiki_file_bug(
                 "effort_classification": effort_classification,
                 "effort_dispatch_route": effort_dispatch_route,
                 "hint": (
-                    "Similar filings exist. Use cosign_bug to add your context "
-                    "to the top match, or set force_new=true if the symptom is "
-                    "materially different."
+                    "Similar filings exist. Bug cosigning is not exposed by "
+                    "the advertised handles; set force_new=true only if the "
+                    "symptom is materially different."
                 ),
             })
 
@@ -2561,7 +2573,7 @@ def _wiki_file_bug(
         "effort_dispatch_route": effort_dispatch_route,
         "investigation": investigation,
         "note": "Filing sent to navigator triage pipeline. "
-                f"Use `wiki action=list category={category_dir}` to view.",
+                f'Use `read_page category="{category_dir}"` to view.',
     }
     if dropped_kwargs:
         response_body["warning"] = (

@@ -378,8 +378,9 @@ def _action_suggest_node_edit(kwargs: dict[str, Any]) -> str:
         lines.append(f"**User context:** {user_context}")
         lines.append("")
     lines.append(
-        "Now propose a new `prompt_template` (or `source_code`) and "
-        "apply it via `update_node` when the user agrees."
+        "Now propose a new `prompt_template` (or `source_code`) and, when the "
+        "user agrees, send an `update_node` operation through write_graph "
+        f'target="branch" branch_id="{bid}" changes_json="[...]".'
     )
 
     return json.dumps({
@@ -576,8 +577,8 @@ def _action_list_node_versions(kwargs: dict[str, Any]) -> str:
         )
     lines.append("")
     lines.append(
-        f"Rollback with `rollback_node branch_def_id={bid} "
-        f"node_id={nid} to_version=<N>`."
+        "Node rollback is not exposed by the advertised handles; use an "
+        "internal operator surface if restoration is required."
     )
 
     return json.dumps({
@@ -692,8 +693,8 @@ def _action_rollback_node(kwargs: dict[str, Any]) -> str:
                 "status": "rejected",
                 "error": (
                     f"No snapshot of node '{nid}' at version "
-                    f"{to_version}. Run list_node_versions to see "
-                    "available targets."
+                    f"{to_version}. Node version-history lookup is not "
+                    "exposed by the advertised handles."
                 ),
             })
 
@@ -758,9 +759,8 @@ def _action_rollback_node(kwargs: dict[str, Any]) -> str:
         f"- Restored body: "
         f"{_node_body_summary(persisted_node.to_dict())}",
         "",
-        "_Rollback is itself an edit — the previous body is still in "
-        "history if you need to go forward again. List versions with "
-        "`list_node_versions`._",
+        "_Rollback is itself an edit — the previous body remains in history. "
+        "Node-version enumeration is not exposed by the advertised handles._",
     ]
 
     return json.dumps({
