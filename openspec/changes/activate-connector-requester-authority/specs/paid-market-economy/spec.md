@@ -2,24 +2,31 @@
 
 ### Requirement: Explicit accepted agreement is the only market input to engine activation
 
-The paid-market owner SHALL convert a current explicitly accepted quote into
-an immutable accepted-agreement result before engine activation may commit.
+The paid-market owner SHALL expose an explicit accepted-agreement producer
+that converts a current canonical request plus current explicitly accepted
+quote into an immutable accepted-agreement result before engine activation may
+commit. This producer SHALL be distinct from request submission, bidding,
+matching, claiming, and delivery and MUST NOT resubmit or reinterpret any of
+those operations as explicit acceptance.
 Quote discovery, live-price ranking, a bid, match, claim, reservation,
 scheduling record, payment intent, or free queue selection MUST NOT by itself
 grant spend, provider, host, capacity, or execution authority.
 
-The accepted terms SHALL bind the route-selection receipt ID/digest, quote
-ID/version/digest, immutable
+The accepted terms SHALL bind the canonical request ID/version/digest,
+route-selection receipt ID/digest, quote ID/version/digest, immutable
 fulfillment descriptor ID/version/digest, currency, positive
-`max_total_minor`, fee-schedule version, demand-commitment digest,
-acceptance-policy digest, quote expiry, authenticated actor, tenant, and exact
-universe. The caller's acceptance object is a confirmation commitment, not a
-source of canonical market facts.
+`budget_micros`, positive `spend_cap_micros` not exceeding that budget,
+fee-schedule version, demand-commitment digest, acceptance-policy digest,
+settlement-policy version, deadline, quote expiry, authenticated actor, tenant,
+and exact universe. The producer SHALL rehydrate the canonical request's
+capability digest, payload digest, bid-window close, acceptance policy,
+settlement policy, visibility, and fanout. The caller's acceptance object is a
+confirmation commitment, not a source of canonical market facts.
 
 #### Scenario: current bounded terms become an accepted agreement
 
-- **WHEN** the authenticated universe writer confirms a current quote whose canonical terms exactly match the closed acceptance object and remain within the stated spend cap
-- **THEN** the paid-market owner returns an immutable agreement bound to the actor, tenant, universe, quote, descriptor, currency, cap, fees, demand, policy, and expiry
+- **WHEN** the authenticated universe writer confirms a current quote whose canonical request and quote terms exactly match the closed acceptance object and remain within the stated micros-denominated budget and spend cap
+- **THEN** the paid-market owner returns an immutable agreement bound to the actor, tenant, universe, request, quote, descriptor, currency, budget, spend cap, fees, demand, acceptance/settlement policy, deadline, and expiry
 - **AND** that agreement still grants no B2 execution authority by itself
 
 #### Scenario: ranking or match cannot activate an engine
@@ -30,9 +37,10 @@ source of canonical market facts.
 ### Requirement: Acceptance is revalidated at the atomic activation boundary
 
 Immediately before commit, the paid-market owner SHALL re-resolve and compare
-the canonical route-selection receipt, quote and descriptor versions/digests,
-currency, spend cap, fee schedule, demand commitment, acceptance policy,
-expiry, cancellation, availability, capacity fence, and
+the canonical request, route-selection receipt, quote and descriptor
+versions/digests, currency, budget, spend cap, fee schedule, demand commitment,
+acceptance and settlement policies, deadline, expiry, cancellation,
+availability, capacity fence, and
 actor/tenant/universe scope. Caller-supplied expiry MUST NOT extend the
 canonical expiry, and stale or changed terms MUST require a newly explicit
 acceptance.
@@ -56,9 +64,12 @@ free, BYOC, maintainer, local, desktop, or differently priced lane.
 
 ### Requirement: Market activation is bounded and idempotent without spending maintainer resources
 
-Accepted-market activation SHALL scope idempotency by authenticated actor,
-tenant, universe, action, and idempotency key. Replaying the same key with the
-same canonical acceptance body SHALL return the original outcome without
+Accepted-market activation SHALL use a domain-separated
+`write_graph/engine/activate_accepted_market` idempotency namespace and then
+scope by authenticated actor, tenant, universe, and idempotency key. That
+namespace MUST NOT collide with request admission or another target/action.
+Replaying the same key with the same canonical acceptance body SHALL return
+the original outcome without
 duplicating an agreement, reservation, charge, grant request, or assignment.
 Reusing the key with a different canonical body MUST return a conflict.
 Concurrent first activations SHALL have one authoritative outcome.
@@ -87,8 +98,8 @@ verify a fresh executable firm quote under the accepted selection policy,
 revalidate its descriptor, demand, quantity, landed total, currency, fee
 schedule, service terms, expiry, and capacity fence, and atomically reserve or
 consume both conserved capacity and requester-owned or explicitly delegated
-funding within the mandate's per-job policy and remaining
-`max_total_minor`. Those owner-native quote, capacity, funding, fee, and spend
+funding within the mandate's remaining `budget_micros` and per-job
+`spend_cap_micros`. Those owner-native quote, capacity, funding, fee, and spend
 references/digests SHALL be available for sealing into the job capsule and B2
 derivation. A platform, maintainer, founder, provider, or mutable row MUST NOT
 substitute for requester funding or conserved capacity.

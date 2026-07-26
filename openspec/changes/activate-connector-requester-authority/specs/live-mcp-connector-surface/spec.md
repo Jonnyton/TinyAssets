@@ -5,19 +5,21 @@
 The live connector SHALL expose accepted-market activation only as
 `write_graph(target="engine", action="activate_accepted_market", graph_id,
 market_acceptance, idempotency_key)` under the existing seven-handle catalog.
-It MUST NOT add a handle, use the deprecated `universe` target, overload
-`target="request"`, accept free-form text as authority, accept a raw secret,
-or require a desktop or web application. Unknown engine actions, missing
-fields, extra fields, numeric coercions, and unsupported schema versions SHALL
-fail before mutation.
+It MUST NOT add a handle, overload the live `target="universe"` birth path or
+`target="request"`, revive the legacy `universe` handle, accept free-form text
+as authority, accept a raw secret, or require a desktop or web application.
+Unknown engine actions, missing fields, extra fields, numeric coercions, and
+unsupported schema versions SHALL fail before mutation.
 
 `market_acceptance` SHALL be a closed object containing exactly:
-`schema_version="accepted-market-activation/v1"`, `selection_receipt_id`,
+`schema_version="accepted-market-activation/v1"`, `request_id`,
+`request_version`, `request_digest`, `selection_receipt_id`,
 `selection_receipt_digest`, `quote_id`,
 `quote_version`, `quote_digest`, `fulfillment_descriptor_id`,
 `fulfillment_descriptor_version`, `fulfillment_descriptor_digest`, `currency`,
-`max_total_minor`, `fee_schedule_version`, `demand_commitment_digest`,
-`acceptance_policy_digest`, and `quote_expires_at`.
+`budget_micros`, `spend_cap_micros`, `fee_schedule_version`,
+`demand_commitment_digest`, `acceptance_policy_digest`,
+`settlement_policy_version`, `deadline`, and `quote_expires_at`.
 
 #### Scenario: chatbot submits a well-shaped activation
 

@@ -2,11 +2,15 @@
 
 ### Requirement: Accepted-market activation binds B13 readiness without pre-minting job authority
 
-The accepted-market activation owner SHALL consume a current, bounded,
-revocable, non-executable mandate created through the sole B13 production
+The accepted-market activation owner SHALL consume a bounded, revocable,
+non-executable provisional mandate created through the sole B13 production
 composition root and bound to the authenticated owner, tenant, target
-universe, accepted agreement, route-selection/pricing policy, total spend
-ceiling, expiry, revocation generation, and idempotency digest. It MUST NOT
+universe, accepted agreement, route-selection/pricing policy, mandate-wide
+budget, per-job spend ceiling, expiry, revocation generation, and idempotency
+digest. The mandate SHALL become current and discoverable only through the
+atomically committed activation reference. Failed commits SHALL idempotently
+revoke or expire their provisional mandate, and retries MUST NOT accumulate
+active mandates. The owner MUST NOT
 mint or store a B2 execution grant before a concrete job and capsule exist.
 For each later job, only the B13 root may create the exact B2 grant after the
 paid-market owners return a fresh executable firm quote, conserved-capacity
@@ -25,9 +29,15 @@ execution but MUST NOT be promoted into a B2 grant.
 
 #### Scenario: complete B13 mandate binds the remote assignment
 
-- **WHEN** the B13 production root returns a current non-executable mandate bound to the exact accepted agreement, selection policy, spend ceiling, and target universe
+- **WHEN** the B13 production root returns a provisional non-executable mandate bound to the exact accepted agreement, selection policy, budget, per-job spend ceiling, and target universe
 - **THEN** activation may atomically store its opaque reference and publish `engine_source="accepted_market"`, `engine_assignment_state="remote_ready"`, and `allowed_providers=[]`
 - **AND** the connector result exposes no grant, signature, lease capability, or internal authority carrier
+
+#### Scenario: failed activation cannot strand current mandate authority
+
+- **WHEN** B13 creates the provisional mandate but the activation transaction loses or fails before its reference commits
+- **THEN** that mandate never becomes current or discoverable and is idempotently revoked or allowed to expire
+- **AND** same-body retry reuses the same provisional identity rather than minting cumulative mandate authority
 
 #### Scenario: activation and market state cannot execute by themselves
 

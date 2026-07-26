@@ -29,7 +29,8 @@ maintainer, local, BYOC, free, role-default, or environment-selected provider.
 
 The public connector has seven canonical handles. This change must be
 completable from a chatbot without adding an eighth handle, using the
-deprecated `universe` target, accepting a raw provider secret, or requiring a
+reusing the live `target="universe"` birth path or legacy `universe` handle,
+accepting a raw provider secret, or requiring a
 desktop or web application. It also must remain separate from
 `write_graph(target="request")`, whose owner admits user work into the request
 and BranchTask lifecycle.
@@ -94,8 +95,8 @@ Alternatives considered:
 
 - A new MCP tool was rejected because the canonical seven-handle surface is a
   compatibility and canary invariant.
-- `target="universe"` was rejected because that target is deprecated and
-  conflates universe birth with compute authority.
+- `target="universe"` was rejected because it is the live opt-in universe-birth
+  path and must not be overloaded with compute authority.
 - `target="request"` was rejected because engine activation is durable
   universe configuration, not admission of a Request or BranchTask.
 - Free-form `text` was rejected because authoritative acceptance must be
@@ -108,6 +109,9 @@ Alternatives considered:
 | Field | Meaning |
 |---|---|
 | `schema_version` | Exact value `accepted-market-activation/v1` |
+| `request_id` | Immutable canonical paid-market request identifier |
+| `request_version` | Positive immutable request version |
+| `request_digest` | Digest of the canonical request and its authority-neutral workload terms |
 | `selection_receipt_id` | Immutable server-issued route-selection receipt |
 | `selection_receipt_digest` | Digest of the accepted route evaluation |
 | `quote_id` | Immutable server-issued quote identifier |
@@ -117,10 +121,13 @@ Alternatives considered:
 | `fulfillment_descriptor_version` | Immutable descriptor version |
 | `fulfillment_descriptor_digest` | Digest of the canonical descriptor |
 | `currency` | Currency code of the accepted cap |
-| `max_total_minor` | Positive maximum total spend in minor units |
+| `budget_micros` | Positive mandate-wide budget in integer micros |
+| `spend_cap_micros` | Positive maximum spend per job in integer micros, not exceeding the budget |
 | `fee_schedule_version` | Accepted immutable fee schedule version |
 | `demand_commitment_digest` | Digest of the quoted workload/demand envelope |
 | `acceptance_policy_digest` | Digest of the matching/acceptance policy |
+| `settlement_policy_version` | Accepted immutable settlement-policy version |
+| `deadline` | Positive epoch-seconds deadline copied from the canonical request |
 | `quote_expires_at` | Aware timestamp copied from the quote |
 
 The object identifies the terms the user is confirming; it does not carry
@@ -129,20 +136,25 @@ wallet, payment authority, B2/B13 grant, lease, generation, fence, and
 execution capability are server-derived or owned elsewhere and are forbidden
 as caller fields.
 
-`max_total_minor` is the mandate-wide spend ceiling, not a promise that one
-quote covers future work. `acceptance_policy_digest` binds the canonical
-server-held route-selection policy, per-job price/service constraints,
-reservation/retry/refund rules, and any per-job cap. A later job whose exact
-demand, quantity, landed total, fee version, or service terms fall outside that
-policy requires a new explicit acceptance.
+`budget_micros` is the mandate-wide spend ceiling and `spend_cap_micros` is
+the per-job ceiling; neither promises that one quote covers future work.
+`acceptance_policy_digest` binds the canonical server-held route-selection
+policy, per-job price/service constraints, reservation/retry/refund rules, and
+any stricter per-job cap. A later job whose exact demand, quantity, landed
+total, fee version, deadline, settlement policy, or service terms fall outside
+that policy requires a new explicit acceptance.
 
-The server re-resolves the selection receipt, quote, and descriptor and
-compares their current canonical versions and digests. It verifies that the
-selected route is still the explicitly accepted paid lane, that the quote is
-unexpired, uncancelled, available to the actor/tenant/universe, within the
-stated spend cap, and backed by a still-acceptable market state. Copying an
-expiry into the request cannot extend it. Unknown fields and numeric coercion
-fail closed.
+The server re-resolves the canonical request, selection receipt, quote, and
+descriptor and compares their current canonical versions and digests. From the
+request it rehydrates and verifies the capability digest, payload digest,
+budget, spend cap, bid-window close, deadline, acceptance policy, settlement
+policy, visibility, and fanout rather than trusting caller-authored copies. It
+verifies that the selected route is still the explicitly accepted paid lane,
+that the quote is unexpired, uncancelled, available to the
+actor/tenant/universe, within the stated micros-denominated bounds, and backed
+by a still-acceptable market state. Copying a deadline or expiry into the
+request cannot extend the canonical value. Unknown fields and numeric
+coercion fail closed.
 
 Alternatives considered:
 
@@ -176,34 +188,44 @@ Alternatives considered:
 - Persisting the request capability for the next `converse` was rejected
   because request-local capabilities cannot escape their originating call.
 
-### 4. One transaction publishes agreement, grant binding, and engine state
+### 4. One transaction publishes agreement, mandate binding, and engine state
 
 Activation uses a single idempotent composition boundary. Inside it, the
 server:
 
 1. verifies request-local actor, tenant, universe write authority, action, and
    idempotency scope;
-2. revalidates the quote, descriptor, spend cap, fee schedule, demand
-   commitment, policy, expiry, cancellation, and capacity;
-3. asks the paid-market owner for the exact accepted-agreement result;
+2. revalidates the canonical paid request, quote, descriptor, budget, spend
+   cap, fee schedule, demand commitment, acceptance/settlement policy,
+   deadline, expiry, cancellation, and capacity;
+3. asks the paid-market owner's explicit accepted-agreement producer to
+   consume the current canonical request, quote, and explicit confirmation
+   without resubmitting or mutating the original market request;
 4. asks the distributed-execution B13 root for a bounded, revocable,
-   non-executable mandate bound to that agreement, target universe, accepted
-   selection/pricing policy, total spend ceiling, expiry, revocation
-   generation, and idempotency digest; and
+   non-executable provisional mandate bound to that agreement, target
+   universe, accepted selection/pricing policy, budget and per-job spend
+   ceilings, expiry, revocation generation, and idempotency digest; and
 5. atomically persists the agreement/mandate references and publishes
    `accepted_market + remote_ready + []`.
 
 If any step fails, none of those activation mutations commits. Payment and
 settlement owners may have their own independently valid pre-existing records,
 but this command must not leave a partial accepted agreement presented as an
-active engine assignment.
+active engine assignment. A provisional mandate becomes current and
+discoverable only through the committed activation reference. If step 5 fails,
+the composition owner idempotently revokes or allows expiry of that
+non-executable provisional mandate; same-body retry finds the same provisional
+identity and can never accumulate active mandates.
 
-The idempotency identity is the authenticated actor, tenant, universe,
-`activate_accepted_market` action, and `idempotency_key`. A replay with the
-same canonical body returns the original typed result. Reusing the key with a
-different body is a conflict. Concurrent first activations have one winner;
-losers observe that winner or a typed conflict. Cancellation, quote expiry,
-capacity loss, or grant revocation that wins before commit prevents activation.
+The idempotency identity is domain-separated by the canonical tool, target,
+and action, then binds the authenticated actor, tenant, universe, and
+`idempotency_key`: `write_graph/engine/activate_accepted_market`. It cannot
+collide with request admission or another `write_graph` action. A replay with
+the same canonical body returns the original typed result. Reusing the key
+within that namespace with a different body is a conflict. Concurrent first
+activations have one winner; losers observe that winner or a typed conflict.
+Cancellation, quote expiry, capacity loss, or mandate revocation that wins
+before commit prevents activation.
 
 Alternatives considered:
 
@@ -320,7 +342,9 @@ desktop. Post-fix clean-use evidence remains a separate release gate.
 2. Reconcile the exact action schema with the canonical connector router while
    preserving the seven-handle catalog and the independent request-target
    contract.
-3. Integrate the paid-market accepted-agreement owner and current transport.
+3. Land and integrate the paid-market accepted-agreement producer and current
+   transport; do not reinterpret request submission or matching as agreement
+   acceptance.
 4. Integrate the B2 signed protocol and B13 sole production composition root,
    plus execution-admission and sandbox enforcement.
 5. Add the dark activation transaction, pre-routing dispatch, typed connector
