@@ -7,16 +7,16 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 | Task | Classification | Evidence / boundary |
 |---|---|---|
 | 1.3 | built | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
-| 2.1 | unblocked -> built | #1679 landed (`01e7ced7`) and 1.5's re-review returned APPROVE, so the amended grammar is fixed contract. Descriptor/market-class identity, grammar, precedence, and quote-bound scope provenance are covered. |
+| 2.1 | unblocked -> built (provenance repaired 2026-07-25) | #1679 landed (`01e7ced7`) and 1.5's re-review returned APPROVE, so the amended grammar is fixed contract. Descriptor/market-class identity, grammar, and precedence were covered; the quote-bound scope provenance claim was premature until the 3.1 join was repaired in the same lane — see the 2.1 evidence block. |
 | 2.2 | unblocked -> built | Same #1679 landing. `descriptors.py` derives both ids; `capability_id` stayed purged. Payload/credential/price/routing/reservation/execution remain absent. |
 | 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
 | 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
-| 2.5 | unblocked -> built | Facet/substitutability coverage landed with the #1679 grammar. Six manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. |
-| 3.1 | built | Fail-closed observation joins and independently fresh price fields use fixture receipts only. |
+| 2.5 | unblocked -> built (price bound added 2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Eleven manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. The first six proved a weight cap only — the unit price is now bounded against settled gross and the canonical fee against its schedule version. |
+| 3.1 | built (join repaired 2026-07-25) | Fail-closed observation joins and independently fresh price fields use fixture receipts only. The join was reopened after Codex's money review: it agreed three receipt copies and then accepted every other price-index input from its caller. Identity/scope now derive from the quote and the price from the settled gross. |
 | 3.2 | built | The field-fresh oracle is differential-tested against landed canonical settlement/index primitives. |
 | 3.3 | built | The credential-blind read-only protocol cannot execute or return an executable route. |
 | 3.4 | built | Two fake adapters cover complete, partial, malformed, stale, timeout, and independent-failure cases without live calls. |
-| 3.5 | stale-inverted → built | Account- and principal-root self-trades stay excluded while every positive-gross settlement retains the canonical fee. Pair/buyer/seller-root dampening, infeasible-cap equal weighting, and composite-only clamping are covered. |
+| 3.5 | stale-inverted → built (hardened 2026-07-25) | Account- and principal-root self-trades stay excluded while every positive-gross settlement retains the canonical fee — now the amount its bound `fee_schedule_version` derives, not merely a positive number. Pair/buyer/seller-root dampening, infeasible-cap equal weighting, and composite-only clamping are covered, plus settlement-identity dampening and settlement-uniqueness against split-account and replayed volume. |
 | 4.1 | built | Explicit free/BYOC/paid mandate selection creates no provider or money effect. |
 | 4.2 | built | Pure eligibility/ranking returns evidence only and owns no reservation. |
 | 4.3 | built | #1737 landed the immutable private receipt, ACL, retention/legal-hold, replay, commitment, and aggregate-projection contract with focused tests. |
@@ -58,8 +58,22 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     by the decoder `:697-716`, plus byte-length, non-ASCII, duplicate-key, depth, and
     NaN gates `:744-786`, and structure-before-validator precedence `:788-796`;
     headroom collapsing to one market class and private demand staying outside public
-    identity `:803-880`. Quote-bound observation-scope provenance is in
-    `tests/test_paid_market_scope_provenance.py:180-330`.
+    identity `:803-880`.
+  - Quote-bound observation-scope provenance — corrected 2026-07-25 after Codex's
+    money review found the earlier claim premature. The prior evidence pointed at
+    two *disconnected* facts (a v2 signature covers scope; an independently
+    assembled observation carries canonical bytes) and proved no join between them,
+    so a quote/observation mismatch could not go red. Closing it required repairing
+    task 3.1's observation-join surface, which this lane did rather than deferring:
+    `join_paid_observation` now *derives* descriptor, market class, scope revision,
+    and scope bytes from the `ValidatedQuote` instead of accepting them. Proof in
+    `tests/test_paid_market_scope_provenance.py`: the observation's bytes are the
+    signature-covered bytes, re-parsed out of `canonical_bytes` `:513`; a tampered
+    scope never validates so no observation exists at all `:540`; a v1 quote —
+    whose signature never spanned a scope binding — is refused `quote_scope_unsigned`
+    `:555`; and a descriptor / currency / fee-version mismatch fails closed `:564`.
+    The control is mutation-probed at
+    `tests/test_paid_market_manipulation_mutation.py:477`.
 - [x] 2.2 Implement pure immutable descriptor and public market-class projection values outside provider/domain execution code with an explicitly injected per-call validator that attests one immutable profile-schema revision and no mutable registry; derive rather than accept both ids; keep private demand commitments tenant-keyed and keep payloads, credentials, prices, routing, reservation, and execution absent.
   - Evidence (2026-07-25): `tinyassets/paid_market/descriptors.py` is a pure value
     module with no provider/domain execution import. `construct_descriptor:235`
@@ -82,24 +96,51 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 - [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
 - [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
 - [x] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.
-  - Evidence (2026-07-25; `tests/test_paid_market_manipulation_mutation.py` 84 passed).
-    Six mutation probes each force one control open and assert the guard goes red:
+  - Evidence (2026-07-25; `tests/test_paid_market_manipulation_mutation.py` 91 passed).
+    Eleven mutation probes each force one control open and assert the guard goes red:
     index eligibility / self-trade / linked-party / unknown-linkage
-    (`_index_eligible`, `:206`), per-principal influence cap (`_capped_scales`,
-    `:252`), canonical settlement fee (`_require_canonical_fee`, `:317`), raw
-    native-truth isolation (`_raw_vwap_field`, `:394`), composite ceiling clamp
-    (`_composite_field`, `:410`), and the substitutability gate
-    (`descriptors._compare`, `:486`). Properties: no nominal price clears any
-    non-price rejection across 7 prices x 7 defects (`:566-604`); a changed
-    descriptor is a different supply identity and is never silently substituted
-    (`:496-519`); stale fields never become executable and a fresh field never
-    refreshes a stale one (`:630-676`). Fee-on-every-settlement holds identically for
-    self-trade, linked-party, and arm's-length (`:291-345`) — no self/linked-party fee
-    exemption is encoded anywhere.
+    (`_index_eligible`, `:250`), per-principal influence cap (`_capped_scales`,
+    `:296`), settlement-derived unit price (`_require_settlement_derived_price`,
+    `:331`), settlement-identity dampening (`_settlement_identity_scale`, `:408`),
+    settlement uniqueness (`_require_unique_settlements`, `:429`), quote binding
+    (`_require_quote_binding`, `:477`), canonical fee positivity
+    (`_require_canonical_fee`, `:536`), canonical fee schedule
+    (`_fee_matches_schedule`, `:559`), raw native-truth isolation (`_raw_vwap_field`,
+    `:644`), composite ceiling clamp (`_composite_field`, `:660`), and the
+    substitutability gate (`descriptors._compare`, `:736`). Properties: no nominal
+    price clears any non-price rejection across 7 prices x 7 defects; a changed
+    descriptor is a different supply identity and is never silently substituted;
+    stale fields never become executable and a fresh field never refreshes a stale
+    one. Fee-on-every-settlement holds identically for self-trade, linked-party, and
+    arm's-length — no self/linked-party fee exemption is encoded anywhere.
+  - Corrected 2026-07-25 (Codex money review): the earlier six probes proved a
+    *weight* cap only, and `unit_price_micros` was an unbounded caller value — a
+    positive fixed weight times an unbounded price is still unbounded. The price is
+    now bounded against authoritative money (`unit_price * quantity ==
+    gross_micros`, exact integer micros) and the parties moved into
+    `SettlementBinding`, so split-account volume can no longer claim unrelated
+    roots. Beyond the monkeypatch probes, a source-mutant run removed each new
+    control from `price_surface.py` directly: all 21 new-control tests went red and
+    no other test did.
 
 ## 3. Price surfaces and reference adapters
 
 - [x] 3.1 Add failing tests for per-descriptor raw-VWAP/native-ask/external-ceiling/composite-index fields, independent timestamps/TTLs/sample counts/owner counts, null versus zero, valid all-in ceiling clamp-and-flag, incomplete/stale never-clamp behavior, confidence flags, and fail-closed paid-observation joins across tenant/universe identity, fence-bound accepted-result identity, parties, currency/token/chain, gross/net/fee amounts, and the finality/reorg status defined by `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6.
+  - Repaired 2026-07-25 (Codex money review reopened this task rather than letting
+    2.1 defer its gap into an already-checked box). The join verified equality among
+    three copies of `SettlementBinding` and then accepted every remaining price-index
+    input from its caller. `join_paid_observation` now derives identity and scope
+    from the settlement's `ValidatedQuote`, takes parties from the binding, and
+    admits a declared unit price only when it exactly reconstructs the settled gross
+    (`tinyassets/paid_market/price_surface.py`, `_require_quote_binding` /
+    `_require_settlement_derived_price` / `_index_eligible`).
+    `PaidObservation` retains `descriptor_id` and `quote_id`, and
+    `PriceSurface.observation_descriptor_ids` keeps each source's exact descriptor id
+    as aggregate evidence — the scenario the earlier shape could not satisfy.
+  - Deliberate fail-closed trade-off, recorded rather than silent: a settlement whose
+    `gross_micros` does not divide exactly by the delivered `quantity` raises
+    `unit_price_not_settlement_derived` instead of rounding into the index. Integer
+    micros only; no float and no floor-drift in the money path.
 - [x] 3.2 Implement the pure field-fresh aggregation oracle and differential-test it against canonical paid-market settlement/index primitives.
 - [x] 3.3 Define the read-only credential-blind reference-adapter boundary and add contract tests proving it cannot execute, reserve, claim, settle, access secrets, or return an executable route.
 - [x] 3.4 Add at least two fake external reference adapters and fault tests for timeout, malformed units/currency, incompatible terms, omitted tax/egress/region/minimum/discount components, partial staleness, independent failure, and partial-reference labeling; use no live credential, quota, or paid API.
