@@ -1425,3 +1425,17 @@ Notes:
 - Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
 - Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
 - Ship/abandon: merge coordination-only foldback, then release this worktree lane
+
+## 2026-07-26 - background-branch-execution-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/background-branch-authority-spec
+- Lane state: claimed; OpenSpec planning only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: split target specification from blocked runtime implementation
+- PLAN refs: Daemon Platform; Multi-User Evolutionary Design; API & MCP Interface; Uptime & Alarms
+- Purpose: bind scheduled, autonomous, and post-response branch execution to server-owned target authority while keeping valid private loops live.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
+- Related implications: harden-branch-access-authority; universe-creation; retire-legacy; provider-attempt receipts
+- Ship/abandon: planning PR only after exact current-main Opus review; no runtime or Village/web dependency
