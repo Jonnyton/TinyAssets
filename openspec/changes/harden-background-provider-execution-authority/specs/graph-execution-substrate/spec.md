@@ -1,9 +1,9 @@
 ## MODIFIED Requirements
 
 ### Requirement: Interrupted runs resume from checkpoint under owner, status, checkpoint, and version guards
-`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when the four canonical guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). Under the effective provider-authority V2 gate, provider-capable resume adds a fifth authority protocol. Before receipt issuance, the runtime SHALL conditionally claim one durable resume-attempt idempotency record against the expected `interrupted` status. Only the winning attempt may idempotently issue a receipt from the current server-owned run binding; the public run remains `interrupted` until that same attempt links the receipt and conditionally commits `resumed`. An `interrupted` run carrying `provider_authority_fenced` SHALL hold instead of claiming a resume attempt until its fence resolves. A crash SHALL resume or revoke the exact attempt and SHALL NOT mint a second receipt. Queue/run identity or stored actor strings grant no provider authority. Once committed, background re-invocation uses `None` inputs (LangGraph's resume signal).
+`resume_run` SHALL resume a run only from its `SqliteSaver` checkpoint and only when the four canonical guards pass: the caller `actor` owns the run (else `auth_failed`), the run is `interrupted` (a run already `resumed` is idempotently returned; any other status raises `not_interrupted`), a checkpoint exists for the run's `thread_id` (else `no_checkpoint`), and the exact branch version the run used still resolves (else `branch_version_mismatch`). Under the effective provider-authority V2 gate, provider-capable resume adds a fifth authority protocol. Before receipt issuance, the runtime SHALL conditionally claim one durable resume-attempt idempotency record against the expected `interrupted` status. Only the winning attempt may idempotently issue a receipt from the current server-owned run binding; the public run remains `interrupted` until that same attempt links the receipt and conditionally commits `resumed`. An `interrupted` run whose diagnostic error reason is `provider_authority_fenced` SHALL raise `ResumeError` with that exact reason instead of claiming a resume attempt until its fence resolves. A crash SHALL resume or revoke the exact attempt and SHALL NOT mint a second receipt. Queue/run identity or stored actor strings grant no provider authority. For every V2, dark, provider-capable, and non-provider-capable resume path, the run SHALL be marked `resumed` before background re-invocation with `None` inputs (LangGraph's resume signal).
 
-Under the effective provider-authority V2 gate, the lazy first-use `_ensure_runs_recovery` guard and its `recover_in_flight_runs` call SHALL sweep a provider-capable `queued` or `running` row to `interrupted` only after authority reconciliation proves no reservation exists or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; succeeded/failed slots and budgets remain consumed while cancelled-before-launch authority is released. A dead-owner `reserved` reservation SHALL first be atomically cancelled before launch. An unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL fence its receipt and update the public run to `interrupted` with `provider_authority_fenced`, so no run is falsely reported in flight after a restart while remaining non-runnable. The lazy guard SHALL be synchronized, SHALL mark recovery done only after reconciliation and sweep both succeed, and SHALL fail closed while remaining retryable after an exception. Non-provider-capable rows retain the shipped first-use sweep under V2. While V2 is dark, first-use recovery retains the shipped unconditional sweep. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
+Under the effective provider-authority V2 gate, the lazy first-use recovery coordinator and its `recover_in_flight_runs` call SHALL sweep a provider-capable `queued` or `running` row to `interrupted` only after authority reconciliation proves no reservation exists or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; succeeded/failed slots and budgets remain consumed while cancelled-before-launch authority is released. A dead-owner `reserved` reservation SHALL first be atomically cancelled before launch. An unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL fence its receipt and update the public run to `interrupted` with diagnostic error reason `provider_authority_fenced`, so no run is falsely reported in flight after a restart while remaining non-runnable. The shipped process-global boolean SHALL become a synchronized per-universe recovery state machine: each universe becomes done only after its applicable reconciliation and sweep succeed; an effective-V2 universe failure remains retryable and fails closed only provider-capable run operations for that universe; dark/unlisted universes complete the shipped sweep and stay live independently. As-built limitation: the `recover_in_flight_runs` docstring still states that `interrupted` is terminal and that mid-run resume via checkpoint is "not available today" — that docstring is stale, because `resume_run` implements exactly that checkpoint-based resume.
 
 #### Scenario: a non-owner cannot resume
 - **WHEN** an actor who does not own the run calls `resume_run`
@@ -16,6 +16,10 @@ Under the effective provider-authority V2 gate, the lazy first-use `_ensure_runs
 #### Scenario: a second resume is idempotent
 - **WHEN** `resume_run` is called on a run already marked `resumed`
 - **THEN** it returns the same run outcome without launching a second resume
+
+#### Scenario: every resume commits status before invocation
+- **WHEN** any dark, V2, provider-capable, or non-provider-capable resume passes its applicable guards
+- **THEN** the run is marked `resumed` before background re-invocation with `None` inputs
 
 #### Scenario: concurrent resume callers share one attempt
 - **WHEN** two callers concurrently resume the same provider-capable `interrupted` run under V2
@@ -38,13 +42,13 @@ Under the effective provider-authority V2 gate, the lazy first-use `_ensure_runs
 
 #### Scenario: first-use recovery fences ambiguous provider work
 - **WHEN** first-use recovery finds a provider-capable run with an unclosed `launch_started`, `indeterminate`, or unreadable reservation
-- **THEN** the receipt becomes `fenced_indeterminate` and the public run becomes `interrupted` with `provider_authority_fenced`
-- **AND** it remains non-runnable and cannot claim a resume attempt until authoritative reconciliation resolves the fence
+- **THEN** the receipt becomes `fenced_indeterminate` and the public run becomes `interrupted` with diagnostic error reason `provider_authority_fenced`
+- **AND** it remains non-runnable and `resume_run` raises that exact reason until authoritative reconciliation resolves the fence
 
-#### Scenario: failed first-use reconciliation is retryable and fail-closed
-- **WHEN** authority reconciliation or the run sweep raises or races
-- **THEN** `_ensure_runs_recovery` does not mark recovery done
-- **AND** provider-capable run operations fail closed and a later use retries the synchronized guard
+#### Scenario: failed first-use reconciliation is isolated and retryable
+- **WHEN** authority reconciliation or the run sweep raises for one effective-V2 universe
+- **THEN** the coordinator does not mark that universe done and a later use retries it
+- **AND** provider-capable run operations fail closed only for that universe while dark/unlisted universes complete their shipped sweep and remain live
 
 #### Scenario: non-provider runs retain the first-use sweep under V2
 - **WHEN** first-use recovery under V2 finds a non-provider-capable row left `queued` or `running`

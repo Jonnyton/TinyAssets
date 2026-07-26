@@ -142,7 +142,11 @@ server-owned transitions:
 - **Child/background work:** an active parent receipt may ask the server to
   create a child binding only when the child remains within the parent’s
   universe/branch lineage, allowed operation set, depth, lifetime, and
-  remaining budget. Child authority is replacement/narrowing, never union.
+  remaining budget. The store atomically transfers invocation/token/cost
+  authority from parent to child, debiting the parent before making the child
+  claimable; concurrent children can never receive more in aggregate than the
+  parent's remaining ceiling. Child authority is replacement/narrowing, never
+  union, and returned unused authority follows one explicit settlement rule.
 - **Maintainer maintenance:** local operator configuration creates a separate
   host/operator-owned binding for the one fixed private viability operation.
 
@@ -178,13 +182,14 @@ existing platform transactional store and expose atomic transactions/CAS
 through this one stable interface; workers never open or mutate the ledger
 directly.
 
-Authority-store transactions are short and complete before
-`ProviderAssignmentAdmission` acquisition. The global acquisition order is
-authority store, then assignment admission, then credential index/keyring.
-No authority-store transaction or lock may be acquired while assignment
-admission or a credential lock is held; reverse acquisition and untracked
-reentrancy fail loud. Result settlement occurs only after assignment
-admission is released.
+Authority-store transactions are short and complete before either
+`ProviderAssignmentAdmission` or the branch-task queue file lock. Provider
+launch order is authority store, release, assignment admission, then
+credential index/keyring. Recovery order is authority store, release, then
+queue file lock. Queue and assignment locks never nest. No authority-store
+transaction may be acquired while queue, assignment-admission, or credential
+locks are held; reverse acquisition and untracked reentrancy fail loud. Result
+settlement occurs only after assignment admission is released.
 
 Cross-store recovery uses a short-lived non-authorizing reconciliation proof
 bound to the exact authority generation, queue task, claim owner, and lease
@@ -192,6 +197,11 @@ generation. Queue reset then performs a file-locked compare-and-swap against
 that exact task/claim/lease tuple. A concurrent heartbeat or lease renewal
 changes the tuple and makes the reset fail; recovery must restart from a fresh
 authority proof. The proof alone grants no provider or queue authority.
+Lease expiry alone never proves death. Before proof issuance, recovery must
+either prove the old owner dead or atomically invalidate the old execution
+claim generation under the authority store. Claim invalidation serializes
+with reservation creation: whichever commits first forces reconciliation of
+the new state, and an invalidated stale worker can reserve nothing.
 
 For task/thread handoff, code carries a non-serializable receipt object only
 inside the claimed execution scope. Queue records created before worker
@@ -305,22 +315,27 @@ Daemon-start and lazy first-use run reconciliation:
 
 - expires elapsed unclaimed receipts;
 - preserves valid active claims whose owner/lease remains live;
-- reclaims only dead-owner claims with no reservation or only durably
-  conclusive `cancelled_before_launch`, `succeeded`, or `failed`
-  reservations, preserving consumed slots/budgets;
-- fences dead-owner `reserved`, unclosed `launch_started`, or
-  `indeterminate` reservations because absence or outcome is not provable;
+- reclaims only after proving the owner dead or atomically invalidating its
+  claim generation, with no reservation or only durably conclusive
+  `cancelled_before_launch`, `succeeded`, or `failed` reservations;
+- atomically cancels dead/invalidated-owner `reserved` before launch and
+  releases its full authority;
+- fences unclosed `launch_started` or `indeterminate` reservations because
+  outcome is not provable;
 - fences any claim with ambiguous launch state;
 - revokes receipts whose binding/target/assignment is provably stale; and
 - preserves plus holds on unreadable authority/lineage stores rather than
   inferring absence or freshness.
 
-The lazy run guard is synchronized and fail-closed. It marks recovery done
-only after authority reconciliation and the run sweep both commit; exceptions
-leave it retryable and prevent provider-capable run operations from continuing
-past the guard. A fenced run is reported publicly as `interrupted` with a
-`provider_authority_fenced` marker, never as indefinitely `queued` or
-`running`; `resume_run` holds that marker until reconciliation resolves it.
+The shipped process-global boolean becomes a synchronized per-universe
+recovery state machine. It marks each universe done only after its applicable
+authority reconciliation and run sweep both commit. A V2-universe failure
+remains retryable and fails closed only provider-capable run operations for
+that universe; dark/unlisted universes complete the shipped sweep and remain
+live independently. A fenced run is reported publicly as `interrupted` with
+`error.reason = provider_authority_fenced`, never as indefinitely `queued` or
+`running`; `resume_run` raises that exact reason until reconciliation resolves
+it.
 
 Ledger events contain secret-free IDs/digests, generations, state, reason,
 timestamps, and bounded classifications. They exclude prompts, model output,
@@ -333,11 +348,13 @@ Today ordinary provider routing can synchronously launch
 `CODEX_HOME` plus the CLI from ambient process state. Dark mode preserves that
 shipped behavior. Under an effective V2 gate, ordinary universe/request
 routing retains the parent's shipped non-completion subscription-auth ladder
-exactly: an absent/empty configuration or other positive dead-auth signature
-quarantines as `not_logged_in`, while stale, unreadable, cache-miss, unknown,
-or inconclusive checks keep the provider eligible and emit inconclusive
-health evidence. Only positive dead evidence quarantines; false quarantine is
-worse than deferred verification. Ordinary routing MUST NOT launch the
+exactly. Codex quarantines when `auth.json` is missing, but an existing empty,
+corrupt, stale, or cache-miss file with probing disabled remains eligible with
+presence/inconclusive evidence. Claude-code quarantines an absent, empty, or
+unreadable config directory. The viability-probe kill switch preserves the
+shipped unconditional eligible verdict. Router `unknown`/inconclusive results
+remain eligible; only each provider's shipped positive dead signature
+quarantines. Ordinary routing MUST NOT launch the
 `_AUTH_PROBE_PROMPT` completion, borrow its universe receipt for that
 completion, dereference maintainer credentials, or start the maintainer CLI.
 
@@ -366,7 +383,12 @@ OpenSpec change. Until then, classifying the completion as a zero-output
 The owner may create, validate, inventory, and emit non-authorizing
 diagnostics while provider-authority V2 is dark, but universe receipt
 enforcement applies only when the exact universe’s effective V2 gate applies.
-Unlisted universes preserve shipped behavior byte-for-byte.
+That gate cannot become effective for a worker/provider until its maintenance
+canary has produced current conclusive viability evidence and the supervisor
+has proven both authenticated spawn and unauthenticated/unknown quarantine.
+Missing maintenance authority keeps V2 dark for that worker/provider rather
+than inventing a health state. Unlisted universes preserve shipped behavior
+byte-for-byte.
 
 Universe-less maintenance enforcement applies when global V2 is true or when
 a server-owned default-empty maintenance-canary set contains the exact fixed
@@ -411,8 +433,9 @@ from its signature.
   bounded lifetime/budget, one active claim, current-state revalidation, and
   non-authorizing IDs/envelopes.
 - **[Crash recovery duplicates provider spend]** → Arm the durable launch
-  fence before assignment admission or transport; dead-owner `reserved` and
-  any other ambiguous state fences.
+  fence before assignment admission or transport; dead/invalidated-owner
+  `reserved` cancels and releases authority, while unclosed armed or
+  indeterminate attempts fence.
 - **[Authorization revocation races an in-flight launch]** → Revalidate under
   atomic reservation immediately before invocation; launch thereafter uses
   the frozen tuple and cannot reread ambient state.

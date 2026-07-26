@@ -41,7 +41,9 @@ server-owned background authority contract exists.
   Agent Village/web dependency, or alternate provider-routing sink.
 - Preserve shipped behavior while provider-authority V2 is dark. A
   server-owned isolated maintenance canary may exercise the fixed probe before
-  global cutover; caller data cannot opt in.
+  cutover; a universe gate cannot become effective for a worker/provider until
+  maintenance viability and supervisor quarantine are proven, and caller data
+  cannot opt in.
 
 ## Capabilities
 

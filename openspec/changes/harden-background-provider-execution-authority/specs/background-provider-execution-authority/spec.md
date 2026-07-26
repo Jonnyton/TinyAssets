@@ -19,8 +19,12 @@ The system SHALL represent authorization for later provider-capable work as a se
 - **THEN** the work has no provider issuance root and holds before every provider authority sink
 
 #### Scenario: Synthetic schedule actor cannot create a binding
-- **WHEN** a schedule or subscription supplies `owner_actor`, caller kwargs, or another synthetic principal without the server-owned record from `harden-background-branch-execution-authority`
-- **THEN** the provider-work binding is not created and the provider-capable trigger remains inactive
+- **WHEN** provider-authority V2 applies and a schedule or subscription supplies `owner_actor`, caller kwargs, or another synthetic principal without the server-owned record from `harden-background-branch-execution-authority`
+- **THEN** the V2 provider-work binding is not created and the provider-capable execution holds without treating the synthetic principal as authority
+
+#### Scenario: Dark schedules retain shipped behavior
+- **WHEN** provider-authority V2 is dark for a schedule or subscription
+- **THEN** this binding requirement does not deactivate or otherwise change the shipped trigger
 
 ### Requirement: Provider work receipts form a closed bounded union
 The system SHALL mint a short-lived `ProviderWorkAuthorityReceipt` for one logical work attempt as exactly one of `universe_work` or `maintainer_maintenance`, with server-owned lifetime, operation, provider-role, invocation, token, and cost ceilings.
@@ -36,6 +40,11 @@ The system SHALL mint a short-lived `ProviderWorkAuthorityReceipt` for one logic
 #### Scenario: Receipt scope cannot widen
 - **WHEN** work retries, falls back, or creates child work
 - **THEN** each resulting attempt uses a fresh receipt or reservation whose operation, provider roles, lineage, depth, lifetime, and budgets are no broader than its authorized parent and current binding
+
+#### Scenario: Concurrent children conserve parent authority
+- **WHEN** one parent creates one or more provider-capable child bindings
+- **THEN** the authority store atomically transfers invocation, token, and cost ceilings from the parent's remaining authority before each child becomes claimable
+- **AND** concurrent children cannot receive more aggregate authority than the parent's prior remaining ceiling
 
 ### Requirement: Fresh issuance revalidates durable authority
 The system SHALL mint each provider-work receipt just in time from a current binding only after atomically revalidating binding state and digest, principal and actor authority, work lineage, physical work location, provider assignment, revocation state, remaining budget, and eligible runtime.
@@ -195,8 +204,9 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 #### Scenario: Ordinary V2 routing keeps the non-completion auth ladder
 - **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
 - **THEN** it retains the shipped read-only subscription-auth presence and freshness ladder exactly
-- **AND** absent or empty configuration and other positive dead-auth signatures yield `not_logged_in`
-- **AND** stale, unreadable, cache-miss, unknown, or inconclusive checks keep the provider eligible and emit inconclusive evidence because only positive dead evidence quarantines
+- **AND** codex yields `not_logged_in` only for a missing `auth.json`, while an existing empty, corrupt, stale, or cache-miss file with probing disabled remains eligible with presence or inconclusive evidence
+- **AND** claude-code yields `not_logged_in` for an absent, empty, or unreadable config directory
+- **AND** the viability-probe kill switch retains its shipped eligible verdict and router unknown/inconclusive results remain eligible
 - **AND** it cannot launch the `_AUTH_PROBE_PROMPT` completion, borrow the universe receipt for that completion, dereference maintainer credentials, or start the maintainer CLI
 
 ### Requirement: Enforcement rollout is server-owned and fail-closed
@@ -205,6 +215,11 @@ The system SHALL preserve shipped behavior while provider-authority V2 is dark a
 #### Scenario: Universe work follows its effective gate
 - **WHEN** provider-capable universe work executes
 - **THEN** receipt enforcement follows the effective per-universe V2 gate
+
+#### Scenario: Universe gate waits for worker maintenance readiness
+- **WHEN** a worker/provider lacks current conclusive maintenance-canary evidence or has not proven authenticated spawn plus unauthenticated/unknown quarantine
+- **THEN** provider-authority V2 remains dark for that worker/provider even if the universe is listed
+- **AND** missing maintenance authority does not invent a replacement auth-health verdict
 
 #### Scenario: Maintenance canary is exact and default-empty
 - **WHEN** the global V2 gate is dark
