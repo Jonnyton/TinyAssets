@@ -328,24 +328,35 @@ The provider layer SHALL add immutable non-serializable
 `ProviderAuthorityCarrier`, `ProviderInvocation`, and
 `ProviderLaunchHandle`, plus an executor-local `ProviderExecutor`.
 
-For a live request, `call_provider` SHALL retrieve the exact current
+For a live HTTP request, the TinyAssets-owned FastMCP
+`Middleware.on_call_tool` hook SHALL re-derive current-message bearer identity
+from `fastmcp.server.dependencies.get_http_request()`, reserve one opaque
+dispatch token bound to the authenticated principal, MCP session/request/tool,
+and owning message task, and structurally await `call_next`. The outer ASGI
+middleware's task-local Context and the stateful session initialize Context
+MUST NOT mint or prove provider authority.
+
+The TinyAssets wrapper created by `_register_structured_tool` SHALL claim the
+reserve atomically on synchronous worker entry, after AnyIO selects the actual
+thread, and bind one active message lease to that worker and exact invocation.
+An async registered handler SHALL claim it in the owning message task before
+handler entry. The reserve is non-authorizing, one-shot, and
+non-serializable. Copied Context, stale session/message state, detached or
+nested execution, and caller-supplied identities cannot claim or extend it.
+Wrapper and per-message middleware `finally` paths SHALL revoke the claim
+before releasing the result.
+
+For provider work, `call_provider` SHALL retrieve the exact current
 `ProviderRequestCapability` or successor-owned
-`ProviderHostRequestCapability` before transport cleanup, prove its
-server-owned request-liveness lease remains active and the current execution
-scope is either the registered transport owner or its exact active
-server-registered structured-worker delegate, mint a sealed internal carrier,
-and explicitly pass it
+`ProviderHostRequestCapability`, prove its server-owned message lease and
+registered execution claim remain active, mint a sealed internal carrier, and
+explicitly pass it
 through internal-only arguments to `call_sync`, `call_with_policy_sync`,
 retry/policy/judge branches, the router `ThreadPoolExecutor` closure, and
-invocation minting. FastMCP synchronous tool dispatch through an AnyIO worker
-thread SHALL register that one-shot delegate at the server-owned dispatch
-edge before submission, bind it to the parent request lease, exact handler
-invocation, and worker identity, keep it active only while the parent
-structurally awaits that call, and revoke it before releasing the worker
-result. This SHALL NOT depend on a copied ContextVar alone or on ContextVar
-propagation into the router pool worker. Inherited asyncio ContextVars SHALL
-NOT extend the lease or pass the owner/delegate check. API/MCP schemas, caller
-kwargs, request/universe
+invocation minting. This SHALL NOT depend on a copied ContextVar alone or on
+ContextVar propagation into the router pool worker. Inherited asyncio
+ContextVars SHALL NOT extend the lease or pass the message/claim check.
+API/MCP schemas, caller kwargs, request/universe
 payloads, serialized state, and ambient worker context MUST NOT construct or
 populate the carrier.
 
@@ -454,10 +465,15 @@ operation exists.
 - **THEN** its closure carries the exact internal capability object retrieved by `call_provider`
 - **AND** an unset worker ContextVar neither widens authority nor causes a valid request to lose its carrier
 
-#### Scenario: synchronous MCP tool dispatch uses one structured delegate
-- **WHEN** an authenticated FastMCP request invokes a synchronous tool through the server-managed AnyIO worker adapter
-- **THEN** the adapter registers one exact request-bound delegate before submission and the bridge accepts it only while the parent awaits that handler invocation
-- **AND** a detached child, copied context, stale worker, or caller-supplied delegate cannot mint a carrier
+#### Scenario: stateful HTTP session derives current message authority
+- **WHEN** a streamable-HTTP session processes initialize and later tool calls in its long-lived server task
+- **THEN** each `tools/call` re-derives identity from its current HTTP request and receives a distinct session/request/tool-bound reserve
+- **AND** the initialize or prior-message Context snapshot and revoked lease authorize nothing
+
+#### Scenario: synchronous MCP tool dispatch claims on worker entry
+- **WHEN** per-message middleware reserves authority and FastMCP invokes the TinyAssets registered wrapper through AnyIO
+- **THEN** the wrapper claims the one-shot reserve against its actual worker identity on entry while the message task awaits `call_next`
+- **AND** a detached child, copied reserve, second claimant, stale worker, or caller-supplied identity cannot mint a carrier
 
 #### Scenario: attested local request uses the same sealed carrier boundary
 - **WHEN** local stdio/SSE supplies a live `ProviderHostRequestCapability`

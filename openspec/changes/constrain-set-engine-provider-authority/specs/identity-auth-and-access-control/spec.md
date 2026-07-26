@@ -30,95 +30,111 @@ state and the effective per-universe gate.
 - **THEN** canary birth preflight refuses before registering any ID
 - **AND** principal membership alone never enables target enforcement on an existing universe
 
-### Requirement: Authenticated transport mints one request-scoped provider capability
+### Requirement: Authenticated MCP message dispatch mints one message-scoped provider capability
 
-Authenticated transport middleware SHALL mint one
-`ProviderRequestCapability` after a bearer token validates and resolves a
-non-anonymous identity for that
-request. The capability SHALL bind an opaque request nonce, authenticated
-principal ID, mechanism `tinyassets.authenticated-request.v1`, issuer
-`tinyassets.auth.middleware`, an unexported identity token, and a
-server-owned request-liveness lease. Middleware SHALL register the lease with
-the owning transport task/execution-scope identity, mark it active only for
-that request, revoke it synchronously before context reset in `finally`, and
-make sink liveness checks thread-safe. When the transport dispatches a
-synchronous MCP tool through a server-managed worker thread, the dispatch
-adapter SHALL register one non-serializable, one-shot
-`ProviderRequestDelegate` bound to the request lease, parent execution scope,
-exact handler invocation, and worker execution identity before submission.
-The delegate SHALL remain active only while the parent transport task
-structurally awaits that exact worker call and SHALL be revoked before the
-worker result is released. A copied `ContextVar`, arbitrary child task/thread,
-caller-controlled worker identifier, or delegate lookalike SHALL NOT register
-or extend a delegate. The capability SHALL be
-non-serializable, non-copyable, non-pickleable, unavailable through API/MCP
-schemas or caller-controlled construction, stored in request-local context,
-and reset with request identity at request end.
+The outer ASGI `AuthContextMiddleware` SHALL retain OAuth challenge,
+invalid-token, and anonymous-write pre-dispatch behavior, but its task-local
+identity and `finally` lifetime SHALL NOT mint or prove provider authority.
+For every `tools/call`, a TinyAssets-owned FastMCP `Middleware.on_call_tool`
+hook SHALL re-derive the bearer and non-anonymous principal from the current
+HTTP message through `fastmcp.server.dependencies.get_http_request()` and the
+configured TinyAssets auth provider. It SHALL NOT trust the session
+initialize request's copied `ContextVar`, prior message identity, MCP
+arguments, client-supplied principal, or ambient session state.
 
-Before request context is reset, the internal `call_provider` bridge SHALL
-retrieve the exact object, prove that the server registry still marks its
-lease active and that the caller is either the owning transport
-task/execution scope or its active exact structured-worker delegate,
-mint an internal-only sealed `ProviderAuthorityCarrier`, and pass it into `call_sync`,
-`call_with_policy_sync`, retry/policy/judge branches, the router thread-pool
-closure, and `ProviderInvocation`. This explicit propagation SHALL NOT depend
-on `ContextVar` propagation into `ProviderRouter`'s class-level
-`ThreadPoolExecutor`, which is intentionally absent. Startup/CI inventory
-SHALL prove that every request thread/task bridge either carries the exact
-object or holds before provider work.
+The per-message hook SHALL reserve one opaque, non-serializable dispatch token
+before `call_next(context)`. The reserve SHALL bind an opaque message nonce,
+authenticated principal ID, current MCP session ID and request ID, exact tool
+name, mechanism `tinyassets.authenticated-request.v1`, issuer
+`tinyassets.auth.middleware`, an unexported identity token, and the owning
+per-message task. The reserve is not provider authority.
+
+For the canonical synchronous-tool path, the TinyAssets-owned wrapper created
+by `_register_structured_tool` SHALL atomically claim that reserve on worker
+entry, after AnyIO has selected the actual worker, and bind the server-owned
+request-liveness lease to the claiming thread plus the exact message/tool
+tuple. For an async registered tool, the per-message task SHALL claim the same
+reserve immediately before handler entry. Exactly one execution scope MAY
+claim it. The resulting `ProviderRequestCapability` and lease SHALL remain
+active only while the per-message middleware structurally awaits that exact
+handler and SHALL be revoked in the wrapper and middleware `finally` paths
+before the result is released. Reserve/capability lookalikes, copied
+`ContextVar` values, arbitrary child tasks/threads, nested workers, stale
+messages, and caller-controlled execution identifiers SHALL NOT claim,
+transfer, or extend the lease.
+
+The capability SHALL be non-serializable, non-copyable, non-pickleable,
+unavailable through API/MCP schemas or caller-controlled construction, and
+usable only by the registered message task or claimed worker. Before provider
+work, the internal `call_provider` bridge SHALL retrieve the exact object,
+prove the server registry still marks its message lease and execution claim
+active, mint an internal-only sealed `ProviderAuthorityCarrier`, and pass it
+into `call_sync`, `call_with_policy_sync`, retry/policy/judge branches, the
+router thread-pool closure, and `ProviderInvocation`. This explicit
+propagation SHALL NOT depend on `ContextVar` propagation into
+`ProviderRouter`'s class-level `ThreadPoolExecutor`, which is intentionally
+absent. Startup/CI inventory SHALL prove that every message-to-worker and
+router-pool bridge either carries the exact server-issued object or holds
+before provider work.
 
 Provider sinks SHALL obtain the exact carried capability rather than accept
-one from action arguments or ambient worker context. A missing bearer,
+one from action arguments or ambient worker/session context. A missing bearer,
 anonymous identity, invalid token, mismatched current identity, wrong
 mechanism/issuer, copied or serialized value, stale prior-request capability,
 lookalike object, capability presented outside its request, or missing
 explicit carrier SHALL grant no provider authority. The sink SHALL recheck
 that the server-owned lease is active immediately before invocation minting;
-an inherited asyncio Context containing the old identity/capability SHALL NOT
-extend the lease or satisfy the owning-execution-scope check.
+an inherited asyncio Context containing an initialize/prior-message
+identity/capability SHALL NOT extend the lease or satisfy the current
+message/execution-claim check.
 The capability alone SHALL NOT authorize a universe, provider, credential,
 host, assignment generation, market agreement, background run, or spend; the
 provider-routing sink SHALL bind those dimensions from fresh server state.
 
-#### Scenario: authenticated request receives an unforgeable capability
-- **WHEN** transport validates a bearer and resolves a non-anonymous identity
-- **THEN** middleware installs one request capability bound to that principal and request nonce
-- **AND** the internal bridge explicitly carries the same object through the router pool only for that request
+#### Scenario: authenticated message receives an unforgeable capability
+- **WHEN** per-message FastMCP middleware resolves a current bearer to a non-anonymous principal for one `tools/call`
+- **THEN** it reserves one dispatch token bound to that principal, session, MCP request, and tool
+- **AND** only the exact registered handler execution may claim the message capability and carry it through the router pool
 
 #### Scenario: anonymous or invalid request receives no capability
-- **WHEN** credentials are absent, invalid, or resolve anonymous
+- **WHEN** current-message credentials are absent, invalid, or resolve anonymous
 - **THEN** no provider request capability is minted
 - **AND** caller data cannot substitute one
 
 #### Scenario: unauthenticated stdio and SSE transports mint no request capability
-- **WHEN** a stdio or SSE server shell runs without `AuthContextMiddleware` or another reviewed authenticated transport identity
+- **WHEN** a stdio or SSE server shell lacks a reviewed authenticated per-message transport identity
 - **THEN** it mints no `ProviderRequestCapability` and request provider work holds
 - **AND** only `activate-requester-host-engines` may mint the separate attested `ProviderHostRequestCapability`
 
-#### Scenario: prior-request replay fails
-- **WHEN** a capability from request A is copied, retained, or presented during request B
-- **THEN** identity-token/current-context validation rejects it
+#### Scenario: stateful session re-derives every message
+- **WHEN** a stateful streamable-HTTP session handles initialize and later tool-call messages with the same or refreshed bearer
+- **THEN** each tool call derives fresh current-request identity and a distinct message reserve
+- **AND** the initialize request's copied identity, token, or revoked lease authorizes nothing
+
+#### Scenario: prior-message replay fails
+- **WHEN** a reserve or capability from message A is copied, retained, or presented during message B
+- **THEN** current session/request/tool and server-claim validation rejects it
 - **AND** no provider or credential is accessed
 
 #### Scenario: inherited asyncio context cannot outlive the request
-- **WHEN** a child task inherits request ContextVars and runs after middleware revokes the request-liveness lease
+- **WHEN** a child task inherits message ContextVars and runs after middleware revokes the message lease
 - **THEN** bridge and sink checks reject the capability despite the inherited identity and object
 - **AND** the child must use a separately owned `ProviderWorkAuthorityReceipt`
 
-#### Scenario: detached child cannot spend while the parent request is active
-- **WHEN** an inherited child task calls the bridge before parent middleware returns
-- **THEN** its execution-scope identity does not match the lease owner and no carrier is minted
-- **AND** only the structured owning request task may propagate request authority
+#### Scenario: detached child cannot spend while the message is active
+- **WHEN** an inherited child task/thread calls the bridge before per-message middleware returns
+- **THEN** its execution identity does not match the registered message task or claimed wrapper worker
+- **AND** no carrier is minted
 
 #### Scenario: structured synchronous MCP dispatch retains request authority
-- **WHEN** the authenticated transport task submits one synchronous MCP tool through its server-managed worker adapter and structurally awaits that exact call
-- **THEN** the adapter registers one active delegate bound to the request lease, handler invocation, and worker identity before the worker can call the bridge
-- **AND** the worker may mint the carrier only during that awaited invocation
+- **WHEN** per-message middleware reserves a token and FastMCP submits the TinyAssets registered synchronous wrapper through AnyIO
+- **THEN** the wrapper atomically claims the reserve against its actual worker identity on entry
+- **AND** that worker may use the message capability only until wrapper or middleware `finally` revokes it before result release
 
-#### Scenario: worker delegation cannot detach or multiply
-- **WHEN** a worker-spawned task/thread, copied context, stale worker, or caller-supplied identifier presents the request capability while the parent request remains active
-- **THEN** it lacks the exact active one-shot delegate and no carrier is minted
-- **AND** worker completion or request completion revokes the delegate before either result is released
+#### Scenario: worker claim cannot detach or multiply
+- **WHEN** a worker-spawned task/thread, copied reserve, stale worker, second claimant, or caller-supplied identifier attempts to claim or present authority
+- **THEN** the server registry rejects it because the reserve is one-shot or the execution identity differs
+- **AND** copied Context alone never proves provider authority
 
 #### Scenario: worker ContextVar absence does not drop explicit authority
 - **WHEN** `call_sync` executes in its thread-pool worker without inherited request ContextVars

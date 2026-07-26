@@ -87,10 +87,22 @@
   per-provider bindings, hold cloud-only custody until a requester-owned role
   supplement exists, and move `_AUTH_PROBE_PROMPT` behind background
   maintenance authority or a zero-output replacement.
-- [ ] 1.24 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
+- [x] 1.24 Obtain the exact-`c40409bd` Opus 5 and independent verifier
+  reviews. Both returned `ADAPT`: stateful FastMCP messages do not execute
+  under the outer ASGI task/initialize Context, worker identity cannot bind
+  before AnyIO submission, and request-time completion auth probing cannot
+  use host quota. The role-complete and maintenance-receipt parts landed in
+  `fdb0c6a9`; the message-dispatch seam remained.
+- [x] 1.25 Fold the measured message-dispatch `ADAPT`: make the outer ASGI
+  context non-authorizing, re-derive current bearer identity in the owned
+  FastMCP per-message hook, reserve one session/request/tool-bound token, and
+  claim it against the actual worker in the TinyAssets registered wrapper on
+  entry. Preserve stateful HTTP while forbidding initialize/prior-message
+  Context authority.
+- [ ] 1.26 Refresh exact-SHA review/handoff evidence and obtain Claude Opus 5
   approval of the exact adapted artifacts; resolve every Critical and
   Important finding.
-- [ ] 1.25 Run strict target/full-tree validation and land this target active
+- [ ] 1.27 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -154,8 +166,11 @@
   Name `_DEFAULT_ENGINE_SOURCE`, `universe_has_assigned_engine`, every
   `engine_setup_required_payload` branch, `_AUTH_PROBE_PROMPT` and its
   completion-based Codex refresh-viability caller, and per-transport auth
-  middleware. Classify that completion as background maintenance requiring
-  its owner receipt or a zero-output replacement, never a host-local probe.
+  middleware. Inventory the outer ASGI `AuthContextMiddleware`, FastMCP
+  stateful streamable-HTTP session/message task split, TinyAssets
+  `Middleware.on_call_tool`, `_register_structured_tool`, and AnyIO worker
+  entry. Classify that completion as background maintenance requiring its
+  owner receipt or a zero-output replacement, never a host-local probe.
   Record that the shipped setup envelope advertises deprecated
   `universe action=set_engine` even though `universe` is not one of the seven
   live handles; do not carry that dead path into target setup.
@@ -174,14 +189,17 @@
 ## 4. RED tests — request capability, birth, and assignment
 
 - [ ] 4.1 Add failing auth-middleware tests proving only a validated
-  non-anonymous bearer request receives one non-copyable/non-serializable
-  `ProviderRequestCapability`; `call_provider` explicitly carries that exact
-  object through `call_sync`, `call_with_policy_sync`, retry/judge branches,
-  and the router pool closure; server liveness plus owning execution-scope
-  checks admit only the exact one-shot FastMCP synchronous-worker delegate
-  while its parent structurally awaits that handler, and reject prior-request
-  replay, lookalikes, copied contexts, detached/nested workers, and inherited
-  child contexts both before and after worker or parent termination.
+  non-anonymous current `tools/call` message receives one
+  non-copyable/non-serializable `ProviderRequestCapability`. Prove the outer
+  ASGI task and stateful-session initialize Context authorize nothing; each
+  later message (including refreshed bearer) re-derives identity through
+  `get_http_request()`, reserves a distinct session/request/tool token, and
+  the TinyAssets wrapper claims it only against the actual AnyIO worker on
+  entry. `call_provider` explicitly carries that exact object through
+  `call_sync`, `call_with_policy_sync`, retry/judge branches, and the router
+  pool closure. Reject prior-message replay, lookalikes, copied reserves,
+  second claims, detached/nested workers, and inherited child contexts before
+  and after wrapper/message termination.
 - [ ] 4.2 Add failing sink tests for exact mechanism/issuer/current identity,
   cross-principal replay, authentic A-on-A capability used on B, and same
   principal with stale assignment generation.
@@ -237,11 +255,14 @@
 ## 5. GREEN implementation — request capability, birth, and assignment
 
 - [ ] 5.1 Implement `ProviderRequestCapability` and request-local mint/reset
-  in `tinyassets/auth/middleware.py` with exact principal, nonce, mechanism,
-  issuer, identity-token, server-owned liveness lease, owning execution scope,
-  one-shot FastMCP synchronous-worker delegation at the server dispatch edge,
-  synchronous worker/request revocation, and inherited-context refusal
-  invariants.
+  in `tinyassets/auth/middleware.py`, the TinyAssets FastMCP
+  `Middleware.on_call_tool` hook, and `_register_structured_tool`. Re-derive
+  current-message bearer identity, reserve the one-shot
+  principal/session/request/tool token in the owning message task, claim it
+  against the actual synchronous worker on wrapper entry (or owning async
+  handler), and revoke in both wrapper and message `finally` before result
+  release. Implement exact nonce/mechanism/issuer/identity token, thread-safe
+  registry, second-claim/replay refusal, and inherited-context non-authority.
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
   canonical `engine_setup_required_payload`, surface-live `setup_paths`,
   optional assignment fields, and migration-aware
@@ -280,10 +301,10 @@
 ## 6. RED tests — propagation, taxonomy, and reference-only launch
 
 - [ ] 6.1 Add exhaustive call-site tests proving live requests retain the
-  exact current capability across the FastMCP structured synchronous-worker
-  delegate, internal args, and the router thread pool; prove the delegate is
-  one-shot, parent-awaited, non-transferable, and revoked before result
-  release;
+  exact current capability across the FastMCP per-message reserve, registered
+  wrapper worker claim, internal args, and router thread pool; prove the
+  reserve is one-shot, message-awaited, non-transferable, current-message
+  bound, and revoked before result release;
   background work requires its owner receipt across task/thread/process
   boundaries; and startup/CI inventory proves every bridge carries one exact
   authority type or holds.
@@ -395,7 +416,11 @@
   currently registered, executable, bound authorized provider; exercise the
   live editorial `role="judge"` and ingestion `role="extract"` call sites. If
   only an absent `ollama-local` remains or any role intersection is empty,
-  keep the assignment held and fail the readiness gate without widening.
+  keep the assignment held and fail the readiness gate without widening. On
+  the canonical stateful `/mcp` app, initialize a session, issue later
+  authenticated tool calls (including a refreshed bearer), and prove each
+  uses only its current per-message identity/capability while the initialize
+  and prior-message Context/leases remain non-authority.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.

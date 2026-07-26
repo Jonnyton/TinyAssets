@@ -203,38 +203,46 @@ target spec.
 
 ### 4. Live requester authority is transport-minted and request-scoped
 
-`identity-auth-and-access-control` owns `ProviderRequestCapability` in
-`tinyassets/auth/middleware.py`. Middleware mints it only after validating a
-bearer and resolving a non-anonymous `Identity`. It contains:
+`identity-auth-and-access-control` owns `ProviderRequestCapability` plus the
+TinyAssets FastMCP message middleware and registered-tool wrapper seams.
+The outer ASGI `AuthContextMiddleware` continues OAuth challenge,
+invalid-token, and anonymous-write pre-dispatch, but its task-local
+`ContextVar` lifetime is not provider authority. In stateful streamable HTTP,
+the ASGI request task does not parent the synchronous tool worker: FastMCP's
+long-lived session task creates a per-message task, and FastMCP 3.2 dispatches
+the registered synchronous wrapper through `anyio.to_thread.run_sync`.
+
+For each `tools/call`, TinyAssets FastMCP `Middleware.on_call_tool` uses
+`fastmcp.server.dependencies.get_http_request()` to inspect the current
+message's HTTP request, resolves its bearer through the configured TinyAssets
+auth provider, and refuses anonymous/invalid identity. This deliberately
+avoids the copied initialize-request Context that stateful sessions otherwise
+retain. Before `call_next`, it registers one opaque dispatch reserve
+containing:
 
 - opaque request nonce;
 - authenticated principal ID;
+- current MCP session ID, request ID, and exact tool name;
 - mechanism `tinyassets.authenticated-request.v1`;
 - issuer `tinyassets.auth.middleware`; and
 - unexported identity token; and
-- opaque server-owned request-liveness lease ID.
+- owning per-message task identity.
 
-It is non-serializable, non-copyable, non-pickleable, and unconstructible from
-tool/API data or other modules. Middleware stores it beside request identity
-in a `ContextVar` only at the transport edge. A private thread-safe
-`RequestCapabilityRegistry` binds the lease to the owning transport
-task/execution-scope identity, marks it active only during that request, and
-revokes it synchronously before middleware resets inherited ContextVars.
-FastMCP 3.2 dispatches synchronous tool functions through
-`anyio.to_thread.run_sync`, so a legitimate canonical-handle call reaches
-`call_provider` from a worker thread rather than the middleware task itself.
-The server-owned synchronous dispatch adapter therefore registers one
-non-serializable, one-shot `ProviderRequestDelegate` before worker submission.
-It binds request lease, parent execution scope, exact handler invocation, and
-worker identity; remains active only while the parent structurally awaits that
-call; and is revoked before the worker result is released. A copied context,
-detached task/thread, nested worker, stale invocation, or caller-controlled
-identifier cannot register or reuse it.
+The reserve is non-authorizing, non-serializable, one-shot, and unavailable
+through tool/API data. The TinyAssets wrapper installed by
+`_register_structured_tool` receives its private copied reserve, then
+atomically claims it at synchronous worker entry after AnyIO has chosen the
+actual thread. The server registry binds the resulting
+`ProviderRequestCapability` and lease to that worker, message, tool, and
+principal. An async registered handler claims in the per-message task before
+entry. Wrapper and message-middleware `finally` paths revoke before returning
+the result. A copied reserve, initialize/prior-message Context, detached task
+or thread, nested worker, second claimant, stale invocation, or
+caller-controlled identifier cannot claim or reuse it.
 
-Before middleware cleanup, `call_provider` retrieves the exact object, proves
-the lease is active plus the current execution scope is its owner or exact
-active structured-worker delegate, and mints
-an internal-only sealed `ProviderAuthorityCarrier` argument for `call_sync`,
+`call_provider` retrieves the exact current capability, proves the server
+registry still marks its message lease plus actual execution claim active, and
+mints an internal-only sealed `ProviderAuthorityCarrier` argument for `call_sync`,
 `call_with_policy_sync`, every retry/judge branch, the router pool closure,
 and `ProviderInvocation`. This explicit carrier is required because
 `ProviderRouter.call_sync` deliberately does not propagate `ContextVar` state
@@ -246,9 +254,10 @@ The provider sink requires the exact capability carried from the current
 transport edge and validates:
 
 - exact mechanism/issuer and identity token;
-- capability principal equals the transport identity captured in the
+- capability principal equals the current-message identity captured in the
   server-owned lease;
-- lease remains active and was propagated by its owning execution scope;
+- current session/request/tool, lease, and registered execution claim remain
+  active;
 - target universe equals routed universe and permits the invoking operation;
 - binding owner equals the capability principal;
 - binding universe/provider/host/generation/digest equal fresh server state;
@@ -259,10 +268,11 @@ those checks. There is no caller-supplied eligible set and no parallel
 universe bundle. Authentic A-on-A authority replayed against B fails even when
 both assignments select the same provider.
 
-An asyncio child inherits a copied Context but not ownership of the
-server-side lease. It cannot mint the sealed carrier while the parent request
-is active, and after middleware returns the synchronously revoked lease fails
-again. ContextVar reset is cleanup, not the authority invalidation mechanism.
+An asyncio child or nested thread may inherit copied Context but cannot claim
+the already-consumed reserve or match the registered execution identity.
+After wrapper/message middleware returns, the synchronously revoked lease
+fails again. ContextVar reset is cleanup, not the authority invalidation
+mechanism.
 
 Background/resumed/scheduled work cannot reuse this capability.
 `harden-background-provider-execution-authority` owns the durable

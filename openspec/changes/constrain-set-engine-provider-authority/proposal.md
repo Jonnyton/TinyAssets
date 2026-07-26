@@ -66,14 +66,15 @@ deny-all.
   atomically publish one coherent role-complete ready or held assignment.
 - Each live request provider attempt intersects the fresh assignment ceiling
   with a server-minted, request-scoped `ProviderRequestCapability` owned by
-  `identity-auth-and-access-control`. The capability is created only after
-  credential validation and binds request nonce plus authenticated principal.
-  A server registry binds its liveness lease to the owning request execution
-  scope and revokes it synchronously at request end, so inherited asyncio
-  contexts cannot extend it. The server-owned FastMCP synchronous dispatch
-  adapter may register one exact one-shot worker delegate only while that
-  request task structurally awaits that handler; detached or copied contexts
-  cannot obtain it. `call_provider` explicitly carries the exact object
+  `identity-auth-and-access-control`. For every `tools/call`, TinyAssets-owned
+  FastMCP message middleware re-derives current HTTP bearer identity and
+  reserves a session/request/tool-bound one-shot token; stateful-session
+  initialize Context never authorizes later messages. The TinyAssets
+  registered-tool wrapper claims the reserve against the actual synchronous
+  worker on entry after AnyIO selects it, and wrapper/message `finally`
+  revokes the lease before result release. Detached, nested, copied, stale,
+  second-claim, and caller-created contexts cannot obtain authority.
+  `call_provider` explicitly carries the exact claimed capability
   through the router's synchronous helpers and thread-pool closure rather
   than depending on `ContextVar` propagation alone. The provider sink binds
   it again to the exact universe, credential owner, provider, host, and

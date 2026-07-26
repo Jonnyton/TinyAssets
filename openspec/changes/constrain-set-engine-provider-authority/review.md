@@ -442,3 +442,41 @@ cutover rather than treating an absent local provider as ready.
 
 Final disposition remains pending a fresh exact-head Opus 5 approval, strict
 validation, and refreshed handoff evidence.
+
+## Tenth exact-revision Opus 5 review — 2026-07-25
+
+Opus 5 and an independent verifier reviewed exact pushed commit `c40409bd`.
+They confirmed strict validity, dark-mode compatibility, and the factual
+subscription-probe correction, but returned `ADAPT` after measuring the
+installed FastMCP 3.2 stateful streamable-HTTP task topology:
+
+1. The outer ASGI auth task awaits `transport.handle_request`; it does not
+   structurally parent the per-message task or synchronous tool worker in the
+   long-lived session task. An owner-ASGI-task lease therefore rejects every
+   legitimate Tier-1 call.
+2. Later stateful-session tool calls can inherit the initialize request's
+   Context snapshot after that ASGI request's `finally` has already revoked
+   it. Initialize/prior-message Context cannot be current request authority.
+3. AnyIO selects the worker inside `to_thread.run_sync`; a contract that binds
+   worker identity before submission has no implementable TinyAssets seam.
+4. A completion-based auth-health probe remains a provider spend. The
+   role-complete adaptation correctly moved it behind bounded background
+   maintenance authority rather than leaving requester-triggerable host quota.
+
+The measured adaptation keeps stateful HTTP and re-anchors authority to two
+owned seams:
+
+- TinyAssets FastMCP `Middleware.on_call_tool` re-derives bearer identity from
+  the current HTTP message via `get_http_request()`, reserves a one-shot token
+  bound to principal/session/request/tool, and structurally awaits
+  `call_next`.
+- The TinyAssets wrapper created by `_register_structured_tool` atomically
+  claims that reserve on worker entry after AnyIO has selected the actual
+  thread. Wrapper and message `finally` revoke before result release.
+
+The outer ASGI task and initialize/prior-message Context are explicitly
+non-authority. Copied reserves, second claims, detached/nested execution,
+stale messages, and caller-supplied identities cannot claim the server lease.
+
+Final disposition remains pending exact-head Opus 5 approval, strict
+validation, and refreshed handoff evidence.
