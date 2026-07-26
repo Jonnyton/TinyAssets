@@ -1382,3 +1382,17 @@ Notes:
 - Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
 - Idea feed refs: none
 - Ship/abandon: merge only if no other foldback already performed all cleanup
+
+## 2026-07-26 - refresh PostgreSQL transactional control-plane authority
+
+- Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review pending
+- Branch: codex/postgres-control-plane-current-main-final-20260726
+- Lane state: claimed; current-main target OpenSpec/audit refresh only
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-current
+- STATUS/Issue/PR: claimed STATUS row; supersedes stale stacked draft PR #1670 only after exact review
+- PLAN refs: per-domain canonical store; full-platform zero-host architecture; §14 load proof
+- Purpose: preserve PostgreSQL authority for catalog/ledger/inbox/market while reconciling current identity, custody, migration, load, market, and execution owners
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-current\_PURPOSE.md
+- Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
+- Review gate: exact current-main Opus 5 plus independent architecture/security/diff review; fresh evidence only in `docs/audits/2026-07-26-postgres-control-plane-refresh.md`
+- Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority
