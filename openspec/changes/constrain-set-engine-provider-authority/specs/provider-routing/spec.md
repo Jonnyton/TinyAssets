@@ -172,8 +172,8 @@ When an auth-health probe is injected, the router SHALL drop a provider whose
 subscription login is definitively `not_logged_in` from fallback chains,
 policy attempt orders, and judge ensemble only after the non-empty provider
 authority ceiling is established. The gate SHALL remain conservative:
-`unknown` and `ok` stay, a probe exception means keep, and no injected probe
-remains a no-op.
+`unknown` and `ok` stay and a probe exception means keep. When no probe is
+injected, the gate SHALL remain an as-built no-op that quarantines nothing.
 
 An authorized pinned writer with dead login SHALL fail loud rather than route
 elsewhere. An authorized chain MAY fall through to `ollama-local` only when
@@ -283,9 +283,11 @@ The provider layer SHALL add immutable non-serializable
 `ProviderLaunchHandle`, plus an executor-local `ProviderExecutor`.
 
 For a live request, `call_provider` SHALL retrieve the exact current
-`ProviderRequestCapability` before middleware cleanup, prove its server-owned
-request-liveness lease remains active and the current task/execution scope is
-the registered owner, mint a sealed internal carrier, and explicitly pass it
+`ProviderRequestCapability` or successor-owned
+`ProviderHostRequestCapability` before transport cleanup, prove its
+server-owned request-liveness lease remains active and the current
+task/execution scope is the registered owner, mint a sealed internal carrier,
+and explicitly pass it
 through internal-only arguments to `call_sync`, `call_with_policy_sync`,
 retry/policy/judge branches, the router `ThreadPoolExecutor` closure, and
 invocation minting. This SHALL NOT depend on ContextVar propagation into the
@@ -312,14 +314,18 @@ Before each attempt, the router SHALL:
    `tinyassets.auth.middleware`, principal matching the authenticated
    transport identity captured by the carrier, and target universe matching
    the routed universe; recheck its server-owned liveness lease immediately
-   before minting invocation; or validate the exact background receipt from
-   its owner;
+   before minting invocation; or validate the exact attested host-request
+   capability with mechanism `tinyassets.attested-host-request.v1`, issuer
+   `activate-requester-host-engines`, and its local
+   principal/host/session/universe/generation tuple; or validate the exact
+   background receipt from its owner;
 4. validate binding principal/universe/provider/host/generation/digest and
    non-empty, unexpired, non-tombstoned, non-revoked state; and
 5. mint a router-token-bound `ProviderInvocation`.
 
-Invocation SHALL contain request capability or owner-defined background
-receipt, target universe, authenticated principal, admitted provider,
+Invocation SHALL contain exactly one HTTP request capability, attested
+host-request capability, or owner-defined background receipt; target universe,
+authenticated principal, admitted provider,
 assignment generation, opaque binding reference/digest, credential/auth
 provenance, `credential_kind`, `authority_class`, immutable call inputs, and
 router-only launch token. It MUST NOT contain native or recoverable
@@ -378,6 +384,11 @@ operation exists.
 - **WHEN** `call_sync` submits provider routing to its class-level thread pool
 - **THEN** its closure carries the exact internal capability object retrieved by `call_provider`
 - **AND** an unset worker ContextVar neither widens authority nor causes a valid request to lose its carrier
+
+#### Scenario: attested local request uses the same sealed carrier boundary
+- **WHEN** local stdio/SSE supplies a live `ProviderHostRequestCapability`
+- **THEN** the carrier and sink bind its exact installation principal, host, session, universe, and assignment generation
+- **AND** it cannot substitute for HTTP request or background authority
 
 #### Scenario: inherited child context is not request liveness
 - **WHEN** an asyncio child inherits identity/capability ContextVars from the request
@@ -586,12 +597,16 @@ classify `ProviderAuthorityHeldError` as provider `error`,
 `provider_error`, exhaustion, fallback, mock, or degraded sentinel. The
 separate provider-attempt receipt owner SHALL consume this exact typed
 classification and extend its closed enums when it aggregates immutable
-attempts/results. `universe-creation` SHALL own the generic rendered
-`engine_setup_required_payload` envelope and map this typed cause into it;
-provider routing does not define a second user-facing envelope.
+attempts/results. `identity-auth-and-access-control` SHALL own the canonical
+authority/setup contract for `engine_setup_required_payload`;
+`universe-creation` SHALL implement its action-layer rendering. Provider
+routing does not define a second user-facing envelope.
 
 On merge, this requirement supersedes the merged active
 `universe-creation` clause that admits a caller-built eligible-provider bundle
+and its same-capability `Missing or partial authority holds execution after
+birth` clause that unconditionally advertises raw BYOC/accepted-market paths
+and names fulfillment as receipt `authority_class`,
 and the merged active `provider-attempt-receipts` closed enums that omit
 `authority_held`. The receipt clause that maps otherwise-unrelated exceptions
 to `outcome=error` / `route_condition=provider_error` SHALL explicitly exclude
@@ -614,13 +629,16 @@ remain fake/test-only.
 
 Self-hosted/host-daemon/local-model activation SHALL require
 `activate-requester-host-engines` across `daemon-identity-and-host-pool`,
-`desktop-host-runtime`, and source-specific provider routing. No live cutover
-or legacy conversion may begin until requester-local opaque custody,
-requester-host, or attested `local_model` route passes rendered end-to-end
-acceptance; the held `engine_setup_required_payload` path is rendered; and
-every background/run/scheduled/daemon provider bridge carries a valid receipt
-from `harden-background-provider-execution-authority` or is proven held
-without breaking canonical connector handles and autonomous loops.
+`desktop-host-runtime`, `identity-auth-and-access-control`, and
+source-specific provider routing. That successor SHALL mint the separate
+attested `ProviderHostRequestCapability` for interactive local stdio/SSE.
+No live cutover or legacy conversion may begin until a Tier-1 chatbot user can
+complete an advertised accepted-market path through the connector; Tier-2
+tray, Tier-3 OSS stdio, and Claude-plugin users can mint local host-request
+authority and complete host/local execution; the typed held payload advertises
+only surface-live paths; and every background/run/scheduled/daemon provider
+bridge carries a valid receipt. A fully held local surface MUST NOT count as
+safe cutover.
 
 #### Scenario: market selection cannot mint execution authority
 - **WHEN** V6 selects an accepted market host
@@ -631,3 +649,8 @@ without breaking canonical connector handles and autonomous loops.
 - **WHEN** the live founder home has only raw-key or otherwise non-ready legacy state and no replacement ready path passes acceptance
 - **THEN** deployment stops before quiescing legacy writers or enforcing the cutover
 - **AND** no raw key is reclassified as an opaque reference
+
+#### Scenario: held local install blocks cutover
+- **WHEN** tray, OSS stdio, or Claude-plugin local runtime cannot mint its attested host-request capability
+- **THEN** post-cutover readiness fails for that surface
+- **AND** deny-all safety is not misreported as a working local product

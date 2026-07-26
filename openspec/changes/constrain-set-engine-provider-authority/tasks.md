@@ -32,9 +32,15 @@
 - [x] 1.8 Republish final-SHA custody acceptance and merged-change
   archive/sync precedence, explicitly carving `ProviderAuthorityHeldError`
   out of receipt `error/provider_error`.
-- [ ] 1.9 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
+- [x] 1.9 Fold the third exact-revision Opus 5 `ADAPT`: extend the host
+  successor into identity/auth for attested stdio/plugin request authority;
+  unify setup-required under the merged identity requirement; fix the default
+  source/readiness predicate; and require surface-completable setup paths.
+- [ ] 1.10 Refresh exact-SHA custody acceptance plus universe/receipt
+  archive-sync handoffs for the unified setup contract.
+- [ ] 1.11 Obtain Claude Opus 5 re-review of the exact adapted artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.10 Run strict target/full-tree validation and land this target active
+- [ ] 1.12 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
@@ -58,10 +64,12 @@
   `ProviderAuthorityHeldError` is never provider `error/provider_error`;
   adapt the merged active change before archive/sync into canonical specs.
 - `activate-requester-host-engines` is a separate successor under
-  `daemon-identity-and-host-pool`, `desktop-host-runtime`, and
-  `provider-routing`. It consumes a stable authenticated account-to-host
+  `daemon-identity-and-host-pool`, `desktop-host-runtime`,
+  `identity-auth-and-access-control`, and `provider-routing`. It consumes a
+  stable authenticated account-to-host or attested same-user installation
   principal and `daemon_summon`, owns ready `local_model` and
-  `founder_hosted_daemon` writers, and grants no authority to pool rows or
+  `founder_hosted_daemon` writers, mints local interactive
+  `ProviderHostRequestCapability`, and grants no authority to pool rows or
   unattested client identifiers.
 - `harden-background-provider-execution-authority` is a separate successor
   that owns durable receipts for post-response graph/run/resume/schedule,
@@ -82,14 +90,18 @@
   birth, config read/write, provider call bridge, direct provider bypass, and
   `call_provider` caller, including graph run/resume/version/policy/judge,
   RAPTOR, reflexion, agentic retrieval, background work, and maintenance.
+  Name `_DEFAULT_ENGINE_SOURCE`, `universe_has_assigned_engine`, every
+  `engine_setup_required_payload` branch, and per-transport auth middleware.
 - [ ] 3.3 Compare draft #1606 lock/transaction/migration/deploy-fence commits
   to current main; select only still-applicable pieces and record why every
   other piece is obsolete or owned elsewhere.
 - [ ] 3.4 Prove at least one target-ready source can be deployed before
   cutover: requester-local opaque custody, requester-host, or attested
-  `local_model`. Prove every background/run/scheduled/daemon bridge has its
-  owner receipt or is safely held, and record the live founder home's current
-  source/credential evidence without reading or exposing secret material.
+  `local_model`. Prove Tier-1 connector users can complete accepted-market
+  setup, Tier-2 tray/Tier-3 OSS/Claude-plugin local users can mint host-request
+  authority, every background/run/scheduled/daemon bridge has its owner
+  receipt, and record the live founder home's current source/credential
+  evidence without reading or exposing secret material.
 
 ## 4. RED tests — request capability, birth, and assignment
 
@@ -107,8 +119,10 @@
   provider, host, generation, digest, expired, tombstoned, or revoked state;
   prove failure precedes credential/provider access.
 - [ ] 4.4 Add failing newborn tests across public, first-contact, internal
-  migration, and dev paths for `unassigned`, generation `0`, and `[]` before
-  index/home/living visibility; failure rolls back the directory.
+  migration, and dev paths for source/state `unassigned`, generation `0`, and
+  `[]` before index/home/living visibility; `_DEFAULT_ENGINE_SOURCE` and
+  `universe_has_assigned_engine` must report not ready; failure rolls back the
+  directory.
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
@@ -128,7 +142,10 @@
 - [ ] 4.9 Add failing first-contact/converse tests proving a pre-provider
   `ProviderAuthorityHeldError` maps to canonical
   `engine_setup_required_payload` without exhaustion or chain state, preserves
-  completed birth/home, and never becomes generic error prose.
+  completed birth/home, and never becomes generic error prose. Cover the
+  legacy bare `AllProvidersExhaustedError` branch for an unassigned newborn,
+  assert raw BYOC is absent, and prove every advertised setup path is
+  completable on the tested connector/tray/stdio/plugin surface.
 - [ ] 4.10 Capture the request/birth/assignment RED evidence.
 
 ## 5. GREEN implementation — request capability, birth, and assignment
@@ -138,8 +155,10 @@
   issuer, identity-token, server-owned liveness lease, owning execution scope,
   synchronous revocation, and inherited-context refusal invariants.
 - [ ] 5.2 Implement direct `ProviderAuthorityHeldError` mapping to the
-  canonical `engine_setup_required_payload`; then, only after that path and at
-  least one ready source are live behind the deployment gate, implement
+  canonical `engine_setup_required_payload`, surface-live `setup_paths`,
+  `_DEFAULT_ENGINE_SOURCE=unassigned`, and readiness-derived
+  `universe_has_assigned_engine`; then, only after Tier-1 connector and local
+  surfaces have their required completable paths, implement
   `engine_source=unassigned` plus independent newborn deny-all initialization
   in the atomic birth transaction for every entry path.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
@@ -235,14 +254,15 @@
 - [ ] 8.2 Prove conversion locked, durable, idempotent, resumable, preserves
   unrelated credential bytes, leaves no unclassified universe or post-cutover
   `None`, and cannot restore wider authority.
-- [ ] 8.3 Block cutover unless requester-local opaque custody,
-  requester-host, or attested local-model activation passes end-to-end; the
-  generic held/setup-required chatbot path is rendered; every
-  background/run/scheduled/daemon bridge carries its owner receipt or is
-  safely held; and the live founder home has a reviewed ready mapping or
-  explicit replacement. The setup gate passes only when the typed
-  `ProviderAuthorityHeldError` itself renders the canonical setup payload.
-  Stop before enabling newborn deny-all or quiescing legacy writers if not.
+- [ ] 8.3 Block cutover unless a Tier-1 streamable-HTTP chatbot user can
+  complete an advertised accepted-market path through the live connector;
+  Tier-2 tray, Tier-3 OSS stdio, and Claude-plugin local users can mint
+  `ProviderHostRequestCapability` and complete host/local execution; every
+  background/run/scheduled/daemon bridge carries its owner receipt; and the
+  live founder home has a reviewed ready mapping or explicit replacement. The
+  typed `ProviderAuthorityHeldError` and legacy unassigned-exhaustion branches
+  must render only surface-live setup paths. A fully held surface fails this
+  gate. Stop before newborn deny-all or legacy-writer quiescence if any fails.
 - [ ] 8.4 Run focused provider/auth/assignment/custody/birth/call-site/crash
   suites, surrounding regressions, Ruff, diff check, mirror parity, and strict
   OpenSpec validation.
@@ -255,9 +275,11 @@
   Important finding.
 - [ ] 8.7 Deploy through immutable-image cutover, run daemon-only canary, and
   retain rollback/release receipts.
-- [ ] 8.8 Run rendered chatbot acceptance: configure the live ready source,
-  force its provider to fail, and prove no alternate provider, maintainer
-  quota, or unrelated credential is used.
+- [ ] 8.8 Run rendered acceptance on Tier-1 chatbot connector, Tier-2 tray,
+  Tier-3 OSS stdio, and Claude-plugin local runtime: complete one advertised
+  setup path on each, configure the live source, force its provider to fail,
+  and prove no alternate provider, maintainer quota, unrelated credential, or
+  dead setup instruction is used.
 - [ ] 8.9 Inspect freshness-stamped post-fix clean-user evidence; if absent,
   leave a STATUS monitoring item.
 - [ ] 8.10 Sync/archive after implementation, update sibling dependencies and

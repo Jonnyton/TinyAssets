@@ -22,13 +22,16 @@ Capability ownership is explicit:
 
 - `provider-routing`: assignment ceilings/admission, provider-layer
   propagation, frozen invocation/launch, and call-local execution evidence;
-- `identity-auth-and-access-control`: authenticated request capability minting;
+- `identity-auth-and-access-control`: HTTP and attested-local request
+  capability minting plus the canonical setup-required authority envelope;
 - `universe-lifecycle-and-soul`: independent newborn deny-all invariant;
-- `universe-creation`: first-contact and held/setup semantics;
+- `universe-creation`: birth/home transaction and action-layer rendering of
+  the canonical setup envelope;
 - `credential-vault` plus #1746: credential isolation, custody, and retirement;
 - `provider-attempt-receipts`: result-local receipt aggregation;
-- `daemon-identity-and-host-pool` plus `desktop-host-runtime`: requester-host
-  activation through the named successor; and
+- `daemon-identity-and-host-pool`, `desktop-host-runtime`,
+  `identity-auth-and-access-control`, and `provider-routing`: requester-host,
+  local-model, stdio, and local-SSE activation through the named successor;
 - `paid-market-economy` plus `distributed-execution`: accepted remote work.
 
 ## Goals / Non-Goals
@@ -79,6 +82,12 @@ Every newborn begins with `engine_source="unassigned"`,
 `allowed_providers=[]`. `ready` requires a non-empty ceiling; all other states
 require `[]`.
 
+`_DEFAULT_ENGINE_SOURCE` becomes `unassigned`.
+`universe_has_assigned_engine` stops comparing source strings and instead
+requires `ready` plus a non-empty ordinary ceiling or separately proven
+accepted remote execution grant. This keeps both typed authority holds and
+legacy exhaustion on the canonical setup-required path.
+
 ### 2. Source resolution is strict and held sources stay deny-all
 
 The resolver is total over both the shipped source domain and target values:
@@ -108,8 +117,11 @@ generation/digest, and its singleton ceiling.
 `founder_hosted_daemon` remain held until
 `activate-requester-host-engines` validates endpoint/daemon/local model,
 requester authorization, and a stable authenticated account-to-host
-principal. That successor modifies `daemon-identity-and-host-pool`,
-`desktop-host-runtime`, and the source activation seam in `provider-routing`;
+principal or an attested same-OS-user local-installation principal. That
+successor modifies `daemon-identity-and-host-pool`, `desktop-host-runtime`,
+`identity-auth-and-access-control`, and the source activation seam in
+`provider-routing`; it mints a separate session-scoped
+`ProviderHostRequestCapability` for attested interactive local stdio/SSE and
 it may consume `daemon_summon` but not treat pool rows or unattested client IDs
 as authority. It is the sole writer of ready `local_model` and
 `founder_hosted_daemon` assignments. `market_rented` remains held permanently
@@ -340,25 +352,35 @@ consent and the reviewed distributed-execution production route. It is not
 host fallback, maintainer capacity, requester-local assignment, or market
 acceptance.
 
-### 10. Cutover preserves at least one live-ready path
+### 10. Cutover preserves a completable path on every first-class surface
 
-No runtime enforcement or legacy conversion may begin until at least one
-end-to-end ready source is deployed and rendered:
+No runtime enforcement or legacy conversion may begin until each affected
+surface has an end-to-end ready and advertised path:
 
-1. requester-local opaque OS custody through #1746 and the request capability;
-2. `activate-requester-host-engines` with stable account-to-host binding; or
-3. its attested `local_model` route with `ollama-local`.
+1. a newborn Tier-1 streamable-HTTP chatbot user can accept market execution
+   through the live connector after paid-market agreement and
+   distributed-execution B2/B13 are live;
+2. Tier-2 tray, Tier-3 OSS stdio, and mirrored Claude-plugin local runtime can
+   mint `ProviderHostRequestCapability` through
+   `activate-requester-host-engines` and complete attested requester-host or
+   `local_model` execution; and
+3. any retained requester-local opaque OS custody path through #1746 has a
+   surface that can actually complete its secure setup.
 
 The canonical `engine_setup_required_payload` must be live and rendered for
 the exact pre-provider `ProviderAuthorityHeldError` cause before newborn
 deny-all state is enabled. The universe action layer owns the direct mapping;
 it MUST NOT require `AllProvidersExhaustedError`, non-null chain state, or a
-provider attempt. Provider routing supplies only the typed held cause. Any
-background/run/scheduled or daemon path that can reach providers must also
-carry a valid
+provider attempt. Its `setup_paths` list contains only routes that pass
+end-to-end acceptance on the current request surface; raw `byo_api_key` and
+unavailable desktop-only routes are absent. Provider routing supplies only
+the typed held cause. Any background/run/scheduled or daemon path that can
+reach providers must also carry a valid
 `ProviderWorkAuthorityReceipt` from
 `harden-background-provider-execution-authority`, or be held and proven not to
 break the connector's canonical handles and autonomous loops, before cutover.
+A fully held OSS clone, tray, stdio/SSE server, or Claude-plugin runtime is a
+failed release, not a safe cutover.
 
 The existing live founder home remains on the pre-cutover artifact until its
 credential/source is inventoried. Current raw `byo_api_key` records have no

@@ -13,10 +13,12 @@ cannot mint requester-provider authority, sibling gates were still circular,
 and cutover had no reachable ready source. An exact-revision re-review then
 found that an ambient `ContextVar` cannot cross the router thread pool,
 background/daemon work had no authority owner, the source table was not total,
-and merged-unsynced sibling deltas contradicted the proposed boundary. This revision
-uses an explicit internal request carrier, names a durable background owner,
-makes source migration total, and publishes exact precedence for sibling
-adaptation.
+and merged-unsynced sibling deltas contradicted the proposed boundary.
+Successive reviews also exposed inherited-task liveness, typed setup mapping,
+unowned local transport authority, stale engine-readiness predicates, and dead
+advertised setup paths. This revision closes each boundary and treats a
+surface with no completable path as failed release readiness rather than safe
+deny-all.
 
 ## What Changes
 
@@ -78,12 +80,15 @@ adaptation.
 - `self_hosted_endpoint`, `host_daemon`, target
   `founder_hosted_daemon`, and attested `local_model` activation belong to the named
   `activate-requester-host-engines` successor across
-  `daemon-identity-and-host-pool`, `desktop-host-runtime`, and
-  `provider-routing`. It is the sole writer of ready host/local assignments,
-  including `local_model` -> `["ollama-local"]`. Cutover is forbidden until
-  a ready request path, the exact typed authority hold renders the canonical
-  setup-required payload, and every relevant background/daemon authority
-  bridge is live or safely held. Both future owners have durable STATUS lanes.
+  `daemon-identity-and-host-pool`, `desktop-host-runtime`,
+  `identity-auth-and-access-control`, and `provider-routing`. It is the sole
+  writer of ready host/local assignments, including `local_model` ->
+  `["ollama-local"]`, and the sole minter of attested interactive local
+  `ProviderHostRequestCapability`. Cutover is forbidden until Tier-1 connector
+  market setup and Tier-2/Tier-3/plugin local setup are each completable,
+  the exact typed authority hold renders only live setup paths, and every
+  background/daemon authority bridge is live. Both future owners have durable
+  STATUS lanes.
 - Draft PR #1606 remains source-only retained work. Its assignment lock,
   transaction, migration, and deployment-fence pieces may be selectively
   ported after current-main review; it does not merge as an authority owner.
@@ -100,7 +105,8 @@ None.
   server-minted request capability, reference-only invocation, and frozen
   executor-local launch.
 - `identity-auth-and-access-control`: Define the unforgeable request-scoped
-  provider capability minted only by authenticated transport middleware.
+  HTTP capability, successor-owned attested local transport capability, and
+  canonical surface-live setup-required envelope.
 - `universe-lifecycle-and-soul`: Require every newborn universe to persist an
   explicit unassigned deny-all engine state within atomic creation.
 
@@ -116,9 +122,11 @@ None.
 - Upstream inputs: authenticated transport middleware supplies the
   request-scoped capability; an internal typed carrier crosses the router
   pool; the sink derives target bindings from server state. The merged active
-  `universe-creation` change currently supplies a caller-built eligible set
-  and MUST adapt before archive/sync into canonical specs: it retains only
-  target universe/request lineage and `fulfillment_class`.
+  `universe-creation` change currently supplies a caller-built eligible set,
+  raw BYOC/accepted-market setup paths, and receipt `authority_class` naming.
+  Before archive/sync it MUST adopt this change's same-named identity
+  requirement: target lineage only, `fulfillment_class`, and setup paths
+  proven completable on the current request surface.
 - Sibling boundaries: `retire-mcp-provider-secret-deposit` owns raw
   `llm_api_key` ingress refusal and OS custody; `provider-attempt-receipts`
   owns immutable result-local evidence; credential-vault owns ambient

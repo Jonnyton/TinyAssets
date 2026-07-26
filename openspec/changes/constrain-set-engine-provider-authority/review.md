@@ -150,3 +150,39 @@ Final candidate `1a2262b9` handoffs:
   comment `issuecomment-5081342047`; and
 - receipt exception carve-out plus archive/sync precedence: PR #1756 comment
   `issuecomment-5081343125`.
+
+## Third exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `1e41d6b0` and returned `ADAPT`. Critical: the
+host/local successor wrote engine assignments but did not own interactive
+request capability minting for unauthenticated stdio/SSE, so Tier-2 tray,
+Tier-3 OSS, and Claude-plugin local surfaces could remain permanently held.
+
+Important findings:
+
+- the canonical setup-required contract was split between
+  `identity-auth-and-access-control` and `universe-lifecycle-and-soul`, while
+  the merged universe change still mandated raw BYOC/accepted-market paths;
+- `_DEFAULT_ENGINE_SOURCE` and `universe_has_assigned_engine` would interpret
+  new `engine_source=unassigned` as an assigned engine on the legacy
+  exhaustion branch; and
+- cutover proved that setup prose rendered, not that any advertised path was
+  completable on the user's actual surface.
+
+The next adaptation:
+
+- extends `activate-requester-host-engines` into
+  `identity-auth-and-access-control` and gives it the separate,
+  session-scoped `ProviderHostRequestCapability` for attested same-user
+  stdio/local-SSE/tray/plugin execution;
+- moves the typed-held setup contract into
+  `identity-auth-and-access-control` under the same requirement name as the
+  merged universe change, with explicit archive/sync supersession;
+- requires `_DEFAULT_ENGINE_SOURCE=unassigned` and readiness-derived
+  `universe_has_assigned_engine`, including legacy exhaustion proof; and
+- requires Tier-1 connector-completable accepted-market setup plus
+  surface-specific local setup for tray, OSS stdio, and Claude plugin before
+  cutover. Raw BYOC and unavailable desktop-only paths are not advertised.
+
+Final disposition remains pending validation, refreshed exact-SHA handoffs,
+and Opus 5 approval.
