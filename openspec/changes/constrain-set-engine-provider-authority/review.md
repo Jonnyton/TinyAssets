@@ -93,3 +93,12 @@ The adapted artifacts now:
 
 Final disposition remains pending strict validation, adapted exact-SHA
 handoffs, and another Opus 5 review.
+
+Adapted exact-SHA `967b048d` handoffs:
+
+- custody provider-owner acceptance: PR #1746 comment
+  `issuecomment-5081288367`;
+- universe bundle/provider-set precedence: PR #1660 comment
+  `issuecomment-5081288830`; and
+- receipt closed-enum precedence: PR #1650 comment
+  `issuecomment-5081289120`.

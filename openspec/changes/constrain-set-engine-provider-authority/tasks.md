@@ -21,7 +21,7 @@
   authority owner; make shipped/target source resolution total and local
   fallback reachable; declare sibling precedence; preserve all canonical
   clauses; and gate newborn deny-all on rendered setup plus ready paths.
-- [ ] 1.6 Publish the adapted exact-SHA provider-owner acceptance required by
+- [x] 1.6 Publish the adapted exact-SHA provider-owner acceptance required by
   custody tasks 1.3a/1.3b, plus explicit supersession notices for the active
   universe-authority bundle and receipt enums. This output gate does not make
   provider routing depend on sibling acceptance.
