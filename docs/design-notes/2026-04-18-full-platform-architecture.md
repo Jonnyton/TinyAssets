@@ -539,7 +539,7 @@ This is an ordering of work within a single-build delivery, not a phased rollout
   - §29 chatbot behavioral patterns (scope-extension + transparent privacy): **+0.5d** mostly prompts + metadata field.
   - §30 real-world handoff pipeline (arXiv / DOI / GitHub Releases / ISBN + auto-badge): **+1.5d** on track N.
   - §15.1 + §5.2 + §14 parallel fan-out + top-N ranking + S11 scale scenario: **+0.5d** folds into existing cascade + track J.
-  - **§18 self-hosted-daemon-no-fee settlement branch:** negligible (≤0.1d) — small conditional in existing settlement pseudocode.
+  - **§18 settlement fee rule:** superseded 2026-07-25: fee on every positive-gross settlement (#1732). No same-owner conditional remains to implement.
   - **Subtotal (full scope): +7.0–8.6 dev-days.** MVP-narrowed §27 reduces this to +5.0–6.1.
 - **A/B/C-follow revision (§26/§27/§29/§31):**
   - §26 three-state onboarding + Claude-catalog State-1 self-connect: **+0.2d** (most of it is catalog-listing ops, near-zero dev).
@@ -1423,13 +1423,8 @@ Threshold is config-level (`settlement_threshold_usd`), not hardcoded. Raise / l
 ```
 settle_request(request_id):
   r = requests[request_id]
-  # Self-hosted = no fee (Scenario C4 / host directive 2026-04-19):
-  # when requester and daemon-host are the same user, platform takes zero fee.
-  if r.requester_user_id == r.winning_host_owner_user_id:
-      platform_fee = 0
-      host_payout  = r.bid_amount   # effectively a no-op on-chain; internal ledger entry only
-      ledger.write(completed_settlement_row, mode='self_hosted_zero_fee')
-      return
+  # superseded 2026-07-25: fee on every positive-gross settlement (#1732).
+  # Same-owner, linked-party, connected, and external supply receive no exemption.
   bid_usd        = r.bid_amount_usd_cached
   platform_fee   = r.bid_amount * 0.01
   host_payout    = r.bid_amount - platform_fee
@@ -2639,7 +2634,7 @@ Routes through the existing `submit_request` RPC per §20.4; `capability_id` inc
 
 **Cascade step-2 naturally absorbs `autoresearch` bids.** The highest-value/effort paid requests for a daemon in always-active mode will often be optimization runs — they're fungible, deadline-bounded, and fan out cleanly. No cascade logic change needed; the new request kind + capability are the only additions.
 
-**Settlement per §18 hybrid.** 1000 iterations at <$1-each batches to a single weekly on-chain settlement; ≥$1-each iterations settle per-bid. `self_hosted_zero_fee` branch (§18.3 pseudocode) applies when requester == daemon-host — your own daemon optimizing your own node is free.
+**Settlement per §18 hybrid.** 1000 iterations at <$1-each batches to a single weekly on-chain settlement; ≥$1-each iterations settle per-bid. superseded 2026-07-25: fee on every positive-gross settlement (#1732). Requester/daemon-host identity may affect market-index eligibility, never settlement economics.
 
 ### §32.6 Parallelism — 1000 runs fans cleanly
 
@@ -2690,7 +2685,7 @@ Per-user chatbot handles three conversational moments:
 This feature is the clearest Q21 real-world-effect moment across every persona:
 
 - **Maya (tier-1).** Her invoice-OCR node currently drifts on vendor names (grievance-LIVE-F-vendor-naming from Session 1 predictions). Set metric = vendor-name-match-rate, editable_surface = prompt + few-shots, budget = 100 runs on her 12-invoice April batch. Sleeps. Wakes to an optimized prompt that halves her manual-merge time. Real workflow, real hours saved, real monthly close done faster.
-- **Devin (tier-2).** His continuity-check node (Session 2 mock, Track N). Metric = continuity-error-false-positive-rate against a hand-labeled 20-chapter corpus. Budget = 500 runs on his RTX 4070 overnight, `self_hosted_zero_fee` branch means $0 cost. Wakes to an optimized node that flags real continuity breaks without noise.
+- **Devin (tier-2).** His continuity-check node (Session 2 mock, Track N). Metric = continuity-error-false-positive-rate against a hand-labeled 20-chapter corpus. Budget = 500 runs on his RTX 4070 overnight. Owner-local execution need not create a positive-gross market settlement; if it does, superseded 2026-07-25: fee on every positive-gross settlement (#1732). Wakes to an optimized node that flags real continuity breaks without noise.
 - **Ilse (tier-3).** Her research-paper critique prompt. Metric = agreement with peer-reviewer judgment on a known-good 10-paper sample. Budget = 200 runs, $5 cap. Wakes to an improved critique node she can contribute back to the commons.
 
 Every persona, every passion project, directly accelerated. "Real world utility is the only valid use case" (§24) — autoresearch makes every node in the catalog more useful tomorrow than it was today.
@@ -2740,7 +2735,7 @@ Net §10 delta: **+3–3.5 dev-days.** New totals: **~22.8–27d with two devs, 
 - Does not optimize without a user-provided metric. The metric is the compass; platform does not infer one.
 - Does not edit the harness. Harness is locked at attach-time; changing it resets the optimization history (a new spec attaches to a new harness).
 - Does not gate the complex mode. Users can express whatever their chatbot can encode; platform does not limit search strategies or objective functions.
-- Does not run against private-instance data by default. `optimization_spec.md` + test harness live in the concept layer (public by default); instance data stays owner-local per §17. Users who want to optimize against their own instance data run `self_hosted_zero_fee` branch on their own daemon.
+- Does not run against private-instance data by default. `optimization_spec.md` + test harness live in the concept layer (public by default); instance data stays owner-local per §17. Users may optimize against their own instance data on their own daemon; superseded 2026-07-25: fee on every positive-gross settlement (#1732).
 - Does not auto-merge non-improving candidates. Baseline always wins ties. Attribution preserved even for rejected candidates (they stay in `optimization_runs` as remix material).
 
 ---
@@ -2895,7 +2890,7 @@ All gap items tracked for spec #25 sharpening in the next drift-audit cycle.
 - **§8 moderation.** `flag_content` invokes the node's configured moderation evaluator; result lands in `evaluator_results` and in `moderation_flags`. Tier-gated escalation routes to more-expensive evaluators (tier-1 auto-rubric → tier-2 rep-earned peer review → admin-pool human). Same tiered-chain pattern as §33.3.
 - **§24 real-world-outcomes.** `real_world_outcomes.verified_count` increments from outcome-verifier evaluator runs (DOI/ISBN/arXiv external-API evaluators). Badges sourced from `evaluator_results` where verdict='accept'.
 - **§15 discovery ranking.** `public_demand_ranked` materialized view becomes an aggregation over `evaluator_results` grouped by artifact. Quality signals lose their ad-hoc column sprinkle; one uniform source.
-- **§18 paid-market settlement.** Bid acceptance gates on the request's acceptance-evaluator verdict. Dispute window re-runs evaluator at higher tier. `self_hosted_zero_fee` branch still applies — no platform fee when host runs own evaluator against own work.
+- **§18 paid-market settlement.** Bid acceptance gates on the request's acceptance-evaluator verdict. Dispute window re-runs evaluator at higher tier. superseded 2026-07-25: fee on every positive-gross settlement (#1732), including when a host runs its own evaluator against its own work.
 - **§16 wiki-edit merge-suggest.** On every edit, chatbot invokes the node's default evaluator on (old, new) pair → surfaces "score improved 0.71 → 0.84" to the user before commit.
 - **§15.3C converge.** Ratification invokes each source's editor-evaluator on the proposed canonical. Passing threshold per source = ratification vote. Formal collapse of the ratification workflow around the evaluator primitive.
 - **§5.2 cascade step-3 stays distinct** per §33.1 audit. Cascade *consumes* evaluator outputs as signals but is not itself an evaluator. Clear boundary.

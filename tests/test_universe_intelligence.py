@@ -10,16 +10,41 @@ from pathlib import Path
 
 import pytest
 
+import tinyassets.api.interlocutor as interlocutor
 import tinyassets.universe_intelligence as ui
 from tinyassets.config import write_universe_config_fields
 from tinyassets.universe_bundle import seed_okf_bundle
+
+
+@pytest.fixture(autouse=True)
+def _data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point the resolvers at the test tree.
+
+    Assembly now runs grounding through the tier ∩ visibility disclosure filter
+    (relay task 6.6), which resolves against the universe registry — so these
+    tests need a real data dir rather than a bare directory.
+    """
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
 
 
 def _seed(tmp_path: Path) -> Path:
     udir = tmp_path / "u-test"
     udir.mkdir()
     seed_okf_bundle(udir, purpose="To help my founder bring their projects to life.")
+    # Register + declare so disclosure is evaluable. Declared `public`, so an
+    # unauthenticated in-process caller (T0) is served the universe's public
+    # grounding; founder-private grounding stays excluded by the filter itself.
+    _declare(tmp_path, "u-test")
     return udir
+
+
+def _declare(base: Path, uid: str) -> None:
+    """Register + declare a universe so disclosure can be evaluated for it."""
+    import tinyassets.api.visibility as vis
+    from tinyassets.daemon_server import ensure_universe_registered
+
+    ensure_universe_registered(base, universe_id=uid, universe_path=base / uid)
+    vis.set_universe_visibility(uid, "public")
 
 
 def _fm(path: Path, key: str) -> str:
@@ -30,13 +55,18 @@ def _fm(path: Path, key: str) -> str:
     return str(meta.get(key, ""))
 
 
-def test_system_prompt_is_first_person_and_grounded(tmp_path):
+def test_system_prompt_is_first_person_and_grounded(tmp_path, monkeypatch):
+    # The universe must be registered + visibility-declared: assembly now runs
+    # the founder's grounding through the tier ∩ visibility disclosure filter
+    # (relay task 6.6), so a bare directory is no longer enough context.
     udir = _seed(tmp_path)
     (udir / "founder.md").write_text(
         "# Founder\nMy founder is Jonathan, a builder of small tools.",
         encoding="utf-8",
     )
-    prompt = ui._build_persona_system_prompt(udir)
+    prompt = ui._build_persona_system_prompt(
+        udir, universe_id="u-test", tier=interlocutor.T2
+    )
 
     assert "first person" in prompt.lower()
     # never a neutral assistant
@@ -84,11 +114,13 @@ def test_converse_missing_universe_raises(tmp_path, monkeypatch):
         ui.converse("u-nope", "hello")
 
 
-def test_unnamed_newborn_prompt_is_honest(tmp_path):
+def test_unnamed_newborn_prompt_is_honest(tmp_path, monkeypatch):
     # A freshly-seeded universe has no learned name yet — the prompt must say so
     # rather than invent one.
     udir = _seed(tmp_path)
-    prompt = ui._build_persona_system_prompt(udir)
+    prompt = ui._build_persona_system_prompt(
+        udir, universe_id="u-test", tier=interlocutor.T2
+    )
     assert "name yet" in prompt.lower() or "newly born" in prompt.lower()
 
 
