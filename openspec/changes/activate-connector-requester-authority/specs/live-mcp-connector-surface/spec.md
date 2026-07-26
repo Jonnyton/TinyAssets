@@ -42,9 +42,11 @@ credential, secret, host address, wallet token, actor/tenant override, or
 internal authority carrier.
 
 Refusal SHALL distinguish malformed/stale acceptance, authorization failure,
-budget conflict, quote expiry, cancellation, unavailable capacity, dependency
-unavailability, and same-key/different-body conflict. Repair SHALL distinguish
-an absent, expired, revoked, fenced, cancelled, or inconsistent remote grant
+budget conflict, quote expiry, quote/fee/policy drift, cancellation,
+unavailable or oversubscribed capacity, unavailable requester funding,
+dependency unavailability, and same-key/different-body conflict. Repair SHALL
+distinguish an absent, expired, revoked, fenced, cancelled, overspent, or
+inconsistent market mandate, per-job quote/capacity/funding path, or B2 grant
 and advertise only accepted-market actions proven completable on the live
 connector.
 
@@ -54,16 +56,17 @@ connector.
 - **THEN** structured content and text agree on the exact universe, accepted quote/version, spend bound, remote-ready state, and idempotency outcome
 - **AND** neither representation contains a secret or positive-authority carrier
 
-#### Scenario: invalid activation or per-job authority renders repair without fallback
+#### Scenario: invalid mandate or per-job authority renders repair without fallback
 
-- **WHEN** an accepted-market universe cannot re-derive its current B13-bound activation grant or obtain an exact per-job B2 grant
+- **WHEN** an accepted-market universe cannot re-derive its current B13-bound market mandate or obtain the exact fresh per-job quote, capacity consumption, requester-funding reservation, and B2 grant
 - **THEN** the connector renders a typed accepted-market repair or renewal state
 - **AND** it does not advertise maintainer, local, BYOC, free, desktop-only, or generic engine-less fallback
 
 ### Requirement: Public activation cutover requires connector and concurrency proof
 
 The action SHALL remain unadvertised as completable and production-inactive
-until paid-market agreement, B13-bound activation authority, per-job B2
+until paid-market agreement, a B13-bound non-executable market mandate,
+per-job executable quote/capacity/requester-funding consumption and B2
 production, execution admission, the activation transaction, and pre-routing
 remote dispatch are integrated.
 Cutover MUST pass strict schema and authority-mutation tests, section 14
@@ -78,5 +81,5 @@ conversation through `https://tinyassets.io/mcp`.
 
 #### Scenario: incomplete dependency blocks completable advertising
 
-- **WHEN** any paid-market, B2/B13, execution-admission, activation, dispatch, canary, or load-proof gate is incomplete
+- **WHEN** any paid-market mandate, fresh per-job quote, capacity, requester-funding, B2/B13, execution-admission, activation, dispatch, canary, or load-proof gate is incomplete
 - **THEN** the connector does not describe accepted-market activation as a completable live path and global Tier-1 cutover remains blocked

@@ -44,21 +44,21 @@ identity and execution authority rather than reuse the activation capability.
 
 The activation composition boundary SHALL combine verified requester identity,
 universe authorization, a current accepted paid-market agreement, and the
-current non-executable B13-bound activation grant before publishing
+current non-executable B13-bound bounded-market mandate before publishing
 `engine_source="accepted_market"`,
 `engine_assignment_state="remote_ready"`, and `allowed_providers=[]`. Identity,
 OAuth, role, founder status, or universe ownership MUST NOT substitute for the
-activation grant or the separate exact per-job B2 grant. A failed composition
-SHALL publish no partial activation state.
+mandate, exact per-job market/funding/capacity authority, or separate B2 grant.
+A failed composition SHALL publish no partial activation state.
 
 #### Scenario: complete authority publishes remote-ready state
 
-- **WHEN** the exact authenticated requester accepts valid bounded market terms and the B13 root returns a current universe-bound non-executable activation grant
+- **WHEN** the exact authenticated requester accepts valid bounded market terms and the B13 root returns a current universe-bound non-executable mandate
 - **THEN** the composition atomically records the owner references and publishes `accepted_market + remote_ready + []`
 - **AND** no maintainer credential, quota, wallet, compute, desktop, or environment fallback participates
 
 #### Scenario: identity without execution grant remains held
 
-- **WHEN** requester identity and universe access are valid but paid-market or B13-bound activation authority is absent, expired, revoked, fenced, cancelled, or inconsistent
+- **WHEN** requester identity and universe access are valid but paid-market or B13-bound mandate authority is absent, expired, revoked, fenced, cancelled, or inconsistent
 - **THEN** no remote-ready assignment is published and the connector returns a typed refusal or accepted-market repair state
 - **AND** identity authority is not promoted into provider or execution authority
