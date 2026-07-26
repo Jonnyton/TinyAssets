@@ -21,9 +21,15 @@ support private branches or prove who authorized unattended work.
   dispatch, and graph child enqueue persist only opaque binding references and
   fail closed when the binding is absent, stale, revoked, exhausted, or no
   longer authorized.
-- Cover authenticated request admission, goal-pool and paid-market producer
+- Cover async live/version root runs and selector/leaderboard/market delegates,
+  authenticated request admission, goal-pool and paid-market producer
   emission, live/frozen direct child invocation, and interrupted-run resume as
   additional issuance roots with the same target-attempt gate.
+- Cover authenticated wiki `file_bug` investigation forward-triggers without
+  treating the written page, bug ID, or queue row as authority.
+- **BREAKING**: retire the default compiled `universe_cycle` execution bypass;
+  materialize it as a registered Branch and governed soul-loop binding before
+  unattended execution.
 - **BREAKING**: epoch-1 graph work may reach a private same-universe child only
   through an exact authenticated parent allowlist and committed child binding;
   branch-authored `child_actor` is rejected rather than used as execution
@@ -70,11 +76,11 @@ support private branches or prove who authorized unattended work.
 
 The change affects authenticated scheduler handlers and storage,
 `tinyassets/scheduler.py`, request admission and run resume, goal/market
-producers and subscriptions, universe soul creation/editing, branch-task
-storage, graph enqueue and direct child invocation, daemon and cloud-worker
-dispatch, distributed worker admission, provenance/audit records, migration
-tooling, and their concurrency, crash-recovery, connector, and
-rendered-chatbot tests. It consumes the existing identity/ACL, daemon-identity,
-branch-access, request-admission, demand-side scheduling, paid-market,
-provider-execution, and provider-attempt contracts rather than redefining
-them.
+producers and subscriptions, wiki bug forwarding, universe soul
+creation/editing and built-in-cycle retirement, branch-task storage, graph
+enqueue and direct child invocation, daemon and cloud-worker dispatch,
+distributed worker admission, provenance/audit records, migration tooling, and
+their concurrency, crash-recovery, connector, and rendered-chatbot tests. It
+consumes the existing identity/ACL, daemon-identity, branch-access,
+request-admission, demand-side scheduling, paid-market, provider-execution,
+and provider-attempt contracts rather than redefining them.

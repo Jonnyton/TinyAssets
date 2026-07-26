@@ -1,18 +1,20 @@
 ## Context
 
-TinyAssets has at least nine ways for branch work to outlive, detach from, or
+TinyAssets has at least twelve ways for branch work to outlive, detach from, or
 re-enter after the request that originally authorized it:
 
 1. cron/interval schedules;
 2. event subscriptions;
 3. a daemon's recurring `soul.md` loop;
-4. authenticated Request admission that persists a `BranchTask`;
-5. goal-pool or paid-market producers that materialize durable tasks;
-6. claimed `BranchTask` rows;
-7. branch work enqueued by an approved source node;
-8. live or frozen `invoke_branch` child execution, including async and retry;
-   and
-9. interrupted-run resume and startup recovery.
+4. async live/version root runs and selector/leaderboard/market delegates;
+5. authenticated Request admission that persists a `BranchTask`;
+6. goal-pool or paid-market producers that materialize durable tasks;
+7. claimed `BranchTask` rows;
+8. branch work enqueued by an approved source node;
+9. live or frozen `invoke_branch` child execution, including async and retry;
+10. interrupted-run resume and startup recovery;
+11. the default compiled `branches/universe_cycle.yaml` daemon stream; and
+12. wiki `file_bug` forwarding into `bug_investigation` queue work.
 
 The current paths preserve scheduling and queue state but not target authority.
 `tinyassets.scheduler` accepts an `owner_actor` string from the action payload;
@@ -49,7 +51,8 @@ a host-approved PLAN reconciliation names the owner.
   revocation state before every logical attempt;
 - pin each admitted attempt to an exact branch snapshot and execution audience;
 - make schedule/subscription and soul-loop changes recoverable across crashes;
-- close request-admission, producer, direct-child, and resume authority seams;
+- close request-admission, producer, wiki-forward, built-in-cycle,
+  direct-child, and resume authority seams;
 - attenuate authority for graph-enqueued children without weakening existing
   universe, lineage, depth, budget, or concurrency limits;
 - make one logical trigger produce at most one target attempt under concurrent
@@ -92,7 +95,7 @@ The binding contains, at minimum:
 - universe ID, exact branch definition ID, and operation;
 - source kind and source identity: schedule, subscription, pinned soul, root
   run, request admission, producer subscription/contract, resumed run, direct
-  child, or parent attempt;
+  child, authenticated wiki forward-trigger, or parent attempt;
 - current source revision/digest and revocation generation;
 - target mode (`live_at_attempt` or `pinned_version`);
 - permitted executor class and optional daemon/runtime binding;
@@ -146,14 +149,21 @@ A binding can be issued or rotated only by one of these transitions:
   that durable source generation. Pool YAML, `posted_by`, producer identity,
   and the fresh-install anonymous maintenance subscription cannot authorize
   execution; ambiguous/default subscriptions hold until a founder
-  reauthorizes them through the connector.
+  reauthorizes them through the connector. Market-derived producer work
+  remains held until `paid-market-track-e-wave-2-transport` defines and lands
+  the accepted execution-contract generation this root consumes.
+- **Authenticated wiki forward-trigger:** the `file_bug` write derives the
+  canonical request principal and current universe/branch authority, then
+  commits or recoverably pairs the bug filing revision with one exact
+  investigation binding/task. Bug text, bug ID, stored page, and queue row are
+  not authority.
 - **Universe creation or governed soul edit:** an authenticated principal that
   can administer the universe and run the declared branch creates or rotates
   the loop binding. A governed edit that preserves the normalized loop target
   may carry the existing scope to the new pinned soul digest. A target change
   requires fresh authenticated authorization or an existing binding whose
   explicit delegation names that exact new target.
-- **Authorized root run:** request-local target authorization may create a
+- **Authorized root run:** request-local target authorization MUST create a
   root binding with a bounded child-delegation policy for work enqueued by that
   run.
 - **Authorized run resume:** an initial run binding may issue one fenced resume
@@ -216,6 +226,8 @@ Each source supplies one deterministic key:
   admission generation;
 - producer emission: producer kind + durable subscription/contract generation
   + source-item revision + subscriber universe;
+- wiki forward-trigger: universe + authenticated filing principal + bug ID +
+  committed filing revision;
 - run resume: run ID + exact checkpoint/version + resume generation;
 - claimed task: physical universe + branch task ID + task generation; and
 - graph child: parent attempt + node execution/invocation ordinal + child
@@ -290,6 +302,14 @@ Edits that do not change the normalized loop target can carry the same narrow
 target scope to the new digest; they do not inherit broader principal rights.
 A changed target cannot be inferred from the learning source or daemon actor.
 
+The default compiled `branches/universe_cycle.yaml` stream is not a permanent
+infrastructure-authority exception. Before enforcement it must be materialized
+as an ordinary registered Branch version, declared in governed `soul.md`, and
+bound through authenticated universe creation or provable founder/admin
+migration. A legacy universe without that proof enters
+`reauthorization_required`; the daemon cannot keep streaming the built-in
+branch outside `execute_branch` or run provenance.
+
 ### 7. Graph child authority is transferred, never copied
 
 The run context receives a non-serializable child-delegation object derived
@@ -314,8 +334,12 @@ The epoch-1 file-backed queue never nests an authority transaction inside its
 file lock: child authority is prepared first, queue append commits under the
 queue lock, and reconciliation activates the exact pair before pickability.
 Only a future epoch-2 store that owns both rows may use one transaction.
-Proven unused child envelopes may be returned once to an active parent
-generation; otherwise they expire rather than being double-credited.
+A conclusive queue-cap or append refusal aborts the prepared child and returns
+its reserved envelope exactly once to the still-active parent generation, so
+the existing exact successful-enqueue invariant is preserved. Proven unused
+authority after a conclusive child close may likewise return once; an
+indeterminate boundary or stale parent generation expires rather than being
+double-credited.
 
 Epoch-1 remains public-only until its file-backed task shape and reconciliation
 path carry these references without weakening existing guards. Epoch-2 cannot
@@ -324,14 +348,23 @@ authority, drained under the old public-only path before enforcement, or held.
 
 ### 8. Queue claim, target attempt, and execution authorities compose
 
-A branch-task queue claim is only a scheduling reservation. After claiming a
-row, a worker must atomically claim its exact `BackgroundBranchAttempt` for the
-physical universe, task generation, daemon/runtime, worker audience, and lease
-generation. A missing, mismatched, revoked, exhausted, or already-owned attempt
-moves the row by fenced transition into non-pickable
-`target_authority_held` before branch resolution or run creation. A fresh
-authenticated reauthorization rotates the binding and revives that same row
-to `pending`; it cannot append a replacement row for the same logical work.
+A branch-task queue claim is only a scheduling reservation. The worker first
+snapshots and verifies its current queue lease/generation under the queue lock,
+releases that lock, then atomically claims the exact
+`BackgroundBranchAttempt` bound to that snapshot, physical universe, task
+generation, and daemon/runtime/worker audience. It rechecks the unchanged
+lease/generation under the queue lock before branch resolution. If recheck
+fails before an irreversible boundary, it releases the target claim
+automatically; an indeterminate release holds the row.
+
+A missing, revoked, exhausted, unauthorized, or indeterminate attempt moves the
+row by fenced transition into non-pickable `target_authority_held`. An audience
+or lease mismatch from a provably dead/invalidated predecessor instead
+advances the attempt-claim generation and autonomously reclaims the same
+attempt when every irreversible boundary is conclusively absent or closed. A
+generation-checked recovery-proven transition may revive the same held row to
+`pending`; authenticated reauthorization is required only when the binding or
+target authority itself must rotate. Neither path appends replacement work.
 
 Held rows do not count against the global active `pending` + `running` queue
 cap. They continue to count exactly once against the lifetime-lineage cap
@@ -349,9 +382,10 @@ mint or replace another.
 
 The order is:
 
-1. target-attempt claim transaction;
-2. release authority-store transaction;
-3. queue lease verification;
+1. queue-lock snapshot of current task/claim/lease generation, then release;
+2. target-attempt claim transaction bound to that snapshot;
+3. queue-lock revalidation, then release; on mismatch, release/fence the target
+   claim before continuing;
 4. B2 claim where applicable;
 5. provider-work issuance where applicable;
 6. exact branch execution; and
@@ -449,8 +483,9 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
 1. **Inventory and classify:** enumerate schedules, subscriptions, current and
    legacy soul/`PROGRAM.md` loops, live/archive branch tasks, graph enqueue
    and live/frozen invoke paths, Request admission, goal/market producers and
-   their subscriptions/contracts, resume/recovery, daemon dispatchers, cloud
-   workers, `_current_actor`, and direct runtime call sites. Record whether
+   their subscriptions/contracts, wiki `file_bug` forward-triggers, the
+   compiled built-in universe cycle, resume/recovery, daemon dispatchers,
+   cloud workers, `_current_actor`, and direct runtime call sites. Record whether
    canonical principal, ACL, target, physical universe, source generation, and
    executor evidence is provable. Actor/environment strings are diagnostic
    only.
@@ -463,10 +498,10 @@ post-fix real-user evidence or an explicit `STATUS.md` watch item.
    recovery scanners. In dark mode, compute classifications and would-allow/
    would-deny decisions without authorizing execution or changing legacy
    behavior.
-4. **Enable new issuance roots:** authenticated schedule/subscription creation,
-   universe creation/soul edits, root runs, and child derivation write bindings.
-   New rows remain non-live until their end-to-end target and provider gates
-   pass.
+4. **Enable new issuance roots:** authenticated schedule/subscription and wiki
+   forward-trigger creation, Request/producer tasks, universe creation/soul
+   edits, root/resumed runs, and child derivation write bindings. New rows
+   remain non-live until their end-to-end target and provider gates pass.
 5. **Backfill only provable work:** create bindings only where canonical durable
    records independently prove principal, universe ACL, exact target, source,
    and generation. Never infer from `owner_actor`, public visibility,

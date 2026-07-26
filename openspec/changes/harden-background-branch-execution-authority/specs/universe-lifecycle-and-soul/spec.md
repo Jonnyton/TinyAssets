@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Executable soul-loop declaration and target authority advance together
-The system SHALL treat the normalized loop branch in governed `soul.md` as executable configuration bound to the pinned soul version/content digest. Universe creation or a governed edit MUST prepare, authorize, and commit a matching `BackgroundBranchBinding`, or a narrow carry-forward when the normalized target is unchanged, before publishing a runnable loop generation. A changed target MUST require fresh authenticated target authorization or an existing binding that explicitly delegates that exact target.
+The system SHALL treat the normalized loop branch in governed `soul.md` as executable configuration bound to the pinned soul version/content digest. As built, `UniverseSoul.loop_branch_def_id` is rendered/read from the `Loop branch` declaration and `PROGRAM.md` is only a legacy fallback; this change makes that existing declaration authoritative rather than inventing a second loop field. Universe creation through `seed_okf_bundle` or a governed edit through `apply_soul_edit` MUST prepare, authorize, and commit a matching `BackgroundBranchBinding`, or a narrow carry-forward when the normalized target is unchanged, before publishing a runnable loop generation. A changed target MUST require fresh authenticated target authorization or an existing binding that explicitly delegates that exact target. These binding clauses MUST remain dark until universe-creation ownership, store ownership, and live-activation prerequisites pass.
 
 #### Scenario: Unchanged target carries only narrow scope
 - **WHEN** an authorized governed edit changes soul content while preserving the normalized loop branch
