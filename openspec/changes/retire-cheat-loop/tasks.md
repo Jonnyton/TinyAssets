@@ -11,14 +11,19 @@
 - [ ] 1.1 Add a `file_bug` contract test proving a valid filing creates no
   trigger receipt, BranchTask, run, Investigation/Patch Packet section, or
   `investigation`/`trigger` response block even when both retired environment
-  variables are present.
+  variables are present; also prove it emits no fast-lane, carrier-review,
+  navigator-triage, daemon-pickup, or other automatic dispatcher-facing route.
 - [ ] 1.2 Add absence tests for the `bug_investigation` request class, the
   `validate_ship_packet` and `open_auto_ship_pr` actions, and
-  `get_status.auto_ship_health`, while preserving generic Goal canonical,
-  BranchTask, graph execution, status, and effect behavior.
+  `get_status.auto_ship_health`, auto-ship coding-rubric aliases/config, and
+  community-loop merge-readiness branding, while preserving generic Goal
+  canonical, BranchTask, graph execution, generic KEEP/APPROVE evaluation,
+  status, and effect behavior.
 - [ ] 1.3 Add source/package/config scan tests that fail on cheat-loop runtime
   modules, imports, environment keys, extension registrations,
-  `community-loop` named executable/build artifacts, or stale plugin copies.
+  `community-loop` named executable/build/website artifacts, active
+  specs/milestones/exec plans/wiki guidance, public prompt/control-station
+  promises, stale site mirrors, or stale plugin copies.
 
 ## 2. Remove Privileged Bug-Investigation Automation
 
@@ -34,20 +39,29 @@
 - [ ] 2.4 Remove the two investigation environment keys, cloud request-type
   defaults, deploy workflow writes, current runbook instructions, dispatcher
   examples, prompts, and comments without adding no-op aliases.
+- [ ] 2.5 Add and run an idempotent pre-worker migration for all v1/v2
+  `bug_investigation` rows and trigger receipts: terminally refuse/quarantine
+  pending rows, fence/cancel claimed or running rows before lease recovery,
+  retain completed history immutably, record counts/ids/digests/prior-final
+  states/retention, and make dispatcher admission plus claim fail closed with
+  no generic reinterpretation or replay execution.
 
 ## 3. Remove Auto-Ship Product Automation
 
 - [ ] 3.1 Delete `tinyassets/auto_ship.py`, `tinyassets/auto_ship_pr.py`,
   `tinyassets/auto_ship_ledger.py`, `tinyassets/api/auto_ship_actions.py`, and
-  their extension/auth registrations while preserving independently owned
-  generic evaluation and GitHub-effect primitives.
+  `auto_ship_ship_classes.yaml`, and their extension/auth registrations;
+  remove `AUTO_SHIP_READY`, `APPROVE_AUTO_SHIP`, and `auto_shipped` rubric
+  aliases plus community-loop merge-readiness branding while preserving only
+  independently owned generic KEEP/APPROVE evaluation and GitHub effects.
 - [ ] 3.2 Remove the auto-ship health computation and response field from
   `get_status`, plus ledger reset/file knowledge and all auto-ship environment
   configuration from compose, templates, deploy tooling, and current operator
   docs.
 - [ ] 3.3 Remove or rewrite tests that pin the validator, action, PR, ledger,
-  status, and isolation behavior; keep negative public-action/status tests and
-  unrelated generic security tests.
+  status, ship-class config, rubric aliases, merge-readiness branding, and
+  isolation behavior; keep negative public-action/status tests and unrelated
+  generic security/evaluation tests.
 - [ ] 3.4 Inspect production data/configuration for obsolete auto-ship ledgers
   and keys, archive or delete them under operator retention policy, and record
   evidence without adding a runtime migration reader.
@@ -56,35 +70,59 @@
 
 - [ ] 4.1 Replace `scripts/community_loop_watch.py` with the generic
   `scripts/platform_uptime_watch.py`, preserving only public MCP, P0 incident,
-  Tier-3 clone, production/website deploy, and revert-rate observation.
+  Tier-3 clone, production/website deploy, and revert-rate reads plus bounded
+  stdout/artifact output; the observer itself never writes the alarm sink.
 - [ ] 4.2 Replace `.github/workflows/community-loop-watch.yml` and community
-  labels/artifacts/tests with generic uptime/alarm names and remove all
-  workflow-dispatch self-heal behavior.
+  labels/artifacts/tests with generic uptime/alarm names; remove all
+  workflow-dispatch self-heal/manual inputs; give the observer job only
+  `contents:read`/`actions:read`/metadata and no actions/content/issues/PR
+  write authority; isolate any `issues:write` in the independent alarm-sink
+  consumer with no dispatch/repair authority.
 - [ ] 4.3 Verify the successor is read-only with respect to workflows, user
-  tasks, queues, wiki/repository content, and repairs while retaining the
-  canonical operational incident/alarm sink.
+  tasks, queues, issues, wiki/repository content, and repairs; separately test
+  that the independently owned incident sink consumes bounded evidence without
+  actions-write or task/repair authority.
 - [ ] 4.4 Remove the main `community-patch-loop` capability after synchronizing
   its complete requirement removals; no empty spec directory or named shipped
   artifact remains.
 
-## 5. Rebuild Packaging And Verify
+## 5. Remove Public Product Presentation
 
-- [ ] 5.1 Rebuild the Claude plugin and prove its runtime contains none of the
+- [ ] 5.1 Remove the canonical Svelte site's patch-loop application,
+  `community-loop-status.json`, community workflow/label/issue fallbacks, and
+  fine-print branding; make `/patch-loop` a static soft landing to generic
+  patterns/commons and keep `/loop` only as provenance-labeled user-workflow
+  activity.
+- [ ] 5.2 Remove or update the legacy React mirror, its fine print, tests, and
+  build artifacts; delete it if non-shipped, otherwise prove parity and absence
+  of every retired website reference.
+- [ ] 5.3 Build/test the canonical site and any retained mirror; prove platform
+  uptime evidence is separately labeled and never presented as privileged task
+  loop activity.
+
+## 6. Rebuild Packaging And Verify
+
+- [ ] 6.1 Rebuild the Claude plugin and prove its runtime contains none of the
   removed modules, actions, imports, environment names, status fields, request
-  special cases, or community-loop executable names.
-- [ ] 5.2 Run focused wiki, dispatcher/executor, extension/auth, status, uptime,
+  special cases, rubric aliases, prompt/control-station promises, or
+  community-loop executable names.
+- [ ] 6.2 Run focused wiki, dispatcher/executor/migration, extension/auth,
+  status, uptime,
   deploy-workflow, reset, and plugin tests plus ruff, plugin probe/build,
   `git diff --check`, and strict validation for this change and all OpenSpec.
-- [ ] 5.3 Run repository scans that distinguish clearly marked historical docs
+- [ ] 6.3 Run repository scans that distinguish clearly marked historical docs
   from shipped runtime, active configuration, current operator guidance,
-  executable tests, workflows, and package output; all shipped scopes must be
-  clean.
-- [ ] 5.4 Perform the final rendered-chatbot `ui-test` through
+  active specs/milestones/exec plans/wiki pages, website source/static/build,
+  executable tests, workflows, and package output; all shipped/current scopes
+  must be clean.
+- [ ] 6.4 Perform the final rendered-chatbot `ui-test` through
   `https://tinyassets.io/mcp`: file a page and inspect status, proving filing has
-  no hidden automation and status has no cheat-specific projection.
-- [ ] 5.5 Freshness-stamp production evidence for generic uptime/deploy
+  no hidden automation/routing claim and status has no cheat-specific projection.
+- [ ] 6.5 Freshness-stamp production evidence for generic uptime/deploy
   observation and post-fix user filing; if no post-fix real-user use exists,
   leave the required short `STATUS.md` watch item rather than claiming clean use.
-- [ ] 5.6 Sync the graph, wiki, and uptime deltas, retire the
-  `community-patch-loop` main spec, archive this change with implementation, and
-  remove its STATUS row in the landing commit.
+- [ ] 6.6 Sync the graph, wiki, uptime, and website deltas; explicitly rewrite
+  canonical `wiki-commons` Purpose prose that promises trigger receipts and
+  `uptime-and-alarms` prose that names the neighboring patch loop; retire the
+  `community-patch-loop` main spec; archive this change with implementation;
+  and remove its STATUS row in the landing commit.

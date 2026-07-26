@@ -5,8 +5,12 @@
 The `file_bug` typed-filing action SHALL atomically create the requested wiki
 filing and return filing metadata without creating a task-trigger receipt,
 resolving an investigation handler, enqueueing a BranchTask, starting a run, or
-appending an investigation section. Its response SHALL NOT expose the retired
-`investigation` or `trigger` blocks as if a hidden workflow were part of filing.
+appending an investigation section. It SHALL NOT attach automatic fast-lane,
+carrier-review, navigator-triage, daemon-pickup, or other dispatcher-facing
+route claims. Its response SHALL NOT expose the retired `investigation` or
+`trigger` blocks or describe the filing as sent to a hidden pipeline.
+Independently owned incentive fields may remain only as inert filing metadata
+with no task, route, receipt, queue, or execution consumer.
 
 #### Scenario: Filing succeeds without task state
 
@@ -14,6 +18,12 @@ appending an investigation section. Its response SHALL NOT expose the retired
 - **THEN** the page is created and the response reports the filing result
 - **AND** no trigger receipt, branch task, run, or investigation section is
   created
+
+#### Scenario: Filing metadata cannot imply an automatic route
+
+- **WHEN** a valid filing includes or derives incentive or review metadata
+- **THEN** the result makes no automatic fast-lane, carrier-review, navigator-triage, daemon-pickup, or queue claim
+- **AND** any retained generic incentive metadata is inert until an explicit user-authored workflow consumes it under ordinary authority
 
 #### Scenario: Obsolete environment configuration has no effect
 
