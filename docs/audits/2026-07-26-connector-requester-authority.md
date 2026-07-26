@@ -96,12 +96,14 @@ epoch-2 BranchTask intake contract.
 
 | Capability | This successor owns | It must not steal |
 |---|---|---|
-| `identity-auth-and-access-control` | Current OAuth requester, tenant, exact universe, request/session/tool binding, revocation generation | Environment actor, caller-supplied actor/tenant, durable replay of the one-message request capability |
-| `paid-market-economy` | Explicit accepted-agreement producer over the canonical request and quote, bounded economic mandate, tenant workflow, domain-separated body-bound idempotency | Treating submission/match/claim as acceptance, quote ranking, host authority, wallet/chain authority, settlement finality, or execution authority |
-| `distributed-execution` | A non-executable B13-bound bounded-market mandate, then fresh firm quote, capacity consumption, requester-funding reservation, and one exact B2 grant after each concrete job/capsule exists, plus Engine OS admission evidence | Pre-minting/storing a future-job B2 or promoting request, match, claim, row, receipt, reservation, or provider-attempt evidence |
+| `identity-auth-and-access-control` | #1784 TinyAssets current-message reserve, actual handler claim/liveness, OAuth requester, tenant, exact universe, message/session/tool/action binding, revocation before result | Outer ContextVar/FastMCP snapshot/prior-message/copied-worker authority, caller actor/tenant, `ProviderRequestCapability` substitution, durable replay |
+| `paid-market-economy` | Explicit accepted-agreement producer over the canonical request and quote, bounded mandate, logical budget reservation/accounting intent, tenant workflow, domain-separated body-bound idempotency | Treating submission/match/claim as acceptance; creating domain capacity, real-fund/wallet/chain authority, selected-host authority, settlement finality, or execution authority |
+| `distributed-execution` | B13 provisional non-executable mandate and sole cross-owner per-job composition of allocation/claim, domain capacity, logical accounting, §18.6 real-fund, S14/B36, and exact B2 plus Engine OS admission | Writing another owner's records, pre-minting future-job B2, or promoting request/match/claim/row/receipt/reservation evidence |
 | `live-mcp-connector-surface` | Exact action/input/result, rendered confirmation, refusal, repair, and renewal | New MCP handle, raw grant/secret/payment carrier, deprecated handle, or desktop prerequisite |
-| `provider-routing` (#1784) | Existing owner: `accepted_market + remote_ready + []`, pre-router seam, ordinary-chain bypass, held state | No delta in this successor |
-| live price / Wave 2 | Existing owners: executable firm quote, selection receipt, request/bid/match/claim/delivery lifecycle | No price-index or operator-request delta in this successor |
+| `provider-routing` (#1784) | Existing assignment/activation-transaction owner: agreement/mandate references, `accepted_market + remote_ready + []`, pre-router seam, ordinary-chain bypass, held state | No delta in this successor |
+| live price / Wave 2 | Exact request-bound quote→bid→deterministic-match→atomic paid-claim/slot, selected host, versions/digests/fences, delivery lifecycle | No price-index or operator-request delta in this successor |
+| domain capacity owners | Domain-native capacity grant/lease/work order and semantic acceptance | No generic market or connector replacement |
+| architecture §18.6 successor | Sole requester real-fund/wallet/chain-effect authority and verified receipts | No PostgreSQL logical reservation promoted to custody |
 
 BYOC, local-model, stdio, tray, and plugin activation belong exclusively to
 `activate-requester-host-engines`.
@@ -117,16 +119,16 @@ fee-schedule and settlement-policy versions, deadline, and acceptance policy.
 The server derives or reloads the actor, tenant, universe, canonical request's
 capability/payload/bid-window/policy/visibility/fanout fields, descriptor,
 demand commitment, quote contents, issuer/capacity evidence, host,
-wallet/chain receipt, and B13 market-mandate authority. Caller-supplied
+domain-capacity result, wallet/chain receipt, and B13 market-mandate authority. Caller-supplied
 versions of those authority objects are rejected. The mandate is ongoing but
 bounded by the accepted budget, per-job spend cap, and selection policy; it is
 neither a reservation nor job authority. Because B2 binds a concrete
 job/capsule, it is not created during activation. After the later message and
-job exist, `converse` obtains a
-fresh executable firm quote for their exact demand and quantity, revalidates
-fees, currency, service policy, capacity, and remaining budget, atomically
-consumes capacity and reserves requester-owned or explicitly delegated
-funding, and only then obtains the exact B2 grant from B13.
+job exist, B13 coordinates the live-price/transport owner's exact
+request/quote/bid/match/paid-claim/slot and selected host, the domain owner's
+fenced capacity, paid-market's logical budget reservation/accounting intent,
+the architecture §18.6 successor's requester real-fund result, and
+distributed-execution S14/B36. Only then may it produce the exact B2.
 
 One production composition boundary must atomically establish the accepted
 agreement, current settlement prerequisites, the non-executable B13-bound
@@ -148,17 +150,18 @@ reference; failed commits revoke or expire it idempotently, and retries cannot
 accumulate mandate authority.
 
 Each later `converse` authenticates its own message and revalidates the
-durable bounded-market mandate. For the exact job it obtains a fresh
-executable firm quote, atomically consumes conserved capacity and reserves
-requester-owned or explicitly delegated funding, and seals the agreement,
-mandate, quote, demand, quantity, capacity-consumption, funding-reservation,
-fee, and spend-ledger references and digests into the capsule and B2 request.
-B13 then produces the exact request-bound B2 job/capsule grant before
-dispatch. Concurrent jobs serialize budget, funding, and capacity consumption
-so they cannot oversubscribe any bound. Same-job retries reuse the same
-reservation and B2; changed-body reuse conflicts. Pre-dispatch cancellation
-releases capacity and funding exactly once; post-dispatch settlement charges
-only verified use and releases or refunds the unused remainder idempotently.
+durable bounded-market mandate. B13 coordinates owner-native idempotent
+prepare/commit/cancel results and seals the exact request, bid, match, claim,
+slot, selected host, quote-to-bid link, logical budget reservation, domain
+capacity fence, §18.6 real-fund receipt, fee/spend ledger, S14/B36
+`job_id:lease_fence:accepted_result_sha256`, demand, quantity, daemon/host,
+capsule, and lease identities into B2. The daemon/host must equal the current
+paid claimant. Each owner serializes its own resource; B13 writes none of
+them. One fenced CAS chooses `dispatch_committed` or
+`cancelled_and_released`. The cancel winner prevents/revokes B2 and releases
+once; the dispatch winner forbids pre-dispatch release. Settlement/refund
+requires current platform-signed B2 terminal evidence plus domain acceptance,
+never host self-attestation.
 An activation, quote, reservation, or mutable database row is never itself
 executable authority. Missing, expired, revoked, fenced, overspent, consumed,
 or inconsistent state maps to held repair/renewal and never to maintainer,
@@ -175,9 +178,11 @@ local, BYOC, free, or ordinary provider fallback.
 - A paid-market accepted-agreement producer distinct from request submission,
   bidding, matching, claiming, and delivery.
 - Distributed-execution B13 production composition, trust/custody, per-job
-  firm-quote/capacity/funding consumption, settlement integration, and live
-  B2 proof.
-- The separately owned wallet/chain-settlement successor.
+  cross-owner composition, S14/B36 fenced terminal settlement identity, and
+  live B2 proof.
+- Every applicable domain-native capacity/acceptance owner.
+- The reviewed wallet/chain-effect successor required by
+  `docs/design-notes/2026-04-18-full-platform-architecture.md` §18.6.
 - Engine OS execution admission (#1573 target; reconciled implementation
   successor).
 - A single transactional persistence boundary for activation plus an atomic
@@ -208,9 +213,11 @@ internally consistent; it does not prove accepted-market activation, which
 does not exist.
 
 Before cutover the implementation successor must add focused authorization,
-schema/idempotency, quote/fee/spend, atomicity/fault, per-job
-budget/capacity/funding oversubscription, retry/cancel/release/refund,
-B2/B13, expiry/revocation/fence, pre-router refusal, and
+schema bounds/coercion/idempotency/non-enumeration/current-replay truth,
+quote/bid/match/claim/slot/selected-host binding, owner-isolated
+budget/capacity/funding oversubscription, dispatch-vs-cancel CAS,
+signed-terminal/domain-acceptance settlement, retry/release/refund, B2/B13,
+expiry/revocation/fence, pre-router refusal, and
 no-maintainer-fallback tests; run the full-platform architecture §14
 concurrent load proof; pass public canaries; complete a rendered chatbot
 conversation through

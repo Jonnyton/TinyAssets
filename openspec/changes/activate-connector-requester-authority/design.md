@@ -20,16 +20,19 @@ records the user's total spend ceiling and accepted selection/pricing policy;
 it is neither a reservation nor job authority. A B2 grant binds a concrete job
 and capsule, so it cannot truthfully be created by an activation request
 before the later `converse` message exists. After that message establishes
-exact demand and quantity, the paid-market and wallet owners must return a
-fresh executable firm quote, capacity consumption, and requester-funded spend
-reservation within the mandate. The B13 root must bind those facts into the
-exact B2 grant at the per-job dispatch boundary. The ordinary provider router
-must never interpret the empty provider list as permission to use a
+exact demand and quantity, the live-price/transport owner must return the
+request-bound quote/bid/match/paid-claim/slot and selected host, the domain
+owner must return fenced capacity, `paid-market-economy` must return logical
+budget/accounting intent, and the architecture §18.6 successor must return
+requester real-fund authority. The B13 root coordinates and binds those
+owner-native facts plus the S14/B36 settlement identity into the exact B2 grant
+at the per-job dispatch boundary. The ordinary provider router must never
+interpret the empty provider list as permission to use a
 maintainer, local, BYOC, free, role-default, or environment-selected provider.
 
 The public connector has seven canonical handles. This change must be
-completable from a chatbot without adding an eighth handle, using the
-reusing the live `target="universe"` birth path or legacy `universe` handle,
+completable from a chatbot without adding an eighth handle, reusing the live
+`target="universe"` birth path or legacy `universe` handle,
 accepting a raw provider secret, or requiring a
 desktop or web application. It also must remain separate from
 `write_graph(target="request")`, whose owner admits user work into the request
@@ -156,6 +159,22 @@ by a still-acceptable market state. Copying a deadline or expiry into the
 request cannot extend the canonical value. Unknown fields and numeric
 coercion fail closed.
 
+The v1 schema fixes its wire bounds rather than relying on language coercion:
+all IDs and the top-level idempotency key are ASCII
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; every digest is exactly 64 lowercase hex
+characters; currency is the canonical request/quote code and matches
+`[A-Z0-9][A-Z0-9._:-]{0,15}`; versions, `deadline`, `budget_micros`, and
+`spend_cap_micros` are strict JSON integers (Boolean, float, decimal string,
+overflow, zero where positive is required, and negative values are rejected)
+not exceeding signed 64-bit range. The owner-published
+`canonical_market_max_micros` is positive and no greater than that range, and
+the invariant is
+`0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
+`quote_expires_at` is canonical UTC RFC 3339 with whole seconds and `Z`;
+deadline and expiry must equal their owner records, remain future-valid, and
+fit the owner-defined maximum horizon. The exact schema is versioned before
+any grammar, maximum, unit, or time encoding changes.
+
 Alternatives considered:
 
 - Sending only `quote_id` was rejected because an old UI could unknowingly
@@ -167,12 +186,19 @@ Alternatives considered:
 
 ### 3. Request-local identity authorizes the command; B2/B13 authorizes work
 
-The connector transport supplies the current authenticated OAuth subject and
-tenant. The identity owner binds a one-shot activation capability to the exact
-request, session, `write_graph` tool, `engine` target, action, principal, and
-universe. The capability is non-serializable, non-delegable, non-replayable
-outside that invocation, and cannot be minted for unauthenticated,
-background, scheduled, deferred, stdio, or SSE work.
+The identity owner derives the current authenticated OAuth subject and tenant
+only through #1784's TinyAssets-owned per-message FastMCP reserve, actual
+registered-handler claim, and live server registry entry. It mints a distinct
+one-shot activation capability bound to the exact current message, claimed
+execution, session, `write_graph` tool, `engine` target, action, principal,
+tenant, and universe, then revokes it before result release. Outer ASGI
+`ContextVar` identity alone, FastMCP inherited or snapshotted request fallback,
+initialize/prior-message headers, and copied worker/task context are not
+current-message authority. The capability is distinct from
+`ProviderRequestCapability`, durable market authority, and B2; it is
+non-serializable, non-delegable, non-replayable outside that invocation, and
+cannot be minted for unauthenticated, background, scheduled, deferred, stdio,
+or SSE work.
 
 Identity permits the actor to request the mutation; it does not permit remote
 execution. The durable mandate is also non-executable: it records only the
@@ -190,8 +216,8 @@ Alternatives considered:
 
 ### 4. One transaction publishes agreement, mandate binding, and engine state
 
-Activation uses a single idempotent composition boundary. Inside it, the
-server:
+Activation uses the provider-routing assignment owner's single idempotent
+storage transaction. Inside its coordinator, the server:
 
 1. verifies request-local actor, tenant, universe write authority, action, and
    idempotency scope;
@@ -205,7 +231,9 @@ server:
    non-executable provisional mandate bound to that agreement, target
    universe, accepted selection/pricing policy, budget and per-job spend
    ceilings, expiry, revocation generation, and idempotency digest; and
-5. atomically persists the agreement/mandate references and publishes
+5. asks the provider-routing assignment owner to atomically persist the
+   agreement/mandate references, make the provisional reference current, and
+   publish
    `accepted_market + remote_ready + []`.
 
 If any step fails, none of those activation mutations commits. Payment and
@@ -227,6 +255,15 @@ activations have one winner; losers observe that winner or a typed conflict.
 Cancellation, quote expiry, capacity loss, or mandate revocation that wins
 before commit prevents activation.
 
+Current authenticated subject, tenant, exact-universe write/admin authority,
+current-message claim, and liveness are rechecked before every idempotency
+lookup. Loss of any authority returns the same non-enumerating denial whether
+or not the key or historical result exists. A same-body historical success is
+side-effect stable but never reactivates expired/revoked authority: the replay
+result identifies the historical commit and separately reports the
+re-derived current assignment. If the mandate is now held, the connector
+renders current held/repair state rather than stale `remote_ready` success.
+
 Alternatives considered:
 
 - Publishing `accepted_market` before grant construction was rejected because
@@ -237,29 +274,46 @@ Alternatives considered:
 ### 5. Accepted-market `converse` dispatch is pre-routing and fail-closed
 
 For an accepted-market universe, `converse` first re-derives the persisted
-agreement and B13-bound bounded-market mandate. After compiling the concrete
-message into exact job demand, quantity, and capsule input, it must:
+agreement and current B13-bound bounded-market mandate. After compiling the
+concrete message into exact job demand, quantity, and capsule input, the B13
+sole production composition root coordinates these owner-native operations:
 
-1. obtain a fresh executable firm quote for that exact demand/quantity under
-   the accepted selection policy;
-2. revalidate quote, fee, currency, service terms, expiry, capacity fence, and
-   remaining mandate budget;
-3. atomically consume/reserve the exact capacity and requester-owned or
-   delegated funding/spend ceiling under a job idempotency identity;
-4. seal the agreement, mandate, quote, demand, quantity, capacity-consumption,
-   funding-reservation, fee, and spend-ledger references/digests into the
-   capsule; and
-5. ask B13 for the B2 grant bound to that sealed capsule plus the selected
-   daemon/host, job, lease, generation/fence, capability ceiling, expiry, and
-   idempotency identity.
+1. the live-price/transport owner obtains a fresh executable firm quote and
+   exact request-bound bid, deterministic match, atomic paid claim/fan-out
+   slot, selected host/owner, versions, digests, and current fences;
+2. the domain owner creates or consumes the exact fenced capacity
+   grant/lease/work order for that demand and quantity;
+3. `paid-market-economy` revalidates quote, fee, currency, service terms,
+   expiry, and remaining mandate budget and records only the logical budget
+   reservation/accounting intent;
+4. the separately reviewed wallet/chain-effect successor required by the
+   full-platform architecture §18.6 returns the requester-owned or explicitly
+   delegated real-fund reservation/receipt;
+5. B13 verifies the exact quote-to-bid link, current claim/slot, selected
+   host, capacity fence, and that the B2 daemon/host equals the current paid
+   claimant, then seals every owner-native identity/version/digest plus
+   `job_id:lease_fence:accepted_result_sha256`, fee, and spend-ledger identity
+   into the capsule; and
+6. B13 issues the B2 grant bound to that sealed capsule, selected daemon/host,
+   job, lease, generation/fence, capability ceiling, expiry, and idempotency
+   identity.
+
+B13 coordinates but cannot write another owner's records. Each owner exposes
+body-bound idempotent prepare/commit/cancel operations. No B2 becomes
+observable until every required result is current; failure before that point
+releases or cancels each prepared owner result exactly once.
 
 Only that exact B2 grant may enter the distributed-execution seam. Concurrent
-jobs serialize against remaining budget and conserved capacity; a loser holds
-before dispatch. Same-job retries reuse the same reservation/consumption and
-B2 result. Cancellation or pre-dispatch failure releases both reservations
-exactly once. Post-dispatch settlement applies actual verified use and releases
-or refunds unused reserved value through the owning market/wallet contracts;
-the connector never invents those effects.
+jobs serialize independently at the claim slot, logical budget, domain
+capacity, and real-fund owners; a loser holds before B2. Same-job retries reuse
+the same owner-native results and B2. One owner-defined CAS/fence chooses
+`reserved -> dispatch_committed` or
+`reserved -> cancelled_and_released`. If cancellation wins, B2 is absent or
+revoked and every reservation releases once. If dispatch wins, pre-dispatch
+release is forbidden. Later settlement/refund consumes current
+platform-signed B2 terminal evidence plus domain acceptance bound to
+`job_id:lease_fence:accepted_result_sha256`; host self-attestation or generic
+"accepted use" is insufficient. The connector never invents those effects.
 
 The ordinary provider router is never consulted for this source. If authority
 is absent, expired, revoked, fenced, cancelled, inconsistent, or cannot be
@@ -310,9 +364,11 @@ desktop. Post-fix clean-use evidence remains a separate release gate.
 - **[Risk: the public acceptance object duplicates immutable quote facts]** →
   Treat caller values only as confirmation commitments and compare every field
   with canonical server records before accepting.
-- **[Risk: cross-owner transaction composition is operationally difficult]** →
-  Define one named composition boundary and publish no ready state until every
-  owner returns verifiable success; retries use the same idempotency identity.
+- **[Risk: cross-owner composition is operationally difficult]** → The
+  provider-routing assignment owner coordinates the activation storage
+  transaction. B13 coordinates the per-job owner-native prepare/commit/cancel
+  protocol, publishes no B2 until every result is current, and compensates
+  failed prepares idempotently without taking another owner's authority.
 - **[Risk: quote or capacity expires during activation]** → Serialize the
   final revalidation and commit against owner-defined cancellation, expiry, and
   capacity fences; the losing operation returns a typed refusal.
@@ -320,9 +376,10 @@ desktop. Post-fix clean-use evidence remains a separate release gate.
   Make the durable mandate explicitly non-executable and require fresh
   per-job quote, capacity, requester-funding, and B2 authority only after each
   concrete job/capsule exists.
-- **[Risk: concurrent jobs oversubscribe budget or conserved capacity]** →
-  Reserve both under one job-idempotency identity before B2 creation; serialize
-  competing commits and release/refund exactly once through owning contracts.
+- **[Risk: concurrent jobs oversubscribe claim slots, budget, capacity, or
+  funds]** → Each owning contract serializes its own resource under one
+  cross-owner job identity before B2 creation; B13 checks all current fences
+  and release/refund remains exactly-once through owning contracts.
 - **[Risk: a stored mandate becomes stale after activation]** →
   Re-derive authority at every execution decision, downgrade to held, and
   expose only repair/renewal.
@@ -361,10 +418,14 @@ assignments. It must never reinterpret a quote, request, legacy
 
 ## Open Questions
 
-No host design question remains in this target. Runtime starts only after the
-paid-market owner exposes stable quote/selection identifiers plus per-job
-capacity and requester-funding reservation/settlement interfaces, the B13 owner
-exposes the non-executable mandate and per-job B2 composition interfaces, and
-one storage owner can prove each required atomic commit. The implementation
-successor advertises only the repair actions it proves live and records its
-numerical section-14 load envelope before executing the gate.
+No host design question remains in this target. Runtime starts only after
+#1784's provider-routing assignment owner exposes the activation transaction;
+the live-price/transport owner exposes request-bound bid/match/claim/slot and
+selected-host results; applicable domain owners expose fenced capacity;
+`paid-market-economy` exposes the accepted agreement plus logical reservation;
+the reviewed full-platform architecture §18.6 successor exposes real-fund
+authority; distributed-execution S14/B36 exposes fenced terminal settlement
+identity; and B13 exposes provisional mandate plus cross-owner per-job B2
+composition. The implementation successor advertises only repair actions it
+proves live and records its numerical section-14 load envelope before the
+gate.
