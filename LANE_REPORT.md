@@ -293,15 +293,23 @@ could not go red.
 | `ruff check tinyassets/paid_market/ tests/test_paid_market_*.py` | All checks passed |
 | `openspec validate paid-market-live-price-discovery --strict` | valid |
 | `packaging/claude-plugin/build_plugin.py` | 288 files staged, import probe ok; pre-commit mirror parity verified |
-| Full `pytest tests/` | NOT RUN — paid-market scope only, as in round 1 |
-| Cross-family review (Codex, refute-3-claims gate) | see below |
+| The 12 other test modules that import `tinyassets.paid_market` | 338 passed |
+| Full `pytest tests/` | NOT RUN — see below |
+| Cross-family review (Codex, refute-3-claims gate) | DISPATCHED, in flight at report time — no verdict yet |
 
 **Not run, stated rather than implied:** the full `pytest tests/` sweep. Round 1
 left it `PENDING_FULL` and Codex's own run was killed by Windows process-resource
-exhaustion. `price_surface` / `PaidObservation` / `SettlementBinding` have no
-importer outside `tinyassets/paid_market/price_surface.py` itself and the
-paid-market tests (verified by repo-wide grep), so the blast radius of these
-commits is the 612-test set above — but that is a scope argument, not a green
-full-suite run, and it is not claimed as one.
+exhaustion. What *was* run to bound the blast radius: `price_surface`,
+`PaidObservation`, and `SettlementBinding` have no importer anywhere outside
+`price_surface.py` itself and the paid-market tests (repo-wide grep), and the 12
+other test modules that import `tinyassets.paid_market` at all were run
+explicitly — 338 passed. That is a scope argument plus its adjacent suites, not a
+green full-suite run, and it is not claimed as one.
+
+**Cross-family gate is dispatched, not returned.** A Codex `refute-these-three-
+claims` review of `25c61cfe` + `aa7d272a` was launched read-only against this
+worktree and was still running when this report was written. Its verdict is
+required before this lane is treated as reviewed; nothing here should be read as
+carrying it.
 
 LANE_RESULT: PENDING
