@@ -303,11 +303,13 @@ surface gates pass may the deployment flip
 `_DEFAULT_ENGINE_SOURCE=unassigned` for new births, and use assignment state
 globally outside the server-owned canary.
 For migrated state, unreadable evidence remains true/fail-safe;
-`unassigned + []` is false; `ready + nonempty ceiling` or a separately proven
-accepted remote grant is true; and pending/held/failed/inconsistent state is
-true for the legacy exhaustion classifier so a real fault is not retold as
-"no engine." Typed `ProviderAuthorityHeldError` still maps directly to the
-precise setup envelope.
+`unassigned + []` is false; `ready + nonempty ceiling` is true; and
+`accepted_market + remote_ready + []` is true only with a current accepted
+agreement plus current non-executable B13 activation mandate. Pending, held,
+failed, or inconsistent state remains true for the legacy exhaustion
+classifier so a real fault is not retold as "no engine." Typed
+`ProviderAuthorityHeldError` still maps directly to the precise setup
+envelope.
 
 The legacy `AllProvidersExhaustedError` path SHALL retain its non-null
 `chain_state` requirement and call the migration-aware helper. A bare
