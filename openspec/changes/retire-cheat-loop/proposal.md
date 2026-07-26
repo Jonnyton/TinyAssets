@@ -78,8 +78,10 @@ None.
   OpenSpec rejects a zero-requirement canonical spec, final foldback SHALL
   explicitly apply the six surviving capability deltas, physically delete the
   reviewed `community-patch-loop` canonical directory, strictly validate the
-  resulting tree, and archive this change with `--skip-specs`; it SHALL NOT
-  attempt a normal all-removals sync that aborts or recreates an empty spec.
+  resulting tree, and archive this change with `--skip-specs` only after every
+  implementation, live-migration receipt, authority, and release gate is
+  complete; it SHALL NOT attempt a normal all-removals sync that aborts or
+  recreates an empty spec, or let `--yes` bypass unfinished work.
 - `daemon-runtime-and-dispatch`: migrate retired v1/v2 queue rows through only
   existing statuses/fields, #1803 authority reconciliation, exact queue CAS,
   and a pre-#1803 worker-quiescence/deployment stop.

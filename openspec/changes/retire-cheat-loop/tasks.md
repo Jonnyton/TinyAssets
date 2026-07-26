@@ -227,8 +227,14 @@
   fallback. After task 4.4's exact-heading manifest is satisfied and the stable
   completed-run reuse guarantee is owned by `daemon-runtime-and-dispatch`,
   physically delete the canonical `community-patch-loop` directory in that same
-  commit, strictly validate the complete canonical tree, and archive with
-  `openspec archive retire-cheat-loop --yes --skip-specs`. Before archive,
-  prove the six canonical updates and physical capability deletion are already
-  present; after archive, prove no empty or resurrected capability exists.
-  Remove the STATUS row in the landing commit.
+  commit. Do not invoke archive until tasks 0.1 through 6.6, all receipt-backed
+  label/auto-merge/data migrations, #1803 authority gates, rendered/public
+  acceptance, and every audit Release Gate are complete, and task inspection
+  proves exactly 6.7 remains unchecked. Before archive, strictly validate and
+  prove a scoped working-tree/index diff contains only the six reviewed
+  canonical updates, physical capability deletion, and this foldback's
+  coordination edits, with no unrelated change. Then run
+  `openspec archive retire-cheat-loop --yes --skip-specs`, mark 6.7 complete in
+  the archived task record, remove the STATUS row, prove no empty or
+  resurrected capability exists, strictly validate all OpenSpec again, and
+  commit the entire foldback atomically.

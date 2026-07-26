@@ -489,7 +489,11 @@ The target modifies seven capabilities:
   canonical deltas, verifies the exact nine-heading removal set, deletes the
   canonical directory, strictly validates, and archives with `--skip-specs`;
   normal archive sync is forbidden because it aborts or would recreate an empty
-  skeleton;
+  skeleton. Because `--yes` can archive incomplete work, foldback is forbidden
+  until tasks 0.1 through 6.6 and every receipt/authority/release gate below are
+  complete and exactly task 6.7 remains pending. A scoped diff, rather than a
+  contradictory clean-tree requirement, proves the atomic foldback has no
+  unrelated changes;
 - `daemon-runtime-and-dispatch`: owns exact v1/v2 retirement transitions,
   #1803 reconciliation ordering, and pre-#1803 worker quiescence/deploy stop;
 - `development-coordination-runtime`: owns receipt-backed retirement of live

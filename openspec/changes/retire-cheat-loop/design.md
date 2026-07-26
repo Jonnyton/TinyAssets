@@ -422,10 +422,15 @@ release, and stop deployment until #1803 becomes authoritative.
    canonical requirements, physically delete
    `openspec/specs/community-patch-loop/`, and run strict validation. Archive
    this change with `openspec archive retire-cheat-loop --yes --skip-specs`
-   only after a clean-tree proof shows those six canonical updates and the
-   physical deletion are already present. The archived delta remains the
-   removal audit trail; `--skip-specs` prevents archive from aborting on, or
-   resurrecting, an empty capability.
+   only after tasks 0.1 through 6.6, every migration receipt, authority gate,
+   and release proof are complete; task inspection MUST show exactly 6.7 still
+   pending. A scoped working-tree/index diff proof SHALL then show only the six
+   reviewed canonical updates, physical capability deletion, and this
+   foldback's coordination edits, with no unrelated change. After archive,
+   mark 6.7 complete in the archived task record, remove the STATUS row,
+   strictly validate, and commit the entire foldback atomically. The archived
+   delta remains the removal audit trail; `--skip-specs` prevents archive from
+   aborting on, or resurrecting, an empty capability.
 
 Rollback is by reverting the removal commit only if ordinary bug filing or
 generic workflow execution regresses. The retired automation is not an
