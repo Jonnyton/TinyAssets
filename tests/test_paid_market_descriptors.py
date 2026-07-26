@@ -134,6 +134,47 @@ def _demand() -> dict[str, object]:
     }
 
 
+def _demand_identity_variants() -> list[dict[str, object]]:
+    """Equivalent structured demand spellings must share one public identity."""
+    baseline = _demand()
+
+    reordered = deepcopy(baseline)
+    reordered["requirements"]["token_categories"]["required_values"] = [  # type: ignore[index]
+        "input",
+        "output",
+    ]
+
+    duplicated = deepcopy(baseline)
+    duplicated["requirements"]["token_categories"]["required_values"] = [  # type: ignore[index]
+        "output",
+        "input",
+        "input",
+    ]
+
+    whitespace_and_case = deepcopy(baseline)
+    whitespace_and_case["lane"] = " INFERENCE "
+    whitespace_and_case["region"] = " US-EAST "
+    whitespace_and_case["requirements"]["modalities"] = {  # type: ignore[index]
+        "unit": " MODALITY ",
+        "required_values": [" TEXT "],
+    }
+
+    unicode_encoding = deepcopy(baseline)
+    unicode_encoding["requirements"]["modalities"]["required_values"] = [  # type: ignore[index]
+        "ｔｅｘｔ"
+    ]
+
+    reversed_members = dict(reversed(list(deepcopy(baseline).items())))
+    return [
+        baseline,
+        reordered,
+        duplicated,
+        whitespace_and_case,
+        unicode_encoding,
+        reversed_members,
+    ]
+
+
 def _validator() -> InferenceValidator:
     return InferenceValidator()
 
@@ -817,6 +858,47 @@ def test_supply_headroom_does_not_fragment_a_market_class() -> None:
     assert project_market_class(_body(), _demand(), validator=_validator()) == (
         project_market_class(wide, _demand(), validator=_validator())
     )
+
+
+def test_equivalent_malformed_demand_variants_share_one_market_class() -> None:
+    results = [
+        project_market_class(_body(), demand, validator=_validator())
+        for demand in _demand_identity_variants()
+    ]
+
+    assert {result["status"] for result in results} == {"classified"}
+    assert len({result["market_class_id"] for result in results}) == 1
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "non_string_identifier",
+        "non_ascii_identifier",
+        "internal_identifier_whitespace",
+        "malformed_requirement_shape",
+        "out_of_range_integer",
+    ],
+)
+def test_unnormalizable_demand_fails_closed(malformation: str) -> None:
+    demand = _demand()
+    if malformation == "non_string_identifier":
+        demand["region"] = 7
+    elif malformation == "non_ascii_identifier":
+        demand["region"] = "東京"
+    elif malformation == "internal_identifier_whitespace":
+        demand["requirements"]["modalities"]["unit"] = "modal ity"  # type: ignore[index]
+    elif malformation == "malformed_requirement_shape":
+        demand["requirements"]["modalities"] = {"unit": "modality"}  # type: ignore[index]
+    else:
+        demand["requirements"]["context_tokens"]["value"] = (  # type: ignore[index]
+            9_007_199_254_740_992
+        )
+
+    with pytest.raises(DescriptorError):
+        match_descriptor(_body(), demand, validator=_validator())
+    with pytest.raises(DescriptorError):
+        project_market_class(_body(), demand, validator=_validator())
 
 
 def test_private_demand_never_enters_the_public_identity() -> None:

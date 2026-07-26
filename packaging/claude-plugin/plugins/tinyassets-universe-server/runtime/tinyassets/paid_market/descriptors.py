@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Mapping, Protocol, Sequence
@@ -547,7 +548,7 @@ def match_descriptor(
     if constructed.status != "valid":
         return constructed.as_result()
     assert constructed.descriptor is not None
-    parsed_demand = _parsed_demand(demand, constructed.descriptor["lane"])
+    parsed_demand = _normalized_demand(demand, constructed.descriptor["lane"])
     try:
         _compare(constructed.descriptor, parsed_demand)
     except _Invalid as invalid:
@@ -556,8 +557,8 @@ def match_descriptor(
     return {"status": "compatible", "descriptor_id": constructed.descriptor_id}
 
 
-def _parsed_demand(demand: object, lane: str) -> dict[str, Any]:
-    """Structural demand errors are caller bugs and fail loudly."""
+def _normalized_demand(demand: object, lane: str) -> dict[str, Any]:
+    """Build one bounded ASCII representation before matching or identity."""
     if not isinstance(demand, Mapping):
         raise DescriptorError("demand must be an object")
     unknown = set(demand) - set(_DEMAND_FIELDS)
@@ -566,15 +567,115 @@ def _parsed_demand(demand: object, lane: str) -> dict[str, Any]:
     missing = set(_DEMAND_FIELDS) - set(demand)
     if missing:
         raise DescriptorError("missing demand field")
-    if demand["lane"] != lane:
+
+    normalized_lane = _canonical_demand_identifier(demand["lane"])
+    if normalized_lane != lane:
         raise DescriptorError("demand lane does not select this descriptor schema")
+    unit_semantics = demand["unit_semantics"]
+    if not isinstance(unit_semantics, Mapping) or set(unit_semantics) != {
+        "delivered_unit",
+        "scale",
+    }:
+        raise DescriptorError("demand unit_semantics is malformed")
+    scale = unit_semantics["scale"]
+    if (
+        isinstance(scale, bool)
+        or not isinstance(scale, int)
+        or scale < 1
+        or scale > MAX_INTEGER
+    ):
+        raise DescriptorError("demand scale is invalid")
+
     requirements = demand["requirements"]
     if not isinstance(requirements, Mapping):
         raise DescriptorError("demand requirements must be an object")
     known = {name for name, _ in _LANE_FIELDS[lane]}
     if set(requirements) - known:
         raise DescriptorError("unknown demand requirement field")
-    return dict(demand)
+
+    normalized_requirements: dict[str, dict[str, Any]] = {}
+    for name, kind in _LANE_FIELDS[lane]:
+        if name not in requirements:
+            continue
+        required = requirements[name]
+        if not isinstance(required, Mapping):
+            raise DescriptorError("demand requirement must be an object")
+        if kind == IDENTIFIER:
+            if set(required) != {"value"}:
+                raise DescriptorError("identifier requirement takes exactly `value`")
+            normalized_requirements[name] = {
+                "value": _canonical_demand_identifier(required["value"])
+            }
+        elif kind == SET_SUBSET:
+            if set(required) != {"unit", "required_values"}:
+                raise DescriptorError(
+                    "set requirement takes `unit` and `required_values`"
+                )
+            values = required["required_values"]
+            if not isinstance(values, list) or not values:
+                raise DescriptorError(
+                    "set requirement needs non-empty required_values"
+                )
+            if len(values) > MAX_VALUES:
+                raise DescriptorError("set requirement exceeds the value limit")
+            normalized_requirements[name] = {
+                "unit": _canonical_demand_identifier(required["unit"]),
+                "required_values": sorted(
+                    {_canonical_demand_identifier(value) for value in values}
+                ),
+            }
+        else:
+            if set(required) != {"unit", "value"}:
+                raise DescriptorError("numeric requirement takes `unit` and `value`")
+            value = required["value"]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value < 0
+                or value > MAX_INTEGER
+            ):
+                raise DescriptorError(
+                    "numeric requirement value must be a bounded integer"
+                )
+            normalized_requirements[name] = {
+                "unit": _canonical_demand_identifier(required["unit"]),
+                "value": value,
+            }
+
+    normalized = {
+        "lane": normalized_lane,
+        "profile_schema_revision": _canonical_demand_identifier(
+            demand["profile_schema_revision"]
+        ),
+        "unit_semantics": {
+            "delivered_unit": _canonical_demand_identifier(
+                unit_semantics["delivered_unit"]
+            ),
+            "scale": scale,
+        },
+        "region": _canonical_demand_identifier(demand["region"]),
+        "privacy_class": _canonical_demand_identifier(demand["privacy_class"]),
+        "reliability_class": _canonical_demand_identifier(
+            demand["reliability_class"]
+        ),
+        "requirements": normalized_requirements,
+    }
+    if len(canonical_bytes(normalized)) > MAX_CANONICAL_BYTES:
+        raise DescriptorError("demand exceeds the canonical byte limit")
+    return normalized
+
+
+def _canonical_demand_identifier(value: object) -> str:
+    if not isinstance(value, str):
+        raise DescriptorError("demand identifier must be a string")
+    normalized = unicodedata.normalize("NFKC", value).strip().casefold()
+    try:
+        normalized.encode("ascii")
+    except UnicodeEncodeError:
+        raise DescriptorError("demand identifier must normalize to ASCII") from None
+    if not _IDENTIFIER.fullmatch(normalized):
+        raise DescriptorError("demand identifier is invalid")
+    return normalized
 
 
 def _compare(descriptor: Mapping[str, Any], demand: Mapping[str, Any]) -> None:
@@ -660,7 +761,7 @@ def project_market_class(
         return unclassified
     descriptor = constructed.descriptor
     assert descriptor is not None and validator is not None
-    parsed_demand = _parsed_demand(demand, descriptor["lane"])
+    parsed_demand = _normalized_demand(demand, descriptor["lane"])
     try:
         # A public class exists only after the pair is proven compatible.
         _compare(descriptor, parsed_demand)

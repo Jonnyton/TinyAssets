@@ -11,6 +11,35 @@ path was stale; `payments/` holds the Wave-2 transport spine, `paid_market/` hol
 the pure live-price core named in the brief: `quotes.py`, `match.py`, `routing.py`,
 `instruments.py`, `price_surface.py`).
 
+## Final money gate — demand canonicalization
+
+- **Red** — `test_equivalent_malformed_demand_variants_share_one_market_class`
+  failed because `_parsed_demand` compared the raw whitespace/case variant before
+  market projection. The same shallow-copy path also let duplicate set members
+  survive into the hashed public envelope after compatibility had reduced them
+  with `set(...)`.
+- **Fix** — both `match_descriptor` and `project_market_class` now pass typed
+  demand through `_normalized_demand` before comparison or identity. It validates
+  the closed shape and bounds, NFKC-normalizes/case-folds/trims identifiers to the
+  existing ASCII grammar, and sorts/de-duplicates semantic sets. Mapping/list
+  ordering and equivalent Unicode spellings therefore cannot create extra market
+  classes; malformed inputs that cannot normalize fail closed.
+- **Green** — `py -m pytest -q tests/test_paid_market_descriptors.py
+  tests/test_paid_market_manipulation_mutation.py`: **175 passed**. The rejection
+  matrix covers non-string, non-ASCII-after-NFKC, internal-whitespace, malformed
+  nested-shape, and out-of-range demand.
+- **Mutation** — `test_demand_canonicalization_is_load_bearing` replaces the
+  canonicalizer with the prior shallow-copy seam and proves the six-variant guard
+  goes red; with the control present, all six variants produce one
+  `market_class_id`.
+- **Mirror** — canonical runtime and packaged Claude-plugin runtime SHA-256:
+  `AFBC5FDD04A5A2D2736A53455675D563AD6F9E3C7195DE59AA415CE63A1F735A`.
+- **Pushed SHA** — `PENDING_IMPLEMENTATION_COMMIT`.
+- **Corrected 2.1 / 2.2 checkoff state** — both remain checked, but their text
+  now states the true strictness boundary: strict canonical-byte ingestion is a
+  descriptor property; demand is a normalized, bounded typed mapping. Neither
+  task claims that this module implements a raw demand-byte decoder.
+
 ---
 
 ## Task 2.2 — descriptor + market-class implementation

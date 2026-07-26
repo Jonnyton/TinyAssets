@@ -7,8 +7,8 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 | Task | Classification | Evidence / boundary |
 |---|---|---|
 | 1.3 | built | Wave 2 is unlanded at 15/37; wallet/chain, R2-1 receipts, S14/B36, tenant, and domain owners are not live. |
-| 2.1 | unblocked -> built (provenance repaired 2026-07-25) | #1679 landed (`01e7ced7`) and 1.5's re-review returned APPROVE, so the amended grammar is fixed contract. Descriptor/market-class identity, grammar, and precedence were covered; the quote-bound scope provenance claim was premature until the 3.1 join was repaired in the same lane — see the 2.1 evidence block. |
-| 2.2 | unblocked -> built | Same #1679 landing. `descriptors.py` derives both ids; `capability_id` stayed purged. Payload/credential/price/routing/reservation/execution remain absent. |
+| 2.1 | unblocked -> built (scope corrected 2026-07-25) | #1679 landed (`01e7ced7`) and 1.5's re-review returned APPROVE. Strict canonical-byte verification applies to descriptor bytes; demand is typed structured input normalized before matching/identity, not a raw-byte decoder. Quote-bound scope provenance was repaired through 3.1 — see the 2.1 evidence block. |
+| 2.2 | unblocked -> built (scope corrected 2026-07-25) | Same #1679 landing. `descriptors.py` derives `descriptor_id` from strict descriptor bytes and `market_class_id` from normalized typed demand; it does not claim byte-canonical demand ingestion. `capability_id` stayed purged and payload/credential/price/routing/reservation/execution remain absent. |
 | 2.3 | built | Opaque descriptor ids, injected issuer verification, exact canonical bytes, mutation refusal, recomputed totals, and conserved pure capacity values are covered. Atomic persistence remains in 5.1. |
 | 2.4 | built | Exact landed-total and quote validation is pure and transport-independent. |
 | 2.5 | built; finding B closed (2026-07-25) | Facet/substitutability coverage landed with the #1679 grammar. Fourteen manipulation controls carry mutation probes that go red when forced open; no self/linked-party fee exemption is encoded. Price and delivered quantity are settlement evidence, the canonical fee is schedule-derived, quote attributes are re-read from signed bytes, and all identity partitions now share one exact capped-weight total. Inconsistent cross-partition constraints fail closed. |
@@ -44,8 +44,8 @@ independently buildable while dark; `blocked-*` work stays unchecked.
 
 ## 2. Pure descriptors, quotes, and evaluation
 
-- [x] 2.1 Add failing unit/property tests for the exact bounded ASCII canonical grammar; normalized structured construction versus strict canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches.
-  - Evidence (2026-07-25; `tests/test_paid_market_descriptors.py` 71 passed,
+- [x] 2.1 Add failing unit/property tests for the descriptor's exact bounded ASCII canonical grammar; normalized structured descriptor construction versus strict descriptor canonical-byte verification; deterministic error precedence and safe paths; golden domain-separated descriptor and market-class `sha256:` identities; one atomic correlated and independently supportable supply profile per descriptor; all four closed lane schemas; immutable validator-revision attestation; schema-owned range and required-set-subset comparison; unsupported versions/revisions; overlapping compatible supply mapping to one normalized public market class; extra supply headroom not changing that class; typed demand canonicalization before public identity; demand/private values staying outside public identity; quote-bound observation-scope provenance; and hard substitutability mismatches. This task does not claim a raw demand-byte decoder.
+  - Evidence (2026-07-25; `tests/test_paid_market_descriptors.py` 77 passed,
     `tests/test_paid_market_scope_provenance.py` 39 passed). In
     `tests/test_paid_market_descriptors.py`: golden domain-separated identities
     re-derived from hand-written envelopes plus pinned literals `:146-260`;
@@ -57,8 +57,10 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     refusal `:626-686`; decoder-vs-constructor split with `not_canonical` emitted only
     by the decoder `:697-716`, plus byte-length, non-ASCII, duplicate-key, depth, and
     NaN gates `:744-786`, and structure-before-validator precedence `:788-796`;
-    headroom collapsing to one market class and private demand staying outside public
-    identity `:803-880`.
+    headroom collapsing to one market class, equivalent demand order/duplicate/
+    whitespace/case/NFKC variants collapsing before identity, unnormalizable
+    shape/type/non-ASCII/bounds failing closed, and private demand staying outside
+    public identity `:803-963`.
   - Quote-bound observation-scope provenance — corrected 2026-07-25 after Codex's
     money review found the earlier claim premature. The prior evidence pointed at
     two *disconnected* facts (a v2 signature covers scope; an independently
@@ -93,6 +95,12 @@ independently buildable while dark; `blocked-*` work stays unchecked.
     Quote-bound scope provenance lands at schema v2 in
     `tinyassets/paid_market/quotes.py:186-206` with the trusted projector in
     `tinyassets/paid_market/scope.py`.
+  - Strictness correction (2026-07-25): demand enters this pure API as a typed
+    mapping, not raw bytes. `_normalized_demand` constructs one bounded ASCII form
+    before compatibility or market identity: NFKC/case/edge-whitespace variants
+    normalize, semantic sets sort and de-duplicate, member order is irrelevant,
+    and malformed shapes/types/identifiers fail closed. Both matching and
+    `project_market_class` consume only that normalized form.
 - [x] 2.3 Add failing tests for indicative versus native firm authority; versioned domain-separated canonical bytes; unknown-field refusal; server-recomputed totals; complete signed-field coverage; enrolled/revoked issuer keys; tenant/demand/descriptor/terms/fee/nonce/expiry/offer binding; and conserved single/partial capacity consumption.
 - [x] 2.4 Implement pure deterministic quote validation and landed monetary normalization for inference, training, task, and fabrication with one settlement currency, exact canonical fee version, priced-component coverage, explicit service attributes/objective weights, optional separately approved FX binding, and exact integer/rational arithmetic.
 - [x] 2.5 Add mutation/property tests proving nominal unit price, stale fields, unsupported facets, or a changed descriptor cannot alter eligibility or silently substitute supply.

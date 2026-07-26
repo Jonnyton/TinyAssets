@@ -26,9 +26,14 @@ from tests.test_paid_market_descriptors import (  # noqa: F401 - shared fixtures
     InferenceValidator,
     _body,
     _demand,
+    _demand_identity_variants,
 )
 from tinyassets.paid_market import descriptors, price_surface, routing
-from tinyassets.paid_market.descriptors import match_descriptor, validate_descriptor
+from tinyassets.paid_market.descriptors import (
+    match_descriptor,
+    project_market_class,
+    validate_descriptor,
+)
 from tinyassets.paid_market.fee_schedule import (
     CANONICAL_FEE_SCHEDULE_VERSION,
     scheduled_fee_micros,
@@ -816,6 +821,26 @@ def test_substitutability_gate_is_load_bearing(monkeypatch) -> None:
 
     monkeypatch.setattr(descriptors, "_compare", lambda descriptor, demand: None)
     assert_control_is_load_bearing(_guard_unsupported_facet_is_not_substituted)
+
+
+def _guard_equivalent_demand_cannot_fragment_market_identity() -> None:
+    results = [
+        project_market_class(_body(), demand, validator=_validator())
+        for demand in _demand_identity_variants()
+    ]
+    assert {result["status"] for result in results} == {"classified"}
+    assert len({result["market_class_id"] for result in results}) == 1
+
+
+def test_demand_canonicalization_is_load_bearing(monkeypatch) -> None:
+    _guard_equivalent_demand_cannot_fragment_market_identity()
+
+    monkeypatch.setattr(
+        descriptors, "_normalized_demand", lambda demand, lane: dict(demand)
+    )
+    assert_control_is_load_bearing(
+        _guard_equivalent_demand_cannot_fragment_market_identity
+    )
 
 
 @pytest.mark.parametrize(
