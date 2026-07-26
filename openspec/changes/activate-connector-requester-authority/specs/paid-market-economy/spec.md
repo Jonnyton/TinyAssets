@@ -31,6 +31,11 @@ agreement SHALL bind the target universe separately from the server-derived
 current activation authority and MUST NOT infer universe scope from request
 contents. Delegation requires a separately verified owner grant and cannot be
 inferred from request contents.
+`currency` SHALL come only from the current revalidated
+`ValidatedQuote.settlement_currency`; `MarketRequest` has no currency field.
+The public `quote_expires_at` SHALL map deterministically to the current
+`ValidatedQuote.expires_at` integer Unix epoch seconds and compare equal to
+that raw owner value before acceptance.
 
 #### Scenario: current bounded terms become an accepted agreement
 
@@ -53,7 +58,8 @@ inferred from request contents.
 
 Immediately before commit, the paid-market owner SHALL re-resolve and compare
 the canonical request, route-selection receipt, quote and descriptor
-versions/digests, currency, budget, spend cap, fee schedule, demand commitment,
+versions/digests, `ValidatedQuote.settlement_currency`, budget, spend cap, fee
+schedule, demand commitment,
 acceptance and settlement policies, deadline, expiry, cancellation,
 availability, capacity fence, and
 actor/tenant/universe scope. Caller-supplied expiry MUST NOT extend the
@@ -172,7 +178,10 @@ revoked and every owner releases its reservation exactly once. If dispatch
 wins, pre-dispatch release is forbidden. Later settlement/refund SHALL consume
 the current platform-signed `ExecutionTerminalV1`, including its current
 generation/fence and distributed-execution owner-CAS completion proof, plus
-domain acceptance bound to `job_id:lease_fence:accepted_result_sha256`; host
+domain acceptance bound to `job_id:lease_fence:accepted_result_sha256`.
+Settlement SHALL require exact equality
+`terminal.job_id == job_id`, `terminal.fence == lease_fence`, and
+`terminal.accepted_result_digest == accepted_result_sha256`; host
 self-attestation or generic accepted-use text is insufficient.
 
 #### Scenario: exact job composes owner-native authority without owner theft
@@ -197,6 +206,7 @@ self-attestation or generic accepted-use text is insufficient.
 
 - **WHEN** a dispatched job reaches settlement or refund
 - **THEN** the owning contracts require the current platform-signed `ExecutionTerminalV1`, its current generation/fence and distributed-execution owner-CAS completion proof, and domain acceptance for the exact `job_id:lease_fence:accepted_result_sha256`
+- **AND** `terminal.job_id == job_id`, `terminal.fence == lease_fence`, and `terminal.accepted_result_digest == accepted_result_sha256`
 - **AND** a host claim, mutable row, or generic accepted-use assertion cannot move logical or real funds
 
 #### Scenario: allocation price capacity or funding drift requires repair

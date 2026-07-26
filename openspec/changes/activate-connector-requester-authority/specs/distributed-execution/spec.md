@@ -88,8 +88,11 @@ result exactly once. If dispatch wins, pre-dispatch release SHALL be forbidden
 and later settlement/refund SHALL require the current platform-signed
 `ExecutionTerminalV1`, including its current generation/fence and
 distributed-execution owner-CAS completion proof, plus domain acceptance
-bound to `job_id:lease_fence:accepted_result_sha256`. Host self-attestation
-and generic accepted-use text MUST NOT satisfy settlement.
+bound to `job_id:lease_fence:accepted_result_sha256`. Settlement SHALL require
+exact equality `terminal.job_id == job_id`,
+`terminal.fence == lease_fence`, and
+`terminal.accepted_result_digest == accepted_result_sha256`. Host
+self-attestation and generic accepted-use text MUST NOT satisfy settlement.
 
 #### Scenario: cancellation wins before dispatch
 

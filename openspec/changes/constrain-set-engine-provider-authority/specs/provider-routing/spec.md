@@ -81,7 +81,9 @@ runtime, creation, and assignment SHALL persist state, generation, and
 `allowed_providers`. It SHALL use `[]` for `unassigned`, `pending`, `held`,
 `failed`, and remote-only `remote_ready`; only ordinary `ready` SHALL carry a
 non-empty canonical list. `remote_ready` SHALL be valid only with
-`engine_source="accepted_market"` and a current successor-issued B2/B13 grant.
+`engine_source="accepted_market"`, a current accepted agreement, and a current
+successor-issued non-executable B13 activation mandate. It SHALL NOT require or
+store a future-job B2.
 An ordinary ready ceiling MUST be role-complete over every role with a live
 provider call site: its intersection with each such canonical chain is
 non-empty. Startup/CI inventory SHALL enumerate live `role=` call sites and
@@ -133,15 +135,19 @@ Maintainer-owned local compute is never a supplement.
 `market_rented` remains held/deny-all in the ordinary router for its entire
 lifecycle.
 
-Target source `accepted_market` is remote-dispatch-only. It stores a separately
-proven B2/B13 grant, publishes `engine_assignment_state="remote_ready"` with
-`allowed_providers=[]`, and has no ordinary provider ceiling. Ordinary role
-chains MUST NOT be consulted for it.
-`activate-connector-requester-authority` SHALL own the pre-routing dispatch
-seam that converts the grant into remote execution for `converse`; provider
-routing holds when that seam or grant is absent, expired, revoked, or
-inconsistent. Such a hold SHALL map to the successor's accepted-market
-repair/renewal path. `universe_has_assigned_engine` SHALL remain fail-safe true
+Target source `accepted_market` is remote-dispatch-only. It stores opaque
+references to a current accepted agreement and current non-executable B13
+activation mandate, publishes `engine_assignment_state="remote_ready"` with
+`allowed_providers=[]`, and has no ordinary provider ceiling. It SHALL NOT
+store or pre-mint a future-job B2. Ordinary role chains MUST NOT be consulted
+for it. `activate-connector-requester-authority` SHALL own the pre-routing
+dispatch seam that delegates each concrete `converse` job to B13 for a fresh
+exact B2 only after every named owner-native market, capacity, funding,
+settlement, and execution-admission result is current. Provider routing holds
+when that seam, agreement, mandate, owner result, or per-job B2 is absent,
+expired, revoked, cancelled, fenced, or inconsistent. Such a hold SHALL map to
+the successor's accepted-market repair/renewal path.
+`universe_has_assigned_engine` SHALL remain fail-safe true
 rather than classify the universe as engine-less, even before the owner
 atomically downgrades stale `remote_ready` state to `held + []`.
 

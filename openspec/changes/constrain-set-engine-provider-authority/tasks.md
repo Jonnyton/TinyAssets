@@ -121,7 +121,7 @@
   audit. They returned `ADAPT`: proposal deferred-call wording, cloud-only
   readiness, accepted-market state encoding, wiki-canary composition, and
   outbound grant/proxy ownership needed exact closure.
-- [x] 1.31 Fold that `ADAPT`: add `remote_ready + []` and exact invalid-grant
+- [x] 1.31 Fold that `ADAPT`: add `remote_ready + []` and exact invalid-mandate
   setup behavior, align cloud readiness, preserve wiki-canary-only authority,
   and consume the outbound owner's ledger/proxy without a parallel authority
   path.
@@ -287,10 +287,12 @@
   source is `unassigned`, each maps
   through its named writer or to held/failed deny-all, raw-secret refusal stays
   custody-owned, and attested local model yields only `ollama-local`. Prove a
-  current B2/B13 grant publishes exactly `accepted_market + remote_ready + []`
-  and bypasses ordinary chains; an absent/expired/revoked/inconsistent grant
-  holds, maps to accepted-market repair/renewal, and remains fail-safe assigned
-  rather than generic engine-less.
+  current accepted agreement plus non-executable B13 activation mandate
+  publishes exactly `accepted_market + remote_ready + []`, then prove each
+  concrete job requires a fresh exact B2 from B13 and bypasses ordinary chains;
+  an absent/expired/revoked/cancelled/fenced/inconsistent agreement, mandate,
+  owner result, or per-job B2 holds, maps to accepted-market repair/renewal,
+  and remains fail-safe assigned rather than generic engine-less.
 - [ ] 4.7 Add failure/crash injection at quarantine, reference update,
   commit-ready, final publication, and cleanup; prove deny-all recovery,
   digest matching, and unrelated credential-byte preservation.
@@ -352,9 +354,11 @@
   supplement). Construct local transport only from the binding's requester
   endpoint inside its matching attested executor-host scope; process defaults
   and ambient/unauthenticated loopback hold. Recognize `accepted_market` as
-  remote-only and hand it to the connector successor's pre-routing B2/B13
-  dispatch seam as `remote_ready + []` without consulting ordinary chains;
-  hold and map invalid grants to accepted-market repair/renewal while keeping
+  remote-only and store only current accepted-agreement/non-executable-mandate
+  refs as `remote_ready + []`; hand each concrete job to the connector
+  successor's pre-routing B13 seam for a fresh exact B2 without consulting
+  ordinary chains; hold and map invalid mandate/per-job authority to
+  accepted-market repair/renewal while keeping
   the legacy assigned-engine classifier fail-safe true. For HTTP providers,
   consume `outbound-boundary-layer`'s current user/universe grant and
   credential-blind proxy rather than create a parallel ledger or ambient
@@ -441,8 +445,9 @@
   sink; add only the three closed zero-output host-local probes; move the
   completion-based subscription refresh-viability caller behind its bounded
   universe-less host/operator maintenance receipt or replace it with a
-  zero-output probe. Route target `accepted_market` through the connector
-  successor's pre-routing B2/B13 seam before ordinary provider routing.
+  zero-output probe. Route each concrete target `accepted_market` job through
+  the connector successor's pre-routing B13 composition seam for a fresh exact
+  B2 before ordinary provider routing; activation stores no future-job B2.
   Compose with the wiki-canary middleware without minting provider authority,
   and require the outbound owner's current user/universe grant plus
   credential-blind proxy for remote HTTP launches.

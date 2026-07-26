@@ -495,8 +495,9 @@ remaining boundaries:
    instance;
 2. readiness needed to cover roles with live call sites, not dormant `embed`,
    so Tier-1 and cloud-only Codex did not acquire a desktop prerequisite;
-3. accepted-market setup needed target source `accepted_market` and a named
-   successor-owned pre-routing B2/B13 remote-dispatch seam; and
+3. accepted-market setup needed target source `accepted_market`, a
+   non-executable activation mandate, and a named successor-owned pre-routing
+   B13 seam that creates a fresh exact B2 for each concrete job; and
 4. `_AUTH_PROBE_PROMPT` needed a closed universe-less maintenance receipt
    bound to host/operator principal, exact operation, fixed private prompt,
    and bounded lifetime.
@@ -550,7 +551,8 @@ HTTP provider binding must consume rather than duplicate the outbound
 connection grant/credential-blind proxy.
 
 The adaptation adds closed `remote_ready + []` state for a current
-`accepted_market` B2/B13 grant, exact invalid-grant repair/renewal behavior,
+accepted agreement plus non-executable B13 activation mandate, exact
+invalid-mandate/per-job-authority repair/renewal behavior,
 non-deferred-only request minting, conditional cloud readiness, explicit
 wiki-canary non-authority, and an outbound-ledger/proxy handoff. The market
 path remains target-only behind its successor; no ordinary chain or runtime

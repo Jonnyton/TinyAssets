@@ -85,7 +85,9 @@ After gated migration, every newborn begins with
 `engine_assignment_state="unassigned"`, `engine_assignment_generation=0`, and
 `allowed_providers=[]`. Ordinary `ready` requires a non-empty ceiling.
 Remote-only `remote_ready` requires `engine_source="accepted_market"`,
-`allowed_providers=[]`, and a current successor-issued B2/B13 grant.
+`allowed_providers=[]`, a current accepted agreement, and a current
+successor-issued non-executable B13 activation mandate; it never stores or
+requires a future-job B2.
 `unassigned`, `pending`, `held`, and `failed` also require `[]`. Non-empty is
 necessary but not sufficient for ordinary readiness: a ready ceiling must
 intersect every canonical role with a live provider call site and carry one
@@ -123,9 +125,10 @@ then depend on `activate-requester-host-engines`; Tier-1 setup remains owned by
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
 `unassigned + []` alone is engine-less. Ordinary `ready + nonempty` is local
-provider-ready. A current accepted-market grant is encoded as
-`remote_ready + []` and is remote-ready. If that grant is absent, expired,
-revoked, or inconsistent, execution holds and the successor-owned setup
+provider-ready. A current accepted agreement plus non-executable B13
+activation mandate is encoded as `remote_ready + []` and is remote-ready. If
+either is absent, expired, revoked, cancelled, fenced, or inconsistent,
+execution holds and the successor-owned setup
 mapper offers accepted-market repair/renewal; the legacy
 `universe_has_assigned_engine` classifier remains fail-safe true rather than
 mislabeling it engine-less, even before the owner atomically downgrades it to
@@ -148,7 +151,7 @@ The resolver is total over both the shipped source domain and target values:
 | `requester_local` + `openai` | target custody source | Codex covers current live writer/judge/extract and may be ready from its own valid cloud binding |
 | `local_model` + `ollama` | target zero-cloud source | `["ollama-local"]`; `activate-requester-host-engines` emits source + attested host binding |
 | `founder_hosted_daemon` | target hosted source | successor-selected ceiling after stable authenticated account-to-host binding |
-| `accepted_market` | target remote grant | current grant publishes `remote_ready + []`; connector successor dispatches `converse` through B2/B13 before routing; missing/revoked grant is held + setup repair |
+| `accepted_market` | target remote mandate | current agreement + non-executable B13 activation mandate publish `remote_ready + []`; connector successor delegates each concrete `converse` job to B13 for fresh exact B2 before routing; missing/revoked mandate or per-job authority is held + setup repair |
 | other legacy BYOC services | no target mapping | gated migration holds/fails deny-all; credential-custody retirement owns remediation/refusal |
 
 An omitted writer is derived; a supplied writer must match exactly. Aliases,
@@ -184,11 +187,13 @@ that endpoint. A process default, ambient `OLLAMA_HOST`, or loopback without a
 matching attested requester host holds. `market_rented` remains held
 permanently in the ordinary router.
 
-`accepted_market` is separate from legacy `market_rented`. Its B2/B13 grant
-dispatches through the connector successor's pre-routing remote seam, so the
-next `converse` never enters ordinary role chains or loops back into setup.
-The successor atomically publishes `remote_ready + []` only with a current
-grant. A missing, expired, revoked, or inconsistent grant holds, maps to the
+`accepted_market` is separate from legacy `market_rented`. Its accepted
+agreement and non-executable B13 activation mandate make `remote_ready + []`
+valid but authorize no job. The connector successor's pre-routing remote seam
+delegates each concrete `converse` job to B13 for a fresh exact B2 after every
+owner-native result is current, so the job never enters ordinary role chains
+or loops back into setup. A missing, expired, revoked, cancelled, fenced, or
+inconsistent agreement, mandate, owner result, or per-job B2 holds, maps to the
 accepted-market repair/renewal path, and cannot fall through to maintainer or
 desktop compute.
 
@@ -507,7 +512,8 @@ surface has an end-to-end ready and advertised path:
 
 1. a newborn Tier-1 streamable-HTTP chatbot user can accept market execution
    through `activate-connector-requester-authority` after paid-market
-   agreement and distributed-execution B2/B13 are live; that successor's own
+   agreement, non-executable B13 activation mandates, and fresh per-job
+   B2/B13 composition are live; that successor's own
    OpenSpec must name an action carried by one of the seven canonical live
    connector handles and must not depend on the deprecated `universe` handle;
 2. Tier-2 tray, Tier-3 OSS stdio, and mirrored Claude-plugin local runtime can

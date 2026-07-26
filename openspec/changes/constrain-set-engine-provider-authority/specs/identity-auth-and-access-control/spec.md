@@ -270,8 +270,9 @@ missing compute/model-access elements, and only setup paths proven live and
 completable for that requester's actual surface. It SHALL use
 `fulfillment_class=requester_owned|accepted_market`, never overload credential
 `authority_class`. Raw `byo_api_key` deposit MUST NOT be advertised.
-Accepted-market setup may appear only after paid-market agreement plus
-distributed-execution B2/B13 and
+Accepted-market setup may appear only after paid-market agreement,
+non-executable B13 activation-mandate support, fresh per-job B2/B13
+composition, and
 `activate-connector-requester-authority` are live;
 requester-host/local setup may appear only after its host successor and
 surface-specific capability are live.

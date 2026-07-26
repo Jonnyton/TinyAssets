@@ -104,9 +104,10 @@ deny-all.
   live connector handles and proves that path completable without raw secret
   deposit or desktop/web-app prerequisites. It cannot depend on the
   deprecated `universe` handle. It persists target source `accepted_market`
-  plus the B2/B13 grant and dispatches the next `converse` through its
-  pre-routing remote-execution seam; ordinary provider ceilings and role
-  chains are not consulted.
+  plus references to the accepted agreement and non-executable B13 activation
+  mandate. Its pre-routing seam delegates each concrete `converse` job to B13
+  for a fresh exact B2 after every owner-native result is current; ordinary
+  provider ceilings and role chains are not consulted.
 - Main's anonymous wiki-canary bearer and
   `_WikiCanaryExecutionAuthority` remain canary-only. They never mint provider
   authority even while provider middleware composes on the same FastMCP app.

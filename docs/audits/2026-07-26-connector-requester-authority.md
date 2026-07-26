@@ -113,7 +113,9 @@ BYOC, local-model, stdio, tray, and plugin activation belong exclusively to
 The connector supplies only server-verifiable references and explicit user
 limits: canonical request identity/version/digest, selection/evaluation
 receipt identity and digest, firm quote identity/version/digest, accepted
-integer-micros budget and per-job spend cap, settlement currency,
+integer-micros budget and per-job spend cap, current
+`ValidatedQuote.settlement_currency`, deterministic RFC3339-Z rendering of
+integer `ValidatedQuote.expires_at`,
 fee-schedule and settlement-policy versions, deadline, and acceptance policy.
 
 The server derives or reloads the actor, tenant, target universe, canonical request's
@@ -166,7 +168,10 @@ chooses `dispatch_committed` or
 once; the dispatch winner forbids pre-dispatch release. Settlement/refund
 requires the current platform-signed `ExecutionTerminalV1`, its current
 generation/fence and distributed-execution owner-CAS completion proof, plus
-domain acceptance, never host self-attestation.
+domain acceptance. Exact settlement joins require
+`terminal.job_id == job_id`, `terminal.fence == lease_fence`, and
+`terminal.accepted_result_digest == accepted_result_sha256`; never host
+self-attestation.
 An activation, quote, reservation, or mutable database row is never itself
 executable authority. Missing, expired, revoked, fenced, overspent, consumed,
 or inconsistent state maps to held repair/renewal and never to maintainer,

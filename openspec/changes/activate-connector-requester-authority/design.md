@@ -123,7 +123,7 @@ Alternatives considered:
 | `fulfillment_descriptor_id` | Selected compute/model fulfillment descriptor |
 | `fulfillment_descriptor_version` | Immutable descriptor version |
 | `fulfillment_descriptor_digest` | Digest of the canonical descriptor |
-| `currency` | Currency code of the accepted cap |
+| `currency` | Current `ValidatedQuote.settlement_currency`; `MarketRequest` has no currency field |
 | `budget_micros` | Positive mandate-wide budget in integer micros |
 | `spend_cap_micros` | Positive maximum spend per job in integer micros, not exceeding the budget |
 | `fee_schedule_version` | Accepted immutable fee schedule version |
@@ -131,7 +131,7 @@ Alternatives considered:
 | `acceptance_policy_digest` | Digest of the matching/acceptance policy |
 | `settlement_policy_version` | Accepted immutable settlement-policy version |
 | `deadline` | Positive epoch-seconds deadline copied from the canonical request |
-| `quote_expires_at` | Aware timestamp copied from the quote |
+| `quote_expires_at` | Deterministic RFC 3339 `Z` rendering of current integer `ValidatedQuote.expires_at` |
 
 The object identifies the terms the user is confirming; it does not carry
 positive authority. Actor, tenant, universe access, provider, host, credential,
@@ -167,8 +167,10 @@ all IDs inside `market_acceptance` are 1-128 ASCII characters matching
 `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`; the top-level idempotency key retains
 `write_graph`'s 16-128 ASCII-character bound and matches
 `[A-Za-z0-9][A-Za-z0-9._:-]{15,127}`; every digest is exactly 64 lowercase hex
-characters; currency is the canonical request/quote code and matches
-`[A-Z0-9][A-Z0-9._:-]{0,15}`. `fee_schedule_version` and
+characters. Currency comes only from the rehydrated current
+`ValidatedQuote.settlement_currency` and matches
+`[A-Z0-9][A-Z0-9._:-]{0,15}`; `MarketRequest` has no currency field.
+`fee_schedule_version` and
 `settlement_policy_version` are owner-native ASCII strings of 1-128 characters
 matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Only `request_version`,
 `quote_version`, `fulfillment_descriptor_version`, `deadline`,
@@ -178,10 +180,14 @@ values are rejected) not exceeding signed 64-bit range. The paid-market
 agreement owner's published `canonical_market_max_micros` is positive and no
 greater than that range, and the invariant is
 `0 < spend_cap_micros <= budget_micros <= canonical_market_max_micros`.
-`quote_expires_at` is canonical UTC RFC 3339 with whole seconds and `Z`;
-deadline and expiry must equal their owner records, remain future-valid, and
-fit the owner-defined maximum horizon. The exact schema is versioned before
-any grammar, maximum, unit, or time encoding changes.
+`quote_expires_at` is deterministically rendered from the current
+`ValidatedQuote.expires_at` integer Unix epoch seconds as whole-second UTC
+RFC 3339 `YYYY-MM-DDTHH:MM:SSZ`. The server parses it back to integer epoch
+seconds and requires exact equality with the raw owner value; fractional
+seconds, non-`Z` offsets, normalization, or caller formatting are never owner
+truth. Deadline and raw quote expiry must equal their owner records, remain
+future-valid, and fit the owner-defined maximum horizon. The exact schema is
+versioned before any grammar, maximum, unit, or time encoding changes.
 
 Alternatives considered:
 
@@ -332,9 +338,11 @@ revoked and every reservation releases once. If dispatch wins, pre-dispatch
 release is forbidden. Later settlement/refund consumes the current
 platform-signed `ExecutionTerminalV1`, its current generation/fence and
 distributed-execution owner-CAS completion proof, plus domain acceptance
-bound to `job_id:lease_fence:accepted_result_sha256`; host self-attestation or
-generic "accepted use" is insufficient. The connector never invents those
-effects.
+bound to `job_id:lease_fence:accepted_result_sha256`. Settlement requires
+`terminal.job_id == job_id`, `terminal.fence == lease_fence`, and
+`terminal.accepted_result_digest == accepted_result_sha256`; host
+self-attestation or generic "accepted use" is insufficient. The connector
+never invents those effects.
 
 The ordinary provider router is never consulted for this source. If authority
 is absent, expired, revoked, fenced, cancelled, inconsistent, or cannot be
