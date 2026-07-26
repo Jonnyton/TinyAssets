@@ -36,6 +36,36 @@ _LLM_API_KEY_ENV_BY_SERVICE: dict[str, str] = {
     "grok": "XAI_API_KEY",
 }
 
+_SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE: dict[
+    str, tuple[frozenset[str], ...]
+] = {
+    "claude": (
+        frozenset({
+            "claude_config_dir",
+            "config_dir",
+            "path",
+            "claude_home",
+            "home",
+            "auth_home",
+        }),
+        frozenset({
+            "oauth_token",
+            "claude_code_oauth_token",
+            "token_b64",
+            "secret_b64",
+        }),
+    ),
+    "codex": (
+        frozenset({
+            "codex_home",
+            "home",
+            "auth_home",
+            "path",
+            "auth_json_path",
+        }),
+    ),
+}
+
 
 def credential_vault_path(universe_dir: str | Path) -> Path:
     """Return the vault file path for *universe_dir*."""
@@ -75,6 +105,29 @@ def _secret_artifact_dir(universe_dir: Path, service: str) -> Path:
     return target
 
 
+def _decode_codex_auth_json(value: Any) -> bytes:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            "credential auth_json_b64 must be a non-empty base64 string"
+        )
+    normalized = value.translate(str.maketrans("", "", " \t\r\n"))
+    try:
+        decoded = base64.b64decode(normalized, validate=True)
+    except ValueError as exc:
+        raise ValueError("credential auth_json_b64 base64 decode failed") from exc
+    if not decoded:
+        raise ValueError("credential auth_json_b64 decoded content is empty")
+    if decoded.startswith(b"\xef\xbb\xbf"):
+        raise ValueError("credential auth_json_b64 decoded content has a UTF-8 BOM")
+    try:
+        json.loads(decoded)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(
+            "credential auth_json_b64 does not contain valid JSON"
+        ) from exc
+    return decoded
+
+
 def _normalize_record(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("credential entries must be JSON objects")
@@ -92,6 +145,13 @@ def _normalize_record(raw: Any) -> dict[str, Any]:
     for key in ("service", "provider", "destination", "purpose"):
         if isinstance(record.get(key), str):
             record[key] = record[key].strip()
+    if (
+        normalized_type == "llm_subscription"
+        and str(record.get("service") or record.get("provider") or "").lower()
+        == "codex"
+        and "auth_json_b64" in record
+    ):
+        _decode_codex_auth_json(record["auth_json_b64"])
     return record
 
 
@@ -105,6 +165,95 @@ def _records_from_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(raw_records, list):
         raise ValueError("credential vault 'credentials' must be a list")
     return [_normalize_record(item) for item in raw_records]
+
+
+def _service(record: dict[str, Any]) -> str:
+    return str(record.get("service") or record.get("provider") or "").strip().lower()
+
+
+def _credential_key(record: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the logical key used for single-record vault upserts."""
+    credential_type = str(record["credential_type"])
+    service = _service(record)
+    if credential_type == "llm_api_key":
+        return (
+            credential_type,
+            _LLM_API_KEY_ENV_BY_SERVICE.get(service, service),
+        )
+    if credential_type == "vcs":
+        destination = str(record.get("destination") or "").strip()
+        return credential_type, service, destination
+    return credential_type, service
+
+
+def _vcs_purposes(record: dict[str, Any]) -> frozenset[str]:
+    purpose = record.get("purpose")
+    if isinstance(purpose, str) and purpose.strip():
+        return frozenset({purpose.strip()})
+    purposes = record.get("purposes")
+    if isinstance(purposes, list):
+        return frozenset(
+            str(item).strip()
+            for item in purposes
+            if str(item).strip()
+        )
+    return frozenset({"write"})
+
+
+def _credentials_match(
+    existing: dict[str, Any],
+    incoming: dict[str, Any],
+) -> bool:
+    if _credential_key(existing) != _credential_key(incoming):
+        return False
+    if incoming["credential_type"] != "vcs":
+        return True
+    return bool(_vcs_purposes(existing) & _vcs_purposes(incoming))
+
+
+def _merge_subscription_records(
+    existing: list[dict[str, Any]],
+    incoming: dict[str, Any],
+) -> dict[str, Any]:
+    replacement: dict[str, Any] = {}
+    for record in reversed(existing):
+        replacement.update(record)
+    for slot in _SUBSCRIPTION_ALIAS_SLOTS_BY_SERVICE.get(
+        _service(incoming), ()
+    ):
+        if not slot.isdisjoint(incoming):
+            for field in slot:
+                replacement.pop(field, None)
+    replacement.update(incoming)
+    return replacement
+
+
+def _merge_single_record(
+    existing: list[dict[str, Any]],
+    incoming: dict[str, Any],
+) -> list[dict[str, Any]]:
+    matching_indexes = [
+        index
+        for index, record in enumerate(existing)
+        if _credentials_match(record, incoming)
+    ]
+    if not matching_indexes:
+        return [*existing, incoming]
+
+    replacement = incoming
+    if incoming["credential_type"] == "llm_subscription":
+        replacement = _merge_subscription_records(
+            [existing[index] for index in matching_indexes],
+            incoming,
+        )
+
+    first_match = matching_indexes[0]
+    matching_set = set(matching_indexes)
+    return [
+        replacement if index == first_match else record
+        for index, record in enumerate(existing)
+        if index == first_match or index not in matching_set
+    ]
 
 
 def load_credential_vault(universe_dir: str | Path) -> list[dict[str, Any]]:
@@ -129,12 +278,44 @@ def write_credential_vault(
 ) -> dict[str, Any]:
     """Validate and write a per-universe credential vault.
 
-    Returns a non-secret summary suitable for logs/status surfaces.
+    Against an existing valid vault, a single record is read-modify-write
+    upserted into its logical slot and all matching duplicates collapse at their
+    first position. Subscription fields merge; other credential types replace
+    the whole slot. Two-or-more records replace the stored list exactly, and an
+    empty payload clears it. A malformed existing vault blocks a single upsert.
+    Returns a non-secret summary suitable for logs/status surfaces, including
+    redundant matches collapsed and VCS purpose slots dropped by an upsert.
     """
     universe = Path(universe_dir)
     universe.mkdir(parents=True, exist_ok=True)
     records = _records_from_payload(credentials)
     path = credential_vault_path(universe)
+    collapsed_credential_count = 0
+    dropped_credential_slots: list[dict[str, Any]] = []
+    if len(records) == 1 and path.is_file():
+        incoming = records[0]
+        existing = load_credential_vault(universe)
+        matching = [
+            record
+            for record in existing
+            if _credentials_match(record, incoming)
+        ]
+        collapsed_credential_count = max(0, len(matching) - 1)
+        if incoming["credential_type"] == "vcs":
+            dropped_purposes = (
+                frozenset().union(*(_vcs_purposes(record) for record in matching))
+                - _vcs_purposes(incoming)
+            )
+            if dropped_purposes:
+                dropped_credential_slots.append({
+                    "credential_type": "vcs",
+                    "service": _service(incoming),
+                    "destination": str(
+                        incoming.get("destination") or ""
+                    ).strip(),
+                    "purposes": sorted(dropped_purposes),
+                })
+        records = _merge_single_record(existing, incoming)
     tmp = path.with_name(f"{path.name}.tmp")
     payload = {"schema_version": 1, "credentials": records}
     tmp.write_text(
@@ -157,22 +338,13 @@ def write_credential_vault(
         "credential_count": len(records),
         "credential_types": credential_types,
         "services": services,
+        "collapsed_credential_count": collapsed_credential_count,
+        "dropped_credential_slots": dropped_credential_slots,
     }
 
 
-def _service(record: dict[str, Any]) -> str:
-    return str(record.get("service") or record.get("provider") or "").strip().lower()
-
-
 def _purpose_matches(record: dict[str, Any], purpose: str) -> bool:
-    expected = purpose.strip()
-    record_purpose = record.get("purpose")
-    if isinstance(record_purpose, str) and record_purpose.strip():
-        return record_purpose.strip() == expected
-    purposes = record.get("purposes")
-    if isinstance(purposes, list):
-        return expected in [str(item).strip() for item in purposes]
-    return expected == "write"
+    return purpose.strip() in _vcs_purposes(record)
 
 
 def _secret_value(record: dict[str, Any], *keys: str) -> str:
@@ -263,12 +435,14 @@ def ensure_codex_home_from_vault(universe_dir: str | Path | None) -> Path | None
         _chmod_best_effort(home, 0o700)
         auth_b64 = record.get("auth_json_b64")
         auth_file = home / "auth.json"
-        if isinstance(auth_b64, str) and auth_b64.strip() and not auth_file.exists():
-            tmp = auth_file.with_name("auth.json.tmp")
-            tmp.write_bytes(base64.b64decode(auth_b64.strip()))
-            _chmod_best_effort(tmp, 0o600)
-            tmp.replace(auth_file)
-            _chmod_best_effort(auth_file, 0o600)
+        if isinstance(auth_b64, str) and auth_b64.strip():
+            auth_bytes = _decode_codex_auth_json(auth_b64)
+            if not auth_file.exists() or auth_file.read_bytes() != auth_bytes:
+                tmp = auth_file.with_name("auth.json.tmp")
+                tmp.write_bytes(auth_bytes)
+                _chmod_best_effort(tmp, 0o600)
+                tmp.replace(auth_file)
+                _chmod_best_effort(auth_file, 0o600)
         config_file = home / "config.toml"
         if auth_file.exists() and not config_file.exists():
             config_file.write_text(

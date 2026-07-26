@@ -3,3 +3,505 @@ What surprised me: the deploy workflow already had nearly all facts needed for a
 Pattern worth capturing: release observability should be deploy-published and status-read-only. That keeps `get_status` safe while still making live drift checkable by chatbots and local tools.
 
 One thing I would do differently: start by adding the deploy workflow structure test before editing YAML, because this repo already has strong workflow-contract tests and they make the intended step ordering explicit.
+
+## 2026-07-23 — MCPB staged catalog parity
+
+What surprised me: the bundle already staged the canonical runtime correctly; the install break was entirely in stale manifest metadata and the absence of a semantic packaging gate.
+
+Pattern worth capturing: package validation should compare the artifact’s declared catalog with middleware-visible behavior from the staged artifact itself. Comparing source constants or relying on a schema validator leaves room for silent product drift.
+
+One thing I would do differently: identify the `--skip-probe` plus `--validate` escape path in the first red test, because a semantic gate is incomplete while the official validator can bypass it.
+
+## 2026-07-23 — PR #1574 research archive
+
+What surprised me: current main already had an independently approved paid-market
+consumer of one research slice while the source reports themselves remained only
+on a stale draft branch. Approval of a consumer must not be generalized into
+approval of its source lane or architectural amendments.
+
+Pattern worth capturing: archive dated research with its review verdict adjacent,
+stamp the exact evidence checkpoint, and keep living design/coordination files out
+of the archival commit. `ADAPT` is durable evidence and a gate, not a synonym for
+approval.
+
+One thing I would do differently: build the source-to-archive hash manifest before
+creating the STATUS claim so the mechanical-copy proof and permitted header drift
+are explicit from the first increment.
+
+## 2026-07-23 — Provider-attempt receipt specification
+
+What surprised me: the router already carries provider/model/family evidence, so the hard part is not provider discovery; it is preserving call-local attribution across the string bridge, retry waves, and the separate learning call.
+
+Pattern worth capturing: an audit envelope needs two orthogonal terminal fields when fallback exists — how output completed (`outcome`) and why routing stopped (`route_condition`). Combining them makes missing-router fallback and exhausted-chain fallback ambiguous.
+
+One thing I would do differently: model synthetic fallback and missing-router behavior before drafting the first enum list, because that boundary exposed the only internal contradiction found by the consistency pass.
+
+## 2026-07-23 — rollback-safe full-volume restore
+
+What surprised me: extracting with `--strip-components=1` into a `mktemp`
+directory preserves file contents but silently replaces the Docker volume
+root's access mode with `0700` unless ownership and mode are copied explicitly.
+
+Pattern worth capturing: recovery tooling must fail closed at every discovery
+boundary—archive metadata, Docker mountpoint resolution, and consumer
+enumeration—before the first live rename.
+
+One thing I would do differently: model the directory metadata and Docker
+enumeration failure paths in the first test batch, alongside corrupt archives
+and rename rollback.
+
+## 2026-07-23 — Operator-request contract refresh
+
+What surprised me: the four-commit branch collapsed to one substantive OpenSpec commit after rebasing; every conflict was stale coordination, while current main independently preserved the unfixed runtime P1.
+
+Pattern worth capturing: a planning-only PR should carry durable contract artifacts but no live spec-claim row. Runtime truth stays as a dated concern until a separate implementation lane produces evidence.
+
+One thing I would do differently: compare the branch against current canonical capability owners before replaying coordination commits, because that makes it obvious which conflicts should resolve entirely to current main.
+
+## 2026-07-23 — terminal deploy/rollback truth
+
+What surprised me: structural workflow tests and actionlint both passed while an old rollback tail still mutated the image after terminal publication. Independent semantic review then found several cross-layer tuples that were individually valid-looking but jointly contradictory.
+
+Pattern worth capturing: deployment truth needs one final-state invariant across shell outputs, the pure classifier, durable receipts, job exit status, and incident wording. Every dangerous path needs an executable cross-layer regression, not only syntax or token-order assertions.
+
+One thing I would do differently: read the entire rendered step body immediately after the first green structural run, then derive tests from each post-publication mutation and each boundary-crossing tuple before asking for review.
+
+## 2026-07-23 — fresh-host backup configuration
+
+What surprised me: three active guides named three different rclone locations,
+while the root-run unit never set the `HOME` override one guide relied on.
+
+Pattern worth capturing: configuration truth spans the consumer, its service
+identity, templates, and every runtime-linked runbook; checking only the
+primary deploy guide leaves a believable but unusable path.
+
+One thing I would do differently: start the contract test from the runtime's
+actual environment and enumerate every linked guide before drafting the
+write-set.
+
+## 2026-07-23 — convergent host uptime installation
+
+What surprised me: installing every unit was not sufficient for a fresh host;
+the disk-rotation import closure and disabled-timer repair had independent
+drift, while backup configuration required its own follow-up boundary.
+
+Pattern worth capturing: a systemd installer should own units, executable
+assets, configuration names, activation state, and rollback as one versioned
+transaction. Existing content-addressed releases still need byte/mode checks.
+
+One thing I would do differently: make the first fake systemd reject missing
+units and inject a mid-stop failure, because permissive doubles hid the two
+fresh-host rollback edges found later.
+
+## 2026-07-23 — hardened DR drill evidence
+
+- **What surprised me:** the first live drill failure was not a restore failure
+  at all; `curl -sf` erased the provider response before provisioning, and the
+  previous PASS ordering could have hidden a later cleanup failure.
+- **Pattern worth capturing:** recovery evidence is a state machine, not a
+  collection of successful steps. Bind one artifact by digest across every
+  boundary, encode path metadata crossing workflow protocols, and publish PASS
+  only after cleanup reaches its terminal success state.
+- **What I would do differently:** model provider API failures and resource
+  deletion as explicit tested states in the first proposal, including request
+  timeouts and adversarial output fields, instead of adding them after the
+  happy path is sketched.
+
+## 2026-07-23 — provider-inventory DR selection
+
+- **What surprised me:** once API diagnostics became truthful, the next outage
+  was provider inventory drift rather than restore logic; a retired base-image
+  slug stopped the drill before it could test recovery.
+- **Pattern worth capturing:** provider inventory should be resolved from a
+  bounded, schema-validated catalog before any mutation, with pagination and
+  the resolved identity retained in terminal evidence.
+- **What I would do differently:** include pagination, exact provider field
+  semantics, permission prerequisites, and provenance in the first selector
+  design instead of treating a large first page as the whole catalog.
+
+## 2026-07-23 — bootstrap checkout ownership
+
+- **What surprised me:** the obvious exact-path `safe.directory` fix still
+  granted root trust to a service-user-writable repository; independent review
+  also exposed the separate interrupted-clone rerun path.
+- **Pattern worth capturing:** privilege-sensitive convergence must model every
+  ownership state, including partial prior runs. Run repository tools as the
+  current owner instead of weakening their trust guard, then validate immutable
+  identity before a privileged installer consumes it.
+- **What I would do differently:** enumerate fresh, completed-repeat, and
+  interrupted-repeat ownership states before drafting the first design, and
+  treat a security guard failure as a boundary signal rather than an obstacle
+  to bypass.
+
+## 2026-07-23 — DR runtime-image pin
+
+- **What surprised me:** a daemon-only Compose start still validates required
+  image interpolation across the complete compose model, while the fresh-host
+  template correctly leaves that image empty.
+- **Pattern worth capturing:** recovery inputs need distinct authorities and
+  evidence names. The provider base image comes from bounded live inventory;
+  the daemon runtime image comes from validated immutable production
+  configuration; neither should be conflated or sourced from a mutable tag.
+- **What I would do differently:** model Compose interpolation and the
+  quoted/unquoted environment grammar in the first DR test matrix, and design
+  the minimal nonsecret configuration transfer before the first live run.
+
+## 2026-07-23 — DR fresh-env startup truth
+
+- **What surprised me:** a successful Compose command and a green GitHub job
+  both concealed a red recovery outcome—the container restart-looped because
+  interpolation did not populate its env file, and the probe step emitted red
+  outputs before ending on a successful shell command.
+- **Pattern worth capturing:** recovery workflows need two truth checks:
+  resource/service evidence must reach the process boundary, and structured
+  red evidence must be followed by an explicit terminal failure. Cleanup tools
+  should verify resource identity, not trust a numeric ID alone.
+- **What I would do differently:** test failed-step `if: always()` semantics
+  and container-visible environment separately from Compose model validation
+  before the first live drill.
+
+## 2026-07-23 — shared in-node enqueue caps
+
+- **What surprised me:** boundary tests aimed at lock correctness also exposed
+  authority bugs in run scope, universe identity, private visibility, and
+  corrupt-history handling.
+- **Pattern worth capturing:** concurrency proof must test the authority used
+  to choose the lock, budget, and target—not only the atomicity of the lock.
+- **What I would do differently:** map cap scope, physical storage identity,
+  and request authority before the first implementation pass, then make those
+  boundaries the first independent security-review checklist.
+
+## 2026-07-24 — production backup preservation and retention
+
+- **What surprised me:** the first exact backup was green while GitHub
+  retention remained one release above policy. Two sequential uploads could
+  each observe a different stale list, and a finite retry count still was not
+  a time bound until every network and delete operation shared one deadline.
+- **Pattern worth capturing:** operational acceptance must inspect the
+  resulting external state, not only terminal workflow markers. Eventual-
+  consistency reconciliation needs current-object visibility, typed
+  already-absent handling, and a wall-clock budget covering every nested
+  request and sleep.
+- **What I would do differently:** make release-count verification and
+  invocation-warning rejection part of the first executable production proof,
+  then run independent review against the full two-upload sequence before the
+  first live retention exercise.
+
+## 2026-07-24 — transactional operator-request storage
+
+- **What surprised me:** the legacy request tests were mostly failing because
+  their fixtures lacked a declared Loop, while the actual operator bug was a
+  swallowed split-write failure that persisted a Request without its task.
+- **Pattern worth capturing:** a durable admission is one aggregate—Request,
+  admission receipt, epoch-specific task, and event—and its idempotency,
+  authority recheck, random-ID allocation, and fault boundary belong inside
+  the same transaction.
+- **What I would do differently:** write the quarantine-replay and lock-error
+  tests in the first red batch. Both are small but distinguish genuinely
+  transactional behavior from a store that only passes happy-path concurrency.
+
+## 2026-07-24 — exact-universe operator-priority grants
+
+- **What surprised me:** the legacy capability table's three-column primary
+  key made revocation history impossible even though most existing read paths
+  could remain unchanged once activity became a timestamped query.
+- **Pattern worth capturing:** elevation authority should be immutable
+  generations plus an exact-scope transactional reread at a server-controlled
+  transaction timestamp. Wildcard or host identity can remain useful for
+  ordinary administration without becoming an accidental substitute for the
+  elevated grant, and caller-supplied audit time must never become an
+  authorization-time override.
+- **What I would do differently:** include mismatched-expiry replay and
+  revoked-issuer backdating tests in the first red batch; both catch ways an
+  apparently idempotent admin API can silently widen authority.
+
+## 2026-07-24 — request-local operator-priority authority
+
+- **What surprised me:** replacing the environment check exposed a second
+  identity boundary: production WorkOS `sub` values are the founder key, while
+  the legacy account helper generated `user::...` aliases. A verdict could be
+  logically correct yet never find a real user's grant.
+- **Pattern worth capturing:** elevation must bind the opaque authenticated
+  subject end to end. Trusted provisioning may create its referential account
+  row, but it must not grant ordinary action scope or ACL authority; those
+  remain separate conjuncts in the request-local verdict.
+- **What I would do differently:** use a production-shaped opaque subject in
+  the first authority test, then exercise host/environment labels only as
+  adversarial non-authority inputs.
+
+## 2026-07-24 - operator-priority replay reauthorization
+
+- **What surprised me:** replay and new admission deliberately diverge after
+  priority revocation. Both must re-check current ordinary access, but only a
+  new effect may require the still-active elevation grant.
+- **Pattern worth capturing:** perform non-enumerating authorization before
+  idempotency lookup, then use a named replay verdict that skips only the
+  prospective elevation leg. This preserves committed truth without turning
+  historical possession of a key into ongoing universe access.
+- **What I would do differently:** start with a store spy that fails on lookup;
+  it makes the security-sensitive operation order executable rather than an
+  inference from a returned error.
+
+## 2026-07-24 - canonical public request admission
+
+- **What surprised me:** an ACL check immediately before replay lookup was
+  still too weak when it used a different database connection. The meaningful
+  boundary is the authorization read and idempotency read in one transaction.
+- **Pattern worth capturing:** idempotency is an authority-sensitive read
+  before it is a duplicate-write optimization. Validate exact UTF-8 input,
+  derive the scope server-side, HMAC the public key, bind the exact body with
+  RFC 8785, and re-check access inside the lookup transaction. Authorized
+  replay also precedes mutable new-admission viability such as the current
+  Loop declaration; committed history does not disappear with later topology.
+- **What I would do differently:** make malformed Unicode, ACL loss between
+  verdict and lookup, and lost-response replay part of the first red batch.
+  Each catches a boundary that happy-path same-body replay does not exercise.
+
+## 2026-07-24 - epoch-2 queue adapter and pure selection
+
+- **What surprised me:** the existing v1 file queue already rejected the new
+  operator trigger tier, so isolation started stronger than expected. The
+  missing boundary was the inverse: giving v2 workers a typed path to both
+  epochs without ever giving v1 code a transactional-store handle.
+- **Pattern worth capturing:** selection, reservation, and execution authority
+  are three different operations. Cross-epoch selection stays read-only; each
+  epoch keeps its own conditional claimer; and a v2 claim remains inert for
+  external execution until the separate signed B2 authority is present.
+- **What I would do differently:** include expired-heartbeat revival and
+  cancel-requested worker loss in the first lease test matrix. Both expose
+  lifecycle wedges that a happy claim/finish test cannot see.
+
+## 2026-07-24 - epoch-2 trusted transaction time
+
+- **What surprised me:** exact descriptor equality did not make descriptor
+  freshness trustworthy when the comparison instant still came from the
+  claimant. The same backdating hole existed independently in heartbeat and
+  terminal transitions.
+- **Pattern worth capturing:** authority freshness uses a server clock read
+  after the write transaction begins. Request APIs may choose a shorter lease,
+  but they cannot provide event time or extend the 90-second maximum.
+- **What I would do differently:** make a backdated stale claim, a backdated
+  terminal transition, and a genuinely simultaneous two-writer claim the
+  first red tests for any leased authority boundary.
+
+## 2026-07-24 - boot-bound worker protocol evidence
+
+- **What surprised me:** moving release reads into a memoized helper was still
+  too late: registration-delay and auth-quarantine paths could reach a new
+  receipt before first publication. The snapshot must happen at supervisor
+  entry, and only a terminal-proof version-2 receipt is positive evidence.
+- **Pattern worth capturing:** positive protocol evidence exists only when the
+  exact worker/runtime/universe tuple is durably recorded and the same
+  descriptor appears in that worker's named heartbeat. Metadata publication
+  must preserve concurrent runtime control, and loss of runtime identity must
+  clear the process's last durable descriptor.
+- **What I would do differently:** start with registration-delayed receipt
+  replacement, partial legacy receipts, concurrent pause/retire, and runtime-ID
+  loss. Those four negative tests expose false-upgrade and stale-authority
+  paths that a complete-looking heartbeat fixture misses. Also exercise the
+  full retired-A to replacement-B path: it exposed both stale cleanup blocking
+  publication and an older registry path that resurrected retired slots. A
+  status check before a metadata write is not control-safe; reuse must be one
+  atomic “still provisioned” operation. The worker-ID choice belongs in that
+  same transaction too: otherwise different workers can steal one unassigned
+  slot and identical concurrent starts can create duplicates.
+
+## 2026-07-24 - transactional epoch-2 quarantine
+
+- **What surprised me:** the receipt/disable transaction already existed, but
+  pure selection decoded JSON before validating protocol and linkage. A corrupt
+  row could therefore poison the read path even though claim SQL rejected its
+  protocol.
+- **Pattern worth capturing:** selectors classify raw rows without mutation;
+  maintenance alone owns receipt+disable; claim repeats the integrity boundary.
+  When maintenance rolls back, the selector and claimer still keep the source
+  inert and return a bounded red health result.
+- **What I would do differently:** begin with malformed JSON, broken aggregate
+  links, both precommit fault points, and concurrent maintenance. Those tests
+  distinguish real quarantine isolation from merely having a quarantine table.
+  Treat every imported SQLite storage class as adversarial too: ordinary
+  `TEXT PRIMARY KEY` columns can contain NULL, TEXT-affinity columns can contain
+  BLOBs, and REAL values can be non-finite when constraints were bypassed.
+  Address corrupt sources by rowid, totalize their digest representation, and
+  bound maintenance by rows scanned—not receipts written—while persisting a
+  rotating cursor. Finally, validate the public result and lifecycle
+  semantically at both selection and claim; parseable evidence is not proof.
+  A rotating cursor also needs a per-cycle high-water mark: last-rowid alone
+  can starve an older row forever under sustained inserts. Bound the SQL batch
+  by physical rows (including terminal/disabled rows, which are skipped after
+  fetch) so the writer-lock budget is real rather than a post-filter illusion.
+  Physical rowids are locators only and never digest material. Receipt
+  sanitization must validate identifier formats and enum values before
+  preserving strings, and authority integrity must bind canonical
+  hash/version/policy formats, receipt generation, actor, tenant metadata, and
+  Request lifecycle—not merely JSON shape.
+  Physical cursor progression and semantic classification are separate:
+  terminal tombstones still consume the bounded cursor budget but must not be
+  reclassified after legitimate compaction; disabled rows are skipped only
+  when a quarantine receipt already explains them, otherwise valid rows remain
+  policy-parked and invalid rows gain an audit receipt. Reuse the platform's
+  path-safe custom-universe contract for eligibility while applying a stricter
+  display-safe slug rule to receipts. Closed reason enums, allowed directed
+  scopes, canonical soul hashes, and a non-overridable scan ceiling belong at
+  the storage boundary.
+  Stored evidence is only meaningful when it binds the executable payload:
+  recompute the RFC 8785 body digest from the canonical Request plus task
+  inputs, and bind directed scope/hash to the actual daemon owner/delegation
+  metadata and soul. Terminal rows need two paths: full validation before
+  compaction, or an exact compacted tombstone contract afterward. A status
+  string alone is never permission to skip integrity.
+
+## 2026-07-24 - executable identity and pre-compaction integrity
+
+- **What surprised me:** a canonical request-body digest still left the
+  resolved `branch_def_id` and unexpected task-input keys outside the checked
+  execution envelope. Separately, a correct post-compaction tombstone checker
+  could not recover evidence that compaction had already erased.
+- **Pattern worth capturing:** bind every downstream executable input to at
+  least two authoritative aggregate records, reject surplus keys, and run the
+  same full classifier inside the compaction write transaction before private
+  evidence is replaced. Terminal timestamps are one state transition and must
+  agree across task/admission records before the compaction time can follow
+  them.
+- **What I would do differently:** enumerate the exact fields consumed by the
+  execution handoff and every evidence-destroying maintenance operation during
+  the first threat-model pass, then make each a red mutation test before the
+  initial review.
+
+## 2026-07-24 - mixed epoch isolation proof
+
+- **What surprised me:** the full mixed valid/forged/missing-receipt/
+  unsupported-protocol scenario passed without another runtime change once
+  selection and claim shared the same aggregate classifier.
+- **Pattern worth capturing:** an isolation proof must advance both valid
+  epochs, not merely show that invalid rows are absent from one candidate
+  list. Claim valid v2, then prove valid v1 becomes selectable while invalid
+  v2 rows remain unclaimable and quarantine remains a separate mutation.
+- **What I would do differently:** design the first quarantine integration
+  test around the complete mixed queue. It exposes selector, claim, epoch
+  fallback, purity, and maintenance behavior in one production-shaped trace.
+
+## 2026-07-24 - dark distributed-execution authority spine
+
+- **What surprised me:** the most consequential review findings were not
+  signature failures; they were ordinary-language authority leaks between
+  otherwise valid mechanisms—transplantable evidence provenance, mutable
+  verified metadata, an unbound multi-blob result digest, and SQLite
+  hardening that accidentally weakened POSIX locks.
+- **Pattern worth capturing:** prove authority at the consuming sink with
+  executable mutations, and stop hardening at the honest threat boundary.
+  A fake/test root can reject aliases and own its connection without claiming
+  hostile-host custody; production must wait for the OS/custom-VFS boundary
+  that can actually uphold that stronger promise.
+- **What I would do differently:** write the threat-boundary table and the
+  exact designated-result rule before the first storage implementation. That
+  would have prevented both the unsafe descriptor experiment and the late
+  multi-blob ambiguity.
+
+## 2026-07-24 - canonical MCP route retirement
+
+- **What surprised me:** deleting the runtime and edge routes was the easy
+  part; dated submission runbooks and PLAN still looked current enough to send
+  an operator back to the retired product after every focused test was green.
+- **Pattern worth capturing:** a public-route retirement is one transaction
+  across application mounts, edge routing, generated packages, registrations,
+  canaries, current guidance, and architectural truth. Preserve dated evidence,
+  but fence it from execution and record a live red pre-image before deploy.
+- **What I would do differently:** inventory and classify every old-route
+  reference as current, historical, generated, or test-only before the first
+  code edit, then make the operational-guidance boundary part of the initial
+  review brief.
+
+## 2026-07-24 - epoch-2 operational truth
+
+- **What surprised me:** a fresh worker heartbeat was insufficient evidence
+  of compatible capacity. Status has to match the complete heartbeat
+  descriptor against the durable runtime descriptor or it can promise
+  capacity that the claim transaction will correctly reject.
+- **Pattern worth capturing:** operational state is an exclusive integrity
+  classification layered over lifecycle state. Count physical depth once,
+  keep valid pending lifecycle counts, and expose invalid, quarantined, and
+  policy-parked rows separately with bounded ID/digest diagnostics. Corrupt
+  rows outside the known status enum or authoritative universe scope must
+  reduce completeness explicitly; a filtered-out row is not a clean queue.
+  Collapse corrupt dimensions in SQL, and include authorization class in any
+  cache key whose response contains privilege-conditioned diagnostics.
+- **What I would do differently:** define the read-model schema beside the
+  quarantine receipt schema at the start. Stable pre-quarantine digests,
+  bounded diagnostics, and durable-descriptor matching would then arrive in
+  the first red test rather than during integration hardening.
+
+## 2026-07-24 - epoch-2 wakeup staging
+
+- **What surprised me:** wakeup eligibility is inseparable from executable
+  claim readiness. A truthful descriptor cannot be published just because the
+  queue adapter exists; the supervised child must be able to select, claim,
+  materialize, and lifecycle-manage the same task or the supervisor creates a
+  restart loop.
+- **Pattern worth capturing:** stage dormant readers with code-owned readiness
+  truth, visible status, exact-worker durable identity, and an epoch-filtered
+  selector. A live-child restart guard stays read-only and protects only
+  current live leases; expired/dead-peer recovery belongs in the lifecycle
+  integration that owns failover.
+- **What I would do differently:** test repeated restarts, empty canonical
+  daemon identity, plugin-isolated imports, real-data-dir leakage, partial
+  schemas, and cross-epoch selector identity on the first pass. Those
+  adversarial cases would have exposed the unsafe sequencing immediately.
+
+## 2026-07-24 - epoch-2 claim-bound request materialization
+
+- **What surprised me:** a correctly gated materialization write was not
+  enough. The durable target could outlive its lease and re-enter selection
+  through the producer override, while an SQL `LIMIT` ahead of integrity
+  filtering let one corrupt row hide valid work.
+- **Pattern worth capturing:** lease-gated artifacts need a fail-closed check
+  at the final selection boundary using the complete claim identity. Bounded
+  readers cap rows scanned, not rows fetched before validation, and optional
+  epoch readers must never mask legacy work when they fail.
+- **What I would do differently:** lead with corrupt-first pagination,
+  cross-worker selection, lease expiry/reclaim, same-basename root aliasing,
+  and optional-reader failure tests before implementing the happy path.
+
+## 2026-07-25 - release reconciliation wake-up and chain recovery
+
+- **What surprised me:** GitHub token-dispatched image builds rarely chained
+  into deploys, and Python 3.14 accepted indented `-c` programs that the
+  production runner's Python 3.12 rejected. A locally green exact-script test
+  was therefore still environment-incomplete.
+- **Pattern worth capturing:** executable workflow proofs need the production
+  interpreter, the exact YAML-dedented shell body, a stateful scheduler/run
+  model, and mutation probes. Retry policy belongs in that state model too:
+  permit bounded recovery, then stop before repeating production mutation.
+- **What I would do differently:** model the full token-dispatch-to-deploy
+  chain and pin the hosted runner interpreter in CI before adding the trigger.
+  That would have exposed both the missing deploy chain and parser mismatch in
+  the first red test.
+
+## 2026-07-25 - Agent Village security containment
+
+- **What surprised me:** fixing the server's unauthenticated default exposed a
+  browser recovery state machine, not just a bearer check. Three independent
+  fetch paths, same-document fragment navigation, chat timers, and ordinary
+  toasts could each preserve a silent or misleading locked-out state.
+- **Pattern worth capturing:** authentication failure belongs at the shared API
+  boundary, while recovery needs one dedicated, persistent, reversible UI
+  state. Security reviews should rotate credentials under an already-open
+  interactive view, not only test fresh page loads.
+- **What I would do differently:** establish the product-ordering boundary
+  before shaping the local UI. The connector-backed chatbot is the canonical
+  first-class experience; an experimental operator view should receive only
+  minimum containment until mature platform primitives reveal whether it has a
+  durable role at all.
+
+## 2026-07-25 - branch authority capability boundary
+
+- **What surprised me:** the first security draft correctly found cross-surface
+  leaks but incorrectly made one graph change own requirements that already
+  belonged to run, evaluation, goals, and paid-market capabilities.
+- **Pattern worth capturing:** an umbrella audit may discover the whole failure
+  chain, but each normative delta should live with the capability whose
+  as-built requirement it replaces; sibling changes can remain explicit,
+  non-blocking successors.
+- **What I would do differently:** inventory both runtime call sites and
+  existing OpenSpec requirement ownership before drafting the first delta,
+  then separate the core shared helper boundary from dependent surfaces.

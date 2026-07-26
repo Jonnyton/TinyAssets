@@ -29,7 +29,12 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from tinyassets.paid_market.forwards import FEE_PPM, PPM, ForwardError
+from tinyassets.paid_market.forwards import (
+    FEE_PPM,
+    PPM,
+    ForwardError,
+    canonical_fee_micros,
+)
 
 __all__ = [
     "FabricationError",
@@ -247,7 +252,7 @@ def settle_physical_job(
     goods_gross = (goods_micros * accepted) // units_ordered
     ship_gross = shipping_micros if accepted > 0 else 0
     seller_gross = goods_gross + ship_gross
-    treasury_fee = (seller_gross * fee_ppm) // PPM
+    treasury_fee = canonical_fee_micros(seller_gross, fee_ppm)
     seller_net = seller_gross - treasury_fee
     buyer_refund = (goods_micros - goods_gross) + (shipping_micros - ship_gross)
 

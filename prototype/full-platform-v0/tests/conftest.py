@@ -1,14 +1,6 @@
 """Shared pytest fixtures — fresh DB state per test.
 
-Assumes:
-    docker compose up -d
-    psql ... -f migrations/001_core_tables.sql
-    psql ... -f migrations/002_flags.sql
-    psql ... -f migrations/003_rls.sql
-    psql ... -f migrations/004_indexes.sql
-    psql ... -f migrations/005_seed.sql
-    # optional extensions (not required for Track A tests):
-    psql ... -f migrations/003_discover_nodes.sql
+Assumes ``docker compose up -d`` completed the replay-safe fixture runner.
 
 Each test gets a clean slate via TRUNCATE in a transaction.
 """

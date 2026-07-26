@@ -72,8 +72,11 @@ import socket
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+import uuid
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +102,20 @@ DEFAULT_WORKER_MODELS = {
     "codex": "gpt-5",
     "claude-code": "claude",
 }
+WORKER_QUEUE_DESCRIPTOR_TTL_SECONDS = 90
+WORKER_QUEUE_DESCRIPTOR_FIELDS = (
+    "queue_protocol_version",
+    "capabilities",
+    "worker_id",
+    "runtime_instance_id",
+    "boot_id",
+    "build_sha",
+    "config_hash",
+    "universe_id",
+    "expires_at",
+)
+_WORKER_PROTOCOL_IDENTITIES: dict[str, dict[str, str] | None] = {}
+_WORKER_RUNTIME_INSTANCE_IDS: dict[str, str] = {}
 
 
 def _resolve_universe_path() -> Path:
@@ -156,6 +173,217 @@ def _worker_id() -> str:
     return override or _cloud_host_user()
 
 
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _format_utc(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _worker_release_state_path() -> Path:
+    override = os.environ.get("TINYASSETS_RELEASE_STATE_PATH", "").strip()
+    if override:
+        return Path(override)
+    from tinyassets.storage import data_dir
+
+    return data_dir() / "release-state.json"
+
+
+def _load_worker_release_identity() -> dict[str, str] | None:
+    """Load build/config identity from a terminal-proof v2 deploy receipt."""
+    path = _worker_release_state_path()
+    try:
+        if not path.is_file() or path.stat().st_size > 65_536:
+            return None
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if type(payload.get("release_state_version")) is not int:
+        return None
+    if payload["release_state_version"] != 2:
+        return None
+    if payload.get("outcome") not in {"deployed", "rolled_back"}:
+        return None
+    if payload.get("active_identity_status") != "agreed":
+        return None
+    if payload.get("canary_bundle_status") != "passed":
+        return None
+    image_fields = (
+        "configured_image_ref",
+        "running_image_ref",
+        "active_image_ref",
+        "active_image_digest",
+        "image_ref",
+        "image_digest",
+    )
+    image_refs = [payload.get(field) for field in image_fields]
+    if not image_refs or re.fullmatch(
+        r"[a-z0-9]+(?:[._-][a-z0-9]+)*(?::[0-9]+)?"
+        r"(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)+"
+        r"@sha256:[0-9a-f]{64}",
+        str(image_refs[0] or ""),
+    ) is None:
+        return None
+    if any(image_ref != image_refs[0] for image_ref in image_refs[1:]):
+        return None
+    build_sha = str(payload.get("git_sha") or "").strip()
+    active_build_sha = str(payload.get("active_git_sha") or "").strip()
+    config_hash = str(payload.get("config_hash") or "").strip()
+    if re.fullmatch(r"[0-9a-f]{40}", build_sha) is None:
+        return None
+    if active_build_sha != build_sha:
+        return None
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", config_hash) is None:
+        return None
+    if payload.get("config_version") != "tinyassets-env-v1":
+        return None
+    return {
+        "build_sha": build_sha,
+        "config_hash": config_hash,
+    }
+
+
+def _snapshot_worker_protocol_identity_at_boot() -> dict[str, str] | None:
+    """Bind terminal release identity and boot ID before supervisor work."""
+    worker_id = _worker_id()
+    if worker_id in _WORKER_PROTOCOL_IDENTITIES:
+        return _WORKER_PROTOCOL_IDENTITIES[worker_id]
+    release = _load_worker_release_identity()
+    if release is None:
+        _WORKER_PROTOCOL_IDENTITIES[worker_id] = None
+        return None
+    identity = {
+        **release,
+        "boot_id": uuid.uuid4().hex,
+    }
+    _WORKER_PROTOCOL_IDENTITIES[worker_id] = identity
+    return identity
+
+
+def _worker_protocol_identity(worker_id: str) -> dict[str, str] | None:
+    """Return only identity captured at supervisor boot; never load it late."""
+    return _WORKER_PROTOCOL_IDENTITIES.get(worker_id)
+
+
+def _epoch2_claim_consumer_ready() -> bool:
+    """Return code-owned truth that the supervised daemon can drain epoch 2."""
+    from tinyassets.branch_tasks_v2 import (
+        EPOCH2_QUEUE_CONSUMER_READY,
+    )
+
+    return EPOCH2_QUEUE_CONSUMER_READY is True
+
+
+def _worker_queue_descriptor(
+    universe: Path,
+    *,
+    runtime_instance_id: str,
+    _now: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Return trusted v2 evidence, or no evidence when any source is missing."""
+    if not _epoch2_claim_consumer_ready():
+        return None
+    worker_id = _worker_id()
+    runtime_id = str(runtime_instance_id or "").strip()
+    universe_id = universe.name.strip()
+    if not runtime_id or not universe_id:
+        return None
+    identity = _worker_protocol_identity(worker_id)
+    if identity is None:
+        return None
+    now = _now or _utcnow()
+    expires = now + timedelta(seconds=WORKER_QUEUE_DESCRIPTOR_TTL_SECONDS)
+    return {
+        "queue_protocol_version": 2,
+        "capabilities": ["operator_request_v1"],
+        "worker_id": worker_id,
+        "runtime_instance_id": runtime_id,
+        "boot_id": identity["boot_id"],
+        "build_sha": identity["build_sha"],
+        "config_hash": identity["config_hash"],
+        "universe_id": universe_id,
+        "expires_at": _format_utc(expires),
+    }
+
+
+def _persist_worker_queue_descriptor(
+    descriptor: dict[str, Any] | None,
+) -> bool:
+    worker_id = _worker_id()
+    descriptor_runtime_id = str(
+        (descriptor or {}).get("runtime_instance_id") or ""
+    ).strip()
+    current_runtime_id = os.environ.get(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        "",
+    ).strip()
+    previous_runtime_id = _WORKER_RUNTIME_INSTANCE_IDS.get(worker_id, "")
+    if descriptor is not None:
+        runtime_ids = [
+            runtime_id
+            for runtime_id in (previous_runtime_id, descriptor_runtime_id)
+            if runtime_id
+        ]
+    else:
+        runtime_ids = [
+            runtime_id
+            for runtime_id in (previous_runtime_id, current_runtime_id)
+            if runtime_id
+        ]
+    runtime_ids = list(dict.fromkeys(runtime_ids))
+    if not runtime_ids:
+        return descriptor is None
+    try:
+        from tinyassets.daemon_registry import set_worker_queue_descriptor
+        from tinyassets.storage import data_dir
+
+        for runtime_instance_id in runtime_ids:
+            value = (
+                descriptor
+                if runtime_instance_id == descriptor_runtime_id
+                else None
+            )
+            try:
+                set_worker_queue_descriptor(
+                    data_dir(),
+                    runtime_instance_id=runtime_instance_id,
+                    descriptor=value,
+                    expected_worker_id=worker_id,
+                )
+            except KeyError:
+                if value is not None:
+                    raise
+                logger.info(
+                    "cloud_worker: prior queue runtime already absent runtime=%s",
+                    runtime_instance_id,
+                )
+            except ValueError as exc:
+                if value is not None or str(exc) != "queue_worker_id_mismatch":
+                    raise
+                logger.warning(
+                    "cloud_worker: prior queue runtime no longer belongs to "
+                    "worker runtime=%s worker=%s",
+                    runtime_instance_id,
+                    worker_id,
+                )
+        if descriptor is None:
+            _WORKER_RUNTIME_INSTANCE_IDS.pop(worker_id, None)
+        else:
+            _WORKER_RUNTIME_INSTANCE_IDS[worker_id] = descriptor_runtime_id
+        return True
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "cloud_worker: queue descriptor persistence failed runtimes=%s",
+            runtime_ids,
+        )
+        return False
+
+
 def _safe_worker_id(worker_id: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]+", "-", worker_id.strip())
     return safe.strip(".-") or "default"
@@ -203,7 +431,10 @@ def _worker_model_for_provider(provider_name: str) -> str:
     if explicit:
         return explicit
     if provider_name == "codex":
-        return os.environ.get("TINYASSETS_CODEX_MODEL", "").strip() or DEFAULT_WORKER_MODELS["codex"]
+        return (
+            os.environ.get("TINYASSETS_CODEX_MODEL", "").strip()
+            or DEFAULT_WORKER_MODELS["codex"]
+        )
     if provider_name == "claude-code":
         return (
             os.environ.get("TINYASSETS_CLAUDE_MODEL", "").strip()
@@ -365,23 +596,133 @@ def _register_branch_task_producers_from_env() -> None:
 
 
 def _queue_has_running_branch_task(universe: Path) -> bool:
-    """Return True when interrupting the subprocess may abandon a claim."""
+    """Protect live v1/v2 claims that a subprocess restart may abandon."""
     try:
         from tinyassets.branch_tasks import read_queue
 
-        return any(task.status == "running" for task in read_queue(universe))
+        if any(task.status == "running" for task in read_queue(universe)):
+            return True
+        if not _epoch2_claim_consumer_ready():
+            return False
+        from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter
+        from tinyassets.storage import data_dir
+
+        adapter = Epoch2BranchTaskAdapter(data_dir())
+        return adapter.has_active_claim(
+            universe_id=universe.name,
+            worker_id=_worker_id(),
+        )
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: queue status check failed")
         return True
 
 
+def _current_worker_epoch2_capacity(
+    universe: Path,
+) -> tuple[Any, dict[str, str]] | None:
+    """Return the epoch-2 adapter and trusted current-worker runtime."""
+    if not _epoch2_claim_consumer_ready():
+        return None
+    worker_id = _worker_id()
+    runtime_instance_id = os.environ.get(
+        "TINYASSETS_RUNTIME_INSTANCE_ID",
+        "",
+    ).strip()
+    if not runtime_instance_id:
+        return None
+
+    beat_path = universe / supervisor_heartbeat_filename(worker_id)
+    try:
+        if not beat_path.is_file() or beat_path.stat().st_size > 65_536:
+            return None
+        beat = json.loads(beat_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(beat, dict) or beat.get("subprocess_alive") is not True:
+        return None
+
+    from tinyassets.branch_tasks_v2 import (
+        Epoch2BranchTaskAdapter,
+        WorkerClaimDescriptor,
+        _descriptor_is_live,
+    )
+    from tinyassets.daemon_registry import _runtime_from_author_runtime
+    from tinyassets.daemon_server import get_runtime_instance
+    from tinyassets.storage import data_dir
+
+    try:
+        capabilities = beat.get("capabilities")
+        if not isinstance(capabilities, list):
+            return None
+        descriptor = WorkerClaimDescriptor(
+            queue_protocol_version=int(beat.get("queue_protocol_version")),
+            capabilities=frozenset(str(item) for item in capabilities),
+            worker_id=str(beat.get("worker_id") or ""),
+            runtime_instance_id=str(beat.get("runtime_instance_id") or ""),
+            boot_id=str(beat.get("boot_id") or ""),
+            build_sha=str(beat.get("build_sha") or ""),
+            config_hash=str(beat.get("config_hash") or ""),
+            universe_id=str(beat.get("universe_id") or ""),
+            expires_at=str(beat.get("expires_at") or ""),
+        )
+        runtime = _runtime_from_author_runtime(
+            get_runtime_instance(
+                data_dir(),
+                instance_id=runtime_instance_id,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    metadata = runtime.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    trusted = metadata.get("queue_protocol_descriptor")
+    heartbeat_descriptor = {
+        "queue_protocol_version": descriptor.queue_protocol_version,
+        "capabilities": sorted(descriptor.capabilities),
+        "worker_id": descriptor.worker_id,
+        "runtime_instance_id": descriptor.runtime_instance_id,
+        "boot_id": descriptor.boot_id,
+        "build_sha": descriptor.build_sha,
+        "config_hash": descriptor.config_hash,
+        "universe_id": descriptor.universe_id,
+        "expires_at": descriptor.expires_at,
+    }
+    if (
+        runtime["status"] != "provisioned"
+        or runtime["universe_id"] != universe.name
+        or metadata.get("worker_id") != worker_id
+        or descriptor.worker_id != worker_id
+        or descriptor.runtime_instance_id != runtime_instance_id
+        or descriptor.universe_id != universe.name
+        or trusted != heartbeat_descriptor
+        or not runtime["daemon_id"]
+        or not _descriptor_is_live(
+            descriptor,
+            transaction_at=_utcnow().isoformat(),
+        )
+    ):
+        return None
+
+    return Epoch2BranchTaskAdapter(data_dir()), {
+        "worker_id": worker_id,
+        "runtime_instance_id": runtime_instance_id,
+        "daemon_id": runtime["daemon_id"],
+        "provider_name": runtime["provider_name"],
+        "model_name": runtime["model_name"],
+    }
+
+
 def _has_pickable_branch_task(universe: Path) -> bool:
-    """Return True when the dispatcher has an eligible pending task.
+    """Return True when this worker has an eligible pending task.
 
     The MCP server appends some BranchTasks directly (not via producers).
     The long-running fantasy_daemon subprocess only attempts a dispatcher
     claim at startup, so the supervisor must notice these pending rows and
-    restart the idle wrapper process to let it pick them up.
+    restart the idle wrapper process to let it pick them up. Epoch-2 work is
+    considered only when this exact worker/runtime pair has trusted live
+    protocol evidence; otherwise it remains pending without causing a restart.
     """
     try:
         from tinyassets.dispatcher import (
@@ -395,9 +736,26 @@ def _has_pickable_branch_task(universe: Path) -> bool:
         unified = os.environ.get("TINYASSETS_UNIFIED_EXECUTION", "1")
         if unified.strip().lower() in {"0", "off", "false", "no"}:
             return False
+        config = load_dispatcher_config(universe)
+        if select_next_task(
+            universe,
+            config=config,
+        ) is not None:
+            return True
+
+        capacity = _current_worker_epoch2_capacity(universe)
+        if capacity is None:
+            return False
+        epoch2_adapter, worker = capacity
+        epoch2_config = replace(
+            config,
+            active_daemon_id=worker["daemon_id"],
+        )
         return select_next_task(
             universe,
-            config=load_dispatcher_config(universe),
+            config=epoch2_config,
+            epoch2_adapter=epoch2_adapter,
+            queue_epochs=frozenset({2}),
         ) is not None
     except Exception:  # noqa: BLE001
         logger.exception("cloud_worker: pending BranchTask check failed")
@@ -529,7 +887,7 @@ class SupervisorState:
 
 
 def _utcnow_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _format_utc(_utcnow())
 
 
 # Heartbeat file the supervisor writes into the universe dir. Liveness
@@ -557,8 +915,18 @@ def write_supervisor_heartbeat(
     A probe write must never take down the supervisor (the loop IS the
     uptime surface), so failures log loudly and return.
     """
+    now = _utcnow()
+    descriptor = _worker_queue_descriptor(
+        universe,
+        runtime_instance_id=os.environ.get(
+            "TINYASSETS_RUNTIME_INSTANCE_ID",
+            "",
+        ),
+        _now=now,
+    )
+    descriptor_persisted = _persist_worker_queue_descriptor(descriptor)
     beat = {
-        "ts": _utcnow_iso(),
+        "ts": _format_utc(now),
         "phase": phase,
         "iteration": iteration,
         "supervisor_started_at": state.started_at,
@@ -575,6 +943,8 @@ def write_supervisor_heartbeat(
             "TINYASSETS_RUNTIME_INSTANCE_ID", "",
         ).strip(),
     }
+    if descriptor is not None and descriptor_persisted:
+        beat.update(descriptor)
     filenames = [supervisor_heartbeat_filename(_worker_id())]
     if filenames[0] != SUPERVISOR_HEARTBEAT_FILENAME:
         filenames.append(SUPERVISOR_HEARTBEAT_FILENAME)
@@ -705,6 +1075,7 @@ def run_supervisor(
     + ``time.sleep`` at call time (not import time), so tests can
     monkeypatch the module attribute freely.
     """
+    _snapshot_worker_protocol_identity_at_boot()
     if spawn_fn is None:
         if daemon_args:
             def spawn_fn(universe: Path) -> subprocess.Popen:
@@ -986,15 +1357,21 @@ def main(argv: list[str] | None = None) -> int:
         socket.gethostname(), universe, _cloud_host_user(),
     )
 
-    state = run_supervisor(
-        universe,
-        idle_backoff=args.idle_backoff,
-        crash_backoff=args.crash_backoff,
-        max_backoff=args.max_backoff,
-        producer_poll_interval=args.producer_poll_interval,
-        max_iterations=args.max_iterations,
-        daemon_args=["--provider", args.provider] if args.provider else None,
-    )
+    from tinyassets.scoped_reset import prepare_service_writer_barrier
+
+    writer_barrier = prepare_service_writer_barrier(universe.resolve().parent)
+    try:
+        state = run_supervisor(
+            universe,
+            idle_backoff=args.idle_backoff,
+            crash_backoff=args.crash_backoff,
+            max_backoff=args.max_backoff,
+            producer_poll_interval=args.producer_poll_interval,
+            max_iterations=args.max_iterations,
+            daemon_args=["--provider", args.provider] if args.provider else None,
+        )
+    finally:
+        writer_barrier.release()
     logger.info("cloud_worker: supervisor exited; %s", state.summary())
     return 0
 

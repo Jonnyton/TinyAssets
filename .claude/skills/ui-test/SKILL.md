@@ -151,6 +151,27 @@ identity, and identity must be verified out-of-band before it is asserted. Infer
 login screen, therefore I am anonymous" is the same unfounded-inference error we log as a BUG when a
 chatbot does it.
 
+### CRITICAL — prove the connector's resolved principal from status
+
+Cookies, login screens, connector presence, and browser profiles are supporting context; none proves
+which principal the live MCP request resolved. For any identity, first-contact, or multi-founder
+acceptance mission:
+
+1. Ask the chatbot, in user language, to check the connector's current status. The rendered tool result
+   must contain `request_identity.bearer_present` and a versioned
+   `request_identity.principal_fingerprint`.
+2. Treat `identity_fingerprint_unavailable`, a missing fingerprint, or disagreement between
+   `get_status` and `read_graph target=status` as a hard acceptance failure. Never infer identity from
+   cookies or UI state as a fallback.
+3. Record only the deployment-scoped fingerprint or an operator-approved non-secret alias in traces,
+   screenshots, and proof logs. Never persist the raw subject, bearer, refresh token, cookie, email,
+   grant set, provider credential, or auth-home path.
+4. For a two-founder proof, capture both status results through ordinary connector OAuth and require
+   distinct fingerprints. Reusing one fingerprint under two aliases fails the mission.
+5. `bearer_present=false` proves only that this request carried no bearer; it does not by itself prove
+   the connector has no server-side grant. Corroborate anonymous claims with the existing cookie,
+   connector-removal, and unauthenticated-endpoint checks above.
+
 ## Claude Code CDP setup
 
 `scripts/claude_chat.py` **launches Chrome itself** — the host does not need to start it. `ask`,

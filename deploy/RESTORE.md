@@ -1,176 +1,151 @@
-# TinyAssets — state restore runbook
+# TinyAssets state restore runbook
 
-Self-host migration Row J per
-`docs/exec-plans/active/2026-04-20-selfhost-uptime-migration.md`.
+Use this procedure for whole-volume recovery, rollback after a bad migration,
+or a fresh-host recovery drill. Nightly full archives are gzip files named
+`tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.gz`.
 
-Backups are nightly snapshots of the `tinyassets-data` named Docker
-volume, uploaded to Hetzner Storage Box. This runbook restores from
-a backup onto a fresh (or existing) Hetzner box.
-
-**When to use:**
-- Full data loss (box destroyed, disk corrupted, state file deleted).
-- Rollback after a bad migration / upgrade.
-- Restore-test drill (run quarterly per SUCCESSION.md §8 launch-readiness).
-
-**Estimated time:** 5-15 min depending on archive size.
-
----
+`deploy/backup-restore.sh` owns data restore only. It validates and stages the
+archive before stopping containers, swaps the staged directory into place, and
+retains the prior volume for rollback. It never starts a service.
 
 ## Preconditions
 
-- A running (or freshly provisioned per HETZNER-DEPLOY.md) Hetzner
-  box with Docker + the tinyassets-daemon unit installed but STOPPED.
-- `/etc/tinyassets/env` populated with `STORAGEBOX_HOST` /
-  `STORAGEBOX_USER` / `STORAGEBOX_PASS` (same creds the backup job uses).
-- `rclone` installed (bootstrap handles this).
+- Docker, rclone, Python 3, GNU tar, and `flock` are installed.
+- `/etc/tinyassets/env` contains the configured `BACKUP_DEST`, unless restoring
+  an already-downloaded archive with `BACKUP_FILE`.
+- The repository is present at `/opt/tinyassets`.
+- There is enough free space beside the Docker volume for the staged restore
+  and retained pre-restore data.
 
-## Step 1 — Stop the daemon (~10s)
+Do not wipe or recreate the live volume. The restore script does not mutate it
+until archive validation and staging have succeeded.
 
-```bash
-sudo systemctl stop tinyassets-daemon
-# Watchdog stays running — harmless (it'll see the outage + log reds,
-# but won't restart because we're about to replace state).
-```
-
-## Step 2 — List available backups (~5s)
+## Restore from the configured remote
 
 ```bash
-# Source the env so rclone picks up the config.
-set -a; . /etc/tinyassets/env; set +a
+set -a
+. /etc/tinyassets/env
+set +a
 
-# Write the ephemeral rclone config (same shape as backup.sh).
-mkdir -p ~/.config/rclone
-cat > ~/.config/rclone/rclone.conf <<EOF
-[storagebox]
-type = sftp
-host = ${STORAGEBOX_HOST}
-user = ${STORAGEBOX_USER}
-pass = $(rclone obscure "${STORAGEBOX_PASS}")
-port = 22
-EOF
-chmod 600 ~/.config/rclone/rclone.conf
+# Show only eligible full-volume archives.
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh --list
 
-# List. Most recent first.
-rclone lsl storagebox:tinyassets-backups/ | sort -k2,3 -r | head -20
+# Confirm selection without mutation.
+DRY_RUN=1 sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+
+# Restore the newest full-volume archive.
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh
+
+# Or restore one exact UTC snapshot.
+sudo -E bash /opt/tinyassets/deploy/backup-restore.sh \
+  --timestamp=2026-07-23T03-00-00Z
 ```
 
-Expect tarballs named `tinyassets-data-YYYY-MM-DDTHH-MM-SSZ.tar.zst`.
-Pick the one you want (usually the most recent).
+## Restore an already-downloaded GitHub Release archive
 
-## Step 3 — Pull it down (~1-5 min depending on size)
+`BACKUP_FILE` must be an absolute, readable, non-symlink regular-file path. It
+bypasses rclone and remains caller-owned.
 
 ```bash
-BACKUP="tinyassets-data-2026-04-21T03-00-00Z.tar.zst"  # replace
-rclone copy "storagebox:tinyassets-backups/${BACKUP}" /tmp/
-ls -lh "/tmp/${BACKUP}"
+sudo -E env \
+  BACKUP_FILE=/var/backups/tinyassets/tinyassets-data-2026-07-23T03-00-00Z.tar.gz \
+  bash /opt/tinyassets/deploy/backup-restore.sh
 ```
 
-## Step 4 — Wipe current volume (DESTRUCTIVE — only after step 1)
+Do not combine `BACKUP_FILE` with `--list` or `--timestamp`.
 
-```bash
-# Defensive: daemon must be stopped. Verify.
-sudo systemctl is-active tinyassets-daemon
-# Expected: inactive (or failed — OK, just not running).
+## What a successful restore does
 
-# Remove the volume. Docker refuses if any container mounts it —
-# that's why we stopped the daemon first.
-sudo docker volume rm tinyassets-data
+The script:
 
-# Re-create the named volume (empty) so the restore has a target.
-sudo docker volume create tinyassets-data
-```
+1. Rejects an unreadable archive and any member that is absolute, traverses
+   upward, is outside `_data`, is a symbolic/hard link, or is a special file.
+2. Extracts the archive into a unique sibling stage with `_data` stripped,
+   preserving dotfiles and nested files.
+3. Acquires a non-blocking lock scoped to this resolved Docker volume.
+4. Stops every running container that Docker reports as mounting the volume.
+5. Renames the current `_data` to a unique retained sibling and moves the
+   staged directory into `_data`.
+6. Automatically puts the prior directory back if the second rename fails.
 
-## Step 5 — Extract into the new volume (~30s-2min)
+The final output prints the live path and retained pre-restore path. Record the
+retained path before continuing.
 
-```bash
-VOLUME_DIR="$(sudo docker volume inspect --format '{{ .Mountpoint }}' tinyassets-data)"
-echo "restoring into ${VOLUME_DIR}"
-
-# Tar contains `_data/...` entries (preserves the original parent
-# dirname). Extract into the volume's parent so paths line up.
-sudo tar --zstd -xf "/tmp/${BACKUP}" -C "$(dirname "${VOLUME_DIR}")"
-
-# Sanity: verify some expected files exist.
-sudo ls -la "${VOLUME_DIR}" | head
-```
-
-Expect to see the daemon's state files: `.auth.db`, `.node_eval.db`,
-`.tinyassets.db`, per-universe subdirs, etc. Older backups may still contain
-`.author_server.db`; current code renames it to `.tinyassets.db` on first boot.
-
-## Step 6 — Start the daemon + verify (~30s)
+## Start and verify separately
 
 ```bash
 sudo systemctl start tinyassets-daemon
-sudo systemctl status tinyassets-daemon
-# Watch for: daemon-1 | Starting TinyAssets Server on 0.0.0.0:8001
+sudo systemctl status tinyassets-daemon --no-pager
 
-# Verify via canary.
 python3 /opt/tinyassets/scripts/mcp_public_canary.py \
-    --url https://tinyassets.io/mcp --verbose
+  --url http://127.0.0.1:8001/mcp --verbose
 ```
 
-Exit 0 + `[canary] OK` = restore successful.
+Only a green canary proves the restored daemon is usable. On a drill host, keep
+the host available when the probe is red so the failure evidence survives.
 
-## Step 7 — Clean up (~5s)
+## Remove retained data after a green canary
+
+Set `OLD_DIR` to the exact path printed by the restore. Verify its shape before
+removing it:
 
 ```bash
-rm -f "/tmp/${BACKUP}"
-rm -f ~/.config/rclone/rclone.conf
+OLD_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.REPLACE
+case "${OLD_DIR}" in
+  /var/lib/docker/volumes/*/.tinyassets-restore-old.*)
+    sudo rm -rf -- "${OLD_DIR}"
+    ;;
+  *)
+    echo "refusing unexpected OLD_DIR: ${OLD_DIR}" >&2
+    exit 1
+    ;;
+esac
 ```
 
----
+## Roll back after a red canary
 
-## Recovery-test drill (quarterly)
+Stop the daemon. Keep the failed restored directory as evidence, and move the
+retained prior directory back:
 
-Per SUCCESSION.md §8 launch-readiness: verify the restore path works
-before an incident forces it.
+```bash
+sudo systemctl stop tinyassets-daemon
 
-1. Provision a second Hetzner CX22 as a staging box (not the prod box).
-2. Run `hetzner-bootstrap.sh` on it.
-3. Copy `/etc/tinyassets/env` from prod (READ-ONLY: copy then edit;
-   consider making the staging box point at a separate testnet Supabase).
-4. Run steps 2-6 above.
-5. Verify canary green.
-6. **Destroy** the staging box when done (€5.83/mo is real money).
+LIVE_DIR=/var/lib/docker/volumes/tinyassets-data/_data
+OLD_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-old.REPLACE
+FAILED_DIR=/var/lib/docker/volumes/tinyassets-data/.tinyassets-restore-failed.$(date -u +%Y%m%dT%H%M%SZ)
 
-Log the drill date + result in SUCCESSION.md acceptance criteria.
+case "${LIVE_DIR}|${OLD_DIR}|${FAILED_DIR}" in
+  /var/lib/docker/volumes/*/_data\|/var/lib/docker/volumes/*/.tinyassets-restore-old.*\|/var/lib/docker/volumes/*/.tinyassets-restore-failed.*)
+    sudo mv -- "${LIVE_DIR}" "${FAILED_DIR}"
+    sudo mv -- "${OLD_DIR}" "${LIVE_DIR}"
+    ;;
+  *)
+    echo "refusing unexpected restore paths" >&2
+    exit 1
+    ;;
+esac
 
----
+sudo systemctl start tinyassets-daemon
+python3 /opt/tinyassets/scripts/mcp_public_canary.py \
+  --url http://127.0.0.1:8001/mcp --verbose
+```
 
-## Common failure modes
+## Common failures
 
-- **Backup tarball corrupted.** `tar --zstd -t` to list contents before
-  extracting; if `tar: Error is not recoverable`, the archive is bad.
-  Try a different backup (older). If multiple backups are bad, the
-  backup.sh pipeline itself is broken — investigate before relying on
-  any untested backup.
-- **rclone auth failure.** `rclone lsl storagebox:` hangs or returns
-  `Permission denied`. Re-check `STORAGEBOX_USER` + `STORAGEBOX_PASS` in
-  `/etc/tinyassets/env`. Hetzner Storage Box SSH creds can be rotated at
-  the Hetzner console if compromised.
-- **Volume already in use.** `docker volume rm tinyassets-data` refuses
-  because a container mounts it. Run `sudo docker ps -a | grep
-  tinyassets-data` to find the container, stop + remove it, retry.
-- **Disk full.** `/tmp` needs ~2x archive size free. If low, extract to
-  `/var/lib/docker/volumes/tinyassets-data/_data` directly and skip `/tmp`:
-  `sudo tar --zstd -xf - -C "$(dirname "${VOLUME_DIR}")" < <(rclone cat storagebox:tinyassets-backups/${BACKUP})`.
-- **Post-restore canary red but daemon up.** State from an incompatible
-  schema version. Check daemon logs for migration errors; may need to
-  restore an older backup that matches the current daemon version OR
-  re-deploy a matching daemon image (`TINYASSETS_IMAGE` in `/etc/tinyassets/env`).
+- `archive member validation failed`: the live volume and containers have not
+  been changed. Select another full archive.
+- `restore already in progress`: another restore holds this volume's lock.
+  Wait for it; restores of different volume directories use independent locks.
+- `failed to stop all running volume consumers`: inspect
+  `docker ps -a --filter volume=tinyassets-data`; no directory swap occurred.
+- `failed to install staged volume`: the script attempted automatic rollback.
+  Confirm `_data` contains the prior state and preserve any
+  `.tinyassets-restore-old.*` directory before retrying.
+- Disk full while staging: free space beside the volume or provision a larger
+  disk. Do not stream-extract into the live volume; that bypasses validation
+  and rollback.
 
----
-
-## What this runbook does NOT cover
-
-- **Partial restore** (one universe's state, not whole-volume). Extract
-  the tar to a scratch dir, copy the specific subdir into the live
-  volume. No tooling for this yet; add if incidents surface.
-- **Point-in-time recovery** (restore to a specific timestamp within a
-  day). Backup is nightly snapshots only. Sub-day recovery needs WAL
-  shipping or similar; not in current scope.
-- **Cross-region migration** (move the daemon from Hetzner to another
-  provider). Restore works identically anywhere Docker runs; the
-  Cloudflare tunnel just needs to point at the new box's cloudflared
-  instance.
+The automated fresh-host proof is `.github/workflows/dr-drill.yml`. It
+transfers a selected full archive, invokes this restore script, starts only the
+daemon, probes through an SSH port forward, destroys a green drill host, and
+keeps a red host by default.

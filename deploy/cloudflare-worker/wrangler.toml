@@ -3,7 +3,7 @@
 #
 # Deploy targets:
 #   zone: tinyassets.io
-#   route: tinyassets.io/mcp*  (matches /mcp, /mcp/, /mcp/anything)
+#   route: tinyassets.io/mcp*  (canonical /mcp proxy plus retired-path guard)
 #
 # Reference: https://developers.cloudflare.com/workers/wrangler/configuration/
 
@@ -19,8 +19,11 @@ compatibility_date = "2025-10-01"
 # bundle small + avoids tree-shake surprises.
 compatibility_flags = []
 
-# Route — matches any request to tinyassets.io whose path starts with
-# /mcp. Cloudflare route syntax uses `*` as a match-any suffix.
+# Route — deliberately matches any request whose path starts with /mcp.
+# worker.js proxies only canonical /mcp and returns the same ordinary 404 for
+# every retired /mcp-directory* variant. Narrowing this binding would leak
+# stale calls to the website origin and make rejection method-dependent.
+# Cloudflare route syntax uses `*` as a match-any suffix.
 # Zone name must match the Cloudflare zone that owns tinyassets.io.
 routes = [
     { pattern = "tinyassets.io/mcp*", zone_name = "tinyassets.io" },

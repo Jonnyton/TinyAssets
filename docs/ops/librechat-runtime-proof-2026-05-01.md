@@ -1,5 +1,10 @@
 # LibreChat Runtime Proof - TinyAssets MCP Directory
 
+> **SUPERSEDED / HISTORICAL — DO NOT REUSE THIS CONFIGURATION.** This proof
+> records the retired `/mcp-directory` product. New LibreChat proof must use
+> exact name `TinyAssets` at `https://tinyassets.io/mcp`; do not use public
+> `get_status` until safe status projection lands.
+
 Date: 2026-05-01
 Host: LibreChat
 Host version: `v0.8.5`

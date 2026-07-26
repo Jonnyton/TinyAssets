@@ -35,6 +35,8 @@ dependencies = [
 
     # Robust JSON parsing for LLM output
     "json-repair>=0.30",
+    # RFC 8785/JCS body binding for durable request idempotency.
+    "rfc8785>=0.1.4,<0.2",
 
     # Retry with backoff for provider calls
     "tenacity>=9.0,<10.0",
@@ -72,7 +74,11 @@ fantasy_daemon = "domains.fantasy_daemon.skill:FantasyAuthorDomain"
 research_probe = "domains.research_probe.skill:ResearchProbeDomain"
 
 [project.optional-dependencies]
-desktop = ["Pillow>=10.0", "pystray>=0.19"]
+desktop = [
+    "Pillow>=10.0",
+    "pystray>=0.19",
+    "keyring>=25.0,<26.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

@@ -444,7 +444,15 @@ def test_bound_incomplete_dir_repairs_on_conversation_entry(data_dir):
     _login("founder-1")
     stuck = new_universe_id()
     (data_dir / stuck).mkdir()                  # incomplete: dir exists, no soul.md
-    set_founder_home(data_dir, founder_sub="founder-1", universe_id=stuck)
+    # The interrupted birth was of a PLATFORM-GENERATED serial, so its binding
+    # carries the provenance marker — that is what lets first-contact repair it
+    # rather than fail closed (universe-creation 5.2).
+    set_founder_home(
+        data_dir,
+        founder_sub="founder-1",
+        universe_id=stuck,
+        platform_generated=True,
+    )
 
     # First retry repairs it — same bound id, now materialized (not stuck).
     assert ensure_founder_home(data_dir, "founder-1") == stuck
@@ -677,3 +685,515 @@ def test_write_graph_unknown_target_lists_universe(data_dir):
     out = json.loads(write_graph(target="nope"))
     assert out["error"] == "unknown_target"
     assert "universe" in out["allowed_targets"]
+
+
+# ---------------------------------------------------------------------------
+# universe-lifecycle-and-soul task 5.2: public universe birth self-serializes.
+# Every public birth entry point generates its own opaque ``u-``+ULID serial
+# and rejects a caller-selected id. Internal migration/dev tooling is exempt.
+# ---------------------------------------------------------------------------
+
+
+def test_public_create_universe_rejects_caller_selected_id(data_dir, monkeypatch):
+    """`_universe_impl` (the public dispatch boundary) refuses a chosen id."""
+    from tinyassets.api import universe as universe_api
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    out = json.loads(
+        universe_api._universe_impl(
+            action="create_universe", universe_id="my-cool-name"
+        )
+    )
+    assert out["reason"] == "caller_selected_id_rejected"
+    assert "opaque serial" in out["error"]
+    # No root, serial or descriptive, may be materialized by a rejected birth.
+    assert _universe_dirs(data_dir) == []
+
+
+def test_public_create_universe_without_id_self_serializes(data_dir, monkeypatch):
+    """The public path with no id assigns exactly one opaque serial root."""
+    from tinyassets.api import universe as universe_api
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    out = json.loads(universe_api._universe_impl(action="create_universe"))
+    assert out.get("error") is None, out
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert _serial_dirs(data_dir) == [data_dir / uid]
+
+
+def test_write_graph_universe_rejects_caller_selected_graph_id(data_dir, monkeypatch):
+    """The write_graph target=universe birth path also refuses a chosen id."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.universe_server import write_graph
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-1")
+    out = json.loads(write_graph(target="universe", graph_id="chosen-name"))
+    assert out["reason"] == "caller_selected_id_rejected"
+    assert _universe_dirs(data_dir) == []
+
+
+def test_internal_named_id_is_accepted(data_dir, monkeypatch):
+    """The internal-trust flag lets migration/first-contact supply a serial."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.ids import new_universe_id
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    reserved = new_universe_id()
+    out = json.loads(
+        universe_api._universe_impl(
+            action="create_universe",
+            universe_id=reserved,
+            allow_named_universe_id=True,
+        )
+    )
+    assert out.get("error") is None, out
+    assert out["universe_id"] == reserved
+    assert (data_dir / reserved / "soul.md").is_file()
+
+
+def test_first_contact_birth_still_self_serializes(data_dir, monkeypatch):
+    """`ensure_founder_home` births a serial home through the trusted path."""
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-1")
+    home = ensure_founder_home(data_dir, "founder-1")
+    assert is_universe_serial(home)
+    assert (data_dir / home / "soul.md").is_file()
+
+
+def test_stale_descriptive_binding_is_rejected_not_materialized(data_dir, monkeypatch):
+    """A poisoned pre-existing descriptive `founder_home` must fail closed.
+
+    universe-creation 5.2 provenance gate: `claim_founder_home` returns a
+    pre-existing binding verbatim (ON CONFLICT DO NOTHING). A stale,
+    founder-influenced *descriptive* id must NEVER cross the internal-trust flag
+    and become a materialized named universe — first-contact fails closed and
+    never rebinds it here. `set_founder_home` without the provenance flag records
+    the binding as unproven (marker 0), so the gate rejects it.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import get_founder_home, set_founder_home
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-legacy")
+    # Seed a stale descriptive binding with no complete directory.
+    set_founder_home(data_dir, founder_sub="founder-legacy", universe_id="chosen-name")
+
+    result = ensure_founder_home(data_dir, "founder-legacy")
+
+    assert result == ""                                  # fail closed
+    assert not (data_dir / "chosen-name").exists()       # never materialized
+    assert _universe_dirs(data_dir) == []                # no universe born at all
+    # The stale binding is left as-is for host-run migration — NOT rebound here.
+    assert get_founder_home(data_dir, "founder-legacy") == "chosen-name"
+
+
+def test_serial_shaped_unproven_value_fails_closed(data_dir, monkeypatch):
+    """A serial-SHAPED but non-platform-GENERATED binding must fail closed.
+
+    Round-3 review finding: `is_universe_serial` proves only format, not
+    generation provenance. A hostile/legacy value like
+    `u-00000000000000000000000000` satisfies the regex yet was never generated
+    by the platform. Seeding it via `set_founder_home` (no provenance flag →
+    marker 0) must NOT be materialized: the structural provenance marker, not
+    the format, is what the gate trusts. This test can only pass with the marker
+    gate; a format-only gate materializes the hostile id.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.ids import is_universe_serial
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-hostile")
+    hostile = "u-00000000000000000000000000"
+    assert is_universe_serial(hostile)  # passes FORMAT — the whole point
+    set_founder_home(data_dir, founder_sub="founder-hostile", universe_id=hostile)
+
+    result = ensure_founder_home(data_dir, "founder-hostile")
+
+    assert result == ""                          # fail closed on unproven serial
+    assert not (data_dir / hostile).exists()     # never materialized
+
+
+def test_legitimate_reserved_serial_binding_materializes(data_dir, monkeypatch):
+    """A proven platform-generated serial binding (incomplete dir) materializes.
+
+    The gate's accepted case: a pre-existing binding recorded WITH the
+    provenance marker (e.g. a prior reservation whose dir was removed/never
+    completed) is trusted and repaired to a complete serial home.
+    """
+    from tinyassets.api import universe as universe_api
+    from tinyassets.api.first_contact import ensure_founder_home
+    from tinyassets.daemon_server import set_founder_home
+    from tinyassets.ids import new_universe_id
+
+    monkeypatch.setattr(universe_api, "_base_path", lambda: data_dir)
+    _login("founder-reserved")
+    reserved = new_universe_id()
+    set_founder_home(
+        data_dir,
+        founder_sub="founder-reserved",
+        universe_id=reserved,
+        platform_generated=True,
+    )
+
+    result = ensure_founder_home(data_dir, "founder-reserved")
+
+    assert result == reserved
+    assert is_universe_serial(result)
+    assert (data_dir / reserved / "soul.md").is_file()
+
+
+def test_claim_founder_home_stamps_generation_provenance(data_dir):
+    """`claim_founder_home` records provenance structurally, per writer.
+
+    A freshly reserved serial is marked platform-generated (the reservation
+    contract), so first-contact trusts it. A value bound WITHOUT the flag stays
+    unproven. This is the structural difference the 5.2 gate reads — not id
+    shape.
+    """
+    from tinyassets.daemon_server import (
+        claim_founder_home,
+        founder_home_is_platform_generated,
+        set_founder_home,
+    )
+    from tinyassets.ids import new_universe_id
+
+    reserved = new_universe_id()
+    assert claim_founder_home(data_dir, "founder-fresh", reserved) == reserved
+    assert founder_home_is_platform_generated(
+        data_dir, founder_sub="founder-fresh", universe_id=reserved
+    )
+
+    # Same-shaped serial, but bound without proving generation → unproven.
+    shaped = new_universe_id()
+    set_founder_home(data_dir, founder_sub="founder-unproven", universe_id=shaped)
+    assert not founder_home_is_platform_generated(
+        data_dir, founder_sub="founder-unproven", universe_id=shaped
+    )
+
+
+def test_public_tool_wrappers_omit_the_trust_flag():
+    """Reachability lock: the trust flag is absent from public MCP wrappers.
+
+    universe-creation 5.2: `allow_named_universe_id` must never appear on a
+    public MCP surface, or a caller could self-select an id. Both public birth
+    wrappers omit it (Codex also verified this against the live FastMCP schemas
+    with `mcp.call_tool` probes). This locks it at the signature level.
+    """
+    import inspect
+
+    from tinyassets.universe_server import universe, write_graph
+
+    for tool in (universe, write_graph):
+        assert "allow_named_universe_id" not in inspect.signature(tool).parameters
+
+
+# ---------------------------------------------------------------------------
+# Can the newborn SPEAK? (universe-creation 1.14)
+#
+# Every test above proves a universe is BORN. None proved it can answer. In
+# production it could not: 92dd60c5 correctly stopped a credential-less
+# universe from spending the host's subscription, and nothing gives a newborn
+# a credential of its own — so the founder's very first turn came back as
+# "All providers exhausted for role=writer".
+# ---------------------------------------------------------------------------
+
+
+def _engine_raises(monkeypatch, exc: BaseException):
+    """Make the assigned engine fail, and record whether it was ever called."""
+    import tinyassets.universe_intelligence as intelligence
+
+    called: dict = {"count": 0}
+
+    def fake_call_provider(prompt, system="", *, role="writer", **kwargs):
+        called["count"] += 1
+        raise exc
+
+    monkeypatch.setattr(intelligence, "call_provider", fake_call_provider)
+    return called
+
+
+def _exhausted() -> BaseException:
+    """The exact error a universe with no provider authority produces.
+
+    Built the way `ProviderRouter.call` builds it (router.py) — with the
+    FEAT-006 `chain_state` diagnostics that the genuine every-provider-failed
+    raise carries. The policy hard-fails raise the same class BARE; see
+    `_policy_hard_fail`.
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError
+    from tinyassets.providers.diagnostics import (
+        ProviderAttemptDiagnostic,
+        build_chain_state,
+    )
+
+    chain = ["claude-code", "codex", "ollama-local"]
+    attempts = [
+        ProviderAttemptDiagnostic(
+            provider=name, status="skipped", skip_class="auth_invalid",
+            detail="no credential for this universe",
+        )
+        for name in chain
+    ]
+    return AllProvidersExhaustedError(
+        "All providers exhausted for role=writer. Daemon should retry with backoff.",
+        attempts=attempts,
+        chain_state=build_chain_state(role="writer", chain=chain, attempts=attempts),
+    )
+
+
+def _policy_hard_fail() -> BaseException:
+    """The bare exhaustion the router raises when policy empties the chain."""
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    return AllProvidersExhaustedError(
+        "All providers for role='writer' are blocked by the universe's "
+        "allowed_providers=['ollama-local']. Daemon will not silently fall "
+        "back to a disallowed provider."
+    )
+
+
+def _attach_engine_credential(universe_dir: Path) -> None:
+    """Attach a BYO engine key the same way `universe action=set_engine` does."""
+    import base64
+
+    from tinyassets.credential_vault import write_credential_vault
+
+    write_credential_vault(universe_dir, [{
+        "credential_type": "llm_api_key",
+        "service": "anthropic",
+        "secret_b64": base64.b64encode(b"sk-founder-key").decode("ascii"),
+    }])
+
+
+def test_newborn_without_a_credential_gets_onboarding_not_a_raw_error(
+    data_dir, monkeypatch
+):
+    """P0 #1582: first contact births a universe that cannot answer.
+
+    Birth still succeeds; the founder gets an actionable setup reply naming the
+    real attachment path instead of `All providers exhausted for role=writer`.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+    rendered = json.dumps(out)
+
+    uid = out["universe_id"]
+    assert is_universe_serial(uid)
+    assert (data_dir / uid / "soul.md").is_file()  # birth still succeeded
+    assert out["status"] == "held"
+    assert out["reason"] == "setup_required"
+    assert "All providers exhausted" not in rendered
+    assert "set_engine" in rendered
+    assert "byo_api_key" in rendered
+
+
+def test_setup_required_reply_is_platform_authored_not_the_universe_voice(
+    data_dir, monkeypatch
+):
+    """The held payload must never masquerade as the universe speaking.
+
+    `reply` is the key the connector renders verbatim as the universe's own
+    first-person voice; a deterministic platform message carries `note`
+    instead — the same split `write_page` / `universe` brain-write relays use.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert "reply" not in out
+    assert out["note"].strip()
+    assert out["missing"] == ["compute", "model_access"]
+
+
+def test_credentialed_universe_still_surfaces_transient_exhaustion_honestly(
+    data_dir, monkeypatch
+):
+    """Distinguishability: BUG-038/039 must not be masked as onboarding.
+
+    An ESTABLISHED universe that HAS an attached credential and hits provider
+    exhaustion is a real failure. Telling its founder to go attach a provider
+    they already attached would hide the outage.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    _attach_engine_credential(data_dir / uid)
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+    assert "reply" not in out
+
+
+def test_credentialless_universe_still_surfaces_non_provider_failures(
+    data_dir, monkeypatch
+):
+    """Only provider exhaustion becomes onboarding — nothing else is swallowed."""
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    _engine_raises(monkeypatch, RuntimeError("soul bundle is corrupt"))
+
+    assert not credential_vault_path(data_dir / uid).exists()
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "soul bundle is corrupt" in out["error"]
+
+
+def test_unreadable_vault_never_claims_the_credential_is_missing(
+    data_dir, monkeypatch
+):
+    """Fail-safe direction: a vault we cannot parse is not proof of absence.
+
+    Claiming "no credential attached" from a read failure would send a founder
+    to re-attach a key they already have, and would hide a corrupt vault.
+    """
+    from tinyassets.credential_vault import credential_vault_path
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    credential_vault_path(data_dir / uid).write_text("{not json", encoding="utf-8")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_held_payload_does_not_invoke_a_second_provider_call(
+    data_dir, monkeypatch
+):
+    """The held path is deterministic — it never retries onto another engine."""
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    called = _engine_raises(monkeypatch, _exhausted())
+
+    json.loads(converse(message="Hello"))
+
+    assert called["count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("engine_source", "extra"),
+    [
+        ("self_hosted_endpoint", {"engine_endpoint": "https://llm.internal/v1"}),
+        ("market_rented", {"market_model": "glm-5.2"}),
+        ("host_daemon", {}),
+    ],
+)
+def test_non_vault_engine_choice_is_an_outage_not_missing_setup(
+    data_dir, monkeypatch, engine_source, extra
+):
+    """Codex ADAPT 2026-07-25 finding 1: a vault-only test misreads three engines.
+
+    `set_engine` records `self_hosted_endpoint` / `market_rented` /
+    `host_daemon` in config and writes NO vault credential. Reading an empty
+    vault as "never set up" would send a founder who already chose an engine
+    back to onboarding and hide that their engine is down.
+    """
+    from tinyassets.config import write_universe_config_fields
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    write_universe_config_fields(
+        data_dir / uid, engine_source=engine_source, **extra
+    )
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_unreadable_config_never_claims_the_engine_is_missing(
+    data_dir, monkeypatch
+):
+    """Codex ADAPT round 2 (2026-07-25), reviewer's exact repro.
+
+    `load_universe_config` degrades a corrupt config to a default
+    `UniverseConfig`, whose `engine_source` is the same value that means "the
+    founder never chose an engine". Without a separate parseability probe, a
+    corrupt config reads as "no engine yet" — losing the founder's recorded
+    choice AND hiding that their config is broken.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    (data_dir / uid / "config.yaml").write_text(
+        "engine_source: [unterminated\n", encoding="utf-8"
+    )
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_non_string_engine_source_does_not_crash_the_failing_turn(
+    data_dir, monkeypatch
+):
+    """Codex ADAPT round 2 (2026-07-25): `engine_source: 7` parses fine.
+
+    `_build_config` assigns YAML values without type coercion, so a non-string
+    reaches the comparison. An AttributeError there would escape while we are
+    already handling the founder's failed turn.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    uid = _create_via_action(data_dir, monkeypatch)
+    (data_dir / uid / "config.yaml").write_text("engine_source: 7\n", encoding="utf-8")
+    _engine_raises(monkeypatch, _exhausted())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "All providers exhausted" in out["error"]
+
+
+def test_policy_hard_fail_keeps_its_own_message(data_dir, monkeypatch):
+    """Codex ADAPT 2026-07-25 finding 2: not every exhaustion is missing setup.
+
+    The router raises `AllProvidersExhaustedError` bare when a universe's
+    `allowed_providers` allowlist empties the chain. Retelling that policy
+    block as "you have no engine yet" would send the founder to attach a
+    credential the allowlist would still refuse.
+    """
+    from tinyassets.universe_server import converse
+
+    _login("founder-1")
+    _engine_raises(monkeypatch, _policy_hard_fail())
+
+    out = json.loads(converse(message="Hello"))
+
+    assert out.get("status") != "held"
+    assert "allowed_providers" in out["error"]

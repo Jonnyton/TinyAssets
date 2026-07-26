@@ -5,9 +5,7 @@
 ## Purpose
 
 WorkOS OAuth 2.1 resource-server auth with anonymous-read/authenticated-write posture, pre-dispatch 401 write challenges, founder home auto-birth, and two-axis authorization (universe visibility plus ownership ACL).
-
 ## Requirements
-
 ### Requirement: Auth provider is selected by configuration, defaulting to no-auth
 
 The server SHALL select its auth provider at startup from the `UNIVERSE_SERVER_AUTH`
@@ -107,28 +105,48 @@ The metadata is produced in `tinyassets/auth/wellknown.py`.
 
 ### Requirement: Founder home auto-births exactly once on first authenticated contact
 
-The server SHALL, on the first authenticated `get_status` call (the dedicated connector handle that
-permits first-contact birth), ensure the founder has a home universe. It SHALL check the
-create scope BEFORE reserving any home id, so a founder lacking create scope leaves no phantom
-binding and receives the awaiting card. Reservation SHALL be atomic (an `INSERT ... ON CONFLICT DO
-NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield exactly one
-home id, and materialization SHALL be serialized so a reserved id is created once, with success defined
-as the universe's `soul.md` being present. Anonymous sessions SHALL never trigger birth, and the
-pure-read alias `read_graph target=status` SHALL pass through without first-contact birth. This logic
-lives in `tinyassets/api/status.py` with the atomic claim in `tinyassets/daemon_server.py`.
+The server SHALL, on the first authenticated `converse` call with no `graph_id` (the founder's opening
+relay, and the only handle that performs first-contact birth), ensure the founder has a home universe.
+It SHALL check the create scope BEFORE reserving any home id, so a founder lacking create scope leaves
+no phantom binding and the conversation entry returns a creation failure with
+`auth_scope_required=true`. Reservation SHALL be atomic (an `INSERT ... ON
+CONFLICT DO NOTHING` on the founder key) so concurrent first-contact calls across worker threads yield
+exactly one home id, and materialization SHALL be serialized so a reserved id is created once, with
+success defined as the universe's `soul.md` being present. After successful materialization and
+binding, the resolver SHALL return the bound home id to the originating `converse` entry path.
+Whether that conversation can select and invoke universe intelligence is a subsequent
+authority/execution decision outside this birth contract; successful birth SHALL NOT guarantee
+provider execution or a first-person reply. Anonymous sessions SHALL never trigger birth. Both `get_status` and the
+`read_graph target=status` alias SHALL pass through as pure reads without first-contact birth. This
+logic lives in `tinyassets/api/first_contact.py` with the atomic claim in
+`tinyassets/daemon_server.py`.
 
-#### Scenario: first authenticated get_status births one home
-- **WHEN** an authenticated founder with create scope and no bound home calls `get_status`
+Per the 2026-07-22 host directive
+(`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`), birth moved off
+`get_status` and its `allow_first_contact_birth` parameter was deleted, because a mutating *opening*
+call proved refusable in production: the assistant declined to call `get_status` on the grounds that
+its own tool description advertised a side effect. The 2026-07-15 commitment this replaces — a founder
+never needs to know an incantation — is upheld, since the opening message is itself the relay.
+
+#### Scenario: first authenticated converse births one home
+- **WHEN** an authenticated founder with create scope and no bound home issues their opening `converse` with no `graph_id`
 - **THEN** exactly one home universe is reserved, materialized, and bound to the founder
-- **AND** the response reports the first-contact universe-created event
+- **AND** the originating conversation entry continues with that bound home as its target
+- **AND** completion of birth does not by itself assert that provider execution or a first-person reply succeeded
 
 #### Scenario: read-only founder leaves no phantom binding
-- **WHEN** an authenticated founder lacking create scope calls `get_status` with no home
-- **THEN** no home binding is created and the awaiting card is returned
+- **WHEN** an authenticated founder lacking create scope issues their opening `converse` with no home
+- **THEN** no home binding is created
+- **AND** the result reports that the home could not be created or loaded with `auth_scope_required=true`
 
-#### Scenario: anonymous get_status never births
-- **WHEN** an anonymous session calls `get_status`
+#### Scenario: anonymous first contact never births
+- **WHEN** an anonymous session calls `converse` or `get_status`
 - **THEN** no home universe is created
+
+#### Scenario: get_status never births
+- **WHEN** an authenticated founder with create scope and no bound home calls `get_status`
+- **THEN** no home universe is created and the call is a pure read
+- **AND** a repeated call returns the identical snapshot
 
 ### Requirement: The permission actor is the authenticated subject with no environment fallback
 
@@ -165,3 +183,30 @@ effect grant. This model lives in `tinyassets/api/permissions.py` and the scope 
 #### Scenario: rules-read error fails closed
 - **WHEN** the visibility rule for a universe cannot be read due to a real error
 - **THEN** the universe is treated as not publicly readable
+
+### Requirement: Status identity evidence varies across three response shapes
+The system SHALL expose distinct identity evidence on the audited early-first-contact, dispatcher-config-error, and full `get_status` paths without claiming those are the only possible error or authorization envelopes. An authenticated account that omits `universe_id` and has no complete bound home SHALL receive the early first-contact shape containing `first_contact.event = "no_universe_yet"`, `first_contact.note`, `about`, `next_step_for_user`, and `schema_version = 1`; this shape SHALL omit `session_boundary`. A dispatcher-config load failure after universe resolution and access approval SHALL return `error = "config_load_failed"`, `detail`, `universe_id`, and `universe_exists`; this shape SHALL also omit `session_boundary`. A full status response SHALL include `session_boundary` with `prior_session_context_available`, `account_user`, `last_session_ts`, and `note`.
+
+#### Scenario: Untargeted no-home status returns before session identity assembly
+- **WHEN** an authenticated account with no complete bound home universe calls `get_status` without an explicit `universe_id`
+- **THEN** the response is the early first-contact shape with `schema_version = 1`
+- **AND** `session_boundary` is absent
+
+#### Scenario: Configuration failure returns before session identity assembly
+- **WHEN** a resolved universe's dispatcher configuration raises during load
+- **THEN** the response contains `config_load_failed`, its detail, the universe id, and whether the universe directory exists
+- **AND** `session_boundary` is absent
+
+#### Scenario: Full status attributes the current account
+- **WHEN** status reaches the full response and request authentication supplies a non-anonymous subject
+- **THEN** `session_boundary.account_user` equals that authenticated subject
+
+#### Scenario: Authless full status uses the legacy environment actor
+- **WHEN** status reaches the full response without a non-anonymous request subject
+- **THEN** `session_boundary.account_user` equals `UNIVERSE_SERVER_USER`, defaulting to `anonymous`
+
+#### Scenario: Prior-session evidence is a best-effort activity-tail match
+- **WHEN** one of the newest 20 activity-log lines contains the raw `account_user` string anywhere and begins with a bracketed timestamp
+- **THEN** the newest such substring match makes `prior_session_context_available` true and supplies that timestamp as `last_session_ts`
+- **AND** this is best-effort substring evidence rather than verified actor attribution, so a name contained inside another value can match and an empty account string matches every line
+- **AND** no match or any handled scan error yields false with `last_session_ts` set to null

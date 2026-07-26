@@ -1,8 +1,21 @@
-# Host Discoverability And Customer Onboarding Rollout
+# Host Discoverability And Customer Onboarding Rollout — SUPERSEDED HISTORICAL SNAPSHOT
 
 Date: 2026-05-01
-Status: active seed plan
+Status: **SUPERSEDED / HISTORICAL — DO NOT EXECUTE**
 Owner: lead + codex-gpt5-desktop
+
+> This plan preserves the 2026-05-01 rollout design and evidence as historical
+> context. It is not an active execution plan. `/mcp-directory*` is retired and
+> must be an ordinary 404 without redirect, alias, or compatibility behavior.
+> Current work uses the exact public name `TinyAssets`, the sole remote endpoint
+> `https://tinyassets.io/mcp`, and
+> `openspec/changes/reconcile-external-connector-manifests/`.
+>
+> Do not execute the phases or implementation cards below. Reframe any
+> still-relevant host-discovery work through the OpenSpec change and current
+> `STATUS.md` coordination.
+
+The remainder of this document is the preserved 2026-05-01 snapshot.
 
 ## Trigger
 

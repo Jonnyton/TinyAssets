@@ -1,7 +1,21 @@
 # Auto-birth the founder's home universe on first connect (2026-07-15)
 
-**Status:** approved (host directive, 2026-07-15) — supersedes the 2026-07-02
+**Status:** SUPERSEDED (2026-07-22) by
+[`2026-07-22-first-contact-birth-moves-to-converse.md`](2026-07-22-first-contact-birth-moves-to-converse.md).
+Was: approved (host directive, 2026-07-15) — superseded the 2026-07-02
 opt-in-birth decision.
+
+> **What changed and what did not.** The core commitment below — a founder never
+> has to know an incantation to get their home universe — is *upheld*, not
+> reversed. Only the handle that provisions moved: birth is now performed by
+> `converse` on the founder's opening message, and `get_status` is a pure read
+> again (`readOnlyHint=True`, `allow_first_contact_birth` deleted).
+>
+> The reason is that making the connector's *opening call* mutate turned out to
+> make it refusable: observed live on 2026-07-21, the assistant declined to call
+> `get_status` because its own tool description advertised a side effect, which
+> contradicted the shipped instruction to call it first. Read the successor note
+> before treating any `get_status`-provisions statement below as current.
 
 ## Decision
 

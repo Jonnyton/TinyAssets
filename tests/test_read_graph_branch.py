@@ -6,7 +6,7 @@ this adds read_graph target=branch (SEE branches) so a founder can inspect a
 branch's full node configs (timeout_seconds, model_hint, prompt_template,
 edges, state schema) before editing — informed edits, not blind ones.
 
-Within the PR-178 five-handle invariant: a new *target*, no new handle.
+Within the canonical seven-handle invariant: a new *target*, no new handle.
 """
 from __future__ import annotations
 
@@ -16,12 +16,13 @@ import json
 
 import pytest
 
-ADVERTISED = {
+CANONICAL_HANDLES = {
     "read_graph",
     "write_graph",
     "run_graph",
     "read_page",
     "write_page",
+    "converse",
     "get_status",
 }
 
@@ -53,10 +54,10 @@ def server_env(tmp_path, monkeypatch):
     importlib.reload(us)
 
 
-def test_five_handles_unchanged(server_env):
+def test_new_target_preserves_canonical_handle_set(server_env):
     us = server_env
     advertised = {t.name for t in asyncio.run(us.mcp.list_tools(run_middleware=True))}
-    assert advertised == ADVERTISED
+    assert advertised == CANONICAL_HANDLES
 
 
 def test_read_graph_branch_routes_to_get_branch(server_env):

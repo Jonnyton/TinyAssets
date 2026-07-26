@@ -77,21 +77,43 @@ Every universe-intelligence engine turn SHALL run with `sandbox_workspace=True` 
 - **WHEN** `converse` runs its reply turn and its learning-extraction turn
 - **THEN** both turns use the fail-closed sandboxed config
 
-### Requirement: Learning is a separate fail-closed step over explicitly-taught facts, and persistence never breaks the reply
-After the reply turn, `converse` SHALL run a SEPARATE extract-and-commit step that persists only the durable facts the founder EXPLICITLY stated this turn — never inferred, invented, or carried over from earlier turns — into the universe's governed soul and its own private canon, with the universe as the sole writer of its own brain. Generic self-framing boilerplate (a blank/newborn/personified mind that learns over time) SHALL be dropped so `identity.md` stays not-learned until the founder actually defines it, and when nothing grounded was taught the commit SHALL persist nothing. A persistence failure SHALL be logged and SHALL NOT break the conversation turn — the founder still receives their reply.
+### Requirement: Learning is a separate tolerant model-extracted step with field-specific filtering, and reply delivery survives failures
+After the reply turn, `converse` SHALL run a separate provider call whose prompt
+asks for durable facts explicitly stated in the founder's latest message.
+Parsing SHALL tolerate fenced JSON or an embedded top-level object and return
+an empty proposal when no dict can be recovered. `commit_learning` SHALL
+string-coerce `name`, treat non-dict `soul` as empty, accept only governed soul
+filenames with non-empty string bodies, apply the generic-boilerplate regex only
+to `soul["identity.md"]`, and filter canon list items individually for non-empty
+title/content. It SHALL NOT compare accepted non-generic name, soul, or canon
+facts with the founder message, so unsupported extractor output can pass. A
+`SoulEditError` while reading governed files SHALL become an empty governed set
+without logging at that catch; rejected soul edits and failed canon items SHALL
+be logged. Any other extraction/commit exception reaching `converse` SHALL be
+logged, and no learning failure SHALL prevent reply delivery.
 
-#### Scenario: only grounded facts persist
-- **WHEN** the extraction step returns durable facts the founder explicitly stated
-- **THEN** the grounded soul files and canon pages are written as the universe's own brain
-- **AND** generic identity boilerplate not grounded in the founder's words is dropped from `identity.md`
+#### Scenario: tolerant parsing and field-specific filtering
+- **WHEN** extraction returns fenced or embedded JSON with mixed valid and invalid fields
+- **THEN** the top-level dict is recovered when possible
+- **AND** name, governed non-empty soul bodies, and non-empty canon items are handled by their field-specific coercion and filters rather than one strict schema validator
 
-#### Scenario: nothing grounded means no write
-- **WHEN** the founder revealed nothing durable this turn
-- **THEN** the commit persists nothing and makes no empty edits
+#### Scenario: accepted extractor output is not source-entailment checked
+- **WHEN** field-specific filters accept a non-generic name, soul body, or canon item
+- **THEN** commit does not compare that fact with the founder's latest message before persistence
+
+#### Scenario: generic identity boilerplate is filtered only from identity.md
+- **WHEN** a proposal contains only an `identity.md` body matched by the generic-boilerplate regex and no accepted name or canon item
+- **THEN** commit makes no soul edit
+- **AND** the regex is not applied to the separate name or canon fields
+
+#### Scenario: governed-file read failure is silently narrowed
+- **WHEN** `read_governed_files` raises `SoulEditError`
+- **THEN** commit uses an empty governed-file set without logging at that catch
+- **AND** continues processing any accepted name or canon fields
 
 #### Scenario: persistence failure preserves the reply
-- **WHEN** the learning persistence step raises an error
-- **THEN** the error is logged and the founder still receives the reply
+- **WHEN** extraction or commit raises beyond the field-specific handled failures
+- **THEN** `converse` logs the error and the founder still receives the reply
 
 ### Requirement: The MCP converse handle is founder-only and fail-closed
 The MCP `converse` handle (`tinyassets.universe_server.converse`) SHALL be founder-only: it SHALL reject an unauthenticated request and reject any authenticated caller who is not the target universe's founder (write access), returning an explicit auth error rather than reaching the universe intelligence. It SHALL require a non-empty message, register with `anonymous_write_challenge=True`, and on any downstream failure return an honest error instead of fabricating a reply. As-built limitation: public "talk to a stranger's universe" access is a later, separately-gated slice.

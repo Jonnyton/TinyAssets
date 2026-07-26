@@ -8,6 +8,12 @@ import uuid
 from conftest import as_user, stub_embedding
 
 
+def _assume_fixture_app(db, user_id):
+    with db.cursor() as cur:
+        cur.execute("SET ROLE tinyassets_fixture_app")
+    as_user(db, user_id)
+
+
 def _create_alice_node(db, alice_id, visibility="public", with_private_field=True):
     nid = str(uuid.uuid4())
     concept = {
@@ -34,8 +40,8 @@ def _create_alice_node(db, alice_id, visibility="public", with_private_field=Tru
 
 
 def test_owner_sees_all_fields(db, alice_id):
-    as_user(db, alice_id)
     nid = _create_alice_node(db, alice_id)
+    _assume_fixture_app(db, alice_id)
     with db.cursor() as cur:
         cur.execute("SELECT concept FROM public.nodes WHERE node_id = %s", (nid,))
         row = cur.fetchone()
@@ -45,11 +51,10 @@ def test_owner_sees_all_fields(db, alice_id):
 
 def test_non_owner_sees_public_node_stripped(db, alice_id, bob_id):
     # Alice creates a public node with a private field
-    as_user(db, alice_id)
     _create_alice_node(db, alice_id, visibility="public")
 
     # Bob queries via discover_nodes (which applies strip_private_fields)
-    as_user(db, bob_id)
+    _assume_fixture_app(db, bob_id)
     with db.cursor() as cur:
         cur.execute(
             "SELECT public.discover_nodes(%s, %s::vector(16), NULL, NULL, NULL, 10, true)",
@@ -66,10 +71,9 @@ def test_non_owner_sees_public_node_stripped(db, alice_id, bob_id):
 
 
 def test_non_owner_cannot_see_private_visibility_node(db, alice_id, bob_id):
-    as_user(db, alice_id)
     _create_alice_node(db, alice_id, visibility="private", with_private_field=False)
 
-    as_user(db, bob_id)
+    _assume_fixture_app(db, bob_id)
     with db.cursor() as cur:
         cur.execute(
             "SELECT public.discover_nodes(%s, %s::vector(16), NULL, NULL, NULL, 10, true)",

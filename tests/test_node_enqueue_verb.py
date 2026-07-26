@@ -5,16 +5,18 @@ queue via ``invoke_mcp_action('enqueue_branch_run', ...)`` — NOT a synchronous
 spawn. The daemon's concurrency cap paces execution.
 
 Containment (Codex enqueue review, 2026-05-30):
-  * default-off capability flag (ships dark);
-  * spawn-depth cap (chain length) + per-run budget (branching factor);
+  * default-off capability flag, explicitly enabled by production deploy;
+  * spawn-depth cap (chain length) + atomic run-wide budget (branching factor);
   * trusted current-universe targeting — never a branch-named universe (Fix 1);
   * global active-queue cap + per-origin spawn-lineage cap (Fix 2);
-  * target branch must exist and be runnable by the actor under the existing
-    public/private visibility model (Fix 3).
+  * epoch-1 targets must exist and be public until request-scoped actor
+    authority is durable.
 """
 
 from __future__ import annotations
 
+import json
+import time
 from pathlib import Path
 
 import pytest
@@ -23,6 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 import tinyassets.api.helpers as helpers
 import tinyassets.branch_tasks as bt
 import tinyassets.daemon_server as ds
+import tinyassets.runs as runs
 from tinyassets.branches import (
     BranchDefinition,
     EdgeDefinition,
@@ -73,6 +76,62 @@ def _branch(src: str, tools_allowed: list[str]) -> BranchDefinition:
     ]
     b.state_schema = [{"name": "status", "type": "str"}]
     return b
+
+
+def _parallel_enqueue_branch() -> BranchDefinition:
+    """Two enqueue-capable nodes that execute in the same parallel superstep."""
+    root_src = "def run(state):\n    return {}\n"
+    enqueue_a = (
+        "def run(state):\n"
+        "    invoke_mcp_action('enqueue_branch_run', "
+        "branch_def_id='a', inputs={})\n"
+        "    return {'status_a': 'enqueued'}\n"
+    )
+    enqueue_b = (
+        "def run(state):\n"
+        "    invoke_mcp_action('enqueue_branch_run', "
+        "branch_def_id='b', inputs={})\n"
+        "    return {'status_b': 'enqueued'}\n"
+    )
+    branch = BranchDefinition(name="parallel-drv", entry_point="root")
+    branch.node_defs = [
+        NodeDefinition(
+            node_id="root",
+            display_name="Root",
+            source_code=root_src,
+            output_keys=[],
+        ).mark_approved(),
+        NodeDefinition(
+            node_id="enqueue_a",
+            display_name="Enqueue A",
+            source_code=enqueue_a,
+            output_keys=["status_a"],
+            tools_allowed=["enqueue_branch_run"],
+        ).mark_approved(),
+        NodeDefinition(
+            node_id="enqueue_b",
+            display_name="Enqueue B",
+            source_code=enqueue_b,
+            output_keys=["status_b"],
+            tools_allowed=["enqueue_branch_run"],
+        ).mark_approved(),
+    ]
+    branch.graph_nodes = [
+        GraphNodeRef(id=node_id, node_def_id=node_id)
+        for node_id in ("root", "enqueue_a", "enqueue_b")
+    ]
+    branch.edges = [
+        EdgeDefinition(from_node="START", to_node="root"),
+        EdgeDefinition(from_node="root", to_node="enqueue_a"),
+        EdgeDefinition(from_node="root", to_node="enqueue_b"),
+        EdgeDefinition(from_node="enqueue_a", to_node="END"),
+        EdgeDefinition(from_node="enqueue_b", to_node="END"),
+    ]
+    branch.state_schema = [
+        {"name": "status_a", "type": "str"},
+        {"name": "status_b", "type": "str"},
+    ]
+    return branch
 
 
 def _patch_storage(monkeypatch, *, branch_meta=None) -> list:
@@ -181,6 +240,26 @@ def test_enqueue_per_run_budget_refuses_second(monkeypatch):
     assert len(captured) == 1  # first appended, second refused
 
 
+def test_enqueue_budget_is_run_wide_across_parallel_source_nodes(monkeypatch):
+    """MAX_PER_RUN is one run-wide budget, not one allowance per node."""
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
+    monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_MAX_PER_RUN", "1")
+    captured = _patch_storage(monkeypatch)
+
+    def _slow_append(upath, task, **caps):
+        # Widen the interval between admission and counter increment. A shared
+        # but unsynchronized list/counter can otherwise pass this by scheduling
+        # luck even though both parallel nodes observed the same old value.
+        time.sleep(0.05)
+        captured.append((upath, task))
+
+    monkeypatch.setattr(bt, "append_task_capped", _slow_append)
+    with pytest.raises(CompilerError, match="budget"):
+        _run(_parallel_enqueue_branch(), thread="enq-parallel-budget")
+
+    assert len(captured) == 1
+
+
 def test_enqueue_requires_tools_allowed(monkeypatch):
     # Even enabled, the node must declare the verb in tools_allowed.
     monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
@@ -257,15 +336,16 @@ def test_enqueue_refuses_private_branch_non_owner(monkeypatch):
     assert captured == []
 
 
-def test_enqueue_allows_private_branch_owner(monkeypatch):
+def test_enqueue_refuses_private_branch_even_for_matching_process_actor(monkeypatch):
+    """V1 has no authenticated end-user principal, so all private targets fail."""
     monkeypatch.setenv("TINYASSETS_NODE_ENQUEUE_ENABLED", "on")
     captured = _patch_storage(
         monkeypatch, branch_meta={"visibility": "private", "author": "me"},
     )
     b = _branch(ENQUEUE_ONE, ["enqueue_branch_run"])
-    result = _run(b, thread="enq-priv-ok", context=_ctx(actor="me"))
-    assert result["status"] == "enqueued"
-    assert len(captured) == 1
+    with pytest.raises(CompilerError, match="private"):
+        _run(b, thread="enq-priv-owner", context=_ctx(actor="me"))
+    assert captured == []
 
 
 # ── Fix 2: spawn lineage stamping + cap surfacing ────────────────────────────
@@ -282,6 +362,41 @@ def test_enqueue_stamps_parent_and_origin(monkeypatch):
     task = captured[0][1]
     assert task.parent_branch_task_id == "P1"
     assert task.origin_branch_task_id == "O1"  # propagated, not reset
+
+
+@pytest.mark.parametrize(
+    ("parent", "origin", "expected"),
+    [
+        ("", "", "run:run-123"),
+        ("parent-task", "", "parent-task"),
+        ("parent-task", "origin-task", "origin-task"),
+    ],
+)
+def test_execute_branch_derives_stable_root_origin_with_explicit_precedence(
+    tmp_path, monkeypatch, parent, origin, expected,
+):
+    captured = []
+    sentinel = object()
+    monkeypatch.setattr(runs, "_prepare_run", lambda *args, **kwargs: "run-123")
+
+    def _capture_invoke(*args, **kwargs):
+        captured.append(kwargs["enqueue_context"])
+        return sentinel
+
+    monkeypatch.setattr(runs, "_invoke_graph", _capture_invoke)
+    outcome = runs.execute_branch(
+        tmp_path,
+        branch=_branch(ENQUEUE_ONE, ["enqueue_branch_run"]),
+        inputs={},
+        _enqueue_universe_id="u",
+        _parent_branch_task_id=parent,
+        _origin_branch_task_id=origin,
+    )
+
+    assert outcome is sentinel
+    assert len(captured) == 1
+    assert captured[0].parent_branch_task_id == parent
+    assert captured[0].origin_branch_task_id == expected
 
 
 def test_enqueue_ignores_branch_authored_request_type(monkeypatch):
@@ -368,3 +483,146 @@ def test_append_task_capped_per_origin_lineage_cap(tmp_path):
     # Different origin → still allowed (cap is per-origin, not global).
     bt.append_task_capped(tmp_path, _task("t3", origin="O2"), max_lineage=1)
     assert len(bt.read_queue(tmp_path)) == 2
+
+
+def _write_archive(universe_path: Path, tasks: list[bt.BranchTask]) -> None:
+    bt.archive_path(universe_path).write_text(
+        json.dumps([task.to_dict() for task in tasks]),
+        encoding="utf-8",
+    )
+
+
+def test_append_task_capped_counts_archived_lineage(tmp_path):
+    _write_archive(tmp_path, [_task("archived-1", origin="O", status="succeeded")])
+
+    with pytest.raises(bt.QueueCapExceeded) as exc:
+        bt.append_task_capped(
+            tmp_path,
+            _task("next", origin="O"),
+            max_active=10,
+            max_lineage=1,
+        )
+
+    assert "lineage" in str(exc.value)
+    assert bt.read_queue(tmp_path) == []
+
+
+def test_append_task_capped_keeps_unrelated_archived_origins_admissible(tmp_path):
+    _write_archive(
+        tmp_path,
+        [_task("other-1", origin="OTHER", status="succeeded")],
+    )
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("ours-1", origin="OURS"),
+        max_active=10,
+        max_lineage=1,
+    )
+
+    assert [task.branch_task_id for task in bt.read_queue(tmp_path)] == ["ours-1"]
+
+
+def test_append_task_capped_global_cap_ignores_terminal_and_archived_rows(tmp_path):
+    bt.append_task(tmp_path, _task("terminal-live", origin="O", status="pending"))
+    queue_file = bt.queue_path(tmp_path)
+    raw = json.loads(queue_file.read_text(encoding="utf-8"))
+    raw[0]["status"] = "succeeded"
+    queue_file.write_text(json.dumps(raw), encoding="utf-8")
+    _write_archive(
+        tmp_path,
+        [_task("terminal-archived", origin="O", status="succeeded")],
+    )
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("active-1", origin="OTHER"),
+        max_active=1,
+        max_lineage=10,
+    )
+    with pytest.raises(bt.QueueCapExceeded):
+        bt.append_task_capped(
+            tmp_path,
+            _task("active-2", origin="ANOTHER"),
+            max_active=1,
+            max_lineage=10,
+        )
+
+    assert {task.branch_task_id for task in bt.read_queue(tmp_path)} == {
+        "terminal-live",
+        "active-1",
+    }
+
+
+def test_append_task_capped_deduplicates_live_archive_task_id(tmp_path):
+    overlap = _task("overlap", origin="O", status="succeeded")
+    bt.append_task(tmp_path, overlap)
+    _write_archive(tmp_path, [overlap])
+
+    bt.append_task_capped(
+        tmp_path,
+        _task("next", origin="O"),
+        max_active=10,
+        max_lineage=2,
+    )
+
+    assert {task.branch_task_id for task in bt.read_queue(tmp_path)} == {
+        "overlap",
+        "next",
+    }
+
+
+def test_append_task_capped_corrupt_archive_fails_without_mutation(tmp_path):
+    archive = bt.archive_path(tmp_path)
+    archive.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError):
+        bt.append_task_capped(
+            tmp_path,
+            _task("next", origin="O"),
+            max_active=10,
+            max_lineage=2,
+        )
+
+    assert archive.read_text(encoding="utf-8") == "{not-json"
+    assert bt.read_queue(tmp_path) == []
+
+
+@pytest.mark.parametrize("blank_content", ["", " \n\t"])
+def test_append_task_capped_blank_live_queue_fails_without_mutation(
+    tmp_path, blank_content,
+):
+    queue = bt.queue_path(tmp_path)
+    queue.write_text(blank_content, encoding="utf-8")
+    before = queue.read_bytes()
+
+    with pytest.raises(RuntimeError, match="Corrupt queue"):
+        bt.append_task_capped(
+            tmp_path,
+            _task("new", origin="O"),
+            max_active=5,
+            max_lineage=5,
+        )
+
+    assert queue.read_bytes() == before
+    assert not bt.archive_path(tmp_path).exists()
+
+
+@pytest.mark.parametrize("blank_content", ["", " \n\t"])
+def test_append_task_capped_blank_archive_fails_without_mutation(
+    tmp_path, blank_content,
+):
+    archive = bt.archive_path(tmp_path)
+    archive.write_text(blank_content, encoding="utf-8")
+    archive_before = archive.read_bytes()
+
+    with pytest.raises(RuntimeError, match="Corrupt queue"):
+        bt.append_task_capped(
+            tmp_path,
+            _task("new", origin="O"),
+            max_active=5,
+            max_lineage=5,
+        )
+
+    assert archive.read_bytes() == archive_before
+    assert not bt.queue_path(tmp_path).exists()

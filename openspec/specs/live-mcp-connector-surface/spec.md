@@ -5,12 +5,19 @@
 ## Purpose
 
 The public MCP entry point: the canonical handle set served at https://tinyassets.io/mcp as thin routers over `tinyassets.api.*` handlers, MCP prompts that teach connecting chatbots, legacy fat-tool deprecation, the Cloudflare Worker front door, and the public canaries that guard the surface.
-
 ## Requirements
-
 ### Requirement: Remote Streamable-HTTP MCP Endpoint
 
-The platform SHALL expose a single remote MCP server over Streamable-HTTP transport (`tinyassets/universe_server.py`, built on FastMCP) that any MCP-compatible chatbot can connect to by URL with no local installation. The server SHALL register MCP prompts (control-station and meet-universe prompts in `tinyassets/api/prompts.py`) so a connecting chatbot receives behavioral instructions on how to act as the user's control interface.
+The platform SHALL expose a single remote MCP server over Streamable-HTTP transport (`tinyassets/universe_server.py`, built on FastMCP) that any MCP-compatible chatbot can connect to by URL with no local installation. The server SHALL register exactly the following prompt catalog so a connecting chatbot receives behavioral instructions on how to act as the user's control interface:
+
+| Prompt name | Title | Tags |
+|---|---|---|
+| `control_station` | `Control Station Guide` | `control`, `daemon`, `multiplayer`, `operations` |
+| `meet_universe` | `Meet Your Universe` | `first-contact`, `onboarding`, `persona`, `tinyassets` |
+| `extension_guide` | `Extension Authoring Guide` | `extensions`, `nodes`, `plugins`, `tinyassets` |
+| `branch_design_guide` | `Branch Design Guide` | `branches`, `customization`, `extensions`, `graph` |
+
+Each prompt SHALL return its registered behavioral guide and SHALL expose its function docstring as discoverability text.
 
 #### Scenario: Chatbot completes an MCP handshake and lists tools
 
@@ -18,14 +25,17 @@ The platform SHALL expose a single remote MCP server over Streamable-HTTP transp
 - **THEN** the server responds with a valid MCP `serverInfo` + `protocolVersion` and returns a non-empty advertised tool list
 - **AND** the response is delivered as either JSON or an SSE `event: message` frame, both of which are valid Streamable-HTTP responses
 
-#### Scenario: Connecting chatbot receives behavioral prompts
+#### Scenario: Prompt listing returns the exact catalog
+- **WHEN** an MCP client lists prompts on the live server
+- **THEN** the response contains the four names, titles, and tag sets above with no additional registered prompt
 
-- **WHEN** a chatbot enumerates the server's MCP prompts
-- **THEN** the control-station and meet-universe prompts are available, teaching the chatbot how to operate the universe and how consent-gated universe embodiment works
+#### Scenario: Prompt invocation returns the owned guide
+- **WHEN** an MCP client invokes any catalogued prompt
+- **THEN** the server returns that prompt's registered control, first-contact, extension-authoring, or branch-design guide
 
 ### Requirement: Canonical Advertised Handle Set
 
-The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require the six core handles (`CANONICAL_HANDLES`, which includes `converse`) and permit `get_status` as an optional read affordance — the server advertises all seven; the canary treats `get_status` as allowed-but-not-required so a status-less deploy is not drift. As-built note: legacy "five handles" naming survives only in identifiers (e.g. `assert_five_handles_with_retry`, `test_universe_server_five_handles.py`) as historical naming; the enforced contract is the set above.
+The advertised `tools/list` surface SHALL be exactly seven handles: `read_graph`, `write_graph`, `run_graph`, `read_page`, `write_page`, `converse`, and `get_status`. Each is a thin shape/target router that delegates to an existing `tinyassets.api.*` handler without changing that handler's behavior. The public drift-guard canary (`scripts/mcp_public_canary.py --assert-handles`) SHALL require that exact set; a missing `get_status` or any extra advertised handle is drift.
 
 #### Scenario: Live surface advertises exactly the seven handles
 
@@ -68,7 +78,7 @@ Every advertised handle name SHALL match `^[a-zA-Z0-9_-]{1,64}$` and MUST NOT co
 
 ### Requirement: Read-Open, Write-Challenged Authentication Boundary
 
-Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status` alias) SHALL remain callable anonymously. Pure-write / costly-effect handles (`write_graph`, `run_graph`, `write_page`, `converse`) SHALL answer an anonymous `tools/call` with an HTTP 401 + `WWW-Authenticate` challenge pre-dispatch so the MCP client launches OAuth, since a tool-JSON rejection would not prompt sign-in. `get_status` is the connector's opening call: for an authenticated founder with no home universe it auto-creates and binds a home universe as a one-time onboarding side effect, so it is idempotent but not a pure read; the `read_graph target=status` alias stays read-only and never provisions. `converse` is founder-only and relays the founder's turn to the universe's own intelligence.
+Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status` alias) SHALL remain callable anonymously. Pure-write / costly-effect handles (`write_graph`, `run_graph`, `write_page`, `converse`) SHALL answer an anonymous `tools/call` with an HTTP 401 + `WWW-Authenticate` challenge pre-dispatch so the MCP client launches OAuth, since a tool-JSON rejection would not prompt sign-in. `converse` is the connector's opening call: it requires an authenticated actor with write or admin access to the target universe and relays the actor's turn to the universe's own intelligence. For an authenticated founder with create scope and no home universe it resolves-or-creates and binds that home as a one-time onboarding side effect before continuing the originating conversation entry. Completion of that provisioning step SHALL NOT by itself assert that downstream provider execution or a first-person reply succeeded. `get_status` and the `read_graph target=status` alias are both pure reads (`readOnlyHint=True`) and never provision. Per the 2026-07-22 host directive (`docs/design-notes/2026-07-22-first-contact-birth-moves-to-converse.md`) birth moved off `get_status`, because a mutating *opening* call proved refusable in production — the assistant declined to call it, citing the side effect its own tool description advertised, which contradicted the shipped instruction to call it first.
 
 #### Scenario: Anonymous write handle triggers an OAuth challenge
 
@@ -80,20 +90,32 @@ Pure-read handles (`read_graph`, `read_page`, and the `read_graph target=status`
 - **WHEN** an unauthenticated client calls `read_graph` or `read_page`
 - **THEN** the read is served without an auth challenge
 
-#### Scenario: First-contact provisioning via get_status
+#### Scenario: First-contact provisioning via converse
 
-- **WHEN** an authenticated founder with no home universe issues their first `get_status`
-- **THEN** a home universe is created and bound, and the result carries a `first_contact: universe_created` welcome
-- **AND** a later `get_status` for the same founder returns a pure snapshot with no further side effect
+- **WHEN** an authenticated founder with create scope and no home universe issues their opening `converse` with no `graph_id`
+- **THEN** a home universe is created and bound and the originating conversation entry continues with that home as its target
+- **AND** completion of provisioning does not by itself assert that provider execution or a first-person reply succeeded
+- **AND** a later `converse` for the same founder reaches the same home with no further creation
+
+#### Scenario: Founder without create scope does not provision
+
+- **WHEN** an authenticated founder without create scope and no home universe issues their opening `converse` with no `graph_id`
+- **THEN** no universe or home binding is created
+- **AND** the result reports that the home could not be created or loaded with `auth_scope_required=true`
+
+#### Scenario: get_status never provisions
+
+- **WHEN** an authenticated founder with no home universe calls `get_status`
+- **THEN** no universe is created and the call is a pure read (`readOnlyHint=True`)
 
 #### Scenario: The read alias never provisions
 
 - **WHEN** any caller invokes `read_graph(target="status")`
-- **THEN** the underlying status handler runs with first-contact birth disabled, so no universe is created
+- **THEN** no universe is created
 
-#### Scenario: Non-founder is refused converse
+#### Scenario: Caller without target write access is refused converse
 
-- **WHEN** an anonymous or non-owner caller reaches `converse` for a universe they do not own
+- **WHEN** an anonymous caller or an authenticated caller without write or admin access reaches `converse` for a universe
 - **THEN** the reply is an auth error and no message is relayed to the universe intelligence
 
 ### Requirement: Faithful Structured And Text Result Envelope
@@ -112,12 +134,24 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 
 ### Requirement: Cloudflare Worker Public Front Door
 
-`https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy `/mcp` and `/mcp-directory` requests to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting the CF Access service-token headers (`CF-Access-Client-Id` / `CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL stream SSE bodies straight through without buffering, SHALL preserve request headers and method, and SHALL map any tunnel `5xx` (or an unreachable tunnel) to an explicit `502` JSON body rather than falling through to the GoDaddy origin. `mcp.tinyassets.io` is an internal Access-gated origin and MUST NOT be presented as user-facing.
+`https://tinyassets.io/mcp` SHALL be the only public user-facing MCP URL. A
+Cloudflare Worker on the `tinyassets.io/mcp*` route SHALL proxy only canonical
+`/mcp` traffic to the Access-gated tunnel origin `mcp.tinyassets.io`, injecting
+the CF Access service-token headers (`CF-Access-Client-Id` /
+`CF-Access-Client-Secret`) from Worker environment secrets. The Worker SHALL
+stream SSE bodies straight through without buffering, SHALL preserve request
+headers and method, and SHALL map any tunnel `5xx` (or an unreachable tunnel)
+to an explicit `502` JSON body rather than falling through to the GoDaddy
+origin. It SHALL NOT route, redirect, proxy, alias, translate, or return a
+compatibility response for `/mcp-directory*`; those paths receive the ordinary
+edge 404. `mcp.tinyassets.io` is an internal Access-gated origin and MUST NOT be
+presented as user-facing.
 
-#### Scenario: Worker proxies to the Access-gated origin with service tokens
+#### Scenario: Worker proxies canonical MCP only
 
 - **WHEN** a client request arrives at `tinyassets.io/mcp`
 - **THEN** the Worker rewrites `Host` to `mcp.tinyassets.io`, adds the CF Access service-token headers from env secrets, and forwards method, body stream, and non-hop-by-hop headers
+- **AND** the broad Worker binding terminates `/mcp-directory*` as an ordinary edge 404 without proxy, redirect, alias, or translation
 
 #### Scenario: SSE bodies stream without buffering
 
@@ -129,16 +163,117 @@ Every handle result SHALL be wrapped so the MCP response carries both a `structu
 - **WHEN** the tunnel origin returns a `5xx` status or is unreachable
 - **THEN** the Worker responds `502` with a `bad_gateway` JSON body, never a GoDaddy `404` fallthrough
 
-### Requirement: Public Canary And Directory Review Surface
+### Requirement: Public Canary And Canonical Review Surface
 
-The platform SHALL provide a stdlib-only public canary (`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full handshake, reads `tools/list`, and fails (exit 4) unless the live surface advertises the required canonical handles and nothing beyond the allowed advertised set, plus a lightweight uptime canary (`scripts/uptime_canary.py`). The platform SHALL also expose a narrower directory surface (`tinyassets/directory_server.py`, served at `/mcp-directory`) intended for reviewed host directories such as Claude's Connectors Directory and ChatGPT Apps: it advertises no catch-all `action` inputs and returns a redacted `get_status` that strips operator diagnostics and injects a `directory_privacy_note`.
+The platform SHALL expose `https://tinyassets.io/mcp` as its sole remote
+user-facing MCP endpoint. Its advertised set SHALL be exactly
+`{read_graph, write_graph, run_graph, read_page, write_page, converse,
+get_status}`. Registry and hosted-chatbot review metadata SHALL bind to this
+endpoint rather than an alternate directory product.
+
+The platform SHALL preserve the stdlib-only public canary
+(`scripts/mcp_public_canary.py`) whose `--assert-handles` mode performs a full
+handshake, reads `tools/list`, and fails (exit 4) unless the live surface
+advertises the exact seven handles, plus the lightweight
+`scripts/uptime_canary.py`.
+
+`/mcp-directory` and every versioned `/mcp-directory*` catalog route SHALL be
+unmounted. The platform SHALL NOT redirect, proxy, alias, silently translate,
+return 410, or serve a compatibility response at the retired path.
 
 #### Scenario: Canary fails on advertised-handle drift
 
 - **WHEN** the live `tools/list` is missing a required canonical handle or advertises a handle outside the allowed set (for example a leaked legacy fat tool)
 - **THEN** `mcp_public_canary.py --assert-handles` exits with code 4 and reports the missing/extra handle sets
 
-#### Scenario: Directory status redacts operator diagnostics
+#### Scenario: Retired directory route is absent
 
-- **WHEN** a directory client reads status through the `/mcp-directory` surface
-- **THEN** raw activity logs and internal diagnostics are stripped and the payload carries a `directory_privacy_note`, whereas the live `/mcp` `read_graph target=status` returns the full unredacted status
+- **WHEN** a client calls `/mcp-directory` or a versioned descendant after the cutover
+- **THEN** no MCP transport or catalog is mounted at that path
+- **AND** the response is the ordinary absent-route 404
+- **AND** it has no `Location` redirect, proxy, alias, translation to `/mcp`, 410 status, or compatibility body
+
+### Requirement: Published registry metadata follows canonical MCP
+
+The checked-in MCP Registry manifest SHALL advertise
+`https://tinyassets.io/mcp`. Repository tests plus packaging CI SHALL fail when
+`packaging/registry/server.json` differs from deterministic canonical runtime
+metadata. The generator SHALL run directly from a clean repository checkout.
+
+#### Scenario: Canonical registry metadata change makes stale metadata fail
+
+- **WHEN** the canonical Registry endpoint or manifest version changes without regenerating `packaging/registry/server.json`
+- **THEN** the focused artifact-equality test fails
+- **AND** the packaging workflow's generator `--check` step fails
+
+#### Scenario: Clean checkout generation uses canonical metadata
+
+- **WHEN** a contributor runs `python packaging/registry/generate_server_json.py --check` from repository root
+- **THEN** the command compares the checked-in manifest with deterministic canonical endpoint metadata without importing a retired directory catalog
+
+#### Scenario: Published registry remote is canonical and reachable
+
+- **WHEN** the generated manifest is proposed for external-directory publication
+- **THEN** its remote URL is exactly `https://tinyassets.io/mcp`
+- **AND** a read-only Streamable-HTTP MCP handshake lists the canonical exact-seven handles
+
+### Requirement: Registered tools publish exact discoverability and behavior metadata
+The system SHALL attach the following title, tag set, and four MCP behavior hints to every currently registered tool. In the hint columns, `T` means true and `F` means false, ordered as read-only, destructive, idempotent, and open-world:
+
+| Tool | Title | Tags | R | D | I | O |
+|---|---|---|---:|---:|---:|---:|
+| `read_graph` | `Read Graph` | `graph`, `read`, `tinyassets` | T | F | T | F |
+| `write_graph` | `Write Graph` | `graph`, `tinyassets`, `write` | F | F | F | F |
+| `run_graph` | `Run Graph` | `graph`, `run`, `tinyassets` | F | F | F | F |
+| `read_page` | `Read Page` | `page`, `read`, `tinyassets`, `wiki` | T | F | T | F |
+| `write_page` | `Write Page` | `page`, `tinyassets`, `wiki`, `write` | F | F | F | T |
+| `converse` | `Talk With Your Universe` | `relay`, `tinyassets`, `universe` | F | F | F | F |
+| `universe` | `Universe Operations` | `agent-workflow`, `ai-builder`, `collaboration`, `custom-ai`, `daemon`, `general-purpose`, `tinyassets`, `universe`, `universe-builder`, `workflow-builder` | F | F | F | T |
+| `community_change_context` | `Community Change Context` | `change-loop`, `community`, `github`, `plan`, `pull-request`, `review`, `tinyassets` | T | F | T | T |
+| `extensions` | `Graph Extensions` | `customization`, `extensions`, `nodes`, `plugins` | F | F | F | T |
+| `goals` | `Goals` | `community`, `discovery`, `goals`, `intent` | F | F | F | T |
+| `gates` | `Outcome Gates` | `community`, `gates`, `impact`, `leaderboard`, `outcomes` | F | F | F | T |
+| `wiki` | `Wiki Knowledge Base` | `drafts`, `knowledge`, `pages`, `research`, `wiki` | F | T | F | T |
+| `get_status` | `Daemon Status + Routing Evidence` | `confidential-tier`, `privacy`, `routing`, `status`, `tinyassets`, `verification` | T | F | T | F |
+
+These hints SHALL remain descriptive MCP metadata rather than authorization enforcement; the tool implementations and permission middleware retain authority over whether an invocation can mutate or access state.
+
+#### Scenario: Raw registry listing carries exact metadata
+- **WHEN** the server registry is listed without deprecated-tool visibility filtering
+- **THEN** every registered tool has the exact title, tag set, and four behavior-hint values in the table
+
+#### Scenario: Behavior hints do not grant authority
+- **WHEN** a tool's metadata marks it non-destructive or open-world
+- **THEN** that metadata alone does not bypass the tool's write gate, authentication, ownership, or action-specific validation
+
+### Requirement: Full get_status responses expose cached sandbox readiness without making the read fail
+
+Full live `get_status` responses SHALL include cached sandbox readiness. When
+the path reaches full daemon-status assembly, the response includes
+`sandbox_status` from the production
+`tinyassets.providers.base.get_sandbox_status` cache. Its ordinary shape SHALL
+include boolean `bwrap_available` and nullable or explanatory `reason`. If
+obtaining the cached result raises, the sandbox lookup failure SHALL be caught
+and substituted with `{"bwrap_available": false, "reason": "probe_error:
+<exception>"}` without itself aborting the remaining assembly.
+
+This evidence is a best-effort, process-cached readiness observation. Reading
+status SHALL not refresh the probe, provision a universe, gate execution, or
+assert OS confinement. Early no-home, access-denied, or configuration-load
+responses return before full status assembly and do not include this field.
+
+#### Scenario: Full status returns the cached readiness dictionary
+
+- **WHEN** `get_status` passes its early gates and obtains a cached unavailable or available sandbox result
+- **THEN** its response includes that dictionary under `sandbox_status`
+
+#### Scenario: A probe error does not break status
+
+- **WHEN** obtaining sandbox status raises an exception
+- **THEN** the lookup failure is caught and does not itself abort full daemon-status assembly
+- **AND** `sandbox_status.bwrap_available` is false with a `probe_error` reason
+
+#### Scenario: Early status responses omit sandbox evidence
+
+- **WHEN** `get_status` returns early for no bound home, denied access, or configuration-load failure
+- **THEN** that early response does not include `sandbox_status`

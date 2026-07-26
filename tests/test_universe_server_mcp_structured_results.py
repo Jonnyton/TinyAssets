@@ -5,6 +5,19 @@ from __future__ import annotations
 import asyncio
 import json
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """Isolate the data dir so a blank-scope ``get_status`` resolves the
+    first-contact path deterministically instead of the developer's ambient
+    ``TINYASSETS_DATA_DIR`` (which, under the universe-visibility contract, holds
+    an undeclared universe that now fails closed). These tests assert the MCP
+    result CONTRACT, not visibility — an empty data dir gives them a clean,
+    reproducible first-contact payload."""
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+
 
 def test_direct_wrappers_keep_json_string_contract() -> None:
     """Local callers still import wrappers directly and json.loads the result."""
@@ -15,7 +28,7 @@ def test_direct_wrappers_keep_json_string_contract() -> None:
 
     assert isinstance(status_raw, str)
     assert isinstance(wiki_raw, str)
-    assert json.loads(status_raw)["schema_version"] == 1
+    assert json.loads(status_raw)["schema_version"] == 2
     assert "promoted" in json.loads(wiki_raw)
 
 
@@ -35,7 +48,7 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     result = asyncio.run(_call_status())
 
     assert isinstance(result.structured_content, dict)
-    assert result.structured_content["schema_version"] == 1
+    assert result.structured_content["schema_version"] == 2
     assert result.content
     assert result.content[0].type == "text"
     text = result.content[0].text
@@ -43,7 +56,7 @@ def test_mcp_tool_result_has_structured_content_and_text_content() -> None:
     assert "schema_version" in text
     if "[truncated:" not in text:
         # Small payloads stay fully faithful and parseable.
-        assert json.loads(text)["schema_version"] == 1
+        assert json.loads(text)["schema_version"] == 2
     else:
         # Oversized payloads carry real leading data + a pointer to the rest.
         assert "structuredContent" in text

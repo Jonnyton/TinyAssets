@@ -27,7 +27,9 @@ permissions:
 
 concurrency:
   group: build-image-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push supersedes stale work. A manual recovery build waits instead
+  # of cancelling the push build that may already be converging production.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 env:
   REGISTRY: ghcr.io

@@ -14,6 +14,8 @@ Covers:
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -46,6 +48,10 @@ def _triggers(wf: dict) -> dict:
 
 def _steps(wf: dict) -> list[dict]:
     return wf.get("jobs", {}).get("triage", {}).get("steps", [])
+
+
+def _step_by_id(step_id: str) -> dict:
+    return next(step for step in _steps(_load()) if step.get("id") == step_id)
 
 
 # ---------------------------------------------------------------------------
@@ -239,3 +245,112 @@ def test_concurrency_not_cancel_in_progress():
     wf = _load()
     concurrency = wf.get("concurrency", {})
     assert concurrency.get("cancel-in-progress") is False
+
+
+def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
+    step = next(
+        item for item in _steps(_load())
+        if item.get("name", "").startswith("Page — provider_exhaustion")
+    )
+    run = step["run"]
+
+    assert "scripts/pushover_page.py" in run
+    for required in (
+        "--issue-number",
+        "--run-url",
+        "--probe-url",
+        "--probe-exit",
+        "--kind",
+        "--first-alarm",
+    ):
+        assert required in run
+    assert "--probe-exit 3" in run
+    for retired in ("--title", "--message", "--priority"):
+        assert retired not in run
+    assert "|| echo" not in run
+    assert step.get("continue-on-error") is True
+
+
+def test_provider_exhaustion_page_is_not_gated_by_worker_pause_setting():
+    steps = _steps(_load())
+    page_index = next(
+        index for index, item in enumerate(steps)
+        if item.get("name", "").startswith("Page — provider_exhaustion")
+    )
+    page_step = steps[page_index]
+
+    assert page_step["if"] == "steps.classify.outputs.class == 'provider_exhaustion'"
+    assert "AUTO_REPAIR" not in page_step.get("env", {})
+    assert page_index > next(
+        index for index, item in enumerate(steps)
+        if item.get("id") == "repair_provider_exhaustion_gate"
+    )
+    assert page_index < next(
+        index for index, item in enumerate(steps)
+        if item.get("id") == "reprobe"
+    )
+
+
+def test_bounded_repair_failures_continue_to_canonical_reprobe():
+    repair_ids = (
+        "repair_env",
+        "repair_oom",
+        "repair_disk",
+        "repair_pull",
+        "repair_watchdog",
+        "repair_provider_exhaustion",
+        "restart",
+    )
+    steps = _steps(_load())
+    reprobe_index = next(index for index, step in enumerate(steps) if step.get("id") == "reprobe")
+
+    for repair_id in repair_ids:
+        step = _step_by_id(repair_id)
+        assert step.get("continue-on-error") is True, repair_id
+        assert steps.index(step) < reprobe_index, repair_id
+
+
+def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
+    run = _step_by_id("repair_provider_exhaustion")["run"]
+
+    remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
+    repair_command = "docker stop tinyassets-worker 2>&1 || true;"
+    assert remote_target in run
+    assert run.index(remote_target) < run.index(repair_command)
+
+
+def test_persistent_red_escalation_fails_visibly_after_actual_reprobe():
+    red_step = next(
+        step for step in _steps(_load())
+        if step.get("name") == "Add needs-human label on persistent red"
+    )
+    script = red_step["with"]["script"]
+
+    assert red_step["if"] == "steps.reprobe.outputs.color == 'red'"
+    assert "labels: [label]" in script
+    assert "process.exitCode = 1" in script
+
+
+def test_existing_pushover_cli_dry_run_accepts_provider_exhaustion_page_shape():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/pushover_page.py",
+            "--issue-number", "1564",
+            "--run-url", "https://github.com/example/repo/actions/runs/1",
+            "--probe-url", "https://tinyassets.io/mcp",
+            "--probe-exit", "3",
+            "--kind", "PROVIDER_EXHAUSTION",
+            "--first-alarm",
+            "--dry-run",
+        ],
+        cwd=_REPO,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "decision=PAGE" in result.stdout
+    assert "DRY-RUN" in result.stdout
+    assert "PROVIDER_EXHAUSTION" in result.stdout
