@@ -90,6 +90,14 @@ The host's standing 2026-07-26 direction—if the boundary is fully figured out,
 it is approved and work should continue—therefore satisfies target gate 0.4.
 No unresolved host design choice remains in the removal boundary.
 
+The target was published without runtime or external-state mutation as draft
+PR [#1810](https://github.com/Jonnyton/TinyAssets/pull/1810) after merging
+current `origin/main`, rerunning the foldback provider-context feed, and
+confirming the exact Files set overlaps only this lane's own active claim.
+`retire-legacy-live-mcp-tools` task 4.1 remains an explicit implementation
+cutover dependency. The draft state prevents automatic merge enrollment while
+the staged migrations and rendered acceptance gates remain incomplete.
+
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
 `renamed=1, modified=2`, contained the renamed requirement, and replaced the

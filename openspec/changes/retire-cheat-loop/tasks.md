@@ -4,7 +4,7 @@
 - [x] 0.2 Write the target proposal, design, seven capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
 - [x] 0.3 Obtain exact-head independent architecture/spec/diff review and fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [x] 0.4 Record the host's standing 2026-07-26 acceptance only after reviewers agree the complete removal boundary is fully figured out; stop if any unresolved host design choice remains.
-- [ ] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, record the `retire-legacy-live-mcp-tools` task 4.1 cutover dependency, and publish the target-only draft PR without runtime, deployment, or production mutation.
+- [x] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, record the `retire-legacy-live-mcp-tools` task 4.1 cutover dependency, and publish the target-only draft PR without runtime, deployment, or production mutation.
 
 ## 1. Freeze The Removal Boundary
 
