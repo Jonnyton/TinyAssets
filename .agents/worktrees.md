@@ -1396,3 +1396,15 @@ Notes:
 - Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
 - Review gate: passed at semantic SHA `bc5fdcbb` — exact current-main Opus 5 plus three independent architecture/spec/verification approvals; host accepted the reconciled target boundary 2026-07-26
 - Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority
+
+### 2026-07-26 — retire cheat-loop fallback
+- Provider: codex-gpt5-desktop-cheat-retire
+- Branch: codex/retire-cheat-loop-final-20260726
+- Lane state: claimed; target/audit only
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final
+- STATUS/Issue/PR: retire-cheat-loop-fallback; draft PR expected
+- PLAN refs: §1 Minimal primitives; §2 Community-build over platform-build
+- Purpose: remove the historical privileged task-loop fallback from every shipped surface; recurring automation stays user-authored and remixable.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final\_PURPOSE.md
+- Review gate: exact-head Claude Opus 5 opposite-provider review
+- Ship/abandon: ship target after strict validation/review; runtime waits for collision-free source/test claims
