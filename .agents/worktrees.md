@@ -1315,7 +1315,7 @@ Notes:
 - Branch: codex/reconcile-provider-authority
 - Lane state: claimed; current-main spec-only replacement for draft PR #1691
 - Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
-- STATUS/Issue/PR: STATUS Work row; replacement PR pending
+- STATUS/Issue/PR: STATUS Work row; draft PR #1784
 - PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
 - Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md

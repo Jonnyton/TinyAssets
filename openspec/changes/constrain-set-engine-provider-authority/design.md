@@ -80,25 +80,38 @@ a non-empty ceiling; all other states require `[]`.
 
 ### 2. Source resolution is strict and held sources stay deny-all
 
-| `engine_source` | Service | Ceiling | Preferred writer |
-|---|---|---|---|
-| `requester_local` | `anthropic` | `["claude-code"]` | `claude-code` |
-| `requester_local` | `openai` | `["codex"]` | `codex` |
+The resolver is total over both the shipped source domain and target values:
+
+| `engine_source` | Target treatment | Ready ceiling / owner |
+|---|---|---|
+| `byo_api_key` | legacy read/migration only; new writes refused | convert to `requester_local` only after #1746 creates an opaque binding; otherwise `failed + []` |
+| `self_hosted_endpoint` | held intent | `activate-requester-host-engines`; never ready before endpoint and account-to-host proof |
+| `market_rented` | remote-only intent | always `[]` in ordinary routing; B2+B13 own execution |
+| `host_daemon` | legacy read/migration name | rename to `founder_hosted_daemon` only through the host successor; otherwise held |
+| `requester_local` + `anthropic` | target custody source | `["claude-code"]`; #1746's post-custody writer emits source + opaque binding |
+| `requester_local` + `openai` | target custody source | `["codex"]`; #1746's post-custody writer emits source + opaque binding |
+| `local_model` + `ollama` | target zero-cloud source | `["ollama-local"]`; `activate-requester-host-engines` emits source + attested host binding |
+| `founder_hosted_daemon` | target hosted source | successor-selected ceiling after stable authenticated account-to-host binding |
 
 An omitted writer is derived; a supplied writer must match exactly. Aliases,
 unknown values, mismatches, missing opaque binding references, and unsupported
 assignment fields fail before mutation. Ready requester-local assignment
 stores only an opaque credential binding reference plus non-secret
 provenance. #1746 alone owns raw/recoverable `llm_api_key` ingress refusal,
-binding custody, and legacy retirement.
+binding custody, legacy retirement, and the atomic post-custody writer that
+emits `engine_source=requester_local`, service, opaque binding reference,
+generation/digest, and its singleton ceiling.
 
-`self_hosted_endpoint` and `host_daemon` are non-authorizing intent and remain
-held until `activate-requester-host-engines` validates endpoint/daemon,
+`self_hosted_endpoint`, `host_daemon`, `local_model`, and
+`founder_hosted_daemon` remain held until
+`activate-requester-host-engines` validates endpoint/daemon/local model,
 requester authorization, and a stable authenticated account-to-host
 principal. That successor modifies `daemon-identity-and-host-pool`,
 `desktop-host-runtime`, and the source activation seam in `provider-routing`;
 it may consume `daemon_summon` but not treat pool rows or unattested client IDs
-as authority. `market_rented` remains held permanently in the ordinary router.
+as authority. It is the sole writer of ready `local_model` and
+`founder_hosted_daemon` assignments. `market_rented` remains held permanently
+in the ordinary router.
 
 ### 3. Assignment and custody share one exported admission primitive
 
@@ -121,14 +134,16 @@ identity:
 
 - exclusive writer for assignment, custody replacement/retirement, and
   compare-delete;
-- shared reader held through provider `start()`.
+- shared reader held through `ProviderExecutor.start()`.
 
 Callers cannot choose its lock path. Global order is assignment admission
 before credential-custody index/keyring locks; reverse acquisition and
 untracked reentrancy fail loud. A custody writer validates expected assignment
 generation and credential-record digest before its narrower locks. A launch
 reader validates the same generation/digest before dereference. #1746 consumes
-this published interface without reciprocal acceptance or a second lock.
+this published interface without a second lock; its exact-SHA provider-owner
+acceptance is an output gate from this owner, not a dependency back onto this
+target spec.
 
 ### 4. Live requester authority is transport-minted and request-scoped
 
@@ -142,11 +157,20 @@ bearer and resolving a non-anonymous `Identity`. It contains:
 - issuer `tinyassets.auth.middleware`; and
 - unexported identity token.
 
-It is non-serializable, non-copyable, non-pickleable, unconstructible from
-tool/API data or other modules, stored beside request identity in a
-`ContextVar`, and reset at request end.
+It is non-serializable, non-copyable, non-pickleable, and unconstructible from
+tool/API data or other modules. Middleware stores it beside request identity
+in a `ContextVar` only at the transport edge. Before middleware cleanup,
+`call_provider` retrieves the exact object and passes it through an
+internal-only typed `ProviderAuthorityCarrier` argument into `call_sync`,
+`call_with_policy_sync`, every retry/judge branch, the router pool closure,
+and `ProviderInvocation`. This explicit carrier is required because
+`ProviderRouter.call_sync` deliberately does not propagate `ContextVar` state
+into its class-level `ThreadPoolExecutor` (`router.py:816-819`). Public
+API/MCP schemas, universe/request payloads, caller kwargs, serialized state,
+and ambient worker context cannot populate the carrier.
 
-The provider sink requires the exact current capability and validates:
+The provider sink requires the exact capability carried from the current
+transport edge and validates:
 
 - exact mechanism/issuer and identity token;
 - capability principal equals current authenticated identity;
@@ -160,32 +184,52 @@ those checks. There is no caller-supplied eligible set and no parallel
 universe bundle. Authentic A-on-A authority replayed against B fails even when
 both assignments select the same provider.
 
-Background/resumed/scheduled work cannot reuse this capability. It needs its
-own server-owned background/run authority receipt. Accepted-market and
+Background/resumed/scheduled work cannot reuse this capability.
+`harden-background-provider-execution-authority` owns the durable
+`ProviderWorkAuthorityReceipt` for graph pools, resumed/versioned runs,
+schedules, daemon loops, and every provider call whose request middleware has
+already returned. The receipt is server-issued, names exact
+principal/actor/run/branch/universe/operation, carries assignment
+generation/digest and a bounded lifetime, and is reloaded plus revalidated
+from server state rather than accepted from caller payload. Before that
+successor lands, every such path holds. Accepted-market and
 volunteered-capacity work use distributed execution. Missing capability or
 receipt, anonymous identity, wrong current capability, stale generation, wrong
 principal/universe/provider/host, or invalid binding state fails held before
 provider, credential, auth-health, or quota access.
 
-The interface is one-way. This change does not block on #1660,
-universe-creation, #1746, or receipts accepting it. Those lanes consume the
-published request capability, assignment admission, held outcome, and
-reference-only launch contracts before their own dependent runtime advances.
+The dependency direction is one-way: provider routing publishes this contract
+and does not require sibling acceptance before the target spec lands. Custody
+does require exact-SHA provider-owner acceptance before its dependent runtime
+advances; that acceptance is an output of this owner, not a reciprocal gate
+back onto this spec. Active `universe-creation` and
+`provider-attempt-receipts` deltas currently conflict with this replacement
+and MUST adapt before they merge: the former removes its caller-built eligible
+provider set and keeps only target lineage plus `fulfillment_class`; the
+latter extends its closed enums with `authority_held`.
 
 ### 5. Propagation has one owner; host-local cannot rescue request work
 
-This change owns exhaustive provider-layer propagation. Every live-request
-graph/run/resume/version/policy/judge, RAPTOR, reflexion, agentic-retrieval,
-and other `call_provider` path retains the request capability. Background
-paths supply their owner-defined receipt. Remaining callers are explicitly
-classified host-local or local-only.
+This change owns exhaustive provider-layer propagation. Every live request
+uses the explicit internal carrier through `call_provider`, synchronous
+router helpers, their thread-pool closures, retry/policy/judge branches, and
+launch. `harden-background-provider-execution-authority` owns receipt minting
+and transport across task/thread/process boundaries after the request ends,
+including graph/run/resume/version, RAPTOR, reflexion, agentic retrieval,
+scheduler, cloud worker, and daemon paths. Remaining callers are explicitly
+classified as zero-output host maintenance or local-only.
 
-Only enumerated non-request maintenance may receive
-`HostLocalProviderCapability`, bootstrap-minted after local operator
-configuration. It is identity-validated, non-serializable, mutually exclusive
-with request authority, and absent from API/MCP/config/state/environment
-inputs. `None`, strings, enums, lookalikes, ambient process identity, or a
-genuine host token substituted on request lineage authorize nothing.
+`HostLocalProviderCapability` has a closed, spec-listed operation set:
+`subscription_auth_probe`, `local_model_readiness_probe`, and
+`sandbox_readiness_probe`. Each operation is zero-output, accepts no user
+prompt, invokes no model completion, spends no quota, mutates no
+universe/branch, and cannot produce a `ProviderInvocation`. The capability is
+bootstrap-minted after local operator configuration, identity-validated,
+non-serializable, mutually exclusive with request/work authority, and absent
+from API/MCP/config/state/environment inputs. A closure test fails when any
+host-local operation exists outside the three-name set. `None`, strings,
+enums, lookalikes, ambient process identity, or a genuine host token
+substituted on request lineage authorize nothing.
 
 ### 6. Authority emptiness is distinct from runtime exhaustion
 
@@ -218,18 +262,21 @@ Immutable `ProviderInvocation` contains those values and no native API key,
 OAuth token, decrypted/base64 secret, subscription-file bytes, or other
 recoverable material.
 
-The provider interface is:
+The launch interface layered above the canonical provider interface is:
 
-1. `await BaseProvider.start(invocation) -> ProviderLaunchHandle`;
+1. `await ProviderExecutor.start(invocation) -> ProviderLaunchHandle`;
 2. `await ProviderLaunchHandle.result() -> ProviderResponse`.
 
-Only executor-local `start()` may validate the full non-empty, unexpired,
+Every `BaseProvider` retains canonical
+`complete(prompt, system, config, *, universe_dir=None)`. Only
+executor-local `ProviderExecutor.start()` may validate the full non-empty, unexpired,
 non-tombstoned, non-revoked principal/universe/provider/host/generation/digest
-tuple and dereference the binding. Native material exists only in provider
-child/request memory, never argv, journal, log, config, receipt, or server
-state. `start()` returns after transport owns an irreversible registered copy
-of inputs. Provider/handle code then cannot reread universe config, vault,
-ambient environment, or auth homes.
+tuple, dereference the binding, and call the selected provider's
+`complete(...)`. Native material exists only in provider child/request memory,
+never argv, journal, log, config, receipt, or server state. `start()` returns
+after transport owns an irreversible registered copy of inputs.
+Provider/handle code then cannot reread universe config, vault, ambient
+environment, or auth homes.
 
 Launch timeout is bounded separately from model completion. Cancellation,
 partial creation, result/close races, and crash recovery have one terminal
@@ -280,8 +327,17 @@ No runtime enforcement or legacy conversion may begin until at least one
 end-to-end ready source is deployed and rendered:
 
 1. requester-local opaque OS custody through #1746 and the request capability;
-   or
-2. `activate-requester-host-engines` with stable account-to-host binding.
+2. `activate-requester-host-engines` with stable account-to-host binding; or
+3. its attested `local_model` route with `ollama-local`.
+
+The held/`setup_required` chatbot envelope must be live and rendered before
+newborn deny-all state is enabled. `universe-creation` owns that generic
+envelope because it already owns `engine_setup_required_payload`; provider
+routing supplies only the typed held cause. Any background/run/scheduled or
+daemon path that can reach providers must also carry a valid
+`ProviderWorkAuthorityReceipt` from
+`harden-background-provider-execution-authority`, or be held and proven not to
+break the connector's canonical handles and autonomous loops, before cutover.
 
 The existing live founder home remains on the pre-cutover artifact until its
 credential/source is inventoried. Current raw `byo_api_key` records have no
@@ -302,8 +358,10 @@ replacement change and exact accepted SHA before #1691 closes.
 
 - **Held sources appear less functional.** Return truthful
   `setup_required` rather than borrow platform resources.
-- **Request ContextVar propagation can be lost across custom executors.**
-  Exhaustively test every thread/task bridge; missing capability holds.
+- **Authority can be lost at thread/task/process bridges.** Request calls use
+  the explicit internal carrier across the router pool; background work uses
+  the separately owned durable receipt. A startup/CI inventory asserts every
+  provider bridge carries one exact authority type or is held.
 - **Cross-capability locking can deadlock.** One exported primitive and fixed
   assignment-before-custody order; reverse/reentrant acquisition fails.
 - **Fresh admission adds latency.** Keep reads secret-free/small and prove real
@@ -314,15 +372,20 @@ replacement change and exact accepted SHA before #1691 closes.
 ## Migration Plan
 
 1. Land target specs and one-way sibling handoffs; keep runtime dark.
-2. Add request capability and newborn deny-all state.
-3. Add assignment generation, exported admission, transaction, and held
-   source behavior.
-4. Add sole propagation plus reference-only invocation/launch.
-5. Make at least one requester-local or requester-host source live-ready.
-6. Inventory legacy universes; treat raw-key-only assignments as non-ready.
+2. Add request capability plus the explicit internal thread-pool carrier,
+   assignment generation/admission, reference-only launch, and the rendered
+   held/`setup_required` envelope behind dark gates.
+3. Land `harden-background-provider-execution-authority` and classify every
+   task/thread/process provider bridge; unowned paths stay held.
+4. Make at least one requester-local, requester-host, or attested local-model
+   source live-ready.
+5. Only after steps 2-4 are live, enable newborn deny-all initialization and
+   prove first contact renders setup rather than generic failure.
+6. Inventory legacy universes; convert verified custody/host/local sources and
+   treat raw-key-only assignments as non-ready.
 7. Run race/crash/security suites and real connector load proof.
-8. Quiesce legacy writers only after the ready-path gate; convert, canary,
-   render chatbot acceptance, and inspect post-fix clean use.
+8. Quiesce legacy writers only after request and background ready-path gates;
+   convert, canary, render chatbot acceptance, and inspect post-fix clean use.
 
 Rollback before cutover restores code/config artifacts while deny-all state
 remains safe. After cutover, forward-fix authority state; never reinterpret

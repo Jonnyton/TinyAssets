@@ -6,7 +6,9 @@ dynamic routing, a request/universe call SHALL pass the provider-authority gate
 defined by this change. Only providers inside its non-empty
 `effective_provider_authority` may enter role-chain filtering.
 `ollama-local` is availability fallback, not authority fallback, and MUST NOT
-be attempted when outside that set.
+be attempted when outside that set. Roles with no explicit chain SHALL default
+to the `writer` chain. The system SHALL only stop for provider unavailability
+when the authorized local model itself is also unavailable.
 
 After authority succeeds, subscription-only policy, role membership,
 `llm_policy`, registration, auth health, cooldown, and quota retain their
@@ -20,9 +22,10 @@ not authority hold.
 - **AND** no provider outside authority is attempted
 
 #### Scenario: chains cover the four canonical roles
-- **WHEN** role chains are constructed
+- **WHEN** role chains are constructed or an unknown role is resolved
 - **THEN** `writer`, `judge`, `extract`, and `embed` each end in `ollama-local`
-- **AND** execution filters each chain through authority before dynamic eligibility
+- **AND** an unknown role uses the `writer` chain
+- **AND** execution filters the chain through authority before dynamic eligibility
 
 #### Scenario: local fallback cannot widen authority
 - **WHEN** no authority-admitted provider remains before dynamic routing
@@ -35,7 +38,8 @@ provider after proving it is inside `effective_provider_authority`. A pin
 outside authority SHALL fail held before provider lookup. A pin inside
 authority that is unavailable or fails SHALL raise
 `AllProvidersExhaustedError` without fallback. Non-writer roles remain
-unchanged except for their own authority gate.
+unchanged except for their own authority gate. Every pin exhaustion error
+SHALL name the pinned provider and explain how to clear the pin.
 
 #### Scenario: pinned writer runs alone
 - **WHEN** the pinned writer is authorized and dynamically eligible
@@ -66,18 +70,30 @@ reader. Runtime, creation, and assignment SHALL use `[]` for `unassigned`,
 `pending`, `held`, and `failed`, and a non-empty canonical list only for
 `ready`. Assignment replaces rather than unions the prior ceiling.
 
-Target `engine_source=requester_local` SHALL accept only an already-created
-opaque credential binding reference. Service `anthropic` maps to
-`claude-code`/`["claude-code"]`; service `openai` maps to
-`codex`/`["codex"]`. Omitted writer is derived. Unknown/aliased/mismatched
-service or writer, missing binding reference, and unsupported assignment
-fields fail before mutation. This capability does not define raw-secret
-ingress; `retire-mcp-provider-secret-deposit` owns its refusal.
+Source resolution SHALL be total over the shipped domain. Legacy
+`byo_api_key` is read/migration-only: new writes are refused and it converts
+to target `requester_local` only after
+`retire-mcp-provider-secret-deposit` creates an opaque binding and atomically
+writes the new source, service, reference, generation/digest, and singleton
+ceiling; otherwise it becomes `failed + []`. `requester_local` service
+`anthropic` maps to `claude-code`/`["claude-code"]`; service `openai` maps to
+`codex`/`["codex"]`.
 
-`self_hosted_endpoint` and `host_daemon` remain held/deny-all until
-`activate-requester-host-engines` proves endpoint or daemon, authenticated
-account-to-host principal, and requester authority. `market_rented` remains
-held/deny-all in the ordinary router for its entire lifecycle.
+Legacy `host_daemon` migrates only through
+`activate-requester-host-engines` to `founder_hosted_daemon`.
+`self_hosted_endpoint`, `host_daemon`, `local_model`, and
+`founder_hosted_daemon` remain held/deny-all until that successor proves the
+endpoint/daemon/local model, requester authorization, and stable
+authenticated account-to-host principal. The successor is the sole ready
+writer for target `local_model`/`ollama`, which maps to
+`ollama-local`/`["ollama-local"]`, and `founder_hosted_daemon`.
+`market_rented` remains held/deny-all in the ordinary router for its entire
+lifecycle.
+
+Omitted writer is derived. Unknown/aliased/mismatched service or writer,
+missing binding/host reference, and unsupported assignment fields fail before
+mutation. This capability does not define raw-secret ingress; custody owns its
+refusal and requester-local writer.
 
 `effective_provider_authority` SHALL mean only the fresh assignment ceiling
 after the exact live request capability or owner-defined background receipt
@@ -111,6 +127,16 @@ policy-fallback, and judge behavior.
 - **WHEN** an authenticated requester assigns canonical `anthropic` or `openai` with a valid opaque binding reference
 - **THEN** state is `ready`, generation increments once, and preference/ceiling equal the canonical singleton mapping
 
+#### Scenario: attested local model makes canonical zero-cloud fallback reachable
+- **WHEN** the host successor validates target `local_model` service `ollama` and its stable account-to-host binding
+- **THEN** state is `ready` with `allowed_providers=["ollama-local"]`
+- **AND** canonical role chains can terminate at the authorized local model
+
+#### Scenario: every shipped source has an explicit migration or hold
+- **WHEN** source is `byo_api_key`, `self_hosted_endpoint`, `market_rented`, or `host_daemon`
+- **THEN** routing follows its named conversion/activation owner or publishes held/failed deny-all
+- **AND** no shipped value falls through to an implicit ready state
+
 #### Scenario: invalid route has zero mutation
 - **WHEN** assignment uses an unknown/aliased/mismatched route, lacks an opaque binding reference, or supplies unsupported assignment fields
 - **THEN** it fails before journal, config, credential, ledger, or provider mutation
@@ -139,15 +165,57 @@ policy-fallback, and judge behavior.
 - **THEN** canonical process-global/default configuration fallback remains available
 - **AND** a live request/universe operation with absent context holds instead
 
+### Requirement: Per-node policy routing honors llm_policy overrides
+`call_with_policy` SHALL honor an explicit `llm_policy` dict by building an
+attempt order from `difficulty_override` matched against the call difficulty,
+then `preferred`, then `fallback_chain`, de-duplicated in that order. Before
+subscription-only, allowlist, auth-health, registration, cooldown, or quota
+filters, policy routing SHALL intersect that order with the same non-empty
+`effective_provider_authority` as role routing.
+
+A policy that names no authorized provider SHALL raise
+`ProviderAuthorityHeldError` and MUST NOT fall through to a wider role chain.
+After a non-empty authority intersection, an empty policy or dynamically
+exhausted policy SHALL retain canonical fall-through to role-based `call()`,
+which re-applies the same authority and dynamic gates. The method SHALL retain
+its canonical `(response_text, provider_name_used, call_meta)` result.
+
+#### Scenario: preferred policy provider is tried first
+- **WHEN** policy names an authorized, healthy preferred provider
+- **THEN** it is attempted before authorized policy fallbacks
+- **AND** the returned tuple reports it as provider used
+
+#### Scenario: policy respects the privacy allowlist and authority ceiling
+- **WHEN** policy names providers outside `allowed_providers`
+- **THEN** they are not inspected or attempted
+- **AND** routing continues only with authorized policy providers
+
+#### Scenario: exhausted authorized policy falls through without widening
+- **WHEN** policy has a non-empty authority intersection but its dynamic candidates exhaust
+- **THEN** role-based `call()` runs under the same authority ceiling
+- **AND** no provider outside that ceiling becomes eligible
+
+#### Scenario: policy with no authorized destination holds
+- **WHEN** policy contains no provider inside effective authority
+- **THEN** routing raises `ProviderAuthorityHeldError`
+- **AND** does not fall through to role routing
+
+#### Scenario: policy routing returns response telemetry
+- **WHEN** `call_with_policy` completes through a policy provider or authorized role fallback
+- **THEN** it returns response text, provider used, and call metadata with model, family, latency, degraded state, and attempt count
+
 ### Requirement: Judge ensemble fans out to all healthy judges in parallel
 The judge ensemble SHALL fan out concurrently only to registered, healthy
-judges inside a non-empty provider-authority set. A non-empty authorized set
-with no healthy registered judge retains canonical empty/degraded behavior.
-Authority-derived emptiness raises `ProviderAuthorityHeldError`.
+judges inside a non-empty provider-authority set. It SHALL call every such
+registered, non-cooldown judge provider once, SHALL never call the same
+provider twice, and SHALL return one response per provider that responds. A
+non-empty authorized set with no healthy registered judge retains canonical
+empty/degraded behavior. Authority-derived emptiness raises
+`ProviderAuthorityHeldError`.
 
 #### Scenario: fan-out returns authorized responses
 - **WHEN** multiple healthy registered judges are authorized
-- **THEN** they run concurrently
+- **THEN** each is called exactly once concurrently
 - **AND** one response returns per successful authorized judge
 
 #### Scenario: non-empty authorized ensemble retains empty behavior
@@ -172,20 +240,40 @@ disallowed-tool settings. `ProviderResponse` SHALL retain text, provider,
 model, family, latency, and degraded flag, and add exact call-local credential
 kind and credential-authority class.
 
+Every `BaseProvider` implementation SHALL retain canonical async
+`complete(prompt, system, config, *, universe_dir=None) -> ProviderResponse`.
 The provider layer SHALL add immutable non-serializable
-`ProviderInvocation` and `ProviderLaunchHandle`. Every live-request call site
-shall retain the exact current `ProviderRequestCapability`; background work
-shall supply its owning server receipt. This change is the sole provider-layer
-propagation owner.
+`ProviderAuthorityCarrier`, `ProviderInvocation`, and
+`ProviderLaunchHandle`, plus an executor-local `ProviderExecutor`.
+
+For a live request, `call_provider` SHALL retrieve the exact current
+`ProviderRequestCapability` before middleware cleanup and explicitly pass it
+through internal-only arguments to `call_sync`, `call_with_policy_sync`,
+retry/policy/judge branches, the router `ThreadPoolExecutor` closure, and
+invocation minting. This SHALL NOT depend on ContextVar propagation into the
+pool worker. API/MCP schemas, caller kwargs, request/universe payloads,
+serialized state, and ambient worker context MUST NOT construct or populate
+the carrier.
+
+Background, resumed, scheduled, daemon, RAPTOR, reflexion, retrieval, and
+post-response graph work SHALL supply a server-owned
+`ProviderWorkAuthorityReceipt` defined by
+`harden-background-provider-execution-authority`. That owner SHALL bind the
+receipt to principal/actor/run/branch/universe/operation,
+generation/digest, and bounded lifetime across thread/task/process bridges.
+Before that owner lands, those paths SHALL hold. This change remains the sole
+provider-layer carrier/sink owner.
 
 Before each attempt, the router SHALL:
 
 1. acquire shared `ProviderAssignmentAdmission`;
 2. validate assignment journal/fence, generation, ceiling, and binding digest;
-3. require the exact current request capability with mechanism
+3. require the exact explicitly carried request capability with mechanism
    `tinyassets.authenticated-request.v1`, issuer
-   `tinyassets.auth.middleware`, principal matching current identity, and
-   target universe matching the routed universe;
+   `tinyassets.auth.middleware`, principal matching the authenticated
+   transport identity captured by the carrier, and target universe matching
+   the routed universe; or validate the exact background receipt from its
+   owner;
 4. validate binding principal/universe/provider/host/generation/digest and
    non-empty, unexpired, non-tombstoned, non-revoked state; and
 5. mint a router-token-bound `ProviderInvocation`.
@@ -203,11 +291,11 @@ or `unknown`. Credential-authority classes (the receipt field currently named
 `unknown` grants nothing; universe remote success cannot report host. These
 values are captured at the exact execution boundary for the same call.
 
-Every provider SHALL expose
-`start(invocation) -> ProviderLaunchHandle`; the handle SHALL expose
-`result() -> ProviderResponse` and idempotent close. Only executor-local
-`start()` may revalidate and dereference the opaque binding, materializing
-native secret only in provider child/request memory. It SHALL return after
+`ProviderExecutor.start(invocation) -> ProviderLaunchHandle`; the handle SHALL
+expose `result() -> ProviderResponse` and idempotent close. Only
+executor-local `start()` may revalidate and dereference the opaque binding,
+materializing native secret only in provider child/request memory, then invoke
+the selected provider's canonical `complete(...)`. It SHALL return after
 transport owns a registered irreversible copy of launch inputs. Provider and
 handle code thereafter MUST NOT reread config, vault, ambient environment, or
 auth homes.
@@ -218,10 +306,15 @@ terminal owner and secret-free launch ID. Unprovable cleanup SHALL install a
 durable universe fence. Shared admission remains held through `start()` and
 releases while result completion continues.
 
-`HostLocalProviderCapability` MAY authorize only enumerated non-request
-maintenance. It is bootstrap-minted, identity-validated, non-serializable,
-mutually exclusive with request authority, and unavailable through API/MCP,
-config/state, environment-derived request input, or caller construction.
+`HostLocalProviderCapability` MAY authorize only
+`subscription_auth_probe`, `local_model_readiness_probe`, or
+`sandbox_readiness_probe`. Those operations accept no user prompt, invoke no
+model completion, spend no quota, mutate no universe/branch, and cannot mint a
+`ProviderInvocation`. It is bootstrap-minted, identity-validated,
+non-serializable, mutually exclusive with request/work authority, and
+unavailable through API/MCP, config/state, environment-derived request input,
+or caller construction. Startup/CI closure SHALL fail if any other host-local
+operation exists.
 
 #### Scenario: interleaved universes remain isolated
 - **WHEN** A and B interleave provider calls
@@ -241,6 +334,16 @@ config/state, environment-derived request input, or caller construction.
 - **WHEN** live request/universe work lacks the exact current capability
 - **THEN** no global universe, actor, process identity, or environment value substitutes
 
+#### Scenario: request authority crosses the router pool explicitly
+- **WHEN** `call_sync` submits provider routing to its class-level thread pool
+- **THEN** its closure carries the exact internal capability object retrieved by `call_provider`
+- **AND** an unset worker ContextVar neither widens authority nor causes a valid request to lose its carrier
+
+#### Scenario: post-response work requires its durable owner receipt
+- **WHEN** graph, resume, schedule, daemon, retrieval, or other background work reaches routing after request middleware returned
+- **THEN** routing requires a fresh `ProviderWorkAuthorityReceipt` from its named owner
+- **AND** missing, caller-supplied, expired, stale-generation, or wrong-lineage receipts hold
+
 #### Scenario: scheduling artifacts grant no provider authority
 - **WHEN** a caller supplies admission/replay verdict, request receipt/result/event, priority grant, branch-task row, or queue claim/lease without the required capability/receipt
 - **THEN** routing holds before provider or credential access
@@ -249,6 +352,11 @@ config/state, environment-derived request input, or caller construction.
 - **WHEN** request lineage supplies a boolean, string, enum, serialized token, lookalike, or genuine host token
 - **THEN** routing holds without accessing maintainer resources
 
+#### Scenario: host-local operation set is closed and zero-output
+- **WHEN** host-local maintenance is requested
+- **THEN** it is one of the three named probe operations and cannot invoke completion or consume quota
+- **AND** inventory fails for any additional operation
+
 #### Scenario: invocation is reference-only
 - **WHEN** requester-local authority succeeds
 - **THEN** invocation contains opaque reference/digest and provenance
@@ -256,7 +364,7 @@ config/state, environment-derived request input, or caller construction.
 
 #### Scenario: executor-local start owns dereference
 - **WHEN** requester-local provider starts
-- **THEN** only selected executor-local `start()` validates the complete binding tuple and dereferences
+- **THEN** only `ProviderExecutor.start()` validates the complete binding tuple and dereferences
 - **AND** native material exists only inside provider child/request memory
 
 #### Scenario: direct provider bypass holds
@@ -291,18 +399,22 @@ config/state, environment-derived request input, or caller construction.
 - **AND** it does not mint request authority
 
 ### Requirement: The provider call bridge retries only transient full-chain exhaustion
-The bridge SHALL retry only transient `AllProvidersExhaustedError` under its
-canonical bounded policy. `ProviderAuthorityHeldError` SHALL be re-raised
-after one authority check and MUST NOT become retry, alternate provider, local
-fallback, forced mock, judge sentinel, or fallback prose. Dynamic exhaustion,
-unrelated exception identity, and missing-router behavior remain canonical.
+The bridge SHALL retry only transient `AllProvidersExhaustedError` up to three
+total router attempts with exponential waits bounded from two through eight
+seconds. `ProviderAuthorityHeldError` SHALL be re-raised after one authority
+check and MUST NOT become retry, alternate provider, local fallback, forced
+mock, judge sentinel, or fallback prose. The bridge SHALL NOT retry unrelated
+exceptions. After failure or when no router exists, it SHALL return the
+caller-supplied fallback response when present and otherwise re-raise the
+original unrelated error, or raise `AllProvidersExhaustedError` for exhaustion
+or a missing router, rather than synthesize empty prose.
 
 #### Scenario: transient exhaustion clears
 - **WHEN** an authorized dynamic chain exhausts and later succeeds within the bounded policy
-- **THEN** the bridge returns the provider response
+- **THEN** the bridge returns the provider response within three total attempts
 
 #### Scenario: bounded exhaustion uses explicit fallback
-- **WHEN** all bounded authorized dynamic attempts exhaust and explicit fallback exists
+- **WHEN** all three authorized dynamic attempts exhaust and explicit fallback exists
 - **THEN** canonical fallback behavior remains
 
 #### Scenario: exhaustion without fallback fails loudly
@@ -319,7 +431,82 @@ unrelated exception identity, and missing-router behavior remain canonical.
 
 #### Scenario: no router preserves canonical non-authority behavior
 - **WHEN** no router exists on an enumerated non-request path
-- **THEN** canonical fallback/error behavior remains
+- **THEN** the bridge returns supplied fallback immediately or raises `AllProvidersExhaustedError`
+
+### Requirement: Bubblewrap readiness is a cached two-stage provider probe that selects ordinary Codex mode
+`tinyassets.providers.base.probe_sandbox_available` SHALL return a dictionary
+with `bwrap_available` and `reason`. It SHALL report unavailable immediately on
+win32, when `bwrap` is absent from `PATH`, when `bwrap --version` exits
+nonzero, when a minimal `bwrap --ro-bind / / /bin/sh -c true` launch exits
+nonzero, or when either subprocess attempt raises; each subprocess SHALL have
+a five-second timeout. It SHALL report available with a null reason only when
+both subprocesses exit zero.
+
+`get_sandbox_status` SHALL lazily cache and return the first probe dictionary
+for the remainder of the process. It returns that same mutable dictionary,
+does not refresh it, and does not copy it.
+
+When `ProviderExecutor.start()` selects an ordinary `CodexProvider.complete`
+call, `bwrap_available` truthy SHALL select `--full-auto`, while falsey SHALL
+select `--dangerously-bypass-approvals-and-sandbox`; both modes also include
+`--skip-git-repo-check` and `--ephemeral`. An invocation whose canonical
+`ModelConfig` has `sandbox_workspace=True` SHALL refuse before probing or
+selecting either mode. This probe is a CLI-readiness heuristic, not an OS
+backend or proof that the subsequent workload is confined. In particular, an
+unavailable ordinary call bypasses Codex approvals and sandboxing rather than
+failing closed.
+
+#### Scenario: successful version and functional probes select full-auto
+- **WHEN** `bwrap` is found and its version and minimal launch subprocesses both exit zero
+- **THEN** the first cached result is `{"bwrap_available": true, "reason": null}`
+- **AND** an ordinary Codex call includes `--full-auto` and omits `--dangerously-bypass-approvals-and-sandbox`
+
+#### Scenario: an unavailable probe selects the dangerous bypass
+- **WHEN** the cached probe is false because of win32, a missing executable, a nonzero version or launch result, or a probe exception
+- **THEN** an ordinary Codex call includes `--dangerously-bypass-approvals-and-sandbox` and omits `--full-auto`
+- **AND** the result carries a reason for the unavailable classification
+
+#### Scenario: repeated status reads retain the first mutable result
+- **WHEN** `get_sandbox_status` is called repeatedly and a caller mutates the returned dictionary
+- **THEN** the underlying probe is invoked once
+- **AND** every read returns the same cached dictionary, including the mutation
+
+#### Scenario: founder-facing sandbox configuration refuses before mode selection
+- **WHEN** a Codex invocation has `sandbox_workspace=True`
+- **THEN** it raises `ProviderError` before consulting Bubblewrap readiness
+- **AND** no Codex subprocess is started
+
+### Requirement: Recognized provider CLI sandbox failures are loud only after earlier quick-exit classification
+On non-win32 paths, `tinyassets.providers.base.check_bwrap_failure` SHALL
+case-insensitively recognize `bwrap: No permissions to create a new
+namespace`, `bwrap: No permissions to create new namespace`, `bwrap: No such
+file or directory`, and `sandbox initialization failed`. A match SHALL raise
+the provider-layer `SandboxUnavailableError` with at most the first 400 stderr
+characters and three remediation options. Empty or unmatched text SHALL pass.
+On win32 the helper SHALL be a no-op.
+
+When `ProviderExecutor.start()` selects Claude text completion, Claude JSON
+completion, or Codex completion, the selected canonical `complete()` path
+SHALL pass stderr through this helper when control reaches its
+post-communicate sandbox check, including an exit-zero invocation that emitted
+a recognized failure. The check does not dominate every error path: each CLI
+provider's quick return-code-1 classification at elapsed time under five
+seconds occurs first and raises `ProviderUnavailableError`, so such a
+Bubblewrap failure is not guaranteed to retain the sandbox-specific type.
+
+#### Scenario: a recognized exit-zero stderr failure raises the provider sandbox error
+- **WHEN** a provider invocation reaches the sandbox check with any recognized signature in mixed-case stderr
+- **THEN** it raises `tinyassets.providers.base.SandboxUnavailableError`
+- **AND** the error carries a bounded stderr excerpt and remediation guidance
+
+#### Scenario: normal output and win32 do not trigger the recognizer
+- **WHEN** stderr is empty or unmatched, or the process platform is win32
+- **THEN** `check_bwrap_failure` returns without raising a sandbox error
+
+#### Scenario: a return-code-1 failure under five seconds is classified before sandbox recognition
+- **WHEN** a CLI invocation exits one under five seconds with text that also matches a sandbox signature
+- **THEN** the earlier quick-exit path raises `ProviderUnavailableError`
+- **AND** the sandbox recognizer does not retroactively replace that type
 
 ## ADDED Requirements
 
@@ -353,7 +540,16 @@ The provider boundary SHALL classify an authority denial as
 classify `ProviderAuthorityHeldError` as provider `error`,
 `provider_error`, exhaustion, fallback, mock, or degraded sentinel. The
 separate provider-attempt receipt owner SHALL consume this exact typed
-classification when it aggregates immutable attempts/results.
+classification and extend its closed enums when it aggregates immutable
+attempts/results. `universe-creation` SHALL own the generic rendered
+`engine_setup_required_payload` envelope and map this typed cause into it;
+provider routing does not define a second user-facing envelope.
+
+On merge, this requirement supersedes the active
+`universe-creation` clause that admits a caller-built eligible-provider bundle
+and the active `provider-attempt-receipts` closed enums that omit
+`authority_held`. Those sibling deltas MUST adapt before they merge, regardless
+of branch merge order.
 
 #### Scenario: held authority is not provider fault
 - **WHEN** authority-derived emptiness or binding mismatch raises `ProviderAuthorityHeldError`
@@ -362,17 +558,22 @@ classification when it aggregates immutable attempts/results.
 
 ### Requirement: Remote and requester-host activation stay outside ordinary routing
 Accepted-market execution SHALL require the paid-market-economy accepted
-agreement plus the distributed-execution B2 signed-remote protocol and the
-sole production composition root required by anti-loss task B13 (`5.13`).
+agreement plus the distributed-execution signed-remote protocol defined by
+design Decision B2 and the sole production composition root required by
+anti-loss task B13 (`5.13`).
 Distributed-execution V6 SHALL remain scoped to deterministic market selection,
 escrow, verification, settlement, and reputation. Dark D0 records/seals SHALL
 remain fake/test-only.
 
-Self-hosted/host-daemon activation SHALL require
+Self-hosted/host-daemon/local-model activation SHALL require
 `activate-requester-host-engines` across `daemon-identity-and-host-pool`,
 `desktop-host-runtime`, and source-specific provider routing. No live cutover
-or legacy conversion may begin until requester-local opaque custody or that
-requester-host route passes rendered end-to-end acceptance.
+or legacy conversion may begin until requester-local opaque custody,
+requester-host, or attested `local_model` route passes rendered end-to-end
+acceptance; the held `engine_setup_required_payload` path is rendered; and
+every background/run/scheduled/daemon provider bridge carries a valid receipt
+from `harden-background-provider-execution-authority` or is proven held
+without breaking canonical connector handles and autonomous loops.
 
 #### Scenario: market selection cannot mint execution authority
 - **WHEN** V6 selects an accepted market host

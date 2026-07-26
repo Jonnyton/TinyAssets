@@ -27,7 +27,8 @@ The replacement resolves those findings by:
   live, non-tombstoned credential binding;
 - adding an independent deny-all engine-authority invariant to every universe
   birth;
-- publishing one-way exported interfaces with no reciprocal acceptance gates;
+- publishing one-way dependency interfaces while documenting custody's
+  provider-owner acceptance output gate;
 - separating credential authority from fulfillment class and dynamic provider
   availability; and
 - forbidding cutover until at least one live-ready custody or requester-host
@@ -46,10 +47,49 @@ Fresh Windows evidence on 2026-07-25:
 Final status is pending an exact-revision Opus 5 re-review and publication of
 the final review disposition.
 
-The one-way sibling handoffs were published without reciprocal gates:
+The initial sibling handoffs were published without making this target spec
+wait for sibling acceptance:
 
 - custody: PR #1746 comment `issuecomment-5081176707`;
 - universe creation / first-contact authority: PR #1660 comment
   `issuecomment-5081177162`; and
 - provider-attempt receipts: merged spec PR #1650 comment
   `issuecomment-5081177511`.
+
+## Exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed commit `aa6a2799` and returned `ADAPT`. Critical findings:
+
+1. Ambient request `ContextVar` state cannot cross the router's documented
+   class-level thread pool.
+2. Post-response graph/run/schedule, daemon, retrieval, and other background
+   provider work had no named authority owner.
+3. Source resolution did not cover the shipped domain or make
+   `ollama-local` reachable under target authority.
+
+Important findings covered conflicting active universe/receipt deltas,
+custody's exact-SHA owner-acceptance gate, dependent-lane tasks that made this
+change uncompletable, incomplete `complete()`/policy MODIFIED coverage, dropped
+canonical clauses, and newborn deny-all ordering ahead of a rendered setup and
+ready-source gate.
+
+The adapted artifacts now:
+
+- explicitly carry the server-minted request capability through
+  `call_provider`, synchronous router helpers, and the router pool closure;
+- name `harden-background-provider-execution-authority` as durable
+  task/thread/process receipt owner and hold those paths before it lands;
+- define total shipped/target source treatment, including successor-owned
+  `local_model` -> `["ollama-local"]`;
+- declare precedence over the conflicting active universe bundle and receipt
+  enums;
+- move sibling work to published expectations rather than this change's
+  completion checklist;
+- retain canonical provider `complete(...)` under
+  `ProviderExecutor.start(...)`, restore every dropped canonical clause, and
+  MODIFIED-cover policy plus both sandbox requirements; and
+- gate newborn deny-all and cutover on rendered setup, a live-ready request
+  source, and complete background bridge classification.
+
+Final disposition remains pending strict validation, adapted exact-SHA
+handoffs, and another Opus 5 review.
