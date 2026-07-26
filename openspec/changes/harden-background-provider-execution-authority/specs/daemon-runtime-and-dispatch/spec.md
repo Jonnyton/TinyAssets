@@ -1,7 +1,23 @@
 ## MODIFIED Requirements
 
+### Requirement: Queue-state mutations are file-locked, single-winner, and terminally idempotent
+All branch-task queue mutations (`tinyassets.branch_tasks`) SHALL execute under an exclusive per-universe file lock so concurrent workers sharing the queue file cannot race. Internal BranchTask state SHALL carry a monotonic `lease_generation`; `claim_task`, lease release, and reclaim SHALL increment it whenever they change claim/lease ownership or validity. `claim_task` SHALL transition a task to `running` only if it is still `pending`, returning `None` otherwise, so any given task is claimed by at most one worker. `mark_status` SHALL raise on an invalid non-terminal transition, but SHALL treat a duplicate finalize of an already-terminal task as an idempotent no-op that keeps the first result and never crashes the daemon (first-writer-wins).
+
+#### Scenario: only one worker claims a pending task
+- **WHEN** two workers call `claim_task` for the same pending task
+- **THEN** exactly one receives the claimed task transitioned to `running` with an incremented lease generation
+- **AND** the other receives `None`
+
+#### Scenario: duplicate finalize on a terminal task is a no-op
+- **WHEN** `mark_status` is called on a task that is already in a terminal state
+- **THEN** the call returns without raising and without changing the existing terminal result
+
+#### Scenario: an invalid non-terminal transition raises
+- **WHEN** `mark_status` requests a transition that is not permitted from the current non-terminal state
+- **THEN** it raises rather than corrupting the row
+
 ### Requirement: Startup recovery is lease-aware and worker-scoped, never a blanket reset
-At daemon startup and before every dispatcher claim/pick sweep, the runtime (`fantasy_daemon.__main__` startup and dispatch paths) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. It SHALL consider only rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled), so a live peer holding a fresh lease is never reclaimed merely because another worker restarted. The dispatcher SHALL skip predecessor reclaim when the worker id is blank or the shared host default, because a non-unique id could belong to a live twin. Under the effective provider-authority V2 gate, lease expiry alone SHALL NOT prove owner death: before a provider-capable eligible row can reset at either call site, `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation, so an invalidated live-but-wedged worker can reserve nothing. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. BranchTask internal state SHALL carry a monotonic `lease_generation` incremented on claim, heartbeat/renewal, release, and reclaim. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and a concurrent heartbeat, renewal, or authority change makes reset fail and forces fresh reconciliation. Non-provider-capable rows retain the lease-aware reclaim rule under V2, and dark provider behavior retains the same shipped rule. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
+At daemon startup the runtime (`fantasy_daemon.__main__` dispatcher-startup hook) SHALL recover orphaned `running` rows with lease-aware reclaim, NOT a blanket reset of every `running` row. Startup SHALL consider rows whose `executor_worker_id` equals this worker's own uniquely-assigned id (a provably-dead prior incarnation, via `reclaim_predecessor_tasks`) plus rows whose lease has expired or is absent (`reclaim_expired_leases` with leaseless reclaim enabled). The dispatcher SHALL skip predecessor reclaim when the worker id is blank or the shared host default. Before every dispatcher claim/pick, the hot sweep SHALL call only `reclaim_expired_leases` with leaseless reclaim disabled and SHALL NOT perform predecessor reclaim. Under the effective provider-authority V2 gate, both startup and hot-pick expired-lease resets SHALL apply the same provider-authority guard: lease expiry alone SHALL NOT prove owner death; `ProviderWorkAuthorityStore` SHALL either prove the owner dead or atomically invalidate and advance the old execution-claim generation. Reservation creation SHALL validate that exact active generation. The store SHALL then prove that the prior receipt has no reservation or every reservation is durably conclusive as `cancelled_before_launch`, `succeeded`, or `failed`; a dead/invalidated-owner `reserved` reservation SHALL first be atomically cancelled before launch, while an unclosed `launch_started`, `indeterminate`, or unreadable reservation SHALL hold the row non-claimable and fence the receipt. The authority proof SHALL bind the exact task, advanced authority/claim generation, claim owner, and monotonic lease generation, and the file-locked queue reset SHALL compare-and-swap that unchanged tuple; timestamps are observability only, and concurrent heartbeat, renewal, or authority change forces fresh reconciliation. Non-provider-capable rows retain the respective shipped startup or hot-pick lease rule under V2, and dark provider behavior retains the same shipped rules. As-built limitation: this is the cure half of the 2026-06-25 double-claim wedge, where the retired blanket `recover_claimed_tasks` reset stole live peers' tasks on every restart.
 
 #### Scenario: an expired-lease orphan with conclusive authority is reclaimed
 - **WHEN** startup recovery finds an expired provider-capable row, proves its owner dead or atomically invalidates the old claim generation, and finds no reservation or only reservations durably `cancelled_before_launch`, `succeeded`, or `failed`
@@ -12,6 +28,7 @@ At daemon startup and before every dispatcher claim/pick sweep, the runtime (`fa
 #### Scenario: dispatcher pick sweep applies the same authority guard
 - **WHEN** `reclaim_expired_leases` runs immediately before a dispatcher claim/pick
 - **THEN** it applies the same owner invalidation, reservation reconciliation, monotonic lease-generation, and queue compare-and-swap requirements as startup recovery
+- **AND** it does not reclaim leaseless rows or invoke predecessor reclaim
 
 #### Scenario: a dead-owner reserved attempt is cancelled before reclaim
 - **WHEN** startup recovery proves the owner dead or invalidates its claim generation and finds a durable `reserved` reservation
@@ -48,6 +65,30 @@ At daemon startup and before every dispatcher claim/pick sweep, the runtime (`fa
 #### Scenario: non-provider work retains lease recovery under V2
 - **WHEN** startup recovery under V2 finds an eligible non-provider-capable row with an expired lease
 - **THEN** the row is reset to `pending` with its claim and lease metadata cleared
+
+### Requirement: Claimed-task heartbeats refresh only the current running lease
+
+The branch-task queue SHALL refresh heartbeat and lease timestamps only for a
+`running` task under the queue file lock and SHALL increment the task's
+monotonic `lease_generation` in that same locked mutation. When both a
+supplied worker owner and an existing owner are non-empty, an owner mismatch
+MUST return no update; a heartbeat refresh MUST NOT reclaim or transition the
+task.
+
+#### Scenario: Current owner refreshes a running task
+
+- **WHEN** the claiming worker refreshes a running task heartbeat
+- **THEN** the task remains running, receives new `heartbeat_at` and `lease_expires_at` values, and increments `lease_generation`
+
+#### Scenario: A stale worker cannot overwrite another owner lease
+
+- **WHEN** a worker owner different from the stored owner attempts a heartbeat refresh
+- **THEN** the helper returns no task and leaves the stored lease and generation unchanged
+
+#### Scenario: Heartbeat is inert for a non-running task
+
+- **WHEN** heartbeat refresh targets a pending or terminal task
+- **THEN** the helper returns no task without changing its status, lease fields, or generation
 
 ## ADDED Requirements
 

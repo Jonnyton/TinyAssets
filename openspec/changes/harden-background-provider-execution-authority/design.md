@@ -139,6 +139,8 @@ server-owned transitions:
   attempt may issue the receipt. The run remains publicly `interrupted` until
   the same attempt links its receipt and commits `resumed`. Crash recovery
   resumes or revokes that exact attempt and never creates a second receipt.
+  A concurrent loser follows the winner's attempt and returns the same outcome
+  or authority hold without a second submission.
 - **Child/background work:** an active parent receipt may ask the server to
   create a child binding only when the child remains within the parent’s
   universe/branch lineage, allowed operation set, depth, lifetime, and
@@ -208,6 +210,9 @@ performs a file-locked compare-and-swap against
 that exact task/claim/lease tuple. A concurrent heartbeat or lease renewal
 changes the tuple and makes the reset fail; recovery must restart from a fresh
 authority proof. The proof alone grants no provider or queue authority.
+Startup may also reclaim provably-dead predecessor and leaseless rows; the hot
+dispatcher-pick sweep considers expired leases only. Both apply the same V2
+authority proof/CAS when a provider-capable row is eligible.
 Lease expiry alone never proves death. Before proof issuance, recovery must
 either prove the old owner dead or atomically invalidate the old execution
 claim generation under the authority store. Claim invalidation serializes
@@ -350,8 +355,10 @@ that universe; dark/unlisted universes complete the shipped sweep and remain
 live independently. A fenced run is reported publicly as `interrupted` with
 the stable sentinel `provider_authority_fenced` in the existing flat
 `runs.error` text field, never as indefinitely `queued` or `running`;
-`resume_run` raises that exact sentinel until reconciliation resolves it. No
-public run-record shape is added.
+`resume_run` queries the ledger and raises that exact reason only while the
+work-item fence remains current. Resolution clears or replaces the sentinel;
+the projection never overrides ledger truth. No public run-record shape is
+added.
 
 Ledger events contain secret-free IDs/digests, generations, state, reason,
 timestamps, and bounded classifications. They exclude prompts, model output,
