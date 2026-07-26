@@ -154,8 +154,9 @@ The selected universe's credential helper MAY overlay only `CODEX_HOME` and
 `llm_subscription` resolution and materialization remain unchanged by this
 change. A legacy `llm_api_key` SHALL NOT be selected or decoded by that helper.
 For a requester-local API-key binding, `ProviderExecutor.start()` SHALL
-validate the persisted credential-owner principal, universe, provider, host,
-current active `host_principal_generation`, scope,
+validate the persisted credential-owner principal, universe, provider, stable
+`host_principal_id`,
+fresh presented host proof at current active `host_principal_generation`, scope,
 provider-assignment generation, binding digest, expiry, and tombstone state
 from trusted control-plane state under shared `ProviderAssignmentAdmission`
 and cross the
@@ -334,7 +335,7 @@ For requester-local API-key use,
 in its assignment transaction under `ProviderAssignmentAdmission`, and
 `ProviderExecutor.start()` SHALL fail held on an empty, stale, wrong-provider,
 wrong-principal, wrong-host, revoked/expired host principal, stale
-host-principal generation, stale provider-assignment generation, expired, or
+host-proof generation, stale provider-assignment generation, expired, or
 tombstoned binding without scanning vault records, host homes, environment
 variables, or keyring entries.
 
@@ -369,7 +370,7 @@ inventory preserves every stored occurrence instead.
 
 #### Scenario: Current exact binding selects only local dereference
 
-- **WHEN** the provider assignment binding is current and exactly matches persisted credential-owner principal, universe, provider, host, active host-principal generation, scope, and provider-assignment generation and crosses shared `ProviderAssignmentAdmission`
+- **WHEN** the provider assignment binding is current and exactly matches persisted credential-owner principal, universe, provider, stable `host_principal_id`, scope, and provider-assignment generation, and fresh presented host proof matches the current active host-principal generation before crossing shared `ProviderAssignmentAdmission`
 - **THEN** `ProviderExecutor.start()` resolves only that opaque binding at native CLI/local/in-process launch, or delegates remote HTTP resolution only to the outbound owner's credential-blind proxy
 - **AND** no `llm_api_key` secret is decoded or returned by the universe vault
 

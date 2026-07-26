@@ -16,10 +16,15 @@ deputy for another principal's provider authority.
 - Store requester-supplied provider API keys only in the
   requester-controlled executor's native OS
   secret store; keep only an opaque, non-derivable, host/principal/universe/
-  provider/generation-bound reference in control-plane state. Bind and
-  independently recheck both current active `host_principal_generation` and
-  provider-assignment generation immediately before protected launch or
-  custody commit.
+  provider/provider-assignment-generation-bound reference in control-plane
+  state. Bind it to stable `host_principal_id`, not an issue-time host
+  generation. Immediately before protected launch or custody commit,
+  independently require a fresh host proof at the current active
+  `host_principal_generation` and the binding's current provider-assignment
+  generation. Terminal-principal cleanup is the narrow exception: same-subject
+  step-up recovery or separately authorized internal exact-tuple cleanup may
+  tombstone/delete the old binding without dereferencing or transferring its
+  secret.
 - Resolve the secret only at the transport-owned boundary behind the merged
   `constrain-set-engine-provider-authority` change's
   `ProviderAssignmentAdmission` and frozen

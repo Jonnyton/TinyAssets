@@ -113,9 +113,18 @@ provider entry whose custody-side opaque-reference field is named
 
 - opaque, random, non-secret, and not a key-derivation input;
 - bound to canonical provider, universe, credential-owner principal,
-  `host_principal_id`, current active `host_principal_generation`, scope,
-  provider-assignment generation, issue time, and expiry;
+  stable `host_principal_id`, scope, provider-assignment generation, issue
+  time, and expiry;
 - a locator only, never a bearer grant.
+
+The binding does not freeze an issue-time `host_principal_generation`.
+Instead, each sensitive consumer presents fresh device/host proof whose
+generation must equal the current active generation read from trusted
+host-principal state. In-place key rotation keeps the same
+`host_principal_id`, fences old proofs/sessions, and allows a fresh proof at
+the new generation to keep using the binding. Revocation, expiry, and
+lost-key recovery terminate the old principal; recovery creates a new
+principal ID and therefore requires a new provider binding.
 
 The unversioned `.credential-vault.json` SHALL NOT be authoritative binding
 state; it may contain display-only non-secret metadata that is safe to lose,
@@ -127,10 +136,17 @@ Enrollment is a two-store commit-token protocol, not a cross-store CAS. Every
 enrollment, rotation, retirement, and compare-delete operation first acquires
 exclusive `ProviderAssignmentAdmission` for the canonical universe and
 validates expected assignment generation plus affected provider-binding
-digest. It also reads trusted host-principal state and requires the exact
-principal to remain active at the binding's `host_principal_generation`
-immediately before protected work starts or commits. Revoked, expired, rotated,
-lost-key-recovered, or stale-generation host principals fail closed. Only then
+digest. Enrollment, secret use, binding creation/rotation, and cutover also
+read trusted host-principal state and require the exact principal to remain
+active and the presented host proof generation to equal the current trusted
+`host_principal_generation` immediately before protected work starts or
+commits. Revoked, expired, lost-key-recovered, or stale-generation host
+consumers fail closed; same-ID in-place rotation resumes only with fresh
+current-generation proof. Terminal-principal retirement/compare-delete may
+instead use same-subject step-up recovery or a separately authorized internal
+exact-tuple cleanup consumer, under the same exclusive assignment admission,
+but that path can only tombstone/delete and can never dereference, transfer,
+rebind, or launch with the secret. Only then
 may it acquire the narrower local pending-index/keyring
 locks. Reverse acquisition and untracked reentrancy fail loud. A local
 pending-index/keyring lock is released before any control-plane CAS or other
@@ -144,7 +160,9 @@ remains the serialization owner across the protocol.
    narrower local locks;
 2. the control plane compare-and-swaps a pending binding carrying that
    enrollment id and commit-token digest through
-   `ProviderAssignmentAdmission` into the expected assignment generation;
+   `ProviderAssignmentAdmission` into the expected provider-assignment
+   generation only after fresh presented host proof matches current active
+   host-principal generation;
 3. the host reads that exact committed binding and records a local
    acknowledgement before marking the mapping `committed`;
 4. a bounded reconciler may tombstone a timed-out pending local reference only
@@ -152,7 +170,9 @@ remains the serialization owner across the protocol.
 5. because those stores share no transaction, reconciliation re-reads after
    local tombstone; if a late binding appeared, it holds provider launch and
    compare-clears only that exact control-plane enrollment id, token digest,
-   and assignment generation;
+   and provider-assignment generation after rechecking current
+   host-principal status/generation, or under the narrow terminal-principal
+   step-up/internal cleanup authority;
 6. the split-brain path never restores the deleted local secret and requires a
    fresh enrollment.
 
@@ -247,12 +267,17 @@ the old native reference is deleted.
 
 Host-principal rotation, revocation, expiry, or lost-key recovery is a separate
 fence from provider-assignment rotation. `ProviderExecutor.start()` rechecks
-both trusted generations immediately before irreversible launch; every
-custody/assignment commit rechecks both again. A superseded or revoked host
-principal cannot dereference a new secret, start a new launch, or commit an
-in-flight result/cutover under its prior generation; the transport is
-cancelled where possible and otherwise its result is discarded and recorded
-held.
+the presented host-proof generation against current trusted host-principal
+generation and independently rechecks provider-assignment generation before
+irreversible launch; every custody/assignment commit repeats both checks. A
+superseded proof or revoked principal cannot dereference a new secret, start a
+new launch, or commit an in-flight result/cutover; the transport is cancelled
+where possible and otherwise its result is discarded and recorded held.
+Same-ID in-place rotation does not orphan the native reference: fresh
+current-generation proof may continue using the binding. Lost-key recovery
+creates a new principal ID, permanently fences the old binding, and requires
+fresh enrollment while the old reference follows the safe rotation/tombstone
+path.
 
 ### 6. Retirement is a monotonic saga
 

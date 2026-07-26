@@ -47,13 +47,23 @@ selected provider's entry in
 `constrain-set-engine-provider-authority`'s versioned
 `provider_authority_bindings` map. The
 reference SHALL be random, non-derivable, and bound to exact credential-owner
-principal, universe, canonical provider, `host_principal_id`, current active
-`host_principal_generation`, scope, provider-assignment generation, issue time,
-and expiry. It SHALL NOT contain or derive secret material, SHALL NOT be a
+principal, universe, canonical provider, stable `host_principal_id`, scope,
+provider-assignment generation, issue time, and expiry. It SHALL NOT freeze an
+issue-time `host_principal_generation`, contain or derive secret material, or be a
 bearer grant, and SHALL NOT resolve for another principal, universe, provider,
 host principal, revoked/expired host principal, stale host-principal
-generation, stale provider-assignment generation, expired host attestation, or
+proof generation, stale provider-assignment generation, expired host attestation, or
 tombstoned reference.
+
+Every sensitive consumer SHALL present fresh host proof whose generation
+equals the current active `host_principal_generation` read from trusted
+control-plane state. Same-ID in-place device-key rotation SHALL fence old
+proofs/sessions but SHALL NOT orphan or require re-enrollment of the provider
+binding; fresh proof at the new generation MAY continue using it. Revocation,
+expiry, and lost-key recovery SHALL fence the old binding because the old
+principal is terminal and recovery creates a new `host_principal_id`. A valid
+host-principal renewal that preserves ID and generation MAY continue using the
+binding after current proof and extended expiry are rechecked.
 
 The unversioned `.credential-vault.json` MAY retain non-authoritative,
 non-secret display metadata, but a provider launch SHALL NOT trust it as
@@ -69,20 +79,33 @@ binding or generation state.
 - **THEN** resolution returns setup-required hold with zero provider and backend calls
 - **AND** no broader universe grant, ACL admin role, empty capability ceiling, or opaque reference upgrades that scope
 
-#### Scenario: stale or tombstoned reference cannot reactivate
-- **WHEN** a reference's host-principal generation or provider-assignment generation is stale, its host principal is revoked/expired, its host attestation expired, or its identifier is tombstoned
+#### Scenario: stale consumer or tombstoned reference cannot reactivate
+- **WHEN** the presented host proof generation or provider-assignment generation is stale, its host principal is revoked/expired, its host attestation expired, or its identifier is tombstoned
 - **THEN** new launches return the existing setup-required hold with zero provider calls
 - **AND** reusing the identifier cannot reactivate the retired binding
+
+#### Scenario: host-principal renewal preserves a current binding
+- **WHEN** an active host principal renews without changing `host_principal_id` or generation
+- **THEN** fresh proof plus the current extended expiry may continue using the existing provider binding
+- **AND** renewal neither bypasses provider-assignment generation checks nor reactivates a revoked or expired principal
 
 ### Requirement: Local binding enrollment is a crash-safe two-store commit-token protocol
 Every enrollment, rotation, retirement, and compare-delete operation SHALL
 first acquire exclusive `ProviderAssignmentAdmission` for the canonical
 universe and validate expected assignment generation plus the affected
-provider-binding digest. It SHALL independently read trusted host-principal
-state and require the exact principal to remain active at the binding's
-`host_principal_generation` immediately before starting or committing
-protected work. Revoked, expired, rotated, lost-key-recovered, or
-stale-generation host principals SHALL fail closed. Only then MAY it acquire
+provider-binding digest. Enrollment, secret use, binding creation/rotation,
+and cutover SHALL independently read trusted host-principal state and require
+the exact principal to remain active and the presented host proof generation
+to equal the current trusted `host_principal_generation` immediately before
+starting or committing protected work. Revoked, expired, lost-key-recovered,
+or stale-generation host consumers SHALL fail closed; same-ID in-place
+rotation resumes only with fresh current-generation proof.
+
+Terminal-principal retirement/compare-delete MAY instead use same-subject
+step-up recovery or a separately authorized internal exact-tuple cleanup
+consumer under exclusive `ProviderAssignmentAdmission`. That path SHALL be
+tombstone/delete-only and SHALL NOT dereference, transfer, rebind, or launch
+with the secret. Only then MAY the applicable operation acquire
 the narrower local
 pending-index/keyring locks. Reverse acquisition and untracked reentrancy
 SHALL fail loud. No local pending-index/keyring lock SHALL remain held across
@@ -154,7 +177,8 @@ that binding.
 A provider API key SHALL be dereferenced exactly once by the selected
 requester-controlled executor after `ProviderExecutor.start()` validates
 provider destination, persisted credential-owner principal, universe,
-`host_principal_id`, current active `host_principal_generation`, scope,
+stable `host_principal_id`, presented host proof against current active
+`host_principal_generation`, scope,
 provider-assignment generation, binding digest, expiry, and tombstone state
 from trusted control-plane state and crosses shared
 `ProviderAssignmentAdmission` and the
@@ -193,10 +217,15 @@ runner carries a locator.
 - **THEN** shared `ProviderAssignmentAdmission` admits no new requester-owned launch with the retired generation
 - **AND** the old native reference is deleted only after captured-generation launches drain or are explicitly cancelled
 
-#### Scenario: host-principal rotation or recovery fences consumers independently
-- **WHEN** device-key rotation advances `host_principal_generation`, or revocation/lost-key recovery terminates the old host principal while a launch or custody cutover is pending
+#### Scenario: host-principal rotation fences old proofs without orphaning the binding
+- **WHEN** in-place device-key rotation advances `host_principal_generation` for the same active `host_principal_id` while a launch or custody cutover is pending
 - **THEN** `ProviderExecutor.start()` and every protected commit recheck trusted host-principal state and provider-assignment state independently
-- **AND** the prior-generation or revoked principal cannot dereference a new secret, start a new launch, or commit an in-flight result/cutover; the transport is cancelled where possible and otherwise its result is discarded and recorded held
+- **AND** a prior-generation proof cannot dereference, launch, or commit, while fresh proof at the new generation for the same active `host_principal_id` may continue using the binding without re-enrollment
+
+#### Scenario: lost-key recovery requires a new binding
+- **WHEN** lost-key recovery revokes the old principal and creates a new `host_principal_id`
+- **THEN** the old binding remains permanently fenced and its native reference enters the safe rotation/tombstone path
+- **AND** same-subject step-up recovery or an authorized internal exact-tuple consumer may tombstone/delete the old binding without dereference, while the new principal must complete fresh provider enrollment rather than inheriting or re-binding the old reference
 
 ### Requirement: Remote HTTP secret resolution belongs only to the outbound boundary
 For requester-owned remote HTTP, `ProviderExecutor.start()` SHALL validate the

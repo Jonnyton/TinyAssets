@@ -11,8 +11,9 @@ universe private — visibility and ownership are not conflated — and SHALL NO
 attach, resolve, use, replace, rotate, or delete a provider credential binding owned by another principal.
 Provider credential use SHALL additionally require the exact credential-owner principal persisted in
 verified request and assignment authority plus matching universe, provider,
-`host_principal_id`, current active `host_principal_generation`, assignment
-scope, and provider-assignment generation from trusted control-plane state; a
+stable `host_principal_id`, fresh presented host proof at the current active
+`host_principal_generation`, assignment scope, and provider-assignment
+generation from trusted control-plane state; a
 mismatch, revoked/expired host principal, or stale generation SHALL fail closed
 even when the caller is a universe admin. Background, resumed,
 retried, and scheduled execution SHALL NOT substitute an ambient HTTP subject, daemon process identity,
@@ -44,10 +45,15 @@ fine-grained action scope or the coarse effect grant. This model lives in
 - **THEN** credential checks use the owner frozen in verified request and assignment authority
 - **AND** no ambient or newly privileged identity substitutes for that owner
 
-#### Scenario: host-principal lifecycle fences provider consumers
-- **WHEN** device-key rotation advances the host-principal generation or revocation/lost-key recovery terminates the old host principal
+#### Scenario: in-place host rotation fences old consumers and admits fresh proof
+- **WHEN** device-key rotation advances the host-principal generation while retaining the same active `host_principal_id`
 - **THEN** provider launch and every protected custody/assignment commit recheck current host-principal status and generation independently from provider-assignment generation
-- **AND** prior-generation or revoked consumers cannot dereference a new secret, start a launch, or commit an in-flight result/cutover
+- **AND** prior-generation consumers cannot dereference, launch, or commit, while fresh proof at the new generation may continue using the existing binding
+
+#### Scenario: revoked or recovered principal cannot transfer a binding
+- **WHEN** revocation, expiry, or lost-key recovery terminates the old host principal
+- **THEN** the old binding remains fenced even if its provider-assignment generation is otherwise current
+- **AND** a recovery-created principal ID requires fresh provider enrollment rather than inheriting or re-binding the old reference; separately authorized same-subject recovery/internal cleanup may tombstone or delete it but cannot dereference or transfer it
 
 #### Scenario: broader administration cannot widen credential scope
 - **WHEN** a principal has universe admin or another broad grant but the binding excludes the requested provider action or capability
