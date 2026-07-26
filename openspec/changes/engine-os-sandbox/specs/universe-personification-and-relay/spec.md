@@ -29,26 +29,31 @@ descendants. The credential-vault-owned requirement SHALL prove that no raw
 key, token, auth file, or other recoverable credential material reaches
 model-controlled work; this lane defines no credential-delivery mechanism.
 
-Admission SHALL require the distributed-execution-owned backend binding and
-request-bound evidence to prove the complete `os_isolated` guarantee set:
+The combined pre-launch and post-launch checks SHALL require the
+distributed-execution-owned backend binding and request-bound evidence to
+prove the complete `os_isolated` guarantee set for the exact execution:
 kernel-enforced daemon separation, exact default-deny filesystem projection,
 exact default-deny network enforcement, explicit resource limits, absent
 platform secrets and undeclared devices, bounded cleanup, and evidence bound
 to the logical requirement and actual launch. A `vm_isolated` label is
-stronger only when it proves every base guarantee plus a distinct guest-kernel
-boundary and default-deny host-device passthrough. Admission compares proved
-property-set inclusion, not labels or booleans.
+stronger only when the combined checks prove every base guarantee plus a
+distinct guest-kernel boundary and default-deny host-device passthrough.
+Acceptance compares proved property-set inclusion, not labels or booleans.
 
 Every resolved policy, isolation, projection, egress, credential, and
 authority reference/digest SHALL match the logical requirement. Pre-launch
-admission SHALL validate trusted requirement/capsule data, profile support,
-and current capability/self-test evidence before launch. Missing, stale,
-mismatched, untrusted, malformed, or unknown pre-launch data SHALL raise
+admission SHALL validate trusted requirement/capsule data, profile and
+enforcement-mechanism support, exact planned launch configuration, current
+capability/self-test evidence, and the backend protocol's commitment to
+return request-bound launch evidence. Pre-launch admission SHALL NOT attest
+the future execution, enforcement, cleanup, or result. Missing, stale,
+mismatched, untrusted, malformed, or unknown pre-launch data SHALL raise the
 shared non-fallbackable `ExecutionAdmissionError` before launch.
 
 Post-launch validation SHALL then verify returned evidence bound to the same
-requirement/capsule and actual execution. Missing or invalid actual-launch
-evidence SHALL raise
+requirement/capsule and actual execution and SHALL alone prove the complete
+guarantee set for that execution. Missing or invalid actual-launch evidence
+SHALL raise
 `ExecutionAdmissionError(reason=backend_evidence_invalid)` and the model
 output SHALL NOT become a successful reply, learning result, or fallback
 input. Admission errors in either phase SHALL terminate the turn, cross

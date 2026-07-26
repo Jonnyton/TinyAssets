@@ -97,14 +97,20 @@ Admission has two fail-closed phases. Pre-launch admission succeeds only when
 the logical requirement is present and trusted; its workload/profile
 combination is valid; every resolved
 policy/isolation/projection/egress/credential/authority digest matches; the
-selected backend supports the profile; and its current capability/self-test
-evidence proves the complete required property set. Missing, stale,
-mismatched, or unknown workload, profile, property, binding, reference,
-digest, requirement, or pre-launch evidence denies before launch.
+selected backend supports every required enforcement property; its current
+capability/self-test evidence covers the required mechanisms; the exact
+planned launch configuration is bound; and the backend protocol commits to
+returning request-bound launch evidence. This phase proves capability and
+configuration support only. It does not attest the future process or remote
+execution, enforcement, cleanup, or result. Missing, stale, mismatched, or
+unknown workload, profile, capability, binding, reference, digest,
+requirement, planned configuration, or pre-launch evidence denies before
+launch.
 
 Post-launch validation then verifies returned evidence bound to the same
 requirement/capsule, actual process or remote execution, policy/projection,
-egress, resources, cleanup, and result. Missing or invalid actual-launch
+egress, resources, cleanup, and result. This phase alone proves the complete
+guarantee set for that exact execution. Missing or invalid actual-launch
 evidence raises `ExecutionAdmissionError(reason=backend_evidence_invalid)`;
 the output cannot become a successful result or trigger fallback.
 

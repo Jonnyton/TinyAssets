@@ -1249,13 +1249,13 @@ Notes:
 ## 2026-07-25 - reconcile engine execution admission and isolation
 
 - Provider: codex-gpt5-desktop-full-product with Claude Opus 5 opposite review
-- Branch: codex/reconcile-engine-os-sandbox-20260725 (publishes in place to `feat/converse-os-sandbox`)
+- Branch: codex/reconcile-engine-os-sandbox-final-20260725 (publishes in place to `feat/converse-os-sandbox`)
 - Lane state: claimed; current-main spec/audit reconciliation of draft PR #1573; no runtime or backend authorized
-- Worktree: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-reconcile
+- Worktree: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final
 - STATUS/Issue/PR: claimed STATUS row; draft PR #1573
 - PLAN refs: Execution substrate; Provider routing; Distributed execution; zero-maintainer-authority invariant
 - Purpose: replace the obsolete Bubblewrap-only false-attestation contract with backend-neutral, non-downgradeable execution admission composed with #1784
-- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-reconcile\_PURPOSE.md
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final\_PURPOSE.md
 - Memory refs: #1784; runner/v1; Opus 5 ADAPT; 2026-07-25 sandbox audit
 - Review gate: current-main strict OpenSpec plus exact-head Claude Opus 5 and independent security/domain/diff review
 - Ship/abandon: update draft PR #1573 in place; never create a sibling sandbox proposal; runtime/backends remain unclaimed

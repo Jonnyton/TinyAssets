@@ -36,24 +36,30 @@ the sealed outer capsule or explicitly versions its own inner wire.
 The source projection SHALL contain no caller-selected host path, repository
 root, universe root, current working directory, home, auth home,
 credential/vault path, or ambient data root. Admission SHALL verify every
-policy, isolation, projection, egress, credential, and authority binding, the
-outer capsule, and request-bound backend evidence. The evidence SHALL prove
-the complete `os_isolated` guarantee set: kernel-enforced daemon separation,
-exact default-deny filesystem and network policy, explicit resource limits,
-absent platform secrets and undeclared devices, bounded cleanup, and binding
-to the requirement and actual launch. A `vm_isolated` label is stronger only
-when it proves every base guarantee plus a distinct guest-kernel boundary and
-default-deny host-device passthrough.
+policy, isolation, projection, egress, credential, and authority binding and
+the outer capsule. The combined pre-launch and post-launch checks SHALL prove
+the complete `os_isolated` guarantee set for the exact execution:
+kernel-enforced daemon separation, exact default-deny filesystem and network
+policy, explicit resource limits, absent platform secrets and undeclared
+devices, bounded cleanup, and binding to the requirement and actual launch. A
+`vm_isolated` label is stronger only when the combined checks prove every base
+guarantee plus a distinct guest-kernel boundary and default-deny host-device
+passthrough.
 
 Missing, stale, mismatched, unknown, malformed, unsupported, or unsatisfied
 pre-launch requirement/capsule/profile/property data SHALL become shared
 `ExecutionAdmissionError` with a closed reason code. Graph/NodeBid SHALL
 normalize runner preflight and protocol refusals into that type and terminate
 the run as `failed` without in-process execution or fallback.
+Pre-launch property evidence SHALL prove support for the required enforcement
+mechanisms and bind the exact planned launch configuration and protocol
+commitment to return request-bound launch evidence; it SHALL NOT attest the
+future execution, enforcement, cleanup, or result.
 
 Post-launch validation SHALL verify returned evidence bound to the same outer
-capsule, inner `job_id`, and actual execution. Missing or invalid
-actual-launch evidence SHALL become
+capsule, inner `job_id`, and actual execution and SHALL alone prove the
+complete guarantee set for that execution. Missing or invalid actual-launch
+evidence SHALL become
 `ExecutionAdmissionError(reason=backend_evidence_invalid)`; the output SHALL
 NOT become a successful runner result, graph output, or fallback input.
 Backend execution failure with valid evidence after successful dispatch

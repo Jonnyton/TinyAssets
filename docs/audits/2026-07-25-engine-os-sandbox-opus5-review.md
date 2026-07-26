@@ -349,6 +349,18 @@ provider/runner/B2 paths; opaque owner-defined credential/egress references;
 an explicit source-heading rename; and restored advisory behavior. A fresh
 exact-head Opus 5 verdict remains required.
 
+Candidate `b0ba1d60` then separated pre-launch admission from post-launch
+validation of evidence for the actual execution. Independent verification
+found one remaining wording contradiction: it still said pre-launch
+capability/self-test evidence proved the *complete* guarantee set even though
+that set includes actual launch, enforcement, cleanup, and result evidence.
+The current successor therefore limits pre-launch proof to backend capability,
+exact planned configuration, and a protocol commitment to return bound launch
+evidence. Post-launch validation alone proves the complete guarantee set for
+the exact execution before any output can become success or fallback input.
+This correction is being restacked on current main `bc1227ee`; a fresh
+exact-head Opus 5 verdict and independent verification remain required.
+
 C1 and C2 are structural blockers. C3, C4, C6, C7, and C8 are required
 corrections. C5's security requirement remains valid, but its proposed owner
 boundary is corrected by current-main evidence: do not create a second
