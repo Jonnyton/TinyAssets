@@ -591,3 +591,16 @@ the mirrored Claude-plugin provider runtime.
 The inventory clarifications are folded. Final disposition requires pushing
 the exact candidate, re-stamping all four handoffs to the resolvable SHA, and
 obtaining exact-revision Opus approval under task 1.34.
+
+## Fourteenth exact-revision Opus 5 approval — 2026-07-25
+
+Opus 5 approved exact pushed commit `abdca5fe`. It verified that PR #1784,
+the remote branch, local HEAD, and GitHub commit object all resolve to the same
+full SHA; all four consuming-lane handoffs cite that exact candidate and match
+the normative interface; the delta from the architecture-reviewed parent is
+limited to review/task records plus the two requested inventory
+clarifications; and strict validation passes 51/51. It found no Critical or
+Important architecture, implementation, or release-integrity issue.
+
+Final disposition is `APPROVE`; task 1.35 owns normal landing and retirement
+of the live STATUS row.

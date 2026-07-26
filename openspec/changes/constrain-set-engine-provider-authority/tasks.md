@@ -132,9 +132,10 @@
 - [x] 1.33 Fold its two inventory clarifications: name both
   `_register_structured_tool` implementations and include the mirrored
   Claude-plugin provider runtime in call-site/transport proof.
-- [ ] 1.34 Push the exact candidate, refresh all four handoffs to the
+- [x] 1.34 Push exact `abdca5fe`, refresh all four handoffs to the
   GitHub-resolvable SHA, and obtain Claude Opus 5 approval of that exact
-  current-main revision; resolve every Critical and Important finding.
+  current-main revision. Opus verified PR/head/comment resolvability, strict
+  51/51 validity, and no remaining Critical or Important finding.
 - [ ] 1.35 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
