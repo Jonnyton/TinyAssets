@@ -62,6 +62,9 @@ server-owned background authority contract exists.
 - `graph-execution-substrate`: Require provider-capable graph nodes and their
   task/thread/process bridges to propagate the exact receipt and preserve its
   lineage, budget, cancellation, and terminal fences.
+- `provider-routing`: Preserve ordinary router eligibility for unknown or
+  inconclusive subscription health while making the worker-only V2 maintenance
+  state `auth_unknown` a quarantine trigger alongside `not_logged_in`.
 
 ## Impact
 

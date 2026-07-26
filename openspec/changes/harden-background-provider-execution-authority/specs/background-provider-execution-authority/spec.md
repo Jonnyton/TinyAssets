@@ -221,7 +221,8 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 #### Scenario: Fixed probe runs without requester authority
 - **WHEN** an authorized maintainer operation invokes the exact fixed private probe under its effective maintenance canary
 - **THEN** the system may issue a maintenance receipt without universe, branch, run, requester identity, requester content, or requester quota
-- **AND** the closed maintenance executor dereferences only the receipt's current opaque credential binding and never ambient `CODEX_HOME`, PATH, or process identity
+- **AND** the closed maintenance executor dereferences only the receipt's current opaque credential binding and never ambient `CODEX_HOME` or process identity
+- **AND** any PATH-resolved flock wrapper is resolved before issuance, recorded as the receipt-bound executor/transport identity, and revalidated without re-resolving ambient PATH at launch
 
 #### Scenario: Maintenance receipt cannot process user work
 - **WHEN** a maintenance receipt is presented with user content, a different prompt digest, graph work, child work, or a different provider operation
@@ -262,11 +263,16 @@ The system SHALL preserve shipped behavior while provider-authority V2 is dark a
 - **THEN** the system requires successful isolated universe-work and maintenance canary evidence, including concurrent claim and launch proof
 
 ### Requirement: Every provider-capable call site has one authority classification
-The background provider execution authority owner SHALL maintain a mechanically checked whole-runtime inventory in which every production provider-capable caller, injected callable, router-internal completion, and packaged runtime mirror has exactly one authority classification.
+The background provider execution authority owner SHALL maintain a mechanically checked whole-runtime inventory in which every production provider-capable caller, injected callable, router-internal completion, and packaged runtime mirror has exactly one authority classification. A persisted row or run is provider-capable when its deterministic server-owned operation classification for the exact attempt can reach a provider authority sink. Enqueue or compile SHALL record that classification, issuance and recovery SHALL revalidate it, and under V2 a missing or unknown classification SHALL fail closed as provider-capable unless the inventory proves the operation non-provider or mock-only.
 
 #### Scenario: Call-site inventory is complete
 - **WHEN** CI scans universe intelligence, compiled nodes and routers, the async judge-ensemble `gather` and direct provider members, run and child bridges, schedules and daemon workers, maintenance probes, editorial and ingestion paths, retrieval and RAPTOR paths, reflexion, entity extraction, community evaluation, and the mirrored Claude plugin
 - **THEN** each provider-capable call site is classified as live-request authority, host authority, background receipt authority, maintenance authority, accepted-market remote dispatch, or proven non-provider or mock-only
+
+#### Scenario: Persisted work classification is deterministic
+- **WHEN** enqueue, compile, issuance, or recovery classifies a persisted row or run
+- **THEN** it derives provider capability from the exact server-owned operation route rather than caller labels, stored actors, or queue identity
+- **AND** a missing or unknown V2 classification cannot select the non-provider bypass
 
 #### Scenario: Successor-owned classifications remain empty
 - **WHEN** `activate-requester-host-engines` or `activate-connector-requester-authority` has not landed its authority owner

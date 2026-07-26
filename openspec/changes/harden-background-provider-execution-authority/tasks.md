@@ -1,6 +1,6 @@
 ## 1. Inventory and runtime boundary
 
-- [ ] 1.1 Re-run the provider-call and injected-callable inventory across the canonical runtime and packaged Claude-plugin mirror, including router-internal auth-health probes, async judge-ensemble fan-out, and direct `provider.complete(...)` calls; classify every production call site into exactly one authority route and make the inventory an executable CI check.
+- [ ] 1.1 Re-run the provider-call and injected-callable inventory across the canonical runtime and packaged Claude-plugin mirror, including router-internal auth-health probes, async judge-ensemble fan-out, and direct `provider.complete(...)` calls; classify every production call site into exactly one authority route, derive and persist each row/run's provider-capable classification from its exact server-owned operation, fail closed on missing/unknown V2 classification, and make the inventory an executable CI check.
 - [ ] 1.2 Select the existing transactional store behind `ProviderWorkAuthorityStore`; enforce authority-store→release→assignment-admission→credential-lock for launches and authority-store→release→queue-file-lock for recovery, forbid queue/assignment nesting and authority acquisition under either lock, and prove BranchTask JSON, public payloads, environment variables, and logs remain non-authority.
 - [ ] 1.3 Define conservative server-owned operation, role, depth, lifetime, invocation, token, and cost ceilings for universe work and maintainer maintenance, including finite fallbacks for `max_tokens=None` and subscription-invocation cost units; reject caller-controlled widening.
 
@@ -40,7 +40,7 @@
 
 ## 6. Isolated maintenance authority
 
-- [ ] 6.1 Add failing tests for the exact `_AUTH_PROBE_PROMPT` digest, host/operator principal, invoking runtime/daemon, provider, executor/transport, opaque credential reference/digest, separate maintenance budget, ambient `CODEX_HOME`/PATH rejection, and rejection of user content, graph work, child work, or requester quota.
+- [ ] 6.1 Add failing tests for the exact `_AUTH_PROBE_PROMPT` digest, host/operator principal, invoking runtime/daemon, provider, executor/transport, opaque credential reference/digest, separate maintenance budget, ambient `CODEX_HOME` and launch-time PATH re-resolution rejection, pre-issuance resolution plus receipt pinning/revalidation of the configured flock-wrapper path, and rejection of user content, graph work, child work, or requester quota.
 - [ ] 6.2 Under V2, retain exact shipped per-provider outcomes—codex missing file is dead but existing empty/corrupt/stale/cache-miss stays eligible; a non-empty `CLAUDE_CODE_OAUTH_TOKEN` wins before claude-code config-dir checks; without it absent/empty/unreadable config is dead; probe kill switch and router unknown/inconclusive stay eligible—while preventing ordinary routing from launching the probe completion.
 - [ ] 6.3 Prove `get_status` and other public reads never launch the probe; prove maintenance readiness before any worker/provider V2 gate, including authenticated spawn and unauthenticated/`auth_unknown` quarantine, and keep V2 dark rather than inventing a health verdict when maintenance authority is unavailable.
 

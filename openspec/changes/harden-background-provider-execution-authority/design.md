@@ -70,11 +70,18 @@ the existing sink validates.
 | `ProviderWorkAuthorityReceipt` | Short-lived bounded authority for one logical work attempt, derived from one current binding | receipt ID or serialized dict |
 | `ProviderWorkExecutionClaim` | One active task/thread/process owner for the receipt generation | worker ID, queue claim, heartbeat, lease |
 | `ProviderInvocationReservation` | Atomic ordinal/budget reservation for one provider launch under the active claim | retry counter or provider response |
+| Provider-capable work record | A persisted row/run whose deterministic server-owned operation classification can reach a provider authority sink in this attempt | caller label, queue kind, stored actor |
 
 The binding answers “may this durable work source ask for provider work?” The
 receipt answers “may this exact logical attempt do so now?” The execution claim
 answers “which currently live execution scope owns it?” The invocation
 reservation answers “has this provider launch consumed bounded authority?”
+A persisted row or run is provider-capable only when the server-owned
+operation classification for that exact attempt can reach a provider sink.
+Enqueue/compile records the classification, issuance and recovery revalidate
+it, and V2 treats a missing or unknown classification as provider-capable
+(fail closed) unless the inventory proves the operation non-provider or
+mock-only.
 
 This separation prevents a persistent schedule or queue artifact from becoming
 a reusable bearer while allowing zero-host work to obtain fresh authority.
