@@ -131,6 +131,9 @@ exact type, nullability, bound, ordering, uniqueness, digest, reference, and
 temporal rule. Registry history is one-way: the scenario registry pins only its
 accepted predecessor; the command registry pins the scenario-registry digest;
 the manifest and authorization pin both, avoiding a digest cycle.
+Each scenario entry also pins one accepted custody mode and backend-policy
+digest; every artifact leaf must match that mode and policy, so leaf
+self-declaration cannot substitute for owner-approved custody and retention.
 History-aware publication receives the prior registry before accepting a
 classification change. The manifest pins its bundle index, and the index
 defines exhaustive run membership without scanning unrelated global CAS
@@ -140,8 +143,11 @@ Scenario blockers and malformed-protocol errors are disjoint enums. Missing
 evidence paired with its legitimate `not_run` blocker is a valid blocked
 scenario; present-but-invalid evidence or missing evidence under a claimed
 pass/fail returns the spec's first stable protocol error. After authenticated
-traffic starts, missing cleanup/abort/lockout proof is both nonconformant and a
-forced owner failure with assumed durable environment lockout.
+traffic starts, valid authenticated evidence of residue or foreign-state
+mutation is a conforming owner failure with durable lockout. Missing, malformed,
+or unauthenticated cleanup/abort/lockout proof is instead nonconformant:
+capacity is null and safety is `unknown_locked`. Invalid evidence is never
+normalized into a trusted failure result.
 
 Stored JSON bytes must equal their RFC 8785 re-encoding. Canonical JSONL is one
 independently guarded and JCS-canonical object followed by exactly one LF; BOM,
@@ -281,15 +287,21 @@ Capability adoption changes—not the shared kernel—own sanitized child
 environments, dispatch tripwire execution, egress constraints, and non-secret
 provider-attempt evidence. The protocol validates their typed, digest-bound
 isolation and tripwire receipts and fails conformance when required receipts
-are absent or contradictory.
+are absent or contradictory. Host authorization selects `provider_free`,
+requester BYOC, or accepted-market authority. The latter modes bind the exact
+non-maintainer authority digest; every mode binds a maintainer-authority
+exclusion digest. Provider-attempt receipts cover the whole traffic/drain
+interval and distinguish authorized, unauthorized, and maintainer-authority
+attempt counts without retaining provider credentials or raw user identity.
 
 ### 7. Live authorization abort and cleanup receipts are typed dependencies
 
 A live authorization record shape binds the run ID, exact environment identity
 and URL, time window, maximum request/concurrency/connection/data envelope,
-test identities, allowed endpoints, scenario versions, operator, abort
-thresholds, and canary coordination. Isolation, abort, canary, tripwire, and
-cleanup records are immutable and digest-bound to that authorization.
+provider-authority mode and digest, maintainer-authority exclusion, test
+identities, allowed endpoints, scenario versions, operator, abort thresholds,
+and canary coordination. Isolation, abort, canary, tripwire, and cleanup
+records are immutable and digest-bound to that authorization.
 
 Every receipt is an authenticated envelope over canonical payload bytes and
 binds an accepted versioned trust set, trust domain, issuer/key, algorithm,
@@ -303,14 +315,22 @@ A distinct operator-domain opt-in receipt proves the local second opt-in.
 Traffic start binds a canonical pre-traffic gate set containing authorization,
 nonce, opt-in, isolation, network identity, and canary-start refs. Sorted
 dispatch receipts reconcile exactly to sent attempt events. Authenticated
-traffic stop closes the interval; provider-attempt and canary receipts must
-cover from no later than start through no earlier than stop. A pre-run
-zero-attempt receipt cannot prove run-wide quota isolation.
+traffic stop closes the interval only after every dispatch has released its
+resources; provider-attempt and canary receipts must cover from no later than
+start through no earlier than that stop, so monitoring cannot end while
+connections or requests still drain. Every dispatch starts before
+authorization expiry, its half-open send interval ends no later than expiry,
+and every actual send is strictly before expiry. Starting a receipt before
+expiry never authorizes post-expiry work. A pre-run zero-attempt receipt cannot
+prove run-wide quota isolation.
 
 Dispatch attempt/ref sets make multi-generator closure deterministic, including
 a valid empty set after immediate stop. Run-wide request/data sums and
 overlapping rate/concurrency/connection intervals are checked against the
-authorization envelope, so splitting load across receipts cannot evade caps.
+authorization envelope. Each receipt's maximum in-flight overshoot is treated
+as active for its whole drain interval and overlapping overshoot maxima are
+summed against the one run-wide allowance, so splitting load across receipts
+cannot evade any cap.
 
 The shared kernel validates those records and their required relationships. It
 does not resolve endpoints, start or stop traffic, perform cleanup, or enforce
@@ -321,8 +341,9 @@ and envelope, and a provider-free path.
 
 The phase matrix is closed: a missing or stale gate before traffic is
 `not_run`; malformed or tampered evidence is protocol-invalid rather than a
-capacity verdict; and provider attempt, tenant bleed, envelope breach, abort
-crossing, foreign mutation, residue, required reconciliation loss,
+capacity verdict; and unauthorized or maintainer-authority provider attempt,
+tenant bleed, envelope breach, abort crossing, foreign mutation, residue,
+required reconciliation loss,
 canary-monitor loss, or generator-control loss after traffic starts is
 `failed`. Saturation, unachieved offered load, or clock loss is `not_run`
 unless independent evidence already proves a required server invariant
@@ -360,8 +381,9 @@ scenario. Aggregates retain all constituent digests and substrate classes.
   preserve unsuccessful operations, and reject success-only denominators.
 - **[The generator is the bottleneck]** → Record offered/achieved load,
   client queueing, resources, clocks, and multi-generator loss.
-- **[Tests spend founder/provider quota]** → Sanitize environments, install a
-  dispatch tripwire, constrain egress, and abort on any provider attempt.
+- **[Tests spend founder/provider quota]** → Sanitize environments, bind
+  provider-free/requester-BYOC/accepted-market authority explicitly, constrain
+  egress, and abort on any unauthorized or maintainer-authority attempt.
 - **[Cleanup becomes broad deletion]** → Depend on scoped reset's closed-world
   plan and fail on foreign/shared/obligated state or residue.
 - **[Conformance is marketed as capacity]** → Keep independent verdicts and

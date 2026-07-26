@@ -133,6 +133,13 @@ without accepted custody/retention remains `not_run`.
 - Owner adoption changes provide typed receipts for allowlisted child
   environments and server-side provider/model pre-dispatch tripwires. The
   shared kernel validates them but launches no process or traffic.
+- Authorization selects `provider_free`, `requester_byoc`, or
+  `accepted_market`; full-interval receipts distinguish authorized,
+  unauthorized, and maintainer-authority attempts. Jonathan's and platform
+  maintainer quotas are never accepted user/load authority.
+- Each scenario-registry entry pins one custody mode and accepted backend
+  policy digest; artifact leaves cannot self-select a different custody or
+  retention policy.
 - Live authorization binds exact environment, window, envelope, identities,
   endpoints, scenarios, aborts, canary, and cleanup. CI cannot select live
   production by default.
@@ -153,19 +160,26 @@ without accepted custody/retention remains `not_run`.
 ## Review And Publication Gate
 
 The target change requires strict validation and independent
-correctness/security/concurrency/evidence-integrity review. A fresh current-main
-Claude Opus 5 review is required before push or apply. Opus 5 inference was
-restored by the 16:00 PDT account reset and the exact adapted packet remains
-pending opposite-provider review. No Opus verdict is claimed yet.
+correctness/security/concurrency/evidence-integrity review. Literal Claude
+Opus 5 approved clean current-main commit `6eb585e1` at delta-spec SHA-256
+`F4FA76A5FB49B73C7D79284A0BD1D52AA7B948B2AC44A041E17101FED65765DC`,
+but that verdict is superseded rather than reused: a subsequent independent
+review found authorization-expiry, stop-before-drain, overlapping-overshoot,
+provider-authority, scenario-custody, cleanup-truth, and superseded-run binding
+defects.
 
-Three independent Codex reviews approve the final target packet:
+The adapted packet now:
 
-- scope/ownership: shared validation kernel versus owner execution, no CLI,
-  dependent-change shape, and parent-first archive order — APPROVE;
-- security/privacy/concurrency/evidence integrity — APPROVE;
-- exact V1 wire grammar/interoperability — APPROVE.
+- bounds every send interval and actual send by authorization expiry;
+- keeps stop and provider/canary coverage open through resource release;
+- aggregates overlapping overshoot against one run-wide allowance;
+- represents provider-free, requester-BYOC, and accepted-market authority
+  while rejecting any maintainer-funded or unbound attempt;
+- pins scenario custody/backend policy and the superseded run identifier; and
+- distinguishes authenticated cleanup failure from missing/invalid proof.
 
-The final reviewed delta spec SHA-256 is
-`F4FA76A5FB49B73C7D79284A0BD1D52AA7B948B2AC44A041E17101FED65765DC`.
-Strict validation passes 48/48. These approvals do not replace the pending
-literal Opus 5 gate and authorize no runtime or live traffic.
+The adapted delta-spec SHA-256 is
+`9BC1A85E62643A4877F61F7C32E03E5B4FA87027C9659FD4961A2751143DB412`.
+Strict validation passes 48/48. Fresh independent and literal Opus 5 approval
+of this exact adapted packet remains required before push or apply. No runtime
+or live traffic is authorized.

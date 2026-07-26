@@ -28,9 +28,13 @@ threshold, adapter, invariant, or activation decision.
   saturation, dirty or mismatched deployments, and mixed-substrate aggregate
   laundering.
 - Require synthetic and pseudonymized durable evidence, bounded artifact
-  paths, no symlink/reparse traversal, and typed owner-supplied receipts for
-  environment isolation, provider/model-dispatch tripwires, authorization,
-  abort, canary coordination, and cleanup.
+  paths, no symlink/reparse traversal, scenario-bound custody/backend policy,
+  and typed owner-supplied receipts for environment isolation,
+  provider/model-dispatch authority, authorization, abort, canary coordination,
+  and cleanup.
+- Distinguish provider-free, requester-BYOC, and accepted-market runs while
+  rejecting any unauthorized or maintainer-funded attempt; distinguish valid
+  cleanup failure evidence from missing or invalid proof.
 - Keep all generator launch, egress control, tripwire execution, cleanup,
   lockout, connector traffic, and baseline execution in separately accepted
   capability-owner adoption changes.
