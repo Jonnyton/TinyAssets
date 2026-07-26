@@ -20,9 +20,12 @@ the original branch-definition fallback:
 5. community-loop named runtime, workflow, artifact, label, package, and test
    surfaces;
 6. active loop skills, catalog routes, and shipped loop-team souls;
-7. hard-coded patch-request claimant/writer/checker composition;
-8. automatic patch-announcement and implicit auto-merge composition; and
-9. generated website/plugin snapshots or prompts that can resurrect the
+7. hard-coded patch-request and filing-effort
+   claimant/writer/checker/triage composition;
+8. hidden `community_change_context` product dispatch and website callers;
+9. automatic patch-announcement and implicit auto-merge composition plus
+   durable open-PR enrollments; and
+10. generated website/plugin snapshots or prompts that can resurrect the
    retired behavior.
 
 TinyAssets retains the domain-agnostic pieces from which a user may build these
@@ -45,10 +48,14 @@ rg -n "TINYASSETS_BUG_INVESTIGATION_(GOAL_ID|BRANCH_DEF_ID)|_maybe_enqueue_inves
 rg -n -i "community[_ -]loop|auto[_ -]ship|TINYASSETS_AUTO_SHIP" tinyassets fantasy_daemon scripts .github deploy packaging/claude-plugin tests docs/ops
 rg -n "bug_investigation|attach_patch_packet|trigger_receipt" tinyassets fantasy_daemon packaging/claude-plugin tests deploy .github docs/ops
 rg -n "classify_patch_request|request_classification|code_writer_gate|checker_gate|claimable_by" tinyassets packaging/claude-plugin tests
+rg -n "classify_filing_effort|filing_effort_dispatch_route|carrier-review-before-daemon-pickup|merge-instant-fast-lane|opposite-family-checker" tinyassets packaging/claude-plugin tests
+rg -n "community_change_context|_CHANGE_LOOP_PLAN_HEADINGS|Codex-written PRs|latest auto-fix" tinyassets packaging/claude-plugin tests WebSite/site WebSite/site-react
 rg -n -i "loop-uptime|community[_ -]loop|auto[_ -]fix|patch[_ -]loop" .agents/skills .claude/skills .github/workflows docs/souls WebSite/site/src/lib/content WebSite/site-react/lib
+rg -n "auto-change loop" PLAN.md STATUS.md
 gh variable list --repo Jonnyton/TinyAssets
 gh label list --repo Jonnyton/TinyAssets --limit 300 --json name,description
 gh issue list --repo Jonnyton/TinyAssets --state open --label <retired-label> --limit 1000 --json number
+gh pr list --repo Jonnyton/TinyAssets --state open --limit 1000 --json id,number,headRefOid,isDraft,headRepository,baseRefName,state,autoMergeRequest
 openspec validate retire-cheat-loop --strict
 ```
 
@@ -91,6 +98,14 @@ Both handler routes are the same retired automation:
 Keeping the Goal route while deleting only the branch-definition fallback would
 leave a host-configured product loop and would not satisfy the directive.
 
+The filing path also imports `classify_filing_effort` and
+`filing_effort_dispatch_route` from `tinyassets/api/market.py:238-379`. Those
+helpers publish `carrier-review-before-daemon-pickup`,
+`merge-instant-fast-lane`, navigator/daemon pickup policy, and
+`opposite-family-checker` semantics into filing markdown, frontmatter, and the
+response. They leave with their constants and behavior-pinning tests. Ordinary
+filing fields and per-kind duplicate detection remain.
+
 ### Hidden patch-request composition
 
 | Surface | Current behavior | Retirement |
@@ -99,6 +114,22 @@ leave a host-configured product loop and would not satisfy the directive.
 | `tinyassets/api/universe.py:2157-2174` | Persists `request_classification` into submitted requests/tasks | Stop writing it and ignore/strip pending legacy metadata as non-authorizing residue |
 | `tinyassets/work_targets.py:546-553` | Copies the hidden classification into downstream targets | Remove the propagation while preserving explicitly authorized generic routing inputs |
 | pickup and soul dispatch | Explicit requester incentives, directed-daemon selection, `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and a user soul's `loop_branch_def_id` | Preserve as bounded user-authored routing under their existing authority owners; none grants provider, credential, effect, release, or merge authority |
+
+### Hidden community-change context
+
+`tinyassets/universe_server.py:1305-1346` still registers the hidden legacy
+`community_change_context` wrapper, while
+`tinyassets/api/universe.py:3227-3420+` retains the internal product action,
+plan-heading policy, auto-change/auto-fix queue aggregation, and hard-coded
+"Codex-written -> Claude-family checker" standard. The package mirror and
+tests pin it; `WebSite/site/src/lib/mcp/live.ts` and
+`WebSite/site-react/lib/live.ts` still call it.
+
+`retire-legacy-live-mcp-tools` owns the exact-six hidden MCP registration
+cutover. This retirement depends on its task 4.1, then deletes the internal
+action, action-map row, wrapper/plugin/tests, and callers rather than preserving
+a dispatchable compatibility path. Generic GitHub reads, PLAN reads, and graph
+composition remain for user-authored review-context workflows.
 
 ### Dedicated execution behavior
 
@@ -221,6 +252,17 @@ protection checks do not restore that missing authority boundary. Generic
 PR-create and exact-head merge effects remain separately available to an
 explicit user/maintainer workflow.
 
+An authenticated GraphQL read on 2026-07-26 found 21 open pull requests with
+auto-merge still enabled, all by `app/github-actions`. GitHub persists those
+instructions on the PR, so deleting the workflow would not revoke them.
+Rollout snapshots each open enrollment's PR/node/head/state/repositories/draft,
+enabled actor/time, and attribution evidence into a digest-bound receipt. The
+repository scan found this workflow is the sole `gh pr merge --auto` source.
+Apply re-reads exact eligible tuples, disables only workflow-attributed
+enrollments, post-reads the result, preserves explicit user/maintainer
+enrollments, and holds ambiguous provenance for host review. Workflow deletion
+requires zero proven workflow-owned open enrollments.
+
 ### Live GitHub label migration
 
 Before deleting label definitions, implementation snapshots the exact
@@ -311,11 +353,14 @@ the retired product:
 
 - `WebSite/site/src/lib/mcp/live.ts` reads
   `community-loop-watch.yml`, community-loop labels/issues, and
-  `/community-loop-status.json`;
+  `/community-loop-status.json`, and calls `community_change_context`;
 - `WebSite/site/static/community-loop-status.json` is a checked-in product
   snapshot;
+- `WebSite/site/src/lib/components/ChatDemo.svelte` narrates the privileged
+  file-to-daemon-to-gates-to-live loop on the homepage;
 - `WebSite/site/src/routes/fine-print/+page.svelte` names the workflow;
-- `WebSite/site-react/lib/live.ts` and its fine print mirror the same shape;
+- `WebSite/site-react/lib/live.ts` calls `community_change_context`, and its
+  fine print mirrors the same shape;
 - canonical site requirements name `/patch-loop` and the community-watch
   fallback.
 
@@ -361,6 +406,10 @@ The implementation must delete or rewrite behavior-positive tests, including:
 - `tests/test_auto_ship_ship_classes_config.py`
 - auto-ship alias cases in `tests/test_coding_packet_rubric.py`
 - `tests/test_merge_readiness.py` community-loop branding/assumptions
+- filing-effort route cases in `tests/test_wiki_tools.py` and related filing
+  suites
+- `tests/test_api_universe.py` and metadata/docstring tests that pin
+  `community_change_context`
 - auto-ship cases in `tests/test_universe_server_isolation.py`,
   `tests/test_api_status.py`, and reset/config tests
 - `tests/test_community_loop_watch.py`
@@ -370,9 +419,11 @@ The implementation must delete or rewrite behavior-positive tests, including:
 
 Replacement tests assert absence and preserve unrelated contracts:
 
-1. `file_bug` creates no task/receipt/run/write-back or automatic
-   dispatcher/triage route even with stale env keys;
-2. retired actions receive ordinary unknown-action behavior;
+1. `file_bug` creates no task/receipt/run/write-back, filing-effort
+   classification, or automatic dispatcher/triage route even with stale env
+   keys;
+2. retired actions, including `community_change_context`, receive ordinary
+   unknown-action behavior after the legacy-registration cutover;
 3. `get_status` works without `auto_ship_health`;
 4. generic canonical execution, dispatcher, completed-run reuse, evaluation,
    effects, and wiki writes still work;
@@ -380,8 +431,11 @@ Replacement tests assert absence and preserve unrelated contracts:
    history remains non-executable;
 6. the generic observer has no write/dispatch credentials or calls; the alarm
    sink is independently least-privileged;
-7. site routes/data/fine print expose no privileged patch/community loop;
-8. source, active config/specs/plans/wiki guidance, websites, executable tests,
+7. the auto-merge migrator preserves explicit enrollments and proves no
+   workflow-owned open enrollment remains;
+8. site routes/data/fine print/homepage expose no privileged patch/community
+   loop or retired context caller;
+9. source, active config/specs/plans/wiki guidance, websites, executable tests,
    workflows, and plugin output contain no retired shipped references.
 
 Historical design notes and audits may retain accurately labeled history. They
@@ -397,11 +451,14 @@ The target modifies seven capabilities:
 - `daemon-runtime-and-dispatch`: owns exact v1/v2 retirement transitions,
   #1803 reconciliation ordering, and pre-#1803 worker quiescence/deploy stop;
 - `development-coordination-runtime`: owns receipt-backed retirement of live
-  GitHub routing/status labels without losing open work or generic labels;
+  GitHub routing/status labels and standing workflow auto-merge enrollments
+  without losing open work, explicit choices, or generic labels;
 - `graph-execution-substrate`: gains the explicit user-authored composition
-  boundary and preserves generic run reuse without implicit write-back;
-- `wiki-commons`: loses trigger receipts and makes typed filing side-effect
-  boundaries explicit;
+  boundary, deletes the product community-context action after its
+  legacy-registration dependency, and preserves generic run reuse without
+  implicit write-back;
+- `wiki-commons`: loses trigger receipts and all derived filing-effort routing,
+  and makes typed filing side-effect boundaries explicit;
 - `uptime-and-alarms`: gains the generic read-only observation successor.
 - `public-website-surface`: removes the privileged patch-loop route/status
   fallback and keeps only provenance-correct generic workflow/uptime truth.
@@ -417,11 +474,15 @@ Implementation is not complete until all of the following are fresh and green:
 2. plugin rebuild/probe plus source/package absence scan;
 3. strict validation of this change and all OpenSpec;
 4. production env/queue/receipt/ledger quarantine and cleanup evidence;
-5. rendered chatbot `ui-test` through `https://tinyassets.io/mcp` proving
+5. `retire-legacy-live-mcp-tools` task 4.1 cutover evidence plus absence of the
+   internal `community_change_context` action/callers;
+6. receipt-backed live-label and auto-merge enrollment migrations, with zero
+   workflow-owned open enrollment and no hidden ambiguity;
+7. rendered chatbot `ui-test` through `https://tinyassets.io/mcp` proving
    filing-only behavior and absence of the status projection;
-6. canonical website plus any retained mirror build/absence evidence and normal
+8. canonical website plus any retained mirror build/absence evidence and normal
    public MCP, Tier-3 clone, production deploy, and website deploy observation;
-7. post-fix real-user evidence, or an explicit short watch item if none exists.
+9. post-fix real-user evidence, or an explicit short watch item if none exists.
 
 This audit authorizes no runtime edit. It records the verified target boundary
 for the later claimed implementation slice.

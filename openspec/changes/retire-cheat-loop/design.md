@@ -31,6 +31,9 @@ the primitives from which a user can build the same outcome explicitly.
   Goal-ID and branch-definition environment routes.
 - Make `file_bug` a filing operation with no hidden task, receipt, run,
   dispatcher/triage route, or write-back side effect.
+- Delete filing-effort classification and dispatch-route policy that emits
+  carrier, daemon-pickup, fast-lane, or opposite-family-checker semantics;
+  preserve ordinary filing fields and duplicate detection.
 - Remove dedicated `bug_investigation` handling from the runtime, deployment
   configuration, generated plugin payload, current operator guidance, and
   behavior-pinning tests.
@@ -43,6 +46,10 @@ the primitives from which a user can build the same outcome explicitly.
 - Remove hard-coded patch-intake writer/checker/access policy while preserving
   explicit requester pickup incentives, directed-daemon selection, and the
   user's soul-declared loop dispatch as ordinary user-authored routing.
+- Delete the internal `community_change_context` product action, its
+  auto-change/auto-fix queue semantics, hard-coded provider-family review rule,
+  website callers, tests, and plugin copies after the legacy-registration owner
+  removes its hidden MCP entry.
 - Move read-only uptime, deploy, clean-clone, and revert-rate observation to a
   generic uptime/alarm successor with no task-dispatch self-heal.
 
@@ -53,6 +60,8 @@ the primitives from which a user can build the same outcome explicitly.
   enqueue, or wiki write capabilities.
 - Removing generic evaluation or explicit GitHub-effect primitives from which a
   user may compose a reviewed shipping workflow.
+- Removing generic GitHub reads or PLAN lookup primitives from which a user may
+  build their own review-context workflow.
 - Removing `_universe_loop_dispatch`,
   `TINYASSETS_SOUL_LOOP_DISPATCH`, or a user's explicit
   soul-declared `loop_branch_def_id`; those are the user-authored automation
@@ -211,12 +220,14 @@ community-loop vocabulary; generic `KEEP_READY`, `APPROVE`, and ordinary
 release evidence remain.
 
 `file_bug` also stops publishing automatic dispatcher-facing fast-lane,
-carrier-review, navigator-triage, or daemon-pickup claims. Independently owned
-incentive metadata may remain only if it is inert filing data and no task,
-route, queue, receipt, or execution consumer is implied. Public prompts,
-control-station copy, current exec plans/specs/milestones, discoverable wiki
-plans, plugin mirrors, and behavior tests are updated or clearly archived so
-no current guidance promises the retired loop.
+carrier-review, navigator-triage, or daemon-pickup claims. Delete
+`classify_filing_effort`, `filing_effort_dispatch_route`, their product
+constants/tokens, markdown/frontmatter/response fields, and behavior-pinning
+tests rather than leaving a dormant policy helper. Ordinary filing fields,
+per-kind duplicate detection, and explicitly submitted tags remain. Public
+prompts, control-station copy, current exec plans/specs/milestones,
+discoverable wiki plans, plugin mirrors, and behavior tests are updated or
+clearly archived so no current guidance promises the retired loop.
 
 The product-wired intake classifier also leaves.
 `tinyassets.api.market.classify_patch_request` currently injects
@@ -230,6 +241,16 @@ ignored/stripped rather than treated as authority. Rename the surviving
 pickup-only boundary/normalizer constants away from patch-loop vocabulary.
 Explicit requester incentives, directed-daemon assignments, and
 soul-declared loop dispatch remain under their independent authority owners.
+
+The hidden-but-dispatchable `community_change_context` product stack also
+leaves: remove its internal action and action-map row,
+`_CHANGE_LOOP_PLAN_HEADINGS`, auto-change/auto-fix queue aggregation,
+hard-coded Codex-writer/Claude-checker standard, wrapper/plugin/tests, and both
+website callers. `retire-legacy-live-mcp-tools` owns removal of the exact six
+legacy MCP registrations and is therefore a cutover dependency; this change
+does not preserve the internal product action after registration retirement.
+Generic GitHub reads, PLAN reads, and graph composition remain available for a
+user-authored review-context design.
 
 The active `loop-uptime-maintenance` agent skill and its catalog routes are
 retired, not left as an emergency backdoor. Its incident records may remain
@@ -248,6 +269,20 @@ explicitly selected user/maintainer workflow with its own narrow authority and
 receipt. Generic PR-create, exact-head merge, and outbound-effect primitives
 remain available. The patch announcement script leaves when it has no
 independent explicit consumer.
+
+Workflow deletion is not sufficient because GitHub persists auto-merge
+enrollment on each pull request. Before deletion, a dry-run/apply migrator
+snapshots every open auto-enrolled PR's number/node id, exact head SHA, state,
+base/head repositories, draft flag, enabled actor/time, and attribution
+evidence into a digest-bound receipt. It attributes an enrollment to this
+workflow only when the exact eligible tuple matches and repository source
+evidence proves this is the sole `gh pr merge --auto` path for the
+`app/github-actions` actor. Apply re-reads the exact tuple immediately before
+disabling, skips/records a changed tuple, disables the attributed enrollment,
+and post-reads the PR into the receipt. Explicit user/maintainer enrollments
+remain untouched; ambiguous provenance is held for host review. Cutover
+requires zero proven workflow-owned open enrollment and no unresolved
+ambiguity hidden by workflow deletion.
 
 Live GitHub labels are executable routing/status vocabulary, not harmless
 documentation. Rollout snapshots every definition and every issue/PR bearing a
@@ -314,6 +349,10 @@ release, and stop deployment until #1803 becomes authoritative.
 - **Consumers call removed extension actions** -> Return the ordinary
   unknown-action behavior; do not retain aliases. Document that shipping is a
   user-built workflow composed from general effects.
+- **Deleting the workflow leaves durable merge instructions behind** ->
+  Receipt-snapshot open enrollments, disable only exact workflow-attributed
+  tuples with pre/post reads, preserve explicit choices, and stop on ambiguous
+  provenance rather than guessing.
 - **Historical documents trigger false-positive scans** -> Limit zero-reference
   gates to shipped runtime, active deployment/configuration, current runbooks,
   plugin payloads, and executable tests. Historical artifacts may retain
@@ -325,7 +364,8 @@ release, and stop deployment until #1803 becomes authoritative.
 
 ## Migration Plan
 
-1. Add negative tests for `file_bug` side effects and absence of the retired
+1. Add negative tests for `file_bug` side effects, filing-route classifiers,
+   the community-context action, and absence of the retired
    configuration/request type in source and package output.
 2. Remove the wiki trigger/receipt integration and the dedicated
    `bug_investigation` module and executor special cases.
@@ -334,24 +374,29 @@ release, and stop deployment until #1803 becomes authoritative.
 4. Rename the useful watch subset into a read-only generic uptime observer,
    separate it from the incident sink, least-privilege its workflow jobs, and
    remove workflow-dispatch self-heal.
-5. Remove environment/default/deploy/runbook references and update generic
+5. Coordinate the exact-six hidden MCP cutover with
+   `retire-legacy-live-mcp-tools`, then remove the internal
+   `community_change_context` stack without a compatibility action.
+6. Remove environment/default/deploy/runbook references and update generic
    dispatcher/examples.
-6. Remove website patch-loop/community-loop presentation and snapshots, retain
-   only provenance-correct generic workflow activity, and build both canonical
-   site and any retained mirror.
-7. Before workers or ordinary #1803 recovery start, activate fail-closed
+7. Remove website patch-loop/community-loop presentation, homepage narrative,
+   legacy community-context callers, and snapshots; retain only
+   provenance-correct generic workflow activity, and build both canonical site
+   and any retained mirror.
+8. Before workers or ordinary #1803 recovery start, activate fail-closed
    admission for the retired class, classify legacy rows, and reconcile any
    authority-store record under #1803's lock ordering. Apply only existing
    v1/v2 state/field transitions from the daemon-runtime delta; do not invent a
    retired/fenced task status. A pre-#1803 deployment must quiesce legacy
    workers and prove no claimed row or stop before runtime replacement.
-8. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
-9. Run focused tests, full relevant suites, lint, plugin build/probe, and
+9. Rebuild the Claude plugin and verify its runtime mirrors the clean source.
+10. Run focused tests, full relevant suites, lint, plugin build/probe, and
    repository scans for shipped references.
-10. Before deployment, inspect production for obsolete environment keys,
-   migrated request/receipt evidence, and auto-ship ledger/config state;
-   remove/archive them without executing them.
-11. Deploy and run the normal public MCP, clean-clone, production deploy, and
+11. Before deployment, inspect production for obsolete environment keys,
+   migrated request/receipt evidence, auto-ship ledger/config state, and open
+   auto-merge enrollments; disable only receipt-proven workflow enrollments and
+   remove/archive the other retired state without executing it.
+12. Deploy and run the normal public MCP, clean-clone, production deploy, and
    website deploy canaries. Verify `file_bug` in a rendered chatbot conversation
    files the page without an investigation/trigger side effect and `get_status`
    contains no cheat-specific health projection.

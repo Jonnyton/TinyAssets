@@ -55,3 +55,45 @@ retired label.
 - **WHEN** a labelled item also carries generic request, gate, checker, writer, payment, primitive-priority, or merge vocabulary
 - **THEN** those generic labels remain unchanged
 - **AND** no retired label is renamed into a compatibility alias
+
+### Requirement: Standing Workflow Auto-Merge Enrollments Are Revoked Without Overwriting Explicit Choices
+
+A pre-deletion migrator SHALL run before
+`.github/workflows/auto-enroll-merge.yml` is deleted and snapshot every open auto-enrolled pull request's
+number, node id, exact head SHA, state, base/head repositories, draft flag,
+enabled actor/time, and attribution evidence into a digest-bound receipt.
+
+An enrollment may be attributed to the standing workflow only when the pull
+request matches its exact same-repository, non-draft, `main`-target eligibility
+tuple, the enabling actor is `app/github-actions`, and repository source
+evidence proves this workflow is the sole `gh pr merge --auto` path for that
+actor. Apply SHALL re-read the exact tuple immediately before mutation,
+skip/record any changed tuple, disable only attributed enrollment, and
+post-read the result into the receipt. Explicit user/maintainer enrollment
+SHALL remain unchanged. Ambiguous provenance SHALL be held for host review,
+not guessed. Workflow deletion SHALL require zero workflow-owned open
+enrollment and no ambiguity hidden by deletion.
+
+#### Scenario: Dry run inventories durable merge instructions
+
+- **WHEN** the migrator runs in dry-run mode
+- **THEN** it emits the deterministic open-enrollment plan and receipt digest with no repository mutation
+- **AND** it distinguishes attributed, explicit, and ambiguous enrollment
+
+#### Scenario: Workflow enrollment is disabled against the exact tuple
+
+- **WHEN** apply re-reads an attributed enrollment and its state/head/eligibility tuple matches the receipt plan
+- **THEN** it disables auto-merge and records the post-read result
+- **AND** the pull request, branch, labels, reviews, content, and explicit merge primitive remain unchanged
+
+#### Scenario: Explicit or ambiguous enrollment is preserved
+
+- **WHEN** an enrollment was enabled by a user/maintainer or attribution is not conclusive
+- **THEN** apply leaves it unchanged
+- **AND** ambiguous provenance blocks workflow deletion pending host review
+
+#### Scenario: Concurrent PR change fails closed
+
+- **WHEN** a planned pull request's head SHA, state, repository tuple, draft flag, actor, or enrollment changes before mutation
+- **THEN** apply skips mutation and records the changed tuple for a fresh plan
+- **AND** it does not infer that a new enrollment belongs to the retired workflow

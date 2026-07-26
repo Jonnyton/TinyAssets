@@ -1,10 +1,10 @@
 ## 0. Target And Review Gates
 
-- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation, auto-ship, status, configuration, deployment, named workflows, live GitHub labels/open-item routing, active skills/souls, automatic patch-announcement effects, generated website snapshots, tests, and the Claude plugin mirror; distinguish generic primitives, independent repo integration, and historical records.
+- [x] 0.1 Inventory the complete shipped cheat-loop surface across bug filing/investigation and filing-effort routing, auto-ship, hidden community-change context, status, configuration, deployment, named workflows, live GitHub labels/open-item routing and auto-merge enrollments, active skills/souls, automatic patch-announcement effects, generated website snapshots, tests, and the Claude plugin mirror; distinguish generic primitives, independent repo integration, and historical records.
 - [x] 0.2 Write the target proposal, design, seven capability deltas, and dated source audit for complete product removal rather than a disabled flag, alias, renamed loop, or replacement platform automation.
 - [ ] 0.3 Obtain exact-head independent architecture/spec/diff review and fresh Claude Opus 5 opposite-provider APPROVE; fold every adaptation into a new exact reviewed SHA.
 - [ ] 0.4 Record the host's standing 2026-07-26 acceptance only after reviewers agree the complete removal boundary is fully figured out; stop if any unresolved host design choice remains.
-- [ ] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, and publish the target-only draft PR without runtime, deployment, or production mutation.
+- [ ] 0.5 Rebase or merge current `origin/main`, rerun provider-context/claim/collision checks, record the `retire-legacy-live-mcp-tools` task 4.1 cutover dependency, and publish the target-only draft PR without runtime, deployment, or production mutation.
 
 ## 1. Freeze The Removal Boundary
 
@@ -12,7 +12,10 @@
   trigger receipt, BranchTask, run, Investigation/Patch Packet section, or
   `investigation`/`trigger` response block even when both retired environment
   variables are present; also prove it emits no fast-lane, carrier-review,
-  navigator-triage, daemon-pickup, or other automatic dispatcher-facing route.
+  navigator-triage, daemon-pickup, or other automatic dispatcher-facing route;
+  delete `classify_filing_effort`, `filing_effort_dispatch_route`, their
+  constants/tokens and markdown/frontmatter/response metadata, and prove
+  ordinary filing fields plus per-kind duplicate detection remain.
 - [ ] 1.2 Add absence tests for the `bug_investigation` request class, the
   `validate_ship_packet` and `open_auto_ship_pr` actions, and
   `get_status.auto_ship_health`, auto-ship coding-rubric aliases/config, and
@@ -73,6 +76,12 @@
   explicit requester pickup incentives, authorized directed-daemon selection,
   `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and user-owned
   soul `loop_branch_def_id` execution under their independent authority.
+- [ ] 2.7 After `retire-legacy-live-mcp-tools` task 4.1 removes the exact six
+  hidden MCP registrations, delete the internal `community_change_context`
+  action, action-map row, wrapper, `_CHANGE_LOOP_PLAN_HEADINGS`,
+  auto-change/auto-fix queue aggregation, Codex-writer/Claude-checker rule,
+  plugin copies, tests, and both website callers. Preserve generic GitHub/PLAN
+  reads for user-authored review-context workflows; add no alias.
 
 ## 3. Remove Auto-Ship Product Automation
 
@@ -111,6 +120,15 @@
   `priority:primitive-*`, `patch_request`, `merge-effector`, and `secure-merge`
   labels. Prove `patch_request` has no active routing consumer and cannot imply
   writer/checker/daemon/merge/effect authority.
+- [ ] 3.7 Add a dry-run/apply auto-merge retirement migrator. Snapshot every
+  open auto-enrolled PR's number/node/head/state/repositories/draft/enabled
+  actor+time and attribution evidence into a digest-bound receipt. Attribute
+  only exact eligible `app/github-actions` tuples proven to come from the sole
+  repository `gh pr merge --auto` path; re-read the exact tuple before
+  mutation, skip/record changes, disable attributed enrollment, and post-read
+  the result. Preserve user/maintainer enrollments, hold ambiguous provenance
+  for host review, and require zero workflow-owned open enrollments before
+  deleting `.github/workflows/auto-enroll-merge.yml`.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
@@ -136,12 +154,15 @@
 
 - [ ] 5.1 Remove the canonical Svelte site's patch-loop application,
   `community-loop-status.json`, community workflow/label/issue fallbacks, and
-  fine-print branding; make `/patch-loop` a static soft landing to generic
-  patterns/commons and keep `/loop` only as provenance-labeled user-workflow
-  activity.
+  fine-print branding; remove `WebSite/site/src/lib/components/ChatDemo.svelte`
+  privileged file-to-daemon-to-gates-to-live narrative and the canonical
+  `community_change_context` caller; make `/patch-loop` a static soft landing
+  to generic patterns/commons and keep `/loop` only as provenance-labeled
+  user-workflow activity.
 - [ ] 5.2 Remove or update the legacy React mirror, its fine print, tests, and
-  build artifacts; delete it if non-shipped, otherwise prove parity and absence
-  of every retired website reference.
+  `community_change_context` caller, and build artifacts; delete it if
+  non-shipped, otherwise prove parity and absence of every retired website
+  reference.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
@@ -163,7 +184,7 @@
   skill sync, and prove `.agents`/`.claude` contain no privileged loop
   instruction.
 - [ ] 6.3 Run focused wiki, dispatcher/executor/migration, extension/auth,
-  status, uptime,
+  filing-route, community-context, auto-merge-state, status, uptime,
   deploy-workflow, reset, and plugin tests plus ruff, plugin probe/build,
   `git diff --check`, and strict validation for this change and all OpenSpec.
 - [ ] 6.4 Run repository scans that distinguish clearly marked historical docs
@@ -172,7 +193,8 @@
   executable tests, workflows, and package output; all shipped/current scopes
   must be clean. Query live GitHub labels and open items to prove the 28 retired
   definitions and their routing/status consumption are absent while generic
-  labels remain.
+  labels remain; prove no workflow-owned open auto-merge enrollment or
+  unresolved attribution is hidden by workflow deletion.
 - [ ] 6.5 Perform the final rendered-chatbot `ui-test` through
   `https://tinyassets.io/mcp`: file a page and inspect status, proving filing has
   no hidden automation/routing claim and status has no cheat-specific projection.

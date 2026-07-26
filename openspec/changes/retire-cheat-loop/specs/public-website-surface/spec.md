@@ -42,12 +42,13 @@ workflow activity from active runs, running queue items, or recent
 run/universe signals only when it labels their live/snapshot provenance. It
 MUST NOT present those signals as a privileged platform loop.
 
-The site SHALL remove the checked-in `community-loop-status.json`, community
-loop workflow/label/issue assumptions, patch-loop feeds, and fine-print
-branding. A generic platform-uptime snapshot MAY be displayed only when it is
-produced by the independently owned uptime/alarm contract and clearly labeled
-as platform observation; it MUST NOT be used as evidence that user task work
-is moving.
+The site SHALL remove the checked-in `community-loop-status.json`, both
+canonical/legacy `community_change_context` callers, the homepage
+`ChatDemo.svelte` file-to-daemon-to-gates-to-live narrative, community-loop
+workflow/label/issue assumptions, patch-loop feeds, and fine-print branding. A
+generic platform-uptime snapshot MAY be displayed only when it is produced by
+the independently owned uptime/alarm contract and clearly labeled as platform
+observation; it MUST NOT be used as evidence that user task work is moving.
 
 #### Scenario: Server is reachable but no recent user work exists
 
@@ -64,5 +65,5 @@ is moving.
 #### Scenario: Canonical site and retained mirror are scan-clean
 
 - **WHEN** website source, static assets, fine print, tests, build output, and any retained legacy React mirror are scanned
-- **THEN** no shipped community-loop status artifact, patch-loop application, workflow/label fallback, or privileged-loop promise remains
+- **THEN** no shipped community-loop status artifact, patch-loop application, `community_change_context` caller, homepage privileged-loop narrative, workflow/label fallback, or privileged-loop promise remains
 - **AND** a non-shipped legacy mirror is deleted rather than preserved as stale product code

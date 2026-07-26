@@ -16,6 +16,12 @@ publish those designs to the commons for copying, remixing, or combination.
   investigation or shipping workflow
 - **AND** any later automation requires an explicit user-authored composition
 
+#### Scenario: Filing contains no hidden triage route
+
+- **WHEN** a user files a bug, feature, design, or patch-request page
+- **THEN** the filing does not classify or publish carrier review, daemon pickup, merge-instant fast-lane, navigator triage, or opposite-family-checker policy
+- **AND** ordinary filing fields and duplicate detection do not imply a task, provider, queue, run, review, or effect route
+
 #### Scenario: A user composes automation from generic primitives
 
 - **WHEN** an authorized user wants to connect intake, graph execution,
@@ -44,6 +50,32 @@ publish those designs to the commons for copying, remixing, or combination.
 - **WHEN** a generic effect opens a same-repository pull request or a deployment/main push completes
 - **THEN** TinyAssets does not implicitly enroll the pull request for merge or automatically compose and post a patch-loop announcement
 - **AND** any later merge or outbound announcement is an explicitly selected workflow with its own narrow capability, exact-target authorization, and receipt
+
+### Requirement: Product Community Review Context Is Not A Hidden Dispatch Action
+
+TinyAssets SHALL NOT retain the internal `community_change_context` product
+stack after the exact-six legacy MCP registration cutover owned by
+`retire-legacy-live-mcp-tools`, including its
+action, action-map row, wrapper, plan-heading
+policy, auto-change/auto-fix queue aggregation, provider-family review rule,
+plugin copy, website caller, or behavior-pinning test. It SHALL NOT rename or
+alias that product composition.
+
+Generic GitHub reads, PLAN reads, graph composition, and explicitly authorized
+effects SHALL remain available so a user may build and publish a review-context
+workflow under ordinary identity and authority rules.
+
+#### Scenario: Retired community context cannot dispatch internally
+
+- **WHEN** a caller submits the former `community_change_context` action after cutover
+- **THEN** ordinary unknown-action/tool behavior is returned
+- **AND** no hidden handler aggregates a platform queue or selects a writer/checker family
+
+#### Scenario: User authors review context from generic reads
+
+- **WHEN** a user wants a workflow to compare repository evidence with PLAN
+- **THEN** they compose or install that behavior from ordinary read and graph primitives
+- **AND** the design receives no implicit provider, reviewer, merge, credential, or effect authority
 
 ### Requirement: Explicit User Request Routing Survives Without A Product Writer Policy
 

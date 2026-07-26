@@ -8,9 +8,11 @@ resolving an investigation handler, enqueueing a BranchTask, starting a run, or
 appending an investigation section. It SHALL NOT attach automatic fast-lane,
 carrier-review, navigator-triage, daemon-pickup, or other dispatcher-facing
 route claims. Its response SHALL NOT expose the retired `investigation` or
-`trigger` blocks or describe the filing as sent to a hidden pipeline.
-Independently owned incentive fields may remain only as inert filing metadata
-with no task, route, receipt, queue, or execution consumer.
+`trigger` blocks or describe the filing as sent to a hidden pipeline. It SHALL
+NOT derive or store an effort class, attention class, dispatch lane,
+pickup-signal weight, triage policy, checker family, or product authority
+boundary. Ordinary submitted filing fields and per-kind duplicate detection
+remain without implying task, route, receipt, queue, review, or execution.
 
 #### Scenario: Filing succeeds without task state
 
@@ -21,9 +23,9 @@ with no task, route, receipt, queue, or execution consumer.
 
 #### Scenario: Filing metadata cannot imply an automatic route
 
-- **WHEN** a valid filing includes or derives incentive or review metadata
+- **WHEN** a valid filing contains fields or text that the retired effort classifier treated as merge-instant or ghost-risk
 - **THEN** the result makes no automatic fast-lane, carrier-review, navigator-triage, daemon-pickup, or queue claim
-- **AND** any retained generic incentive metadata is inert until an explicit user-authored workflow consumes it under ordinary authority
+- **AND** the page/response contains no derived effort/attention/dispatch/checker product policy
 
 #### Scenario: Obsolete environment configuration has no effect
 

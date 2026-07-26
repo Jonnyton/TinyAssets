@@ -11,8 +11,10 @@ public primitives, not a product-specific hidden loop.
 
 - **BREAKING** Remove the implicit investigation trigger, trigger receipt, and
   automatic dispatcher/triage routing metadata from `file_bug`; filing a page
-  performs only the documented filing operation. Generic incentive fields may
-  remain only as inert filing metadata under an independent owner.
+  performs only the documented filing operation. Delete
+  `classify_filing_effort`, `filing_effort_dispatch_route`, their route
+  constants/tokens, stored/response metadata, and behavior-pinning tests;
+  generic filing fields and duplicate detection remain.
 - **BREAKING** Remove the dedicated `bug_investigation` request type, payload
   adapter, handler resolution, execution special cases, and automatic Patch
   Packet write-back from shipped runtime and tests.
@@ -35,13 +37,20 @@ public primitives, not a product-specific hidden loop.
 - Retire the `community-patch-loop` capability and every named shipped
   community-loop artifact rather than leaving a disabled or renamed product
   loop.
+- Delete the product-specific internal `community_change_context` action,
+  handler, plan-heading/auto-change queue logic, Codex-writer/Claude-checker
+  rule, plugin copies, tests, and website callers. Its hidden MCP registration
+  leaves through the exact-six registration removal owned by
+  `retire-legacy-live-mcp-tools`; this change depends on that cutover rather
+  than preserving a dispatchable internal compatibility path.
 - Snapshot and remove the 28 live GitHub label definitions that encode retired
   loop routing/status, strip them from open issues/PRs without closing or
   rewriting user content, preserve generic request/gate/checker/payment labels,
   including non-routing `patch_request` filing/effect trace vocabulary, and
   publish an idempotent migration receipt plus repository-wide notice.
 - Remove the public website's privileged patch-loop route/status fallback,
-  checked-in community-loop JSON, workflow/label assumptions, and fine-print
+  checked-in community-loop JSON, `community_change_context` callers, homepage
+  `ChatDemo.svelte` loop narrative, workflow/label assumptions, and fine-print
   branding. Preserve a generic user-workflow activity view only when it has
   live/snapshot provenance and does not imply a platform-owned loop.
 - Keep generic Goal canonical selection, dispatcher/request admission, node
@@ -88,7 +97,8 @@ The implementation slice removes cheat-loop consumers from
 `fantasy_daemon/__main__.py`, `tinyassets/auto_ship*.py`,
 `tinyassets/api/auto_ship_actions.py`, extension/auth action registration,
 `get_status`, dispatcher/compiler comments and defaults, queued legacy request
-state, hard-coded patch-request classification and downstream metadata,
+state, hard-coded patch-request and filing-effort classification/routing
+metadata, the internal `community_change_context` action and callers,
 coding-packet auto-ship aliases/config/rubrics, merge-readiness branding,
 public prompts/control-station copy, active plans/wiki guidance,
 `tinyassets/wiki/trigger_receipts.py`, `scripts/community_loop_watch.py`,
@@ -99,10 +109,13 @@ skills and loop souls, automatic patch-announcement workflow, current
 "auto-fix loop" wording, generated Claude plugin runtime mirror, and tests that
 assert the retired behavior. The repository auto-enrollment workflow also
 leaves because it escalates generic PR creation into merge without the
-separately required merge authority and receipt. Historical design/audit
-records may retain clearly marked history; current operator guidance,
-configuration, build outputs, behavioral specs, and agent instructions must
-not advertise or exercise the retired path or capability.
+separately required merge authority and receipt. A receipt-backed external
+migration snapshots and disables every still-open auto-merge enrollment proven
+to have been created by that workflow, while preserving explicit
+user/maintainer enrollments and holding ambiguous provenance for review.
+Historical design/audit records may retain clearly marked history; current
+operator guidance, configuration, build outputs, behavioral specs, and agent
+instructions must not advertise or exercise the retired path or capability.
 
 Existing generic primitives are not replaced or aliased. Users who want bug
 investigation, patch generation, PR effects, scheduled work, or similar

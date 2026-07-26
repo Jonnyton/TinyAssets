@@ -1,6 +1,6 @@
 # TinyAssets — Plan
 
-How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, the auto-change loop, user chatbots — consults before building, so that the applicable module's shape is known before code is written.
+How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, AI provider sessions, user chatbots, and user-authored automations — consults before building, so that the applicable module's shape is known before code is written.
 
 For live state, see STATUS.md. For how to work on the project, see AGENTS.md. **Changes here require user approval.**
 
@@ -153,7 +153,7 @@ These principles apply to every module. They do not own a module each; they cons
 
 ## How to Use This PLAN
 
-PLAN.md is the working theory of what each module is and how it works. **Everyone references it before building** — human contributors, the auto-change loop, the user chatbots, the agent teams. If your work doesn't fit one of the modules below, that gap is the design conversation.
+PLAN.md is the working theory of what each module is and how it works. **Everyone references it before building** — human contributors, AI provider sessions, user chatbots, user-authored automations, and agent teams. If your work doesn't fit one of the modules below, that gap is the design conversation.
 
 **Skill anchors.** Each named project skill ties into one PLAN.md surface; invoke the skill before or during module work, not after:
 
