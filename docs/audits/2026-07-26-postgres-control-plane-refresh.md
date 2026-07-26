@@ -9,9 +9,9 @@ and `27f19947`; historical packet review remains on
 `origin/codex/restack-postgres-control-plane-20260725`
 
 **Status:** exact semantic SHA `bc5fdcbb` approved by Claude Opus 5 and three
-independent Codex-side architecture/spec/verification review paths; draft PR
-#1802 published. Host acceptance and every implementation/production gate
-remain open.
+independent Codex-side architecture/spec/verification review paths; host
+accepted the fully reconciled target boundary on 2026-07-26; draft PR #1802
+published. Every implementation and production gate remains open.
 
 **Authority:** target OpenSpec/audit only. No PLAN, SQL, runtime, production
 inventory, Supabase mutation, migration, first write, sync, archive,
