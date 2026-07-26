@@ -9,8 +9,9 @@ The system SHALL represent authorization for later provider-capable work as a se
 
 #### Scenario: Deferred request records intent while request authority is live
 - **WHEN** an authenticated connector message authorizes a registered background-capable operation that will execute after request middleware returns
-- **THEN** TinyAssets middleware creates an inert single-message binding draft after reading the exact current `request_ctx.get().request` and authorizing the target but before awaiting the tool or dispatch augmentation
-- **AND** the operation consumes that draft transactionally with the deferred work item
+- **THEN** TinyAssets middleware creates an inert single-message binding draft for the authenticated principal and registered operation after reading the exact current `request_ctx.get().request` but before awaiting the tool or dispatch augmentation
+- **AND** the operation resolves the exact target and consumes that draft transactionally with the deferred work item
+- **AND** just-in-time receipt issuance authorizes the resolved target against current server state
 - **AND** the deferred worker receives no inherited or snapshotted request capability
 
 #### Scenario: Deferred work misses the recording boundary
@@ -80,12 +81,13 @@ The system SHALL permit at most one active `ProviderWorkExecutionClaim` for a re
 - **THEN** exactly one claim succeeds atomically
 - **AND** the loser cannot reserve or launch a provider invocation
 
-#### Scenario: Provably dead owner with proven absence is reclaimable
-- **WHEN** the current claim owner is provably dead and the receipt has no reservation or only reservations durably `cancelled_before_launch`
-- **THEN** the system may atomically expire the old claim and issue a bounded replacement claim
+#### Scenario: Provably dead owner with conclusive reservations is reclaimable
+- **WHEN** the current claim owner is provably dead and the receipt has no reservation or every reservation is durably `cancelled_before_launch`, `succeeded`, or `failed`
+- **THEN** the system may atomically expire the old claim and issue a bounded replacement claim for remaining authorized work
+- **AND** consumed terminal invocation and budget amounts remain consumed
 
 #### Scenario: Ambiguous launch is fenced
-- **WHEN** worker death leaves a `reserved` reservation or transport ambiguity prevents proof that an invocation remained pre-launch
+- **WHEN** worker death leaves a `reserved`, unclosed `launch_started`, or `indeterminate` reservation
 - **THEN** the receipt enters `fenced_indeterminate`
 - **AND** the system performs no automatic retry, reclaim, or fallback from that receipt
 
@@ -94,13 +96,21 @@ The system SHALL reserve and durably arm a `ProviderInvocationReservation` befor
 
 #### Scenario: Reservation establishes a unique ordinal
 - **WHEN** a valid claimed receipt reserves an invocation
-- **THEN** the authority store atomically assigns the next unique ordinal and reserves the receipt's invocation plus worst-case token and cost ceilings derived from the resolved `ModelConfig` token cap and server-owned provider/model price ceiling
+- **THEN** the authority store atomically assigns the next unique ordinal and reserves the receipt's invocation plus worst-case token and cost ceilings derived from the resolved finite `ModelConfig` token cap and server-owned provider/model price ceiling
+- **AND** a null token cap is replaced by a finite conservative server-owned provider/model/role ceiling or the attempt holds
+- **AND** a subscription CLI provider reserves one server-defined subscription-invocation cost unit instead of fabricated per-token currency
 
 #### Scenario: Launch fence commits before admission and transport
 - **WHEN** a reserved provider attempt is ready to enter the parent provider-routing sequence
 - **THEN** the authority store durably commits `launch_started` and closes its transaction before assignment admission is acquired
-- **AND** the parent sequence revalidates the exact expected assignment tuple and armed reservation before minting the invocation
+- **AND** the carrier freezes the receipt generation, claim generation, reservation ordinal and digest, expected assignment tuple, and revocation or cancellation generation
+- **AND** the parent sequence validates that carried frozen tuple under admission without acquiring the authority store before minting the invocation
 - **AND** no authority-store lock is acquired while assignment admission or a credential lock is held
+
+#### Scenario: Arming chooses the revocation race winner
+- **WHEN** revocation or cancellation commits before `launch_started`
+- **THEN** the attempt cannot arm or launch
+- **AND** when `launch_started` commits first, that single frozen attempt may proceed if parent assignment admission still validates while the revocation prevents every later reservation
 
 #### Scenario: Launch consumes the slot
 - **WHEN** a reservation reaches `launch_started`
@@ -123,9 +133,10 @@ The system SHALL reserve and durably arm a `ProviderInvocationReservation` befor
 - **WHEN** one logical judge operation resolves an ensemble of N direct provider launches
 - **THEN** the system atomically reserves N unique ordinals and every member's worst-case budget before any member launches
 - **AND** insufficient authority holds the entire ensemble without partial fan-out
+- **AND** each member enters the parent `ProviderInvocation` and `ProviderExecutor` sink rather than calling a bare provider directly
 
 ### Requirement: Authority lifecycle and restart reconciliation are monotonic
-The system SHALL maintain monotonic binding, receipt, claim, and reservation states; terminal state transitions SHALL be first-writer-wins and SHALL preserve evidence needed to reconcile crashes safely.
+The system SHALL maintain monotonic binding, receipt, claim, and reservation states; conclusive terminal state transitions SHALL be first-writer-wins and SHALL preserve evidence needed to reconcile crashes safely, while `indeterminate` and `fenced_indeterminate` remain non-runnable states that only authoritative evidence may advance to a matching conclusive terminal.
 
 #### Scenario: Startup expires unused receipts
 - **WHEN** startup reconciliation finds an expired unclaimed receipt
@@ -138,6 +149,24 @@ The system SHALL maintain monotonic binding, receipt, claim, and reservation sta
 #### Scenario: Startup cannot prove absence
 - **WHEN** reconciliation cannot prove that an invocation was never launched or cannot read required authority evidence
 - **THEN** it preserves the evidence, fences or holds the work, and does not retry or delete it
+
+#### Scenario: Autonomous reconciliation resolves a fence
+- **WHEN** provider launch-handle, attempt-receipt, outbound-proxy, child-process, or durable result evidence conclusively proves non-launch, success, or failure
+- **THEN** the reconciler advances the indeterminate reservation once to `cancelled_before_launch`, `succeeded`, or `failed` respectively
+- **AND** it reclaims remaining authorized work only after every reservation is conclusive
+
+#### Scenario: Ambiguity exceeds the reconciliation window
+- **WHEN** bounded autonomous reconciliation cannot obtain conclusive evidence
+- **THEN** the work remains non-runnable and emits an explicit `manual_resolution_required` operator action
+- **AND** global cutover remains prohibited for any transport unable to surface that state safely
+
+#### Scenario: Ambiguous transport enters indeterminate
+- **WHEN** an armed attempt lacks conclusive proof of success, failure, or non-launch
+- **THEN** its reservation enters `indeterminate` and its receipt becomes `fenced_indeterminate`
+
+#### Scenario: Conclusive post-arm failure is terminal
+- **WHEN** admission or launch fails after arming and durable evidence proves the failure outcome
+- **THEN** the reservation becomes `failed`, its invocation slot remains consumed, and only proven unused token or cost budget may settle
 
 #### Scenario: Cancellation is final for future launches
 - **WHEN** cancellation wins the receipt's terminal transition before a new reservation reaches `launch_started`
@@ -155,10 +184,11 @@ The system SHALL authorize the fixed private `_AUTH_PROBE_PROMPT` under V2 only 
 - **WHEN** a maintenance receipt is presented with user content, a different prompt digest, graph work, child work, or a different provider operation
 - **THEN** the system rejects it before the provider authority sink
 
-#### Scenario: Ordinary V2 routing cannot launch the probe
+#### Scenario: Ordinary V2 routing keeps the non-completion auth ladder
 - **WHEN** universe or request provider routing evaluates subscription auth health under an effective V2 gate
-- **THEN** it consumes cached auth-health state only
-- **AND** it cannot launch `_AUTH_PROBE_PROMPT`, borrow the universe receipt, or resolve maintainer credentials from ambient process state
+- **THEN** it may consume cached state and the canonical read-only subscription-auth presence and freshness ladder
+- **AND** absent or empty configuration yields `not_logged_in`, while unreadable or unresolved presence quarantines without assuming healthy
+- **AND** it cannot launch the `_AUTH_PROBE_PROMPT` completion, borrow the universe receipt for that completion, dereference maintainer credentials, or start the maintainer CLI
 
 ### Requirement: Enforcement rollout is server-owned and fail-closed
 The system SHALL preserve shipped behavior while provider-authority V2 is dark and SHALL enable receipt enforcement only through server-owned gates that caller payloads cannot widen or select.
@@ -175,6 +205,26 @@ The system SHALL preserve shipped behavior while provider-authority V2 is dark a
 #### Scenario: Global cutover requires both canaries
 - **WHEN** an operator attempts global provider-authority V2 cutover
 - **THEN** the system requires successful isolated universe-work and maintenance canary evidence, including concurrent claim and launch proof
+
+### Requirement: Every provider-capable call site has one authority classification
+The background provider execution authority owner SHALL maintain a mechanically checked whole-runtime inventory in which every production provider-capable caller, injected callable, router-internal completion, and packaged runtime mirror has exactly one authority classification.
+
+#### Scenario: Call-site inventory is complete
+- **WHEN** CI scans universe intelligence, compiled nodes and routers, the async judge-ensemble `gather` and direct provider members, run and child bridges, schedules and daemon workers, maintenance probes, editorial and ingestion paths, retrieval and RAPTOR paths, reflexion, entity extraction, community evaluation, and the mirrored Claude plugin
+- **THEN** each provider-capable call site is classified as live-request authority, host authority, background receipt authority, maintenance authority, accepted-market remote dispatch, or proven non-provider or mock-only
+
+#### Scenario: Successor-owned classifications remain empty
+- **WHEN** `activate-requester-host-engines` or `activate-connector-requester-authority` has not landed its authority owner
+- **THEN** attested host-request and accepted-market remote classifications respectively contain no production call site
+- **AND** any attempted use fails the call-site closure gate
+
+#### Scenario: Unclassified provider call fails the gate
+- **WHEN** a new or changed production call site can reach provider execution without one exact classification and carrier path
+- **THEN** the call-site closure check fails before the change can land
+
+#### Scenario: Mirrored runtime remains equivalent
+- **WHEN** authority-carrier behavior changes in the canonical runtime
+- **THEN** the packaged Claude-plugin mirror exposes the same background receipt enforcement or is proven not to contain the affected provider path
 
 ### Requirement: Authority observability is secret-free
 The system SHALL emit receipt, claim, reservation, hold, fence, and reconciliation observability without prompts, outputs, credentials, claim nonces, reusable bearer material, or raw private identity.

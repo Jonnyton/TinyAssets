@@ -116,12 +116,14 @@ server-owned transitions:
 
 - **Deferred/task-augmented request:** TinyAssets-owned
   `Middleware.on_call_tool` creates an inert, single-message binding draft
-  after it reads `request_ctx.get().request`, re-derives bearer identity, and
-  authorizes the exact target, but before it structurally awaits `call_next`
-  or any dispatch augmentation. Only a registered background-capable
-  operation may consume that draft transactionally with its deferred work
-  item. The later worker mints no request capability. Work that becomes
-  deferred before this boundary has no issuance root and holds.
+  after it reads `request_ctx.get().request` and re-derives bearer identity,
+  but before it structurally awaits `call_next` or any dispatch augmentation.
+  The draft binds only principal, message, and registered operation; it is not
+  target authority. The tool resolves the exact target and consumes the draft
+  transactionally with its deferred work item. Just-in-time receipt issuance
+  performs target authorization against that resolved server record. The
+  later worker mints no request capability. Work that becomes deferred before
+  this boundary has no issuance root and holds.
 - **Schedule/subscription:** the background-branch authority owner records the
   authenticated principal, target authorization, operation, and limits at
   authorized creation. This change consumes that server-owned record; it does
@@ -132,7 +134,11 @@ server-owned transitions:
 - **Run/resume/daemon activation:** an authorized run or daemon activation
   records its durable binding. Resume/cycle issuance revalidates ownership,
   target visibility/authorization, non-cancelled state, and current daemon
-  eligibility.
+  eligibility. Concurrent resume first claims one durable resume-attempt
+  idempotency record by conditional transition from `interrupted`; only that
+  attempt may issue the receipt. The run remains publicly `interrupted` until
+  the same attempt links its receipt and commits `resumed`. Crash recovery
+  resumes or revokes that exact attempt and never creates a second receipt.
 - **Child/background work:** an active parent receipt may ask the server to
   create a child binding only when the child remains within the parent’s
   universe/branch lineage, allowed operation set, depth, lifetime, and
@@ -204,16 +210,23 @@ item, and lease. Heartbeat may extend the claim only for that exact owner and
 never extends the receipt’s absolute lifetime or budget.
 
 If a worker is provably dead and the receipt has no reservation, or every
-reservation is durably `cancelled_before_launch`, the server may expire the
-claim and issue a new claim generation for the same logical receipt. A
-`reserved` reservation owned by a dead worker is ambiguous and fences; it is
-never inferred to be pre-launch. Every stale object/envelope from the old
-generation then fails.
+reservation has a durable conclusive state (`cancelled_before_launch`,
+`succeeded`, or `failed`), the server may expire the claim and issue a new
+claim generation for the remaining authorized work. Consumed terminal slots
+and budgets remain consumed. A `reserved`, unclosed `launch_started`, or
+`indeterminate` reservation owned by a dead worker is ambiguous and fences;
+it is never inferred to be pre-launch. Every stale object/envelope from the
+old generation then fails.
 
-If any reservation may have launched but lacks a terminal result, the receipt
-becomes `fenced_indeterminate`. It cannot be reclaimed or retried
-automatically. Operator/reconciliation evidence must resolve or replace the
-work. This follows the provider target’s durable launch-fence rule and avoids
+If any reservation may have launched but lacks a conclusive result, the
+receipt becomes `fenced_indeterminate`. It cannot be reclaimed or retried
+automatically. An autonomous reconciler first consumes provider launch-handle,
+attempt-receipt, outbound-proxy, child-process, and durable result evidence to
+resolve proven absence, success, or failure. If evidence remains ambiguous
+after the bounded reconciliation window, the work stays non-runnable and
+emits the smallest explicit `manual_resolution_required` operator action;
+global cutover is prohibited for a transport that cannot surface that state.
+This follows the provider target’s durable launch-fence rule and avoids
 duplicate cost/effects disguised as recovery.
 
 ### 7. Provider launches consume atomic receipt reservations
@@ -225,20 +238,35 @@ membership, current claim/receipt/binding state, and an expected provider
 assignment tuple. The authority transaction then durably transitions the
 reservation to `launch_started` and closes before assignment admission is
 acquired. `launch_started` means the irreversible launch fence is armed, not
-that transport is known to have started. The parent provider-routing sequence
-revalidates that exact expected tuple and armed reservation under assignment
-admission before minting `ProviderInvocation`. A later admission or launch
-failure consumes the armed slot conservatively; no authority-store lock is
-reacquired under admission. Dynamic provider routing may narrow afterward but
-cannot refund or widen authority.
+that transport is known to have started. The carrier then freezes the receipt
+generation, claim generation, reservation ordinal/digest, expected assignment
+tuple, and revocation/cancellation generation. The parent provider-routing
+sequence validates that carried frozen tuple under assignment admission
+without rereading the authority store before minting `ProviderInvocation`. A
+revocation or cancellation committed before arming wins and prevents the
+attempt; once arming commits, that single attempt owns the launch race and may
+proceed if parent admission still validates, while the revocation prevents
+every later reservation. A later admission or launch failure consumes the
+armed slot conservatively; no authority-store lock is reacquired under
+admission. Dynamic provider routing may narrow afterward but cannot refund or
+widen authority.
 
 Reservation states are `reserved`, `launch_started`, `succeeded`, `failed`,
-`cancelled_before_launch`, and `indeterminate`. A reservation cancelled before
+`cancelled_before_launch`, and `indeterminate`. `indeterminate` is a fenced
+non-conclusive state entered when an armed attempt lacks proof of success,
+failure, or non-launch; authoritative reconciliation may advance it once to
+`cancelled_before_launch`, `succeeded`, or `failed`. An admission or launch
+failure with conclusive no-transport or failure evidence becomes `failed`;
+ambiguous transport becomes `indeterminate`. A reservation cancelled before
 the launch fence is armed releases its full invocation, token, and cost
 reservation. Once `launch_started`, the invocation slot remains consumed
 regardless of provider outcome. Token and cost authority reserve the
 server-owned worst case derived from the resolved provider/model price
-ceiling and `ModelConfig` token cap. An authoritative terminal usage record
+ceiling and `ModelConfig` token cap. If `max_tokens` is `None`, the adapter
+must substitute a finite conservative server-owned ceiling for the exact
+provider/model/role or hold. Subscription CLI providers reserve one
+server-defined subscription-invocation cost unit rather than fabricated
+per-token currency. An authoritative terminal usage record
 may refund only the proven unused portion after admission release; absent or
 ambiguous usage retains the full reservation. Provider fallback/retry creates
 another reservation and must fit the same receipt limits.
@@ -247,7 +275,8 @@ Judge-ensemble fan-out resolves its exact N providers/configs and atomically
 reserves all N ordinals plus their worst-case budgets before any member
 launches. If the receipt cannot fund the complete ensemble, the whole
 ensemble holds; partial fan-out is forbidden. Each member arms its own launch
-fence before its direct `complete(...)` call and reconciles independently.
+fence and enters the parent `ProviderInvocation`/`ProviderExecutor` sink;
+direct bare `BaseProvider.complete(...)` remains a CI failure.
 
 This is not billing or requester quota. It is an authority ceiling. Existing
 quota and outbound-grant owners apply their own narrower checks afterward.
@@ -256,18 +285,21 @@ quota and outbound-grant owners apply their own narrower checks afterward.
 
 Bindings are `active`, `revoked`, `expired`, or `superseded`.
 Receipts are `issued`, `claimed`, `completed`, `failed`, `cancelled`,
-`expired`, or `fenced_indeterminate`. Transitions are monotonic and
-first-terminal-writer-wins. Terminal work cancellation revokes the active
-claim before downstream cleanup; stale task/run finalizers cannot reopen it.
+`expired`, or `fenced_indeterminate`. Transitions are monotonic.
+`fenced_indeterminate` is non-runnable but may advance only from authoritative
+evidence to the matching conclusive terminal; the first conclusive terminal
+wins. Terminal work cancellation revokes the active claim before downstream
+cleanup; stale task/run finalizers cannot reopen it.
 
-Startup reconciliation:
+Daemon-start and lazy first-use run reconciliation:
 
 - expires elapsed unclaimed receipts;
 - preserves valid active claims whose owner/lease remains live;
 - reclaims only dead-owner claims with no reservation or only durably
-  `cancelled_before_launch` reservations;
-- fences dead-owner `reserved` reservations because absence of launch is not
-  provable;
+  conclusive `cancelled_before_launch`, `succeeded`, or `failed`
+  reservations, preserving consumed slots/budgets;
+- fences dead-owner `reserved`, unclosed `launch_started`, or
+  `indeterminate` reservations because absence or outcome is not provable;
 - fences any claim with ambiguous launch state;
 - revokes receipts whose binding/target/assignment is provably stale; and
 - preserves plus holds on unreadable authority/lineage stores rather than
@@ -283,8 +315,13 @@ Today ordinary provider routing can synchronously launch
 `_AUTH_PROBE_PROMPT` through `subscription_auth_health` and resolve
 `CODEX_HOME` plus the CLI from ambient process state. Dark mode preserves that
 shipped behavior. Under an effective V2 gate, ordinary universe/request
-routing may consume only cached auth-health state and MUST NOT launch the
-probe, borrow its universe receipt, or reread ambient maintainer credentials.
+routing may consume cached auth-health state and the parent's non-completion
+subscription-auth presence/freshness ladder, including the canonical
+absent/empty-config `not_logged_in` verdict. An unreadable or unresolved
+presence check quarantines as unknown/not logged in; it never assumes healthy.
+Ordinary routing MUST NOT launch the `_AUTH_PROBE_PROMPT` completion, borrow
+its universe receipt for that completion, dereference maintainer credentials,
+or start the maintainer CLI.
 
 The target probe owner instead validates the `maintainer_maintenance` receipt
 and separate maintenance binding/budget, reserves its one bounded invocation,

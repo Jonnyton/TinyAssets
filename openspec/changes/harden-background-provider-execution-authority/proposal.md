@@ -29,8 +29,9 @@ server-owned background authority contract exists.
   and operation, opaque credential binding/digest, private-prompt digest,
   invoking runtime/daemon identity, separate maintenance binding/budget, and
   no universe, run, branch, requester identity, requester content, or
-  requester quota. Under V2 the ordinary router consumes cached auth-health
-  state but cannot launch the probe from a universe receipt.
+  requester quota. Under V2 the ordinary router retains cached and read-only
+  non-completion presence/freshness health checks but cannot launch the probe
+  from a universe receipt.
 - Require deferred/task-augmented connector work, graph/run/resume/schedule
   execution, daemon loops, retrieval/reflexion, ingestion/evaluation, and
   mirrored Claude-plugin provider bridges to carry the exact server-issued
