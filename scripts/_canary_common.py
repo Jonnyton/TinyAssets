@@ -66,6 +66,7 @@ def _post(
     step_code: int,
     error_factory: Callable[[int, str], Exception],
     user_agent: str,
+    bearer_token: str | None = None,
 ) -> tuple[dict | None, str | None]:
     """Send one JSON-RPC POST. Returns (parsed_response_or_None, new_sid).
 
@@ -86,6 +87,8 @@ def _post(
     }
     if sid:
         headers["mcp-session-id"] = sid
+    if bearer_token:
+        headers["Authorization"] = f"Bearer {bearer_token}"
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),

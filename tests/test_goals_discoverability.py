@@ -1,21 +1,8 @@
-"""#63 — Goals tool discoverability invariants.
-
-Mission 5 probe found the bot enumerated 33 extensions + 17 universe +
-wiki actions and skipped `goals` entirely. The `goals` tool IS
-registered as @mcp.tool, but `control_station` didn't promote it, so
-when bots asked "what can this connector do?" they listed actions
-per dispatcher and forgot the goals dispatcher exists.
-
-Locks in:
-1. Goals tool is registered (regression guard).
-2. control_station prompt mentions all 5 tools by name.
-3. control_station explicitly tells the bot to enumerate ALL when
-   asked.
-4. Routing table includes goals rows so intent → goals routing fires.
-"""
+"""Goals discoverability and canonical control-station routing invariants."""
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 
 import pytest
@@ -45,11 +32,9 @@ def test_goals_tool_is_registered_callable(us_env):
     assert callable(us.goals)
 
 
-def test_all_five_tools_callable(us_env):
+def test_all_deprecated_tools_remain_callable_during_migration(us_env):
     us = us_env
-    for name in (
-        "universe", "extensions", "goals", "wiki", "community_change_context",
-    ):
+    for name in us._DEPRECATED_TOOL_NAMES:
         assert hasattr(us, name), f"missing tool: {name}"
         assert callable(getattr(us, name))
 
@@ -57,16 +42,15 @@ def test_all_five_tools_callable(us_env):
 # ─── control_station prompt invariants ──────────────────────────────────
 
 
-def test_control_station_mentions_all_five_tools_by_name(us_env):
-    """Bot should never enumerate the surface and skip `goals` because
-    the prompt left it out."""
+def test_control_station_mentions_every_advertised_handle_by_name(us_env):
     us = us_env
     prompt = us.control_station()
-    for name in (
-        "`universe`", "`extensions`", "`goals`", "`wiki`",
-        "`community_change_context`",
-    ):
-        assert name in prompt, f"control_station omits {name}"
+    advertised = {
+        tool.name
+        for tool in asyncio.run(us.mcp.list_tools(run_middleware=True))
+    }
+    for name in advertised:
+        assert f"`{name}`" in prompt, f"control_station omits {name}"
 
 
 def test_control_station_has_tool_catalog_section(us_env):
@@ -74,12 +58,8 @@ def test_control_station_has_tool_catalog_section(us_env):
     the bot enumerates the full surface, not action-by-action."""
     us = us_env
     prompt = us.control_station()
-    # Some phrasing that ties the five together explicitly.
-    assert (
-        "FIVE tools" in prompt
-        or "five tools" in prompt
-        or "FIVE" in prompt and "tools" in prompt
-    ), "no explicit five-tool framing"
+    assert "describe every advertised handle" in prompt
+    assert "FIVE tools" not in prompt
     # The catalog should describe goals' purpose, not just name it.
     assert "Goal" in prompt
     assert "discover" in prompt.lower() or "discovery" in prompt.lower()
@@ -89,32 +69,22 @@ def test_control_station_routes_intent_to_goals(us_env):
     """Routing rules section should tell the bot when to use goals."""
     us = us_env
     prompt = us.control_station()
-    # At least one routing row mentions a goals action.
-    assert "goals action=propose" in prompt
-    assert (
-        "goals action=search" in prompt
-        or "goals action=list" in prompt
-    )
-    assert "goals action=bind" in prompt or "bind" in prompt
-    assert "goals action=leaderboard" in prompt
+    assert 'write_graph target="goal"' in prompt
+    assert 'read_graph target="goals"' in prompt
+    assert 'read_graph target="goal"' in prompt
+    assert "Binding a workflow to a Goal is not exposed" in prompt
+    assert "Goal leaderboards are not exposed" in prompt
 
 
 def test_control_station_enumerate_directive_is_explicit(us_env):
-    """Bot should be told ENUMERATE ALL FIVE when user asks 'what can
-    this do' — so missing goals is impossible."""
+    """Bot should enumerate the whole dynamic advertised catalog."""
     us = us_env
     prompt = us.control_station()
     # The directive language should appear near the catalog.
     catalog_pos = prompt.find("Tool Catalog")
     assert catalog_pos >= 0, "Tool Catalog section header missing"
-    # Some "enumerate all" / "describe all" / "list all" phrasing.
     catalog_section = prompt[catalog_pos:catalog_pos + 1500]
-    assert (
-        "enumerate ALL" in catalog_section
-        or "describe ALL" in catalog_section
-        or "list ALL" in catalog_section
-        or "all five" in catalog_section.lower()
-    ), "no explicit 'enumerate all five' directive in catalog section"
+    assert "enumerate every handle" in catalog_section
 
 
 # ─── goals docstring still leads with intent ────────────────────────────

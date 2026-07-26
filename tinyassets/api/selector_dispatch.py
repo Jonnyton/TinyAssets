@@ -211,9 +211,9 @@ def resolve_selector_branch_version_id(
                     "selector binding for goal=%s points at "
                     "branch_version_id=%r with status=%r "
                     "(active-only required); falling back to "
-                    "platform default. Operator: re-bind via "
-                    "goals action=set_selector with an active "
-                    "version, or unbind with branch_version_id=''",
+                    "platform default. Operator: use the internal selector "
+                    "binding surface to bind an active version, or unbind "
+                    "with branch_version_id=''",
                     goal_id, explicit, status,
                 )
                 explicit = None
@@ -354,8 +354,8 @@ def ensure_default_selector_published(base_path: str | Path) -> str:
             "dispatch a rolled-back default selector. Operator: "
             "republish the platform default branch with a content "
             "change (so a fresh content_hash mints a new active row), "
-            "or bind a custom selector to the affected Goal via "
-            "goals action=set_selector.",
+            "or bind a custom selector to the affected Goal through "
+            "the internal selector-binding surface.",
             persisted.branch_version_id, status,
         )
         return ""
@@ -666,11 +666,11 @@ def dispatch_selector(
                 f"status={bv_status!r} at dispatch time. The "
                 "selector binding is stale or the platform default "
                 "was rolled back without a fresh active replacement. "
-                "Operator: bind a different active selector via "
-                "goals action=set_selector, unbind to fall back to "
-                "the platform default, or republish the platform "
-                "default with new content so a fresh active version "
-                "is minted."
+                "Selector binding is not exposed by the advertised handles. "
+                "An operator must bind a different active selector through "
+                "the internal selector-binding surface, unbind to fall back "
+                "to the platform default, or republish the platform default "
+                "with new content so a fresh active version is minted."
             ),
             "branch_version_id": bvid,
             "status": bv_status,

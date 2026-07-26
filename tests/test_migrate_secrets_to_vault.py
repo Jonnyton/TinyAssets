@@ -87,6 +87,14 @@ def test_canonical_keys_include_github_push_token():
     assert "GH_TOKEN" in m._read_keys(_SCRIPTS / "secrets_keys.txt")
 
 
+def test_wiki_canary_token_is_cataloged_but_not_loaded_into_operator_shells():
+    key_file = _SCRIPTS / "secrets_keys.txt"
+    text = key_file.read_text(encoding="utf-8")
+
+    assert "ROTATION-ONLY TINYASSETS_WIKI_CANARY_TOKEN" in text
+    assert "TINYASSETS_WIKI_CANARY_TOKEN" not in m._read_keys(key_file)
+
+
 # ---- migrate() decision matrix --------------------------------------------
 
 

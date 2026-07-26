@@ -93,7 +93,7 @@ The installed application SHALL register one per-user autostart entry and SHALL 
 - **THEN** managed processes follow the declared shutdown policy, the singleton lease releases, and host presence becomes offline directly or by bounded TTL
 
 ### Requirement: Updates are signed, atomic, channel-scoped, and recoverable
-The tray SHALL support stable and opt-in pre-release update channels backed by signed manifests and signed platform artifacts. It SHALL verify signature, checksum, product identity, target platform/architecture, and monotonic allowed version before installation. Update application SHALL be atomic from the user's perspective: a crash or failed health check SHALL retain or restore the last known-good version. Critical security revocation MAY require an update or disable network hosting, but SHALL still surface the reason and preserve user content.
+The tray SHALL support stable and opt-in pre-release update channels backed by signed manifests and signed platform artifacts. The signed manifest SHALL bind the artifact, SBOM, and release-metadata names and SHA-256 hashes, and the client SHALL verify all three before staging. It SHALL verify signature, checksum, product identity, target platform/architecture, and monotonic allowed version before installation and again under the activation lock. A missing, unreadable, or unusable installed-version record SHALL refuse normal update activation; an equal or older version MAY run only through the deliberate retained-installer rollback/recovery flow. Update application SHALL be atomic from the user's perspective: a crash or failed health check SHALL retain or restore the last known-good version. Critical security revocation MAY require an update or disable network hosting, but SHALL still surface the reason and preserve user content.
 
 #### Scenario: Valid update passes health check
 - **WHEN** a newer allowed-channel artifact validates and the restarted tray passes its readiness check
@@ -102,6 +102,15 @@ The tray SHALL support stable and opt-in pre-release update channels backed by s
 #### Scenario: Update artifact is tampered
 - **WHEN** artifact checksum or signature does not match the signed manifest
 - **THEN** installation is refused, the current version keeps running, and a security event is recorded without exposing secrets
+
+#### Scenario: Published update provenance is tampered
+- **WHEN** the published SBOM or release-metadata JSON does not match the hash bound into the signed manifest
+- **THEN** staging is refused and the current version keeps running
+
+#### Scenario: Installed version authority is unavailable
+- **WHEN** the installed-version record is missing, unreadable, unusable, or changes so the staged candidate is no longer newer before activation
+- **THEN** normal update activation is refused
+- **AND** only the explicit retained-installer recovery path may deliberately restore an older version
 
 #### Scenario: New version crash-loops
 - **WHEN** the updated tray fails the bounded post-update health check

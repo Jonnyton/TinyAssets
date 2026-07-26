@@ -10,6 +10,7 @@ implementation surface.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from tinyassets.api import runs as runs_mod
 from tinyassets.api.runs import (
@@ -195,6 +196,45 @@ def test_action_run_branch_missing_branch_def_id_returns_error():
 def test_action_run_branch_returns_str():
     out = _action_run_branch({})
     assert isinstance(out, str)
+
+
+def test_action_run_branch_guidance_uses_advertised_handles(monkeypatch):
+    class RunnableBranch:
+        version = 1
+
+        @staticmethod
+        def validate():
+            return []
+
+    monkeypatch.setattr(runs_mod, "_ensure_runs_recovery", lambda: None)
+    monkeypatch.setattr(
+        "tinyassets.api.branches._resolve_branch_id",
+        lambda branch_id, _base_path: branch_id,
+    )
+    monkeypatch.setattr(
+        "tinyassets.daemon_server.get_branch_definition",
+        lambda _base_path, *, branch_def_id: {"branch_def_id": branch_def_id},
+    )
+    monkeypatch.setattr(
+        "tinyassets.branches.BranchDefinition.from_dict",
+        lambda _source: RunnableBranch(),
+    )
+    monkeypatch.setattr(
+        "tinyassets.runs.execute_branch_async",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            run_id="r-guidance",
+            status="queued",
+            output={},
+            error="",
+        ),
+    )
+
+    payload = json.loads(_action_run_branch({"branch_def_id": "b-guidance"}))
+    text = payload["text"]
+    assert 'read_graph target="run"' in text
+    assert "wait_for_run" not in text
+    assert "get_run" not in text
+    assert "cancel_run" not in text
 
 
 # Arc A re-export shims removed in Task #18 retarget sweep — the

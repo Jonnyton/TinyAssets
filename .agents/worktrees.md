@@ -1236,15 +1236,15 @@ Notes:
 
 - Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
 - Branch: codex/host-principal-binding
-- Lane state: Draft PR #1753 published; owner accept/adapt review open; no runtime authorized
+- Lane state: claimed; current-main reconciliation of draft PR #1753; no runtime authorized
 - Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
-- STATUS/Issue/PR: Bind authenticated host principal to account / draft PR #1753
+- STATUS/Issue/PR: claimed STATUS row; draft PR #1753
 - PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
-- Purpose: specify the missing server account-to-stable-host binding; PR #1736 retains desktop ownership but must adapt its client protocol
+- Purpose: preserve the stable server account-to-host authority and add the unowned subject-pinned `bound`-not-`online` tray contract without creating a competing identity primitive
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
 - Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
-- Review gate: Opus 5 + three independent Codex reviews approved spec-only; counterparty owner acceptance remains
-- Ship/abandon: spec/audit draft PR only; runtime files remain unclaimed
+- Review gate: fold the current-main Opus 5 ADAPT, then obtain exact-head Opus/Codex approval; counterparty owner acceptance remains
+- Ship/abandon: current-main spec/audit PR only; runtime files remain unclaimed
 
 ## 2026-07-24 23:15 - repurpose release-reconcile-event
 
@@ -1261,3 +1261,110 @@ Notes:
 - Idea feed refs: none
 - Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
 - Foldback: OpenSpec archived; Opus 5 approved; #1750 repaired post-merge CI; main smoke #30152319997 woke successful workflow_run reconcile #30152436780
+
+## 2026-07-25 - repurpose secure-agent-village
+
+- Provider: codex-gpt5-desktop-village-security
+- Branch: codex/secure-agent-village
+- Lane state: PR #1760 landed; containment foldback complete
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: #1760 merged; active row retired
+- PLAN refs: API & MCP Interface; chatbot + connector is canonical, Agent Village deferred
+- Purpose: minimum containment of the already-shipped unsafe surface; no continuing Village product lane.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: PR #1489 recovery and clean-checkout proof
+- Related implications: local-app capability axis; host-private coordination state; explicit write actions
+- Idea feed refs: none
+- Ship/abandon: strict OpenSpec change, exact HTTP/browser contract tests, security review, and short-lived PR; abandon only if current main already enforces equivalent authentication
+- Foldback: OpenSpec archived; Opus 5 approved; #1760 merged; all checks green; connector-first priority recorded
+
+## 2026-07-25 - harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next
+- STATUS/Issue/PR: STATUS Work row; PR pending
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: define the shared production-load evidence protocol without owning capability scenarios, thresholds, or `tests/load/`.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: 2026-07-21 user-growth concurrency/scalability audit; April Track J pre-draft
+- Idea feed refs: ideas/INBOX.md §14 production-load harness entry
+- Ship/abandon: ship a strict-valid target OpenSpec after Opus 5 artifact review; abandon if the draft cannot keep protocol ownership disjoint from capability owners
+
+## 2026-07-25 - fold back harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence-foldback
+- Lane state: foldback after PR #1775
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next-foldback
+- STATUS/Issue/PR: #1775 merged at `c94575c9`; completed authoring row retired
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: mark proposal validation/landing complete while leaving implementation tasks and the isolated `/mcp` host decision active
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next-foldback\_PURPOSE.md
+- Memory refs: none
+- Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
+- Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
+- Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
+
+## 2026-07-25 - full-product-vision-completion-audit
+
+- Provider: codex-gpt56-full-vision
+- Branch: codex/full-product-vision-audit-20260725
+- Lane state: landed as PR #1779 / `b1acc2bc`
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
+- STATUS/Issue/PR: merged PR #1779; STATUS Work row retired
+- PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
+- Memory refs: Handoff #1582; historical 2026-07-21 implications reports
+- Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
+- Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
+- Ship/abandon: shipped after exact-head Opus approval and 51/51 strict validation; no implementation authority or runtime edits
+- Foldback: gaps promoted through separate OpenSpec/STATUS claims only
+
+## 2026-07-25 - harden-branch-access-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-branch-access-authority
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-first-next
+- STATUS/Issue/PR: STATUS Work rows; PR pending
+- PLAN refs: API & MCP Interface; connector users are first-class
+- Purpose: specify one authenticated-subject branch authority boundary across reads, projections, reuse, lineage, mutation, and deletion
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-first-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
+- Idea feed refs: none
+- Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
+
+## 2026-07-25 - reconcile-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/reconcile-provider-authority
+- Lane state: landed in main as #1784 / `620fed5a`; supersedes draft PR #1691
+- Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
+- STATUS/Issue/PR: merged PR #1784; STATUS Work row retired
+- PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
+- Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md
+- Memory refs: draft PR #1691 is source-only
+- Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
+- Idea feed refs: none
+- Ship/abandon: shipped after strict 51/51 validation, exact-revision Opus 5 approval, and published sibling handoffs
+
+## 2026-07-25 - provider-authority-foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-foldback
+- Lane state: claimed; merged-lane coordination cleanup only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-foldback
+- STATUS/Issue/PR: retire #1784 Work row; close superseded draft PR #1691; follow-up PR
+- PLAN refs: Provider Integration; §14 concurrency/load proof
+- Purpose: mark task 1.35, retire the landed STATUS claim, and preserve the target active/unsynced.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-foldback\_PURPOSE.md
+- Memory refs: #1784 exact-head Opus approval
+- Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
+- Idea feed refs: none
+- Ship/abandon: merge only if no other foldback already performed all cleanup

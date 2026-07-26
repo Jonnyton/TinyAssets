@@ -29,6 +29,19 @@ BUNDLE_PATH = DIST_ROOT / "tinyassets-universe-server.mcpb"
 
 TINYASSETS_SRC = REPO_ROOT / "tinyassets"
 
+# Provider credentials never reach a packaging probe. `_probe_catalog` boots
+# the staged runtime, so an inherited key is the shape that would let a
+# packaging gate spend maintainer quota instead of proving the package.
+PROVIDER_CREDENTIAL_ENV: tuple[str, ...] = (
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GROQ_API_KEY",
+    "XAI_API_KEY",
+    "TINYASSETS_ALLOW_API_KEY_PROVIDERS",
+)
+
 # Patterns excluded when copying the tinyassets/ tree into the stage.
 # Glob shapes match Path.match semantics.
 _TREE_EXCLUDES: tuple[str, ...] = (
@@ -107,6 +120,14 @@ def _stage_bundle() -> Path:
     return STAGE_ROOT
 
 
+def _probe_env() -> dict[str, str]:
+    """Base environment for every subprocess probe: no provider credentials."""
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    for name in PROVIDER_CREDENTIAL_ENV:
+        env.pop(name, None)
+    return env
+
+
 def _probe_import(stage: Path) -> None:
     """Fail loudly if the staged bundle can't import its entry point.
 
@@ -122,7 +143,7 @@ def _probe_import(stage: Path) -> None:
         "assert hasattr(us, 'main'), 'tinyassets.universe_server.main missing'; "
         "print('probe-ok')"
     )
-    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+    env = _probe_env()
     result = subprocess.run(
         [sys.executable, "-c", probe_script],
         capture_output=True, text=True, check=False, env=env,
@@ -162,10 +183,7 @@ def _probe_catalog(stage: Path) -> None:
             f"print({marker!r} + json.dumps(names))",
         )
     )
-    env = {
-        **os.environ,
-        "PYTHONDONTWRITEBYTECODE": "1",
-    }
+    env = _probe_env()
     env.pop("TINYASSETS_REPO_ROOT", None)
     env.pop("UNIVERSE_SERVER_AUTH", None)
 
