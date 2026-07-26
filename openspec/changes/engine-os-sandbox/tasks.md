@@ -1,35 +1,19 @@
-# Tasks — universe engine OS sandbox
+## 1. Contract review gates
 
-## 1. Freeze the seam and policy
+- [ ] 1.1 Re-check all three MODIFIED requirement headings by exact match against their canonical specs and run `openspec validate engine-os-sandbox --strict`.
+- [ ] 1.2 Obtain opposite-provider review of the closed workload/profile/policy/tier vocabulary, bound policy/projection/egress/credential/authority references, non-fallbackable error taxonomy, and #1784 consumption boundary.
+- [ ] 1.3 Reconcile every blocking review finding without adding a distributed-execution delta or restating provider authority.
 
-- [x] 1.1 Audit every universe engine call and every local provider subprocess launch; record them in `design.md`.
-- [x] 1.2 Specify the fixed namespace, mount, environment, failure, and Windows-development policies.
-- [ ] 1.3 Run provider-context build checkpoint and re-check active file claims before touching source/tests.
+## 2. Owner handoffs
 
-## 2. RED: executable sandbox contract
+- [ ] 2.1 Hand the concrete backend-to-profile/tier binding and additive in-process `RunnerCapabilities.isolation_tier` decision to `distributed-execution`, preserving both frozen runner wire versions and all existing `JobCapability` values.
+- [ ] 2.2 Hand scoped egress to `outbound-boundary-layer` and ambient credential isolation to `credential-vault`; neither may be represented as complete in this lane.
+- [ ] 2.3 Hand authoring false-attestation A0 to the active node-authoring owner so `requires_os_isolation` refuses until a real admitted backend binding exists.
+- [ ] 2.4 Confirm #1784 and its three provider-authority successors retain sole ownership of authority, immutable invocation/executor integration, background/requester-host activation, and B2/B13 accepted-market pre-routing.
 
-- [ ] 2.1 Add focused tests for exact bwrap construction, minimal environment, and forbidden host mounts.
-- [ ] 2.2 Add a fail-closed test proving an unavailable Linux probe refuses before provider invocation.
-- [ ] 2.3 Add provider tests proving both Claude launch methods are wrapped and the tool denylist remains present.
-- [ ] 2.4 Add a real-bwrap Linux escape test: outside secret unreadable, universe workspace writable.
-- [ ] 2.5 Run the focused tests and record the expected failures before production code exists.
+## 3. Implementation-lane prerequisites
 
-## 3. GREEN: fixed wrapper beneath existing controls
-
-- [ ] 3.1 Implement `tinyassets/sandbox/engine.py` with fixed mounts, namespaces, sanitized environment, and explicit non-Linux development behavior.
-- [ ] 3.2 Integrate the wrapper into `ClaudeProvider.complete` and `complete_json` without changing `_sandbox_cli_args` or the denylist.
-- [ ] 3.3 Add the pre-routing Linux functional-probe gate to `_sandboxed_config` so the whole turn fails closed.
-- [ ] 3.4 Run focused tests, then provider/universe/sandbox regression suites and Ruff.
-
-## 4. Mutation and independent review
-
-- [ ] 4.1 Revert the implementation in the worktree, run the focused tests, and record that each security regression goes red; restore the commit and re-run green.
-- [ ] 4.2 Commit the final implementation and capture base/head SHAs.
-- [ ] 4.3 Obtain Claude-family review that explicitly cites this brief, `universe_intelligence.py`, `providers/base.py`, both CLI providers, `api/branches.py`, the relay design note, and the reviewed base/head SHAs.
-- [ ] 4.4 Resolve all blocking review findings and repeat focused/full verification if the SHA changes.
-
-## 5. Draft publication only
-
-- [ ] 5.1 Sync the accepted requirement into the canonical spec only when the change is ready to land; do not archive in this draft lane.
-- [ ] 5.2 Push `feat/converse-os-sandbox` and open a DRAFT PR; include exact verification, cross-family verdict, rollout/auth prerequisite, and the verbatim proposed STATUS change.
-- [ ] 5.3 Do not merge, deploy, or claim live acceptance.
+- [ ] 3.1 Before any runtime work, create separately claimed implementation rows with exact file boundaries and refresh provider-context at build phase.
+- [ ] 3.2 Require tests that mutation-prove diagnostic-only status, no Codex dangerous bypass, immutable trusted-callsite derivation, terminal admission errors, tool-denied inference, closed projections, and runner-backed graph/NodeBid `source_exec`.
+- [ ] 3.3 Require distributed-execution evidence for every backend-to-tier/profile binding before enabling the corresponding workload.
+- [ ] 3.4 Keep implementation, build, canonical spec sync, archive, deployment, live acceptance, and post-fix monitoring outside this spec-only rewrite.

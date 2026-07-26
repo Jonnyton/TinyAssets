@@ -1,35 +1,37 @@
-# Universe Personification and Relay
-
 ## MODIFIED Requirements
 
 ### Requirement: The engine turn is confined by a fail-closed sandbox
 
-Every universe-intelligence engine turn SHALL retain the existing `sandbox_workspace=True` CLI policy (`WebFetch` requested as the sole allowed tool, every currently enumerated non-WebFetch tool denied, `--setting-sources project`, and cwd scoped to the universe) AND, on Linux, SHALL run the local Claude CLI subprocess inside a fixed Bubblewrap policy. The OS policy SHALL expose a minimal read-only runtime, network access required by the provider and `WebFetch`, private proc/dev/tmp/home state, and the universe's own directory as the only read-write host bind. It SHALL NOT bind the repository, host filesystem root, host home, Codex/Claude configuration homes, or credential/vault paths. Both the reply and learning-extraction turns SHALL use the same policy.
+Every universe-intelligence engine turn SHALL derive an immutable trusted-callsite `ExecutionRequirement` with `workload=inference_only`, `profile=provider_cli`, an exact `tool_denied` policy digest, `minimum_isolation=os_isolated`, a closed empty-projection reference and digest, a scoped-egress requirement reference and digest, closed credential delivery `none|opaque_brokered`, and the #1784-owned authority-evidence reference. `provider_cli` is an execution profile, not a workload. The requirement SHALL be attached to the router-minted immutable `ProviderInvocation` owned by provider routing and consumed by `ProviderExecutor.start()` at launch admission. Neither the founder message, universe content, provider configuration, routing policy, environment, nor an assigned provider may supply, lower, or replace it.
 
-If the existing two-stage functional bwrap probe is unavailable or unhealthy on Linux, the universe engine turn SHALL refuse before provider execution and SHALL NOT fall back to CLI-only confinement. Codex SHALL retain its existing sandbox-incapable refusal. On non-Linux development hosts, the existing cwd/tool-policy confinement MAY run without Bubblewrap and SHALL emit a warning that the path is development-only and not production-equivalent.
+The trusted call site SHALL assemble the reply and learning-extraction prompts from the admitted universe grounding files before provider launch. The provider process SHALL receive no universe-directory, repository-root, current-working-directory, credential/vault, auth-home, or host-path projection and SHALL expose no Bash, filesystem, WebFetch, scheduling, messaging, MCP, or future unenumerated tool. A complete universe root SHALL never be projected because it may contain credential and provider-child descendants. `opaque_brokered` credential delivery SHALL expose no raw key, token, auth file, or other recoverable credential material to model-controlled work.
 
-#### Scenario: both engine subprocesses receive OS confinement
+Admission SHALL use the closed isolation order `os_isolated < vm_isolated` and succeed only when the selected backend's distributed-execution-owned profile/tier binding supports `provider_cli`, meets or exceeds `os_isolated`, and every resolved policy, projection, and egress digest plus credential-delivery class and authority-evidence reference matches the immutable requirement. Missing, stale, mismatched, or unknown requirement fields, backend binding, profile support, policy, projection, egress, credential delivery, authority evidence, or tier SHALL raise the consumed non-fallbackable execution-admission exception before provider launch. That exception SHALL terminate the turn, cross universe and graph boundaries unchanged, and SHALL NOT become provider cooldown, retry, alternate provider, local fallback, explicit fallback, degraded output, or fallback prose. Provider errors after successful admission remain distinct.
 
-- **WHEN** `converse` runs its reply turn and its learning-extraction turn on Linux
-- **THEN** both Claude subprocesses are launched beneath the fixed Bubblewrap wrapper
-- **AND** the existing allowed/disallowed tool flags remain present inside that wrapper
+Cached sandbox status and installed-executable probes SHALL be diagnostic only and SHALL NOT derive, satisfy, or attest this requirement. No platform-specific downgrade, CLI-only mode, in-process execution, or same-UID child process satisfies `os_isolated`.
 
-#### Scenario: only universe files are writable
+#### Scenario: both universe turns use tool-denied inference
 
-- **WHEN** a command runs through the real Linux engine wrapper
-- **THEN** it can create a file in the bound universe workspace
-- **AND** it cannot read a host path outside the explicitly bound runtime and universe paths
-- **AND** the repo, host homes, Claude/Codex config homes, and credential paths are absent
+- **WHEN** `converse` runs its reply turn and learning-extraction turn
+- **THEN** each trusted call site derives `inference_only/provider_cli/tool_denied/os_isolated` with matching policy, projection, egress, credential-delivery, and authority-evidence references
+- **AND** each immutable provider invocation carries that requirement to executor admission
+- **AND** neither turn exposes a provider tool
 
-#### Scenario: unavailable Linux sandbox refuses the turn
+#### Scenario: prompt grounding does not project the universe root
 
-- **WHEN** the functional bwrap probe reports unavailable on Linux
-- **THEN** the engine turn raises a sandbox-unavailable error before any provider subprocess is launched
-- **AND** it does not retry or fall back to flag-only confinement
+- **WHEN** trusted code grounds a universe turn in selected OKF files
+- **THEN** it injects admitted content into the prompt before launch
+- **AND** the execution workspace projection remains empty
+- **AND** the universe root and its credential, vault, provider-child, and auth descendants are absent
 
-#### Scenario: Windows development remains usable but is not production proof
+#### Scenario: unavailable or unknown isolation terminates the turn
 
-- **WHEN** a contributor runs a sandboxed engine turn on Windows
-- **THEN** the existing cwd and CLI tool controls remain usable for development
-- **AND** a warning states that OS isolation was not applied
-- **AND** this behavior is not treated as production-equivalent verification
+- **WHEN** the requirement, one of its bound references/digests, or the backend profile/tier binding is missing, stale, mismatched, unknown, or below `os_isolated`
+- **THEN** execution admission raises the consumed non-fallbackable admission exception before provider launch
+- **AND** the reply and learning turn do not retry or fall back through another provider or execution mode
+
+#### Scenario: diagnostic availability grants no execution authority
+
+- **WHEN** a cached sandbox diagnostic reports an available host executable
+- **THEN** that result does not satisfy execution admission or select a backend
+- **AND** only an explicit distributed-execution-owned backend profile/tier binding can satisfy the requirement
