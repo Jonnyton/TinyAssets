@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from fractions import Fraction
 from typing import Protocol, Sequence
 
+from tinyassets.paid_market.fee_schedule import FeeScheduleError, scheduled_fee_micros
 from tinyassets.paid_market.index import PPM, capped_pair_weights
 from tinyassets.paid_market.scope import ScopeError, validate_scope_dimensions
 
@@ -28,6 +29,7 @@ class SettlementBinding:
     gross_micros: int
     net_micros: int
     fee_micros: int
+    fee_schedule_version: str
 
 
 @dataclass(frozen=True)
@@ -355,6 +357,7 @@ def _validate_binding(binding: SettlementBinding) -> None:
         "currency",
         "token",
         "chain",
+        "fee_schedule_version",
     ):
         if not getattr(binding, name):
             raise PriceSurfaceError(f"{name} is required")
@@ -371,9 +374,26 @@ def _require_canonical_fee(binding: SettlementBinding) -> None:
 
     Same-owner, linked-party, connected, and external supply never create a
     fee exemption; only index eligibility differs.
+
+    Positivity is not canonicality: the fee must equal the amount the
+    settlement's *bound schedule version* derives from its gross, so a
+    1-micro fee on a 1,000,000-micro gross is refused even though it conserves.
     """
     if binding.fee_micros <= 0:
         raise PriceSurfaceError("canonical_fee_required")
+    if not _fee_matches_schedule(binding):
+        raise PriceSurfaceError("canonical_fee_mismatch")
+
+
+def _fee_matches_schedule(binding: SettlementBinding) -> bool:
+    """Manipulation control: the fee is the *bound version's* derived amount."""
+    try:
+        expected = scheduled_fee_micros(
+            binding.gross_micros, fee_schedule_version=binding.fee_schedule_version
+        )
+    except FeeScheduleError as exc:
+        raise PriceSurfaceError("unknown_fee_schedule_version") from exc
+    return binding.fee_micros == expected
 
 
 def _validate_reference_request(request: ReferenceRequest) -> None:

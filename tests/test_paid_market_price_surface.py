@@ -4,6 +4,11 @@ from dataclasses import replace
 
 import pytest
 
+from tinyassets.paid_market.fee_schedule import (
+    CANONICAL_FEE_SCHEDULE_VERSION,
+    scheduled_fee_micros,
+)
+from tinyassets.paid_market.forwards import FEE_PPM, canonical_fee_micros
 from tinyassets.paid_market.index import SettledTrade, compute_vwap
 from tinyassets.paid_market.price_surface import (
     AccountingReceipt,
@@ -37,7 +42,15 @@ SCOPE = derive_public_scope_dimensions(
 )
 
 
+def _canonical_fee(gross: int) -> int:
+    return scheduled_fee_micros(
+        gross, fee_schedule_version=CANONICAL_FEE_SCHEDULE_VERSION
+    )
+
+
 def _binding(**changes: object) -> SettlementBinding:
+    gross = int(changes.get("gross_micros", 1_000))  # type: ignore[arg-type]
+    fee = int(changes.get("fee_micros", _canonical_fee(gross)))  # type: ignore[arg-type]
     values: dict[str, object] = {
         "tenant_id": "tenant-a",
         "universe_id": "universe-a",
@@ -48,12 +61,48 @@ def _binding(**changes: object) -> SettlementBinding:
         "currency": "tiny",
         "token": "tiny-test",
         "chain": "base-sepolia",
-        "gross_micros": 1_000,
-        "net_micros": 990,
-        "fee_micros": 10,
+        "gross_micros": gross,
+        "net_micros": gross - fee,
+        "fee_micros": fee,
+        "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
+
+
+def _receipts(binding: SettlementBinding, source: str = "tx-1"):
+    return (
+        AccountingReceipt(binding=binding, transaction_id=f"tx:{source}"),
+        DomainAcceptanceReceipt(
+            binding=binding,
+            evidence_digest=f"sha256:evidence:{source}",
+            accepted=True,
+            disputed=False,
+        ),
+        ChainReceipt(
+            binding=binding,
+            receipt_digest=f"sha256:chain:{source}",
+            finality_status="final",
+            reorged=False,
+        ),
+    )
+
+
+def _join(binding: SettlementBinding, **overrides: object):
+    """Join one settlement whose declared price reconstructs its gross."""
+    quantity = int(overrides.pop("quantity", 10))
+    kwargs: dict[str, object] = {
+        "market_class_id": "sha256:market",
+        "market_scope_revision": SCOPE_REVISION,
+        "public_scope": SCOPE,
+        "unit_price_micros": binding.gross_micros // quantity,
+        "quantity": quantity,
+        "observed_at": 100,
+        "buyer_principal_root": "principal:buyer",
+        "seller_principal_root": "principal:seller",
+    }
+    kwargs.update(overrides)
+    return join_paid_observation(*_receipts(binding), **kwargs)  # type: ignore[arg-type]
 
 
 def _observation(
@@ -275,6 +324,50 @@ def test_positive_gross_requires_fee_even_when_same_owner_or_linked() -> None:
             buyer_principal_root="principal:a",
             seller_principal_root="principal:a",
         )
+
+
+def test_positive_but_non_canonical_fee_is_refused() -> None:
+    """Positivity is not canonicality.
+
+    A 1-micro fee on a 1,000,000-micro gross is positive, conserves, and is
+    nowhere near the fee its bound schedule version derives.
+    """
+    understated = _binding(
+        gross_micros=1_000_000, net_micros=999_999, fee_micros=1
+    )
+    with pytest.raises(PriceSurfaceError, match="canonical_fee_mismatch"):
+        _join(understated)
+
+    overstated = _binding(
+        gross_micros=1_000_000, net_micros=980_000, fee_micros=20_000
+    )
+    with pytest.raises(PriceSurfaceError, match="canonical_fee_mismatch"):
+        _join(overstated)
+
+    canonical = _binding(
+        gross_micros=1_000_000, net_micros=990_000, fee_micros=10_000
+    )
+    assert _join(canonical).binding.fee_micros == 10_000
+
+
+def test_fee_schedule_version_must_be_a_known_canonical_schedule() -> None:
+    for version in ("", "fee-v1", "tinyassets.paid-market.fee.v0"):
+        unknown = _binding(fee_schedule_version=version)
+        with pytest.raises(PriceSurfaceError):
+            _join(unknown)
+
+
+def test_settlement_fee_matches_the_landed_canonical_primitive() -> None:
+    """One fee formula in the paid market — the schedule only versions it."""
+    for gross in (1, 999, 1_000, 12_345, 1_000_000, 10**12):
+        expected = canonical_fee_micros(gross, FEE_PPM)
+        assert (
+            scheduled_fee_micros(
+                gross, fee_schedule_version=CANONICAL_FEE_SCHEDULE_VERSION
+            )
+            == expected
+        )
+        assert isinstance(expected, int)
 
 
 class PublicCatalogAdapter:

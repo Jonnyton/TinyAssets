@@ -27,6 +27,10 @@ from tests.test_paid_market_descriptors import (  # noqa: F401 - shared fixtures
 )
 from tinyassets.paid_market import descriptors, price_surface, routing
 from tinyassets.paid_market.descriptors import match_descriptor, validate_descriptor
+from tinyassets.paid_market.fee_schedule import (
+    CANONICAL_FEE_SCHEDULE_VERSION,
+    scheduled_fee_micros,
+)
 from tinyassets.paid_market.price_surface import (
     AccountingReceipt,
     ChainReceipt,
@@ -75,7 +79,15 @@ def assert_control_is_load_bearing(guard) -> None:
 # --------------------------------------------------------------------------
 
 
+def _canonical_fee(gross: int) -> int:
+    return scheduled_fee_micros(
+        gross, fee_schedule_version=CANONICAL_FEE_SCHEDULE_VERSION
+    )
+
+
 def _binding(**changes: object) -> SettlementBinding:
+    gross = int(changes.get("gross_micros", 1_000))  # type: ignore[arg-type]
+    fee = int(changes.get("fee_micros", _canonical_fee(gross)))  # type: ignore[arg-type]
     values: dict[str, object] = {
         "tenant_id": "tenant-a",
         "universe_id": "universe-a",
@@ -86,9 +98,10 @@ def _binding(**changes: object) -> SettlementBinding:
         "currency": "tiny",
         "token": "tiny-test",
         "chain": "base-sepolia",
-        "gross_micros": 1_000,
-        "net_micros": 990,
-        "fee_micros": 10,
+        "gross_micros": gross,
+        "net_micros": gross - fee,
+        "fee_micros": fee,
+        "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
     }
     values.update(changes)
     return SettlementBinding(**values)  # type: ignore[arg-type]
@@ -319,6 +332,37 @@ def test_canonical_fee_control_is_load_bearing(monkeypatch) -> None:
 
     monkeypatch.setattr(price_surface, "_require_canonical_fee", lambda binding: None)
     assert_control_is_load_bearing(_guard_zero_fee_settlement_is_refused)
+
+
+def _guard_off_schedule_fee_is_refused() -> None:
+    """Positivity is not canonicality: the fee must be the derived amount."""
+    for gross, fee in ((1_000_000, 1), (1_000_000, 20_000), (1_000, 9)):
+        off_schedule = _binding(
+            gross_micros=gross, fee_micros=fee, net_micros=gross - fee
+        )
+        raised = False
+        try:
+            _observation(
+                price=gross, quantity=1, source="off-schedule", binding=off_schedule
+            )
+        except PriceSurfaceError as exc:
+            raised = "canonical_fee_mismatch" in str(exc)
+        assert raised, "a positive fee is not automatically the canonical fee"
+
+
+def test_canonical_fee_schedule_control_is_load_bearing(monkeypatch) -> None:
+    _guard_off_schedule_fee_is_refused()
+
+    # Force the schedule comparison open — positivity alone becomes the test.
+    monkeypatch.setattr(price_surface, "_fee_matches_schedule", lambda binding: True)
+    assert_control_is_load_bearing(_guard_off_schedule_fee_is_refused)
+
+
+def test_unknown_fee_schedule_version_fails_closed() -> None:
+    for version in ("", "fee-v1", "tinyassets.paid-market.fee.v2"):
+        unknown = _binding(fee_schedule_version=version)
+        with pytest.raises(PriceSurfaceError):
+            _observation(price=100, quantity=10, source="unknown-fee", binding=unknown)
 
 
 def test_excluded_volume_still_carries_its_fee() -> None:
@@ -682,21 +726,17 @@ def test_settlements_outside_the_ttl_window_leave_the_index(observed_at: int) ->
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("gross", "net", "fee"), [(1_000, 990, 10), (7, 6, 1), (10**12, 10**12 - 3, 3)]
-)
-def test_settlement_values_are_exact_integer_micros(
-    gross: int, net: int, fee: int
-) -> None:
+@pytest.mark.parametrize("gross", [1_000, 7, 10**12])
+def test_settlement_values_are_exact_integer_micros(gross: int) -> None:
+    """The scheduled fee is an exact integer at every scale — no float, no drift."""
     observation = _observation(
-        price=gross, quantity=1, source="exact", binding=_binding(
-            gross_micros=gross, net_micros=net, fee_micros=fee
-        )
+        price=gross, quantity=1, source="exact", binding=_binding(gross_micros=gross)
     )
 
     assert observation.binding.net_micros + observation.binding.fee_micros == gross
     assert isinstance(observation.unit_price_micros, int)
     assert isinstance(observation.binding.fee_micros, int)
+    assert observation.binding.fee_micros == _canonical_fee(gross)
 
 
 @pytest.mark.parametrize("bad_net", [989, 991, 0])

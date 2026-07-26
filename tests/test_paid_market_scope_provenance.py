@@ -14,6 +14,10 @@ import json
 
 import pytest
 
+from tinyassets.paid_market.fee_schedule import (
+    CANONICAL_FEE_SCHEDULE_VERSION,
+    scheduled_fee_micros,
+)
 from tinyassets.paid_market.price_surface import (
     AccountingReceipt,
     ChainReceipt,
@@ -379,6 +383,15 @@ def test_tuple_scope_substitution_in_a_quote_is_refused() -> None:
 
 
 def _binding(**overrides: object) -> SettlementBinding:
+    gross = int(overrides.get("gross_micros", 40_000))  # type: ignore[arg-type]
+    fee = int(  # type: ignore[arg-type]
+        overrides.get(
+            "fee_micros",
+            scheduled_fee_micros(
+                gross, fee_schedule_version=CANONICAL_FEE_SCHEDULE_VERSION
+            ),
+        )
+    )
     kwargs: dict[str, object] = {
         "tenant_id": "tenant-a",
         "universe_id": "universe-a",
@@ -389,9 +402,10 @@ def _binding(**overrides: object) -> SettlementBinding:
         "currency": "tiny",
         "token": "tiny",
         "chain": "ledger",
-        "gross_micros": 1_000,
-        "net_micros": 950,
-        "fee_micros": 50,
+        "gross_micros": gross,
+        "net_micros": gross - fee,
+        "fee_micros": fee,
+        "fee_schedule_version": CANONICAL_FEE_SCHEDULE_VERSION,
     }
     kwargs.update(overrides)
     return SettlementBinding(**kwargs)  # type: ignore[arg-type]
