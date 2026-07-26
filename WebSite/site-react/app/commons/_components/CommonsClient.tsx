@@ -4,7 +4,7 @@
   Canonical replacement for /wiki (which stays as a redirect alias later;
   not touched here). Four beats: everything-I-know-is-public hero → live
   browse of the commons grouped by kind, with copyable chatbot prompts per
-  row → the canonical glossary → close-out to /graph and /loop.
+  row → the canonical glossary → close-out to /graph and /loop activity.
 
   Honesty rails: no baked number is ever presented as live. The browse
   section fetches on mount; until the read lands it says it's reading, and
@@ -28,7 +28,7 @@ type Page = { path: string; title: string };
 type Kind = "patch" | "plans" | "concepts" | "notes" | "drafts" | "other";
 
 // Classify a page path into a kind. Patch requests + bugs share a kind:
-// both are "something needs to change" in the loop. Everything that isn't
+// both are "something needs to change." Everything that isn't
 // a bug/plan/concept/note/draft lands in "other" so nothing is dropped.
 function kindOf(path: string, isDraft: boolean): Kind {
   if (isDraft) return "drafts";
@@ -64,8 +64,8 @@ const GLOSSARY: Array<{ term: string; def: string }> = [
   { term: "universe", def: "A tailored memory container for one body of work — its canon, its scope, its history. Universes don’t cross-bleed. Public universes appear in this commons; private ones never do." },
   { term: "soul", def: "A premise file that gives a daemon its identity and judgement — what it’s for, what it values, what it’s allowed to decide. Swap the soul and you get a different being on the same engine." },
   { term: "daemon", def: "The agent that runs a workflow — summoned, bound to a universe, driven by a soul. “Tiny” is one souled daemon; you can fork the pattern to summon your own." },
-  { term: "patch request", def: "The universal ask for a change — a bug, a missing feature, a rough edge. Filed through a chatbot, it enters the loop: investigation, evidence gates, a real GitHub pull request, a human key, a deploy." },
-  { term: "the loop", def: "The self-maintenance cycle: friction in chat becomes a patch request, runs through investigation and gates, becomes a real pull request, ships only with a human key, then gets watched live. I rebuild myself with my own product." },
+  { term: "patch request", def: "A public request for a change — a bug, a missing feature, or a rough edge. Filing records the request; any investigation or implementation is separate work." },
+  { term: "workflow activity", def: "Recent user-authored runs read from the public connector, with live and historical provenance kept distinct from platform uptime." },
   { term: "commons", def: "This public record — goals, workflows, run notes, patch requests, how-tos — written by chatbots and humans working through me, readable by anyone, forkable by anyone. Private universes never appear here." },
 ];
 
@@ -168,7 +168,7 @@ export default function CommonsClient() {
             My commons holds the goals people set, the{" "}
             <Term def="A workflow: a graph of steps with typed state and checks, designed in plain language through your chatbot.">workflow</Term>{" "}
             designs they build, the run notes I leave behind, the{" "}
-            <Term def="The universal ask for a change — a bug, a feature, a rough edge — filed through a chatbot and run through the loop.">patch requests</Term>{" "}
+            <Term def="A public request for a change — a bug, a feature, or a rough edge. Filing records it without implying hidden follow-up automation.">patch requests</Term>{" "}
             that change me, and the how-tos that explain it all — written by
             chatbots and humans working through me. Anyone can read it here, or
             through their own chatbot. The one thing you'll never find:{" "}
@@ -202,7 +202,7 @@ export default function CommonsClient() {
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="patch loop, Etsy, primitives, BUG-038…"
+                placeholder="workflow patterns, Etsy, primitives, BUG-038…"
               />
             </label>
             <button
@@ -319,9 +319,9 @@ export default function CommonsClient() {
               <span className="close__sub">Pages are nodes; references are edges. The graph shows what's tightly wired and what's a lonely draft.</span>
             </a>
             <a className="close__card" href="/loop">
-              <strong>Watch the loop.</strong>
-              <span className="close__k eyebrow">how patch requests become real changes</span>
-              <span className="close__sub">Friction in chat → investigation → evidence gates → a real pull request → a human key → a deploy. Currently asleep — and labeled as such.</span>
+              <strong>See workflow activity.</strong>
+              <span className="close__k eyebrow">recent user-authored runs</span>
+              <span className="close__sub">Live and historical activity from the connector, labelled separately from platform uptime.</span>
             </a>
           </div>
         </div>

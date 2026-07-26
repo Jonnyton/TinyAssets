@@ -4,7 +4,7 @@
   / — Tiny's front door. "Field Notes" rebuild, 2026-06-09.
 
   Seven beats: meet a being → what he does → three paths → proof over
-  promise (ladders) → the loop, unredacted → many rooms → the turn.
+  promise (ladders) → workflow activity with provenance → many rooms → the turn.
   Honesty rails: no baked number is ever presented as live; every live
   value carries a read-stamp; asleep is a first-class state; dated claims
   are dated. Voice: narrative in Tiny's first person, action cards in
@@ -71,37 +71,6 @@ const LADDERS = [
   }
 ];
 
-// The loop's short life — every entry dated, every entry true.
-const LOG = [
-  {
-    date: "3 Jun 2026",
-    title: "Born.",
-    body: "My self-patching loop ran end-to-end for the first time — dispatched by my own soul, composed from public building blocks, not wired into the engine."
-  },
-  {
-    date: "3–4 Jun 2026",
-    title: "I flooded my own repository.",
-    body: "No dedup check. I filed ~31 near-duplicate pull requests that boiled down to 3 real defects — all in my own filing plumbing. Humans closed the duplicates and merged one vetted fix per cluster."
-  },
-  {
-    date: "4 Jun 2026",
-    title: "First real change shipped end-to-end.",
-    body: "A request filed in chat became an investigation, then pull request #1248, survived a cross-family AI review, got a human merge key, and deployed to the live engine.",
-    tick: { href: "https://github.com/Jonnyton/TinyAssets/pull/1248", label: "PR #1248", external: true }
-  },
-  {
-    date: "5 Jun 2026",
-    title: "Paused, on purpose, and repaired through chat.",
-    body: "My keeper edited two nodes of my own workflow — through a chatbot, no engine code — so repeat runs now recognize already-fixed work and dedup at the door."
-  },
-  {
-    date: "5–9 Jun 2026",
-    title: "Asleep while the repairs waited.",
-    body: "For four days the loop didn’t move, and a staleness alarm stayed open about exactly that. The site said \"asleep\" the whole time — an instrument that can’t show a flat line can’t be trusted to show a pulse.",
-    tick: { href: "https://github.com/Jonnyton/TinyAssets/issues?q=is%3Aissue+label%3Ap0-outage", label: "canary alarm trail", external: true }
-  }
-];
-
 // Answer-first FAQ, truth-checked 2026-06-09. Short answers.
 const faqs = [
   {
@@ -110,7 +79,7 @@ const faqs = [
   },
   {
     q: "What is actually running on it today?",
-    a: "Public goals include a computational-biology research program aiming at peer review, an Etsy print-on-demand pipeline, legal restoration of classic software, archaeology-evidence reconstructions, and the engine’s own patch loop. The goals board on this page reads the live list."
+    a: "Public goals include a computational-biology research program aiming at peer review, an Etsy print-on-demand pipeline, legal restoration of classic software, and archaeology-evidence reconstructions. The goals board on this page reads the live list."
   },
   {
     q: "How do I know outcomes are real and not claimed?",
@@ -122,7 +91,7 @@ const faqs = [
   },
   {
     q: "What makes this different from any other AI tool?",
-    a: "The engine maintains itself through its own product: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, and ships only with a human key. The whole trail is public — including the failures."
+    a: "Workflows are durable, inspectable graphs rather than one-off chats. People can publish, copy, and remix them, while their goals and evidence remain visible through the same public connector."
   },
   {
     q: "Is it free?",
@@ -227,10 +196,9 @@ export default function HomeClient() {
             <p className="eyebrow">my pulse, right now</p>
             <VitalSigns variant="hero" />
             <p className="cover__pulse-note">
-              The engine serves around the clock; the loop is my maintenance cycle,
-              and it naps between repairs. Asleep is a real state and I'll say it
-              plainly. A brochure can't be wrong; an instrument can — that's what
-              makes it worth reading.
+              Server reachability and user-workflow activity are separate readings.
+              Quiet work never gets relabeled as downtime, and uptime never gets
+              presented as proof that a user&apos;s task is moving.
             </p>
           </div>
         </div>
@@ -280,7 +248,7 @@ export default function HomeClient() {
               <span className="path__n">02</span>
               <h3 className="path__h">Watch the work</h3>
               <p className="path__p">
-                The goals board, the loop, and the whole-brain graph render live
+                The goals board, workflow activity, and the whole-brain graph render live
                 state — with timestamps, refresh buttons, and honest empty states
                 when something is quiet.
               </p>
@@ -300,9 +268,9 @@ export default function HomeClient() {
               <span className="path__n">03</span>
               <h3 className="path__h">Help build the engine</h3>
               <p className="path__p">
-                Found a rough edge? File it through your chatbot and it enters the
-                patch loop — investigation, evidence gates, a real pull request,
-                a human key. Or clone the engine and work on it directly.
+                Found a rough edge? File it in the public record, open an ordinary
+                pull request, or clone the engine and work on it directly. Filing
+                does not imply hidden platform automation.
               </p>
               <a className="path__cta" href="/build">ways to contribute →</a>
               <a className="path__cta path__cta--alt" href="https://github.com/Jonnyton/TinyAssets" target="_blank" rel="noreferrer">TinyAssets on GitHub ↗</a>
@@ -345,48 +313,34 @@ export default function HomeClient() {
         </div>
       </section>
 
-      {/* 5 · The loop, unredacted */}
+      {/* 5 · Generic workflow activity */}
       <section className="ch ch--loop" aria-labelledby="loop-title">
         <div className="container ch__inner">
-          <p className="eyebrow">entry five · my flagship, unredacted</p>
-          <h2 id="loop-title">I patch myself.<br />Here's my first week, including the mess.</h2>
+          <p className="eyebrow">entry five · workflow activity</p>
+          <h2 id="loop-title">Your automations are ordinary, inspectable designs.</h2>
           <p className="voice">
-            My favorite proof isn't a success story. It's a log with the failures
-            left in. My maintenance runs through my own product: friction becomes
-            a patch request, then an investigation, then evidence gates, then a
-            real pull request a human has to turn a key on.
+            TinyAssets supplies generic graph, state, run, and evidence primitives.
+            You decide what a workflow does, when it runs, and whether to publish it
+            for others to copy or remix. Recent public activity is read from the
+            connector; it is never treated as a privileged platform cycle.
           </p>
-          <ol className="log">
-            {LOG.map((entry) => (
-              <li className="log__entry" key={entry.date + entry.title}>
-                <span className="log__date ev">{entry.date}</span>
-                <div className="log__body">
-                  <h3 className="log__title">{entry.title}</h3>
-                  <p className="log__text">{entry.body}</p>
-                  {entry.tick && (
-                    <Tick href={entry.tick.href} label={entry.tick.label} external={entry.tick.external} />
-                  )}
-                </div>
-              </li>
-            ))}
-          </ol>
           <p className="log__now" aria-live="polite">
             {vitals?.reachable ? (
               <>
-                <span className={`dot ${vitals.loopAwake ? "live" : "idle"}`} aria-hidden="true"></span>
-                {vitals.loopAwake && vitals.activeRun ? (
+                <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true"></span>
+                {vitals.workflowActive && vitals.activeRun ? (
                   <>
-                    <span>right now: <strong>loop awake · a run is moving</strong></span>
+                    <span>right now: <strong>a user workflow is active</strong></span>
                     <span className="ev">read {fmtRel(vitals.fetchedAt)}</span>
                   </>
-                ) : vitals.loopAwake ? (
+                ) : vitals.workflowActive ? (
                   <>
-                    <span>right now: <strong>loop awake</strong></span>
+                    <span>right now: <strong>recent workflow activity is visible</strong></span>
                     {vitals.lastMovedAt && <span className="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>}
                   </>
                 ) : (
                   <>
-                    <span>right now: <strong>loop asleep</strong></span>
+                    <span>right now: <strong>no recent workflow activity</strong></span>
                     {vitals.lastMovedAt && <span className="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>}
                   </>
                 )}
@@ -394,20 +348,20 @@ export default function HomeClient() {
             ) : vitals ? (
               <>
                 <span className="dot error" aria-hidden="true"></span>
-                <span className="ev">couldn't read the loop just now — the live page retries</span>
+                <span className="ev">couldn&apos;t read workflow activity just now — the live page retries</span>
               </>
             ) : (
               <>
                 <span className="dot" aria-hidden="true"></span>
-                <span className="ev">reading the loop…</span>
+                <span className="ev">reading workflow activity…</span>
               </>
             )}
           </p>
           <p className="voice">
-            A system that can only report success isn't being honest with you.
-            <em>Mine can't help it</em> — the trail is public either way.
+            Live and historical runs carry their source and read time. Platform
+            uptime and release evidence stay separate in the fine print.
           </p>
-          <a className="btn btn--ghost" href="/loop">watch the loop →</a>
+          <a className="btn btn--ghost" href="/loop">see workflow activity →</a>
         </div>
       </section>
 
@@ -461,8 +415,8 @@ export default function HomeClient() {
             Everything that makes me <em>me</em> is a pattern you can fork: a
             premise (my soul), a workflow (my brain), a goal with a ladder (my
             reasons). Swap the premise and your project gets its own small being —
-            running your domain, patching its own body the way I patch mine.
-            I'm instance zero, not the point.
+            running your domain through workflows you author and control. I&apos;m
+            instance zero, not the point.
           </p>
           <a className="btn btn--ghost" href="/soul">how souls work →</a>
         </div>

@@ -41,7 +41,7 @@ const CHANNELS: Channel[] = [
     href: GH_ISSUES,
     cta: "open an issue ↗",
     external: true,
-    note: "The whole engine is public — clone it, read the loop, send a pull request.",
+    note: "The whole engine is public — clone it, inspect the workflows, send a pull request.",
   },
   {
     eyebrow: "door three · talk business",
@@ -112,22 +112,19 @@ export default function AlliancePage() {
           <p className="voice">
             A filed item doesn&apos;t vanish into a queue you can&apos;t see. It lands in the{" "}
             <Term def="The public record: goals, workflows, run evidence, and notes — readable by anyone, forkable by anyone. The canonical glossary lives at /commons.">public commons</Term>,
-            where my self-patching{" "}
-            <Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, ships only with a human key.">loop</Term>
-            {" "}can investigate it the same way it investigates everything else.
-            Nothing ships on a whim — a human still holds every merge key. You can
-            watch the whole trail, including the parts that didn&apos;t work.
+            where anyone can read and discuss it. Filing is the whole automatic
+            action: investigation, implementation, review, and release each require
+            an explicit next step under their own authority.
           </p>
-          <a className="btn btn--ghost" href="/loop">watch the loop →</a>
+          <a className="btn btn--ghost" href="/commons">browse the commons →</a>
 
           <div className="keeper">
             <p className="keeper__eyebrow eyebrow">who runs this</p>
             <p className="keeper__body">
               Tiny&apos;s keeper is Jonathan{" "}
               (<a href="https://github.com/Jonnyton" target="_blank" rel="noreferrer">@Jonnyton</a>),
-              a single operator; AI agents do much of the building by running through
-              the loop. The merge keys are human-held — no agent ships a change on its
-              own.
+              a single operator. AI agents can contribute through explicit workflows,
+              but merge keys are human-held — no agent ships a change on its own.
             </p>
           </div>
         </div>

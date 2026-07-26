@@ -136,8 +136,8 @@ export default function StartClient() {
                     <span className="pulse__sub ev">deployed {fmtRel(vitals.deployedAt)}{vitals.gitSha ? <>&nbsp;· {vitals.gitSha}</> : null}</span>
                   )}
                   <span className="pulse__row pulse__row--quiet">
-                    <span className={`dot ${vitals.loopAwake ? "live" : "idle"}`} aria-hidden="true"></span>
-                    <span className="pulse__k">{vitals.loopAwake ? "loop awake" : "loop asleep"}</span>
+                    <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true"></span>
+                    <span className="pulse__k">{vitals.workflowActive ? "workflow activity visible" : "no recent workflow activity"}</span>
                   </span>
                   <span className="pulse__stamp ev">
                     read {fmtRel(vitals.fetchedAt)}
@@ -305,7 +305,7 @@ export default function StartClient() {
             <article className="oss__card">
               <h3 className="oss__h">Clone the repo</h3>
               <p className="oss__p">
-                Read the engine, the loop, and every workflow definition. It&apos;s all
+                Read the engine and every public workflow definition. It&apos;s all
                 public.
               </p>
               <pre className="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
@@ -335,9 +335,9 @@ export default function StartClient() {
               <span className="close__sub">live public goals, each with its outcome ladder.</span>
             </a>
             <a className="close__card" href="/loop">
-              <span className="close__k eyebrow">the patch loop</span>
-              <strong>Watch how it maintains itself →</strong>
-              <span className="close__sub">friction becomes a patch request, a real PR, a release.</span>
+              <span className="close__k eyebrow">workflow activity</span>
+              <strong>See recent user-authored runs →</strong>
+              <span className="close__sub">live and historical activity, labelled with its MCP provenance.</span>
             </a>
           </nav>
         </div>

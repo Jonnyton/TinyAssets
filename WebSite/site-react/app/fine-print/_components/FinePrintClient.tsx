@@ -13,14 +13,10 @@ const GH_ACTIONS = "https://github.com/Jonnyton/TinyAssets/actions";
 const MCP_BARE = "tinyassets.io/mcp";
 const bakedFetchedAt: string = baked.fetched_at ?? "";
 
-const WATCHDOGS = [
+const UPTIME_CHECKS = [
   {
     file: "uptime-canary.yml",
     what: "Probes the public MCP endpoint on a schedule and after any DNS, tunnel, or Worker change — the out-of-band check that catches a silently-dropped route.",
-  },
-  {
-    file: "community-loop-watch.yml",
-    what: "Watches the self-patch loop end to end — intake, investigation, gate, release — and opens an alarm when a stage stalls.",
   },
 ];
 
@@ -144,13 +140,13 @@ export default function FinePrintClient() {
               </dd>
             </div>
             <div className="measure">
-              <dt><span className="dot idle" aria-hidden="true"></span> loop awake</dt>
+              <dt><span className="dot idle" aria-hidden="true"></span> workflow activity</dt>
               <dd>
                 A public universe shows activity within the last hour, <em>or</em> a
-                run is executing right now. If neither is true, the loop is asleep —
-                and the strip says asleep, plainly. This state is read live every
-                time; it is never hardcoded, because the site got that wrong once and
-                left a flat line showing as a pulse.
+                user-authored run is executing right now. If neither is true, the
+                strip reports no recent workflow activity. This is separate from
+                server uptime: activity cannot make the server healthy, and uptime
+                cannot prove that user work is moving.
               </dd>
             </div>
             <div className="measure">
@@ -258,14 +254,15 @@ export default function FinePrintClient() {
 
       <section className="ch ch--watch" aria-labelledby="watch-title">
         <div className="container ch__inner">
-          <p className="eyebrow">entry three · the public watchdogs</p>
-          <h2 id="watch-title">Who watches it when no one&apos;s looking.</h2>
+          <p className="eyebrow">entry three · independent uptime evidence</p>
+          <h2 id="watch-title">How reachability is checked from outside.</h2>
           <p className="watch__lede">
-            Two GitHub Actions watch the live system on a schedule. They&apos;re public —
-            their run history, pass and fail, is on the Actions tab anyone can open.
+            A public GitHub Action probes the live system on a schedule. Its run
+            history, pass and fail, is visible on the Actions tab. It observes
+            platform uptime only; it does not dispatch, repair, or represent user work.
           </p>
           <ul className="watch">
-            {WATCHDOGS.map((w) => (
+            {UPTIME_CHECKS.map((w) => (
               <li className="watch__item" key={w.file}>
                 <code className="watch__file">{w.file}</code>
                 <p className="watch__what">{w.what}</p>
@@ -303,9 +300,9 @@ export default function FinePrintClient() {
           <h2 id="close-title">Seen the gauges. Now watch the work.</h2>
           <nav className="close__cards">
             <a className="close__card" href="/loop">
-              <span className="close__k eyebrow">the patch loop</span>
-              <strong>Watch how it maintains itself →</strong>
-              <span className="close__sub">friction becomes a patch request, a real PR, a release — live runs and gates.</span>
+              <span className="close__k eyebrow">workflow activity</span>
+              <strong>See recent user-authored runs →</strong>
+              <span className="close__sub">live and historical activity, labelled separately from uptime evidence.</span>
             </a>
             <a className="close__card" href="/commons">
               <span className="close__k eyebrow">the public commons</span>

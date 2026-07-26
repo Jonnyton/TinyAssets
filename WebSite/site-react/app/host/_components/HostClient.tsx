@@ -141,8 +141,8 @@ export default function HostClient() {
             installing a thing. <em>Hosting is for when you want your own.</em>
             Your own private
             {" "}<Term def="A universe: a tailored container for one body of work — its canon, goals, workflows, and run history. The public ones are listed below; private ones live on your machine.">universes</Term>
-            {" "}on your own machine, your own keys and data, the same loop pattern
-            pointed at your projects.
+            {" "}on your own machine, with your own keys, data, and user-authored
+            workflows.
           </p>
           <div className="cover__actions">
             <a className="btn btn--primary" href="/start">Just use the public engine →</a>
@@ -183,13 +183,11 @@ export default function HostClient() {
             </li>
             <li className="get">
               <span className="get__n">03</span>
-              <h3 className="get__h">The same loop, on your projects</h3>
+              <h3 className="get__h">Your workflows, on your projects</h3>
               <p className="get__p">
-                The self-patching
-                {" "}<Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real change, and ships. Tiny uses it on himself; you can point it at your own repo.">loop</Term>
-                {" "}pattern isn&apos;t special-cased to me — it&apos;s a workflow bound to a goal.
-                Fork the pattern, swap the goal for your project, and your instance
-                maintains itself the way I maintain mine.
+                Build or remix ordinary workflows bound to your goals. Your instance
+                runs only the designs you choose, under the authority and schedule
+                you configure.
               </p>
               <a className="get__cta" href="/build">how the pattern forks →</a>
             </li>
@@ -260,8 +258,8 @@ export default function HostClient() {
             Honest version: there&apos;s no hosted-cloud signup, waitlist, or pricing
             today, and I won&apos;t fake one. <em>If you want it, the useful thing is to
             say so</em> — a request through chat or a GitHub issue is a real signal
-            that shapes what gets built, and it enters the same patch loop everything
-            else does.
+            that shapes what gets built. Filing records the request; it does not
+            start hidden follow-up work.
           </p>
           <div className="cloud__paths">
             <a className="cloud__path" href="/start">

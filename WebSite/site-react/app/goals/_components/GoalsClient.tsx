@@ -391,9 +391,9 @@ export default function GoalsClient() {
           <h2 id="close-title">Where this connects.</h2>
           <nav className="close__cards">
             <a className="close__card" href="/loop">
-              <span className="close__k eyebrow">the patch loop</span>
-              <strong>Watch a goal turn into shipped work →</strong>
-              <span className="close__sub">friction becomes a patch request, an investigation, a real pull request, a release.</span>
+              <span className="close__k eyebrow">workflow activity</span>
+              <strong>See recent user-authored runs →</strong>
+              <span className="close__sub">live and historical activity, labelled with its MCP provenance.</span>
             </a>
             <a className="close__card" href="/commons">
               <span className="close__k eyebrow">the public commons</span>

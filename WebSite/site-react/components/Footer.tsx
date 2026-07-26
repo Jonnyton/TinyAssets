@@ -34,7 +34,7 @@ export function Footer() {
         <div className={styles.col}>
           <span className="eyebrow">Watch him</span>
           <ul>
-            <li><Link href="/loop">The loop — how he patches himself</Link></li>
+            <li><Link href="/loop">Workflow activity — public run provenance</Link></li>
             <li><Link href="/commons">Commons — the public brain</Link></li>
             <li><Link href="/graph">Graph — the whole map</Link></li>
             <li><Link href="/fine-print">Vital signs &amp; fine print</Link></li>

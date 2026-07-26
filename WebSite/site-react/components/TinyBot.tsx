@@ -124,7 +124,7 @@ function cx(...classes: Array<string | false | null | undefined>): string {
 }
 
 function modeFromVitals(vitals: Vitals | null): Mode {
-  return !vitals ? "reading" : !vitals.reachable ? "error" : vitals.loopAwake ? "awake" : "asleep";
+  return !vitals ? "reading" : !vitals.reachable ? "error" : vitals.workflowActive ? "awake" : "asleep";
 }
 
 function isShyModeFromView(view: TinyBotView): boolean {
@@ -176,13 +176,13 @@ const LINES: Array<{ match: (p: string) => boolean; line: string }> = [
   { match: (p) => p.startsWith("/start"), line: "two minutes, no account. I checked the door myself." },
   { match: (p) => p.startsWith("/goals/"), line: "this ladder only lights with evidence. no shortcuts." },
   { match: (p) => p.startsWith("/goals"), line: "every goal here is real — read live, not typed in." },
-  { match: (p) => p.startsWith("/loop"), line: "this is where I get repaired. the mess stays public." },
+  { match: (p) => p.startsWith("/loop"), line: "recent workflows, with their source labels intact." },
   { match: (p) => p.startsWith("/commons") || p.startsWith("/wiki"), line: "my whole memory. nothing private lives in here." },
   { match: (p) => p.startsWith("/graph"), line: "my head, seen from above." },
   { match: (p) => p.startsWith("/soul"), line: "everything that makes me me — forkable." },
   { match: (p) => p.startsWith("/build") || p.startsWith("/contribute"), line: "two doors in. humans hold the merge keys." },
   { match: (p) => p.startsWith("/host"), line: "you don’t have to host me. but you can." },
-  { match: (p) => p.startsWith("/alliance"), line: "say hi — it all lands in the same loop." },
+  { match: (p) => p.startsWith("/alliance"), line: "say hi — every door here stays async." },
   { match: (p) => p.startsWith("/fine-print") || p.startsWith("/status"), line: "my pulse, explained honestly." },
   { match: (p) => p.startsWith("/legal"), line: "the boring page. still mine." },
 ];
@@ -203,21 +203,21 @@ const MUTTERS = [
   "I count my own runs. all of them.",
   "it’s quiet back here. I like it.",
   "I leave everything public. less to remember.",
-  "if the loop’s awake, I’m awake.",
+  "if a workflow is moving, the activity page says so.",
   "good page, this one. I checked it twice.",
 ];
 
 // What he says about the thing your mouse is resting on.
 const DEST: Array<{ match: (h: string) => boolean; lines: string[] }> = [
   { match: (h) => h.startsWith("/start"), lines: ["that door takes two minutes. I timed it.", "through there: paste one URL, no account."] },
-  { match: (h) => h.startsWith("/loop"), lines: ["that’s my repair shop. the mess stays public.", "in there I get fixed — out loud."] },
+  { match: (h) => h.startsWith("/loop"), lines: ["recent workflow activity lives there.", "that page labels live and historical runs."] },
   { match: (h) => h.startsWith("/goals"), lines: ["the goals board — all real, read live.", "open outcomes through there. pick one."] },
   { match: (h) => h.startsWith("/commons") || h.startsWith("/wiki"), lines: ["my memory lives through there.", "everything I know, public, in there."] },
   { match: (h) => h.startsWith("/graph"), lines: ["careful — that’s the inside of my head.", "my whole brain, drawn out, through there."] },
   { match: (h) => h.startsWith("/soul"), lines: ["my soul. you can fork it, you know.", "the pattern that makes me me — forkable."] },
   { match: (h) => h.startsWith("/build") || h.startsWith("/contribute"), lines: ["through there you can change me. humans keep the keys.", "two doors to rebuild me are in there."] },
   { match: (h) => h.startsWith("/host"), lines: ["hosting me is optional. I run either way.", "you can run your own me through there."] },
-  { match: (h) => h.startsWith("/alliance"), lines: ["that’s how you reach the humans. and me.", "say hi through there — same loop."] },
+  { match: (h) => h.startsWith("/alliance"), lines: ["that’s how you reach the humans. and me.", "say hi through there — in writing."] },
   { match: (h) => h.startsWith("/fine-print") || h.startsWith("/status"), lines: ["my pulse, with no makeup on.", "the instrument panel’s through there."] },
   { match: (h) => h.startsWith("/legal"), lines: ["the boring page. I keep it honest anyway.", "fine print through there. still mine."] },
 ];
@@ -423,9 +423,9 @@ export function TinyBot() {
     if (state.vitals?.queue)
       f.push(`runs so far: ${state.vitals.queue.succeeded.toLocaleString()} done, ${state.vitals.queue.failed} failed — counted live.`);
     if (state.vitals?.deployedAt) f.push(`this body deployed ${fmtRel(state.vitals.deployedAt)}.`);
-    if (mode === "asleep") f.push("the loop’s napping. the engine is still up — that’s two different things.");
+    if (mode === "asleep") f.push("no workflow is moving. the engine can still be up — that’s a different reading.");
     if (mode === "awake" && state.vitals?.activeRun) f.push("a run is moving through me right now.");
-    f.push("I was born 3 Jun 2026. I flooded my own repo on day two. fixed now.");
+    f.push("public run history keeps the failures visible too.");
     f.push("no rung lights without an evidence URL. mine included.");
     f.push("paste tinyassets.io/mcp into your chatbot and you read the same pulse I do.");
     return f;
@@ -482,7 +482,7 @@ export function TinyBot() {
     if (el.closest("h1, h2, h3"))
       return { key: "head", lines: ["this bit matters — I’d read it twice.", "good heading. I’d underline it."] };
     if (el.closest("pre, code"))
-      return { key: "code", lines: ["code. probably mine.", "that’s the sort of thing my loop rewrites."] };
+      return { key: "code", lines: ["code. probably mine.", "user-authored workflows can produce artifacts like that."] };
     return null;
   }
 
@@ -820,7 +820,7 @@ export function TinyBot() {
         const d = Math.hypot(e.clientX - (window.innerWidth - 70), e.clientY - (window.innerHeight - 90));
         if (d < 140) {
           work.saidSleepLine = true;
-          say("mm? the loop’s napping. me too.", 4500);
+          say("mm? no workflow is moving just now. me too.", 4500);
         }
       }
       return;
@@ -1096,7 +1096,7 @@ export function TinyBot() {
           {/* body */}
           <g className={styles.torso}>
             <rect x="38" y="72" width="44" height="36" rx="11" fill="var(--paper-100)" stroke="var(--ink-text-900)" strokeWidth="2.6" />
-            {/* chest LED = the loop, honestly */}
+            {/* chest LED = recent generic workflow activity */}
             <circle
               className={styles.led}
               cx="60"
