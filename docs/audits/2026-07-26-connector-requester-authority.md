@@ -16,7 +16,7 @@ The live connector has no complete path by which an authenticated Tier-1
 chatbot user can explicitly accept market-priced compute for a universe and
 then use that compute without reaching an ordinary provider chain. The exact
 successor assigned by #1784 is therefore necessary, but it must remain a
-composition of four existing capability owners rather than a new top-level
+composition of five existing capability owners rather than a new top-level
 primitive.
 
 The clean public action is:
@@ -100,7 +100,7 @@ epoch-2 BranchTask intake contract.
 | `paid-market-economy` | Explicit accepted-agreement producer over the canonical request and quote, bounded mandate, logical budget reservation/accounting intent, tenant workflow, domain-separated body-bound idempotency | Treating submission/match/claim as acceptance; creating domain capacity, real-fund/wallet/chain authority, selected-host authority, settlement finality, or execution authority |
 | `distributed-execution` | B13 provisional non-executable mandate and sole cross-owner per-job composition of allocation/claim, domain capacity, logical accounting, §18.6 real-fund, S14/B36, and exact B2 plus Engine OS admission | Writing another owner's records, pre-minting future-job B2, or promoting request/match/claim/row/receipt/reservation evidence |
 | `live-mcp-connector-surface` | Exact action/input/result, rendered confirmation, refusal, repair, and renewal | New MCP handle, raw grant/secret/payment carrier, deprecated handle, or desktop prerequisite |
-| `provider-routing` (#1784) | Existing assignment/activation-transaction owner: agreement/mandate references, `accepted_market + remote_ready + []`, pre-router seam, ordinary-chain bypass, held state | No delta in this successor |
+| `provider-routing` (#1784 reconciliation) | Assignment transaction stores agreement plus current non-executable mandate refs for `remote_ready + []`; each concrete job delegates to B13 for fresh B2; ordinary bypass/held state | Never store/require a speculative future-job B2 or convert the activation mandate directly into execution |
 | live price / Wave 2 | Exact request-bound quote→bid→deterministic-match→atomic paid-claim/slot, selected host, versions/digests/fences, delivery lifecycle | No price-index or operator-request delta in this successor |
 | domain capacity owners | Domain-native capacity grant/lease/work order and semantic acceptance | No generic market or connector replacement |
 | architecture §18.6 successor | Sole requester real-fund/wallet/chain-effect authority and verified receipts | No PostgreSQL logical reservation promoted to custody |
