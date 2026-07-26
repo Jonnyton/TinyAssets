@@ -8,15 +8,83 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
+
+from tinyassets.auth.middleware import auth_middleware, set_provider
+from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
 
 # Force mock provider responses in all tests to avoid real API calls
 from tinyassets.providers import call as _provider_call
 
 _provider_call.set_force_mock(True)
+
+
+class _CredentialSubjectProvider(AuthProvider):
+    """Resolve only issued test credentials to persisted subjects."""
+
+    def __init__(self) -> None:
+        self._identities_by_token: dict[str, Identity] = {}
+
+    def issue_credential(self, subject: str) -> str:
+        token = f"pytest-credential::{subject}"
+        self._identities_by_token[token] = Identity(
+            user_id=subject,
+            username=f"{subject}-display",
+            capabilities=[
+                "tinyassets.extensions.read",
+                "tinyassets.extensions.write",
+                "tinyassets.extensions.admin",
+            ],
+        )
+        return token
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self._identities_by_token.get(token)
+
+    def is_auth_required(self) -> bool:
+        return True
+
+    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
+        return {"client_id": "pytest-credential-subject", **metadata}
+
+    def create_authorization(
+        self,
+        client_id: str,
+        redirect_uri: str,
+        scope: str,
+        state: str,
+        code_challenge: str,
+        code_challenge_method: str,
+    ) -> str:
+        return "pytest-credential-subject-code"
+
+    def exchange_code(
+        self,
+        code: str,
+        client_id: str,
+        redirect_uri: str,
+        code_verifier: str,
+    ) -> dict[str, Any] | None:
+        return None
+
+
+@pytest.fixture
+def authenticate_request() -> Callable[[str | None], None]:
+    """Bind branch-authority tests to a credential-derived request subject."""
+    provider = _CredentialSubjectProvider()
+    set_provider(provider)
+    auth_middleware(None)
+
+    def authenticate(subject: str | None) -> None:
+        token = provider.issue_credential(subject) if subject else None
+        auth_middleware(token)
+
+    yield authenticate
+    auth_middleware(None)
+    set_provider(DevAuthProvider())
 
 
 @pytest.fixture(autouse=True)

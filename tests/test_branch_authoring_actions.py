@@ -8,14 +8,14 @@ recipe-tracker end-to-end vignette, and the hard-rule UX flag that
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
+from typing import Callable
 
 import pytest
 
 
 @pytest.fixture
-def branch_env(tmp_path, monkeypatch):
+def branch_env(tmp_path, monkeypatch, authenticate_request):
     """Point the TinyAssets data root at a temp base path for the test.
 
     The Community Branches storage layer uses ``_base_path()`` which
@@ -25,6 +25,7 @@ def branch_env(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request("tester")
     import importlib
 
     from tinyassets import universe_server as us
@@ -144,16 +145,19 @@ def test_list_branches_scope_published_is_the_default(branch_env):
     assert "Draft only" not in {b["name"] for b in default_listing["branches"]}
 
 
-def test_list_branches_scope_mine_filters_to_caller(branch_env, monkeypatch):
+def test_list_branches_scope_mine_filters_to_caller(
+    branch_env,
+    authenticate_request: Callable[[str | None], None],
+):
     """`scope="mine"` returns only branches authored by the calling identity."""
     us, _ = branch_env
-    # The branch_env fixture set UNIVERSE_SERVER_USER=tester; the first
-    # batch should land with author=tester.
+    # The branch_env fixture authenticated tester; the first batch should
+    # land with author=tester.
     _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Mine 1")))
     _call(us, "build_branch", spec_json=json.dumps(_build_basic_spec("Mine 2")))
 
     # Switch identity and write a third branch as someone else.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "other")
+    authenticate_request("other")
     import importlib
 
     from tinyassets import universe_server as us2
@@ -164,7 +168,7 @@ def test_list_branches_scope_mine_filters_to_caller(branch_env, monkeypatch):
     ))
 
     # Back to tester; only the two `Mine *` branches must come back.
-    monkeypatch.setenv("UNIVERSE_SERVER_USER", "tester")
+    authenticate_request("tester")
     importlib.reload(us2)
     listing = json.loads(us2.extensions(action="list_branches", scope="mine"))
     names = sorted(b["name"] for b in listing["branches"])
@@ -383,13 +387,16 @@ def test_recipe_tracker_end_to_end(branch_env):
     assert actions.count("add_state_field") == 3
 
 
-def test_ledger_attribution_uses_current_actor(branch_env):
+def test_ledger_attribution_uses_current_actor(
+    branch_env,
+    authenticate_request: Callable[[str | None], None],
+):
     us, base = branch_env
-    os.environ["UNIVERSE_SERVER_USER"] = "alice"
+    authenticate_request("alice")
     try:
         _call(us, "create_branch", name="alice's branch")
     finally:
-        os.environ["UNIVERSE_SERVER_USER"] = "tester"
+        authenticate_request("tester")
 
     ledger = json.loads((base / "ledger.json").read_text(encoding="utf-8"))
     assert any(
@@ -412,14 +419,11 @@ def test_read_actions_do_not_hit_ledger(branch_env):
     assert ledger[0]["action"] == "create_branch"
 
 
-def test_unknown_action_returns_error_with_catalog(branch_env):
+def test_unknown_action_without_metadata_is_denied(branch_env):
     us, _ = branch_env
     result = _call(us, "flimflam")
     assert "error" in result
-    avail = result.get("available_actions", [])
-    assert "create_branch" in avail
-    assert "describe_branch" in avail
-    assert "register" in avail  # Legacy node registration still listed
+    assert result.get("available_actions", []) == []
 
 
 def test_missing_branch_id_returns_error(branch_env):
