@@ -8,57 +8,12 @@ from typing import Any, Callable
 
 import pytest
 
-from tinyassets.auth.middleware import auth_middleware, set_provider
-from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
-
-
-class _CredentialProvider(AuthProvider):
-    """Resolve each non-empty test bearer to a credential-backed subject."""
-
-    def resolve_token(self, token: str) -> Identity | None:
-        if not token:
-            return None
-        return Identity(
-            user_id=token,
-            username=f"{token}-display",
-            capabilities=[
-                "tinyassets.extensions.read",
-                "tinyassets.extensions.write",
-                "tinyassets.extensions.admin",
-            ],
-        )
-
-    def is_auth_required(self) -> bool:
-        return True
-
-    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        return {"client_id": "branch-authority-test", **metadata}
-
-    def create_authorization(
-        self,
-        client_id: str,
-        redirect_uri: str,
-        scope: str,
-        state: str,
-        code_challenge: str,
-        code_challenge_method: str,
-    ) -> str:
-        return "branch-authority-code"
-
-    def exchange_code(
-        self,
-        code: str,
-        client_id: str,
-        redirect_uri: str,
-        code_verifier: str,
-    ) -> dict[str, Any] | None:
-        return None
-
 
 @pytest.fixture
 def branch_authority_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    authenticate_request: Callable[[str | None], None],
 ) -> tuple[Path, Callable[[str | None], None]]:
     base = tmp_path / "data"
     base.mkdir()
@@ -68,15 +23,9 @@ def branch_authority_env(
     from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(base)
-    set_provider(_CredentialProvider())
-
-    def authenticate(subject: str | None) -> None:
-        auth_middleware(subject)
-
-    authenticate(None)
-    yield base, authenticate
-    authenticate(None)
-    set_provider(DevAuthProvider())
+    authenticate_request(None)
+    yield base, authenticate_request
+    authenticate_request(None)
 
 
 def _call_raw(action: str, **kwargs: Any) -> str:
@@ -156,6 +105,16 @@ def _publish(base: Path, branch: dict[str, Any], publisher: str) -> str:
         branch,
         publisher=publisher,
     ).branch_version_id
+
+
+def test_caller_identity_string_is_not_an_authenticated_credential(
+    branch_authority_env: tuple[Path, Callable[[str | None], None]],
+) -> None:
+    from tinyassets.auth.middleware import auth_middleware, current_identity
+
+    auth_middleware("alice")
+
+    assert current_identity().user_id == "anonymous"
 
 
 def test_anonymous_environment_actor_cannot_create_or_reach_ledger(

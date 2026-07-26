@@ -8,55 +8,12 @@ from typing import Any, Callable
 
 import pytest
 
-from tinyassets.auth.middleware import auth_middleware, set_provider
-from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
-
-
-class _CredentialProvider(AuthProvider):
-    def resolve_token(self, token: str) -> Identity | None:
-        if not token:
-            return None
-        return Identity(
-            user_id=token,
-            username=f"{token}-display",
-            capabilities=[
-                "tinyassets.extensions.read",
-                "tinyassets.extensions.write",
-                "tinyassets.extensions.admin",
-            ],
-        )
-
-    def is_auth_required(self) -> bool:
-        return True
-
-    def register_client(self, metadata: dict[str, Any]) -> dict[str, Any]:
-        return {"client_id": "branch-mutation-test", **metadata}
-
-    def create_authorization(
-        self,
-        client_id: str,
-        redirect_uri: str,
-        scope: str,
-        state: str,
-        code_challenge: str,
-        code_challenge_method: str,
-    ) -> str:
-        return "branch-mutation-code"
-
-    def exchange_code(
-        self,
-        code: str,
-        client_id: str,
-        redirect_uri: str,
-        code_verifier: str,
-    ) -> dict[str, Any] | None:
-        return None
-
 
 @pytest.fixture
 def mutation_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    authenticate_request: Callable[[str | None], None],
 ) -> tuple[Path, Callable[[str | None], None]]:
     base = tmp_path / "data"
     base.mkdir()
@@ -66,15 +23,9 @@ def mutation_env(
     from tinyassets.daemon_server import initialize_author_server
 
     initialize_author_server(base)
-    set_provider(_CredentialProvider())
-
-    def authenticate(subject: str | None) -> None:
-        auth_middleware(subject)
-
-    authenticate(None)
-    yield base, authenticate
-    authenticate(None)
-    set_provider(DevAuthProvider())
+    authenticate_request(None)
+    yield base, authenticate_request
+    authenticate_request(None)
 
 
 def _call_raw(action: str, **kwargs: Any) -> str:
@@ -622,7 +573,9 @@ def test_delete_author_control_still_removes_branch(
         get_branch_definition(base, branch_def_id="owner-delete-target")
 
 
-def test_branch_action_scope_defense_in_depth_stays_fail_closed() -> None:
+def test_branch_action_scope_defense_in_depth_stays_fail_closed(
+    authenticate_request: Callable[[str | None], None],
+) -> None:
     from tinyassets.auth.middleware import require_action_scope
     from tinyassets.auth.provider import action_scope_for
 
@@ -647,7 +600,6 @@ def test_branch_action_scope_defense_in_depth_stays_fail_closed() -> None:
         assert metadata is not None
         assert metadata.effect == "admin"
 
-    set_provider(_CredentialProvider())
-    auth_middleware("alice")
+    authenticate_request("alice")
     with pytest.raises(PermissionError, match="No action-scope metadata"):
         require_action_scope("extensions", "missing_branch_action")

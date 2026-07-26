@@ -23,20 +23,26 @@ _provider_call.set_force_mock(True)
 
 
 class _CredentialSubjectProvider(AuthProvider):
-    """Resolve a test bearer token to the same persisted subject."""
+    """Resolve only issued test credentials to persisted subjects."""
 
-    def resolve_token(self, token: str) -> Identity | None:
-        if not token:
-            return None
-        return Identity(
-            user_id=token,
-            username=f"{token}-display",
+    def __init__(self) -> None:
+        self._identities_by_token: dict[str, Identity] = {}
+
+    def issue_credential(self, subject: str) -> str:
+        token = f"pytest-credential::{subject}"
+        self._identities_by_token[token] = Identity(
+            user_id=subject,
+            username=f"{subject}-display",
             capabilities=[
                 "tinyassets.extensions.read",
                 "tinyassets.extensions.write",
                 "tinyassets.extensions.admin",
             ],
         )
+        return token
+
+    def resolve_token(self, token: str) -> Identity | None:
+        return self._identities_by_token.get(token)
 
     def is_auth_required(self) -> bool:
         return True
@@ -68,9 +74,15 @@ class _CredentialSubjectProvider(AuthProvider):
 @pytest.fixture
 def authenticate_request() -> Callable[[str | None], None]:
     """Bind branch-authority tests to a credential-derived request subject."""
-    set_provider(_CredentialSubjectProvider())
+    provider = _CredentialSubjectProvider()
+    set_provider(provider)
     auth_middleware(None)
-    yield auth_middleware
+
+    def authenticate(subject: str | None) -> None:
+        token = provider.issue_credential(subject) if subject else None
+        auth_middleware(token)
+
+    yield authenticate
     auth_middleware(None)
     set_provider(DevAuthProvider())
 
