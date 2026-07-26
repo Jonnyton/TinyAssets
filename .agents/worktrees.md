@@ -1382,3 +1382,15 @@ Notes:
 - Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
 - Idea feed refs: none
 - Ship/abandon: merge only if no other foldback already performed all cleanup
+
+### 2026-07-26 — retire cheat-loop fallback
+- Provider: codex-gpt5-desktop-cheat-retire
+- Branch: codex/retire-cheat-loop-final-20260726
+- Lane state: claimed; target/audit only
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final
+- STATUS/Issue/PR: retire-cheat-loop-fallback; draft PR expected
+- PLAN refs: §1 Minimal primitives; §2 Community-build over platform-build
+- Purpose: remove the historical privileged task-loop fallback from every shipped surface; recurring automation stays user-authored and remixable.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-final\_PURPOSE.md
+- Review gate: exact-head Claude Opus 5 opposite-provider review
+- Ship/abandon: ship target after strict validation/review; runtime waits for collision-free source/test claims
