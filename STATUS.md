@@ -57,6 +57,4 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 | Specialist legal-review artifact for forward/training/hardware routes — live-price 5.5 residual (code half landed #1737) | docs/ | - | host-action |
 ## Next
 1. **Cheat-loop CI retired (host 2026-06-25)** — `AUTO_FIX_DISABLED=true`; strip intake/writer/checker machinery, keep get_status, deploy lanes, MCP canaries, dispatcher.
-2. **No-shims-ever** + **platform responsibility model** + **public-surface probes after DNS/tunnel/Worker/connector changes** (canonical: https://tinyassets.io/mcp).
-3. **Scoping rules apply to design questions themselves** — if X composes from primitives, do NOT offer "platform builds it" when steering.
-4. **Capacity/context** — Claude Opus 5 inference restored 2026-07-26; use it for required opposite-provider reviews.
+2. **No-shims-ever** + **platform responsibility/scoping model** — if X composes from primitives, do not offer a new platform primitive; probe public surfaces after DNS/tunnel/Worker/connector changes (canonical: https://tinyassets.io/mcp).
