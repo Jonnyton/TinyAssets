@@ -107,8 +107,10 @@ current-message handler claim, and liveness SHALL be verified before any
 idempotency lookup. Authority loss SHALL return a non-enumerating denial that
 reveals neither key existence nor historical result.
 Replaying the same key with the same `activation_body_digest` SHALL return
-the original outcome without
-duplicating an agreement, reservation, charge, grant request, or assignment.
+the original outcome without duplicating the accepted agreement,
+non-executable mandate, or assignment. Initial activation and every replay
+SHALL create zero future-job B2/grant requests, capacity reservations, charges,
+or spend.
 Reusing the key with a different canonical body MUST return a conflict.
 Concurrent first activations SHALL have one authoritative outcome.
 A historical success SHALL NOT reactivate or preserve expired, revoked,

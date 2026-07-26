@@ -168,8 +168,8 @@ all IDs inside `market_acceptance` are 1-128 ASCII characters matching
 `write_graph`'s 16-128 ASCII-character bound and matches
 `[A-Za-z0-9][A-Za-z0-9._:-]{15,127}`; every digest is exactly 64 lowercase hex
 characters. Currency comes only from the rehydrated current
-`ValidatedQuote.settlement_currency` and matches
-`[A-Z0-9][A-Z0-9._:-]{0,15}`; `MarketRequest` has no currency field.
+`ValidatedQuote.settlement_currency` without case normalization and matches
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,15}`; `MarketRequest` has no currency field.
 `fee_schedule_version` and
 `settlement_policy_version` are owner-native ASCII strings of 1-128 characters
 matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Only `request_version`,
@@ -290,8 +290,9 @@ renders current held/repair state rather than stale `remote_ready` success.
 
 Alternatives considered:
 
-- Publishing `accepted_market` before grant construction was rejected because
-  it creates a phantom ready state.
+- Publishing `accepted_market` before the atomic accepted-agreement plus
+  non-executable-mandate reference commit was rejected because it creates a
+  phantom ready state. The later per-job B2 is intentionally absent here.
 - Eventual reconciliation was rejected because `converse` could run in the
   gap and reach an ambient fallback.
 

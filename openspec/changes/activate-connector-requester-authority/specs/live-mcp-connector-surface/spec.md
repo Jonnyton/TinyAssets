@@ -27,8 +27,9 @@ retain `write_graph`'s 16-128 ASCII-character bound and match
 `[A-Za-z0-9][A-Za-z0-9._:-]{15,127}`. Digests SHALL be exactly 64 lowercase
 hex characters. `currency` SHALL equal the rehydrated current
 `ValidatedQuote.settlement_currency` and match
-`[A-Z0-9][A-Z0-9._:-]{0,15}`; `MarketRequest` is not a currency owner and has
-no currency field. `fee_schedule_version` and
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,15}` without case normalization;
+`MarketRequest` is not a currency owner and has no currency field.
+`fee_schedule_version` and
 `settlement_policy_version` SHALL be owner-native ASCII strings of 1-128
 characters matching `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`.
 `request_version`, `quote_version`, `fulfillment_descriptor_version`,
