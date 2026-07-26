@@ -180,9 +180,10 @@
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
 - [ ] 5.4 Build/test the production React/Next site and retained Svelte rollback
-  site; correct active runbook/skill prose that reverses their deployment
-  ownership; prove platform uptime evidence is separately labeled and never
-  presented as privileged task-loop activity.
+  site; correct `deploy-site-react.yml` header, active runbook, and website
+  skill prose that reverse their deployment ownership; prove platform uptime
+  evidence is separately labeled and never presented as privileged task-loop
+  activity.
 
 ## 6. Rebuild Packaging And Verify
 

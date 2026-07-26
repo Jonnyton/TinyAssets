@@ -374,9 +374,9 @@ named `community-loop` survives.
 The current production React/Next site and retained Svelte rollback source both
 expose the retired product. Fresh GitHub evidence on 2026-07-26 shows five
 successful `deploy-site-react` runs (latest 2026-06-27); the current workflow
-comments identify React as live and Svelte as dispatch-only rollback, while the
-older cutover runbook and website skill still state the reverse and must be
-corrected.
+deployment chronology and `deploy-site.yml` identify React as live and Svelte
+as dispatch-only rollback. The `deploy-site-react.yml` header, older cutover
+runbook, and website skill still say React is not live and must be corrected.
 
 - `WebSite/site/src/lib/mcp/live.ts` reads
   `community-loop-watch.yml`, community-loop labels/issues, and
