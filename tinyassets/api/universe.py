@@ -296,12 +296,17 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     steps = [
         {
             "id": "premise",
-            "label": "Save a soul purpose with create_universe text or set_premise.",
+            "label": (
+                "Save a purpose with write_graph target=\"universe\" text= "
+                "when creating the universe."
+            ),
             "complete": has_premise,
         },
         {
             "id": "canon_source",
-            "label": "Upload at least one canon source with add_canon or add_canon_from_path.",
+            "label": (
+                "Canon-source upload is not exposed by the advertised handles."
+            ),
             "complete": False,
         },
         {
@@ -317,8 +322,8 @@ def _synthesis_first_run_checklist(has_premise: bool) -> dict[str, Any]:
     ]
     if has_premise:
         next_action = (
-            "Upload canon with add_canon or add_canon_from_path, then wait for "
-            "the daemon to process the synthesize_source signal."
+            "Canon-source upload and synthesis waiting are not exposed by the "
+            "advertised handles."
         )
     else:
         next_action = (
@@ -1678,27 +1683,28 @@ def _action_inspect_universe(universe_id: str = "", **_kwargs: Any) -> str:
     # and wiki span all domains.
     result["cross_surface_hint"] = {
         "note": (
-            "This workspace is one container; cross-domain branches and Goals "
-            "live at extensions + goals + wiki regardless of this workspace's theme."
+            "This workspace is one container; canonical graph and page reads "
+            "span domains regardless of this workspace's theme. Global workflow "
+            "enumeration is not exposed by the advertised handles."
         ),
         "paths": [
             {
-                "action": "extensions action=list_branches",
-                "purpose": "All workflows across all domains",
+                "action": 'read_graph target="branch" branch_id="<known id>"',
+                "purpose": "Inspect a known workflow by identifier",
             },
             {
-                "action": "goals action=list",
+                "action": 'read_graph target="goals"',
                 "purpose": (
                     "Domain-agnostic intents "
                     "(research, software, science, fantasy, etc.)"
                 ),
             },
             {
-                "action": "wiki action=search",
+                "action": 'read_page query="<terms>"',
                 "purpose": "Cross-domain notes, bugs, and design plans",
             },
             {
-                "action": "universe action=list",
+                "action": 'read_graph target="graphs"',
                 "purpose": "Other workspaces if multiple exist",
             },
         ],
@@ -2080,8 +2086,8 @@ def _action_submit_request(
             "error": (
                 f"Request text exceeds {_SUBMIT_REQUEST_MAX_BYTES} bytes "
                 f"({text_bytes} submitted). Summarize or split into "
-                "multiple requests. For long prose, use `add_canon` "
-                "instead."
+                "multiple requests. For private long-form material, relay it "
+                "to the universe through converse instead."
             ),
         })
 
@@ -2252,7 +2258,7 @@ def _action_submit_request(
         "ahead_of_yours": ahead,
         "what_happens_next": (
             f"The daemon will see your request on its next review cycle; "
-            f"{position_note}. Use `universe action=inspect universe_id={uid}` "
+            f'{position_note}. Use `read_graph target="graph" graph_id="{uid}"` '
             "to watch the queue or check whether your request is now active work."
         ),
     })
@@ -3220,16 +3226,23 @@ def _tail_file_lines(path: Path, n: int) -> list[str]:
 
 _CHANGE_LOOP_PLAN_HEADINGS = (
     "Scoping Rules",
-    "Work Targets And Review Gates",
-    "Multiplayer Daemon Platform",
-    "Multi-User Evolutionary Design",
+    "Module: Goals & Gates",
+    "Module: Daemon Platform",
+    "Module: Evolution & Evaluation",
 )
 
 
-def _repo_root() -> Path:
-    override = os.environ.get("TINYASSETS_REPO_ROOT")
-    if override:
-        return Path(override)
+def _bundled_source_root() -> Path:
+    """Root of the bundled source tree, where the shipped ``PLAN.md`` lives.
+
+    Deliberately NOT driven by ``TINYASSETS_REPO_ROOT``. That variable names
+    the git checkout used for ``producers.goal_pool`` and catalog writes; in
+    the deployed container ``deploy/compose.yml`` points it at the
+    ``/data/community-pool`` data volume, which ships no source assets. Wiring
+    this asset lookup to that storage variable silently emptied the deployed
+    review context. The package parent is the checkout root in development and
+    ``/app`` in the image, where the Dockerfile stages ``PLAN.md``.
+    """
     return Path(__file__).resolve().parents[2]
 
 
@@ -3311,16 +3324,22 @@ def _extract_plan_section(text: str, heading: str) -> str:
 
 
 def _change_loop_plan_context() -> dict[str, str]:
-    plan_path = _repo_root() / "PLAN.md"
+    plan_path = _bundled_source_root() / "PLAN.md"
     try:
         text = plan_path.read_text(encoding="utf-8")
     except OSError:
-        return {}
+        text = ""
     sections: dict[str, str] = {}
     for heading in _CHANGE_LOOP_PLAN_HEADINGS:
         excerpt = _extract_plan_section(text, heading)
-        if excerpt:
-            sections[heading] = _shorten(excerpt, 2400)
+        sections[heading] = (
+            _shorten(excerpt, 1400)
+            if excerpt
+            else (
+                "[ERROR: unable to resolve bundled PLAN.md section: "
+                f"## {heading}]"
+            )
+        )
     return sections
 
 
@@ -4574,7 +4593,10 @@ def _action_read_premise(universe_id: str = "", **_kwargs: Any) -> str:
             "premise": None,
             "has_soul": soul is not None,
             "soul": soul.summary() if soul is not None else None,
-            "note": "No premise set. Use action='set_premise' to create one.",
+            "note": (
+                "No premise set. Tell the universe its premise through "
+                "converse."
+            ),
         })
     return json.dumps({
         "universe_id": uid,
@@ -4636,9 +4658,9 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
 
 
 _CANON_SAME_FILENAME_BEHAVIOR = (
-    "A later add_canon call with the same filename replaces the stored "
-    "source bytes and manifest entry when the content hash changes; "
-    "identical bytes are treated as unchanged."
+    "A later ingest of the same canon-source filename replaces the stored "
+    "source bytes and manifest entry when the content hash changes; identical "
+    "bytes are treated as unchanged."
 )
 
 
@@ -5084,7 +5106,10 @@ def _action_read_source(
     safe_name = Path(filename).name
     if not safe_name or safe_name != filename:
         return json.dumps({
-            "error": "Filename required. Use list_sources to see available files.",
+            "error": (
+                "Filename required. Source enumeration is not exposed by the "
+                "advertised handles."
+            ),
         })
 
     # Resolve + contain against the canon ROOT (not the ``sources/`` subdir) so
@@ -5101,7 +5126,9 @@ def _action_read_source(
     if not target.is_file():
         return json.dumps({
             "error": f"Source file '{safe_name}' not found.",
-            "hint": "Use list_sources to see available files.",
+            "hint": (
+                "Source enumeration is not exposed by the advertised handles."
+            ),
         })
 
     try:
@@ -5158,7 +5185,12 @@ def _action_read_canon(
 
     safe_name = Path(filename).name
     if not safe_name:
-        return json.dumps({"error": "Filename required. Use list_canon to see available files."})
+        return json.dumps({
+            "error": (
+                "Filename required. Canon enumeration is not exposed by the "
+                "advertised handles."
+            ),
+        })
 
     # Resolve + contain before any ``is_file`` / read so a symlinked canon
     # file whose target lives outside canon_dir is rejected, not read.
@@ -5169,7 +5201,7 @@ def _action_read_canon(
     if not target.is_file():
         return json.dumps({
             "error": f"Canon file '{safe_name}' not found.",
-            "hint": "Use list_canon to see available files.",
+            "hint": "Canon enumeration is not exposed by the advertised handles.",
         })
 
     try:
@@ -5477,9 +5509,10 @@ def _action_switch_universe(universe_id: str = "", **_kwargs: Any) -> str:
             "status": "selected",
             "scope": "request",
             "note": (
-                f"Selected '{uid}' for this session. Pass universe_id on each "
-                "call to act on it; this does not change the daemon's global "
-                "active universe."
+                f"Selected '{uid}' for this session. Pass the explicit target "
+                "on each advertised handle (graph_id for graph operations; "
+                "universe_id for converse, page, and status operations); this "
+                "does not change the daemon's global active universe."
             ),
         })
 
@@ -5669,6 +5702,168 @@ def _action_create_universe(
 # wrapping a delegation to this function. Same shape as ``goals()`` /
 # ``gates()`` (Step 7), ``branch_design_guide`` (Step 8).
 # ───────────────────────────────────────────────────────────────────────────
+
+
+# ───────────────────────────────────────────────────────────────────────────
+# Newborn without an engine (P0 #1582).
+#
+# 92dd60c5 correctly stopped a universe with no credential of its own from
+# spending the host's subscription — but nothing gives a newborn a credential,
+# so the founder's very first `converse` turn came back as the raw
+# "All providers exhausted for role=writer". That is a true statement of the
+# runtime and a dead end for the person reading it.
+#
+# The distinction that matters: a universe with NO attached engine credential
+# can never speak until its founder attaches one (BYOC), while a universe that
+# HAS one and still exhausts is a real outage (BUG-038/039) whose error must
+# keep surfacing. Only the first case becomes onboarding.
+# ───────────────────────────────────────────────────────────────────────────
+
+_ENGINE_CREDENTIAL_TYPES = frozenset({"llm_subscription", "llm_api_key"})
+
+# `UniverseConfig.engine_source` defaults to "byo_api_key" for every newborn, so
+# the default value is NOT evidence the founder chose anything. Any OTHER value
+# was written by `universe action=set_engine` and IS an explicit choice.
+_DEFAULT_ENGINE_SOURCE = "byo_api_key"
+
+
+def universe_has_assigned_engine(universe_dir: str | Path) -> bool:
+    """Return True when this universe has an engine of its own by any route.
+
+    Two routes count. A vault LLM credential is the fully-wired BYO path. An
+    explicit non-default ``engine_source`` is the other: ``self_hosted_endpoint``
+    / ``market_rented`` / ``host_daemon`` record the founder's choice in config
+    and write NO vault record, so a vault-only test would read them as "never
+    set up" and send a founder who already chose an engine back to onboarding
+    while hiding that their engine is down.
+
+    Fail-safe direction throughout: an unreadable vault or config returns True.
+    We only ever claim "no engine is attached" from state we actually read —
+    otherwise a corrupt file becomes a setup instruction the founder already
+    followed, hiding the real fault (Hard Rule #8).
+    """
+    from tinyassets.credential_vault import load_credential_vault
+
+    try:
+        records = load_credential_vault(universe_dir)
+    except (ValueError, OSError):
+        logger.warning(
+            "credential vault unreadable for %s; not treating as engine-less",
+            universe_dir,
+        )
+        return True
+    if any(
+        record.get("credential_type") in _ENGINE_CREDENTIAL_TYPES
+        for record in records
+    ):
+        return True
+
+    config_file = Path(universe_dir) / "config.yaml"
+    if config_file.exists() and not _config_yaml_is_parseable(config_file):
+        logger.warning(
+            "universe config unreadable for %s; not treating as engine-less",
+            universe_dir,
+        )
+        return True
+
+    from tinyassets.config import load_universe_config
+
+    try:
+        engine_source = load_universe_config(Path(universe_dir)).engine_source
+    except Exception:  # noqa: BLE001 - unreadable config is not proof of absence
+        logger.warning(
+            "universe config unreadable for %s; not treating as engine-less",
+            universe_dir,
+        )
+        return True
+    # `_build_config` (config.py) assigns YAML values to fields without type
+    # coercion, so `engine_source: 7` arrives as an int. Coerce before
+    # comparing — an AttributeError here would escape while we are already
+    # handling the founder's failed turn. A non-string value is also not the
+    # default, so it lands on the fail-safe side. (Codex ADAPT round 2.)
+    return str(engine_source or "").strip() != _DEFAULT_ENGINE_SOURCE
+
+
+def _config_yaml_is_parseable(config_file: Path) -> bool:
+    """True when ``config.yaml`` actually parses.
+
+    Codex ADAPT round 2 (2026-07-25): ``load_universe_config`` deliberately
+    degrades a corrupt, unreadable, or PyYAML-less config to a default
+    ``UniverseConfig`` (config.py:137-151) rather than raising — and the
+    default ``engine_source`` is exactly the value read above as "the founder
+    never chose an engine". So the loader alone cannot tell "no choice" from
+    "a choice we failed to read", and the try/except around it never fires.
+    Probe parseability separately so the read failure stays visible.
+    """
+    try:
+        import yaml
+    except ImportError:
+        return False
+    try:
+        yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def engine_setup_required_payload(
+    universe_id: str, exc: BaseException,
+) -> dict[str, Any] | None:
+    """Return the held/setup-required envelope, or None to surface *exc*.
+
+    Returns a payload ONLY when the turn failed because the universe has no
+    engine of its own. Every other failure — a transient outage on a universe
+    that HAS an engine, a policy block, anything not provider exhaustion —
+    returns None so the caller reports it honestly.
+
+    The envelope deliberately carries no ``reply`` key. ``reply`` is what the
+    connector renders verbatim as the universe's own first-person voice; this
+    text is platform-authored, so it travels as ``note`` like the other
+    deterministic relay payloads (`write_page`, brain-write relays).
+    """
+    from tinyassets.exceptions import AllProvidersExhaustedError
+
+    if not isinstance(exc, AllProvidersExhaustedError):
+        return None
+    # The router raises this one class for several distinct conditions. Only
+    # the genuine "every provider in the chain was tried and failed" raise
+    # carries `chain_state` diagnostics — which is the shape a universe with no
+    # auth of its own produces. The policy hard-fails (allowlist blocks the
+    # chain, pinned writer unavailable, API-key policy, no router installed)
+    # raise it bare, and each of those is a real fault whose own message must
+    # reach the founder rather than being retold as "you have no engine".
+    if getattr(exc, "chain_state", None) is None:
+        return None
+    udir = _universe_dir(universe_id)
+    if universe_has_assigned_engine(udir):
+        return None
+    return {
+        "status": "held",
+        "reason": "setup_required",
+        "universe_id": universe_id,
+        "missing": ["compute", "model_access"],
+        "note": (
+            "Your universe is born and listening, but it has no engine yet — "
+            "no provider of its own to think with, so it can't answer you. It "
+            "will never run on anyone else's account, which is why this is the "
+            "one thing it needs from you first. Give it one and it starts "
+            "speaking on this very next turn."
+        ),
+        "setup_paths": [{
+            "path": "byo_api_key",
+            "how": "Engine assignment is not exposed by the advertised handles.",
+            "inputs_json": {
+                "engine_source": "byo_api_key",
+                "service": "anthropic | openai",
+                "api_key": "<your key>",
+            },
+            "note": (
+                "Your own API key would be stored in this universe's private "
+                "vault and never echoed back. Ask the host to use the internal "
+                "engine-assignment surface."
+            ),
+        }],
+    }
 
 
 def _action_set_engine(
@@ -5865,8 +6060,10 @@ def _set_engine_host_daemon(uid, udir, data, preferred_writer) -> str:
         "status": "engine_set", "universe_id": uid,
         "engine_source": "host_daemon", "provider": provider,
         "preferred_writer": fields["preferred_writer"],
-        "next_step": "Host a daemon for this universe via "
-                     "`universe action=daemon_summon` to bind a runtime instance.",
+        "next_step": (
+            "Runtime-daemon binding is not exposed by the advertised handles; "
+            "ask the host to use the internal operator surface."
+        ),
     })
 
 

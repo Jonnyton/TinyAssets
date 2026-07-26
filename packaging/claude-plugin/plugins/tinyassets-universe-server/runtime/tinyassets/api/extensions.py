@@ -86,6 +86,8 @@ from tinyassets.api.runtime_ops import (
     _PROJECT_MEMORY_WRITE_ACTIONS,
     _SCHEDULER_ACTIONS,
 )
+from tinyassets.authoring.service import _AUTHORING_ACTIONS
+from tinyassets.handoffs.service import _HANDOFF_ACTIONS
 from tinyassets.phase_vocab import VALID_PHASES, normalize_phase
 
 logger = logging.getLogger(__name__)
@@ -709,6 +711,83 @@ def _extensions_impl(
         }
         return attribution_handler(attr_kwargs)
 
+    # ── Node / evaluator authoring sessions (target 4.3) ───────────────────
+    # Authoring composes under this canonical router: no new advertised MCP
+    # handle, and the ``extensions`` tool signature is NOT widened. Each
+    # authoring parameter reuses an existing kwarg (same technique as the
+    # effector-consent actions above), which is also why a chatbot can reach
+    # these without a connector-surface change:
+    #   key                → session_id          field_type   → artifact_kind
+    #   intent             → sketch / effect name resume_from  → draft to resume
+    #   branch_version_id  → base published ver.  select       → view
+    #   since              → diff anchor event_id changes_json → edit operations
+    #   expected_version   → reviewed draft ver.  notes        → change message
+    #   value              → test mode            request_id   → confirmation token
+    #   payload_json       → action body (test inputs, visibility, risk acks)
+    authoring_handler = _AUTHORING_ACTIONS.get(action)
+    if authoring_handler is not None:
+        from tinyassets.api.engine_helpers import _current_actor
+
+        return authoring_handler({
+            "actor_id": _current_actor(),
+            "session_id": key,
+            "artifact_kind": field_type,
+            "sketch": intent,
+            "effect_name": intent,
+            "base_version_id": branch_version_id,
+            "resume_session_id": resume_from,
+            "view": select,
+            "anchor": since,
+            "operations_json": changes_json,
+            "expected_version": expected_version,
+            "change_message": notes,
+            "mode": value,
+            "confirmation": request_id,
+            "payload_json": payload_json,
+            "limit": limit,
+        })
+
+    # ── Real-world handoffs and outcomes (target 5.2/5.4) ──────────────────
+    # Handoffs compose under this canonical router: no new advertised MCP handle
+    # and the ``extensions`` tool signature is NOT widened. Each parameter reuses
+    # an existing kwarg (same technique as the effector-consent and authoring
+    # actions), so a chatbot reaches these without a connector-surface change:
+    #   key            → handoff_id        field_name  → declared output field
+    #   project_id     → destination check request_id  → confirmation token
+    #   event_type     → outcome_kind      status      → target state / filter
+    #   notes          → attestation note  payload_json→ external_id + evidence
+    # Authority is NOT taken from any of them: the acting subject is resolved
+    # server-side from the credential-validated request, and source ownership
+    # comes from the persisted run + immutable version.
+    handoff_handler = _HANDOFF_ACTIONS.get(action)
+    if handoff_handler is not None:
+        from tinyassets.api.helpers import _request_universe, _universe_dir
+        from tinyassets.handoffs.authority import request_subject
+        from tinyassets.handoffs.models import HandoffAuthorityError
+
+        try:
+            subject = request_subject()
+        except HandoffAuthorityError as exc:
+            return json.dumps({"error": str(exc), "code": exc.code})
+        return handoff_handler({
+            "actor_id": subject,
+            "base_path": _base_path(),
+            "universe_dir": _universe_dir(_request_universe(universe_id)),
+            "handoff_id": key,
+            "run_id": run_id,
+            "branch_version_id": branch_version_id,
+            "output_field": field_name,
+            "destination": project_id,
+            "confirmation": request_id,
+            "outcome_kind": event_type,
+            "state": status,
+            "evidence_url": evidence_url,
+            "outcome_id": outcome_id,
+            "note": notes,
+            "payload_json": payload_json,
+            "limit": limit,
+        })
+
     # ── Quality leaderboard / parent selection (PR-123 substrate M2) ───────
     leaderboard_handler = _LEADERBOARD_ACTIONS.get(action)
     if leaderboard_handler is not None:
@@ -758,6 +837,13 @@ def _extensions_impl(
             "quality_leaderboard", "recommended_parent_for_fork",
             "grant_effector_consent", "revoke_effector_consent",
             "list_effector_consents",
+            "authoring_start", "authoring_inspect", "authoring_edit",
+            "authoring_test", "authoring_confirm_effect", "authoring_publish",
+            "authoring_list",
+            "handoff_declarations", "handoff_dry_run", "handoff_prepare",
+            "handoff_execute", "handoff_get", "handoff_list",
+            "handoff_record_evidence", "handoff_attest_outcome",
+            "handoff_outcome_evidence",
         ],
     })
 

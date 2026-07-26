@@ -28,7 +28,11 @@ The installer SHALL place the application in the platform-standard application l
 - **AND** user-owned content remains intact with a clear location or export path
 
 ### Requirement: First run binds the tray to the user's existing platform account
-First run SHALL open the platform's supported browser authorization flow and bind the tray to the same account the user uses on chatbot/web surfaces. The tray SHALL validate the returned audience, issuer, expiry, state/nonce, and redirect binding before accepting credentials. A second machine SHALL create a distinct host identity under the same account rather than overwriting the first host. The implementation SHALL NOT require a second TinyAssets account or a per-launch copy/paste secret.
+First run SHALL open the platform's supported browser authorization flow and bind the tray to the same account the user uses on chatbot/web surfaces. The tray SHALL validate the returned audience, issuer, expiry, interactive authentication time, state/nonce, and redirect binding before accepting credentials. The native/public client SHALL use authorization-code PKCE S256 without a desktop client secret. Its callback listener SHALL bind only `127.0.0.1` on an ephemeral port, accept one callback on the allow-listed scheme/host/path within a hard timeout, reject every callback without the exact state, stop after the first callback, and never log the authorization code.
+
+The installation SHALL record a durable local binding to exactly one authenticated subject derived only from the validated token's `sub`. Once bound, an authorization completing as another subject SHALL fail without changing the stored subject, host identity, credential reference, or server principal. Re-authorization as the same subject SHALL be idempotent. A clean second machine SHALL create a distinct host identity under the same account rather than overwriting the first host. The implementation SHALL accept no caller-supplied owner/account field, SHALL NOT require a second TinyAssets account or per-launch copy/paste secret, and SHALL NOT import or invoke LLM provider routing or consume maintainer credentials, quota, models, or compute.
+
+Successful account binding SHALL stop in a distinct `bound` state. That state SHALL advertise no capacity, create no capability-scoped host-pool row, publish no market availability, and start no authority-requiring daemon or MCP role. Transition to `online` SHALL be a later explicit capability-registration step.
 
 #### Scenario: Existing user completes browser authorization
 - **WHEN** a signed-in user approves the tray authorization in their browser and the callback validates
@@ -41,6 +45,26 @@ First run SHALL open the platform's supported browser authorization flow and bin
 #### Scenario: Same account installs on a second machine
 - **WHEN** the same account authorizes a clean second installation
 - **THEN** both machines remain separately addressable hosts under that account
+
+#### Scenario: A different account cannot silently take over a bound installation
+- **WHEN** an installation already bound to one subject completes authorization as another subject
+- **THEN** authorization is refused, the recorded subject and host identity remain unchanged, the credential reference is not overwritten, and the tray offers only re-authorization as the original account or an explicit user-initiated reset
+
+#### Scenario: Re-authorizing as the same subject is idempotent
+- **WHEN** the same subject repeats authorization on the same installation
+- **THEN** the same local host identity is retained, no duplicate server principal or capability registration is created, and only the subject-consistent credential reference and expiry may be refreshed
+
+#### Scenario: Successful binding does not advertise capacity
+- **WHEN** account authorization and durable subject binding succeed
+- **THEN** the tray reports `bound`, creates no capability row or market advertisement, and starts no authority-requiring role
+
+#### Scenario: Loopback authorization is local, single-use, and secret-safe
+- **WHEN** the native client starts browser authorization
+- **THEN** it listens only on `127.0.0.1` at an ephemeral allow-listed redirect, accepts one exact-state callback before the timeout, closes the listener, and emits no authorization code to logs
+
+#### Scenario: Account binding requires no LLM provider
+- **WHEN** every Claude, OpenAI, and other model provider is unavailable
+- **THEN** account binding can still complete or return an identity/network error without invoking provider routing or maintainer quota
 
 ### Requirement: Long-lived credentials use the operating system secret store
 Refresh credentials and other reusable account secrets SHALL be stored through Windows Credential Manager/Credential Locker, macOS Keychain, or an available Linux Secret Service/libsecret provider. Stable releases SHALL NOT persist bearer or refresh secrets in plaintext preferences, command-line arguments, logs, crash reports, or environment files. If no supported secret store is available, the tray SHALL fail closed for persistent hosting and explain the remediation rather than downgrade to plaintext storage.
@@ -93,7 +117,7 @@ The installed application SHALL register one per-user autostart entry and SHALL 
 - **THEN** managed processes follow the declared shutdown policy, the singleton lease releases, and host presence becomes offline directly or by bounded TTL
 
 ### Requirement: Updates are signed, atomic, channel-scoped, and recoverable
-The tray SHALL support stable and opt-in pre-release update channels backed by signed manifests and signed platform artifacts. It SHALL verify signature, checksum, product identity, target platform/architecture, and monotonic allowed version before installation. Update application SHALL be atomic from the user's perspective: a crash or failed health check SHALL retain or restore the last known-good version. Critical security revocation MAY require an update or disable network hosting, but SHALL still surface the reason and preserve user content.
+The tray SHALL support stable and opt-in pre-release update channels backed by signed manifests and signed platform artifacts. The signed manifest SHALL bind the artifact, SBOM, and release-metadata names and SHA-256 hashes, and the client SHALL verify all three before staging. It SHALL verify signature, checksum, product identity, target platform/architecture, and monotonic allowed version before installation and again under the activation lock. A missing, unreadable, or unusable installed-version record SHALL refuse normal update activation; an equal or older version MAY run only through the deliberate retained-installer rollback/recovery flow. Update application SHALL be atomic from the user's perspective: a crash or failed health check SHALL retain or restore the last known-good version. Critical security revocation MAY require an update or disable network hosting, but SHALL still surface the reason and preserve user content.
 
 #### Scenario: Valid update passes health check
 - **WHEN** a newer allowed-channel artifact validates and the restarted tray passes its readiness check
@@ -102,6 +126,15 @@ The tray SHALL support stable and opt-in pre-release update channels backed by s
 #### Scenario: Update artifact is tampered
 - **WHEN** artifact checksum or signature does not match the signed manifest
 - **THEN** installation is refused, the current version keeps running, and a security event is recorded without exposing secrets
+
+#### Scenario: Published update provenance is tampered
+- **WHEN** the published SBOM or release-metadata JSON does not match the hash bound into the signed manifest
+- **THEN** staging is refused and the current version keeps running
+
+#### Scenario: Installed version authority is unavailable
+- **WHEN** the installed-version record is missing, unreadable, unusable, or changes so the staged candidate is no longer newer before activation
+- **THEN** normal update activation is refused
+- **AND** only the explicit retained-installer recovery path may deliberately restore an older version
 
 #### Scenario: New version crash-loops
 - **WHEN** the updated tray fails the bounded post-update health check

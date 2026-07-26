@@ -1231,3 +1231,211 @@ Notes:
 - Review gate: ui-test through real chatbot + independent evidence review
 - Ship/abandon: publish proof/task foldback only; no runtime changes
 - Foldback: proof complete and independently approved; PR #1747 merged
+
+## 2026-07-25 - bind authenticated host principal to account
+
+- Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
+- Branch: codex/host-principal-binding
+- Lane state: landed; PR #1753 merged at `d454a5c5`; runtime remains separately gated
+- Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
+- STATUS/Issue/PR: STATUS row retired; PR #1753 merged
+- PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
+- Purpose: preserve the stable server account-to-host authority and add the unowned subject-pinned `bound`-not-`online` tray contract without creating a competing identity primitive
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
+- Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
+- Review gate: exact-head Opus 5 and independent Codex approved; counterparty owner acceptance remains before runtime
+- Ship/abandon: current-main spec/audit PR only; runtime files remain unclaimed
+
+## 2026-07-25 - reconcile engine execution admission and isolation
+
+- Provider: codex-gpt5-desktop-full-product with Claude Opus 5 opposite review
+- Branch: `feat/converse-os-sandbox` via local `codex/reconcile-engine-os-sandbox-final-20260725`
+- Lane state: landed as PR #1573 / `c1f0d404`; spec/audit only, with no runtime or backend authority
+- Worktree: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final
+- STATUS/Issue/PR: PR #1573 merged; STATUS work row retired; P0 runtime concern remains
+- PLAN refs: Execution substrate; Provider routing; Distributed execution; zero-maintainer-authority invariant
+- Purpose: replace the obsolete Bubblewrap-only false-attestation contract with backend-neutral, non-downgradeable execution admission composed with #1784
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final\_PURPOSE.md
+- Memory refs: #1784; runner/v1; exact Opus 5 APPROVE; 2026-07-25 sandbox audit
+- Review gate: passed — exact-head Opus 5 plus independent security/domain/diff approvals; 53/53 strict OpenSpec
+- Ship/abandon: merged in place; runtime/backends remain unclaimed and require owner-specific lanes
+
+## 2026-07-24 23:15 - repurpose release-reconcile-event
+
+- Provider: codex-gpt5-desktop-release-reconcile
+- Branch: codex/release-reconcile-event
+- Lane state: PRs #1749/#1750 landed; live foldback complete
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: #1749 implementation + #1750 CI cleanup merged; drift/failure-cap monitoring remains
+- PLAN refs: Uptime & Alarms; release/deploy reconciliation
+- Purpose: trigger release reconciliation after successful Docker smoke completion while retaining the cron backstop and non-cancelling concurrency.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: wf-openspec-uptime-backfill; release terminal truth and deploy rollback receipts
+- Related implications: Docker build smoke; build-image/deploy-prod chain; release-state honesty
+- Idea feed refs: none
+- Ship/abandon: ship through OpenSpec, Section-14 concurrency proof, actionlint, Opus 5 review, and a short-lived PR; abandon if current main already has an equivalent event trigger
+- Foldback: OpenSpec archived; Opus 5 approved; #1750 repaired post-merge CI; main smoke #30152319997 woke successful workflow_run reconcile #30152436780
+
+## 2026-07-25 - repurpose secure-agent-village
+
+- Provider: codex-gpt5-desktop-village-security
+- Branch: codex/secure-agent-village
+- Lane state: PR #1760 landed; containment foldback complete
+- Worktree: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer
+- STATUS/Issue/PR: #1760 merged; active row retired
+- PLAN refs: API & MCP Interface; chatbot + connector is canonical, Agent Village deferred
+- Purpose: minimum containment of the already-shipped unsafe surface; no continuing Village product lane.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-operator-epoch2-consumer\_PURPOSE.md
+- Memory refs: PR #1489 recovery and clean-checkout proof
+- Related implications: local-app capability axis; host-private coordination state; explicit write actions
+- Idea feed refs: none
+- Ship/abandon: strict OpenSpec change, exact HTTP/browser contract tests, security review, and short-lived PR; abandon only if current main already enforces equivalent authentication
+- Foldback: OpenSpec archived; Opus 5 approved; #1760 merged; all checks green; connector-first priority recorded
+
+## 2026-07-25 - harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next
+- STATUS/Issue/PR: STATUS Work row; PR pending
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: define the shared production-load evidence protocol without owning capability scenarios, thresholds, or `tests/load/`.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: 2026-07-21 user-growth concurrency/scalability audit; April Track J pre-draft
+- Idea feed refs: ideas/INBOX.md §14 production-load harness entry
+- Ship/abandon: ship a strict-valid target OpenSpec after Opus 5 artifact review; abandon if the draft cannot keep protocol ownership disjoint from capability owners
+
+## 2026-07-25 - fold back harden-production-load-evidence
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-production-load-evidence-foldback
+- Lane state: foldback after PR #1775
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-next-foldback
+- STATUS/Issue/PR: #1775 merged at `c94575c9`; completed authoring row retired
+- PLAN refs: §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: mark proposal validation/landing complete while leaving implementation tasks and the isolated `/mcp` host decision active
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-next-foldback\_PURPOSE.md
+- Memory refs: none
+- Related implications: final Opus 5 APPROVE in `docs/audits/2026-07-25-section14-production-load-evidence-opus5-review.md`
+- Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
+- Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
+
+## 2026-07-25 - full-product-vision-completion-audit
+
+- Provider: codex-gpt56-full-vision
+- Branch: codex/full-product-vision-audit-20260725
+- Lane state: landed as PR #1779 / `b1acc2bc`
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
+- STATUS/Issue/PR: merged PR #1779; STATUS Work row retired
+- PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
+- Memory refs: Handoff #1582; historical 2026-07-21 implications reports
+- Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
+- Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
+- Ship/abandon: shipped after exact-head Opus approval and 51/51 strict validation; no implementation authority or runtime edits
+- Foldback: gaps promoted through separate OpenSpec/STATUS claims only
+
+## 2026-07-25 - harden-branch-access-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-branch-access-authority
+- Lane state: claimed; spec-only promotion
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-first-next
+- STATUS/Issue/PR: STATUS Work rows; PR pending
+- PLAN refs: API & MCP Interface; connector users are first-class
+- Purpose: specify one authenticated-subject branch authority boundary across reads, projections, reuse, lineage, mutation, and deletion
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-first-next\_PURPOSE.md
+- Memory refs: none
+- Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
+- Idea feed refs: none
+- Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
+
+## 2026-07-25 - reconcile-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/reconcile-provider-authority
+- Lane state: landed in main as #1784 / `620fed5a`; supersedes draft PR #1691
+- Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
+- STATUS/Issue/PR: merged PR #1784; STATUS Work row retired
+- PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
+- Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md
+- Memory refs: draft PR #1691 is source-only
+- Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
+- Idea feed refs: none
+- Ship/abandon: shipped after strict 51/51 validation, exact-revision Opus 5 approval, and published sibling handoffs
+
+## 2026-07-25 - provider-authority-foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-foldback
+- Lane state: claimed; merged-lane coordination cleanup only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-foldback
+- STATUS/Issue/PR: retire #1784 Work row; close superseded draft PR #1691; follow-up PR
+- PLAN refs: Provider Integration; §14 concurrency/load proof
+- Purpose: mark task 1.35, retire the landed STATUS claim, and preserve the target active/unsynced.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-foldback\_PURPOSE.md
+- Memory refs: #1784 exact-head Opus approval
+- Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
+- Idea feed refs: none
+- Ship/abandon: merge only if no other foldback already performed all cleanup
+
+## 2026-07-25 - background-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-successors
+- Lane state: claimed; OpenSpec planning only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: split provider-authority successor bundle; claim background receipt contract
+- PLAN refs: Daemon Platform; Providers; API & MCP Interface; Uptime & Alarms
+- Purpose: specify durable provider work authority across post-response task/thread/process bridges without runtime edits.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge 620fed5a / exact-head Opus approval
+- Related implications: run/background branch authority; provider-attempt receipts; outbound boundary
+- Idea feed refs: none
+- Ship/abandon: planning PR after exact current-main Opus review; no Village/web dependency
+
+## 2026-07-26 - refresh PostgreSQL transactional control-plane authority
+
+- Provider: codex-gpt5-desktop-full-product; Claude Opus 5 opposite review approved
+- Branch: codex/postgres-control-plane-exact-main-20260726
+- Lane state: host-approved; landing current-main target OpenSpec/audit refresh only
+- Worktree: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact
+- STATUS/Issue/PR: draft PR #1802; stale stacked draft PR #1670 closed as superseded
+- PLAN refs: per-domain canonical store; full-platform zero-host architecture; §14 load proof
+- Purpose: preserve PostgreSQL authority for catalog/ledger/inbox/market while reconciling current identity, custody, migration, load, market, and execution owners
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-postgres-control-plane-exact\_PURPOSE.md
+- Memory refs: PR #1670; PR #1761 PLAN foldback; PRs #1775/#1784/#1797/#1798/#1573/#1800
+- Review gate: passed at semantic SHA `bc5fdcbb` — exact current-main Opus 5 plus three independent architecture/spec/verification approvals; host accepted the reconciled target boundary 2026-07-26
+- Ship/abandon: target-only OpenSpec/audit publication; no SQL, runtime, baseline inventory, migration, cutover, sync, archive, deploy, or production authority
+
+## 2026-07-26 - background-provider-authority foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-successors-foldback
+- Lane state: foldback after PR #1803 merged
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: retire the landed planning claim; target stays active with 33 runtime tasks
+- PLAN refs: Daemon Platform; Providers; API & MCP Interface; Uptime & Alarms
+- Purpose: preserve the approved implementation handoff without treating planning as runtime completion.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
+- Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
+- Ship/abandon: merge coordination-only foldback, then release this worktree lane
+
+## 2026-07-26 - background-branch-execution-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/background-branch-authority-spec
+- Lane state: claimed; OpenSpec planning only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-successors
+- STATUS/Issue/PR: split target specification from blocked runtime implementation
+- PLAN refs: Daemon Platform; Multi-User Evolutionary Design; API & MCP Interface; Uptime & Alarms
+- Purpose: bind scheduled, autonomous, and post-response branch execution to server-owned target authority while keeping valid private loops live.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-successors\_PURPOSE.md
+- Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
+- Related implications: harden-branch-access-authority; universe-creation; retire-legacy; provider-attempt receipts
+- Ship/abandon: planning PR only after exact current-main Opus review; no runtime or Village/web dependency

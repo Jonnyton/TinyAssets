@@ -330,10 +330,10 @@ def test_goal_pool_emits_goal_ladder_rung_claim_recommendations(
             "bounty_requirements": {
                 "settlement_gate": "pr_ready",
             },
-            "claim_action": (
-                "gates action=claim "
-                "branch_def_id=fantasy_author:universe_cycle_wrapper "
-                "rung_key=pr_ready evidence_url=<evidence_url>"
+            "claim_action": None,
+            "claim_gap": (
+                "Gate claims are not exposed by the advertised handles; "
+                "use an internal operator surface."
             ),
         },
     ]

@@ -11,21 +11,21 @@ def _call_inspect(universe_id="test-u"):
 
     fake_udir = Path("/fake") / universe_id
 
-    def fake_is_dir():
-        return True
-
     with (
         # _action_inspect_universe lives in tinyassets.api.universe and
         # imports these symbols directly (not via re-export). Patch at the
         # consumer site (api.universe) for it to take effect.
-        patch("tinyassets.api.universe._default_universe", return_value=universe_id),
+        patch("tinyassets.api.universe._request_universe", return_value=universe_id),
         patch("tinyassets.api.universe._universe_dir", return_value=fake_udir),
         patch.object(Path, "is_dir", return_value=True),
+        patch("tinyassets.api.visibility.visibility_permits", return_value=True),
+        patch("tinyassets.api.visibility.declared_level_name", return_value="public"),
         patch("tinyassets.api.universe._read_json", return_value=None),
         patch("tinyassets.api.universe._read_text", return_value=""),
         patch("tinyassets.api.universe._daemon_liveness", return_value={
             "phase": "idle", "phase_human": "Idle", "is_paused": False,
-            "has_premise": False, "has_work": False, "last_activity_at": "",
+            "has_premise": False, "has_soul": False, "has_work": False,
+            "last_activity_at": "",
             "staleness": "fresh", "word_count": 0, "word_count_sample": "",
             "accept_rate": 0, "accept_rate_sample": "",
         }),
@@ -56,13 +56,13 @@ class TestInspectCrossSurfaceHint:
         assert len(paths) == 4
 
     def test_cross_surface_hint_path_actions(self):
-        """All 4 required discovery paths are present."""
+        """All four hints route through advertised handles."""
         result = _call_inspect()
         actions = {p["action"] for p in result["cross_surface_hint"]["paths"]}
-        assert "extensions action=list_branches" in actions
-        assert "goals action=list" in actions
-        assert "wiki action=search" in actions
-        assert "universe action=list" in actions
+        assert 'read_graph target="branch" branch_id="<known id>"' in actions
+        assert 'read_graph target="goals"' in actions
+        assert 'read_page query="<terms>"' in actions
+        assert 'read_graph target="graphs"' in actions
 
     def test_cross_surface_hint_paths_have_purpose(self):
         """Every path entry has a non-empty purpose field."""
@@ -78,15 +78,21 @@ class TestInspectCrossSurfaceHint:
 
 
 class TestPromptCrossDomainRule:
-    def test_prompt_mentions_cross_surface_hint(self):
-        """The routing rules section names cross_surface_hint so chatbots know the field."""
-        assert "cross_surface_hint" in _CONTROL_STATION_PROMPT
+    def test_prompt_keeps_domain_agnostic_framing(self):
+        """Cross-domain routing starts from domain-agnostic framing."""
+        text = _CONTROL_STATION_PROMPT.lower()
+        assert "domain-agnostic" in text
+        assert "research" in text
+        assert "recipe" in text
 
-    def test_prompt_cross_domain_pivot_rule_present(self):
-        """The prompt tells chatbots to pivot on domain mismatch, not say 'fantasy-only'."""
-        assert "fantasy-only" in _CONTROL_STATION_PROMPT
-        assert "cross_surface_hint.paths" in _CONTROL_STATION_PROMPT
+    def test_prompt_cross_domain_routes_use_advertised_handles(self):
+        """Cross-domain reads use graph/page handles, not hidden dispatchers."""
+        assert 'read_graph target="goals"' in _CONTROL_STATION_PROMPT
+        assert 'read_page query=' in _CONTROL_STATION_PROMPT
+        assert "goals action=" not in _CONTROL_STATION_PROMPT
+        assert "wiki action=" not in _CONTROL_STATION_PROMPT
 
-    def test_prompt_pivot_mentions_list_branches(self):
-        """Pivot rule directs chatbots to extensions action=list_branches."""
-        assert "extensions action=list_branches" in _CONTROL_STATION_PROMPT
+    def test_prompt_names_global_search_gap(self):
+        """The prompt states the global search limitation instead of inventing it."""
+        assert "extensions action=list_branches" not in _CONTROL_STATION_PROMPT
+        assert "global node search" in _CONTROL_STATION_PROMPT.lower()

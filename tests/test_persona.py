@@ -311,7 +311,8 @@ def test_meet_universe_prompt_registered_and_carries_bonding_markers() -> None:
     assert "converse" in text                # creates/loads + relays in one entry
     assert "consent" in text                 # invoking the prompt IS consent
     assert "persists" in text.lower()        # the universe persists what it learns
-    assert "set_engine" in text              # 24/7 power-source bonding beat
+    assert "power source" in text             # 24/7 power-source bonding beat
+    assert "Engine assignment is not" in text
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -461,3 +461,47 @@ fresh-host rollback edges found later.
 - **What I would do differently:** lead with corrupt-first pagination,
   cross-worker selection, lease expiry/reclaim, same-basename root aliasing,
   and optional-reader failure tests before implementing the happy path.
+
+## 2026-07-25 - release reconciliation wake-up and chain recovery
+
+- **What surprised me:** GitHub token-dispatched image builds rarely chained
+  into deploys, and Python 3.14 accepted indented `-c` programs that the
+  production runner's Python 3.12 rejected. A locally green exact-script test
+  was therefore still environment-incomplete.
+- **Pattern worth capturing:** executable workflow proofs need the production
+  interpreter, the exact YAML-dedented shell body, a stateful scheduler/run
+  model, and mutation probes. Retry policy belongs in that state model too:
+  permit bounded recovery, then stop before repeating production mutation.
+- **What I would do differently:** model the full token-dispatch-to-deploy
+  chain and pin the hosted runner interpreter in CI before adding the trigger.
+  That would have exposed both the missing deploy chain and parser mismatch in
+  the first red test.
+
+## 2026-07-25 - Agent Village security containment
+
+- **What surprised me:** fixing the server's unauthenticated default exposed a
+  browser recovery state machine, not just a bearer check. Three independent
+  fetch paths, same-document fragment navigation, chat timers, and ordinary
+  toasts could each preserve a silent or misleading locked-out state.
+- **Pattern worth capturing:** authentication failure belongs at the shared API
+  boundary, while recovery needs one dedicated, persistent, reversible UI
+  state. Security reviews should rotate credentials under an already-open
+  interactive view, not only test fresh page loads.
+- **What I would do differently:** establish the product-ordering boundary
+  before shaping the local UI. The connector-backed chatbot is the canonical
+  first-class experience; an experimental operator view should receive only
+  minimum containment until mature platform primitives reveal whether it has a
+  durable role at all.
+
+## 2026-07-25 - branch authority capability boundary
+
+- **What surprised me:** the first security draft correctly found cross-surface
+  leaks but incorrectly made one graph change own requirements that already
+  belonged to run, evaluation, goals, and paid-market capabilities.
+- **Pattern worth capturing:** an umbrella audit may discover the whole failure
+  chain, but each normative delta should live with the capability whose
+  as-built requirement it replaces; sibling changes can remain explicit,
+  non-blocking successors.
+- **What I would do differently:** inventory both runtime call sites and
+  existing OpenSpec requirement ownership before drafting the first delta,
+  then separate the core shared helper boundary from dependent surfaces.

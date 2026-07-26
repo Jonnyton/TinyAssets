@@ -7,24 +7,24 @@
 
 ## 1. Connection resource ledger and grants
 
-- [ ] 1.1 Add connection-class and grant persistence with owning user, scope, provider, destination, per-universe binding, and revocation state, plus the next numbered storage migration.
-- [ ] 1.2 Resolve a scoped proxy for a node's declared connection class from the ledger, failing closed on absent, revoked, or ambiguous grants with no ambient or maintainer-credential fallback.
-- [ ] 1.3 Keep raw credential material out of graph state, artifacts, run snapshots, and error text; add an adversarial test that an adapter cannot recover a secret from state, environment, request metadata, or proxy errors.
-- [ ] 1.4 Make connector definitions and their MCP client configuration commons artifacts that carry attribution through remix.
+- [x] 1.1 Add connection-class and grant persistence with owning user, scope, provider, destination, per-universe binding, and revocation state, plus the next numbered storage migration.
+- [x] 1.2 Resolve a scoped proxy for a node's declared connection class from the ledger, failing closed on absent, revoked, or ambiguous grants with no ambient or maintainer-credential fallback.
+- [x] 1.3 Keep raw credential material out of graph state, artifacts, run snapshots, and error text; add an adversarial test that an adapter cannot recover a secret from state, environment, request metadata, or proxy errors.
+- [x] 1.4 Make connector definitions and their MCP client configuration commons artifacts that carry attribution through remix.
 
 ## 2. Action caps and held effects
 
-- [ ] 2.1 Add a machine-readable unprompted-action cap evaluated independently of tool authorization and of any spend cap.
-- [ ] 2.2 Execute below-cap authorized actions automatically; hold above-cap actions with a receipt naming the cap, consuming no funds or quota, until an authorized confirmation is recorded.
-- [ ] 2.3 Surface held effects with actionable remediation rather than silence, and test that the same action at or below the cap executes without a hold.
+- [x] 2.1 Add a machine-readable unprompted-action cap evaluated independently of tool authorization and of any spend cap.
+- [x] 2.2 Execute below-cap authorized actions automatically; hold above-cap actions with a receipt naming the cap, consuming no funds or quota, until an authorized confirmation is recorded.
+- [x] 2.3 Surface held effects with actionable remediation rather than silence, and test that the same action at or below the cap executes without a hold.
 
 ## 3. Replay safety, reconciliation, and batches
 
-- [ ] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
-- [ ] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
-- [ ] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
-- [ ] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
-- [ ] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
+- [x] 3.1 Derive the effect key from durable goal, schedule-period, and item-fingerprint identity; journal intent before firing and consult the journal on every replay.
+- [x] 3.2 Reconcile ambiguous outcomes with the destination where the destination supports it, and persist a terminal result in every case.
+- [x] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
+- [x] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
+- [x] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
 
 ## 4. Inboxes and typed artifacts
 

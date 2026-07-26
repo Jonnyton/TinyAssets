@@ -50,6 +50,11 @@ services:
       CODEX_HOME: /data/.codex
       # Persist Claude subscription auth on the shared tinyassets-data volume.
       CLAUDE_CONFIG_DIR: /data/.claude
+      # Shared community-pool root on the durable volume. Load-bearing: the
+      # container has no `.git`, so `producers.goal_pool.repo_root_path()`
+      # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
+      # if this is unset. Do NOT "clean this up" by dropping it. The directory
+      # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
       TINYASSETS_REPO_ROOT: /data/community-pool
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
@@ -165,6 +170,11 @@ services:
       TINYASSETS_DATA_DIR: /data
       CODEX_HOME: /data/.codex
       CLAUDE_CONFIG_DIR: /data/.claude
+      # Shared community-pool root on the durable volume. Load-bearing: the
+      # container has no `.git`, so `producers.goal_pool.repo_root_path()`
+      # git-detect fallback finds nothing and raises `repo_root_not_resolvable`
+      # if this is unset. Do NOT "clean this up" by dropping it. The directory
+      # need not pre-exist — `write_pool_post()` mkdirs parents on first write.
       TINYASSETS_REPO_ROOT: /data/community-pool
       TINYASSETS_ALLOW_API_KEY_PROVIDERS: "0"
       TINYASSETS_CLOUD_DAEMON_SUBSCRIPTION_ONLY: "1"
