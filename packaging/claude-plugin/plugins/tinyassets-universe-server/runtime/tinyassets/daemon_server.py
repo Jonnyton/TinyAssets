@@ -4334,6 +4334,7 @@ def search_nodes(
     query: str = "",
     role: str = "",
     limit: int = 20,
+    viewer: str | None = None,
 ) -> list[dict[str, Any]]:
     """Search NodeDefinitions across every Branch by free-text ``query``
     and optional ``role`` (phase) filter.
@@ -4353,7 +4354,7 @@ def search_nodes(
     using a node_id can intersect ``reuse_count`` with the full
     branch list via ``list_branch_definitions``.
     """
-    branches = list_branch_definitions(base_path)
+    branches = list_branch_definitions(base_path, viewer=viewer or "")
     q = (query or "").strip().lower()
     q_tokens = [t for t in q.split() if t]
     phase_filter = (role or "").strip().lower()

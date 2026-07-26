@@ -1325,9 +1325,9 @@ def run_github_pr_effector(
             "intent": packet,
             "matched_output_key": matched_key,
             "hint": (
-                "Call extensions action=grant_effector_consent "
-                f"sink={EXTERNAL_WRITE_SINK_GITHUB_PR} "
-                f"destination={destination} to authorize this universe."
+                "Effector consent grants are not exposed by the advertised "
+                "handles; an operator must authorize this universe through "
+                "the internal consent surface."
             ),
         }
 

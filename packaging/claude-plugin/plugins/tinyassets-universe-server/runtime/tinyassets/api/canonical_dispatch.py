@@ -204,9 +204,9 @@ def resolve_canonical_for_run(
                 "error": (
                     f"Goal '{goal_id}' has no canonical_branch_version_id "
                     "set, and auto_canonical_via_leaderboard is off. "
-                    "Set canonical via `goals action=set_canonical` or "
-                    "enable auto-canonical via `goals action=update "
-                    "auto_canonical_via_leaderboard=true`."
+                    "Canonical selection is not exposed by the advertised "
+                    "handles; an operator must set it or enable automatic "
+                    "leaderboard selection through the internal admin surface."
                 ),
                 "error_kind": "no_canonical_handler",
                 "goal_id": goal_id,
@@ -372,9 +372,9 @@ def _refresh_via_leaderboard(
             goal_id=goal_id, goal=goal,
             hint=(
                 "auto_canonical_via_leaderboard is on, but no Branches "
-                "are bound to this Goal yet. Bind at least one (and "
-                "produce >= min_completed_runs_for_canonical successful "
-                "runs) before calling run_canonical."
+                "are bound to this Goal yet. Goal-to-branch binding is not "
+                "exposed by the advertised handles; an operator must bind a "
+                "branch before canonical selection can proceed."
             ),
         )
 
@@ -448,8 +448,9 @@ def _refresh_via_leaderboard(
                 "hint": (
                     f"Top entry '{candidate_bdid}' has no published "
                     "branch_version. Keeping the stored canonical. "
-                    "Publish the branch via `extensions action="
-                    "publish_version` before it can serve as canonical."
+                    "Branch-version publication is not exposed by the "
+                    "advertised handles; ask an operator to publish it "
+                    "through the internal admin surface."
                 ),
             }
         return _no_canonical_response(

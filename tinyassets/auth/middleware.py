@@ -24,6 +24,12 @@ from tinyassets.auth.provider import (
     action_scope_for,
     create_provider,
 )
+from tinyassets.auth.wiki_canary import (
+    is_exact_wiki_canary_request,
+    reset_wiki_canary_authority,
+    set_wiki_canary_authority,
+    wiki_canary_token_matches,
+)
 
 logger = logging.getLogger("universe_server.auth")
 
@@ -281,6 +287,7 @@ class AuthContextMiddleware:
 
         previous: Token[Identity | None] = _current_identity.set(ANONYMOUS)
         previous_bearer: Token[bool] = _current_bearer_present.set(False)
+        previous_canary = set_wiki_canary_authority(False)
         try:
             auth_header = ""
             for key, value in scope.get("headers", []):
@@ -290,14 +297,37 @@ class AuthContextMiddleware:
             token = None
             if auth_header.lower().startswith("bearer "):
                 token = auth_header[7:].strip()
-            auth_middleware(token)
+            canary_authorized = False
+            if (
+                token
+                and wiki_canary_token_matches(token)
+                and scope.get("method", "").upper() == "POST"
+                and _auth_challenge_path(scope.get("path", ""))
+            ):
+                body, messages, disconnected, oversized = (
+                    await _buffer_request_body(receive)
+                )
+                if oversized:
+                    await _send_payload_too_large_413(send)
+                    return
+                canary_authorized = (
+                    not disconnected and is_exact_wiki_canary_request(body)
+                )
+                receive = _replay_receive(messages, receive)
+                if canary_authorized:
+                    _current_identity.set(ANONYMOUS)
+                    _current_bearer_present.set(True)
+                    set_wiki_canary_authority(True)
+            if not canary_authorized:
+                auth_middleware(token)
             identity = _current_identity.get()
-            if token and identity is None:
+            if not canary_authorized and token and identity is None:
                 # Present-but-invalid bearer token → 401 challenge (RFC 9728).
                 await _send_auth_challenge_401(send, invalid_token=True)
                 return
             if (
-                identity is ANONYMOUS
+                not canary_authorized
+                and identity is ANONYMOUS
                 and _auth_challenge_path(scope.get("path", ""))
                 and _get_provider().challenge_unauthenticated()
             ):
@@ -309,7 +339,8 @@ class AuthContextMiddleware:
                 await _send_auth_challenge_401(send, invalid_token=False)
                 return
             if (
-                identity is ANONYMOUS
+                not canary_authorized
+                and identity is ANONYMOUS
                 and scope.get("method", "").upper() == "POST"
                 and _auth_challenge_path(scope.get("path", ""))
                 and _ANON_WRITE_CHALLENGE_TOOLS
@@ -334,6 +365,7 @@ class AuthContextMiddleware:
                 receive = _replay_receive(messages, receive)
             await self.app(scope, receive, send)
         finally:
+            reset_wiki_canary_authority(previous_canary)
             _current_bearer_present.reset(previous_bearer)
             _current_identity.reset(previous)
 

@@ -142,9 +142,9 @@ Layer-2 binds to host availability — the persona's CDP profile + browser run o
 
 ---
 
-## PROBE-003 — Wiki gate + read (auto-heal pipeline integrity)
+## PROBE-003 — Wiki write-roundtrip with gate fallback
 
-**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. Scheduled in CI 2026-04-26 — Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 min on the GHA cron alongside the other Layer-1 probes. **Reworked 2026-07-14** after the server-side anonymous-write gate (#1441): the anonymous write-then-read roundtrip is impossible by design, so the probe now asserts the gate itself plus the open read path.
+**Validated:** wiki canary script live since 2026-04-22; logs probes to `.agents/uptime.log`. The Layer-1e step in `.github/workflows/uptime-canary.yml` runs every 5 minutes. **Upgraded 2026-07-25:** a scoped non-OAuth service token restores persisted write/read evidence for exactly `drafts/notes/uptime-probe.md`. If the CI secret is absent, the probe keeps the post-#1441 anonymous gate-plus-read assertion rather than going red for missing credentials.
 **Source script:** `scripts/wiki_canary.py`
 **Persona:** `wiki-canary` (automated; client name `wiki-canary/1.0`)
 **Connector URL under test:** `https://tinyassets.io/mcp`
@@ -157,38 +157,41 @@ python scripts/wiki_canary.py --url https://tinyassets.io/mcp --verbose
 python scripts/wiki_canary.py --once --format=gha
 ```
 
-Scope: auth-gated deployments only (production runs `UNIVERSE_SERVER_AUTH=optional`). A dev-mode server (`UNIVERSE_SERVER_AUTH=false`) leaves anonymous writes open by design, so the gate step reds with exit 6 there — that means "server is not auth-gated", not "wiki is down".
+Credentialed mode is selected by `TINYASSETS_WIKI_CANARY_TOKEN`. The same value (minimum 32 UTF-8 bytes) must be installed in the production server environment and the GitHub Actions secret. The credential is not OAuth and grants no identity; it can dispatch only the exact reserved `write_page` request.
+
+No-token fallback applies to auth-gated deployments. A dev-mode server leaves anonymous writes open by design, so the fallback gate assertion is red there.
 
 ### What it exercises
 
 | Layer | What's tested |
 |---|---|
 | System | MCP `initialize` handshake reaches the daemon. |
-| System | Anonymous `write_page` is REJECTED with the `status=rejected` / `auth_required=true` envelope (write gate active). |
-| System | `read_page` returns the persisted canary draft `drafts/notes/uptime-probe.md` verbatim (reads stay open; catches wiki-read / storage-mount breakage, e.g. the readonly-volume class). |
-| User-impact | Auth policy integrity — an anonymous write silently persisting is a security regression; wiki reads staying open keeps discovery/remix live. |
+| System | With the secret present, scoped `write_page` reports exactly `drafts/notes/uptime-probe.md`; the bearer is attached only to this write. |
+| System | Anonymous `read_page` returns the same fresh per-run content marker just written to the reserved draft. |
+| Security | Without the secret, anonymous `write_page` must return pre-dispatch HTTP 401 with a non-empty `WWW-Authenticate` challenge before the persisted read check. |
+| User-impact | Detects wiki write, storage, read, and scoped-auth regressions while preserving anonymous discovery/remix reads. |
 
 ### Green criteria
 
 - Exit code 0.
-- Anonymous `write_page` returns `status=rejected` with `auth_required=true` (no `isError`).
-- `read_page` returns content matching `_CANARY_CONTENT` byte-for-byte.
+- Credentialed mode: `write_page` returns `status=drafted|updated` and the exact reserved path, then anonymous `read_page` contains the same fresh per-run marker.
+- Fallback mode: anonymous `write_page` returns HTTP 401 with a non-empty OAuth challenge, then anonymous `read_page` contains the persisted `_CANARY_CONTENT`.
 
 ### Red signals
 
 - Exit 2 — MCP handshake failed (initialize or session establishment).
-- Exit 6 — write-gate probe failed: anonymous write ACCEPTED (gate regression), `isError=true`, unexpected envelope, or network error.
+- Exit 6 — scoped write rejected, wrong response path/status, present credential invalid, fallback challenge invalid, or write network failure.
 - Exit 7 — wiki read failed or canary draft content mismatched.
 - Exit 99 — unexpected error.
 
 ### Why this probe earns a catalog slot
 
-BUG-028 demonstrated that a slug-normalization bug could silently break bug filing while the Layer-1 MCP handshake stayed green — the read half keeps that class covered. Post-#1441 the write half guards the auth boundary instead: a regression that silently re-opens anonymous writes would otherwise be invisible to every other probe. Known gap: authenticated write-path persistence is NOT exercised — restoring that coverage needs a canary service credential (tracked in `STATUS.md`).
+BUG-028 demonstrated that a slug-normalization bug could silently break wiki writes while the MCP handshake stayed green. The scoped roundtrip now exercises persistence without reopening anonymous writes or minting a general service identity. The fallback still proves the anonymous-write challenge when credential availability is absent.
 
 ### When to use
 
 - After any change to wiki write/read tool handlers, slug normalization, or wiki storage backend.
-- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, or the auth gate (`writes_require_identity` / `write_gate_rejection`).
+- After any deploy that touches `_wiki_file_bug`, `write_page`/`read_page` routing, scoped canary authorization, or the anonymous-write gate.
 - As a continuous P0 canary alongside PROBE-002.
 
 ---

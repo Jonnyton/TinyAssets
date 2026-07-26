@@ -435,10 +435,10 @@ def run_wiki_write_back_effector(
             "matched_output_key": matched_key,
             "intent": packet,
             "hint": (
-                "Call extensions action=grant_effector_consent "
-                f"sink={EXTERNAL_WRITE_SINK_WIKI_WRITE_BACK} "
-                f"destination={destination} before dispatching wiki write-back "
-                "effects."
+                "Effector consent grants are not exposed by the advertised "
+                "handles; an operator must authorize this destination through "
+                "the internal consent surface before dispatching wiki "
+                "write-back effects."
             ),
         }
 

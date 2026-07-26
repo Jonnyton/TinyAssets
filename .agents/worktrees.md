@@ -1232,6 +1232,20 @@ Notes:
 - Ship/abandon: publish proof/task foldback only; no runtime changes
 - Foldback: proof complete and independently approved; PR #1747 merged
 
+## 2026-07-25 - bind authenticated host principal to account
+
+- Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
+- Branch: codex/host-principal-binding
+- Lane state: claimed; current-main reconciliation of draft PR #1753; no runtime authorized
+- Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
+- STATUS/Issue/PR: claimed STATUS row; draft PR #1753
+- PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
+- Purpose: preserve the stable server account-to-host authority and add the unowned subject-pinned `bound`-not-`online` tray contract without creating a competing identity primitive
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
+- Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
+- Review gate: fold the current-main Opus 5 ADAPT, then obtain exact-head Opus/Codex approval; counterparty owner acceptance remains
+- Ship/abandon: current-main spec/audit PR only; runtime files remain unclaimed
+
 ## 2026-07-24 23:15 - repurpose release-reconcile-event
 
 - Provider: codex-gpt5-desktop-release-reconcile
@@ -1294,6 +1308,22 @@ Notes:
 - Idea feed refs: retired into active OpenSpec `harden-production-load-evidence`
 - Foldback: target change remains active and unsynced; no runtime or `tests/load/` implementation claimed
 
+## 2026-07-25 - full-product-vision-completion-audit
+
+- Provider: codex-gpt56-full-vision
+- Branch: codex/full-product-vision-audit-20260725
+- Lane state: landed as PR #1779 / `b1acc2bc`
+- Worktree: C:\Users\Jonathan\Projects\wf-full-product-vision-audit
+- STATUS/Issue/PR: merged PR #1779; STATUS Work row retired
+- PLAN refs: full product architecture; §14 concurrency/load proof; API & MCP connector-first principle
+- Purpose: map the host's complete product vision to current design, implementation, and acceptance evidence without claiming active runtime files.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-full-product-vision-audit\_PURPOSE.md
+- Memory refs: Handoff #1582; historical 2026-07-21 implications reports
+- Related implications: compute/LLM market; Zapier automation; scalability; organization brains; regulated-industry profiles
+- Idea feed refs: ideas/PIPELINE.md promoted research; ideas/INBOX.md organization and assurance successors
+- Ship/abandon: shipped after exact-head Opus approval and 51/51 strict validation; no implementation authority or runtime edits
+- Foldback: gaps promoted through separate OpenSpec/STATUS claims only
+
 ## 2026-07-25 - harden-branch-access-authority
 
 - Provider: codex-gpt5-desktop-full-product
@@ -1308,3 +1338,33 @@ Notes:
 - Related implications: active universe-visibility predicates stay owner-local; run-branch access is a named sibling lane
 - Idea feed refs: none
 - Ship/abandon: ship strict-valid target OpenSpec after Opus 5 artifact review; no runtime or test edits while claimed elsewhere
+
+## 2026-07-25 - reconcile-provider-authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/reconcile-provider-authority
+- Lane state: landed in main as #1784 / `620fed5a`; supersedes draft PR #1691
+- Worktree: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority
+- STATUS/Issue/PR: merged PR #1784; STATUS Work row retired
+- PLAN refs: Provider Integration; §14 concurrency/load proof; connector users are first-class
+- Purpose: replace the unmintable requester seal and circular sibling gates with request-scoped transport evidence, sink-bound authority, and one-way interfaces.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-reconcile-provider-authority\_PURPOSE.md
+- Memory refs: draft PR #1691 is source-only
+- Related implications: #1746 secret custody; universe creation; provider-attempt receipts; future requester-host activation
+- Idea feed refs: none
+- Ship/abandon: shipped after strict 51/51 validation, exact-revision Opus 5 approval, and published sibling handoffs
+
+## 2026-07-25 - provider-authority-foldback
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/provider-authority-foldback
+- Lane state: claimed; merged-lane coordination cleanup only
+- Worktree: C:\Users\Jonathan\Projects\wf-provider-authority-foldback
+- STATUS/Issue/PR: retire #1784 Work row; close superseded draft PR #1691; follow-up PR
+- PLAN refs: Provider Integration; §14 concurrency/load proof
+- Purpose: mark task 1.35, retire the landed STATUS claim, and preserve the target active/unsynced.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-provider-authority-foldback\_PURPOSE.md
+- Memory refs: #1784 exact-head Opus approval
+- Related implications: #1746 secret custody; provider-attempt receipts; provider-authority successors
+- Idea feed refs: none
+- Ship/abandon: merge only if no other foldback already performed all cleanup
