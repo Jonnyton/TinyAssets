@@ -71,9 +71,12 @@ RECIPE_SPEC = {
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _build_approved_source_branch(us, *, node_id="approved_calc"):
-    from tinyassets.auth.middleware import auth_middleware
-
+def _build_approved_source_branch(
+    us,
+    authenticate_request,
+    *,
+    node_id="approved_calc",
+):
     _call(
         us,
         "register",
@@ -88,11 +91,11 @@ def _build_approved_source_branch(us, *, node_id="approved_calc"):
     )
     prior_actor = os.environ.get("UNIVERSE_SERVER_USER")
     os.environ["UNIVERSE_SERVER_USER"] = "host-operator"
-    auth_middleware("host-operator")
+    authenticate_request("host-operator")
     try:
         approved = _call(us, "approve", node_id=node_id)
     finally:
-        auth_middleware("tester")
+        authenticate_request("tester")
         if prior_actor is None:
             os.environ.pop("UNIVERSE_SERVER_USER", None)
         else:
@@ -202,9 +205,12 @@ def test_build_branch_receipt_reports_unapproved_source_code(comp_env):
     }]
 
 
-def test_patch_branch_source_code_mutation_clears_prior_approval(comp_env):
+def test_patch_branch_source_code_mutation_clears_prior_approval(
+    comp_env,
+    authenticate_request,
+):
     us, _ = comp_env
-    built = _build_approved_source_branch(us)
+    built = _build_approved_source_branch(us, authenticate_request)
     bid = built["branch_def_id"]
 
     result = _call(
@@ -947,9 +953,16 @@ def test_update_node_switches_from_template_to_source_code(comp_env):
     assert capture["prompt_template"] == ""
 
 
-def test_update_node_source_code_mutation_clears_prior_approval(comp_env):
+def test_update_node_source_code_mutation_clears_prior_approval(
+    comp_env,
+    authenticate_request,
+):
     us, _ = comp_env
-    built = _build_approved_source_branch(us, node_id="approved_update")
+    built = _build_approved_source_branch(
+        us,
+        authenticate_request,
+        node_id="approved_update",
+    )
     bid = built["branch_def_id"]
 
     result = _call(
