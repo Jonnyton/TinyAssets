@@ -3,7 +3,7 @@
 **Date:** 2026-07-26
 **Environment:** Windows worktree
 `C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current`, based on exact
-`origin/main` `ba273312484d8717eaa12f2cd66e6629458aa36b`
+`origin/main` `3f71084dacda881b596ecfd86b1a1112586d915c`
 **Finding:** current shipped source contradicts the host-approved architecture;
 the cheat loop is disabled in some places but is not deleted from the build.
 **Target:** `openspec/changes/retire-cheat-loop/`
@@ -63,6 +63,32 @@ openspec validate retire-cheat-loop --strict
 The last command passed on 2026-07-26 after all proposal artifacts were
 complete. These searches are diagnostic inventory, not proof of implementation;
 the runtime is still unchanged in this target-only lane.
+
+Exact-head review on 2026-07-26 approved semantic target
+`8ef99451f985e1a0ef73cfa608b78fa5ac8989b7` after merging current
+`origin/main`. Fresh Claude Opus 5 opposite-provider review, independent
+architecture review, independent OpenSpec review, and independent
+cross-capability/market review all returned APPROVE. The reviewers confirmed:
+
+- `file_bug` becomes filing-only only after retirement task 2.1;
+- wiki filing is never a background-authority issuance root;
+- historical `bug_investigation` rows/receipts and every derived run,
+  BranchTask, or attempt can only enter retirement task 2.5 and cannot be
+  bound, backfilled, drained, revived, resumed, picked, or executed; and
+- retirement task 2.5 plus spec sync/archive gates background-authority live
+  activation and foldback.
+
+Both targeted strict validations and repository-wide strict validation passed
+(`57 passed, 0 failed`); all exact diff checks and installed OpenSpec engine
+rebuilds passed. A full `pytest tests/ -q` verifier run reported no failures
+before exceeding its 10-minute integration timeout. Ruff reported 111
+pre-existing E501 findings in code/plugin files outside this documentation and
+OpenSpec delta. These baseline observations do not weaken the exact semantic
+approval and are not claimed as a full-suite pass.
+
+The host's standing 2026-07-26 direction—if the boundary is fully figured out,
+it is approved and work should continue—therefore satisfies target gate 0.4.
+No unresolved host design choice remains in the removal boundary.
 
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
