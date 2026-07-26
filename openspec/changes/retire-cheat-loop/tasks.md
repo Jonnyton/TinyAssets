@@ -235,11 +235,12 @@
   leave the required short `STATUS.md` watch item rather than claiming clean use.
 - [ ] 6.7 In one canonical foldback commit, explicitly apply the coordination,
   daemon, graph, wiki, uptime, and website deltas to their canonical specs;
-  rewrite canonical `wiki-commons`
+  require final canonical `wiki-commons`
   Purpose prose that promises trigger receipts, `uptime-and-alarms` prose that
   names the neighboring patch loop, and the `public-website-surface`
-  historical-run scenario that requires patch-loop feed/community-watch
-  fallback. After task 4.4's exact-heading manifest is satisfied and the stable
+  historical-run scenario to no longer require patch-loop
+  feed/community-watch fallback. After task 4.4's exact-heading manifest is
+  satisfied and the stable
   completed-run reuse guarantee is owned by `daemon-runtime-and-dispatch`,
   physically delete the canonical `community-patch-loop` directory in that same
   commit. Do not invoke archive until tasks 0.1 through 6.6, all receipt-backed
@@ -255,10 +256,16 @@
   coordination `added=2`, graph `added=4`, website `renamed=1, modified=2`,
   uptime `added=1`, and wiki `added=1, removed=1`; only after every build,
   validation, and count check succeeds may `writeUpdatedSpec` write those exact
-  six. Never use `skipValidation`, and fail on a missing or extra capability.
-  Prove a scoped working-tree/index diff contains only those six
-  engine-generated canonical updates, physical capability deletion, and this
-  foldback's coordination edits, with no unrelated change. Then run
+  six. Resolve/import those engine symbols from the installed module files;
+  do not assume the package root re-exports them. Never use `skipValidation`,
+  and fail on a missing or extra capability. After the engine writes, manually
+  rewrite only the reviewed `wiki-commons` and `uptime-and-alarms` Purpose
+  prologues, which the requirements-only engine preserves; verify the website
+  historical-run replacement came from the engine delta and do not hand-edit
+  it. Prove a scoped working-tree/index diff contains only the six canonical
+  files with their engine-generated requirement updates plus those two Purpose
+  edits, the physical capability deletion, and this foldback's coordination
+  edits, with no unrelated change. Then run
   `openspec archive retire-cheat-loop --yes --skip-specs`, mark 6.7 complete in
   the archived task record, remove the STATUS row, prove no empty or
   resurrected capability exists, strictly validate all OpenSpec again, and

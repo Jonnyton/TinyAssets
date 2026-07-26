@@ -25,6 +25,11 @@ than becoming dead links. Generated static assets SHALL include the canonical
 hostname, crawler policy, sitemap, brand marks, and machine-readable `llms.txt`
 committed with the deployed site.
 
+#### Scenario: A retired proof route is visited
+
+- **WHEN** a visitor opens `/proof` or `/status`
+- **THEN** the page explains that operational evidence moved to `/fine-print` and directs the visitor there
+
 #### Scenario: Retired patch-loop route is visited
 
 - **WHEN** a visitor opens `/patch-loop`
