@@ -29,6 +29,13 @@ logger = logging.getLogger(__name__)
 EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME = (
     "host_local.windows_desktop.install_classic_game"
 )
+DESTINATION_RECONCILIATION = {
+    "supported": False,
+    "reason": (
+        "desktop automation has no destination query by system effect key; "
+        "stale intents require operator inspection"
+    ),
+}
 DEFAULT_WINDOWS_DESKTOP_DESTINATION = "host-local/windows-desktop"
 _ALLOWED_ACTIONS = frozenset({
     "download",
@@ -84,6 +91,9 @@ def _find_packet(
 
 
 def _idempotency_key(packet: dict[str, Any]) -> str:
+    resolved = packet.get("_resolved_effect_key")
+    if isinstance(resolved, str) and resolved:
+        return resolved
     for key in ("idempotency_key", "idempotency_hint"):
         value = packet.get(key)
         if isinstance(value, str) and value.strip():
@@ -420,9 +430,17 @@ def run_windows_desktop_effector(
             "error_kind": "no_matching_packet",
         }
 
+    universe_dir = Path(base_path) if base_path is not None else None
+    from tinyassets.idempotency import resolve_effector_identity
+
+    identity = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
+        universe_dir=universe_dir,
+    )
+    packet = {**packet, "_resolved_effect_key": identity.active_key}
     destination = _destination(packet)
     idem_key = _idempotency_key(packet)
-    universe_dir = Path(base_path) if base_path is not None else None
 
     if not _has_user_approval(packet):
         return {
@@ -512,9 +530,28 @@ def run_windows_desktop_effector(
             "reservation_created_at": held.get("created_at"),
             "intent": packet,
         }
+    if status == "reconciliation_required":
+        from tinyassets.effectors.outbound_boundary import (
+            hold_unreconciled_pending,
+        )
+
+        hold = hold_unreconciled_pending(
+            universe_dir=universe_dir,
+            effect_key=idem_key,
+            sink=EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
+            run_id=run_id,
+        )
+        return {
+            **hold,
+            "dry_run": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_key": idem_key,
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
     if status not in (
         "reserved",
-        "reserved_after_stale",
         "reserved_after_failed",
         "no_hint",
     ):
@@ -559,7 +596,7 @@ def run_windows_desktop_effector(
         "runtime_attestation": attestation,
         "recorded_at": time.time(),
     })
-    if status in ("reserved_after_stale", "reserved_after_failed"):
+    if status == "reserved_after_failed":
         evidence["reservation_origin"] = status
 
     if idem_key and not _finalize_receipt(
@@ -568,5 +605,15 @@ def run_windows_desktop_effector(
         evidence=evidence,
         run_id=run_id,
     ):
-        evidence["receipt_finalize_failed"] = True
+        from tinyassets.effectors.outbound_boundary import (
+            hold_receipt_finalization_failure,
+        )
+
+        evidence = hold_receipt_finalization_failure(
+            universe_dir=universe_dir,
+            effect_key=idem_key,
+            sink=EXTERNAL_WRITE_SINK_WINDOWS_DESKTOP_CLASSIC_GAME,
+            run_id=run_id,
+            destination_evidence=evidence,
+        )
     return evidence

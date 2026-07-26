@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 from typing import Any
 
 import pytest
@@ -23,16 +24,31 @@ from tinyassets.auth.middleware import (
     AuthContextMiddleware,
     anonymous_write_challenge_tools,
     auth_middleware,
+    current_identity,
     register_anonymous_write_challenge_tool,
     set_provider,
 )
 from tinyassets.auth.provider import AuthProvider, DevAuthProvider, Identity
+from tinyassets.auth.wiki_canary import current_wiki_canary_authority
 
 _SUBJECT = Identity(
     user_id="founder-1",
     username="founder-1",
     capabilities=["read", "write", "costly"],
 )
+_CANARY_TOKEN = "c" * 32
+
+
+def _canary_write_rpc(filename: str = "uptime-probe", **extra: Any) -> dict:
+    return _rpc(
+        "tools/call",
+        "write_page",
+        filename=filename,
+        category="notes",
+        content="roundtrip",
+        dry_run=False,
+        **extra,
+    )
 
 
 class _ResolveAlwaysProvider(AuthProvider):
@@ -190,6 +206,239 @@ def test_authenticated_write_call_passes_through():
     )
     assert app_called
     assert _status(sent) == 200
+
+
+def test_scoped_canary_token_dispatches_only_the_reserved_write(monkeypatch):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+
+    sent, app_called, seen = _drive(_canary_write_rpc(), token=_CANARY_TOKEN)
+
+    assert app_called
+    assert _status(sent) == 200
+    assert json.loads(seen)["params"]["arguments"]["filename"] == "uptime-probe"
+
+
+def test_scoped_canary_token_uses_constant_time_compare(monkeypatch):
+    calls: list[tuple[bytes, bytes]] = []
+
+    def _compare(left: bytes, right: bytes) -> bool:
+        calls.append((left, right))
+        return left == right
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    monkeypatch.setattr(secrets, "compare_digest", _compare)
+
+    sent, app_called, _ = _drive(_canary_write_rpc(), token=_CANARY_TOKEN)
+
+    assert app_called
+    assert _status(sent) == 200
+    assert calls == [(_CANARY_TOKEN.encode(), _CANARY_TOKEN.encode())]
+
+
+@pytest.mark.parametrize(
+    ("configured", "presented"),
+    [
+        (None, _CANARY_TOKEN),
+        ("short", "short"),
+        ("\ud800" * 32, _CANARY_TOKEN),
+        (_CANARY_TOKEN, "x" * 32),
+    ],
+)
+def test_scoped_canary_token_is_off_when_absent_short_or_mismatched(
+    monkeypatch,
+    configured,
+    presented,
+):
+    if configured is None:
+        monkeypatch.delenv("TINYASSETS_WIKI_CANARY_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", configured)
+
+    sent, app_called, _ = _drive(_canary_write_rpc(), token=presented)
+
+    assert not app_called
+    assert _status(sent) == 401
+    assert "invalid_token" in _www_authenticate(sent)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        _canary_write_rpc(filename="uptime-probe-neighbor"),
+        _canary_write_rpc(universe_id="another-scope"),
+        [
+            _canary_write_rpc(),
+            _rpc("tools/call", "read_page", page="uptime-probe"),
+        ],
+        _rpc("tools/call", "write_graph", target="goal"),
+    ],
+)
+def test_scoped_canary_token_cannot_authorize_any_other_request(monkeypatch, body):
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+
+    sent, app_called, _ = _drive(body, token=_CANARY_TOKEN)
+
+    assert not app_called
+    assert _status(sent) == 401
+    assert "invalid_token" in _www_authenticate(sent)
+
+
+def test_scoped_canary_token_never_becomes_an_authenticated_identity(monkeypatch):
+    observed: list[Identity] = []
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+
+    async def _app(scope, receive, send):  # noqa: ANN001, ANN202
+        observed.append(current_identity())
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    body = json.dumps(_canary_write_rpc()).encode()
+    messages = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def _receive():  # noqa: ANN202
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    sent: list[dict] = []
+
+    async def _send(message):  # noqa: ANN001, ANN202
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"authorization", f"Bearer {_CANARY_TOKEN}".encode())],
+    }
+    asyncio.run(AuthContextMiddleware(_app)(scope, _receive, _send))
+
+    assert _status(sent) == 200
+    assert observed and observed[0].user_id == "anonymous"
+
+
+def test_scoped_canary_token_writes_exact_reserved_draft(monkeypatch, tmp_path):
+    from tinyassets import universe_server
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    tool_results: list[dict[str, Any]] = []
+
+    async def _app(scope, receive, send):  # noqa: ANN001, ANN202
+        message = await receive()
+        request = json.loads(message["body"])
+        arguments = request["params"]["arguments"]
+        tool_results.append(json.loads(universe_server.write_page(**arguments)))
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    body = json.dumps(_canary_write_rpc()).encode()
+    messages = [{"type": "http.request", "body": body, "more_body": False}]
+
+    async def _receive():  # noqa: ANN202
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    sent: list[dict] = []
+
+    async def _send(message):  # noqa: ANN001, ANN202
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/mcp",
+        "headers": [(b"authorization", f"Bearer {_CANARY_TOKEN}".encode())],
+    }
+    asyncio.run(AuthContextMiddleware(_app)(scope, _receive, _send))
+
+    assert _status(sent) == 200
+    assert tool_results == [{
+        "path": "drafts/notes/uptime-probe.md",
+        "status": "drafted",
+        "note": "Drafted reserved uptime canary page.",
+    }]
+    written_files = [
+        path.relative_to(tmp_path).as_posix()
+        for path in tmp_path.rglob("*.md")
+        if path.read_text(encoding="utf-8") == "roundtrip"
+    ]
+    assert written_files == ["wiki/drafts/notes/uptime-probe.md"]
+
+
+def test_scoped_canary_authority_isolated_between_concurrent_requests(monkeypatch):
+    from tinyassets import universe_server
+
+    monkeypatch.setenv("TINYASSETS_WIKI_CANARY_TOKEN", _CANARY_TOKEN)
+    observed: dict[str, Any] = {}
+
+    async def _run() -> None:
+        canary_entered = asyncio.Event()
+        release_canary = asyncio.Event()
+
+        async def _canary_app(scope, receive, send):  # noqa: ANN001, ANN202
+            await receive()
+            observed["canary_active"] = current_wiki_canary_authority()
+            canary_entered.set()
+            await release_canary.wait()
+            observed["canary_still_active"] = current_wiki_canary_authority()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def _anonymous_app(scope, receive, send):  # noqa: ANN001, ANN202
+            await receive()
+            await canary_entered.wait()
+            observed["anonymous_active"] = current_wiki_canary_authority()
+            observed["anonymous_write"] = json.loads(
+                universe_server.write_page(
+                    filename="uptime-probe",
+                    category="notes",
+                    content="must-not-write",
+                    dry_run=False,
+                ),
+            )
+            release_canary.set()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"ok"})
+
+        async def _request(app, body, token=None):  # noqa: ANN001, ANN202
+            raw = json.dumps(body).encode()
+            pending = [{"type": "http.request", "body": raw, "more_body": False}]
+
+            async def _receive():  # noqa: ANN202
+                return pending.pop(0) if pending else {"type": "http.disconnect"}
+
+            sent: list[dict] = []
+
+            async def _send(message):  # noqa: ANN001, ANN202
+                sent.append(message)
+
+            headers = []
+            if token:
+                headers.append((b"authorization", f"Bearer {token}".encode()))
+            scope = {
+                "type": "http",
+                "method": "POST",
+                "path": "/mcp",
+                "headers": headers,
+            }
+            await AuthContextMiddleware(app)(scope, _receive, _send)
+            return _status(sent)
+
+        statuses = await asyncio.gather(
+            _request(_canary_app, _canary_write_rpc(), _CANARY_TOKEN),
+            _request(
+                _anonymous_app,
+                _rpc("tools/call", "read_page", page="uptime-probe"),
+            ),
+        )
+        observed["statuses"] = statuses
+
+    asyncio.run(_run())
+
+    assert observed["statuses"] == [200, 200]
+    assert observed["canary_active"] is True
+    assert observed["canary_still_active"] is True
+    assert observed["anonymous_active"] is False
+    assert observed["anonymous_write"]["auth_required"] is True
+    assert current_wiki_canary_authority() is False
 
 
 def test_malformed_json_passes_through_unchallenged():

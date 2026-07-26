@@ -106,6 +106,13 @@ logger = logging.getLogger(__name__)
 
 
 EXTERNAL_WRITE_SINK_GITHUB_PR = "github_pull_request"
+DESTINATION_RECONCILIATION = {
+    "supported": False,
+    "reason": (
+        "the adapter has no stable destination lookup by system effect key; "
+        "stale intents require operator inspection"
+    ),
+}
 _ENABLE_ENV = "TINYASSETS_EXTERNAL_WRITE_ENABLED"
 # Round-3 P1 fix (Codex round-2 verdict on PR #969): this env is the
 # **operator panic-button kill switch**. When truthy, the effector
@@ -348,8 +355,9 @@ def _release_reservation(
 
     Called after ``gh pr create`` returned an error. Best-effort —
     failure to release means the next retry under the same hint has
-    to wait for the stale-pending threshold (default 10 min) before
-    re-acquiring. Log loudly so the operator can spot stuck rows.
+    to reconcile with the destination or hold for remediation rather
+    than re-acquiring by elapsed time. Log loudly so the operator can
+    spot stuck rows.
     """
     if universe_dir is None or not idempotency_hint:
         return
@@ -1215,7 +1223,7 @@ def run_github_pr_effector(
     if isinstance(raw_hint, str):
         idempotency_hint = raw_hint.strip()
 
-    # â”€â”€ Phase 1 backward-compat path â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Phase 1 backward-compat path.
     # A packet without ``destination`` is a Phase 1 packet by definition
     # — Phase 2 made the field part of the canonical shape. Preserve the
     # Phase-1 dry-run evidence shape exactly so existing tests + consumers
@@ -1238,8 +1246,15 @@ def run_github_pr_effector(
         }
 
     universe_dir = _resolve_universe_dir(base_path)
+    from tinyassets.idempotency import resolve_effector_identity
 
-    # â”€â”€ Gate 0: soul-scoped effect-authority â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    idempotency_hint = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+        universe_dir=universe_dir,
+    ).active_key
+
+    # Gate 0: soul-scoped effect authority.
     # The running universe's soul is the source of effect-authority (gap 1 of
     # the souled-universe self-maintenance model). A universe whose soul.md
     # declares effect_authority grants must include this sink:destination, or
@@ -1300,7 +1315,7 @@ def run_github_pr_effector(
             "matched_output_key": matched_key,
         }
 
-    # â”€â”€ Gate 2: consent grant â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 2: consent grant.
     if not _check_consent(universe_dir, destination):
         return {
             "dry_run": True,
@@ -1316,7 +1331,7 @@ def run_github_pr_effector(
             ),
         }
 
-    # â”€â”€ Gate 3: idempotency receipt (atomic reservation) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Gate 3: idempotency receipt (atomic reservation).
     # Round-2 P1.1: the round-1 sequence (lookup → invoke → record)
     # was non-atomic. Two concurrent threads could both observe "no
     # receipt" and both invoke ``gh pr create``. We now reserve the
@@ -1385,13 +1400,32 @@ def run_github_pr_effector(
             "hint": (
                 "Another worker is currently invoking gh pr create "
                 "under the same idempotency_hint. Retry after it "
-                "settles (or wait for the stale-pending threshold)."
+                "settles."
             ),
             "intent": packet,
         }
+    if reservation_status == "reconciliation_required":
+        from tinyassets.effectors.outbound_boundary import (
+            hold_unreconciled_pending,
+        )
+
+        hold = hold_unreconciled_pending(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+            run_id=run_id,
+        )
+        return {
+            **hold,
+            "dry_run": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
     if reservation_status not in (
-        "reserved", "reserved_after_stale",
-        "reserved_after_failed", "no_hint",
+        "reserved", "reserved_after_failed", "no_hint",
     ):
         # Defensive — unknown reservation shape. Treat conservatively
         # as in-flight so we don't fire a duplicate.
@@ -1409,7 +1443,7 @@ def run_github_pr_effector(
     # We hold the reservation (or there was no hint so we proceed
     # without one). Invoke the side-effect.
 
-    # â”€â”€ Real write â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # Real write.
     payload = packet.get("payload") or {}
     payload = payload if isinstance(payload, dict) else {}
 
@@ -1481,11 +1515,7 @@ def run_github_pr_effector(
         evidence["label_error"] = invocation["label_error"]
     if idempotency_hint:
         evidence["idempotency_hint"] = idempotency_hint
-    # Reservation status is surfaced so a downstream auditor can see
-    # whether this run reclaimed a stale row.
-    if reservation_status in (
-        "reserved_after_stale", "reserved_after_failed",
-    ):
+    if reservation_status == "reserved_after_failed":
         evidence["reservation_origin"] = reservation_status
     if idempotency_hint:
         finalized = _finalize_receipt(
@@ -1495,11 +1525,17 @@ def run_github_pr_effector(
             run_id=run_id,
         )
         if not finalized:
-            # The reservation row we held was rewritten by another
-            # writer between our reserve and our finalize. The PR
-            # already exists; flag the inconsistency so the operator
-            # can spot it without us masking the successful write.
-            evidence["receipt_finalize_failed"] = True
+            from tinyassets.effectors.outbound_boundary import (
+                hold_receipt_finalization_failure,
+            )
+
+            evidence = hold_receipt_finalization_failure(
+                universe_dir=universe_dir,
+                effect_key=idempotency_hint,
+                sink=EXTERNAL_WRITE_SINK_GITHUB_PR,
+                run_id=run_id,
+                destination_evidence=evidence,
+            )
     return evidence
 
 

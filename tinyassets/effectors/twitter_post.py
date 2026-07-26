@@ -32,6 +32,13 @@ from tinyassets.effectors.authority import resolve_soul_effect_authority
 logger = logging.getLogger(__name__)
 
 EXTERNAL_WRITE_SINK_TWITTER_POST = "twitter_post"
+DESTINATION_RECONCILIATION = {
+    "supported": False,
+    "reason": (
+        "the adapter has no stable destination lookup by system effect key; "
+        "stale intents require operator inspection"
+    ),
+}
 
 _DRY_RUN_ENV = "TINYASSETS_EXTERNAL_WRITE_DRY_RUN"
 _DEFAULT_HANDLE = "@kwisatzh4derach"
@@ -235,10 +242,17 @@ def _derive_idempotency_hint(
     run_id: str,
     handle: str,
     text: str,
+    universe_dir: Path | None,
 ) -> str:
-    raw = packet.get("idempotency_hint") or packet.get("idempotency_key")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
+    from tinyassets.idempotency import resolve_effector_identity
+
+    identity = resolve_effector_identity(
+        packet,
+        sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+        universe_dir=universe_dir,
+    )
+    if identity.active_key:
+        return identity.active_key
     payload = _payload(packet)
     source_run_id = payload.get("source_run_id") or packet.get("source_run_id") or run_id
     seed = f"{source_run_id}|{EXTERNAL_WRITE_SINK_TWITTER_POST}|{handle}|{text}"
@@ -504,6 +518,7 @@ def run_twitter_post_effector(
         run_id=run_id,
         handle=handle,
         text=text,
+        universe_dir=universe_dir,
     )
 
     if not destination:
@@ -654,9 +669,28 @@ def run_twitter_post_effector(
             "reservation_created_at": held.get("created_at"),
             "intent": packet,
         }
+    if status == "reconciliation_required":
+        from tinyassets.effectors.outbound_boundary import (
+            hold_unreconciled_pending,
+        )
+
+        hold = hold_unreconciled_pending(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            run_id=run_id,
+        )
+        return {
+            **hold,
+            "dry_run": True,
+            "phase": "phase_2",
+            "destination": destination,
+            "idempotency_hint": idempotency_hint,
+            "matched_output_key": matched_key,
+            "intent": packet,
+        }
     if status not in (
         "reserved",
-        "reserved_after_stale",
         "reserved_after_failed",
         "no_hint",
     ):
@@ -720,7 +754,7 @@ def run_twitter_post_effector(
         "credential_source": credentials.source,
         "recorded_at": time.time(),
     }
-    if status in ("reserved_after_stale", "reserved_after_failed"):
+    if status == "reserved_after_failed":
         evidence["reservation_origin"] = status
     if not _finalize_receipt(
         universe_dir,
@@ -728,7 +762,17 @@ def run_twitter_post_effector(
         evidence=evidence,
         run_id=run_id,
     ):
-        evidence["receipt_finalize_failed"] = True
+        from tinyassets.effectors.outbound_boundary import (
+            hold_receipt_finalization_failure,
+        )
+
+        evidence = hold_receipt_finalization_failure(
+            universe_dir=universe_dir,
+            effect_key=idempotency_hint,
+            sink=EXTERNAL_WRITE_SINK_TWITTER_POST,
+            run_id=run_id,
+            destination_evidence=evidence,
+        )
     return evidence
 
 

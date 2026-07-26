@@ -19,7 +19,18 @@ class TestUniverseServerMetadata:
 
         universe = tools["universe"]
         assert universe.title == "Universe Operations"
-        assert {"universe", "daemon", "collaboration", "workflow-builder"} <= universe.tags
+        assert universe.tags == {
+            "agent-workflow",
+            "ai-builder",
+            "collaboration",
+            "custom-ai",
+            "daemon",
+            "general-purpose",
+            "tinyassets",
+            "universe",
+            "universe-builder",
+            "workflow-builder",
+        }
         assert universe.annotations.readOnlyHint is False
         assert universe.annotations.destructiveHint is False
         assert universe.annotations.idempotentHint is False
@@ -55,5 +66,10 @@ class TestUniverseServerMetadata:
 
         extension_guide = prompts["extension_guide"]
         assert extension_guide.title == "Extension Authoring Guide"
-        assert {"extensions", "nodes", "plugins", "tinyassets"} <= extension_guide.tags
+        assert extension_guide.tags == {
+            "extensions",
+            "nodes",
+            "plugins",
+            "tinyassets",
+        }
         assert "LangGraph nodes" in extension_guide.description
