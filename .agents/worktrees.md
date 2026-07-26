@@ -1236,15 +1236,29 @@ Notes:
 
 - Provider: codex-gpt56-host-principal with Claude Opus 5 opposite review
 - Branch: codex/host-principal-binding
-- Lane state: claimed; current-main reconciliation of draft PR #1753; no runtime authorized
+- Lane state: landed; PR #1753 merged at `d454a5c5`; runtime remains separately gated
 - Worktree: C:\Users\Jonathan\Projects\wf-host-principal-binding
-- STATUS/Issue/PR: claimed STATUS row; draft PR #1753
+- STATUS/Issue/PR: STATUS row retired; PR #1753 merged
 - PLAN refs: Identity; Host Pool; Providers; zero-maintainer-authority invariant
 - Purpose: preserve the stable server account-to-host authority and add the unowned subject-pinned `bound`-not-`online` tray contract without creating a competing identity primitive
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-host-principal-binding\_PURPOSE.md
 - Memory refs: draft PR #1746 owner-resolution ADAPT; PR #1736
-- Review gate: fold the current-main Opus 5 ADAPT, then obtain exact-head Opus/Codex approval; counterparty owner acceptance remains
+- Review gate: exact-head Opus 5 and independent Codex approved; counterparty owner acceptance remains before runtime
 - Ship/abandon: current-main spec/audit PR only; runtime files remain unclaimed
+
+## 2026-07-25 - reconcile engine execution admission and isolation
+
+- Provider: codex-gpt5-desktop-full-product with Claude Opus 5 opposite review
+- Branch: codex/reconcile-engine-os-sandbox-final-20260725 (publishes in place to `feat/converse-os-sandbox`)
+- Lane state: claimed; current-main spec/audit reconciliation of draft PR #1573; no runtime or backend authorized
+- Worktree: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final
+- STATUS/Issue/PR: claimed STATUS row; draft PR #1573
+- PLAN refs: Execution substrate; Provider routing; Distributed execution; zero-maintainer-authority invariant
+- Purpose: replace the obsolete Bubblewrap-only false-attestation contract with backend-neutral, non-downgradeable execution admission composed with #1784
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-engine-os-sandbox-final\_PURPOSE.md
+- Memory refs: #1784; runner/v1; Opus 5 ADAPT; 2026-07-25 sandbox audit
+- Review gate: current-main strict OpenSpec plus exact-head Claude Opus 5 and independent security/domain/diff review
+- Ship/abandon: update draft PR #1573 in place; never create a sibling sandbox proposal; runtime/backends remain unclaimed
 
 ## 2026-07-24 23:15 - repurpose release-reconcile-event
 
