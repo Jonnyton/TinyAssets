@@ -259,7 +259,7 @@ The next adaptation:
   not yet exist.
 
 Current exact-revision authority lives in the bodies of these four durable
-handoff comments, which task 1.18 requires to match the final PR head before
+handoff comments, which task 1.20 requires to match the final PR head before
 merge:
 
 - custody acceptance: `issuecomment-5081341084`;
@@ -342,3 +342,35 @@ The next adaptation:
 
 Final disposition remains pending strict validation, four refreshed exact-head
 handoffs, and Opus 5 approval.
+
+## Eighth exact-revision Opus 5 re-review — 2026-07-25
+
+Opus 5 reviewed clean commit `42ab3799` and approved the effective carrier
+gate, generated-ID principal canary, dark non-BYOC compatibility, retirement
+handoff, assignment-global wording, Q6.3 expansion, config-parse guard, and all
+four exact-SHA comments. It returned `ADAPT` on the remaining
+flag-independent legacy slice.
+
+The deployed image has no Ollama service, so the proposed Anthropic
+cloud-plus-local ceiling was role-member-complete but not reachable for
+judge/extract. More importantly, PR #1592 already fail-closes credential
+recovery for universe-scoped calls, while the process-global/no-universe path
+that can inherit maintainer authentication remained outside the slice until
+the full gate.
+
+The final adaptation applies the simplification ladder:
+
+- delete the flag-independent deprecated-action requirement and all
+  compatibility implementation tasks rather than add a second kill switch,
+  live-image reachability subsystem, and rollback path;
+- preserve every shipped `set_engine` source/service/config/readiness and
+  destination behavior while the effective gate is dark;
+- state the true residual: universe-scoped credential access is fail-closed,
+  but unchosen destination choice plus the ambient/no-universe maintainer-auth
+  path remain until effective V2 enforcement; and
+- bind exact owner/timing to gated R2-1a after the three ready-path successors,
+  hidden-action retirement, and migration of every legacy
+  `allowed_providers=None` record in task 8.1.
+
+Final disposition remains pending strict validation, four refreshed exact-head
+handoffs, and Opus 5 approval of the simplified target.

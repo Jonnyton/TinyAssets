@@ -4,7 +4,9 @@
 `allowed_providers`. A failed user-selected engine can therefore fall through
 to an unchosen provider, consume unrelated quota, or cross a privacy boundary.
 The fail-closed credential environment shipped in PR #1592 closes ambient
-credential recovery but does not close this provider-destination boundary.
+credential recovery for universe-scoped calls but does not close destination
+choice or the process-global/no-universe branch that can still inherit
+maintainer authentication.
 
 Draft PR #1691 identified the right boundary but is rooted on obsolete history
 and received an Opus 5 `ADAPT` in merged PR #1727. A first current-main
@@ -35,22 +37,13 @@ deny-all.
   that ID. Caller data cannot opt in, unlisted universes preserve shipped
   behavior, and existing user universes are never migrated merely to obtain
   proof.
-- Before that full cutover, an authenticated caller holding
-  `universe:admin` plus the universe write ACL narrows the originating leak
-  immediately on surfaces that can still reach legacy `set_engine`: signed-in
-  raw-MCP callers, Tier-2/Tier-3 stdio, and Claude-plugin runtime. Canonical
-  Anthropic/OpenAI assignments remove cross-cloud fallback while retaining
-  `ollama-local` so writer/judge/extract/embed chains remain representable.
-  Tier-1 chatbot users cannot reach this hidden legacy action; their fix stays
-  owned by `activate-connector-requester-authority`. Supported aliases
-  normalize; other accepted cloud services retain shipped behavior and the
-  STATUS Q6.3 residual until gated migration. Unsupported or mismatched
-  assignments fail before mutation; existing records and newborn defaults
-  remain untouched. While the effective gate is dark, shipped
-  self-hosted/market-rented/host-daemon intent keeps its current
-  `engine_set`, config, readiness, and no-ceiling behavior; only the target
-  canary/global contract converts a non-executable source to typed
-  pre-mutation setup refusal.
+- No flag-independent legacy-action subsystem ships. While the effective gate
+  is dark, every `set_engine` source/service and provider path retains exact
+  shipped behavior. The hidden action is unavailable to Tier-1 chatbots and
+  its retirement strictly reduces new exposure. R2-1a implements destination
+  authority only behind the effective gate after the three ready-path
+  successors; task 8.1 migrates all legacy `allowed_providers=None` records.
+  This exact owner/timing replaces the unsafe pre-cutover shortcut.
 - Requester-owned local assignments publish a singleton canonical provider
   ceiling only after their assignment and opaque credential binding reference
   are ready. Legacy `byo_api_key` is read/migration-only and converts only
@@ -166,7 +159,7 @@ None.
   credential isolation; paid-market/distributed-execution own remote market
   execution. `retire-legacy-live-mcp-tools` owns removal of hidden
   `universe/set_engine`; removal strictly reduces new exposure and need not
-  preserve the narrow writer. Its handoff is instead that pre-slice
+  preserve a new writer. Its handoff is instead that all legacy
   `allowed_providers=None` records require gated migration, and
   Tier-2/Tier-3/plugin assignment needs the requester-host successor after
   removal. It does not make that path Tier-1.

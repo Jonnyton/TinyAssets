@@ -43,7 +43,8 @@ omit engine authority initialization.
 #### Scenario: authority initialization failure rolls birth back
 - **WHEN** any birth path fails to persist engine authority
 - **THEN** the partial universe is removed before the error returns
-- **AND** no bare or authority-uninitialized directory is observable as living
+- **AND** any generated-ID canary registration is removed durably
+- **AND** no bare or authority-uninitialized directory or orphan canary entry remains observable
 
 #### Scenario: pre-cutover birth preserves shipped engine semantics
 - **WHEN** any birth path succeeds while the global flag is false and its canonical ID is absent from configured/registered canary state

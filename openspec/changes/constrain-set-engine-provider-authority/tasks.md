@@ -62,14 +62,22 @@
   legacy retirement around residual migration and replacement paths.
 - [x] 1.17 Publish the retirement handoff with the two exact residuals and
   add its durable comment ID to the current binding set.
-- [ ] 1.18 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
-  approval of the exact adapted artifacts;
+- [x] 1.18 Refresh all four exact-SHA handoffs and obtain the eighth
+  exact-revision Opus 5 review; it returned `ADAPT` because the
+  flag-independent slice was not role-reachable on the deployed image and did
+  not close the ambient maintainer-auth path.
+- [x] 1.19 Apply the simplification gate: delete the deprecated-action slice
+  instead of adding its own kill switch/reachability subsystem; preserve all
+  shipped behavior while dark and bind the remaining exposure to gated R2-1a,
+  three ready-path successors, retirement, and migration task 8.1.
+- [ ] 1.20 Refresh all four exact-SHA handoffs and obtain Claude Opus 5
+  approval of the simplified exact artifacts;
   resolve every Critical and Important finding.
-- [ ] 1.19 Run strict target/full-tree validation and land this target active
+- [ ] 1.21 Run strict target/full-tree validation and land this target active
   and unsynced. Close/supersede draft #1691 only after the replacement and all
   citation handoffs are durable.
 
-## Published dependent-lane expectations (not completion tasks)
+## 2. Published dependent-lane expectations (not completion tasks)
 
 - `retire-mcp-provider-secret-deposit` consumes exported
   `ProviderAssignmentAdmission`, its assignment-before-custody lock order,
@@ -105,7 +113,7 @@
   secret deposit or desktop/web-app dependency.
 - `retire-legacy-live-mcp-tools` owns retirement of the hidden `universe`
   action; removing it strictly reduces new exposure and does not wait on
-  preserving the narrow writer. Its handoff records two residuals: pre-slice
+  preserving a new writer. Its handoff records two residuals: all legacy
   records with `allowed_providers=None` require gated migration task 8.1, and
   removal leaves Tier-2/Tier-3/plugin users without assignment until
   `activate-requester-host-engines` supplies the replacement. Tier-1 chatbot
@@ -164,28 +172,20 @@
   explicit-source readiness, unreadable-state fail-safe true, and the bare
   exhaustion carve-out. Post-cutover proves source/state `unassigned`,
   generation `0`, and `[]` before visibility; failure rolls back the
-  directory. With the global flag false, prove a server-listed isolated test
+  directory plus any generated-ID canary registration. With the global flag
+  false, prove a server-listed isolated test
   principal with no existing home/universe registers its generated public or
   first-contact birth ID before target initialization, while any existing-home
   principal and every caller-supplied opt-in fail before canary registration.
 - [ ] 4.5 Add failing canonical requester-local mapping tests for
   `anthropic -> claude-code` and `openai -> codex`, exact opaque reference,
   generation increment, singleton ceiling, inferred/matching writer, and
-  byte-exact zero mutation on invalid route. Separately prove that while the
-  effective V2 gate is dark, an authorized legacy `set_engine` write
-  normalizes Anthropic/OpenAI aliases and writes its role-complete
-  cloud-plus-`ollama-local` ceiling in the same config call as
-  source/preference. Assert writer/judge/extract/embed each retain a
-  destination, no other cloud provider is reachable, other accepted cloud
-  services keep shipped behavior/Q6.3 residual, existing records and newborn
-  defaults are untouched, and invalid/mismatched BYOC input fails
-  pre-mutation. Assert dark self-hosted/market-rented/host-daemon intent keeps
-  its shipped `engine_set`, config, readiness, and no-ceiling behavior, while
-  the effectively gated form returns the universe-action-owned typed setup
-  refusal with byte-exact zero vault/config/ledger mutation. Require a
-  parseable existing config before the load-bearing config merge so fallback
-  rewrite cannot drop unrelated keys. Record that credential deposit remains
-  outside this atomic config write until task 5.4.
+  byte-exact zero mutation on invalid route under the effective gate. Prove
+  with the global flag false and empty canary state that all four shipped
+  `set_engine` sources, all ten accepted BYOC services, config/readiness
+  results, provider destination behavior, and `allowed_providers=None` no-op
+  semantics remain byte-for-byte/behaviorally unchanged. No deprecated-action
+  kill switch or partial ceiling may exist.
 - [ ] 4.6 Add failing total-source tests for shipped `byo_api_key`,
   `self_hosted_endpoint`, `market_rented`, and `host_daemon` plus target
   `unassigned`, `requester_local`, `local_model`, and
@@ -226,18 +226,15 @@
   canary-proven Tier-1 connector and local surface gates pass, flip the global
   flag/default and enable `engine_source=unassigned` plus newborn deny-all
   atomically. Make the secret-free generated-ID canary registry durable across
-  process restart and remove it during bounded-test cleanup.
+  process restart, remove failed-birth entries before returning error, and
+  remove it during bounded-test cleanup.
 - [ ] 5.3 Implement canonical requester-local resolver accepting only an
   existing opaque binding reference and strict service/writer mapping; add
   total shipped-source migration/hold behavior and the successor-owned
-  attested local/host target mappings. First land the flag-independent narrow
-  compatibility slice for authorized reachable legacy `set_engine`: normalize
-  Anthropic/OpenAI aliases and publish the matching cloud-plus-`ollama-local`
-  ceiling in the same config write as source/preference; keep other accepted
-  cloud services and every non-BYOC source branch unchanged while dark.
-  Refuse before credential/config mutation if existing config is unparseable
-  so the fallback-empty merge cannot drop unrelated keys; keep all other
-  target authority/carrier enforcement dark.
+  attested local/host target mappings only under the effective gate. While
+  dark, keep every legacy source/service/config/readiness/destination behavior
+  unchanged. Refuse target migration/assignment before mutation if existing
+  config is unparseable so fallback-empty merge cannot drop unrelated keys.
 - [ ] 5.4 Implement assignment generation, exclusive transaction, secret-free
   journal, pending quarantine, coherent atomic publication, failed deny-all
   recovery, and startup cleanup.
@@ -371,4 +368,7 @@
   leave a STATUS monitoring item.
 - [ ] 8.10 Sync/archive after implementation, update sibling dependencies and
   citations, close superseded drafts #1606/#1691 only after preservation,
-  retire the STATUS row, and publish through normal review/merge.
+  retire the STATUS row, and publish through normal review/merge. Do not sync
+  the two `ProviderExecutor.start()`-bound sandbox requirements into canonical
+  `provider-routing` before task 7.4 lands; until then the as-built sandbox
+  requirements remain authoritative.

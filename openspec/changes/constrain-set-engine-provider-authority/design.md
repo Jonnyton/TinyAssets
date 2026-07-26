@@ -90,35 +90,20 @@ Before migration, optional assignment fields remain absent and
 `TINYASSETS_PROVIDER_AUTHORITY_V2` defaults false. `_DEFAULT_ENGINE_SOURCE`
 stays `byo_api_key`; `universe_has_assigned_engine` retains its shipped vault
 credential, explicit non-default source, and unreadable-state fail-safes.
-One deliberately narrower compatibility fix remains active while the flag is
-false: an authenticated caller holding `universe:admin` plus the universe
-write ACL can use reachable legacy `set_engine` to remove cross-cloud fallback
-for canonical Anthropic/OpenAI assignments. Their role-complete ceilings are
-respectively `["claude-code", "ollama-local"]` and
-`["codex", "ollama-local"]`; the local destination keeps judge, extract, and
-embed representable until target role-specific authority can narrow further.
-Claude/Claude-Code and Codex aliases normalize first. Other accepted cloud
-services retain shipped no-ceiling behavior and the STATUS Q6.3 residual until
-gated migration. Unsupported, mismatched, or non-executable sources fail
-before mutation. This narrows the originating leak for canonical
-Anthropic/OpenAI assignments without rewriting existing records, changing
-newborn defaults, or activating the target authority carrier. The credential
-deposit remains a preceding non-transactional write until task 5.4; source,
-preference, and ceiling share one config write.
-Because `universe` is hidden from the seven canonical live handles, this slice
-helps only signed-in raw-MCP, Tier-2/Tier-3 stdio, and Claude-plugin callers
-that can still invoke the legacy action directly. It is not Tier-1 onboarding.
-`retire-legacy-live-mcp-tools` may remove the action without preserving the
-narrow writer because removal strictly reduces new exposure. Its handoff
-records that pre-slice `allowed_providers=None` records remain for gated
-migration and that local surfaces need `activate-requester-host-engines` as
-their replacement assignment path. `activate-connector-requester-authority`
-owns the chatbot path.
-The flag-independent slice changes no other source branch:
-`self_hosted_endpoint`, `market_rented`, and `host_daemon` keep their shipped
-`engine_set`, config write, readiness classification, and no-ceiling behavior
-while dark. Only an effectively gated canary/global request applies the target
-typed pre-mutation refusal for a non-executable source.
+There is no flag-independent exception: every legacy `set_engine` source,
+service, config write, readiness result, and `allowed_providers=None` no-op
+retains shipped behavior while dark. PR #1592 already fail-closes credential
+recovery for universe-scoped calls, but unchosen destination choice remains
+and the process-global/no-universe provider path can still inherit maintainer
+authentication. The effective V2 gate closes both; R2-1a owns that gated
+runtime after the three ready-path successors, and task 8.1 migrates every
+legacy `None` record.
+
+Because `universe` is hidden from the seven canonical live handles, Tier-1
+chatbots cannot reach the deprecated action. `retire-legacy-live-mcp-tools`
+may remove it because removal strictly reduces new exposure. Local surfaces
+then depend on `activate-requester-host-engines`; Tier-1 setup remains owned by
+`activate-connector-requester-authority`.
 Only after every universe has a manifest classification and all surface gates
 pass does cutover flip the flag/default for new births. Post-migration,
 `unassigned + []` alone is engine-less; ready/nonempty or a proven remote
@@ -469,32 +454,27 @@ replacement change and exact accepted SHA before #1691 closes.
 ## Migration Plan
 
 1. Land target specs and one-way sibling handoffs; keep runtime dark.
-2. Land the narrow compatibility fix on surfaces that can still reach legacy
-   `set_engine`: normalize supported Anthropic/OpenAI aliases, publish the
-   role-complete cloud-plus-`ollama-local` ceiling in the same config write as
-   source/preference, and leave other cloud services tracked as the Q6.3
-   residual. Do not rewrite existing records or newborn defaults.
-3. Add request capability plus the explicit internal thread-pool carrier,
+2. Add request capability plus the explicit internal thread-pool carrier,
    assignment generation/admission, reference-only launch, and the rendered
-   held/`setup_required` envelope behind
-   `TINYASSETS_PROVIDER_AUTHORITY_V2=false`; preserve every shipped helper,
-   default, fail-safe, and bare-exhaustion behavior.
-4. Land `harden-background-provider-execution-authority`,
+   held/`setup_required` envelope with the global flag false and canary state
+   empty; preserve every shipped helper, default, fail-safe, source/service
+   write, destination choice, and bare-exhaustion behavior.
+3. Land `harden-background-provider-execution-authority`,
    `activate-requester-host-engines`, and
    `activate-connector-requester-authority`; classify every provider bridge
    and make connector/local setup paths live.
-5. With the flag still false, inventory every legacy universe; preserve
+4. With the flag still false, inventory every legacy universe; preserve
    credentialed/non-default sources, fail-safe unreadable state, and convert
    verified custody/host/local/remote sources into explicit assignment state.
-6. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
+5. Prove the manifest is complete and all Tier-1/Tier-2/Tier-3/plugin surface
    gates pass under the server-owned isolated-universe canary; prove unlisted
    universes remain on shipped behavior and clean up canary universes,
    principal entries, and registered IDs.
-7. Only then flip the flag/default, enable newborn deny-all initialization,
+6. Only then flip the flag/default, enable newborn deny-all initialization,
    and prove typed holds render setup while bare infrastructure exhaustion
    remains loud.
-8. Run race/crash/security suites and real connector load proof.
-9. Quiesce legacy writers only after request and background ready-path gates;
+7. Run race/crash/security suites and real connector load proof.
+8. Quiesce legacy writers only after request and background ready-path gates;
    convert, canary, render chatbot acceptance, and inspect post-fix clean use.
 
 Rollback before cutover restores code/config artifacts while deny-all state

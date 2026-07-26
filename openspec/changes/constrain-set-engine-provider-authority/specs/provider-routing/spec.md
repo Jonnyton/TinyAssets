@@ -605,6 +605,8 @@ server SHALL register the generated canonical universe ID in a private canary
 registry durably before target birth initialization or visibility. The
 secret-free registry SHALL reload across process restart. After birth,
 enforcement keys only on the registered universe ID, not on principal alone.
+A registration whose birth transaction does not commit SHALL be removed
+durably before the failure returns.
 
 Target enforcement is active for a universe only when the global flag is true
 or its canonical ID is in configured/registered server-owned canary state.
@@ -614,9 +616,7 @@ populate or widen either canary set or the private registry.
 While neither gate applies to a universe, every new
 authority, carrier, assignment-state, hold, retry, pin, policy, judge,
 auth-health, launch, birth, and setup clause in this change SHALL remain
-observational/non-authorizing and preserve shipped runtime behavior, except
-the explicitly assigned legacy `set_engine` role-complete narrowing defined
-below.
+observational/non-authorizing and preserve shipped runtime behavior.
 Requirements in this delta MUST NOT be read independently as enabling target
 enforcement while the global gate is dark.
 
@@ -647,70 +647,6 @@ existing user universe merely to obtain pre-flip proof.
 - **WHEN** a preflight-clean isolated test principal with no home or universe performs public or first-contact birth
 - **THEN** the server registers the generated ID before target initialization and visibility
 - **AND** the principal cannot opt an existing or caller-selected universe into canary enforcement
-
-### Requirement: Explicit legacy set_engine assignment narrows immediately
-An authorized legacy `set_engine` caller SHALL narrow the pre-cutover
-provider-destination leak for canonical Anthropic/OpenAI assignments on
-surfaces that can still reach the action. The caller must be authenticated,
-hold `universe:admin`, and pass the universe write ACL. While raw-key ingress
-remains enabled, canonical
-`byo_api_key + anthropic` SHALL write `preferred_writer=claude-code` and
-`allowed_providers=["claude-code", "ollama-local"]`; canonical
-`byo_api_key + openai` SHALL write `preferred_writer=codex` and
-`allowed_providers=["codex", "ollama-local"]`. The pre-cutover ceiling SHALL
-retain `ollama-local` so canonical judge, extract, and embed chains remain
-non-empty; narrowing to a bare singleton is target-only and remains behind the
-effective V2 gate. A supplied writer MUST match.
-
-Accepted aliases SHALL normalize before mapping: `claude` and `claude-code`
-map to `anthropic`, while `codex` maps to `openai`, and receive the same
-ceiling. Accepted non-canonical cloud services `gemini`, `google`, `groq`,
-`xai`, and `grok` retain shipped no-ceiling behavior in this narrow slice; the
-residual leak remains tracked by the STATUS Q6.3 Concern until gated
-migration.
-
-The ceiling SHALL be written in the same `write_universe_config_fields` call
-as source and preference so failure cannot leave a preference without its
-ceiling. The existing credential deposit precedes that config call and is not
-rolled back on config failure until the full assignment transaction in task
-5.4 lands.
-
-While the effective V2 gate is dark, shipped
-`self_hosted_endpoint`, `market_rented`, and `host_daemon` writes SHALL retain
-their current `status=engine_set`, config mutation, readiness classification,
-and no-ceiling behavior; this narrow BYOC slice does not change or endorse
-them. When the effective gate applies, a currently non-executable instance of
-those sources SHALL fail before mutation with the canonical typed
-`setup_required` response owned by the universe action layer and identity
-setup contract. Unknown or mismatched input likewise fails pre-mutation.
-Existing legacy records are not reclassified by the narrow slice. If
-secret-custody retirement has already disabled raw ingress, that stricter
-refusal wins.
-
-#### Scenario: explicit Anthropic assignment cannot cross cloud providers
-- **WHEN** an authorized caller successfully assigns canonical legacy Anthropic through `set_engine`
-- **THEN** preference and `allowed_providers=["claude-code", "ollama-local"]` commit in one config write
-- **AND** failure of `claude-code` cannot route to Codex or another cloud provider
-
-#### Scenario: every canonical role stays representable pre-cutover
-- **WHEN** a canonical pre-cutover Anthropic or OpenAI assignment commits
-- **THEN** writer, judge, extract, and embed each retain at least one destination in their authority-bounded chain
-- **AND** no cross-provider cloud fallback remains
-
-#### Scenario: target-gated invalid or unsupported assignment has zero mutation
-- **WHEN** effectively gated `set_engine` receives a mismatched writer or non-executable source
-- **THEN** it returns typed setup-required/refusal before vault, config, or ledger mutation
-- **AND** no unrestricted preference is stored
-
-#### Scenario: dark non-BYOC sources preserve shipped writes
-- **WHEN** the effective V2 gate is dark and `set_engine` receives shipped self-hosted, market-rented, or host-daemon intent
-- **THEN** its current engine-set response, config write, and readiness classification remain unchanged
-- **AND** the narrow BYOC slice writes no target ceiling or assignment state for it
-
-#### Scenario: newborns are unaffected by the narrow slice
-- **WHEN** a universe is born without an explicit successful `set_engine`
-- **THEN** this pre-cutover exception writes no allowlist or assignment state
-- **AND** shipped newborn behavior remains unchanged
 
 ### Requirement: Provider assignment admission is one exported cross-capability primitive
 Provider routing SHALL export one `ProviderAssignmentAdmission` keyed by

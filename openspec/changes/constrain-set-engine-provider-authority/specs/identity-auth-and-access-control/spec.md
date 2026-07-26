@@ -11,6 +11,9 @@ unchanged. A server-listed isolated test principal may bootstrap only a new
 public/first-contact birth after the server proves it has no existing
 home/universe; the generated universe ID is registered before visibility, and
 later enforcement keys on that ID rather than principal alone.
+The process-global `_DEFAULT_ENGINE_SOURCE` is the sole carve-out: it remains
+keyed only on the global flag, while canary universes use their explicit birth
+state and the effective per-universe gate.
 
 #### Scenario: dark identity target preserves shipped surfaces
 - **WHEN** the global flag is false and a universe is absent from configured/registered server-owned canary state
