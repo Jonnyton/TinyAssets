@@ -1425,3 +1425,17 @@ Notes:
 - Memory refs: #1784 / merge `620fed5a`; #1803 / merge `58371486`
 - Related implications: background branch authority; run authority; provider-attempt receipts; outbound boundary
 - Ship/abandon: merge coordination-only foldback, then release this worktree lane
+
+## 2026-07-26 - activate Tier-1 connector requester authority
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/activate-connector-requester-authority-current-20260726
+- Lane state: claimed; target OpenSpec/audit only
+- Worktree: C:\Users\Jonathan\Projects\wf-connector-requester-authority-current
+- STATUS/Issue/PR: split from the provider-authority-successors row; PR pending exact review
+- PLAN refs: connector users are first-class; provider integration; paid market; zero-maintainer-authority invariant
+- Purpose: define how a Tier-1 chatbot request explicitly accepts market compute without ambient/founder/maintainer credentials; requester-host/BYOC stays with its separate successor
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-connector-requester-authority\_PURPOSE.md
+- Memory refs: #1784/#1797/#1786/#1798/#1573; P0 newborn-contact concern #1582
+- Review gate: exact current-main Opus 5 plus independent architecture/security/spec verification
+- Ship/abandon: target-only OpenSpec/audit publication; no router/runtime/API/credential, provider invocation, market acceptance, deploy, or production authority
