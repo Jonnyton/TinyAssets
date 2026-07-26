@@ -34,7 +34,7 @@ the pure live-price core named in the brief: `quotes.py`, `match.py`, `routing.p
   `market_class_id`.
 - **Mirror** — canonical runtime and packaged Claude-plugin runtime SHA-256:
   `AFBC5FDD04A5A2D2736A53455675D563AD6F9E3C7195DE59AA415CE63A1F735A`.
-- **Pushed SHA** — `PENDING_IMPLEMENTATION_COMMIT`.
+- **Pushed SHA** — `f9448f9c`.
 - **Corrected 2.1 / 2.2 checkoff state** — both remain checked, but their text
   now states the true strictness boundary: strict canonical-byte ingestion is a
   descriptor property; demand is a normalized, bounded typed mapping. Neither
