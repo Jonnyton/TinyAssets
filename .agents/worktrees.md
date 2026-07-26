@@ -1453,3 +1453,17 @@ Notes:
 - Memory refs: host directive 2026-07-26; final exact reviewed SHA 8ef99451; current origin/main 3f71084d
 - Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
 - Ship/abandon: draft target PR #1810 first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
+
+## 2026-07-26 - retire cheat-loop collision-safe waves
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-loop-safe-waves
+- Lane state: claimed; React/Svelte/deployment-truth implementation starting
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves
+- STATUS/Issue/PR: stacked implementation lane on draft target PR #1810
+- PLAN refs: user-authored/remixable automations; public website surface; complete-system uptime
+- Purpose: remove retired product presentation and callers from production React, rollback Svelte, and deployment guidance without touching runtime/queue or external GitHub state
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves\_PURPOSE.md
+- Memory refs: exact approved target 8ef99451; target draft PR #1810
+- Review gate: focused builds/scans plus independent diff review; rendered connector and post-fix clean-use remain later acceptance gates
+- Ship/abandon: stacked draft PR against codex/retire-cheat-loop-current-20260726; retarget after #1810 lands
