@@ -82,10 +82,9 @@ class TestAddCanonSynthesisSignal:
             "mode": "filename_upsert",
             "identity": "canon/sources/ryn.md",
             "same_filename_behavior": (
-                "Relaying a later canon update through converse with the same "
-                "filename replaces the stored source bytes and manifest entry "
-                "when the content hash changes; identical bytes are treated "
-                "as unchanged."
+                "A later ingest of the same canon-source filename replaces "
+                "the stored source bytes and manifest entry when the content "
+                "hash changes; identical bytes are treated as unchanged."
             ),
             "history_retained": False,
             "supersede_supported": False,

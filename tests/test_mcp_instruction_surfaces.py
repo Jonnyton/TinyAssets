@@ -17,6 +17,15 @@ import pytest
 
 from tinyassets import universe_server
 
+_CANONICAL_ADVERTISED_HANDLES = {
+    "converse",
+    "get_status",
+    "read_graph",
+    "read_page",
+    "run_graph",
+    "write_graph",
+    "write_page",
+}
 _ROUTING_HEAD_STOPWORDS = {
     "a",
     "an",
@@ -314,9 +323,14 @@ def _catalog_claims(control_station: str) -> set[str]:
 
 def test_instruction_surfaces_claim_only_live_advertised_handles() -> None:
     advertised = set(_advertised_tools())
+    assert advertised == _CANONICAL_ADVERTISED_HANDLES
+    assert "extensions" not in advertised
     surfaces = _instruction_surfaces()
     _assert_surfaces_claim_only_advertised_handles(surfaces)
-    assert _catalog_claims(surfaces["prompt:control_station"]) == advertised
+    assert (
+        _catalog_claims(surfaces["prompt:control_station"])
+        == _CANONICAL_ADVERTISED_HANDLES
+    )
 
 
 @pytest.mark.parametrize(

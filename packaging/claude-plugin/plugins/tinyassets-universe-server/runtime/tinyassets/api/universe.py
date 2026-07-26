@@ -4658,9 +4658,9 @@ def _action_set_premise(universe_id: str = "", text: str = "", **_kwargs: Any) -
 
 
 _CANON_SAME_FILENAME_BEHAVIOR = (
-    "Relaying a later canon update through converse with the same filename "
-    "replaces the stored source bytes and manifest entry when the content "
-    "hash changes; identical bytes are treated as unchanged."
+    "A later ingest of the same canon-source filename replaces the stored "
+    "source bytes and manifest entry when the content hash changes; identical "
+    "bytes are treated as unchanged."
 )
 
 

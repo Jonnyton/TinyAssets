@@ -954,7 +954,7 @@ def test_get_run_output_text_channel(runner_env):
     # #58: raw run_id does not leak into the phone-legible text channel.
     assert run["run_id"] not in full["text"]
     # The workflow name should surface instead — it's in the text.
-    assert "workflow" in full["text"].lower()
+    assert "recipe tracker" in full["text"].lower()
     single = _call(us, "get_run_output", run_id=run["run_id"],
                    field_name="capture_output")
     assert "text" in single

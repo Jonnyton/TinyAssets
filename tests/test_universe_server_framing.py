@@ -101,7 +101,9 @@ def test_extensions_tool_description_points_to_prompts_for_rules() -> None:
         "schedule_branch",
     ):
         assert action in text
-    assert len(tool.description or "") < 900
+    # The reconciled action catalog is 1,948 chars. This leaves about 33%
+    # growth headroom while staying under half the 6,000-char MCP ceiling.
+    assert len(tool.description or "") < 2600
 
 
 def test_wiki_tool_description_is_not_a_catchall() -> None:
