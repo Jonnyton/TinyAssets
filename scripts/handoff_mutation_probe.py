@@ -76,6 +76,16 @@ MUTATIONS: list[tuple[str, str, str, str, list[str]]] = [
         [f"{AUTHORITY_TEST}::TestSourceAuthority::test_foreign_run_is_refused"],
     ),
     (
+        "outcome-run-owner-check",
+        "tinyassets/api/extensions.py",
+        'if owner in ("", "anonymous") or owner != actor_id:',
+        "if False:",
+        [
+            f"{OUTCOMES_TEST}::TestSingleRegistry::"
+            "test_record_outcome_requires_authenticated_run_ownership"
+        ],
+    ),
+    (
         "declared-destination-substitution",
         "tinyassets/handoffs/models.py",
         "if supplied and supplied != declaration.destination:",

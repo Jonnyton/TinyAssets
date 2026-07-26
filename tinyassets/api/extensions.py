@@ -670,6 +670,28 @@ def _extensions_impl(
     if outcome_handler is not None:
         from tinyassets.api.permissions import current_request_actor_id
 
+        actor_id = current_request_actor_id()
+        if action == "record_outcome":
+            from tinyassets.handoffs.authority import request_subject
+            from tinyassets.handoffs.models import HandoffAuthorityError
+            from tinyassets.runs import get_run
+
+            try:
+                actor_id = request_subject()
+                run = get_run(_base_path(), run_id)
+                owner = ""
+                if run is not None:
+                    owner = (
+                        str(run.get("owner_user_id") or "").strip()
+                        or str(run.get("actor") or "").strip()
+                    )
+                if owner in ("", "anonymous") or owner != actor_id:
+                    raise HandoffAuthorityError(
+                        f"run {run_id!r} is not available to this account"
+                    )
+            except HandoffAuthorityError as exc:
+                return json.dumps({"error": str(exc), "code": exc.code})
+
         oc_kwargs: dict[str, Any] = {
             "branch_def_id": branch_def_id,
             "run_id": run_id,
@@ -683,7 +705,7 @@ def _extensions_impl(
             # Resolved server-side from the credential-validated request. An
             # attestation names who made it, so this must never come from a
             # caller-supplied ``author``/``attested_by`` kwarg.
-            "actor_id": current_request_actor_id(),
+            "actor_id": actor_id,
         }
         return outcome_handler(oc_kwargs)
 

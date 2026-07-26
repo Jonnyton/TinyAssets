@@ -143,6 +143,28 @@ class TestSingleRegistry:
         )
         assert result["attested_by"] == "account-alice"
 
+    @pytest.mark.parametrize("actor_id", ["anonymous", "account-mallory"])
+    def test_record_outcome_requires_authenticated_run_ownership(
+        self, base, store, run_id, monkeypatch, actor_id
+    ):
+        import json
+
+        from tinyassets.api.extensions import _extensions_impl
+
+        monkeypatch.setattr(
+            "tinyassets.api.permissions.current_request_actor_id",
+            lambda: actor_id,
+        )
+        result = json.loads(
+            _extensions_impl(
+                action="record_outcome",
+                run_id=run_id,
+                event_type="published_paper",
+            )
+        )
+        assert result["code"] == "handoff_authority_required"
+        assert _rows(base, "outcome_event") == []
+
     def test_a_handoff_outcome_lands_in_outcome_event(self, base, store, run_id):
         recorded = store.record_outcome_evidence(
             account_id="account-alice",
