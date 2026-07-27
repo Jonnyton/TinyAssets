@@ -10,22 +10,22 @@ copyable, remixable designs.
 Apply is blocked. As of 2026-07-27, read-only production inventory found:
 
 - all 28 exact retired label definitions;
-- 1,963 retired-label associations across 883 unique items;
-- 221 open issues, 296 closed issues, and 366 closed or merged pull requests;
+- 1,963 retired-label associations across 884 unique items;
+- 221 open issues, 297 closed issues, and 366 closed or merged pull requests;
 - 98 open pull requests, including 21 with auto-merge requests; and
 - workflow database ID `317815472` (`auto-enroll-merge.yml`) still active.
 
 The terminal-proven label receipt binds all 29 Link-header connections (six
 multi-page) at digest
-`sha256:2f1fc9f45344990ffffb1de676290e2bf2b463ea58373bf3d5055b5de1c42406`.
+`sha256:6407b7f78a15c9160805b858cb000b0a5ea6801f8917478d6d2e3451db7d331c`.
 
 The 2026-07-27 terminal-proven live attribution receipt captured 833 workflow
 runs, 21 complete job connections, the one-entry reviewed default-branch
 source history, and one exact run/job/step/log proof for each of the 21
 enrollments. All 21 classify `attributed`; none classify explicit or ambiguous.
 Its inventory-only receipt digest is
-`sha256:ac2fcb69bb553d4b238f7944aefa473eab1cfe737c60c6a9b5ac5b343304869e`.
-Both receipts are bound to implementation revision `77cef3bc` and include terminal
+`sha256:c5063d6f38071b9a9f4fc9ee415c664f65708cdb7d41ea963270314804534b37`.
+Both receipts are bound to implementation revision `4a4b9efe` and include terminal
 GitHub Link-header evidence. This remains historical capture, not mutation
 authority: the workflow is active and `apply_complete=false`.
 
@@ -102,7 +102,9 @@ markers. The exact raw GraphQL Actions identity is
 `Bot/github-actions/MDM6Qm90NDE4OTgyODI=`. That actor alone remains ambiguous:
 attribution additionally requires one matching run/job/step window and one log
 member proving the exact PR, repository, auto-squash command, and successful
-enrollment line.
+enrollment line. If an otherwise eligible competing run's log is unavailable,
+the receipt binds `log_unavailable` to that captured run and preserves the PR
+as ambiguous; a failed read never makes another candidate appear unique.
 
 Stable GitHub APIs do not expose the exact historical default-branch commit
 used by a `pull_request_target` run. The collector therefore never substitutes
