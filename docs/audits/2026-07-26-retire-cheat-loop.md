@@ -116,13 +116,18 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   `post_x_update.py` as an explicit generic outbound primitive, and makes every
   assigned workflow/runbook/skill agree that React is manual production while
   Svelte is dispatch-only rollback.
+- Residual cleanup `49192987` removes the rollback console's fixed
+  six-stage-loop assumption, attributes notes and run identity to the
+  user-authored workflow, replaces remaining loop-routing copy, and treats
+  interrupted runs as terminal. Follow-up `33fb617b` proves the already-guarded
+  parser token to TypeScript without changing parser behavior.
 
 Both site production builds passed; the React build emitted 27 static routes
 including `/patch-loop`, and the Svelte build emitted the expected loop,
-patch-loop, and fine-print pages. React TypeScript passed. Svelte's optional
-`npm run check` still reports only three pre-existing errors in untouched
-`src/lib/mcp/playground.ts`; browser smoke remains unavailable until Playwright
-Chromium is installed. Active-source scans found zero retired
+patch-loop, and fine-print pages. React TypeScript passed. After residual
+cleanup, Svelte `npm run check` passed with zero errors and six existing
+warnings outside the retired-loop edits; browser smoke remains unavailable
+until Playwright Chromium is installed. Active-source scans found zero retired
 `community_change_context`, community-loop/status/watch, bug-investigation,
 auto-fix/ship, self-patching, automatic-pickup, or label-fallback identifiers.
 Independent reviewers approved the React, Svelte, and automation/deployment
@@ -161,11 +166,19 @@ open-issue counts were
 open issues. These are active external routing/status claims, not merely
 historical source vocabulary.
 
-## Current Shipped Consumers
+## Pre-retirement shipped-consumer baseline
+
+This inventory records the audited `origin/main` state before the stacked
+site/deployment implementation commits `5e8e5e39`, `594a9287`, `255e83cf`,
+`49192987`, and `33fb617b`.
+It remains here as historical removal evidence, not as a claim that each
+consumer is still present on the current stacked branch. Unless a paragraph
+explicitly says otherwise, present-tense descriptions below refer to that
+pre-retirement baseline.
 
 ### Filing intake and receipt
 
-| Surface | Current behavior | Retirement |
+| Surface | Baseline behavior | Retirement |
 |---|---|---|
 | `tinyassets/api/wiki.py:2430-2570` | `file_bug` imports `bug_investigation` and `trigger_receipts`, creates a pending receipt, reads a retired env key, enqueues, appends `## Investigation`, and returns `investigation`/`trigger` blocks | Remove the entire post-filing automation block; filing returns filing metadata only |
 | `tinyassets/wiki/trigger_receipts.py` | Dedicated mutable receipt store for the filed-page auto-trigger | Stop writes in the filing-only deployment; retain the reader/store/data until every old writer is drained or fenced and task 2.5 completes its locked inventory, authority-safe migration, retention record, and final rescan; only then delete the unused implementation |
@@ -190,7 +203,7 @@ filing fields and per-kind duplicate detection remain.
 
 ### Hidden patch-request composition
 
-| Surface | Current behavior | Retirement |
+| Surface | Baseline behavior | Retirement |
 |---|---|---|
 | `tinyassets/api/market.py:202-235` | `classify_patch_request` injects free/paid daemon claimants, a Claude/Codex writer gate, and an opposite-family checker gate | Delete the classifier; ordinary request submission does not choose a platform writer/checker team |
 | `tinyassets/api/universe.py:2157-2174` | Persists `request_classification` into submitted requests/tasks | Stop writing it and ignore/strip pending legacy metadata as non-authorizing residue |
@@ -452,33 +465,40 @@ named `community-loop` survives.
 
 ### Public website presentation
 
-The current production React/Next site and retained Svelte rollback source both
-expose the retired product. Fresh GitHub evidence on 2026-07-26 shows five
-successful `deploy-site-react` runs (latest 2026-06-27); the current workflow
-deployment chronology and `deploy-site.yml` identify React as live and Svelte
-as dispatch-only rollback. The `deploy-site-react.yml` header, older cutover
-runbook, and website skill still say React is not live and must be corrected.
+At the pre-retirement baseline, the production React/Next site and retained
+Svelte rollback source both exposed the retired product. Fresh GitHub evidence
+on 2026-07-26 showed five successful `deploy-site-react` runs (latest
+2026-06-27); the workflow deployment chronology and `deploy-site.yml`
+identified React as live and Svelte as dispatch-only rollback, while the
+`deploy-site-react.yml` header, older cutover runbook, and website skill still
+incorrectly said React was not live.
 
-- `WebSite/site/src/lib/mcp/live.ts` reads
+The baseline consumers were:
+
+- `WebSite/site/src/lib/mcp/live.ts` read
   `community-loop-watch.yml`, community-loop labels/issues, and
-  `/community-loop-status.json`, and calls `community_change_context`;
-- `WebSite/site/static/community-loop-status.json` is a checked-in product
+  `/community-loop-status.json`, and called `community_change_context`;
+- `WebSite/site/static/community-loop-status.json` was a checked-in product
   snapshot;
-- `WebSite/site/src/lib/components/ChatDemo.svelte` narrates the privileged
+- `WebSite/site/src/lib/components/ChatDemo.svelte` narrated the privileged
   file-to-daemon-to-gates-to-live loop on the homepage;
-- `WebSite/site/src/routes/fine-print/+page.svelte` names the workflow;
-- `WebSite/site-react/lib/live.ts` calls `community_change_context`, and its
-  fine print mirrors the same shape;
-- canonical site requirements name `/patch-loop` and the community-watch
+- `WebSite/site/src/routes/fine-print/+page.svelte` named the workflow;
+- `WebSite/site-react/lib/live.ts` called `community_change_context`, and its
+  fine print mirrored the same shape;
+- canonical site requirements named `/patch-loop` and the community-watch
   fallback.
 
-The migration removes the patch-loop application and fallback data from both
-trees, makes `/patch-loop` a static soft landing to user-authored
-patterns/commons, and keeps `/loop` only as provenance-labeled generic workflow
-activity. Generic platform uptime evidence remains a separate observation and
-never proves that task work is moving. Both the deployed React tree and Svelte
-rollback tree must build and pass the same absence scan; this retirement does
-not delete the live React source or decide a new framework migration.
+On the current stacked branch, commits `5e8e5e39`, `594a9287`, and `49192987`
+remove those exact product callers, feeds, snapshot, and presentation surfaces
+from the Svelte and React trees. `/patch-loop` is now a static soft landing to
+user-authored patterns/commons, and `/loop` is provenance-labeled generic
+workflow activity. Commit `255e83cf` also corrects the deployment workflow,
+runbook, and website-skill truth: React is manual production and Svelte is
+dispatch-only rollback. Generic platform uptime evidence remains a separate
+observation and never proves that task work is moving. Final cross-tree
+absence, rendered-surface, and clean-use evidence remain release gates; this
+retirement does not delete the live React source or decide a new framework
+migration.
 
 ### Plugin payload
 
