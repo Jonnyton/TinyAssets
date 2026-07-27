@@ -15,7 +15,7 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { callTool } from "../../../lib/live";
+import { fetchPublicGoals } from "../../../lib/live";
 import bakedMcp from "../../../lib/mcp-snapshot.json";
 import { fmtDate, fmtDateStable, fmtRel } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
@@ -91,8 +91,8 @@ function normalizeBaked(raw: any): BoardGoal[] {
     }));
 }
 
-function normalizeLive(raw: any): BoardGoal[] {
-  return (raw?.goals ?? [])
+function normalizeLive(goals: any[]): BoardGoal[] {
+  return goals
     .filter((g: any) => isPublicGoal(g.name, g.visibility))
     .map((g: any) => ({
       id: String(g.goal_id ?? g.id ?? ""),
@@ -157,8 +157,7 @@ export default function GoalsClient() {
     setPhase("reading");
     setErrMsg(null);
     try {
-      const res = await callTool("goals", { action: "list" });
-      const next = normalizeLive(res);
+      const next = normalizeLive(await fetchPublicGoals());
       setGoals(next);
       setReadAt(new Date().toISOString());
       setPhase("live");

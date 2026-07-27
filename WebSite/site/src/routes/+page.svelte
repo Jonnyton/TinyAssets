@@ -10,7 +10,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchLive, fetchVitals, type LiveResult, type Vitals } from '$lib/mcp/live';
+  import { fetchPublicGoals, fetchVitals, type Vitals } from '$lib/mcp/live';
   import VitalSigns from '$lib/components/VitalSigns.svelte';
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
@@ -31,13 +31,17 @@
 
   // Live rooms board — fetched, never baked. Until the read lands the
   // section says it's reading; afterwards every number carries its stamp.
-  let live = $state<LiveResult | null>(null);
+  type GoalsRead = { goals: any[]; fetchedAt: string };
+  let live = $state<GoalsRead | null>(null);
   let liveErr = $state<string | null>(null);
   let reading = $state(false);
   async function refreshRooms() {
     reading = true;
     try {
-      live = await fetchLive();
+      live = {
+        goals: await fetchPublicGoals(),
+        fetchedAt: new Date().toISOString()
+      };
       liveErr = null;
     } catch (e: any) {
       liveErr = e?.message ?? String(e);
@@ -245,7 +249,7 @@
         <a class="path__cta" href="/goals">open the goals board →</a>
         {#if live}
           <p class="path__live ev">
-            {publicGoals.length} public goals · {(live.wiki.promoted.length + live.wiki.drafts.length).toLocaleString()} commons pages · read {fmtRel(live.fetchedAt)}
+            {publicGoals.length} public goals · read {fmtRel(live.fetchedAt)}
           </p>
         {:else if reading}
           <p class="path__live ev">reading live counts…</p>

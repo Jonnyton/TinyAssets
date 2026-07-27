@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       refresh_snapshot:
-        description: 'Rollback only — DO NOT USE until snapshot-mcp.mjs migrates to canonical handles (retire-cheat-loop 5.3)'
+        description: 'Rollback only — DO NOT USE until read_page is full-scope/paginated and retired live records are dispositioned (retire-cheat-loop 5.3)'
         required: false
         default: 'false'
         type: choice
@@ -52,6 +52,7 @@ jobs:
         env:
           MCP_BEARER: ${{ secrets.MCP_BEARER }}
           SNAPSHOT_FULL: '1'
+          SNAPSHOT_REQUIRED: '1'
         run: npm run snapshot
 
       - name: Test snapshot retirement invariants

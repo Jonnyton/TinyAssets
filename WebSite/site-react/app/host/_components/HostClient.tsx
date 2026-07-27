@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { fetchLive, type LiveResult } from "../../../lib/live";
+import { fetchPublicUniverses } from "../../../lib/live";
 import baked from "../../../lib/mcp-snapshot.json";
 import { fmtCount, fmtRel, fmtStampStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
@@ -23,7 +23,7 @@ function isPublicUniverse(u: any): boolean {
   return !/SUPERSEDED|RETRACTED|smoke/i.test(String(u?.id ?? ""));
 }
 
-// Shape a live universe (live.ts hands us raw `universe action=list` rows)
+// Shape a live universe (live.ts hands us raw `read_graph target=graphs` rows)
 // or a baked one (already normalised) into one display shape.
 type Row = { id: string; phase: string; words: number; lastAt: string | null };
 function toRow(u: any, fromLive: boolean): Row {
@@ -67,15 +67,17 @@ function quiet(r: Row, mounted: boolean): boolean {
 
 export default function HostClient() {
   const mounted = useMounted();
-  const [live, setLive] = React.useState<LiveResult | null>(null);
+  const [live, setLive] = React.useState<{ universes: any[]; fetchedAt: string } | null>(null);
   const [liveErr, setLiveErr] = React.useState<string | null>(null);
   const [reading, setReading] = React.useState(false);
 
   const refreshUniverses = React.useCallback(async () => {
     setReading(true);
     try {
-      const r = await fetchLive();
-      setLive(r);
+      setLive({
+        universes: await fetchPublicUniverses(),
+        fetchedAt: new Date().toISOString(),
+      });
       setLiveErr(null);
     } catch (e: any) {
       setLiveErr(e?.message ?? String(e));
@@ -334,7 +336,7 @@ export default function HostClient() {
                       {" "}<button className="rooms__refresh" onClick={refreshUniverses} disabled={reading}>{reading ? "reading…" : "Refresh MCP"}</button>
                     </>
                   )}
-                  {" "}· <Tick href="/goals" label="universe action=list" />
+                  {" "}· <Tick href="/goals" label="read_graph target=graphs" />
                 </p>
                 {liveErr && live ? (
                   <p className="rooms__state ev">last live read failed — {liveErr} · showing the most recent good read.</p>

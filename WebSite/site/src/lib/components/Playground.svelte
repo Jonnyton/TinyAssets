@@ -30,11 +30,11 @@
   type Chip = { label: string; sub: string; canonical: string; color: string };
 
   const CHIPS: Chip[] = [
-    { label: 'List the wiki',     sub: 'wiki action=list',                                                                        canonical: 'wiki action=list', color: 'var(--ember-500)' },
-    { label: 'Latest workflow run', sub: 'extensions action=list_runs limit=1',                                                   canonical: 'extensions action=list_runs limit=1', color: 'var(--violet-400)' },
-    { label: 'Active universes',  sub: 'universe action=list',                                                                    canonical: 'universe action=list', color: 'var(--signal-live)' },
-    { label: 'Open goals',        sub: 'goals action=list',                                                                       canonical: 'goals action=list', color: 'var(--ember-300)' },
-    { label: 'Read a bug page',   sub: 'wiki action=read page=pages/bugs/bug-052',                                                canonical: 'wiki action=read page=pages/bugs/bug-052-wiki-bug-list-contains-duplicate-stale-bug-pages', color: 'var(--ember-500)' }
+    { label: 'Browse discovery pages', sub: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', canonical: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', color: 'var(--ember-500)' },
+    { label: 'Latest workflow run', sub: 'read_graph target=runs limit=1', canonical: 'read_graph target=runs limit=1', color: 'var(--violet-400)' },
+    { label: 'Active universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' },
+    { label: 'Open goals', sub: 'read_graph target=goals limit=100', canonical: 'read_graph target=goals limit=100', color: 'var(--ember-300)' },
+    { label: 'Read a public concept', sub: 'read_page page=pages/concepts/structured-json-node-outputs', canonical: 'read_page page=pages/concepts/structured-json-node-outputs', color: 'var(--ember-500)' }
   ];
 
   const RUN_STATES: Array<{ id: RunStateId; label: string }> = [
@@ -45,7 +45,7 @@
     { id: 'interrupted', label: 'Interrupted' }
   ];
 
-  let inputValue = $state('wiki action=list');
+  let inputValue = $state('read_graph target=graphs limit=100');
   let inputError = $state<string | null>(null);
   let busy = $state(false);
   let mode = $state<DisclosureMode>('pretty');
@@ -109,8 +109,8 @@
   function onKeydown(e: KeyboardEvent) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void run(); } }
   async function refreshNotes() { notesLoading = true; try { const h = await harvestWorkflowNotes(6); workflowNotes = h.notes; } finally { notesLoading = false; } }
   async function refreshRuns() { runsLoading = true; try { recentRuns = await listRecentRuns(10); } finally { runsLoading = false; } }
-  function injectNoteCall(q: WorkflowNote) { inputValue = q.nodeId ? `extensions action=get_node_output run_id=${q.runId} node_id=${q.nodeId}` : `extensions action=get_run run_id=${q.runId}`; void run(); }
-  function injectRunCall(r: RecentRun) { inputValue = `extensions action=get_run run_id=${r.run_id}`; void run(); }
+  function injectNoteCall(q: WorkflowNote) { inputValue = `read_graph target=run run_id=${q.runId}`; void run(); }
+  function injectRunCall(r: RecentRun) { inputValue = `read_graph target=run run_id=${r.run_id}`; void run(); }
   function selectChip(c: Chip) { inputValue = c.canonical; void run(); }
   function setMode(m: DisclosureMode) { mode = m; }
   function jsonPretty(v: unknown): string { if (v == null) return 'null'; try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
@@ -140,13 +140,13 @@
     <form class="repl" onsubmit={(e) => { e.preventDefault(); void run(); }}>
       <div class="repl__row">
         <span class="repl__prompt" aria-hidden="true">›</span>
-        <input class="repl__input" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="wiki action=list" bind:value={inputValue} onkeydown={onKeydown} aria-label="MCP tool call" disabled={busy} />
+        <input class="repl__input" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="read_graph target=graphs limit=100" bind:value={inputValue} onkeydown={onKeydown} aria-label="MCP tool call" disabled={busy} />
         <button class="repl__run" type="submit" disabled={busy} aria-busy={busy}>{busy ? 'Calling…' : 'Run'}</button>
       </div>
       {#if inputError}
         <p class="repl__error">{inputError}</p>
       {:else}
-        <p class="repl__hint">Format: <code>tool action=verb key=value …</code>. Press Enter to send.</p>
+        <p class="repl__hint">Format: <code>tool target=value key=value …</code>. Press Enter to send.</p>
       {/if}
     </form>
 
@@ -210,7 +210,7 @@
 
       <div class="terminal__body">
         {#if !current}
-          <div class="terminal__empty"><p>The terminal is loaded with <code>wiki action=list</code> and will fire automatically.</p></div>
+          <div class="terminal__empty"><p>The terminal is loaded with <code>read_graph target=graphs limit=100</code> and will fire automatically.</p></div>
         {:else if current.status === 'pending'}
           <div class="terminal__pending">
             <span class="dot"></span>
@@ -292,7 +292,7 @@
         <RitualLabel>· walk a run ·</RitualLabel>
         <span>{recentRuns.length} visible</span>
       </header>
-      <p class="pulse__lede">Click any run to load <code>extensions action=get_run</code> into the terminal. The workflow identity comes from the run record.</p>
+      <p class="pulse__lede">Click any run to load <code>read_graph target=run</code> into the terminal. The workflow identity comes from the run record.</p>
       {#if recentRuns.length === 0 && !runsLoading}
         <p class="pulse__empty">No recent runs visible. Try the "Latest workflow run" chip — it lists the most recent.</p>
       {/if}

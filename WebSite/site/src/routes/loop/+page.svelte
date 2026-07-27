@@ -5,17 +5,22 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchLive, type LiveResult } from '$lib/mcp/live';
+  import { fetchPublicGoals, fetchPublicUniverses } from '$lib/mcp/live';
   import { fmtRel } from '$lib/fmt';
 
-  let live = $state<LiveResult | null>(null);
+  type ActivityRead = { goals: any[]; universes: any[]; fetchedAt: string };
+  let live = $state<ActivityRead | null>(null);
   let error = $state<string | null>(null);
   let reading = $state(false);
 
   async function refresh() {
     reading = true;
     try {
-      live = await fetchLive();
+      // The shared browser MCP session initializes lazily, so keep the first
+      // public graph reads sequential.
+      const universes = await fetchPublicUniverses();
+      const goals = await fetchPublicGoals();
+      live = { universes, goals, fetchedAt: new Date().toISOString() };
       error = null;
     } catch (cause: any) {
       error = cause?.message ?? String(cause);

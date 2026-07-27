@@ -12,7 +12,7 @@
 */
 
 import * as React from "react";
-import { fetchLive, fetchVitals, type LiveResult, type Vitals } from "../../lib/live";
+import { fetchPublicGoals, fetchVitals, type Vitals } from "../../lib/live";
 import { VitalSigns } from "../../components/VitalSigns";
 import { Tick } from "../../components/Tick";
 import { Term } from "../../components/Term";
@@ -126,15 +126,17 @@ export default function HomeClient() {
 
   // Live rooms board — fetched, never baked. Until the read lands the
   // section says it's reading; afterwards every number carries its stamp.
-  const [live, setLive] = React.useState<LiveResult | null>(null);
+  const [live, setLive] = React.useState<{ goals: any[]; fetchedAt: string } | null>(null);
   const [liveErr, setLiveErr] = React.useState<string | null>(null);
   const [reading, setReading] = React.useState(false);
 
   const refreshRooms = React.useCallback(async () => {
     setReading(true);
     try {
-      const result = await fetchLive();
-      setLive(result);
+      setLive({
+        goals: await fetchPublicGoals(),
+        fetchedAt: new Date().toISOString(),
+      });
       setLiveErr(null);
     } catch (e: any) {
       setLiveErr(e?.message ?? String(e));
@@ -255,7 +257,7 @@ export default function HomeClient() {
               <a className="path__cta" href="/goals">open the goals board →</a>
               {live ? (
                 <p className="path__live ev">
-                  {publicGoals.length} public goals · {(live.wiki.promoted.length + live.wiki.drafts.length).toLocaleString()} commons pages · read {fmtRel(live.fetchedAt)}
+                  {publicGoals.length} public goals · read {fmtRel(live.fetchedAt)}
                 </p>
               ) : reading ? (
                 <p className="path__live ev">reading live counts…</p>

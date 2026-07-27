@@ -6,6 +6,16 @@
  */
 
 import type { Snapshot } from "./types";
+import {
+  pageInventoryCall,
+  publicGoalCall,
+  publicGraphCall,
+  publicPageCall,
+  requireCollection,
+  requireObjectResult,
+  requirePageBody,
+  splitPageInventory,
+} from "../../shared/mcp/public-read-contract.js";
 
 const MCP_PATH =
   (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MCP_PATH) || "/mcp";
@@ -129,19 +139,47 @@ export type LiveResult = {
   fetchedAt: string;
 };
 
+export async function fetchPublicGoals(limit = 100): Promise<any[]> {
+  const goalsCall = publicGraphCall("goals", limit);
+  return requireCollection(
+    await callTool(goalsCall.name, goalsCall.args),
+    "goals",
+    "read_graph goals",
+  );
+}
+
+export async function fetchPublicGoal(goalId: string): Promise<Record<string, any>> {
+  const goalCall = publicGoalCall(goalId);
+  return requireObjectResult(
+    await callTool(goalCall.name, goalCall.args),
+    "read_graph goal",
+  );
+}
+
+export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
+  const universesCall = publicGraphCall("graphs", limit);
+  return requireCollection(
+    await callTool(universesCall.name, universesCall.args),
+    "universes",
+    "read_graph graphs",
+  );
+}
+
 /** Fetch the same generic public data that the checked-in snapshot contains. */
 export async function fetchLive(): Promise<LiveResult> {
-  const [wikiList, goalsList, universesList] = await Promise.all([
-    callTool("wiki", { action: "list" }),
-    callTool("goals", { action: "list" }),
-    callTool("universe", { action: "list" }),
-  ]);
+  // One browser MCP session owns initialization and session-id state, so keep
+  // these reads sequential instead of racing the first call through ensureInit.
+  const inventoryCall = pageInventoryCall();
+  const pageInventory = await callTool(inventoryCall.name, inventoryCall.args);
+  const wiki = splitPageInventory(pageInventory);
+  const goals = await fetchPublicGoals();
+  const universes = await fetchPublicUniverses();
   return {
-    goals: goalsList?.goals ?? [],
-    universes: universesList?.universes ?? [],
+    goals,
+    universes,
     wiki: {
-      promoted: wikiList?.promoted ?? [],
-      drafts: wikiList?.drafts ?? [],
+      promoted: wiki.promoted,
+      drafts: wiki.drafts,
     },
     fetchedAt: new Date().toISOString(),
   };
@@ -149,7 +187,11 @@ export async function fetchLive(): Promise<LiveResult> {
 
 /** Fetch a single public page body for graph reference extraction. */
 export async function fetchPageBody(page: string): Promise<{ content?: string } | null> {
-  return await callTool("wiki", { action: "read", page: page.replace(/\.md$/, "") });
+  const pageCall = publicPageCall(page);
+  return requirePageBody(
+    await callTool(pageCall.name, pageCall.args),
+    "read_page body",
+  );
 }
 
 export type WorkflowRun = {
@@ -243,14 +285,16 @@ function isTerminalRunStatus(status: string): boolean {
  */
 export async function fetchWorkflowActivity(limit = 12): Promise<WorkflowActivity> {
   try {
-    const payload = await callTool("extensions", { action: "list_runs", limit });
-    const runs = Array.isArray(payload?.runs)
-      ? payload.runs
-          .map(normalizeWorkflowRun)
-          .sort((a: WorkflowRun, b: WorkflowRun) => (runTimestampMs(b) ?? 0) - (runTimestampMs(a) ?? 0))
-      : [];
+    const runsCall = publicGraphCall("runs", limit);
+    const runs = requireCollection(
+      await callTool(runsCall.name, runsCall.args),
+      "runs",
+      "read_graph runs",
+    )
+      .map(normalizeWorkflowRun)
+      .sort((a: WorkflowRun, b: WorkflowRun) => (runTimestampMs(b) ?? 0) - (runTimestampMs(a) ?? 0));
     return {
-      source: "MCP extensions list_runs",
+      source: "MCP read_graph runs",
       fetchedAt: new Date().toISOString(),
       active: runs.some((run: WorkflowRun) => !isTerminalRunStatus(run.status)),
       runs,
@@ -258,7 +302,7 @@ export async function fetchWorkflowActivity(limit = 12): Promise<WorkflowActivit
     };
   } catch (error) {
     return {
-      source: "MCP extensions list_runs",
+      source: "MCP read_graph runs",
       fetchedAt: new Date().toISOString(),
       active: false,
       runs: [],
@@ -287,15 +331,30 @@ const VITALS_SIGNAL_WINDOW_MS = 60 * 60 * 1000;
 /** Read server reachability, release truth, and generic workflow activity separately. */
 export async function fetchVitals(): Promise<Vitals> {
   try {
-    const [status, universes, goalsList, runsList] = await Promise.all([
-      callTool("get_status", {}),
-      callTool("universe", { action: "list" }),
-      callTool("goals", { action: "list" }).catch(() => null),
-      callTool("extensions", { action: "list_runs", limit: 8 }).catch(() => null),
-    ]);
+    // Keep the shared browser MCP session deterministic; optional reads still
+    // degrade independently after the required status/universe reads succeed.
+    const universesCall = publicGraphCall("graphs", 100);
+    const runsCall = publicGraphCall("runs", 8);
+    const status = requireObjectResult(await callTool("get_status", {}), "get_status");
+    const publicUniverses = requireCollection(
+      await callTool(universesCall.name, universesCall.args),
+      "universes",
+      "read_graph graphs",
+    );
+    let goalsList: any[] | null = null;
+    let runsList: any[] | null = null;
+    try {
+      goalsList = await fetchPublicGoals();
+    } catch {}
+    try {
+      runsList = requireCollection(
+        await callTool(runsCall.name, runsCall.args),
+        "runs",
+        "read_graph runs",
+      );
+    } catch {}
     const queueState = status?.supervisor_liveness?.queue_state ?? null;
     const release = status?.release_state ?? null;
-    const publicUniverses = Array.isArray(universes?.universes) ? universes.universes : [];
 
     let universeMovedMs: number | null = null;
     for (const universe of publicUniverses) {
@@ -305,9 +364,7 @@ export async function fetchVitals(): Promise<Vitals> {
       }
     }
 
-    const runs: WorkflowRun[] = Array.isArray(runsList?.runs)
-      ? runsList.runs.map(normalizeWorkflowRun)
-      : [];
+    const runs: WorkflowRun[] = runsList ? runsList.map(normalizeWorkflowRun) : [];
     const runIsActive = runs.some((run) => !isTerminalRunStatus(run.status));
     let newestRunMs: number | null = null;
     for (const run of runs) {
@@ -347,7 +404,7 @@ export async function fetchVitals(): Promise<Vitals> {
         : null,
       lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
       universeCount: publicUniverses.length,
-      goalCount: Array.isArray(goalsList?.goals) ? goalsList.goals.length : null,
+      goalCount: goalsList?.length ?? null,
       workflowActive,
       activeRun: runIsActive,
       lastSignalSource,

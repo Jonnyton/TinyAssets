@@ -10,6 +10,11 @@
  * Prod: hits /mcp (same-origin Cloudflare worker).
  */
 
+import {
+  publicGraphCall,
+  publicRunCall
+} from '../../../../shared/mcp/public-read-contract.js';
+
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
 let initialized = false;
@@ -169,21 +174,29 @@ export type ParsedInput =
   | { ok: true; tool: string; args: Record<string, unknown>; canonical: string }
   | { ok: false; error: string };
 
+const PUBLIC_READ_TOOLS = new Set(['get_status', 'read_graph', 'read_page']);
+
 /**
  * Parse playground input like:
- *   wiki action=list
- *   extensions action=get_run run_id=abc123
- *   wiki action=read page=pages/bugs/bug-052
- *   universe action=queue_list limit=5
+ *   read_page changed_since=1970-01-01T00:00:00Z max_results=100
+ *   read_graph target=run run_id=abc123
+ *   read_page page=pages/bugs/bug-052
+ *   read_graph target=graphs limit=5
  */
 export function parseInput(text: string): ParsedInput {
   const trimmed = text.trim();
-  if (!trimmed) return { ok: false, error: 'Type a tool call (e.g. `wiki action=list`).' };
+  if (!trimmed) return { ok: false, error: 'Type a tool call (e.g. `read_graph target=graphs`).' };
   const tokens = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
   if (!tokens.length) return { ok: false, error: 'No tool name found.' };
   const tool = tokens[0]!;
   if (!/^[a-zA-Z_][\w-]*$/.test(tool)) {
     return { ok: false, error: `Tool name "${tool}" looks malformed.` };
+  }
+  if (!PUBLIC_READ_TOOLS.has(tool)) {
+    return {
+      ok: false,
+      error: `The public playground only runs get_status, read_graph, and read_page.`
+    };
   }
   const args: Record<string, unknown> = {};
   const canonicalParts: string[] = [tool];
@@ -235,13 +248,15 @@ export async function harvestWorkflowNotes(maxRuns = 6): Promise<{ notes: Workfl
   const warnings: string[] = [];
   const notes: WorkflowNote[] = [];
   try {
-    const list = await callTool('extensions', { action: 'list_runs', limit: maxRuns });
+    const runsCall = publicGraphCall('runs', maxRuns);
+    const list = await callTool(runsCall.name, runsCall.args);
     const runs: any[] = (list.parsed?.runs as any[]) ?? [];
-    if (!runs.length) warnings.push('extensions.list_runs returned no runs');
+    if (!runs.length) warnings.push('read_graph target=runs returned no runs');
 
     for (const run of runs.slice(0, maxRuns)) {
       try {
-        const detail = await callTool('extensions', { action: 'get_run', run_id: run.run_id });
+        const runCall = publicRunCall(run.run_id);
+        const detail = await callTool(runCall.name, runCall.args);
         const events: any[] =
           (detail.parsed?.events as any[]) ??
           (detail.parsed?.timeline as any[]) ??
@@ -263,12 +278,12 @@ export async function harvestWorkflowNotes(maxRuns = 6): Promise<{ notes: Workfl
           }
         }
       } catch (err) {
-        warnings.push(`get_run ${run?.run_id}: ${err instanceof Error ? err.message : String(err)}`);
+        warnings.push(`read_graph target=run ${run?.run_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (notes.length >= 12) break;
     }
   } catch (err) {
-    warnings.push(`list_runs: ${err instanceof Error ? err.message : String(err)}`);
+    warnings.push(`read_graph target=runs: ${err instanceof Error ? err.message : String(err)}`);
   }
   // Dedupe by text prefix.
   const seen = new Set<string>();
@@ -295,7 +310,8 @@ export type RecentRun = {
 
 export async function listRecentRuns(limit = 10): Promise<RecentRun[]> {
   try {
-    const list = await callTool('extensions', { action: 'list_runs', limit });
+    const runsCall = publicGraphCall('runs', limit);
+    const list = await callTool(runsCall.name, runsCall.args);
     const runs: any[] = (list.parsed?.runs as any[]) ?? [];
     return runs.map((r) => ({
       run_id: r.run_id ?? r.id ?? 'unknown',
@@ -319,12 +335,12 @@ export async function listRecentRuns(limit = 10): Promise<RecentRun[]> {
 export function summarize(tool: string, parsed: any): string | null {
   if (parsed === null || parsed === undefined) return null;
 
-  if (tool === 'wiki') {
-    if (Array.isArray(parsed?.promoted) || Array.isArray(parsed?.drafts)) {
-      const promoted = parsed.promoted?.length ?? 0;
-      const drafts = parsed.drafts?.length ?? 0;
+  if (tool === 'read_page') {
+    if (Array.isArray(parsed?.results)) {
+      const promoted = parsed.results.filter((page: any) => !page?.is_draft).length;
+      const drafts = parsed.results.filter((page: any) => Boolean(page?.is_draft)).length;
       const buckets: Record<string, number> = {};
-      for (const p of parsed.promoted ?? []) {
+      for (const p of parsed.results.filter((page: any) => !page?.is_draft)) {
         const path: string = p.path ?? '';
         const cat =
           path.includes('/bugs/') ? 'bugs'
@@ -338,7 +354,13 @@ export function summarize(tool: string, parsed: any): string | null {
         .sort((a, b) => b[1] - a[1])
         .map(([k, v]) => `${v} ${k}`)
         .join(', ');
-      return `The wiki has ${promoted} promoted page${promoted === 1 ? '' : 's'} (${breakdown}) and ${drafts} draft${drafts === 1 ? '' : 's'}.`;
+      const scope = typeof parsed.scope === 'string' ? `${parsed.scope}-scope ` : '';
+      const truncated = Number(parsed.truncated_count);
+      const truncation =
+        Number.isInteger(truncated) && truncated > 0
+          ? ` This read is incomplete: ${truncated} additional page${truncated === 1 ? ' was' : 's were'} truncated.`
+          : '';
+      return `The wiki returned ${promoted} ${scope}promoted page${promoted === 1 ? '' : 's'} (${breakdown}) and ${drafts} draft${drafts === 1 ? '' : 's'}.${truncation}`;
     }
     if (typeof parsed?.content === 'string') {
       const lines = parsed.content.split('\n').filter((l: string) => l.trim()).length;
@@ -347,15 +369,12 @@ export function summarize(tool: string, parsed: any): string | null {
     }
   }
 
-  if (tool === 'goals') {
+  if (tool === 'read_graph') {
     if (Array.isArray(parsed?.goals)) {
       const n = parsed.goals.length;
       const names = parsed.goals.slice(0, 3).map((g: any) => g.name ?? g.id).filter(Boolean).join(', ');
       return `${n} active goal${n === 1 ? '' : 's'}${names ? `: ${names}${n > 3 ? ', …' : ''}` : ''}.`;
     }
-  }
-
-  if (tool === 'universe') {
     if (Array.isArray(parsed?.universes)) {
       const n = parsed.universes.length;
       const phases = parsed.universes.slice(0, 3).map((u: any) => `${u.id} (${u.phase ?? u.phase_human ?? '?'})`).join(', ');
@@ -368,9 +387,6 @@ export function summarize(tool: string, parsed: any): string | null {
     if (parsed?.alive !== undefined) {
       return `Daemon ${parsed.alive ? 'alive' : 'inactive'}${parsed.last_activity_at ? `, last activity ${parsed.last_activity_at}` : ''}.`;
     }
-  }
-
-  if (tool === 'extensions') {
     if (Array.isArray(parsed?.runs)) {
       const n = parsed.runs.length;
       const recent = parsed.runs[0];

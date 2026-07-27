@@ -4,7 +4,7 @@
 
   Client-side only. It paints instantly from the baked snapshot if the goal
   is in it, stamped with the snapshot's fetched_at, then upgrades live via
-  `goals action=get`, which is the only place the full description + gate
+  `read_graph target=goal`, which is the only place the full description + gate
   ladder live. Honest states: a goal absent from the snapshot shows
   "reading…" until the live read settles; a live read that fails with nothing
   baked says so plainly; a private / not-returned goal says exactly that. All
@@ -14,7 +14,7 @@
 
 import * as React from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { callTool } from "../../../lib/live";
+import { fetchPublicGoal } from "../../../lib/live";
 import bakedMcp from "../../../lib/mcp-snapshot.json";
 import { fmtStamp, fmtRel } from "../../../lib/fmt";
 import Ladder from "../../../components/Ladder";
@@ -89,7 +89,7 @@ function fromBaked(gid: string): Goal | null {
 
 function fromLive(raw: any, gid: string): Goal | null {
   if (!raw || typeof raw !== "object") return null;
-  // `goals action=get` may return the goal directly or under a `goal` key.
+  // `read_graph target=goal` may return the goal directly or under a `goal` key.
   const g = raw.goal ?? raw;
   if (!g || typeof g !== "object") return null;
   const liveId = String(g.goal_id ?? g.id ?? gid);
@@ -135,7 +135,7 @@ export default function GoalDetail({ id }: { id: string }) {
     }
     setErrMsg(null);
     try {
-      const res = await callTool("goals", { action: "get", goal_id: gid });
+      const res = await fetchPublicGoal(gid);
       const live = fromLive(res, gid);
       if (live) {
         // A goal that comes back private (or with no public body) is named,

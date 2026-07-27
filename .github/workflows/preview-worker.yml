@@ -9,6 +9,8 @@ on:
   pull_request:
     paths:
       - 'WebSite/site-react/**'
+      - 'WebSite/shared/**'
+      - 'WebSite/site/scripts/canonical-mcp-contract.test.mjs'
       - 'WebSite/design-system/**'
       - '.github/workflows/preview-worker.yml'
 
@@ -35,6 +37,12 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Test canonical MCP read contract
+        working-directory: WebSite/site
+        run: |
+          npm ci
+          npm test
 
       - name: Build site (root, same-origin /mcp)
         working-directory: WebSite/site-react

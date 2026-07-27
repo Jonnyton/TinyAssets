@@ -15,7 +15,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import baked from '$lib/content/mcp-snapshot.json';
-  import { fetchLive } from '$lib/mcp/live';
+  import { fetchPublicUniverses } from '$lib/mcp/live';
   import type { Snapshot } from '$lib/mcp/types';
 
   type Mood = 'drafting' | 'watching' | 'quiet' | 'summoned';
@@ -44,8 +44,7 @@
 
   async function refresh() {
     try {
-      const live = await fetchLive();
-      const next = moodFromUniverses(live.universes ?? []);
+      const next = moodFromUniverses(await fetchPublicUniverses());
       mood = next.mood;
       mostRecentMs = next.mostRecentMs;
       source = 'live';
@@ -124,7 +123,7 @@
         </div>
       </dl>
       <p class="pop__source">
-        Source: <code>universe action=list</code> via <code>tinyassets.io/mcp</code>.
+        Source: <code>read_graph target="graphs"</code> via <code>tinyassets.io/mcp</code>.
         Reading the {source === 'live' ? 'live brain' : source === 'snapshot' ? 'baked snapshot (live refresh pending)' : 'last good cache'}.
       </p>
     </aside>

@@ -19,7 +19,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchLive, type LiveResult } from '$lib/mcp/live';
+  import { fetchPublicUniverses } from '$lib/mcp/live';
   import { initialMcpSnapshot } from '$lib/live/project';
   import { fmtRel } from '$lib/fmt';
   import Tick from '$lib/components/Tick.svelte';
@@ -33,13 +33,17 @@
   const SNAPSHOT_DATE = '10 Jun 2026';
   const bakedUniverses = (initialMcpSnapshot.universes ?? []) as any[];
 
-  let live = $state<LiveResult | null>(null);
+  type UniverseRead = { universes: any[]; fetchedAt: string };
+  let live = $state<UniverseRead | null>(null);
   let liveErr = $state<string | null>(null);
   let reading = $state(false);
   async function refreshUniverses() {
     reading = true;
     try {
-      live = await fetchLive();
+      live = {
+        universes: await fetchPublicUniverses(),
+        fetchedAt: new Date().toISOString()
+      };
       liveErr = null;
     } catch (e: any) {
       liveErr = e?.message ?? String(e);
@@ -55,7 +59,7 @@
     return !/SUPERSEDED|RETRACTED|smoke/i.test(String(u?.id ?? ''));
   }
 
-  // Shape a live universe (live.ts hands us raw `universe action=list` rows)
+  // Shape a live universe (live.ts hands us raw `read_graph target=graphs` rows)
   // or a baked one (already normalised) into one display shape.
   type Row = { id: string; phase: string; words: number; lastAt: string | null };
   function toRow(u: any, fromLive: boolean): Row {
@@ -345,7 +349,7 @@
             {rows.length} public universes · snapshot {SNAPSHOT_DATE} (baked, upgrading to live…) ·
             <button class="rooms__refresh" onclick={refreshUniverses} disabled={reading}>{reading ? 'reading…' : 'Refresh MCP'}</button>
           {/if}
-          · <Tick href="/goals" label="universe action=list" />
+          · <Tick href="/goals" label="read_graph target=graphs" />
         </p>
         {#if liveErr && live}
           <p class="rooms__state ev">last live read failed — {liveErr} · showing the most recent good read.</p>

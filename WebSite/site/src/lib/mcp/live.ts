@@ -7,6 +7,16 @@
  */
 
 import type { Snapshot } from '$lib/mcp/types';
+import {
+  pageInventoryCall,
+  publicGoalCall,
+  publicGraphCall,
+  publicPageCall,
+  requireCollection,
+  requireObjectResult,
+  requirePageBody,
+  splitPageInventory
+} from '../../../../shared/mcp/public-read-contract.js';
 
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
@@ -129,16 +139,44 @@ export type LiveResult = {
   fetchedAt: string;
 };
 
+export async function fetchPublicGoals(limit = 100): Promise<any[]> {
+  const goalsCall = publicGraphCall('goals', limit);
+  return requireCollection(
+    await callTool(goalsCall.name, goalsCall.args),
+    'goals',
+    'read_graph goals'
+  );
+}
+
+export async function fetchPublicGoal(goalId: string): Promise<Record<string, any>> {
+  const goalCall = publicGoalCall(goalId);
+  return requireObjectResult(
+    await callTool(goalCall.name, goalCall.args),
+    'read_graph goal'
+  );
+}
+
+export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
+  const universesCall = publicGraphCall('graphs', limit);
+  return requireCollection(
+    await callTool(universesCall.name, universesCall.args),
+    'universes',
+    'read_graph graphs'
+  );
+}
+
 /** Fetch the same public collections the checked-in snapshot contains. */
 export async function fetchLive(): Promise<LiveResult> {
-  const [wikiList, goalsList, universesList] = await Promise.all([
-    callTool('wiki', { action: 'list' }),
-    callTool('goals', { action: 'list' }),
-    callTool('universe', { action: 'list' })
-  ]);
+  // One browser MCP session owns initialization and session-id state, so keep
+  // these reads sequential instead of racing the first call through ensureInit.
+  const inventoryCall = pageInventoryCall();
+  const pageInventory = await callTool(inventoryCall.name, inventoryCall.args);
+  const wikiList = splitPageInventory(pageInventory);
+  const goals = await fetchPublicGoals();
+  const universes = await fetchPublicUniverses();
   return {
-    goals: goalsList?.goals ?? [],
-    universes: universesList?.universes ?? [],
+    goals,
+    universes,
     wiki: {
       promoted: wikiList?.promoted ?? [],
       drafts: wikiList?.drafts ?? []
@@ -149,7 +187,11 @@ export async function fetchLive(): Promise<LiveResult> {
 
 /** Fetch a single public page body for reference extraction. */
 export async function fetchPageBody(page: string): Promise<{ content?: string } | null> {
-  return await callTool('wiki', { action: 'read', page: page.replace(/\.md$/, '') });
+  const pageCall = publicPageCall(page);
+  return requirePageBody(
+    await callTool(pageCall.name, pageCall.args),
+    'read_page body'
+  );
 }
 
 type WorkflowRun = {
@@ -220,15 +262,30 @@ const ACTIVITY_WINDOW_MS = 60 * 60 * 1000;
  */
 export async function fetchVitals(): Promise<Vitals> {
   try {
-    const [status, universes, goalsList, runsList] = await Promise.all([
-      callTool('get_status', {}),
-      callTool('universe', { action: 'list' }),
-      callTool('goals', { action: 'list' }).catch(() => null),
-      callTool('extensions', { action: 'list_runs', limit: 8 }).catch(() => null)
-    ]);
+    // Keep the shared browser MCP session deterministic; optional reads still
+    // degrade independently after the required status/universe reads succeed.
+    const universesCall = publicGraphCall('graphs', 100);
+    const runsCall = publicGraphCall('runs', 8);
+    const status = requireObjectResult(await callTool('get_status', {}), 'get_status');
+    const publicUniverses = requireCollection(
+      await callTool(universesCall.name, universesCall.args),
+      'universes',
+      'read_graph graphs'
+    );
+    let publicGoals: any[] | null = null;
+    let publicRuns: any[] | null = null;
+    try {
+      publicGoals = await fetchPublicGoals();
+    } catch {}
+    try {
+      publicRuns = requireCollection(
+        await callTool(runsCall.name, runsCall.args),
+        'runs',
+        'read_graph runs'
+      );
+    } catch {}
     const queue = status?.supervisor_liveness?.queue_state ?? null;
     const release = status?.release_state ?? null;
-    const publicUniverses = Array.isArray(universes?.universes) ? universes.universes : [];
 
     let universeMovedMs: number | null = null;
     for (const universe of publicUniverses) {
@@ -238,7 +295,7 @@ export async function fetchVitals(): Promise<Vitals> {
       }
     }
 
-    const runs: WorkflowRun[] = Array.isArray(runsList?.runs) ? runsList.runs.map(normalizeRun) : [];
+    const runs: WorkflowRun[] = publicRuns ? publicRuns.map(normalizeRun) : [];
     const runIsActive = runs.some((run) => !isTerminalRunStatus(run.status));
     let newestRunMs: number | null = null;
     for (const run of runs) {
@@ -276,7 +333,7 @@ export async function fetchVitals(): Promise<Vitals> {
         : null,
       lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
       universeCount: publicUniverses.length,
-      goalCount: Array.isArray(goalsList?.goals) ? goalsList.goals.length : null,
+      goalCount: publicGoals?.length ?? null,
       workflowActive: runIsActive || running > 0 || recentSignal,
       activeRun: runIsActive,
       lastSignalSource

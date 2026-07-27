@@ -244,14 +244,46 @@
   **Host-local zero-active proved 2026-07-26:** see
   `docs/audits/2026-07-26-retire-cheat-loop.md` §Host-local registered-role
   authority proof. Production and third-party hosts remain unproved.
-  **Current dependency:** the snapshot generator calls legacy `wiki`, `goals`,
-  and `universe` handles that the canonical-seven live MCP surface no longer
-  advertises, then swallows tool failures into null/empty output. Regeneration
-  before source-data retirement and migration to supported canonical handles
-  could create a hollow false-green snapshot. The static MCP payload cleanup
-  above is not represented as live regeneration. Do not run that legacy
-  generator until its source contract is migrated and the resulting content
-  is proved.
+  **Canonical source contract proved 2026-07-27:** the snapshot generator,
+  production React and rollback Svelte browser clients, goal pages, host
+  presentation, and live playground use only `read_page`, `read_graph`, and
+  `get_status` through one shared contract. It rejects truncation, missing or
+  inconsistent collections/crawls, missing or invalid page bodies, and any
+  page inventory whose declared scope is not `all`; Node
+  contract/retirement tests pass 13/13, React TypeScript and its 27-route
+  production build pass, Svelte type-check has zero errors (six existing
+  warnings), and its static build passes. React preview/deploy both run the
+  cross-tree invariant suite, and a direct Vite dev probe returned HTTP 200
+  for the transformed client and external shared module.
+  Canonical graph reads remain independently live while page inventory is
+  incomplete: the home goals board, host, ordinary activity, and mood surfaces
+  no longer depend on the page crawl. `LiveSourceBar` remains an intentional
+  all-collections refresh and keeps its prior snapshot when page inventory is
+  incomplete. The playground is public-read-only and discloses server-reported
+  truncation. Explicit rollback refresh now fails its workflow when
+  completeness prevents regeneration; ordinary local refresh remains
+  fail-soft.
+  The goals list has a separate server gap: `read_graph target=goals limit=100`
+  exposes neither a total/truncated field nor a cursor, so a 100-row response
+  cannot prove full inventory. Server-side bounded pagination/completeness
+  metadata remains required.
+  A live anonymous probe returned 78/78 **discovery-scope** pages with no
+  truncation and an explicit `scope_note` that coordination pages were omitted;
+  it successfully read a page body but did not prove a complete public
+  inventory. Public `read_page` exposes neither `scope=all` nor pagination
+  beyond its 100-result ceiling, so website live collection upgrades and
+  regeneration now fail closed until a full-scope paginated successor exists.
+  A live `npm run snapshot` attempt proved the guard and preserved the prior
+  snapshot byte-for-byte at SHA-256
+  `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+  The probe also proved two remaining source-data blockers: public page
+  `pages/concepts/community-patch-loop-as-project-steward.md` still presents
+  the retired loop as future platform guidance, and public universe
+  `patch-loop-live` still exists. Do not regenerate the checked-in snapshots
+  until those live records receive a reviewed retention/supersession/removal
+  disposition; hiding them in the generator is not source retirement. Rendered
+  browser proof is still missing because no browser backend was available in
+  this session.
 - [x] 5.4 Build/test the production React/Next site and retained Svelte rollback
   site; correct `deploy-site-react.yml` header, active runbook, and website
   skill prose that reverse their deployment ownership; prove platform uptime

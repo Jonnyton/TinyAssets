@@ -13,7 +13,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { callTool } from '$lib/mcp/live';
+  import { fetchPublicGoals } from '$lib/mcp/live';
   import bakedMcp from '$lib/content/mcp-snapshot.json';
   import { fmtDate, fmtRel } from '$lib/fmt';
   import Ladder from '$lib/components/Ladder.svelte';
@@ -88,8 +88,8 @@
       }));
   }
 
-  function normalizeLive(raw: any): BoardGoal[] {
-    return (raw?.goals ?? [])
+  function normalizeLive(liveGoals: any[]): BoardGoal[] {
+    return liveGoals
       .filter((g: any) => isPublicGoal(g.name, g.visibility))
       .map((g: any) => ({
         id: String(g.goal_id ?? g.id ?? ''),
@@ -119,8 +119,7 @@
     phase = 'reading';
     errMsg = null;
     try {
-      const res = await callTool('goals', { action: 'list' });
-      const next = normalizeLive(res);
+      const next = normalizeLive(await fetchPublicGoals());
       goals = next;
       readAt = new Date().toISOString();
       phase = 'live';

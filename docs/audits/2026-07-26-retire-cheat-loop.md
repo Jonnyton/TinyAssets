@@ -497,12 +497,64 @@ post-`file_bug` branch promise, and retired tags:
 
 They are regenerated from the clean source or removed with an unshipped mirror;
 checked-in generated data cannot serve as a compatibility backdoor.
-The current `snapshot-mcp.mjs` generator still invokes legacy `wiki`, `goals`,
-and `universe` handles that are absent from the canonical-seven live MCP
-surface, and it swallows those tool failures into null/empty output. Running it
-before source retirement and migration to supported canonical handles could
-produce a hollow false-green snapshot rather than proving retired content is
-gone.
+
+Freshness-stamped 2026-07-27: `snapshot-mcp.mjs`, both production React and
+rollback Svelte browser readers, both goal surfaces, host copy, and the live
+playground now use only the canonical `read_page`, `read_graph`, and
+`get_status` handles through one shared public-read contract. The contract
+rejects truncation, inconsistent collection metadata, missing required arrays,
+missing or invalid page bodies, an incomplete page-body crawl, and any
+inventory whose server-declared scope is not `all`. Node tests pass 13/13,
+React TypeScript and its 27-route production build pass, Svelte check has zero
+errors (six existing warnings), and its static build passes. The React preview
+and production deployment workflows both run that cross-tree invariant suite.
+A direct Vite dev probe reproduced HTTP 200 for both the transformed Svelte
+client and the shared module; the earlier external-root 403 is fixed.
+
+Canonical graph reads are independently available while page inventory remains
+incomplete: the home goals board, host, ordinary workflow activity, and mood
+surfaces now read goals/universes without depending on `read_page`.
+`LiveSourceBar` remains an intentionally all-collections refresh and therefore
+keeps its prior snapshot when page inventory is incomplete. Single-page bodies
+require a real content string, discovery summaries disclose any
+server-reported truncation, and the public playground accepts only
+`get_status`, `read_graph`, and `read_page`. An explicitly requested rollback
+snapshot refresh now exits non-zero when the completeness guard refuses
+regeneration; ordinary local refresh remains fail-soft and keeps the last
+complete file.
+
+The canonical goals list still has a separate server-side completeness gap:
+`read_graph target=goals limit=100` exposes neither a total/truncated field nor
+a cursor. The website cannot distinguish a complete list from the first 100
+visible goals, so it must not be treated as full-inventory proof until the
+server adds bounded pagination/completeness metadata.
+
+A live anonymous probe of `https://tinyassets.io/mcp` returned 78/78
+**discovery-scope** pages with zero truncation and a `scope_note` saying
+coordination pages were omitted; it also read a page body and returned the
+canonical goals/graphs/runs shapes. That response is not a complete public-page
+inventory. The current public `read_page` handle exposes neither `scope=all`
+nor a cursor/offset beyond its 100-result ceiling, so the shared contract now
+fails closed: `/graph` keeps its explicitly labeled baked snapshot,
+`/commons` shows an empty live browse plus the read error rather than
+mislabeling baked rows as live, and snapshot regeneration keeps the previous
+file rather than publishing a complete-looking partial result. A server-side
+full-scope, paginated read successor is required before canonical regeneration
+can pass.
+Running `npm run snapshot` against the live endpoint on 2026-07-27 produced
+that incomplete-inventory error, retained the 2026-04-30 snapshot, and preserved its
+SHA-256
+`597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`
+byte-for-byte.
+
+The same probe found two source records that stop truthful regeneration:
+`pages/concepts/community-patch-loop-as-project-steward.md` still describes
+the retired loop as future platform guidance, and public universe
+`patch-loop-live` still exists. The generator must not hide either record.
+They require a reviewed retention/supersession/removal disposition at the live
+source before the canonical/legacy snapshots are regenerated. Rendered browser
+acceptance remains missing because no browser backend was available in this
+session.
 
 #### Host-local registered-role authority proof
 
@@ -626,6 +678,12 @@ observation and never proves that task work is moving. Final cross-tree
 absence, rendered-surface, and clean-use evidence remain release gates; this
 retirement does not delete the live React source or decide a new framework
 migration.
+
+The 2026-07-27 canonical-read slice removes every remaining production React
+and rollback Svelte website call and public example for the retired `wiki`,
+`goals`, `universe`, and `extensions` tool names. Existing site behavior is
+expressed through the advertised handles; no new Village or web-product
+architecture was introduced.
 
 ### Plugin payload
 

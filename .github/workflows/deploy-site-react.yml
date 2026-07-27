@@ -64,6 +64,12 @@ jobs:
       - name: Install site deps
         run: npm ci
 
+      - name: Test canonical MCP read contract
+        working-directory: WebSite/site
+        run: |
+          npm ci
+          npm test
+
       - name: Build (static export)
         run: npm run build
 
