@@ -1460,12 +1460,12 @@ Notes:
 - Branch: codex/retire-cheat-loop-safe-waves
 - Lane state: claimed; current-main site/announcement/helper wave approved at `c84cb833`
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves
-- STATUS/Issue/PR: draft implementation PR #1812; retargeting to `main` after #1810 merged
+- STATUS/Issue/PR: open draft implementation PR #1812 against `main`
 - PLAN refs: user-authored/remixable automations; public website surface; complete-system uptime
 - Purpose: remove retired product presentation and callers from production React, rollback Svelte, and deployment guidance without touching runtime/queue or external GitHub state
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves\_PURPOSE.md
 - Memory refs: target merge 0d50a2d4; safe-wave commits 5e8e5e39/594a9287/255e83cf; current-main exact approval c84cb833
 - Review gate: current-main Opus 5 APPROVE plus three pre-merge exact APPROVEs over byte-identical implementation; rendered connector and post-fix clean-use remain later acceptance gates
-- Ship/abandon: retarget PR #1812 to `main`; do not deploy or authorize runtime/external-state retirement
+- Ship/abandon: keep PR #1812 draft and gate any merge on task 3.5's final announcement-run drain; do not deploy or authorize runtime/external-state retirement
 - Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
 - Update 2026-07-26: parent #1810 folded in; React/Svelte builds, 58/58 strict OpenSpec, active-source scans, and exact current-main reviews pass at `c84cb833`

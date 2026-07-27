@@ -151,7 +151,8 @@ completed, with no queued or in-progress run. No workflow was disabled, no run
 was cancelled, no site was deployed, and no production/GitHub label or
 auto-merge state was mutated. Task 3.5 remains open for the separately claimed
 effector-comment neutralization and final pre-merge run-drain proof; task 5.2
-remains open for claimed tests/snapshot-dependent absence proof; task 5.3 owns
+remains open for tests blocked by active claims and snapshot-dependent absence
+proof; task 5.3 owns
 snapshot/soul regeneration.
 
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
