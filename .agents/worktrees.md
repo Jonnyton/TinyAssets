@@ -1524,9 +1524,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-loop-github-state
-- Lane state: claimed; tasks 3.6/3.7 migrator implementation
+- Lane state: published draft; tasks 3.6/3.7 read-only inventory increment
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-github-state
-- STATUS/Issue/PR: stacked after draft PR #1819; no PR yet
+- STATUS/Issue/PR: draft PR #1820 stacked after draft PR #1819
 - PLAN refs: user-selected effects only; exact-head merge authority; generic labels and explicit enrollments survive
 - Purpose: build receipt-bound dry-run/apply retirement for 28 exact loop labels and workflow-attributed auto-merge enrollments without mutating GitHub before producer quiescence
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-github-state\_PURPOSE.md
