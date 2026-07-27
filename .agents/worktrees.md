@@ -1458,12 +1458,12 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/close-release-reconcile-watch-20260726
-- Lane state: claimed; evidence-only closure
+- Lane state: complete; PR #1816 open
 - Worktree: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch
-- STATUS/Issue/PR: retire the resolved release-reconcile monitoring row
+- STATUS/Issue/PR: resolved monitoring row retired in PR #1816
 - PLAN refs: Uptime & Alarms; complete-system 24/7 uptime
 - Purpose: preserve the first end-to-end drift-to-build-to-explicit-deploy convergence under the #1749/#1750 logic; drift detection itself predates it.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch\_PURPOSE.md
 - Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
-- Review gate: evidence-only diff review; no runtime/workflow changes
-- Ship/abandon: focused PR to main; abandon if authoritative Actions logs contradict the recorded chain
+- Review gate: Claude Opus 5 APPROVE after two correction passes; no runtime/workflow changes
+- Ship/abandon: merge focused PR #1816; abandon if authoritative Actions logs contradict the recorded chain
