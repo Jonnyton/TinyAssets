@@ -1,5 +1,9 @@
 # Operating model + four-agent topology — working model for evolving the loop as users
 
+> Historical design note from the retired privileged-loop operating model.
+> It is not living design truth, current authorization, or operator guidance.
+> Current architecture is governed by `PLAN.md` and OpenSpec.
+
 Date: 2026-05-04
 Status: living document — Cowork and Codex co-edit as shared understanding evolves
 Owner: Cowork + Codex jointly
