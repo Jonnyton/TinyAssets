@@ -98,15 +98,25 @@ test("exact retired platform projections are removed while near-collisions and u
     sourceUrl: "https://example.test/mcp",
     goalsResult: {
       goals: [
-        { goal_id: "4ff5862cc26d", name: "retired platform goal" },
+        {
+          goal_id: "4ff5862cc26d",
+          name: "retired platform goal",
+          visibility: "public",
+        },
         {
           goal_id: "4ff5862cc26d-user",
           name: "A user-authored patch loop study",
           description:
             "Users may compose automations with ordinary primitives.",
+          visibility: "public",
+        },
+        {
+          goal_id: "private-goal",
+          name: "Private customer plan",
+          visibility: "private",
         },
       ],
-      count: 2,
+      count: 3,
     },
     graphsResult: {
       universes: [
@@ -129,6 +139,10 @@ test("exact retired platform projections are removed while near-collisions and u
   );
   assert.equal(snapshot.goals[0].name, "A user-authored patch loop study");
   assert.equal(
+    snapshot.goals.some((goal) => goal.id === "private-goal"),
+    false,
+  );
+  assert.equal(
     snapshot.source,
     "https://example.test/mcp · discovery snapshot",
   );
@@ -137,6 +151,28 @@ test("exact retired platform projections are removed while near-collisions and u
     "patch-loop-live",
   ]);
   assert.doesNotThrow(() => assertNoRetiredSignatures(snapshot));
+});
+
+test("goal visibility must be explicit and known before public filtering", () => {
+  const build = (visibility, includeVisibility = true) =>
+    buildMcpSnapshot({
+      fetchedAt: "2026-07-26T00:00:00.000Z",
+      goalsResult: {
+        goals: [
+          {
+            goal_id: "goal-with-bad-visibility",
+            ...(includeVisibility ? { visibility } : {}),
+          },
+        ],
+        count: 1,
+      },
+      graphsResult: { universes: [], count: 0 },
+      pagesResult: completePages,
+      pageBodies: new Map(),
+    });
+
+  assert.throws(() => build(undefined, false), /visibility/);
+  assert.throws(() => build("organization"), /visibility/);
 });
 
 test("buildMcpSnapshot requires unique bounded graph IDs and complete direct-page proof", () => {

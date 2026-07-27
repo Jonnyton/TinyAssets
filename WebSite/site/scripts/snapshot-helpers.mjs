@@ -418,12 +418,27 @@ export function buildMcpSnapshot({
       "read_graph graphs reached the requested cap; completeness is unknowable",
     );
   }
+  const knownGoalVisibilities = new Set(["public", "private", "deleted"]);
+  for (const goal of rawGoals) {
+    if (
+      typeof goal.visibility !== "string" ||
+      !knownGoalVisibilities.has(goal.visibility)
+    ) {
+      throw new Error(
+        `read_graph goal ${String(goal.goal_id ?? goal.id)} has unknown visibility`,
+      );
+    }
+  }
   const pages = validatePageInventory(pagesResult);
   if (!(pageBodies instanceof Map)) throw new Error("pageBodies must be a Map");
 
   const goals = sortBy(
     rawGoals
-      .filter((goal) => !RETIRED_GOAL_IDS.has(String(goal.goal_id ?? goal.id)))
+      .filter(
+        (goal) =>
+          goal.visibility === "public" &&
+          !RETIRED_GOAL_IDS.has(String(goal.goal_id ?? goal.id)),
+      )
       .map((goal) => ({
         id: String(goal.goal_id ?? goal.id ?? ""),
         name: goal.name ?? "",
@@ -438,7 +453,7 @@ export function buildMcpSnapshot({
               ? goal.tags
               : [],
         author: goal.author ?? "anonymous",
-        visibility: goal.visibility ?? "public",
+        visibility: goal.visibility,
       })),
     (goal) => goal.id,
   );
