@@ -46,8 +46,8 @@ Verdict: **APPROVE**
 - Verified wrong-typed `scope_note` rejects; missing/blank notes remain a
   bounded successful result distinct from unavailable.
 - Confirmed public completeness/privacy checks, identical curated snapshots,
-  zero production audit vulnerabilities, 81/81 tests, and a clean cumulative
-  diff.
+  zero Svelte production dependency audit vulnerabilities, 81/81 tests, and
+  a clean cumulative diff.
 
 ## Public-Truth Codex Review
 
@@ -70,8 +70,8 @@ Verdict: **APPROVE**
 Verdict: **APPROVE**
 
 - Independently reran 81/81 Node tests, Svelte check (0 errors, 3 existing
-  warnings), both production builds, the production dependency audit (zero
-  vulnerabilities), OpenSpec 58/58 strict, and `git diff --check`.
+  warnings), both production builds, the Svelte production dependency audit
+  (zero vulnerabilities), OpenSpec 58/58 strict, and `git diff --check`.
 - Directly probed 43 endpoint inputs and about 40 response payload shapes,
   including the prior credential, userinfo, continuation, cap, visibility,
   exact-page proof, and generic-error failure classes.
