@@ -383,6 +383,15 @@
   `scope_note` was treated as missing. The current repair normalizes those
   controls, uses a scheme-generic apparent-authority check, and rejects
   malformed omission metadata.
+  Exact-head general review of `1d9644ae` returned ADAPT because
+  parser-successful opaque arbitrary-scheme spellings returned before the
+  apparent-credential check. The current repair evaluates the normalized
+  scheme-generic check first for zero, single, and multiple separators.
+  Exact-head security review of `1d9644ae` also proved that a credential-name
+  blacklist cannot establish anonymity: standard OAuth, OIDC, SAML, cloud,
+  and ticket parameter names remained open-ended. The current repair removes
+  the blacklist and requires a bare public MCP endpoint with no query or
+  fragment data.
   The full Node suite passes 81/81 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production

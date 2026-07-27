@@ -166,15 +166,13 @@ metadata; deleting only the primary Goal row is insufficient.
 
 - **WHEN** a snapshot refresh is started with an MCP bearer or other caller credential
 - **THEN** it fails before connecting or writing an artifact
-- **AND** credential-like URL query or fragment parameters fail before the URL is logged
-- **AND** recursively encoded query/fragment separators cannot hide credential parameters
-- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, WHATWG-removable controls, arbitrary schemes, malformed authorities, or zero/single/multiple slash/backslash-equivalent spellings
-- **AND** the snapshot URL uses HTTPS before the connector opens or logs it
+- **AND** the public MCP endpoint must be a bare URL with no query or fragment data, rather than relying on a credential-name blacklist
+- **AND** the snapshot URL uses HTTPS and contains no userinfo before the connector opens or logs it
 
 #### Scenario: A browser build configures a public MCP endpoint
 
 - **WHEN** a public browser bundle reads an environment-configured MCP endpoint
-- **THEN** it accepts only a same-origin relative path or a credential-free HTTPS URL
+- **THEN** it accepts only a bare same-origin relative path or a bare credential-free HTTPS URL with no query or fragment data
 - **AND** validation runs before the first request or log
 
 #### Scenario: A repository snapshot records its public remote

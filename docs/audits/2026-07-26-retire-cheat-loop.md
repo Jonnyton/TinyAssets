@@ -804,6 +804,14 @@ verdict without pretending the unsafe server projections are public:
   `scope_note` values were treated as missing; the current repair normalizes
   those controls, applies scheme-generic apparent-authority rejection, and
   rejects malformed omission metadata;
+- exact-head general review of `1d9644ae` returned ADAPT because
+  parser-successful opaque arbitrary-scheme spellings returned before the
+  apparent-credential check; the current repair evaluates the normalized
+  scheme-generic check first for zero, single, and multiple separators;
+- exact-head security review of `1d9644ae` also proved a credential-name
+  blacklist cannot establish anonymity because standard OAuth, OIDC, SAML,
+  cloud, and ticket fields remained open-ended; the current repair removes
+  that blacklist and requires a bare endpoint with no query or fragment data;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte

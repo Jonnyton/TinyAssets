@@ -9,147 +9,27 @@ const DISCOVERABLE_UNIVERSE_VISIBILITIES = new Set([
   "public",
   "metadata_only",
 ]);
-const CREDENTIAL_PARAMETER_NAMES = new Set([
-  "accesstoken",
-  "refreshtoken",
-  "idtoken",
-  "token",
-  "apikey",
-  "key",
-  "auth",
-  "authorization",
-  "signature",
-  "sig",
-  "bearer",
-  "credential",
-  "credentials",
-  "password",
-  "passwd",
-  "secret",
-  "clientsecret",
-  "xamzcredential",
-  "xamzsignature",
-  "xamzsecuritytoken",
-  "xgoogcredential",
-  "xgoogsignature",
-  "jwt",
-  "session",
-  "sessionid",
-  "oauthcode",
-  "authorizationcode",
-  "code",
-  "accesskey",
-  "secretkey",
-  "privatekey",
-]);
-
-/** @param {string} value */
-function normalizedParameterName(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
-/** @param {string} value */
-function isCredentialParameterName(value) {
-  const normalized = normalizedParameterName(value);
-  return (
-    CREDENTIAL_PARAMETER_NAMES.has(normalized) ||
-    /(?:token|secret|password|passwd|credential|signature)$/.test(normalized)
-  );
-}
 
 /** @param {string} value */
 function containsUrlUserinfo(value) {
+  const normalized = value.replace(/[\t\n\r]/g, "");
+  if (
+    /^[\u0000-\u0020]*(?:(?:[a-z][a-z0-9+.-]*:[\\/]*)|(?:[\\/]{2,}))[^/?#\\]*@/i.test(
+      normalized,
+    )
+  ) {
+    return true;
+  }
   try {
     const absolute = new URL(value);
     return Boolean(absolute.username || absolute.password);
-  } catch {
-    const normalized = value.replace(/[\t\n\r]/g, "");
-    if (
-      /^[\u0000-\u0020]*(?:(?:[a-z][a-z0-9+.-]*:[\\/]+)|(?:(?:https?|wss?|ftp):)|(?:[\\/]{2,}))[^/?#\\]*@/i.test(
-        normalized,
-      )
-    ) {
-      return true;
-    }
-  }
+  } catch {}
   try {
     const relative = new URL(value, "https://public.invalid");
     return Boolean(relative.username || relative.password);
   } catch {
     return false;
   }
-}
-
-/**
- * @param {URLSearchParams} params
- * @returns {boolean}
- */
-function containsCredentialMaterial(params) {
-  for (const [name, value] of params) {
-    if (isCredentialParameterName(name)) {
-      return true;
-    }
-    if (/^\s*bearer(?:\s|%20)+\S/i.test(value)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/**
- * Decode a URL component repeatedly so encoded separators cannot hide
- * credential parameters. The small bound handles ordinary browser/OAuth
- * double encoding without turning malformed input into an unbounded parser.
- *
- * @param {string} value
- * @returns {string[]}
- */
-function decodedComponentVariants(value) {
-  const variants = [value];
-  let current = value;
-  for (let round = 0; round < 16; round += 1) {
-    let decoded;
-    try {
-      decoded = decodeURIComponent(current);
-    } catch {
-      throw new Error("Public MCP URL contains an undecodable component");
-    }
-    if (decoded === current) return variants;
-    variants.push(decoded);
-    current = decoded;
-  }
-  throw new Error("Public MCP URL is excessively encoded");
-}
-
-/** @param {string} component */
-function componentContainsCredentialMaterial(component) {
-  const pending = [component];
-  const seen = new Set();
-  while (pending.length > 0) {
-    const candidate = pending.shift();
-    if (candidate === undefined) break;
-    for (const variant of decodedComponentVariants(candidate)) {
-      if (seen.has(variant)) continue;
-      seen.add(variant);
-      if (seen.size > 64) {
-        throw new Error("Public MCP URL has excessive nested components");
-      }
-      if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
-      if (containsUrlUserinfo(variant)) return true;
-      const params = new URLSearchParams(variant);
-      if (containsCredentialMaterial(params)) return true;
-      for (const [, value] of params) {
-        if (value && value !== variant) pending.push(value);
-      }
-      for (const separator of ["?", "#"]) {
-        const index = variant.indexOf(separator);
-        if (index >= 0 && index + 1 < variant.length) {
-          pending.push(variant.slice(index + 1));
-        }
-      }
-    }
-  }
-  return false;
 }
 
 /** @param {string} page */
@@ -205,16 +85,14 @@ export function assertAnonymousSnapshotUrl(value) {
   if (parsed.protocol !== "https:") {
     throw new Error("Public snapshots require an HTTPS MCP URL");
   }
-  const fragment = parsed.hash.slice(1);
-  if (
-    parsed.username ||
-    parsed.password ||
-    containsCredentialMaterial(parsed.searchParams) ||
-    componentContainsCredentialMaterial(parsed.search.slice(1)) ||
-    componentContainsCredentialMaterial(fragment)
-  ) {
+  if (parsed.username || parsed.password) {
     throw new Error(
       "Public snapshots must run anonymously; MCP URL credentials are forbidden",
+    );
+  }
+  if (parsed.search || parsed.hash) {
+    throw new Error(
+      "Public snapshots require a bare MCP URL without query or fragment data",
     );
   }
   return value;

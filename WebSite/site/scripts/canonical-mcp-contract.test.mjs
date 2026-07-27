@@ -115,16 +115,10 @@ test("public Playground execution contract accepts only bounded discovery reads"
   }
 });
 
-test("public snapshot URL rejects embedded caller credentials", () => {
+test("public snapshot URL requires a bare credential-free HTTPS endpoint", () => {
   assert.equal(
     assertAnonymousSnapshotUrl("https://tinyassets.io/mcp"),
     "https://tinyassets.io/mcp",
-  );
-  assert.equal(
-    assertAnonymousSnapshotUrl(
-      "https://tinyassets.io/mcp?region=us-west&mode=public#documentation",
-    ),
-    "https://tinyassets.io/mcp?region=us-west&mode=public#documentation",
   );
   for (const unsafe of [
     "https://user:token@tinyassets.io/mcp",
@@ -144,6 +138,14 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?session_token=top-secret",
     "https://tinyassets.io/mcp?oauth_token=top-secret",
     "https://tinyassets.io/mcp?client_secret=top-secret",
+    "https://tinyassets.io/mcp?id_token_hint=eyJhbGciOiJIUzI1NiJ9",
+    "https://tinyassets.io/mcp?client_assertion=eyJhbGciOiJIUzI1NiJ9",
+    "https://tinyassets.io/mcp?SAMLResponse=assertion",
+    "https://tinyassets.io/mcp?ticket=service-ticket",
+    "https://tinyassets.io/mcp?AWSAccessKeyId=AKIAEXAMPLE",
+    "https://tinyassets.io/mcp?CF_Authorization=opaque",
+    "https://tinyassets.io/mcp?device_code=device-value",
+    "https://tinyassets.io/mcp?code_verifier=verifier-value",
     "https://tinyassets.io/mcp?jwt=top-secret",
     "https://tinyassets.io/mcp?authorization_code=top-secret",
     "https://tinyassets.io/mcp#access_token=top-secret",
@@ -183,6 +185,11 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?next=h%09ttps%3A%2F%2Fuser%3Ahunter2%40%5B",
     "https://tinyassets.io/mcp#next=https%3A%2F%0A%2Fuser%3Ahunter2%40%5B",
     "https://tinyassets.io/mcp?next=https%3A%2F%2F%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp?next=ssh%3A%2Fuser%3Ahunter2%40host.invalid%2Fcb",
+    "https://tinyassets.io/mcp?next=ssh%3Auser%3Ahunter2%40host.invalid%2Fcb",
+    "https://tinyassets.io/mcp#next=ssh%3A%2F%2F%2Fuser%3Ahunter2%40host.invalid%2Fcb",
+    "https://tinyassets.io/mcp?next=git%2Bssh%3A%5Cuser%3Ahunter2%40host.invalid%2Fcb",
+    "https://tinyassets.io/mcp#next=g%09it%2Bssh%3A%2Fuser%3Ahunter2%40host.invalid%2Fcb",
     "https://alice:s3cr3t@[::1",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
@@ -191,7 +198,7 @@ test("public snapshot URL rejects embedded caller credentials", () => {
   ]) {
     assert.throws(
       () => assertAnonymousSnapshotUrl(unsafe),
-      /anonymous.*credentials/i,
+      /anonymous.*credentials|bare MCP URL/i,
     );
   }
   const excessivelyEncodedCredential = Array.from({ length: 20 }).reduce(
@@ -203,7 +210,7 @@ test("public snapshot URL rejects embedded caller credentials", () => {
       assertAnonymousSnapshotUrl(
         `https://tinyassets.io/mcp#${excessivelyEncodedCredential}`,
       ),
-    /excessively encoded/i,
+    /bare MCP URL/i,
   );
   for (const insecureSnapshotUrl of [
     "http://tinyassets.io/mcp",
@@ -215,17 +222,19 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     );
   }
   assert.equal(assertPublicBrowserEndpoint("/mcp"), "/mcp");
-  assert.equal(
-    assertPublicBrowserEndpoint("https://tinyassets.io/mcp?mode=public"),
-    "https://tinyassets.io/mcp?mode=public",
-  );
   for (const unsafeBrowserEndpoint of [
     "//token@evil.example/mcp",
     String.raw`/\\evil.example/mcp`,
     "http://tinyassets.io/mcp",
+    "https://tinyassets.io/mcp?mode=public",
     "https://tinyassets.io/mcp?code=abc123",
     `/mcp?next=${encodeURIComponent("h\tttps://alice:hunter2@[")}`,
     `/mcp?next=${encodeURIComponent("https:/\n/alice:hunter2@[")}`,
+    `/mcp?next=${encodeURIComponent("ssh:/alice:hunter2@host.invalid/cb")}`,
+    `/mcp?next=${encodeURIComponent("ssh:alice:hunter2@host.invalid/cb")}`,
+    `/mcp?next=${encodeURIComponent(
+      "g\tit+ssh:/alice:hunter2@host.invalid/cb",
+    )}`,
     `https://tinyassets.io/mcp#next=${encodeURIComponent(
       "git://alice:hunter2@host.invalid:99999/cb",
     )}`,

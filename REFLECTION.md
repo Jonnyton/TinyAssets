@@ -545,3 +545,9 @@ fresh-host rollback edges found later.
 - **Follow-up:** parser normalization includes removable characters inside a
   URL, and credential-bearing authority syntax is not confined to common web
   schemes. Fail closed generically; never use a finite scheme allowlist.
+- **Follow-up:** a successful parse is not affirmative safety when a parser
+  treats authority-like text as an opaque path. Apply the conservative
+  credential syntax check before accepting parser output.
+- **Follow-up:** credential-name blacklists are structurally incomplete. When
+  the canonical public endpoint needs no URL parameters, the smallest safe
+  contract is a bare HTTPS URL with no query or fragment channel at all.
