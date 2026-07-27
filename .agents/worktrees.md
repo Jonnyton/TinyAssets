@@ -1519,3 +1519,17 @@ Notes:
 - Update 2026-07-26: final implementation `67e55866`; 22/22 snapshot tests; live 78/78 discovery rebuild; Svelte/React builds; byte-identical MCP mirrors; 288 public origin refs; exact retired projections removed without keyword censorship
 - Update 2026-07-26: Claude Opus 5 plus three independent exact-head reviewers APPROVE; OpenSpec task 5.3 checked; runtime/stored-role proof remains independently gated by tasks 6.1/6.4
 - Update 2026-07-26: pushed as draft PR #1819; stacked order is #1812 → #1815 → #1818 → #1819
+
+## 2026-07-26 - retire privileged GitHub label and auto-merge state
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-loop-github-state
+- Lane state: claimed; tasks 3.6/3.7 migrator implementation
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-github-state
+- STATUS/Issue/PR: stacked after draft PR #1819; no PR yet
+- PLAN refs: user-selected effects only; exact-head merge authority; generic labels and explicit enrollments survive
+- Purpose: build receipt-bound dry-run/apply retirement for 28 exact loop labels and workflow-attributed auto-merge enrollments without mutating GitHub before producer quiescence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-github-state\_PURPOSE.md
+- Memory refs: target #1810; parent snapshot stack head 77fe68fb; 2026-07-26 GitHub-state audit
+- Review gate: RED/GREEN local tests, live read-only inventory receipt, mutation fail-closed gates, independent exact-head and Claude Opus 5 review
+- Ship/abandon: stacked draft PR; never run apply until task 4.2/all producers are removed, workflow runs drained, and explicit preflight receipts prove authority
