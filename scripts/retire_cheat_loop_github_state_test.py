@@ -1537,6 +1537,8 @@ class ReadOnlyClientTests(unittest.TestCase):
                 [
                     "gh",
                     "api",
+                    "--hostname",
+                    "github.com",
                     "--include",
                     "--method",
                     "GET",
@@ -1594,6 +1596,11 @@ class ReadOnlyClientTests(unittest.TestCase):
             ),
         )
         self.assertEqual(1, len(calls))
+        self.assertIn("github.com", calls[0])
+        self.assertEqual(
+            ["--hostname", "github.com"],
+            calls[0][2:4],
+        )
         self.assertNotIn("-F", calls[0])
         self.assertIn(f"query={mod.AUTO_MERGE_QUERY}", calls[0])
 
@@ -1647,8 +1654,26 @@ class ReadOnlyClientTests(unittest.TestCase):
         self.assertEqual([{"id": 1}, {"id": 2}], rows)
         self.assertEqual(
             [
-                ["gh", "api", "--include", "--method", "GET", endpoint],
-                ["gh", "api", "--include", "--method", "GET", next_url],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--include",
+                    "--method",
+                    "GET",
+                    endpoint,
+                ],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--include",
+                    "--method",
+                    "GET",
+                    next_url,
+                ],
             ],
             calls,
         )

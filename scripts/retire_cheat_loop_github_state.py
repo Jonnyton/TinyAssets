@@ -1765,7 +1765,16 @@ class ReadOnlyGitHub:
             endpoint = self._validate_repo_endpoint(endpoint)
         try:
             completed = self._runner(
-                ["gh", "api", "--include", "--method", "GET", endpoint],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--include",
+                    "--method",
+                    "GET",
+                    endpoint,
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -1844,7 +1853,15 @@ class ReadOnlyGitHub:
         endpoint = self._validate_repo_endpoint(endpoint)
         try:
             completed = self._runner(
-                ["gh", "api", "--method", "GET", endpoint],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--method",
+                    "GET",
+                    endpoint,
+                ],
                 check=True,
                 capture_output=True,
                 text=False,
@@ -1951,7 +1968,17 @@ class ReadOnlyGitHub:
         endpoint = self._validate_repo_endpoint(endpoint)
         try:
             completed = self._runner(
-                ["gh", "api", "--method", "GET", "--paginate", "--slurp", endpoint],
+                [
+                    "gh",
+                    "api",
+                    "--hostname",
+                    "github.com",
+                    "--method",
+                    "GET",
+                    "--paginate",
+                    "--slurp",
+                    endpoint,
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -2020,6 +2047,8 @@ class ReadOnlyGitHub:
                 [
                     "gh",
                     "api",
+                    "--hostname",
+                    "github.com",
                     "graphql",
                     "--paginate",
                     "--slurp",
