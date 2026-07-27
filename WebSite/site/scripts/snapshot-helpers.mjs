@@ -234,7 +234,17 @@ function validatePageBody(page, body) {
   const contentSha256 = createHash("sha256")
     .update(body.content, "utf8")
     .digest("hex");
-  if (proof.sha256 !== contentSha256) {
+  const draftDecoration = "[DRAFT] ";
+  const rawDraftSha256 =
+    body.is_draft === true && body.content.startsWith(draftDecoration)
+      ? createHash("sha256")
+          .update(body.content.slice(draftDecoration.length), "utf8")
+          .digest("hex")
+      : null;
+  if (
+    proof.sha256 !== contentSha256 &&
+    (rawDraftSha256 === null || proof.sha256 !== rawDraftSha256)
+  ) {
     throw new Error(`read_page ${page.path} sha256 does not match content`);
   }
   return body.content;

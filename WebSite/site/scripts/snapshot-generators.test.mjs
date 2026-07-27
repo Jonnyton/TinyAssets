@@ -246,6 +246,63 @@ test("buildMcpSnapshot requires unique bounded graph IDs and complete direct-pag
   );
 });
 
+test("draft source proofs allow exactly the server-added draft marker", () => {
+  const page = {
+    path: "drafts/notes/example.md",
+    title: "Draft example",
+    updated: "2026-07-26T00:00:00Z",
+    is_draft: true,
+  };
+  const build = (content, proofContent) =>
+    buildMcpSnapshot({
+      fetchedAt: "2026-07-26T00:00:00.000Z",
+      goalsResult: { goals: [], count: 0 },
+      graphsResult: { universes: [], count: 0 },
+      pagesResult: {
+        ...completePages,
+        results: [page],
+        count: 1,
+        total_matches: 1,
+      },
+      pageBodies: new Map([
+        [
+          page.path,
+          {
+            path: page.path,
+            is_draft: true,
+            content,
+            truncated: false,
+            total_chars: [...content].length,
+            read_start: 0,
+            read_end: [...content].length,
+            next_offset: null,
+            source_read_proof: {
+              path: page.path,
+              title: page.title,
+              updated: page.updated,
+              is_draft: true,
+              sha256: sha256(proofContent),
+            },
+          },
+        ],
+      ]),
+    });
+
+  assert.doesNotThrow(() =>
+    build(
+      "[DRAFT] ---\ntitle: Draft example\n---\nBody",
+      "---\ntitle: Draft example\n---\nBody",
+    ),
+  );
+  assert.doesNotThrow(() =>
+    build("[DRAFT] Stored marker", "[DRAFT] Stored marker"),
+  );
+  assert.throws(
+    () => build("[DRAFT] Tampered body", "Different raw body"),
+    /sha256/,
+  );
+});
+
 test("repo snapshot is rebuilt from explicit clean topology and retains the generic coding branch", () => {
   const topology = {
     schema_version: 1,

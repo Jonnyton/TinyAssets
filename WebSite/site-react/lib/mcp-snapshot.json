@@ -646,7 +646,7 @@
       "to": "draft:agent-teams-as-graphs"
     }
   ],
-  "fetched_at": "2026-07-27T03:03:58.346Z",
+  "fetched_at": "2026-07-27T03:17:44.778Z",
   "goals": [],
   "provenance": {
     "complete": true,
@@ -829,7 +829,7 @@
     {
       "accept_rate": 1,
       "id": "concordance",
-      "last_activity_at": "2026-07-27T03:02:06.426016+00:00",
+      "last_activity_at": "2026-07-27T03:17:01.748218+00:00",
       "phase": "paused",
       "word_count": 75816
     },
