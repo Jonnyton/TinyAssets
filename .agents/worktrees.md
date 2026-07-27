@@ -1444,12 +1444,12 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-current-20260726
-- Lane state: claimed; target published as draft PR #1810; implementation gates remain
+- Lane state: claimed; target reconciled in draft PR #1810; implementation gates remain
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
 - STATUS/Issue/PR: host-directed retirement; draft PR #1810
 - PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
 - Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
-- Memory refs: host directive 2026-07-26; final exact reviewed SHA 8ef99451; current origin/main 3f71084d
+- Memory refs: host directive 2026-07-26; semantic target SHA 8ef99451; current-main reconciliation reviewed at 75e21fba; current origin/main 46cbb08c
 - Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
 - Ship/abandon: draft target PR #1810 first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
