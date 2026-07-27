@@ -85,16 +85,23 @@ def receipt() -> dict:
     )
 
 
-def auto_pr(actor_type="Bot", login="app/github-actions") -> dict:
+def auto_pr(
+    actor_type="Bot",
+    login="app/github-actions",
+    *,
+    node_id="PR_1",
+    number=7,
+    head_ref_oid="deadbeef",
+) -> dict:
     repository = {"id": "R_repo", "nameWithOwner": "Jonnyton/TinyAssets"}
     return {
-        "node_id": "PR_1",
-        "number": 7,
+        "node_id": node_id,
+        "number": number,
         "state": "OPEN",
         "is_draft": False,
         "base_ref_name": "main",
         "head_ref_name": "feature",
-        "head_ref_oid": "deadbeef",
+        "head_ref_oid": head_ref_oid,
         "repository": repository,
         "base_repository": repository,
         "head_repository": repository,
@@ -113,7 +120,7 @@ def auto_pr(actor_type="Bot", login="app/github-actions") -> dict:
     }
 
 
-def exact_evidence() -> dict:
+def exact_evidence(*, pull_request_number=7, head_sha="deadbeef") -> dict:
     return {
         "workflow_id": mod.AUTO_ENROLL_WORKFLOW_ID,
         "run_id": 101,
@@ -124,8 +131,8 @@ def exact_evidence() -> dict:
         "run_url": "https://example.invalid/actions/runs/101",
         "event": "pull_request_target",
         "conclusion": "success",
-        "pull_request_number": 7,
-        "head_sha": "deadbeef",
+        "pull_request_number": pull_request_number,
+        "head_sha": head_sha,
         "run_created_at": "2026-07-25T01:00:00Z",
         "run_updated_at": "2026-07-25T01:00:04Z",
         "job_name": "Enroll for auto-merge",
@@ -203,6 +210,43 @@ def complete_auto_receipt() -> tuple[dict, dict]:
             inventory=inventory,
         ),
         action,
+    )
+
+
+def complete_two_action_receipt() -> tuple[dict, list[dict]]:
+    value, first = complete_auto_receipt()
+    inventory = copy.deepcopy(value["plan"]["inventory"])
+    second_pr = auto_pr(node_id="PR_2", number=8, head_ref_oid="cafebabe")
+    second_after = copy.deepcopy(second_pr)
+    second_after["auto_merge_request"] = None
+    second = {
+        "ordinal": 1,
+        "kind": "disable_auto_merge",
+        "target_node_id": second_pr["node_id"],
+        "planned_before": second_pr,
+        "planned_after": second_after,
+    }
+    inventory["pull_requests"].append(second_pr)
+    inventory["connections"][0]["count"] = 2
+    inventory["connections"][0]["total_count"] = 2
+    inventory["attribution"].append(
+        {
+            "pull_request_node_id": second_pr["node_id"],
+            "classification": "attributed",
+            "evidence": [
+                exact_evidence(pull_request_number=8, head_sha="cafebabe")
+            ],
+        }
+    )
+    inventory["planned_actions"] = [first, second]
+    return (
+        mod.build_receipt(
+            operation=mod.AUTO_MERGE_OPERATION,
+            repo=repo(),
+            source_revision="abc123",
+            inventory=inventory,
+        ),
+        [first, second],
     )
 
 
@@ -302,6 +346,27 @@ class ReceiptTests(unittest.TestCase):
                 source_revision="abc123",
                 inventory=inventory,
             )
+
+    def test_float_ordinals_and_naive_quiescence_times_are_rejected(self) -> None:
+        value, _ = complete_auto_receipt()
+        inventory = copy.deepcopy(value["plan"]["inventory"])
+        inventory["planned_actions"][0]["ordinal"] = 0.0
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+        inventory = copy.deepcopy(value["plan"]["inventory"])
+        inventory["quiescence"]["workflow_disabled_verified_at"] = "2026-07-25T00:59:00"
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
         inventory = label_inventory()
         inventory["connections"] = []
         with self.assertRaises(mod.PlanError):
@@ -338,8 +403,12 @@ class JournalTests(unittest.TestCase):
             value = receipt()
             journal.register(value)
             journal.register(value)
+            journal.claim_apply(
+                value["apply_key"], "executor", recovery_authorized=False
+            )
             journal.persist_intent(
                 apply_key=value["apply_key"],
+                executor_token="executor",
                 ordinal=0,
                 action_kind="remove_label",
                 target_node_id="I_1",
@@ -349,6 +418,7 @@ class JournalTests(unittest.TestCase):
             with self.assertRaises(mod.JournalConflict):
                 journal.persist_intent(
                     apply_key=value["apply_key"],
+                    executor_token="executor",
                     ordinal=0,
                     action_kind="remove_label",
                     target_node_id="I_1",
@@ -357,6 +427,34 @@ class JournalTests(unittest.TestCase):
                 )
             rows = journal.intent_rows(value["apply_key"])
             self.assertEqual("intent_persisted", rows[0]["state"])
+
+    def test_stale_executor_cannot_write_or_update_missing_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = mod.MigrationJournal(Path(tmp) / "journal.sqlite3")
+            value = receipt()
+            journal.register(value)
+            journal.claim_apply(value["apply_key"], "old", recovery_authorized=False)
+            journal.mark_executor_abandoned(value["apply_key"], "old")
+            journal.claim_apply(value["apply_key"], "new", recovery_authorized=True)
+            with self.assertRaises(mod.JournalConflict):
+                journal.persist_intent(
+                    apply_key=value["apply_key"],
+                    executor_token="old",
+                    ordinal=0,
+                    action_kind="remove_label",
+                    target_node_id="I_1",
+                    planned_before={"labels": ["auto-bug", "keep"]},
+                    planned_after={"labels": ["keep"]},
+                )
+            with self.assertRaises(mod.JournalConflict):
+                journal.set_pre_read(
+                    value["apply_key"], "new", 0, {"labels": []}, "host_review"
+                )
+            with self.assertRaises(mod.JournalConflict):
+                journal.set_outcome(
+                    value["apply_key"], "new", 0, {"labels": []},
+                    state="host_review", outcome="missing_row"
+                )
 
     def test_same_apply_key_cannot_bind_changed_plan(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -388,6 +486,10 @@ class ApplyTests(unittest.TestCase):
 
         def mutate(self, action, client_mutation_id):
             self.calls.append((action, client_mutation_id))
+
+    @staticmethod
+    def fresh_proof(proof):
+        return lambda action: copy.deepcopy(proof)
 
     def test_every_quiescence_gate_is_required(self) -> None:
         value, _ = complete_auto_receipt()
@@ -443,6 +545,7 @@ class ApplyTests(unittest.TestCase):
                 journal=mod.MigrationJournal(Path(tmp) / "journal.sqlite3"),
                 reader=self.Reader([]),
                 mutator=self.Writer(),
+                proof_refresher=self.fresh_proof(authority_proof()),
             )
 
     def test_pre_read_drift_persists_hold_and_never_mutates(self) -> None:
@@ -462,6 +565,7 @@ class ApplyTests(unittest.TestCase):
                     journal=journal,
                     reader=self.Reader([drifted]),
                     mutator=writer,
+                    proof_refresher=self.fresh_proof(authority_proof()),
                 )
             self.assertEqual([], writer.calls)
             self.assertEqual(
@@ -485,6 +589,7 @@ class ApplyTests(unittest.TestCase):
                     [action["planned_before"], action["planned_after"]]
                 ),
                 mutator=writer,
+                proof_refresher=self.fresh_proof(authority_proof()),
             )
             self.assertEqual(1, len(writer.calls))
             self.assertEqual(
@@ -497,8 +602,10 @@ class ApplyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             journal = mod.MigrationJournal(Path(tmp) / "journal.sqlite3")
             journal.register(value)
+            journal.claim_apply(value["apply_key"], "crashed", recovery_authorized=False)
             journal.persist_intent(
                 apply_key=value["apply_key"],
+                executor_token="crashed",
                 ordinal=0,
                 action_kind=action["kind"],
                 target_node_id=action["target_node_id"],
@@ -507,10 +614,12 @@ class ApplyTests(unittest.TestCase):
             )
             journal.set_pre_read(
                 value["apply_key"],
+                "crashed",
                 0,
                 action["planned_before"],
                 "pre_read_authorized",
             )
+            journal.mark_executor_abandoned(value["apply_key"], "crashed")
             mod.apply_actions(
                 receipt=value,
                 proof=authority_proof(mod.AUTO_MERGE_OPERATION),
@@ -520,7 +629,8 @@ class ApplyTests(unittest.TestCase):
                 journal=journal,
                 reader=self.Reader([action["planned_after"]]),
                 mutator=writer,
-                recovery_authorized=False,
+                recovery_authorized=True,
+                proof_refresher=self.fresh_proof(authority_proof()),
             )
             self.assertEqual([], writer.calls)
             self.assertEqual(
@@ -543,6 +653,7 @@ class ApplyTests(unittest.TestCase):
                     journal=journal,
                     reader=self.Reader([action["planned_after"]]),
                     mutator=writer,
+                    proof_refresher=self.fresh_proof(authority_proof()),
                 )
             self.assertEqual([], writer.calls)
             self.assertEqual(
@@ -556,9 +667,10 @@ class ApplyTests(unittest.TestCase):
                     confirm_plan_digest=value["plan_digest"],
                     actions=[action],
                     journal=journal,
-                    reader=self.Reader([action["planned_after"]]),
+                    reader=self.Reader([action["planned_before"]]),
                     mutator=writer,
                     recovery_authorized=True,
+                    proof_refresher=self.fresh_proof(authority_proof()),
                 )
             self.assertEqual([], writer.calls)
             self.assertEqual(
@@ -577,6 +689,118 @@ class ApplyTests(unittest.TestCase):
                 journal.claim_apply(
                     value["apply_key"], "executor-two", recovery_authorized=False
                 )
+            with self.assertRaises(mod.ApplyBlocked):
+                journal.claim_apply(
+                    value["apply_key"], "executor-two", recovery_authorized=True
+                )
+
+    def test_recovery_preserves_terminal_first_action_and_reconciles_second(self) -> None:
+        value, actions = complete_two_action_receipt()
+        writer = self.Writer()
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = mod.MigrationJournal(Path(tmp) / "journal.sqlite3")
+            journal.register(value)
+            journal.claim_apply(value["apply_key"], "crashed", recovery_authorized=False)
+            first = actions[0]
+            journal.persist_intent(
+                apply_key=value["apply_key"], executor_token="crashed", ordinal=0,
+                action_kind=first["kind"], target_node_id=first["target_node_id"],
+                planned_before=first["planned_before"], planned_after=first["planned_after"],
+            )
+            journal.set_pre_read(
+                value["apply_key"], "crashed", 0, first["planned_before"],
+                "pre_read_authorized",
+            )
+            journal.set_outcome(
+                value["apply_key"], "crashed", 0, first["planned_after"],
+                state="succeeded", outcome="post_read_verified",
+            )
+            journal.mark_executor_abandoned(value["apply_key"], "crashed")
+            mod.apply_actions(
+                receipt=value, proof=authority_proof(), apply_key=value["apply_key"],
+                confirm_plan_digest=value["plan_digest"], actions=actions, journal=journal,
+                reader=self.Reader([
+                    first["planned_after"], actions[1]["planned_before"],
+                    actions[1]["planned_after"],
+                ]),
+                mutator=writer, recovery_authorized=True,
+                proof_refresher=self.fresh_proof(authority_proof()),
+            )
+            self.assertEqual(1, len(writer.calls))
+            self.assertEqual(
+                ["succeeded", "succeeded"],
+                [row["state"] for row in journal.intent_rows(value["apply_key"])],
+            )
+
+    def test_terminal_success_is_not_reapplied_after_remote_reenrollment(self) -> None:
+        value, action = complete_auto_receipt()
+        writer = self.Writer()
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = mod.MigrationJournal(Path(tmp) / "journal.sqlite3")
+            journal.register(value)
+            journal.claim_apply(
+                value["apply_key"], "crashed", recovery_authorized=False
+            )
+            journal.persist_intent(
+                apply_key=value["apply_key"],
+                executor_token="crashed",
+                ordinal=0,
+                action_kind=action["kind"],
+                target_node_id=action["target_node_id"],
+                planned_before=action["planned_before"],
+                planned_after=action["planned_after"],
+            )
+            journal.set_pre_read(
+                value["apply_key"],
+                "crashed",
+                0,
+                action["planned_before"],
+                "pre_read_authorized",
+            )
+            journal.set_outcome(
+                value["apply_key"],
+                "crashed",
+                0,
+                action["planned_after"],
+                state="succeeded",
+                outcome="post_read_verified",
+            )
+            journal.mark_executor_abandoned(value["apply_key"], "crashed")
+            with self.assertRaises(mod.ApplyBlocked):
+                mod.apply_actions(
+                    receipt=value,
+                    proof=authority_proof(),
+                    apply_key=value["apply_key"],
+                    confirm_plan_digest=value["plan_digest"],
+                    actions=[action],
+                    journal=journal,
+                    reader=self.Reader([action["planned_before"]]),
+                    mutator=writer,
+                    recovery_authorized=True,
+                    proof_refresher=self.fresh_proof(authority_proof()),
+                )
+            self.assertEqual([], writer.calls)
+            self.assertEqual(
+                "succeeded", journal.intent_rows(value["apply_key"])[0]["state"]
+            )
+
+    def test_proof_refresher_blocks_drift_between_actions(self) -> None:
+        value, actions = complete_two_action_receipt()
+        writer = self.Writer()
+        proofs = [authority_proof(), authority_proof()]
+        proofs[1]["source_revision"] = "drifted"
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(mod.ApplyBlocked):
+            mod.apply_actions(
+                receipt=value, proof=authority_proof(), apply_key=value["apply_key"],
+                confirm_plan_digest=value["plan_digest"], actions=actions,
+                journal=mod.MigrationJournal(Path(tmp) / "journal.sqlite3"),
+                reader=self.Reader([
+                    actions[0]["planned_before"], actions[0]["planned_after"],
+                ]),
+                mutator=writer,
+                proof_refresher=lambda action: proofs.pop(0),
+            )
+        self.assertEqual(1, len(writer.calls))
 
 
 class AttributionTests(unittest.TestCase):
@@ -699,6 +923,32 @@ class ReadOnlyClientTests(unittest.TestCase):
         client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
         with self.assertRaises(mod.PlanError):
             client.rest_pages("repos/Jonnyton/TinyAssets/labels?per_page=100")
+
+    def test_gh_failure_and_graphql_structure_are_sanitized(self) -> None:
+        def failing_runner(args, **kwargs):
+            raise subprocess.CalledProcessError(
+                1, args, stderr="token=top-secret-value", output="not for callers"
+            )
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=failing_runner)
+        with self.assertRaises(mod.RetirementError) as failed:
+            client.rest("repos/Jonnyton/TinyAssets")
+        self.assertNotIn("top-secret-value", str(failed.exception))
+
+        class MalformedGraphQLClient:
+            repo = "Jonnyton/TinyAssets"
+
+            def rest(self, endpoint):
+                return {
+                    "node_id": "R_repo", "id": 42,
+                    "full_name": "Jonnyton/TinyAssets", "default_branch": "main",
+                }
+
+            def graphql_pages(self, query, fields):
+                return [{"data": {"repository": None}}]
+
+        with self.assertRaises(mod.RetirementError):
+            mod.collect_auto_merge_inventory(MalformedGraphQLClient())
 
     def test_auto_inventory_rejects_truncated_graphql_nodes(self) -> None:
         repository = {"id": "R_repo", "nameWithOwner": "Jonnyton/TinyAssets"}

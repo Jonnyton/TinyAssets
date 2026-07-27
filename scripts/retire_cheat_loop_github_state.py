@@ -273,6 +273,10 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
 def _normalize_planned_actions(
     actions: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
+    for action in actions:
+        ordinal = action.get("ordinal")
+        if not isinstance(ordinal, int) or isinstance(ordinal, bool):
+            raise PlanError("planned action ordinal must be an integer")
     normalized = _sorted_json_records(
         actions,
         key=lambda row: (
@@ -669,7 +673,7 @@ class MigrationJournal:
                 raise JournalConflict("apply plan is not registered")
             if row["status"] != "planned" and not (
                 recovery_authorized
-                and row["status"] in {"applying", "host_review", "failed"}
+                and row["status"] in {"host_review", "failed"}
             ):
                 raise ApplyBlocked(
                     f"apply journal is {row['status']}; explicit recovery is required"
@@ -683,6 +687,31 @@ class MigrationJournal:
                 """,
                 (executor_token, now, apply_key),
             )
+
+    def mark_executor_abandoned(
+        self, apply_key: str, expected_executor_token: str
+    ) -> None:
+        """Fence a proven-dead executor before recovery is allowed.
+
+        This has no command-line surface. A future operator flow must prove the
+        executor has stopped before invoking it with the exact old token.
+        """
+
+        now = dt.datetime.now(dt.timezone.utc).isoformat()
+        with self._session() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                UPDATE migration_runs
+                   SET phase = 'host_review', status = 'host_review',
+                       executor_token = NULL, updated_at = ?
+                 WHERE apply_key = ? AND status = 'applying'
+                   AND executor_token = ?
+                """,
+                (now, apply_key, expected_executor_token),
+            )
+            if cursor.rowcount != 1:
+                raise JournalConflict("abandoned executor token does not match")
 
     def finish_apply(
         self, apply_key: str, executor_token: str, *, status: str
@@ -739,6 +768,7 @@ class MigrationJournal:
         self,
         *,
         apply_key: str,
+        executor_token: str,
         ordinal: int,
         action_kind: str,
         target_node_id: str,
@@ -769,6 +799,7 @@ class MigrationJournal:
         )
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            self._assert_executor(conn, apply_key, executor_token)
             row = conn.execute(
                 "SELECT * FROM mutation_intents WHERE apply_key = ? AND ordinal = ?",
                 (apply_key, ordinal),
@@ -799,14 +830,39 @@ class MigrationJournal:
             )
         return client_id, None
 
+    @staticmethod
+    def _assert_executor(
+        conn: sqlite3.Connection, apply_key: str, executor_token: str
+    ) -> None:
+        row = conn.execute(
+            """
+            SELECT status, executor_token
+              FROM migration_runs
+             WHERE apply_key = ?
+            """,
+            (apply_key,),
+        ).fetchone()
+        if (
+            row is None
+            or row["status"] != "applying"
+            or row["executor_token"] != executor_token
+        ):
+            raise JournalConflict("journal write rejected for stale apply executor")
+
     def set_pre_read(
-        self, apply_key: str, ordinal: int, value: Mapping[str, Any], state: str
+        self,
+        apply_key: str,
+        executor_token: str,
+        ordinal: int,
+        value: Mapping[str, Any],
+        state: str,
     ) -> None:
         if state not in {"pre_read_authorized", "stale_needs_replan", "host_review"}:
             raise ValueError("invalid pre-read state")
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            self._assert_executor(conn, apply_key, executor_token)
+            cursor = conn.execute(
                 """
                 UPDATE mutation_intents
                    SET preread_digest = ?, preread_json = ?, state = ?
@@ -814,10 +870,13 @@ class MigrationJournal:
                 """,
                 (digest(value), canonical_bytes(value), state, apply_key, ordinal),
             )
+            if cursor.rowcount != 1:
+                raise JournalConflict("pre-read intent row is missing")
 
     def set_outcome(
         self,
         apply_key: str,
+        executor_token: str,
         ordinal: int,
         value: Mapping[str, Any],
         *,
@@ -834,7 +893,8 @@ class MigrationJournal:
             raise ValueError("invalid outcome state")
         with self._session() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            self._assert_executor(conn, apply_key, executor_token)
+            cursor = conn.execute(
                 """
                 UPDATE mutation_intents
                    SET postread_digest = ?, postread_json = ?, state = ?,
@@ -851,6 +911,8 @@ class MigrationJournal:
                     ordinal,
                 ),
             )
+            if cursor.rowcount != 1:
+                raise JournalConflict("outcome intent row is missing")
 
     def intent_rows(self, apply_key: str) -> list[dict[str, Any]]:
         with self._session() as conn:
@@ -943,6 +1005,7 @@ def apply_actions(
     journal: MigrationJournal,
     reader: ExactReader,
     mutator: Mutator,
+    proof_refresher: Callable[[Mapping[str, Any]], Mapping[str, Any]],
     recovery_authorized: bool = False,
 ) -> None:
     """Apply exact injected actions after durable intent and immediate reads.
@@ -969,8 +1032,18 @@ def apply_actions(
             action = copy.deepcopy(dict(raw_action))
             before = action["planned_before"]
             after = action["planned_after"]
+            fresh_proof = proof_refresher(action)
+            if not isinstance(fresh_proof, Mapping):
+                raise ApplyBlocked("per-action authority proof is unavailable")
+            verify_apply_authority(
+                receipt,
+                fresh_proof,
+                apply_key=apply_key,
+                confirm_plan_digest=confirm_plan_digest,
+            )
             client_id, prior_intent_state = journal.persist_intent(
                 apply_key=apply_key,
+                executor_token=executor_token,
                 ordinal=ordinal,
                 action_kind=str(action["kind"]),
                 target_node_id=str(action["target_node_id"]),
@@ -978,17 +1051,35 @@ def apply_actions(
                 planned_after=after,
             )
             current = dict(reader.read_exact(action))
+            if prior_intent_state in {"succeeded", "succeeded_after_restart"}:
+                if digest(current) == digest(after):
+                    continue
+                raise ApplyBlocked(
+                    f"terminal target {action['target_node_id']} changed after success"
+                )
+            if prior_intent_state in {
+                "host_review",
+                "stale_needs_replan",
+                "failed",
+            }:
+                raise ApplyBlocked(
+                    f"target {action['target_node_id']} requires a fresh plan"
+                )
             if digest(current) == digest(after):
                 if prior_intent_state != "pre_read_authorized":
-                    journal.set_pre_read(apply_key, ordinal, current, "host_review")
+                    journal.set_pre_read(
+                        apply_key,
+                        executor_token,
+                        ordinal,
+                        current,
+                        "host_review",
+                    )
                     raise ApplyBlocked(
                         f"target {action['target_node_id']} lacks a prior mutation-authorizing intent"
                     )
-                journal.set_pre_read(
-                    apply_key, ordinal, current, "pre_read_authorized"
-                )
                 journal.set_outcome(
                     apply_key,
+                    executor_token,
                     ordinal,
                     current,
                     state="succeeded_after_restart",
@@ -997,19 +1088,28 @@ def apply_actions(
                 continue
             if digest(current) != digest(before):
                 journal.set_pre_read(
-                    apply_key, ordinal, current, "stale_needs_replan"
+                    apply_key,
+                    executor_token,
+                    ordinal,
+                    current,
+                    "stale_needs_replan",
                 )
                 raise ApplyBlocked(
                     f"target {action['target_node_id']} changed before mutation"
                 )
             journal.set_pre_read(
-                apply_key, ordinal, current, "pre_read_authorized"
+                apply_key,
+                executor_token,
+                ordinal,
+                current,
+                "pre_read_authorized",
             )
             mutator.mutate(action, client_id)
             post = dict(reader.read_exact(action))
             if digest(post) != digest(after):
                 journal.set_outcome(
                     apply_key,
+                    executor_token,
                     ordinal,
                     post,
                     state="host_review",
@@ -1021,6 +1121,7 @@ def apply_actions(
                 )
             journal.set_outcome(
                 apply_key,
+                executor_token,
                 ordinal,
                 post,
                 state="succeeded",
@@ -1036,9 +1137,12 @@ def _parse_time(value: str | None) -> dt.datetime | None:
     if not value:
         return None
     try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed
 
 
 def classify_auto_merge(
@@ -1138,14 +1242,21 @@ class ReadOnlyGitHub:
             )
         if any("mutation" in arg.lower() for arg in args):
             raise ApplyBlocked("read-only GitHub client rejected a GraphQL mutation")
-        completed = self._runner(
-            ["gh", "api", *args],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        return json.loads(completed.stdout)
+        try:
+            completed = self._runner(
+                ["gh", "api", *args],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+            return json.loads(completed.stdout)
+        except subprocess.CalledProcessError as exc:
+            raise RetirementError(
+                f"GitHub read failed with exit status {exc.returncode}"
+            ) from None
+        except (json.JSONDecodeError, TypeError):
+            raise RetirementError("GitHub read returned invalid JSON") from None
 
     def rest(self, endpoint: str) -> Any:
         return self._json([endpoint])
@@ -1282,11 +1393,18 @@ def collect_auto_merge_inventory(
     expected_total: int | None = None
     observed_total = 0
     for page in pages:
-        connection = page["data"]["repository"]["pullRequests"]
+        try:
+            connection = page["data"]["repository"]["pullRequests"]
+            page_nodes = connection["nodes"]
+            page_total = connection["totalCount"]
+        except (KeyError, TypeError):
+            raise RetirementError(
+                "GitHub GraphQL response omitted the pull-request connection"
+            ) from None
         if expected_total is None:
-            expected_total = connection["totalCount"]
-        observed_total += len(connection["nodes"])
-        for raw in connection["nodes"]:
+            expected_total = page_total
+        observed_total += len(page_nodes)
+        for raw in page_nodes:
             request = raw.get("autoMergeRequest")
             if request is None:
                 continue
