@@ -85,6 +85,10 @@ Fresh production evidence on 2026-07-25:
   delivery and safe coalescing while reinforcing the documented absence of a
   dispatch-latency guarantee.
 
-No real drift repair or failed explicit retry has occurred since landing. The
-first production exercise of that path remains a STATUS monitoring item rather
-than being claimed as proven clean use.
+Historical note: at the time of this 2026-07-25 review, no real drift repair or
+failed explicit retry had occurred since landing. That premise changed on
+2026-07-26: scheduled reconcile run
+[30188518485](https://github.com/Jonnyton/TinyAssets/actions/runs/30188518485)
+detected real production drift and dispatched successful build/deploy runs.
+See
+[the production drift proof](2026-07-26-release-reconcile-production-drift-proof.md).

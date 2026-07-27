@@ -1453,3 +1453,17 @@ Notes:
 - Memory refs: host directive 2026-07-26; semantic target SHA 8ef99451; current-main reconciliation reviewed at 75e21fba; current origin/main 46cbb08c
 - Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
 - Ship/abandon: draft target PR #1810 first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
+
+## 2026-07-26 - close release-reconcile production drift watch
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/close-release-reconcile-watch-20260726
+- Lane state: claimed; evidence-only closure
+- Worktree: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch
+- STATUS/Issue/PR: retire the resolved release-reconcile monitoring row
+- PLAN refs: Uptime & Alarms; complete-system 24/7 uptime
+- Purpose: preserve the first end-to-end drift-to-build-to-explicit-deploy convergence under the #1749/#1750 logic; drift detection itself predates it.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch\_PURPOSE.md
+- Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
+- Review gate: evidence-only diff review; no runtime/workflow changes
+- Ship/abandon: focused PR to main; abandon if authoritative Actions logs contradict the recorded chain
