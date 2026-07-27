@@ -1499,3 +1499,5 @@ Notes:
 - Memory refs: target merge 0d50a2d4; parent skill-retirement head 50192892
 - Review gate: exact-head source/reference scan plus independent review
 - Ship/abandon: keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination and live-source projection are truthful
+- Update 2026-07-26: source-only deletion committed at `d311cf03`; Claude Opus 5 plus three independent exact-head reviewers APPROVE; 58/58 strict OpenSpec and 22/22 daemon-registry tests pass
+- Remaining proof: snapshots/source provenance and stored-role zero-active runtime state; source deletion is not production deregistration evidence
