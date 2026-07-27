@@ -15,8 +15,10 @@ import {
   atomicWriteMirrors,
   buildMcpSnapshot,
   buildRepoSnapshot,
+  normalizePublicOriginRefs,
   pageReadHandle,
   parseToolResponse,
+  sanitizePublicRemoteUrl,
   serializeSnapshot,
 } from "./snapshot-helpers.mjs";
 
@@ -85,9 +87,10 @@ test("buildMcpSnapshot rejects a truncated or non-discovery page inventory", () 
   );
 });
 
-test("exact retired goals are removed while unproven universe names and user text survive", () => {
+test("exact retired platform projections are removed while near-collisions and user text survive", () => {
   const snapshot = buildMcpSnapshot({
     fetchedAt: "2026-07-26T00:00:00.000Z",
+    sourceUrl: "https://example.test/mcp",
     goalsResult: {
       goals: [
         { goal_id: "4ff5862cc26d", name: "retired platform goal" },
@@ -117,9 +120,17 @@ test("exact retired goals are removed while unproven universe names and user tex
   );
   assert.deepEqual(
     snapshot.universes.map((universe) => universe.id),
-    ["patch-loop-live", "patch-loop-live-user-copy"],
+    ["patch-loop-live-user-copy"],
   );
   assert.equal(snapshot.goals[0].name, "A user-authored patch loop study");
+  assert.equal(
+    snapshot.source,
+    "https://example.test/mcp · discovery snapshot",
+  );
+  assert.equal(snapshot.provenance.endpoint, "https://example.test/mcp");
+  assert.deepEqual(snapshot.provenance.exclusions.universes, [
+    "patch-loop-live",
+  ]);
   assert.doesNotThrow(() => assertNoRetiredSignatures(snapshot));
 });
 
@@ -214,6 +225,7 @@ test("repo snapshot is rebuilt from explicit clean topology and retains the gene
     routes: [
       { id: "route:/patch-loop", path: "/patch-loop", label: "Patterns" },
     ],
+    external_nodes: [],
     edges: [
       {
         from: "area:coding-system",
@@ -266,7 +278,108 @@ test("checked-in repo topology is the reviewed clean fixture", () => {
   assert.doesNotThrow(() => assertNoRetiredSignatures(topology));
 });
 
-test("retired signature assertion rejects exact shipped IDs without keyword censorship", () => {
+test("public origin normalization excludes local state, strips origin prefix, and deduplicates", () => {
+  const refs = normalizePublicOriginRefs([
+    {
+      name: "main",
+      commit: "local123",
+      date: "2026-07-26T00:00:00Z",
+      subject: "local-only secret",
+    },
+    {
+      name: "origin/main",
+      commit: "public123",
+      date: "2026-07-25T00:00:00Z",
+      subject: "public main",
+    },
+    {
+      name: "origin/feature",
+      commit: "feature1",
+      date: "2026-07-24T00:00:00Z",
+      subject: "public feature",
+    },
+    {
+      name: "origin/HEAD",
+      commit: "public123",
+      date: "2026-07-25T00:00:00Z",
+      subject: "origin head",
+    },
+  ]);
+
+  assert.deepEqual(
+    refs.map((ref) => ({ id: ref.id, name: ref.name, commit: ref.commit })),
+    [
+      { id: "git:feature", name: "feature", commit: "feature1" },
+      { id: "git:main", name: "main", commit: "public123" },
+    ],
+  );
+  assert.equal(serializeSnapshot(refs).includes("local-only secret"), false);
+});
+
+test("public remote URL removes credentials and normalizes SSH syntax", () => {
+  assert.equal(
+    sanitizePublicRemoteUrl(
+      "https://jonathan:ghp_supersecret@github.com/Jonnyton/TinyAssets.git",
+    ),
+    "https://github.com/Jonnyton/TinyAssets",
+  );
+  assert.equal(
+    sanitizePublicRemoteUrl("git@github.com:Jonnyton/TinyAssets.git"),
+    "https://github.com/Jonnyton/TinyAssets",
+  );
+});
+
+test("repo topology rejects duplicate edges, dangling endpoints, and retired identities", () => {
+  const base = {
+    schema_version: 1,
+    areas: [{ id: "area:repo", label: "Repository" }],
+    workflow_branches: [],
+    routes: [],
+    external_nodes: [],
+    edges: [{ from: "repo:TinyAssets", to: "area:repo", kind: "contains" }],
+  };
+  const args = {
+    fetchedAt: "2026-07-26T00:00:00.000Z",
+    repo: { id: "repo:TinyAssets", name: "TinyAssets" },
+    branches: [],
+  };
+
+  assert.throws(
+    () =>
+      buildRepoSnapshot({
+        ...args,
+        topology: { ...base, edges: [...base.edges, ...base.edges] },
+      }),
+    /duplicate edge/,
+  );
+  assert.throws(
+    () =>
+      buildRepoSnapshot({
+        ...args,
+        topology: {
+          ...base,
+          edges: [
+            {
+              from: "repo:TinyAssets",
+              to: "bug:BUG-017",
+              kind: "blocked-by",
+            },
+          ],
+        },
+      }),
+    /unknown endpoint/,
+  );
+  assert.throws(
+    () =>
+      buildRepoSnapshot({
+        ...args,
+        topology: { ...base, areas: [{ id: "area:patch-loop" }] },
+      }),
+    /area:patch-loop/,
+  );
+});
+
+test("retired signature assertion checks platform projections without censoring user content", () => {
   assert.throws(
     () => assertNoRetiredSignatures({ areas: [{ id: "area:patch-loop" }] }),
     /area:patch-loop/,
@@ -283,7 +396,88 @@ test("retired signature assertion rejects exact shipped IDs without keyword cens
       title: "Patch loop retrospective",
       route: "/patch-loop",
       id: "area:patch-loop-user-copy",
+      wiki: {
+        notes: [
+          {
+            title: "area:patch-loop",
+            slug: "pages/notes/community-history.md",
+            tags: ["ada-request-steward"],
+          },
+        ],
+      },
     }),
+  );
+});
+
+test("frontmatter relationship fields and bounded title mentions remain graph edges", () => {
+  const related = {
+    path: "pages/notes/related.md",
+    title: "A sufficiently specific related page title",
+    updated: "2026-07-26T00:00:00Z",
+    is_draft: false,
+  };
+  const source = {
+    path: "pages/notes/source.md",
+    title: "Source",
+    updated: "2026-07-26T00:00:00Z",
+    is_draft: false,
+  };
+  const body = (page, content) => ({
+    path: page.path,
+    is_draft: false,
+    content,
+    truncated: false,
+    total_chars: [...content].length,
+    read_start: 0,
+    read_end: [...content].length,
+    next_offset: null,
+    source_read_proof: {
+      path: page.path,
+      title: page.title,
+      updated: page.updated,
+      is_draft: false,
+      sha256: "b".repeat(64),
+    },
+  });
+  const sourceContent = `---
+supersedes_individual_bugs: [pages/notes/related.md]
+related_canonical: [related]
+related_concepts: [related]
+---
+A sufficiently specific related page title`;
+  const relatedContent = "# Related";
+  const snapshot = buildMcpSnapshot({
+    fetchedAt: "2026-07-26T00:00:00.000Z",
+    sourceUrl: "https://example.test/mcp",
+    goalsResult: { goals: [], count: 0 },
+    graphsResult: { universes: [], count: 0 },
+    pagesResult: {
+      ...completePages,
+      results: [related, source],
+      count: 2,
+      total_matches: 2,
+    },
+    pageBodies: new Map([
+      [related.path, body(related, relatedContent)],
+      [source.path, body(source, sourceContent)],
+    ]),
+  });
+
+  assert.ok(
+    snapshot.edges.some(
+      (edge) =>
+        edge.from === "note:source" &&
+        edge.to === "note:related" &&
+        edge.kind === "source",
+    ),
+  );
+  assert.ok(
+    snapshot.edges.some(
+      (edge) =>
+        edge.from === "note:source" &&
+        edge.to === "note:related" &&
+        edge.kind === "title",
+    ),
   );
 });
 
@@ -347,6 +541,65 @@ test("atomicWriteMirrors restores every prior output when a mirror replacement f
 
     assert.equal(readFileSync(first, "utf8"), "old-svelte\n");
     assert.equal(readFileSync(second, "utf8"), "old-react\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteMirrors restores prior outputs when post-write parity verification fails", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tinyassets-snapshot-corruption-"));
+  try {
+    const first = join(dir, "svelte.json");
+    const second = join(dir, "react.json");
+    writeFileSync(first, "old-svelte\n");
+    writeFileSync(second, "old-react\n");
+    let reads = 0;
+
+    assert.throws(
+      () =>
+        atomicWriteMirrors(
+          [first, second],
+          serializeSnapshot({ current: true }),
+          {
+            readFileSync(path, encoding) {
+              reads += 1;
+              if (reads === 2) return "corrupt\n";
+              return readFileSync(path, encoding);
+            },
+          },
+        ),
+      /verification/,
+    );
+    assert.equal(readFileSync(first, "utf8"), "old-svelte\n");
+    assert.equal(readFileSync(second, "utf8"), "old-react\n");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("atomicWriteMirrors treats backup cleanup as best-effort after commit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "tinyassets-snapshot-cleanup-"));
+  try {
+    const first = join(dir, "svelte.json");
+    const second = join(dir, "react.json");
+    writeFileSync(first, "old-svelte\n");
+    writeFileSync(second, "old-react\n");
+    const bytes = serializeSnapshot({ current: true });
+
+    assert.doesNotThrow(() =>
+      atomicWriteMirrors([first, second], bytes, {
+        unlinkSync(path) {
+          if (path.includes(".snapshot-backup-")) {
+            const error = new Error("injected cleanup failure");
+            error.code = "EPERM";
+            throw error;
+          }
+          rmSync(path);
+        },
+      }),
+    );
+    assert.equal(readFileSync(first, "utf8"), bytes);
+    assert.equal(readFileSync(second, "utf8"), bytes);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

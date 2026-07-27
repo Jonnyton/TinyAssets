@@ -137,7 +137,9 @@
       "summary": "Terms, privacy, licensing, and token disclosure ledger."
     }
   ],
+  "external_nodes": ["universe:concordance"],
   "edges": [
+    { "from": "repo:TinyAssets", "to": "area:repo", "kind": "contains" },
     { "from": "repo:TinyAssets", "to": "area:mcp-api", "kind": "contains" },
     {
       "from": "repo:TinyAssets",
@@ -194,11 +196,6 @@
       "from": "area:coding-system",
       "to": "area:tests-ci",
       "kind": "verified-by"
-    },
-    {
-      "from": "branch:agent_team_3node_v4",
-      "to": "bug:BUG-017",
-      "kind": "blocked-by"
     },
     { "from": "route:/wiki", "to": "area:mcp-api", "kind": "showcases" },
     { "from": "route:/graph", "to": "repo:TinyAssets", "kind": "showcases" },

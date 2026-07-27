@@ -141,8 +141,9 @@ operation. Empty goals are valid and clear stale goals. Any incomplete read or
 write failure exits non-zero and leaves both prior outputs untouched. If the
 endpoint requires auth, set `MCP_BEARER`.
 
-`scripts/snapshot-repo.mjs` reads current git refs and the reviewed static
-topology in `src/lib/content/repo-topology.json`. It never reuses topology
+`scripts/snapshot-repo.mjs` reads public `origin/*` refs and the reviewed
+static topology in `src/lib/content/repo-topology.json`. It excludes local-only
+branches, checkout/dirty state, and remote credentials. It never reuses topology
 arrays from a previously generated snapshot and never keyword-filters user or
 historical branch names. Edit the topology source, not
 `repo-snapshot.json`, when the designed repository graph changes.

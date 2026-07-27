@@ -9,6 +9,8 @@ import {
   assertNoRetiredSignatures,
   atomicWriteMirrors,
   buildRepoSnapshot,
+  normalizePublicOriginRefs,
+  sanitizePublicRemoteUrl,
   serializeSnapshot,
 } from "./snapshot-helpers.mjs";
 
@@ -42,10 +44,9 @@ function refRows() {
   const raw = git([
     "for-each-ref",
     "--format=%(refname:short)|%(objectname:short)|%(committerdate:iso8601-strict)|%(subject)",
-    "refs/heads",
     "refs/remotes/origin",
   ]);
-  return raw
+  const refs = raw
     .split(/\r?\n/)
     .filter(Boolean)
     .map((line) => {
@@ -61,20 +62,14 @@ function refRows() {
       };
     })
     .filter((branch) => branch.name !== "origin");
+  return normalizePublicOriginRefs(refs);
 }
 
 function main() {
   const branches = refRows();
-  const currentBranch = git(["branch", "--show-current"]) || "detached";
-  const remote = git(["remote", "get-url", "origin"]);
-  const head = git(["rev-parse", "--short", "HEAD"]);
+  const remote = sanitizePublicRemoteUrl(git(["remote", "get-url", "origin"]));
   const mainCommit =
-    branches.find((branch) => branch.name === "main")?.commit ??
-    branches.find((branch) => branch.name === "origin/main")?.commit ??
-    "";
-  const dirty = git(["status", "--short"])
-    .split(/\r?\n/)
-    .filter(Boolean).length;
+    branches.find((branch) => branch.name === "main")?.commit ?? "";
   const topology = JSON.parse(readFileSync(TOPOLOGY_PATH, "utf8"));
   const snapshot = buildRepoSnapshot({
     fetchedAt: new Date().toISOString(),
@@ -83,13 +78,7 @@ function main() {
       name: "TinyAssets",
       owner: "Jonnyton",
       remote_url: remote,
-      current_branch: currentBranch,
-      head,
       main: mainCommit,
-      dirty_note:
-        dirty === 0
-          ? "Working tree clean when repo snapshot was generated."
-          : `Working tree had ${dirty} changed paths when repo snapshot was generated.`,
     },
     branches,
     topology,

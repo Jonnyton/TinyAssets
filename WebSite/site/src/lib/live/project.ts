@@ -34,8 +34,8 @@ export type RepoSnapshot = {
     name: string;
     owner: string;
     remote_url: string;
-    current_branch: string;
-    head: string;
+    current_branch?: string;
+    head?: string;
     main: string;
     dirty_note?: string;
     default_branch?: string;

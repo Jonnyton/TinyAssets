@@ -9,6 +9,10 @@ import {
 export const RETIRED_EXACT_IDENTIFIERS = new Set([
   "4ff5862cc26d",
   "f10caea2e437",
+  "goal:4ff5862cc26d",
+  "goal:f10caea2e437",
+  "patch-loop-live",
+  "universe:patch-loop-live",
   "area:patch-loop",
   "branch:change_loop_v1",
   "branch:bug_to_patch_packet_v1",
@@ -26,6 +30,7 @@ export const RETIRED_EXACT_IDENTIFIERS = new Set([
 ]);
 
 const RETIRED_GOAL_IDS = new Set(["4ff5862cc26d", "f10caea2e437"]);
+const RETIRED_UNIVERSE_IDS = new Set(["patch-loop-live"]);
 export function parseToolResponse(result) {
   if (
     result?.structuredContent &&
@@ -54,6 +59,55 @@ export function pageReadHandle(path) {
   if (handle.length === 0)
     throw new Error(`cannot derive read_page handle from ${String(path)}`);
   return handle;
+}
+
+export function normalizePublicOriginRefs(refs) {
+  if (!Array.isArray(refs)) throw new Error("git refs must be an array");
+  const publicRefs = new Map();
+  for (const ref of refs) {
+    if (typeof ref?.name !== "string" || !ref.name.startsWith("origin/"))
+      continue;
+    const name = ref.name.slice("origin/".length);
+    if (!name || name === "HEAD") continue;
+    const normalized = {
+      id: `git:${name}`,
+      name,
+      kind: "remote",
+      commit: String(ref.commit ?? ""),
+      date: ref.date ?? "",
+      subject: ref.subject ?? "",
+    };
+    const existing = publicRefs.get(name);
+    if (
+      !existing ||
+      `${normalized.commit}|${normalized.date}|${normalized.subject}` <
+        `${existing.commit}|${existing.date}|${existing.subject}`
+    ) {
+      publicRefs.set(name, normalized);
+    }
+  }
+  return sortBy([...publicRefs.values()], (ref) => ref.name);
+}
+
+export function sanitizePublicRemoteUrl(remote) {
+  const value = String(remote ?? "").trim();
+  const scpStyle = value.match(/^git@([^:]+):(.+)$/);
+  if (scpStyle) {
+    return `https://${scpStyle[1]}/${scpStyle[2].replace(/\.git$/, "")}`;
+  }
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("origin remote is not a public URL");
+  }
+  if (!["http:", "https:", "ssh:"].includes(parsed.protocol)) {
+    throw new Error(`unsupported origin remote protocol ${parsed.protocol}`);
+  }
+  const path = parsed.pathname.replace(/^\/+/, "").replace(/\.git$/, "");
+  if (!parsed.hostname || !path)
+    throw new Error("origin remote lacks a public host or path");
+  return `https://${parsed.hostname}/${path}`;
 }
 
 function requireObject(value, label) {
@@ -239,11 +293,14 @@ function extractMetadata(content) {
     "related_bugs",
     "related_pages",
     "supersedes",
+    "supersedes_individual_bugs",
     "blocks",
     "blocked_by",
     "fixes",
     "see_also",
     "amends",
+    "related_canonical",
+    "related_concepts",
     "parent",
     "children",
   ];
@@ -298,6 +355,7 @@ function sortBy(items, key) {
 
 export function buildMcpSnapshot({
   fetchedAt,
+  sourceUrl = "https://tinyassets.io/mcp",
   goalsResult,
   graphsResult,
   pagesResult,
@@ -338,13 +396,15 @@ export function buildMcpSnapshot({
     (goal) => goal.id,
   );
   const universes = sortBy(
-    rawUniverses.map((universe) => ({
-      id: String(universe.id ?? ""),
-      phase: universe.phase_human ?? universe.phase ?? "unknown",
-      word_count: universe.word_count ?? 0,
-      last_activity_at: universe.last_activity_at ?? null,
-      accept_rate: universe.accept_rate ?? null,
-    })),
+    rawUniverses
+      .filter((universe) => !RETIRED_UNIVERSE_IDS.has(String(universe.id)))
+      .map((universe) => ({
+        id: String(universe.id ?? ""),
+        phase: universe.phase_human ?? universe.phase ?? "unknown",
+        word_count: universe.word_count ?? 0,
+        last_activity_at: universe.last_activity_at ?? null,
+        accept_rate: universe.accept_rate ?? null,
+      })),
     (universe) => universe.id,
   );
 
@@ -368,11 +428,13 @@ export function buildMcpSnapshot({
     }
     const content = validatePageBody(page, pageBodies.get(page.path));
     const metadata = extractMetadata(content);
+    const title = page.title ?? page.path;
     metadataByPath.set(page.path, {
       ...metadata,
       isDraft: page.is_draft === true,
+      content,
+      title,
     });
-    const title = page.title ?? page.path;
     if (page.is_draft === true) {
       wiki.drafts.push({ slug: page.path, title });
     } else {
@@ -401,6 +463,14 @@ export function buildMcpSnapshot({
   const edges = [];
   const seenEdges = new Set();
   const tags = {};
+  const titleIndex = [...metadataByPath.entries()]
+    .map(([path, metadata]) => ({
+      id: pathToNodeId(path, metadata.isDraft),
+      title: String(metadata.title ?? "")
+        .trim()
+        .toLowerCase(),
+    }))
+    .filter((entry) => entry.id && entry.title.length >= 24);
   const addEdge = (from, to, kind) => {
     if (!from || !to || from === to) return;
     const signature = `${from}|${to}|${kind}`;
@@ -414,12 +484,18 @@ export function buildMcpSnapshot({
     for (const ref of metadata.refs)
       addEdge(from, resolveRef(ref, knownIds), "ref");
     for (const source of metadata.sources) {
+      const pathId = pathToNodeId(source, String(source).startsWith("drafts/"));
       addEdge(
         from,
-        pathToNodeId(source, String(source).startsWith("drafts/")) ??
-          resolveRef(source, knownIds),
+        pathId && knownIds.has(pathId) ? pathId : resolveRef(source, knownIds),
         "source",
       );
+    }
+    const lowerContent = metadata.content.toLowerCase();
+    for (const target of titleIndex) {
+      if (target.id !== from && lowerContent.includes(target.title)) {
+        addEdge(from, target.id, "title");
+      }
     }
     if (metadata.tags.length > 0) tags[from] = [...metadata.tags].sort();
   }
@@ -440,8 +516,9 @@ export function buildMcpSnapshot({
     wiki.other.length;
   const snapshot = {
     fetched_at: fetchedAt,
-    source: "tinyassets.io/mcp · discovery snapshot",
+    source: `${sourceUrl} · discovery snapshot`,
     provenance: {
+      endpoint: sourceUrl,
       scope: "discovery",
       complete: true,
       goals: "read_graph target=goals",
@@ -449,7 +526,7 @@ export function buildMcpSnapshot({
       wiki: "read_page changed_since + direct read_page",
       exclusions: {
         goals: [...RETIRED_GOAL_IDS].sort(),
-        universes: [],
+        universes: [...RETIRED_UNIVERSE_IDS].sort(),
       },
     },
     stats: {
@@ -475,11 +552,43 @@ export function buildMcpSnapshot({
 export function buildRepoSnapshot({ fetchedAt, repo, branches, topology }) {
   requireObject(repo, "repo metadata");
   requireObject(topology, "repo topology");
-  for (const key of ["areas", "workflow_branches", "routes", "edges"]) {
+  for (const key of [
+    "areas",
+    "workflow_branches",
+    "routes",
+    "external_nodes",
+    "edges",
+  ]) {
     if (!Array.isArray(topology[key]))
       throw new Error(`repo topology.${key} is not an array`);
   }
   const sortedBranches = sortBy(branches, (branch) => branch.id);
+  assertNoRetiredSignatures(topology);
+  const knownEndpoints = new Set([repo.id, ...topology.external_nodes]);
+  for (const collection of [
+    topology.areas,
+    topology.workflow_branches,
+    topology.routes,
+    sortedBranches,
+  ]) {
+    for (const item of collection) {
+      if (!item?.id) throw new Error("repo topology contains an empty node id");
+      if (knownEndpoints.has(item.id))
+        throw new Error(`repo topology contains duplicate node ${item.id}`);
+      knownEndpoints.add(item.id);
+    }
+  }
+  const edgeSignatures = new Set();
+  for (const edge of topology.edges) {
+    const signature = `${edge.from}|${edge.to}|${edge.kind}`;
+    if (edgeSignatures.has(signature))
+      throw new Error(`repo topology contains duplicate edge ${signature}`);
+    edgeSignatures.add(signature);
+    for (const endpoint of [edge.from, edge.to]) {
+      if (!knownEndpoints.has(endpoint))
+        throw new Error(`repo topology edge has unknown endpoint ${endpoint}`);
+    }
+  }
   const edges = [
     ...topology.edges.map((edge) => ({ ...edge })),
     ...sortedBranches.map((branch) => ({
@@ -494,7 +603,7 @@ export function buildRepoSnapshot({ fetchedAt, repo, branches, topology }) {
   );
   const snapshot = {
     fetched_at: fetchedAt,
-    source: "local git checkout + GitHub remote · explicit topology",
+    source: "public GitHub origin refs · explicit topology",
     provenance: {
       topology: "src/lib/content/repo-topology.json",
       generated_arrays_reused: false,
@@ -513,19 +622,28 @@ export function buildRepoSnapshot({ fetchedAt, repo, branches, topology }) {
 }
 
 export function assertNoRetiredSignatures(value) {
-  const visit = (current, path) => {
-    if (path.startsWith("$.provenance.exclusions")) return;
+  const check = (current, path) => {
     if (typeof current === "string" && RETIRED_EXACT_IDENTIFIERS.has(current)) {
       throw new Error(`retired snapshot signature ${current} at ${path}`);
     }
-    if (Array.isArray(current)) {
-      current.forEach((item, index) => visit(item, `${path}[${index}]`));
-    } else if (current && typeof current === "object") {
-      for (const [key, item] of Object.entries(current))
-        visit(item, `${path}.${key}`);
-    }
   };
-  visit(value, "$");
+  for (const [collectionName, fields] of [
+    ["goals", ["id"]],
+    ["universes", ["id"]],
+    ["areas", ["id"]],
+    ["workflow_branches", ["id", "name"]],
+    ["roles", ["id", "name"]],
+    ["souls", ["id", "name"]],
+  ]) {
+    for (const [index, item] of (value?.[collectionName] ?? []).entries()) {
+      for (const field of fields)
+        check(item?.[field], `$.${collectionName}[${index}].${field}`);
+    }
+  }
+  for (const [index, edge] of (value?.edges ?? []).entries()) {
+    check(edge?.from, `$.edges[${index}].from`);
+    check(edge?.to, `$.edges[${index}].to`);
+  }
 }
 
 function sortObject(value) {
@@ -576,8 +694,8 @@ export function atomicWriteMirrors(paths, bytes, overrides = {}) {
   };
   try {
     for (const state of states) {
-      remove(state.temp);
-      remove(state.backup);
+      if (io.existsSync(state.temp)) remove(state.temp);
+      if (io.existsSync(state.backup)) remove(state.backup);
       io.writeFileSync(state.temp, bytes, "utf8");
     }
     for (const state of states) {
@@ -591,7 +709,9 @@ export function atomicWriteMirrors(paths, bytes, overrides = {}) {
       state.installed = true;
     }
     for (const state of states) {
-      if (state.backedUp) remove(state.backup);
+      if (io.readFileSync(state.path, "utf8") !== bytes) {
+        throw new Error(`snapshot verification failed for ${state.path}`);
+      }
     }
   } catch (error) {
     for (const state of [...states].reverse()) {
@@ -599,8 +719,17 @@ export function atomicWriteMirrors(paths, bytes, overrides = {}) {
       if (state.backedUp && io.existsSync(state.backup)) {
         io.renameSync(state.backup, state.path);
       }
-      remove(state.temp);
+      if (io.existsSync(state.temp)) remove(state.temp);
     }
     throw error;
+  }
+  for (const state of states) {
+    if (!state.backedUp || !io.existsSync(state.backup)) continue;
+    try {
+      io.unlinkSync(state.backup);
+    } catch {
+      // Outputs are already verified and committed. A leftover backup is safer
+      // than attempting a rollback after another backup may have been removed.
+    }
   }
 }

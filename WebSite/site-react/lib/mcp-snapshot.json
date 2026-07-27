@@ -87,7 +87,17 @@
     },
     {
       "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
       "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
       "to": "concept:community-patch-loop-as-project-steward"
     },
     {
@@ -97,13 +107,18 @@
     },
     {
       "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:website-as-live-project-observability"
+    },
+    {
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
       "kind": "ref",
       "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
     },
     {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "concept:phase-4-multi-user-consensus-design-layer-v2 (full-scale contract this convention rides on)"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
     },
     {
       "from": "concept:auto-hydrate-then-invoke-v1",
@@ -112,48 +127,8 @@
     },
     {
       "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "concept:semantic-queue-reconciler-v1 (the user-authored classifier this convention wraps)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
       "kind": "ref",
       "to": "concept:semantic-queue-reconciler-v1"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:B framing)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:codex-phase-2-path-a-hydration-capability-test-result-2026-05-07 (capability test that proved hydration must be upstream)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:codex-response-enumeration-stage-ab-phase4-v2-2026-05-07 (Codex acceptance + code-node finding)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:codex-step-2-review-auto-hydrate-then-invoke-v1-2026-05-07 (Codex five amendments)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:cowork-brain-friction-catalog-phase-2-addendum-2026-05-08 (friction events #11-#13)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-phase-4-v2-fold-codex-8-amendments-and-stage-ab-and-enumeration-2026-05-08 (consensus marker authorizing this draft)"
-    },
-    {
-      "from": "concept:auto-hydrate-then-invoke-v1",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-stage-a-amendments-v2-1-amendments-host-decision-envelope-2026-05-08 (Cowork accepted all five amendments)"
     },
     {
       "from": "concept:before-filing-a-patch-request-user-buildable-check",
@@ -186,31 +161,6 @@
       "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
     },
     {
-      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
-      "kind": "source",
-      "to": "note:codex-bu-canary-verification-and-timestamp-lint-gap-2026-05-08 (Codex verification + timestamp-lint finding)"
-    },
-    {
-      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
-      "kind": "source",
-      "to": "note:codex-session-bandages-are-brain-substrate-signals-2026-05-07 (Codexs lint enum amendment)"
-    },
-    {
-      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
-      "kind": "source",
-      "to": "note:cowork-chatgpt-dev-partner-probe-result-3-way-convergence-brain-coherence-spine-2026-05-08 (ChatGPT cross-confirm + spine proposal)"
-    },
-    {
-      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-stage-a-amendments-v2-1-amendments-host-decision-envelope-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
-      "kind": "source",
-      "to": "note:cowork-substrate-gap-fake-consensus-needs-required-reason-and-engagement-lint-2026-05-08"
-    },
-    {
       "from": "concept:brain-update-002-utc-source-fidelity-split",
       "kind": "ref",
       "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
@@ -226,31 +176,6 @@
       "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
     },
     {
-      "from": "concept:brain-update-002-utc-source-fidelity-split",
-      "kind": "source",
-      "to": "note:codex-bu-canary-verification-and-timestamp-lint-gap-2026-05-08 (Codex verification + timestamp-lint finding)"
-    },
-    {
-      "from": "concept:brain-update-002-utc-source-fidelity-split",
-      "kind": "source",
-      "to": "note:codex-response-utc-enumeration-brain-refactor-ledger-2026-05-07 (Codexs source-fidelity scope distinction)"
-    },
-    {
-      "from": "concept:brain-update-002-utc-source-fidelity-split",
-      "kind": "source",
-      "to": "note:cowork-chatgpt-dev-partner-probe-result-3-way-convergence-brain-coherence-spine-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-002-utc-source-fidelity-split",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-utc-completeness-refactor-ledger-codex-amendments-folded-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-002-utc-source-fidelity-split",
-      "kind": "source",
-      "to": "note:cowork-substrate-gap-utc-universal-time-and-completeness-without-date-gate-2026-05-08"
-    },
-    {
       "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
       "kind": "ref",
       "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
@@ -264,31 +189,6 @@
       "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
       "kind": "ref",
       "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
-    },
-    {
-      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
-      "kind": "source",
-      "to": "note:codex-bu-canary-verification-and-timestamp-lint-gap-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
-      "kind": "source",
-      "to": "note:cowork-chatgpt-dev-partner-probe-result-3-way-convergence-brain-coherence-spine-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-utc-completeness-refactor-ledger-codex-amendments-folded-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
-      "kind": "source",
-      "to": "note:cowork-substrate-gap-utc-universal-time-and-completeness-without-date-gate-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
-      "kind": "source",
-      "to": "note:page_version proposal)"
     },
     {
       "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
@@ -319,31 +219,6 @@
       "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
       "kind": "source",
       "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
-    },
-    {
-      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
-      "kind": "source",
-      "to": "note:codex-confirm-explicit-position-record-schema-and-pr680-merge-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
-      "kind": "source",
-      "to": "note:codex-step-2-response-merge-authorization-routing-anomalies-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
-      "kind": "source",
-      "to": "note:cowork-step-3-4-engagement-codex-key-turn-bounded-amendment-explicit-position-record-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
-      "kind": "source",
-      "to": "note:cowork-step-3-4-engagement-codex-merge-authorization-routing-anomalies-amendments-bu005-path-canary-2026-05-08"
-    },
-    {
-      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
-      "kind": "source",
-      "to": "note:cowork-substrate-gap-merge-authorization-state-and-routing-anomalies-derived-views-from-explicit-position-record-2026-05-08"
     },
     {
       "from": "concept:capability-provisioning-via-brain-pages",
@@ -356,8 +231,18 @@
       "to": "concept:community-patch-loop-as-project-steward"
     },
     {
+      "from": "concept:chatbot-friction-as-loop-learning-telemetry",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
       "from": "concept:community-patch-loop-as-project-steward",
       "kind": "ref",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:community-patch-loop-as-project-steward",
+      "kind": "title",
       "to": "concept:chatbot-friction-as-loop-learning-telemetry"
     },
     {
@@ -366,13 +251,18 @@
       "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
     },
     {
-      "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
-      "kind": "source",
-      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24.md (the substrate audit; this contract makes it physical)"
+      "from": "concept:consumer-ai-anticipation-gap-jones-2026-05-05",
+      "kind": "title",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
     },
     {
       "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
       "kind": "ref",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
+      "kind": "source",
       "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
     },
     {
@@ -391,91 +281,6 @@
       "to": "concept:semantic-queue-reconciler-v1"
     },
     {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "draft:phase-4-multi-user-consensus-design-layer-v1 (SUPERSEDED — small-N-first)"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:codex-host-correction-phase-4-full-scale-first-scope-2026-05-07"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:codex-phase-4-full-scale-first-design-layer-v2-proposal-2026-05-07"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:codex-response-enumeration-stage-ab-phase4-v2-2026-05-07"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:codex-step-2-review-phase-4-multi-user-consensus-design-layer-2026-05-07"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:cowork-codex-enumeration-replaces-search-for-counterpart-completeness-2026-05-08"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:cowork-reset-phase-4-full-scale-first-accept-codex-v2-and-consent-split-2026-05-08"
-    },
-    {
-      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
-      "kind": "source",
-      "to": "note:cowork-step-4-consensus-phase-4-v2-fold-codex-8-amendments-and-stage-ab-and-enumeration-2026-05-08"
-    },
-    {
-      "from": "concept:pr-103a-release-ship-validator-deterministic-canary-inputs",
-      "kind": "source",
-      "to": "bug:BUG-075"
-    },
-    {
-      "from": "concept:pr-103a-release-ship-validator-deterministic-canary-inputs",
-      "kind": "source",
-      "to": "draft:pr-103a-release-ship-validator-review-checklist"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:codex-accepts-phase-2-goal-a-with-source-role-amendment-2026-05-07"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:codex-accepts-self-refactoring-meta-run-phase-1-closeout-2026-05-07"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:codex-source-doc-role-is-goal-and-universe-scoped-2026-05-07"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:codex-vocabulary-convergence-research-synthesis-2026-05-07"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:cowork-accept-source-role-amendment-phase-2-consensus-2026-05-08"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:cowork-multi-user-consensus-is-brain-structure-gap-2026-05-07"
-    },
-    {
-      "from": "concept:semantic-queue-reconciler-v1",
-      "kind": "source",
-      "to": "note:phase-1-final-closeout-user-driven-loop-evolution-2026-05-07"
-    },
-    {
       "from": "concept:skill-sync-via-brain-pages",
       "kind": "ref",
       "to": "concept:capability-provisioning-via-brain-pages"
@@ -487,7 +292,17 @@
     },
     {
       "from": "concept:website-as-live-project-observability",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
       "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
+      "kind": "title",
       "to": "concept:community-patch-loop-as-project-steward"
     },
     {
@@ -497,12 +312,27 @@
     },
     {
       "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
       "kind": "ref",
       "to": "concept:community-patch-loop-as-project-steward"
     },
     {
       "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
       "kind": "ref",
+      "to": "concept:website-as-live-project-observability"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
       "to": "concept:website-as-live-project-observability"
     },
     {
@@ -527,6 +357,11 @@
     },
     {
       "from": "draft:factory-branch-layer-boundaries-convention-2026-05-24",
+      "kind": "source",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-layer-boundaries-convention-2026-05-24",
       "kind": "ref",
       "to": "draft:factory-branch-substrate-state-ledger-2026-05-24"
     },
@@ -537,12 +372,22 @@
     },
     {
       "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "source",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
       "kind": "ref",
       "to": "draft:factory-branch-layer-boundaries-convention-2026-05-24"
     },
     {
       "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
       "kind": "ref",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "title",
       "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
     },
     {
@@ -756,8 +601,33 @@
       "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
     },
     {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:community-lego-assembly-rule-for-workflow-authoring"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-branch-builder-schema-dry-run-status-contract"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-branch-merge-remix-for-shared-workflow-primitives"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-community-assembly-reuse-planner"
+    },
+    {
       "from": "draft:splitroot-interface-references-pt-commander-wc3-2026-06-10",
       "kind": "ref",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:splitroot-interface-references-pt-commander-wc3-2026-06-10",
+      "kind": "title",
       "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
     },
     {
@@ -769,29 +639,37 @@
       "from": "draft:workflow-patterns",
       "kind": "ref",
       "to": "draft:workflow-redesign-2026-04"
+    },
+    {
+      "from": "draft:workflow-redesign-2026-04",
+      "kind": "title",
+      "to": "draft:agent-teams-as-graphs"
     }
   ],
-  "fetched_at": "2026-07-27T02:42:56.115Z",
+  "fetched_at": "2026-07-27T03:03:58.346Z",
   "goals": [],
   "provenance": {
     "complete": true,
+    "endpoint": "https://tinyassets.io/mcp",
     "exclusions": {
       "goals": [
         "4ff5862cc26d",
         "f10caea2e437"
       ],
-      "universes": []
+      "universes": [
+        "patch-loop-live"
+      ]
     },
     "goals": "read_graph target=goals",
     "scope": "discovery",
     "universes": "read_graph target=graphs",
     "wiki": "read_page changed_since + direct read_page"
   },
-  "source": "tinyassets.io/mcp · discovery snapshot",
+  "source": "https://tinyassets.io/mcp · discovery snapshot",
   "stats": {
-    "edges": 138,
+    "edges": 113,
     "goals": 0,
-    "universes": 15,
+    "universes": 14,
     "wiki_drafts": 39,
     "wiki_promoted": 39
   },
@@ -951,7 +829,7 @@
     {
       "accept_rate": 1,
       "id": "concordance",
-      "last_activity_at": "2026-07-27T02:42:00.997707+00:00",
+      "last_activity_at": "2026-07-27T03:02:06.426016+00:00",
       "phase": "paused",
       "word_count": 75816
     },
@@ -1002,13 +880,6 @@
       "id": "paper-notes",
       "last_activity_at": null,
       "phase": "starved",
-      "word_count": 0
-    },
-    {
-      "accept_rate": null,
-      "id": "patch-loop-live",
-      "last_activity_at": null,
-      "phase": "idle-no-premise",
       "word_count": 0
     },
     {

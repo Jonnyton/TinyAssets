@@ -170,6 +170,7 @@ async function main() {
     const pageBodies = await readEveryPage(sdk, pages);
     const snapshot = buildMcpSnapshot({
       fetchedAt: new Date().toISOString(),
+      sourceUrl: MCP_URL,
       goalsResult,
       graphsResult,
       pagesResult,
