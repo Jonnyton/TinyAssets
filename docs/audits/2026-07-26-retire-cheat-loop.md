@@ -139,8 +139,15 @@ Both site production builds passed; the React build emitted 27 static routes
 including `/patch-loop`, and the Svelte build emitted the expected loop,
 patch-loop, and fine-print pages. React TypeScript passed. After residual
 cleanup, Svelte `npm run check` passed with zero errors and six existing
-warnings outside the retired-loop edits; browser smoke remains unavailable
-until Playwright Chromium is installed. Active-source scans found zero retired
+warnings outside the retired-loop edits. A fresh 2026-07-26 Chrome browser
+sweep against local Next (`localhost:3000`) and Vite (`localhost:5173`)
+rendered all 11 affected routes in both the React production tree and Svelte
+rollback tree with zero console errors or warnings and zero active
+retired-website-token matches. Both `/loop` `Refresh MCP` controls returned
+human-readable explicit empty states without raw placeholders or uptime
+substitution. Both `/patch-loop` routes rendered static user-owned workflow
+landings with real `/patterns` and `/commons` links and no privileged
+automation promise. Active-source scans found zero retired
 `community_change_context`, community-loop/status/watch, bug-investigation,
 auto-fix/ship, self-patching, automatic-pickup, or label-fallback identifiers.
 Independent reviewers approved the React, Svelte, and automation/deployment
@@ -150,10 +157,17 @@ Read-only GitHub preflight found the latest 30 announcement-workflow runs all
 completed, with no queued or in-progress run. No workflow was disabled, no run
 was cancelled, no site was deployed, and no production/GitHub label or
 auto-merge state was mutated. Task 3.5 remains open for the separately claimed
-effector-comment neutralization and final pre-merge run-drain proof; task 5.2
-remains open for tests blocked by active claims and snapshot-dependent absence
-proof; task 5.3 owns
-snapshot/soul regeneration.
+effector-comment neutralization and final pre-merge run-drain proof. On
+2026-07-26 Windows/Python 3.14.3,
+`python -m pytest tests/test_website_rename_surfaces.py
+tests/test_community_loop_watch.py
+tests/test_community_loop_watch_workflow.py -q` reported
+`8 passed, 1 failed`: the remaining failure is
+`test_alarm_sink_dispatches_only_stale_uptime_canary_workflow`, which still
+expects `createTinyAssetsDispatch` in
+`tests/test_community_loop_watch_workflow.py`. That broadly claimed test
+surface keeps task 5.2 open despite the completed build/browser proof. Task 5.3
+separately owns snapshot/soul regeneration and its absence proof.
 
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
 into the stacked implementation branch without changing any reviewed site,
