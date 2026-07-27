@@ -11,7 +11,7 @@
    - stale Apr-30 stamps → all live values carry read-stamps, baked first
      paint is stamped "snapshot 10 Jun 2026" and upgraded on mount.
    - "0 words / idle" universes undercutting the pitch → the live section is
-     framed as "the public engine right now", honest about quiet universes,
+     framed as shared-engine discovery, honest about quiet universes,
      and is NOT the hosting pitch (hosting is your own private universes).
 
   Honesty rails: no baked number presented as live; public-commons only;
@@ -299,11 +299,11 @@
   </div>
 </section>
 
-<!-- 5 · What's running on the public engine right now ────────────────────── -->
+<!-- 5 · Public universes hosted on the shared engine ────────────────────── -->
 <section class="ch ch--rooms" aria-labelledby="rooms-title">
   <div class="container">
-    <p class="eyebrow">entry five · the public engine right now</p>
-    <h2 id="rooms-title">These are running on the box you'd be opting out of.</h2>
+    <p class="eyebrow">entry five · shared-engine discovery</p>
+    <h2 id="rooms-title">These public universes are hosted on the shared engine.</h2>
     <p class="voice rooms__lede">
       Your hosted universes would be private and wouldn't appear anywhere like
       this. But it's worth seeing what the shared engine carries — public
@@ -512,7 +512,7 @@
   .cloud__path strong { font-family: var(--font-display); font-size: 20px; font-weight: 500; letter-spacing: -0.01em; line-height: 1.18; color: var(--fg-1); }
   .cloud__sub { font-size: 13px; color: var(--fg-2); }
 
-  /* ── Rooms (public engine right now) ── */
+  /* ── Rooms (shared-engine discovery) ── */
   .rooms__lede { margin: 0 0 8px; }
   .rooms__quietnote { font-size: 12px; margin: 0 0 4px; max-width: 60ch; }
   .rooms { margin-top: 24px; }

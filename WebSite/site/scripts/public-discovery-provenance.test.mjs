@@ -194,6 +194,18 @@ test("Host surfaces distinguish unavailable discovery from a proven empty result
   }
 });
 
+test("public graph discovery is never labelled as active or executing work", () => {
+  for (const path of [
+    "WebSite/site/src/lib/components/Playground.svelte",
+    "WebSite/site-react/app/host/_components/HostClient.tsx",
+    "WebSite/site/src/routes/host/+page.svelte",
+  ]) {
+    const body = source(path);
+    assert.doesNotMatch(body, /Active universes|These are running on the box/i);
+    assert.match(body, /Public universes|shared-engine discovery/i);
+  }
+});
+
 test("proof and status aliases promise only the public Fine Print boundary", () => {
   for (const path of [
     "WebSite/site-react/app/proof/page.tsx",

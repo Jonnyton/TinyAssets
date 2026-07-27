@@ -53,6 +53,17 @@ function isCredentialParameterName(value) {
   );
 }
 
+/** @param {string} value */
+function containsUrlUserinfo(value) {
+  if (!/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(value)) return false;
+  try {
+    const parsed = new URL(value.startsWith("//") ? `https:${value}` : value);
+    return Boolean(parsed.username || parsed.password);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * @param {URLSearchParams} params
  * @returns {boolean}
@@ -108,6 +119,7 @@ function componentContainsCredentialMaterial(component) {
         throw new Error("Public MCP URL has excessive nested components");
       }
       if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
+      if (containsUrlUserinfo(variant)) return true;
       const params = new URLSearchParams(variant);
       if (containsCredentialMaterial(params)) return true;
       for (const [, value] of params) {
@@ -426,6 +438,11 @@ export function requireCollection(payload, key, source) {
  */
 function assertNoIncompleteCollectionMetadata(result, source) {
   if (
+    ("total_matches" in result &&
+      (!Number.isInteger(result.total_matches) ||
+        result.total_matches !== result.count)) ||
+    ("total" in result &&
+      (!Number.isInteger(result.total) || result.total !== result.count)) ||
     ("truncated_count" in result &&
       (!Number.isInteger(result.truncated_count) ||
         result.truncated_count !== 0)) ||

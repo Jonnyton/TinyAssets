@@ -349,9 +349,16 @@
   visibility defaulting, and one Svelte dated-Goal overclaim remained. The
   current repair recursively scans nested values and both separator families,
   requires HTTPS, disables full wiki regeneration without a separate
-  publication manifest, emits generic errors, distinguishes unavailable Host
-  state, requires explicit discoverable visibility, and restores Start parity.
-  The full Node suite passes 80/80 on the repaired working head. Both
+  publication manifest, emits generic errors, requires totals to equal the
+  exact count, distinguishes unavailable Host state, requires explicit
+  discoverable visibility, and restores Start parity.
+  Exact-head review of `a4b58cc6` then returned ADAPT on nested-URL userinfo,
+  two raw SDK/unhandled CI-log paths, contradictory collection totals, and
+  discovery labelled as active/running on Playground and Host. The current
+  repair rejects nested URL userinfo, keeps every snapshot log generic,
+  requires total/count equality, and labels those surfaces as public
+  shared-engine discovery.
+  The full Node suite passes 81/81 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production
   dependency audit reports zero vulnerabilities; strict validation passes all

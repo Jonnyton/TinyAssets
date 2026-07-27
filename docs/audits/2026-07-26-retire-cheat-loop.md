@@ -776,7 +776,12 @@ verdict without pretending the unsafe server projections are public:
   visibility defaulting, and one Svelte dated-Goal overclaim remained; the
   current repair closes those cases and keeps full wiki regeneration disabled
   until a separate audience-safe publication manifest exists;
-- the full Node website suite passes 80/80 on the repaired working head; both
+- exact-head review of `a4b58cc6` returned ADAPT on nested-URL userinfo, two
+  raw SDK/unhandled CI-log paths, contradictory collection totals, and
+  discovery labelled as active/running on Playground and Host; the current
+  repair rejects nested URL userinfo, keeps snapshot logs generic, requires
+  total/count equality, and uses public shared-engine discovery labels;
+- the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
   production dependency audit reports zero vulnerabilities, strict OpenSpec

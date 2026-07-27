@@ -25,7 +25,7 @@
 
   const CHIPS: Chip[] = [
     { label: 'Browse discovery pages', sub: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', canonical: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', color: 'var(--ember-500)' },
-    { label: 'Active universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' }
+    { label: 'Public universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' }
   ];
 
   let inputValue = $state('read_graph target=graphs limit=100');

@@ -67,8 +67,8 @@ async function loadSdk() {
     const mod = await import('@modelcontextprotocol/sdk/client/index.js');
     const transportMod = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
     return { Client: mod.Client, StreamableHTTPClientTransport: transportMod.StreamableHTTPClientTransport };
-  } catch (e) {
-    warn(`SDK not installed (${e.message}). Run \`npm install\` first.`);
+  } catch {
+    warn('MCP SDK is unavailable; install dependencies before refreshing.');
     return null;
   }
 }
@@ -548,7 +548,7 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((e) => {
-  warn(`unhandled: ${e?.message ?? e}`);
+main().catch(() => {
+  warn('public snapshot process failed');
   process.exit(process.env.SNAPSHOT_REQUIRED === '1' ? 1 : 0);
 });

@@ -278,11 +278,11 @@ export default function HostClient() {
         </div>
       </section>
 
-      {/* 5 · What's running on the public engine right now */}
+      {/* 5 · Public universes hosted on the shared engine */}
       <section className="ch ch--rooms" aria-labelledby="rooms-title">
         <div className="container">
-          <p className="eyebrow">entry five · the public engine right now</p>
-          <h2 id="rooms-title">These are running on the box you&apos;d be opting out of.</h2>
+          <p className="eyebrow">entry five · shared-engine discovery</p>
+          <h2 id="rooms-title">These public universes are hosted on the shared engine.</h2>
           <p className="voice rooms__lede">
             Your hosted universes would be private and wouldn&apos;t appear anywhere like
             this. But it&apos;s worth seeing what the shared engine carries — public

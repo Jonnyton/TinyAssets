@@ -164,6 +164,9 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?next=%2561ccess_token%253Dtop-secret",
     "https://tinyassets.io/mcp?redirect=cb%2523token%253Dtop-secret%2526next%253Dok",
     "https://tinyassets.io/mcp#redirect=cb%2523token%253Dtop-secret%2526next%253Dok",
+    "https://tinyassets.io/mcp?next=https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp#next=https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
       "?token=top-secret",
@@ -364,6 +367,8 @@ test("public Playground responses are validated and reduced to public discovery 
     /over-limit/i,
   );
   for (const incomplete of [
+    { total_matches: 999 },
+    { total: 999 },
     { truncated_count: 1 },
     { truncated: true },
     { has_more: true },
@@ -486,6 +491,7 @@ test("public clients and snapshot logs never surface untrusted error detail", ()
     assert.match(client, /Public MCP read is unavailable/);
   }
   const snapshotSource = readFileSync(snapshotSourcePath, "utf8");
+  assert.doesNotMatch(snapshotSource, /\.(?:message|stack)\b/);
   assert.doesNotMatch(
     snapshotSource,
     /tool \$\{name\}.*JSON\.stringify\(args\).*e\.message|refresh failed: \$\{/,
@@ -760,6 +766,8 @@ test("snapshot collections fail closed when an unpageable request fills its cap"
   for (const inconsistent of [
     { universes: [{ id: "u-1" }], count: 2 },
     { universes: [{ id: "u-1" }], count: "1" },
+    { universes: [{ id: "u-1" }], count: 1, total_matches: 2 },
+    { universes: [{ id: "u-1" }], count: 1, total: 2 },
     { universes: [{ id: "u-1" }], count: 1, truncated_count: 1 },
     { universes: [{ id: "u-1" }], count: 1, has_more: true },
   ]) {
