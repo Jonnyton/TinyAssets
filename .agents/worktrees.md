@@ -1444,27 +1444,27 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-current-20260726
-- Lane state: claimed; target published as draft PR #1810; implementation gates remain
+- Lane state: target merged as PR #1810; implementation gates remain in the safe-waves lane
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
 - STATUS/Issue/PR: host-directed retirement; draft PR #1810
 - PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
 - Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
-- Memory refs: host directive 2026-07-26; final exact reviewed SHA 8ef99451; current origin/main 3f71084d
+- Memory refs: host directive 2026-07-26; semantic target 8ef99451; current-main reconciliation 3fabd2e1; merge 0d50a2d4
 - Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
-- Ship/abandon: draft target PR #1810 first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
+- Ship/abandon: target landed; collision-free runtime deletion remains separately gated; no reinterpretation of queued privileged rows as generic user automations
 
 ## 2026-07-26 - retire cheat-loop collision-safe waves
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-safe-waves
-- Lane state: claimed; website/deployment waves reviewed, announcement deletion staged
+- Lane state: claimed; site/announcement wave approved at pre-merge `9e08a28c`; current-main reconciliation in progress
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves
-- STATUS/Issue/PR: stacked implementation lane on draft target PR #1810
+- STATUS/Issue/PR: draft implementation PR #1812; retargeting to `main` after #1810 merged
 - PLAN refs: user-authored/remixable automations; public website surface; complete-system uptime
 - Purpose: remove retired product presentation and callers from production React, rollback Svelte, and deployment guidance without touching runtime/queue or external GitHub state
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves\_PURPOSE.md
-- Memory refs: exact approved target 8ef99451; target draft PR #1810; safe-wave commits 5e8e5e39/594a9287/255e83cf
-- Review gate: focused builds/scans plus independent diff review; rendered connector and post-fix clean-use remain later acceptance gates
-- Ship/abandon: stacked draft PR against codex/retire-cheat-loop-current-20260726; retarget after #1810 lands
+- Memory refs: target merge 0d50a2d4; safe-wave commits 5e8e5e39/594a9287/255e83cf; pre-merge exact approval 9e08a28c
+- Review gate: fresh current-main builds/scans and exact Opus 5 review; rendered connector and post-fix clean-use remain later acceptance gates
+- Ship/abandon: retarget PR #1812 to `main`; do not deploy or authorize runtime/external-state retirement
 - Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open

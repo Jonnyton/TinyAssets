@@ -3,7 +3,7 @@
 **Date:** 2026-07-26
 **Environment:** Windows worktree
 `C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current`, based on exact
-`origin/main` `3f71084dacda881b596ecfd86b1a1112586d915c`
+`origin/main` `46cbb08c4227a20f313269f7f89b08c2c37a626b`
 **Finding:** current shipped source contradicts the host-approved architecture;
 the cheat loop is disabled in some places but is not deleted from the build.
 **Target:** `openspec/changes/retire-cheat-loop/`
@@ -65,10 +65,11 @@ complete. These searches are diagnostic inventory, not proof of implementation;
 the runtime is still unchanged in this target-only lane.
 
 Exact-head review on 2026-07-26 approved semantic target
-`8ef99451f985e1a0ef73cfa608b78fa5ac8989b7` after merging current
-`origin/main`. Fresh Claude Opus 5 opposite-provider review, independent
-architecture review, independent OpenSpec review, and independent
-cross-capability/market review all returned APPROVE. The reviewers confirmed:
+`8ef99451f985e1a0ef73cfa608b78fa5ac8989b7`. After merging current
+`origin/main`, Claude Opus 5 re-reviewed exact pushed reconciliation head
+`75e21fbacb6b488995be78beb62ab35009ac0ba5` and returned APPROVE, confirming
+that the effective target did not drift. The opposite-provider,
+architecture, OpenSpec, and cross-capability/market reviewers confirmed:
 
 - `file_bug` becomes filing-only only after retirement task 2.1;
 - wiki filing is never a background-authority issuance root;
@@ -79,7 +80,7 @@ cross-capability/market review all returned APPROVE. The reviewers confirmed:
   activation and foldback.
 
 Both targeted strict validations and repository-wide strict validation passed
-(`57 passed, 0 failed`); all exact diff checks and installed OpenSpec engine
+(`58 passed, 0 failed`); all exact diff checks and installed OpenSpec engine
 rebuilds passed. A full `pytest tests/ -q` verifier run reported no failures
 before exceeding its 10-minute integration timeout. Ruff reported 111
 pre-existing E501 findings in code/plugin files outside this documentation and
@@ -90,13 +91,14 @@ The host's standing 2026-07-26 direction—if the boundary is fully figured out,
 it is approved and work should continue—therefore satisfies target gate 0.4.
 No unresolved host design choice remains in the removal boundary.
 
-The target was published without runtime or external-state mutation as draft
-PR [#1810](https://github.com/Jonnyton/TinyAssets/pull/1810) after merging
+The target was published and merged without runtime or external-state mutation
+as PR [#1810](https://github.com/Jonnyton/TinyAssets/pull/1810) after merging
 current `origin/main`, rerunning the foldback provider-context feed, and
 confirming the exact Files set overlaps only this lane's own active claim.
 `retire-legacy-live-mcp-tools` task 4.1 remains an explicit implementation
-cutover dependency. The draft state prevents automatic merge enrollment while
-the staged migrations and rendered acceptance gates remain incomplete.
+cutover dependency. Publication of the target did not authorize runtime,
+deployment, external-state mutation, canonical spec sync, or archive; the
+staged migrations and rendered acceptance gates remain incomplete.
 
 ### Collision-safe implementation evidence
 
