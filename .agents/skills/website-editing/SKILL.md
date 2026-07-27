@@ -47,9 +47,14 @@ the Svelte parity result.
 
 If F5 is ever needed, that's a signal HMR misfired — **investigate**, don't normalize the workaround. The intended state is "edit a file, tab updates, no input from the user."
 
-## Transparent capture — when the website shows a real chatbot conversation
+## Transparent capture — when a page intentionally publishes a real chatbot conversation
 
-The site's home (ChatDemo) and `/loop` show real conversations Jonathan had with the TinyAssets MCP connector via claude.ai. The principle: **when claiming transparency, the captured material has to BE the captured material — not a summary, not a paraphrase, not curated highlights.**
+The homepage and `/loop` do not currently publish captured conversations;
+`/loop` is provenance-labelled generic workflow activity. If a future
+user-authored site design intentionally publishes a real chatbot conversation,
+the principle is: **when claiming transparency, the captured material has to
+BE the captured material — not a summary, not a paraphrase, not curated
+highlights.**
 
 Required when capturing a real conversation for the site:
 

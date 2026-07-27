@@ -2,7 +2,7 @@
   / — Tiny's front door. "Field Notes" rebuild, 2026-06-09.
 
   Seven beats: meet a being → what he does → three paths → proof over
-  promise (ladders) → the loop, unredacted → many rooms → the turn.
+  promise (ladders) → workflow activity, unredacted → many rooms → the turn.
   Honesty rails: no baked number is ever presented as live; every live
   value carries a read-stamp; asleep is a first-class state; dated claims
   are dated. Voice: narrative in Tiny's first person, action cards in

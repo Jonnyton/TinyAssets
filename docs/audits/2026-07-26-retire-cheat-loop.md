@@ -128,7 +128,10 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   one-sided Svelte presentation wording after the React port. Cleanup
   `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
   and README residue with user-authored workflow language and removes the
-  remaining `loopAwake`, `WATCHDOGS`, and deleted `ChatDemo` identifiers.
+  remaining shipped-site `loopAwake`, `WATCHDOGS`, and deleted-component
+  references. A subsequent exact review found the active website skill still
+  described the deleted component and misclassified `/loop`; the mirrored
+  instruction was corrected before final approval.
 
 Both site production builds passed; the React build emitted 27 static routes
 including `/patch-loop`, and the Svelte build emitted the expected loop,
