@@ -21,6 +21,26 @@ artifacts consume those exported contracts and no longer normatively depend on
 #1691. Runtime, sync/archive, deployment, and rollout remain blocked pending
 the still-open owner and implementation gates in `tasks.md`.
 
+## Reconciliation approval — 2026-07-26
+
+Claude Opus 5 re-reviewed the current-main reconciliation through successive
+exact pushed heads, returning ADAPT until transport ownership, lock ordering,
+host-principal lifecycle, outbound composition, and terminal cleanup were
+closed. It returned **APPROVE — spec/review-only** on `3f4fc3ab`, then
+**APPROVE** on exact pushed cleanup head `437413ab`. The latter confirmed the
+terminal-principal proof precondition and the tombstone/delete-only exception
+without widening credential use or cross-principal administration.
+
+Fresh evidence on Windows, 2026-07-26:
+
+- `openspec validate retire-mcp-provider-secret-deposit --strict` — valid;
+- `openspec validate --all --strict` — 57 passed, 0 failed;
+- `git diff --check 3f4fc3ab..437413ab` — clean.
+
+Approval authorizes publication of the OpenSpec/review artifacts only. Runtime
+implementation, canonical sync/archive, deployment, and rollout remain
+blocked.
+
 ## Executive finding
 
 Keep `retire-mcp-provider-secret-deposit` as a separate OpenSpec change. The

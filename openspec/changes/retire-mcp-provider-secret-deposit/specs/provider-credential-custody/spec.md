@@ -273,8 +273,9 @@ from its attested requester endpoint and executor-host identity.
 A shared universe SHALL NOT own or copy provider API-key material, and a
 universe ACL `admin` grant SHALL NOT confer authority to attach, resolve,
 rotate, delete, replace, or use a credential binding owned by another
-principal. Every secret-enabling binding mutation and every use SHALL require
-an exact current credential-owner
+principal. Every binding mutation other than the terminal-principal
+tombstone/delete-only cleanup path defined above, and every binding use, SHALL
+require an exact current credential-owner
 principal/host/provider/universe/scope/generation match in addition to
 universe and fulfillment-class authority; otherwise the universe SHALL remain
 held. The sole mismatch exception is the tombstone/delete-only

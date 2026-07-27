@@ -23,8 +23,9 @@ deputy for another principal's provider authority.
   `host_principal_generation` and the binding's current provider-assignment
   generation. Terminal-principal cleanup is the narrow exception: same-subject
   step-up recovery or separately authorized internal exact-tuple cleanup may
-  tombstone/delete the old binding without dereferencing or transferring its
-  secret.
+  tombstone/delete the old binding only after trusted state proves the exact
+  bound principal revoked, expired, or recovery-superseded, without
+  dereferencing or transferring its secret.
 - Resolve the secret only at the transport-owned boundary behind the merged
   `constrain-set-engine-provider-authority` change's
   `ProviderAssignmentAdmission` and frozen

@@ -13,7 +13,7 @@
 - [ ] 1.7 Create the planned `activate-requester-host-engines` change and obtain acceptance for the completable Tier-2/Tier-3/plugin native-custody route; create the planned `activate-connector-requester-authority` change and obtain acceptance for the newborn Tier-1 accepted-market route without raw secret or desktop/web-app dependency; obtain `openspec/changes/universe-creation/`, `openspec/changes/retire-legacy-live-mcp-tools/`, and live-interface owner acceptance for their exact setup/cutover handoffs before hidden `universe/set_engine` unregistration.
 - [ ] 1.8 Obtain `openspec/changes/test-identity-and-reset/` owner acceptance that global reset cannot clear, normalize, or delete a legacy `llm_api_key` outside this retirement saga.
 - [ ] 1.9 Obtain `openspec/changes/retire-legacy-live-mcp-tools/` live-MCP owner and production gateway/deployment owner acceptance of an inventory for every TinyAssets-controlled gateway/access log, MCP middleware/request capture, trace, ledger, exception, and crash sink; explicitly exclude client-owned upstream chatbot transcript bytes that TinyAssets cannot redact.
-- [ ] 1.10 Replace every normative draft-#1691 citation with #1784's exported contracts, strictly validate the reconciled OpenSpec tree, and obtain Opus 5 exact-head re-review before publishing this spec-only change.
+- [x] 1.10 Replace every normative draft-#1691 citation with #1784's exported contracts, strictly validate the reconciled OpenSpec tree, and obtain Opus 5 exact-head re-review before publishing this spec-only change. Opus 5 approved exact pushed head `437413ab` after all Critical/Important findings were resolved; final evidence-only wording preserves that approved contract.
 
 ## 2. Canonical Setup Surface
 
