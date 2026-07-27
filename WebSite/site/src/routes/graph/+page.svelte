@@ -11,7 +11,9 @@
     - bright lines are REAL page→page references from the snapshot;
     - the faintest spokes are filing (page→its category) — metadata,
       labelled as such in the legend, never dressed up as citations;
-    - first paint is the baked snapshot, stamped; Refresh MCP re-reads live;
+    - first paint is the baked snapshot, stamped; Refresh MCP updates only
+      discovery-scoped pages and public-universe timestamps;
+    - Goal and edge evidence stays tied to the checked-in snapshot;
     - dot size = how often a page is actually referenced.
 
   Interaction: hover = focus neighbourhood · click hub = newest pages panel
@@ -39,8 +41,8 @@
   const MCP_URL = 'https://tinyassets.io/mcp';
   const PER_CATEGORY = 30;
 
-  // First paint from the baked snapshot; Refresh MCP swaps in a live re-read
-  // of the exact same shape, so the whole sky rebuilds against fresh data.
+  // First paint comes from the baked snapshot. Refresh MCP replaces only the
+  // discovery-scoped page/universe layer; Goal and edge evidence stays baked.
   let snapshot = $state<Snapshot>(baked as unknown as Snapshot);
   let liveStamp = $state<string | null>(null);
   let liveDiscovery = $state<LiveResult['pageDiscovery'] | null>(null);
@@ -48,6 +50,9 @@
   let liveErr = $state<string | null>(null);
 
   const atlas = $derived(buildAtlas(snapshot as unknown as Snapshotish));
+  const bakedEvidenceAtlas = buildAtlas(baked as unknown as Snapshotish);
+  const checkedInEvidenceStamp = fmtStamp((baked as unknown as Snapshot).fetched_at);
+  const checkedInEdgeCount = (baked as unknown as Snapshot).edges?.length ?? 0;
   let refCount = $state(0);
   let dotCount = $state(0);
 
@@ -104,8 +109,10 @@
   const wikiTotal = $derived(
     atlas.counts.patch + atlas.counts.plans + atlas.counts.notes + atlas.counts.concepts + atlas.counts.drafts
   );
-  const stampLabel = $derived(
-    liveStamp ? `live read ${fmtRel(liveStamp)}` : `baked snapshot ${fmtStamp(snapshot.fetched_at)}`
+  const discoveryStampLabel = $derived(
+    liveStamp
+      ? `live discovery read ${fmtRel(liveStamp)}`
+      : `checked-in page and universe snapshot ${fmtStamp(snapshot.fetched_at)}`
   );
   const universesList = $derived(snapshot.universes ?? []);
 
@@ -515,15 +522,16 @@
       Each of the {wikiTotal.toLocaleString()} pages in this view is a dot,
       settling around its category the way notes cluster around tags. The
       checked-in first view is a dated snapshot; a refresh replaces its page set
-      with a discovery-scoped result, not a complete inventory. Goals burn
-      ember; universes drift violet. The bright lines are real page-to-page
-      references — {refCount} of them; the faintest spokes are filing and
+      and public-universe timestamps with a discovery-scoped result, not a
+      complete inventory. Goal and edge evidence stays tied to the checked-in
+      snapshot. Goals burn ember; universes drift violet. The bright lines are
+      recorded page-to-page references; the faintest spokes are filing and
       shared-tag clusters, and I'll never dress either up as a citation.
     </p>
-    <p class="cover__stamp ev" aria-live="polite">
+    <p class="cover__stamp ev" aria-live="polite" data-source-layer="live-discovery">
       <span class="dot" class:live={Boolean(liveStamp)}></span>
-      {stampLabel} · {dotCount.toLocaleString()} page dots · {atlas.publicGoalCount} goals ·
-      {atlas.universeCount} universes · {refCount} cross-references
+      {discoveryStampLabel} · {dotCount.toLocaleString()} page dots ·
+      {atlas.universeCount} universes
       <button type="button" class="refresh" onclick={refresh} disabled={reading} aria-busy={reading}>
         {reading ? 'reading…' : 'Refresh MCP'}
       </button>
@@ -532,6 +540,12 @@
           page {liveDiscovery.scope} scope · {liveDiscovery.scopeNote} · not a complete inventory
         </span>
       {/if}
+    </p>
+    <p class="cover__stamp ev" data-source-layer="checked-in-evidence">
+      checked-in snapshot {checkedInEvidenceStamp} ·
+      {bakedEvidenceAtlas.publicGoalCount} public goals ·
+      {checkedInEdgeCount.toLocaleString()} recorded cross-references · Goal
+      and edge evidence does not refresh in the browser
     </p>
     {#if liveErr}
       <p class="cover__err ev">
@@ -572,7 +586,7 @@
         </header>
         {#if categoryPages.length === 0}
           <p class="panel__empty ev">
-            this category read as empty at {stampLabel}. A loose end, not a hidden link.
+            this category read as empty at {discoveryStampLabel}. A loose end, not a hidden link.
           </p>
         {:else}
           <ul class="rows">
@@ -630,7 +644,7 @@
           they're drawn like they barely exist.
         </p>
         <p class="panel__foot">
-          <Tick href="/commons" label="browse every page in the commons" />
+          <Tick href="/commons" label="browse the discovery view of the commons" />
         </p>
         <p class="panel__foot">
           <Tick href={REPO_URL} label="the repo behind all of it" external />

@@ -10,7 +10,8 @@
   Honesty rails: nothing baked is shown as live. Operator status is not
   downloaded by this public page. Every external
   link goes somewhere real. No money-as-investment language. Generic workflow
-  activity is never hardcoded — VitalSigns derives it from a live read.
+  activity is never hardcoded — VitalSigns derives it only from
+  visibility-filtered public-universe timestamps.
 -->
 <script lang="ts">
   import VitalSigns from '$lib/components/VitalSigns.svelte';
@@ -71,8 +72,9 @@
     </p>
     <VitalSigns variant="hero" />
     <p class="cover__stamp ev">
-      first paint seeded from snapshot {stamp(bakedFetchedAt)} · every reading
-      above is upgraded by a live read on load and carries its own stamp
+      first paint seeded from snapshot {stamp(bakedFetchedAt)} · reachability
+      and public-universe timestamps refresh live; unavailable operator fields
+      stay unavailable
     </p>
   </div>
 </section>
@@ -102,10 +104,10 @@
       <div class="measure">
         <dt><span class="dot idle" aria-hidden="true"></span> workflow activity</dt>
         <dd>
-          A public universe shows activity within the last hour, <em>or</em> a
-          user-authored run is executing right now. If neither is true, the
-          strip says no recent activity, plainly. This state is read live every
-          time and does not imply any platform-owned task route.
+          A visibility-filtered public universe has a recorded activity
+          timestamp within the last hour. That is a timestamp signal only: it
+          is not run state and cannot prove that anything is executing. If no
+          recent timestamp exists, the strip says so plainly.
         </dd>
       </div>
       <div class="measure">
@@ -353,8 +355,7 @@
   .close__card strong { font-family: var(--font-display); font-size: clamp(20px, 2.6vw, 26px); font-weight: 500; letter-spacing: -0.015em; line-height: 1.14; color: var(--fg-1); }
   .close__sub { font-size: 13.5px; color: var(--fg-2); }
 
-  /* ── Release receipt → dark readout card: the lede above is the claim (paper);
-     this card is the engine's own evidence, read live. ── */
+  /* ── Release receipt → dark unavailable card. No operator payload is read. ── */
   .receipt { background: var(--panel); border-color: var(--panel-line); }
   .receipt__msg { color: var(--on-panel-soft); }
   .receipt__note { color: var(--on-panel-soft); }

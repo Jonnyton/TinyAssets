@@ -70,6 +70,24 @@ test("Commons and Graph copy does not claim discovery is the complete public bra
   assert.match(copy, /not (?:a )?complete inventory/i);
 });
 
+test("global navigation and metadata never relabel discovery as the whole brain", () => {
+  const copy = [
+    "WebSite/site-react/components/TinyBot.tsx",
+    "WebSite/site/src/lib/components/TinyBot.svelte",
+    "WebSite/site-react/app/layout.tsx",
+    "WebSite/site/src/routes/+layout.svelte",
+    "WebSite/site-react/app/notebook/page.tsx",
+    "WebSite/site/src/routes/notebook/+page.svelte",
+    "WebSite/site-react/app/graph/_components/GraphClient.tsx",
+    "WebSite/site/src/routes/graph/+page.svelte",
+  ].map(source).join("\n").replace(/\s+/g, " ");
+
+  assert.doesNotMatch(copy, /my whole memory|everything I know.{0,20}public/i);
+  assert.doesNotMatch(copy, /my whole brain|every page a live reading/i);
+  assert.doesNotMatch(copy, /live, verifiable state on every page/i);
+  assert.doesNotMatch(copy, /browse every page in the commons/i);
+});
+
 test("public Fine Print pages never download or advertise raw get_status", () => {
   for (const path of [
     "WebSite/site-react/app/fine-print/_components/FinePrintClient.tsx",
@@ -82,5 +100,40 @@ test("public Fine Print pages never download or advertise raw get_status", () =>
       `${path} must not fetch or advertise the operator status payload`,
     );
     assert.match(body, /unavailable|checked-in/i);
+  }
+});
+
+test("Graph keeps live discovery evidence separate from checked-in Goal and edge evidence", () => {
+  for (const path of [
+    "WebSite/site-react/app/graph/_components/GraphClient.tsx",
+    "WebSite/site/src/routes/graph/+page.svelte",
+  ]) {
+    const body = source(path);
+    const liveLayer = body.match(/data-source-layer=["']live-discovery["'][\s\S]{0,900}?<\/p>/)?.[0] ?? "";
+    const snapshotLayer = body.match(/data-source-layer=["']checked-in-evidence["'][\s\S]{0,700}?<\/p>/)?.[0] ?? "";
+
+    assert.match(liveLayer, /page dots/i, `${path} must put page counts in the live discovery layer`);
+    assert.match(liveLayer, /universes/i, `${path} must put universe counts in the live discovery layer`);
+    assert.doesNotMatch(liveLayer, /\bgoals?\b|\bcross-references?\b|\bedges?\b/i);
+    assert.match(snapshotLayer, /checked-in snapshot/i);
+    assert.match(snapshotLayer, /\bgoals?\b/i);
+    assert.match(snapshotLayer, /\b(?:cross-references?|edges?)\b/i);
+    assert.doesNotMatch(snapshotLayer, /\blive read\b/i);
+  }
+});
+
+test("Fine Print defines activity only from visibility-filtered universe timestamps", () => {
+  for (const path of [
+    "WebSite/site-react/app/fine-print/_components/FinePrintClient.tsx",
+    "WebSite/site/src/routes/fine-print/+page.svelte",
+  ]) {
+    const body = source(path).replace(/\s+/g, " ");
+    assert.match(body, /visibility-filtered public universe/i);
+    assert.match(body, /timestamp signal/i);
+    assert.doesNotMatch(
+      body,
+      /\buser-authored run is executing\b|\ba run is moving\b|\bactive run\b/i,
+      `${path} must not infer executing-run state from universe timestamps`,
+    );
   }
 });

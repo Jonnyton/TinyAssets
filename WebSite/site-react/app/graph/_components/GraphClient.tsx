@@ -11,7 +11,9 @@
     - bright lines are REAL page→page references from the snapshot;
     - the faintest spokes are filing (page→its category) — metadata,
       labelled as such in the legend, never dressed up as citations;
-    - first paint is the baked snapshot, stamped; Refresh MCP re-reads live;
+    - first paint is the baked snapshot, stamped; Refresh MCP updates only
+      discovery-scoped pages and public-universe timestamps;
+    - Goal and edge evidence stays tied to the checked-in snapshot;
     - dot size = how often a page is actually referenced.
 
   Interaction: hover = focus neighbourhood · click hub = newest pages panel
@@ -78,8 +80,8 @@ export default function GraphClient() {
   const router = useRouter();
   const mounted = useMounted();
 
-  // First paint from the baked snapshot; Refresh MCP swaps in a live re-read
-  // of the exact same shape, so the whole sky rebuilds against fresh data.
+  // First paint comes from the baked snapshot. Refresh MCP replaces only the
+  // discovery-scoped page/universe layer; Goal and edge evidence stays baked.
   const [snapshot, setSnapshot] = useState<Snapshot>(baked as unknown as Snapshot);
   const [liveStamp, setLiveStamp] = useState<string | null>(null);
   const [liveDiscovery, setLiveDiscovery] = useState<LiveResult["pageDiscovery"] | null>(null);
@@ -87,6 +89,10 @@ export default function GraphClient() {
   const [liveErr, setLiveErr] = useState<string | null>(null);
 
   const atlas = useMemo(() => buildAtlas(snapshot as unknown as Snapshotish), [snapshot]);
+  const bakedEvidenceAtlas = useMemo(
+    () => buildAtlas(baked as unknown as Snapshotish),
+    [],
+  );
   const [refCount, setRefCount] = useState(0);
   const [dotCount, setDotCount] = useState(0);
 
@@ -145,9 +151,13 @@ export default function GraphClient() {
 
   const wikiTotal =
     atlas.counts.patch + atlas.counts.plans + atlas.counts.notes + atlas.counts.concepts + atlas.counts.drafts;
-  const stampLabel = liveStamp
-    ? `live read ${fmtRel(liveStamp)}`
-    : `baked snapshot ${mounted ? fmtStamp(snapshot.fetched_at) : fmtStampStable(snapshot.fetched_at)}`;
+  const discoveryStampLabel = liveStamp
+    ? `live discovery read ${fmtRel(liveStamp)}`
+    : `checked-in page and universe snapshot ${mounted ? fmtStamp(snapshot.fetched_at) : fmtStampStable(snapshot.fetched_at)}`;
+  const checkedInEvidenceStamp = mounted
+    ? fmtStamp((baked as unknown as Snapshot).fetched_at)
+    : fmtStampStable((baked as unknown as Snapshot).fetched_at);
+  const checkedInEdgeCount = (baked as unknown as Snapshot).edges?.length ?? 0;
   const universesList = snapshot.universes ?? [];
 
   /* ─────────────────── the canvas force graph ─────────────────── */
@@ -581,16 +591,18 @@ export default function GraphClient() {
           <p className="voice cover__lede">
             Each of the {fmtCount(wikiTotal)} pages in this view is a dot, settling
             around its category the way notes cluster around tags. The checked-in
-            first view is a dated snapshot; a refresh replaces its page set with a
-            discovery-scoped result, not a complete inventory. Goals burn ember;
-            universes drift violet. The bright lines are real page-to-page
-            references — {refCount} of them; the faintest spokes are filing and
-            shared-tag clusters, and I'll never dress either up as a citation.
+            first view is a dated snapshot; a refresh replaces its page set and
+            public-universe timestamps with a discovery-scoped result, not a
+            complete inventory. Goal and edge evidence stays tied to the
+            checked-in snapshot. Goals burn ember; universes drift violet. The
+            bright lines are recorded page-to-page references; the faintest
+            spokes are filing and shared-tag clusters, and I'll never dress
+            either up as a citation.
           </p>
-          <p className="cover__stamp ev" aria-live="polite">
+          <p className="cover__stamp ev" aria-live="polite" data-source-layer="live-discovery">
             <span className={liveStamp ? "dot live" : "dot"}></span>
-            {stampLabel} · {fmtCount(dotCount)} page dots · {atlas.publicGoalCount} goals ·{" "}
-            {atlas.universeCount} universes · {refCount} cross-references
+            {discoveryStampLabel} · {fmtCount(dotCount)} page dots ·{" "}
+            {atlas.universeCount} universes
             <button type="button" className="refresh" onClick={refresh} disabled={reading} aria-busy={reading}>
               {reading ? "reading…" : "Refresh MCP"}
             </button>
@@ -599,6 +611,12 @@ export default function GraphClient() {
                 page {liveDiscovery.scope} scope · {liveDiscovery.scopeNote} · not a complete inventory
               </span>
             )}
+          </p>
+          <p className="cover__stamp ev" data-source-layer="checked-in-evidence">
+            checked-in snapshot {checkedInEvidenceStamp} ·{" "}
+            {bakedEvidenceAtlas.publicGoalCount} public goals ·{" "}
+            {fmtCount(checkedInEdgeCount)} recorded cross-references · Goal and
+            edge evidence does not refresh in the browser
           </p>
           {liveErr && (
             <p className="cover__err ev">
@@ -646,7 +664,7 @@ export default function GraphClient() {
                 </header>
                 {categoryPages.length === 0 ? (
                   <p className="panel__empty ev">
-                    this category read as empty at {stampLabel}. A loose end, not a hidden link.
+                    this category read as empty at {discoveryStampLabel}. A loose end, not a hidden link.
                   </p>
                 ) : (
                   <ul className="rows">
@@ -748,7 +766,7 @@ export default function GraphClient() {
                   carrying the same tag). Filing and tags aren't citations, so they're drawn like they barely exist.
                 </p>
                 <p className="panel__foot">
-                  <Tick href="/commons" label="browse every page in the commons" />
+                  <Tick href="/commons" label="browse the discovery view of the commons" />
                 </p>
                 <p className="panel__foot">
                   <Tick href={REPO_URL} label="the repo behind all of it" external />

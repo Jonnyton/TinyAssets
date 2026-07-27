@@ -562,9 +562,19 @@ closed. A page body with `truncated=true` is likewise incomplete even when
 `content` is a string; it must not be reference-extracted or overwrite prior
 edges.
 
-The checked-in 2026-04-30 snapshot remains the labelled fallback at SHA-256
+The first fail-closed proof left the checked-in 2026-04-30 mirrors untouched at
+SHA-256
 `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
-No 2026-07-27 review established safe full regeneration, rendered-browser
+Later independent review established that the historical generator's
+`visibility ?? "public"` normalization was not publication proof. Three Goals
+without an independent explicit-public record were therefore removed manually
+from both mirrors. The sole retained Goal, `dd187997039b`, cites and is tested
+against two independent publication records:
+`branches/echoes-reddit-source-intake.yaml` and
+`docs/portfolio/echoes-of-the-cosmos/README.md`. The matching curated mirrors
+contain one Goal at SHA-256
+`0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+No 2026-07-27 evidence established safe full regeneration, rendered-browser
 acceptance, or post-fix clean use.
 
 The same probe found two source records that stop truthful regeneration:
@@ -725,18 +735,29 @@ verdict without pretending the unsafe server projections are public:
   validated same-refresh inventory, full replacement requires explicit
   untruncated `scope=all`, and an exactly-full 100-result response fails
   closed as ambiguous;
-- snapshot startup rejects bearer credentials and URL userinfo before
-  connection or logging, requires the MCP SDK, and repository regeneration
-  emits only `https://github.com/Jonnyton/TinyAssets.git` rather than copying
-  a local Git origin;
-- the full Node website suite passes 63/63, both production builds pass,
+- snapshot startup rejects bearer credentials, URL userinfo, credential-like
+  query/hash values, and bearer values before connection or logging; every
+  browser initialization notification uses `credentials: "omit"`;
+- the public Playground validates and reduces tool responses before parsed,
+  raw, or wire rendering, strips session/response headers, and withholds
+  response bodies when request or validation fails;
+- snapshot startup requires the MCP SDK, and repository regeneration emits
+  only `https://github.com/Jonnyton/TinyAssets.git` rather than copying a
+  local Git origin;
+- exact-head Codex review of implementation commit `afb77f12` returned ADAPT
+  on the Playground/credential gaps, residual whole-brain/live-Goal copy,
+  conflated Graph provenance, and an executing-run claim inferred from
+  universe timestamps; the follow-up repairs every finding and separates
+  bounded live discovery, checked-in Goal/edge evidence, and
+  visibility-filtered timestamp signals;
+- the full Node website suite passes 74/74, both production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
   production dependency audit reports zero vulnerabilities, strict OpenSpec
   validation passes all 58 items, and `git diff --check` passes;
 - a live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh exits 1 on
-  the server's `scope=discovery` response and leaves both checked-in snapshots
+  the server's `scope=discovery` response and leaves both curated snapshots
   byte-identical at SHA-256
-  `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
 
 These are implementation and fail-closed proofs, not final acceptance.
 Server-side Goal/run/status/exact-page privacy, live source-data retirement,

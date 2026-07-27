@@ -23,6 +23,7 @@ const goalCopyPages = [
   ...goalMetadataPages,
 ];
 const relatedReactCopyPages = [
+  "WebSite/site-react/components/TinyBot.tsx",
   "WebSite/site-react/app/commons/_components/CommonsClient.tsx",
   "WebSite/site-react/app/fine-print/_components/FinePrintClient.tsx",
   "WebSite/site-react/app/soul/page.tsx",
@@ -142,7 +143,7 @@ test("related React navigation advertises public graphs, not Goal or run history
     const prose = source(path).replace(/\s+/g, " ");
     assert.doesNotMatch(
       prose,
-      /\brecent user-authored runs\b|\blive and historical activity\b|\blive public goals\b|\bwhat(?:&apos;|')s already running\b/i,
+      /\brecent user-authored runs\b|\blive and historical activity\b|\blive public goals\b|\bwhat(?:&apos;|')s already running\b|\bgoals?\b.{0,48}\bread live\b|\bread live\b.{0,48}\bgoals?\b/i,
       `${path} must not promise unsafe public Goal or run projections`,
     );
   }
@@ -151,4 +152,41 @@ test("related React navigation advertises public graphs, not Goal or run history
   assert.match(combined, /\buser-authored\b/i);
   assert.match(combined, /\bremix\b/i);
   assert.match(combined, /\bpublic graph\b/i);
+});
+
+test("TinyBot describes dated Goal examples and timestamp-only workflow activity", () => {
+  const body = source("WebSite/site-react/components/TinyBot.tsx").replace(/\s+/g, " ");
+
+  assert.match(body, /checked-in snapshot/i);
+  assert.match(body, /public-universe timestamp/i);
+  assert.doesNotMatch(body, /\bactiveRun\b|\bqueue\b/);
+  assert.doesNotMatch(
+    body,
+    /\ba run is moving\b|\bevery run logged\b|\bcounted live\b|\blive and historical runs\b/i,
+  );
+});
+
+test("React Start and Soul never promote stale or private-capable Goal evidence", () => {
+  const start = source("WebSite/site-react/app/start/_components/StartClient.tsx");
+  const soul = source("WebSite/site-react/app/soul/page.tsx");
+
+  assert.doesNotMatch(
+    start,
+    /\b(?:inspect|read|show|open)\b.{0,64}\b(?:Goal|goal|goals|branch|branches)\b/i,
+    "Start prompts must use public discovery or compose user-owned work",
+  );
+  assert.match(start, /dated checked-in snapshot/i);
+
+  assert.doesNotMatch(
+    soul,
+    /\bTINY_RUNGS\b|\bread from the live brain\b|\bread 9 Jun 2026\b|\bd1424d86cb5f\b/i,
+    "Soul must not preserve the stale Tiny ladder fixture",
+  );
+  assert.match(soul, /checked-in public snapshot/i);
+  assert.doesNotMatch(soul, /\blive public goals\b/i);
+  assert.doesNotMatch(
+    soul,
+    /\bread real ladders in the wild\b/i,
+    "Soul must not promise ladder evidence that the public snapshot may not contain",
+  );
 });

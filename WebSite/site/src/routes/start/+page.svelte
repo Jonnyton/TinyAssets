@@ -45,13 +45,13 @@
   onMount(() => { void refreshPulse(); });
 
   // ── Six persona starter prompts — each copyable, each works today
-  // via the universe / goals / wiki tools. ──
+  // through public discovery or user-authorized composition tools. ──
   type Prompt = { persona: string; flavor: string; text: string };
   const PROMPTS: Prompt[] = [
     {
       persona: 'The researcher',
       flavor: 'orient first',
-      text: 'Tiny: inspect my universe and show me what goals exist.'
+      text: 'Browse the public commons for research workflows I can inspect, copy, and remix.'
     },
     {
       persona: 'The maker',
@@ -264,8 +264,8 @@
     <h2 id="prompts-title">Bring a first sentence.</h2>
     <p class="prompts__lede voice">
       — connected and not sure what to ask? Here are six openers, one per
-      kind of visitor. Each works today through my universe, goals, and
-      commons tools. Swap the bracketed bits for your own.
+      kind of visitor. Each uses public discovery or asks you to compose
+      user-owned work. Swap the bracketed bits for your own.
     </p>
 
     <ul class="prompts">
@@ -288,9 +288,9 @@
       {/each}
     </ul>
     <p class="prompts__foot">
-      Wondering what a "goal" or the "commons" is? Open the live
-      <a href="/goals">goals board</a> — it reads the real list straight from
-      the engine.
+      Wondering what a "goal" or the "commons" is? The
+      <a href="/goals">goals board</a> shows explicitly public examples from a
+      dated checked-in snapshot.
     </p>
   </div>
 </section>
@@ -337,7 +337,7 @@
       <a class="close__card" href="/goals">
         <span class="close__k eyebrow">the goals board</span>
         <strong>See what's already running →</strong>
-        <span class="close__sub">live public goals, each with its outcome ladder.</span>
+        <span class="close__sub">dated public Goal examples, with ladders only where the snapshot includes them.</span>
       </a>
       <a class="close__card" href="/loop">
         <span class="close__k eyebrow">workflow activity</span>

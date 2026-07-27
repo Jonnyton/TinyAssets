@@ -100,6 +100,7 @@ async function ensureInit(): Promise<void> {
         ...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
       },
       body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+      credentials: "omit",
     });
   } catch {}
   initialized = true;

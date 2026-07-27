@@ -37,8 +37,9 @@ export default function FinePrintClient() {
           </p>
           <VitalSigns variant="hero" />
           <p className="cover__stamp ev">
-            first paint seeded from snapshot {bakedStamp} · every reading
-            above is upgraded by a live read on load and carries its own stamp
+            first paint seeded from snapshot {bakedStamp} · reachability and
+            public-universe timestamps refresh live; unavailable operator fields
+            stay unavailable
           </p>
         </div>
       </section>
@@ -67,11 +68,10 @@ export default function FinePrintClient() {
             <div className="measure">
               <dt><span className="dot idle" aria-hidden="true"></span> workflow activity</dt>
               <dd>
-                A public universe shows activity within the last hour, <em>or</em> a
-                user-authored run is executing right now. If neither is true, the
-                strip reports no recent workflow activity. This is separate from
-                server uptime: activity cannot make the server healthy, and uptime
-                cannot prove that user work is moving.
+                A visibility-filtered public universe has a recorded activity
+                timestamp within the last hour. That is a timestamp signal only:
+                it is not run state and cannot prove that anything is executing.
+                This remains separate from server uptime.
               </dd>
             </div>
             <div className="measure">

@@ -79,6 +79,11 @@ browser therefore MUST NOT accept arbitrary exact page paths. Any snapshot
 body read MUST be provenance-bound to a path returned by the already-validated
 inventory for that same refresh, and a full snapshot replacement MUST require
 an audience-safe complete inventory rather than discovery scope.
+Checked-in Goal data is not self-authenticating: a historical normalizer
+defaulting a missing visibility field to `public` is not publication proof.
+Every retained Goal row MUST have independent, explicit public-publication
+provenance or be removed from every public snapshot mirror and rendered
+surface.
 
 #### Scenario: Tool response includes structured content
 
@@ -101,6 +106,24 @@ an audience-safe complete inventory rather than discovery scope.
 - **THEN** browser clients and public snapshot jobs do not call that projection
 - **AND** retained checked-in Goal or run data is labelled as snapshot data rather than a live public read
 
+#### Scenario: A checked-in Goal has only normalized visibility
+
+- **WHEN** a Goal snapshot says `visibility=public` but its historical generator could have defaulted a missing value and no independent publication record exists
+- **THEN** the Goal is removed from every public snapshot mirror and rendered surface
+- **AND** a retained Goal names the independent checked-in public-publication evidence that authorizes it
+
+#### Scenario: Browser initialization sends its completion notification
+
+- **WHEN** a public browser completes MCP session initialization
+- **THEN** both the initialize request and `notifications/initialized` request omit browser credentials
+- **AND** later public reads cannot inherit cookie-authenticated caller context through that session
+
+#### Scenario: Playground receives an invalid or over-broad result
+
+- **WHEN** a permitted Playground request returns an invalid collection, a non-discovery page scope, missing omission metadata, truncation, or unexpected response fields
+- **THEN** the Playground rejects or allowlist-sanitizes the result before rendering parsed, raw, error, or wire views
+- **AND** no unvalidated response body is copied into a user-visible trace
+
 #### Scenario: Raw status includes operator detail
 
 - **WHEN** anonymous `get_status` can return activity records, task or worker identifiers, local paths, persona state, cost data, or authentication health
@@ -117,6 +140,7 @@ an audience-safe complete inventory rather than discovery scope.
 
 - **WHEN** a snapshot refresh is started with an MCP bearer or other caller credential
 - **THEN** it fails before connecting or writing an artifact
+- **AND** credential-like URL query or fragment parameters fail before the URL is logged
 
 #### Scenario: A repository snapshot records its public remote
 

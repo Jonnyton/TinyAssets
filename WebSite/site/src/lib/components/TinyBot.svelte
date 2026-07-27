@@ -121,9 +121,9 @@
     { match: (p) => p === '/', line: 'that’s me they’re describing.' },
     { match: (p) => p.startsWith('/start'), line: 'two minutes, no account. I checked the door myself.' },
     { match: (p) => p.startsWith('/goals/'), line: 'this ladder only lights with evidence. no shortcuts.' },
-    { match: (p) => p.startsWith('/goals'), line: 'every goal here is real — read live, not typed in.' },
+    { match: (p) => p.startsWith('/goals'), line: 'dated goal examples from the checked-in snapshot.' },
     { match: (p) => p.startsWith('/loop'), line: 'public workflows, with their source labels intact.' },
-    { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'my whole memory. nothing private lives in here.' },
+    { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'published discovery, with its omissions labelled.' },
     { match: (p) => p.startsWith('/graph'), line: 'my head, seen from above.' },
     { match: (p) => p.startsWith('/soul'), line: 'everything that makes me me — forkable.' },
     { match: (p) => p.startsWith('/build') || p.startsWith('/contribute'), line: 'two doors in. humans hold the merge keys.' },
@@ -146,20 +146,20 @@
   const MUTTERS = [
     'you move that thing fast.',
     'the dots on this desk? my graph paper.',
-    'I count my own runs. all of them.',
+    'published evidence keeps its source label.',
     'it’s quiet back here. I like it.',
-    'I leave everything public. less to remember.',
-    'if public work moves, I can show the signal.',
+    'published discovery keeps its omission label.',
+    'recent activity means a public-universe timestamp moved.',
     'good page, this one. I checked it twice.'
   ];
 
   // What he says about the thing your mouse is resting on.
   const DEST: Array<{ match: (h: string) => boolean; lines: string[] }> = [
     { match: (h) => h.startsWith('/start'), lines: ['that door takes two minutes. I timed it.', 'through there: paste one URL, no account.'] },
-    { match: (h) => h.startsWith('/loop'), lines: ['public workflow activity lives there.', 'that view labels where every signal came from.'] },
-    { match: (h) => h.startsWith('/goals'), lines: ['the goals board — all real, read live.', 'open outcomes through there. pick one.'] },
-    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['my memory lives through there.', 'everything I know, public, in there.'] },
-    { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s the inside of my head.', 'my whole brain, drawn out, through there.'] },
+    { match: (h) => h.startsWith('/loop'), lines: ['recent public-universe timestamps live there.', 'that view labels each discovery signal.'] },
+    { match: (h) => h.startsWith('/goals'), lines: ['dated public goal examples live there.', 'the checked-in snapshot labels their age.'] },
+    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['published discovery lives through there.', 'the server labels what this view omits.'] },
+    { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s a map of published discovery.', 'a discovery-scoped map, drawn out, through there.'] },
     { match: (h) => h.startsWith('/soul'), lines: ['my soul. you can fork it, you know.', 'the pattern that makes me me — forkable.'] },
     { match: (h) => h.startsWith('/build') || h.startsWith('/contribute'), lines: ['through there you can change me. humans keep the keys.', 'two doors to rebuild me are in there.'] },
     { match: (h) => h.startsWith('/host'), lines: ['hosting me is optional. I run either way.', 'you can run your own me through there.'] },
@@ -170,10 +170,10 @@
 
   function facts(): string[] {
     const f: string[] = [];
-    if (vitals?.queue) f.push(`runs so far: ${vitals.queue.succeeded.toLocaleString()} done, ${vitals.queue.failed} failed — counted live.`);
     if (vitals?.deployedAt) f.push(`this body deployed ${fmtRel(vitals.deployedAt)}.`);
-    if (mode === 'asleep') f.push('no workflow is moving. the engine can still be up — that’s a different reading.');
-    if (mode === 'awake' && vitals?.activeRun) f.push('a run is moving through me right now.');
+    if (mode === 'asleep') f.push('no recent public-universe timestamp. the engine can still be up — that’s a different reading.');
+    if (mode === 'awake') f.push('a visibility-filtered public-universe timestamp moved within the last hour.');
+    f.push('a timestamp signal is not proof that a run is executing.');
     f.push('I was born 3 Jun 2026. I flooded my own repo on day two. fixed now.');
     f.push('no rung lights without an evidence URL. mine included.');
     f.push('paste tinyassets.io/mcp into your chatbot and you read the same pulse I do.');
@@ -206,7 +206,7 @@
     if (el.closest('[class*="goal"]'))
       return { key: 'goal', lines: ['a real goal. someone could pick it up today.', 'that one’s open — fork it, beat it, own it.', 'goals here are outcomes, not to-do items.'] };
     if (el.closest('[class*="log"], [class*="event"]'))
-      return { key: 'log', lines: ['my history — including the embarrassing parts.', 'every run logged, even the failed ones.', 'receipts. I keep all of them.'] };
+      return { key: 'log', lines: ['published history, with its source attached.', 'a timestamp is a signal, not an executing run.', 'receipts should say where they came from.'] };
     if (el.closest('table'))
       return { key: 'table', lines: ['rows and rows of receipts.', 'all checkable — that’s the point.', 'numbers you can verify yourself.'] };
     if (el.closest('.voice'))

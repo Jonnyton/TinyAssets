@@ -4,26 +4,11 @@
   "stats": {
     "wiki_promoted": 55,
     "wiki_drafts": 8,
-    "goals": 4,
+    "goals": 1,
     "universes": 3,
     "edges": 130
   },
   "goals": [
-    {
-      "id": "62f977e7ff0c",
-      "name": "Play classic games on modern computers",
-      "summary": "Help a user identify an old game from memory, find a legal acquisition path, adapt it for their current machine, install or configure it with approval, create a launcher, and verify the game starts. Community branches under this Goal should be forkable recipes for lawful game restoration and compatibility, not piracy or DRM bypass.",
-      "tags": [
-        "classic-games",
-        "game-preservation",
-        "compatibility",
-        "local-app",
-        "installers",
-        "legal-provenance"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
-    },
     {
       "id": "dd187997039b",
       "name": "Connect public web sources to TinyAssets universes",
@@ -38,28 +23,11 @@
         "canon-gate"
       ],
       "author": "anonymous",
-      "visibility": "public"
-    },
-    {
-      "id": "454b6e72348b",
-      "name": "Complete a software project end-to-end",
-      "summary": "Take a project brief and acceptance criteria as input; coordinate a team of Claude Code agents (lead, dev, checker, plus optional specialized roles) to plan, implement, test, and iterate until acceptance criteria are met. Human review is optional throughout — the system can run autonomously with retry budgets and task decomposition as escalation mechanisms. Branches bound to this goal range from 3-node minimum (lead/dev/checker) to 20-node production (with security/perf/ops/docs specialization).",
-      "tags": [
-        "agent-teams",
-        "claude-code",
-        "autonomous",
-        "end-to-end"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
-    },
-    {
-      "id": "4ce84ff648d4",
-      "name": "Produce a research paper",
-      "summary": "Take a research topic or question as input and produce a full research paper — framed question, landscape survey, evidence synthesis, section outline, prose draft, and critiqued final revision. Branches bound to this goal may vary in depth (position paper vs full survey) but share the outcome: a complete paper draft.",
-      "tags": [],
-      "author": "anonymous",
-      "visibility": "public"
+      "visibility": "public",
+      "publication_provenance": [
+        "branches/echoes-reddit-source-intake.yaml",
+        "docs/portfolio/echoes-of-the-cosmos/README.md"
+      ]
     }
   ],
   "universes": [

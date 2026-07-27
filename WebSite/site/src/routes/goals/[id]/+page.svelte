@@ -83,11 +83,12 @@
   const bakedStamp = fmtStamp((bakedMcp as any).fetched_at);
   const goal = $derived(id ? fromBaked(id) : null);
 
-  // The neutral prompt a visitor pastes into their own chatbot.
+  // This prompt carries the dated published content itself. It never asks the
+  // visitor's connector to retrieve the source Goal or its branches.
   const bridgePrompt = $derived(
     goal?.name
-      ? `Show me the goal "${goal.name}" (${id}) on my TinyAssets connector and list its branches.`
-      : `Show me the goal ${id} on my TinyAssets connector and list its branches.`
+      ? `Using this dated public snapshot record as inspiration—not as current state—help me design my own user-authored workflow. Published goal: "${goal.name}" (${id}). Outcome: ${goal.description || 'No outcome text was included.'}`
+      : `Using this dated public snapshot record as inspiration—not as current state—help me design my own user-authored workflow. Published goal id: ${id}.`
   );
   let copied = $state(false);
   let copyTimer: number | null = null;
@@ -181,15 +182,14 @@
         {/if}
       </section>
 
-      <!-- The chatbot bridge: a copyable prompt the visitor pastes into their
-           own assistant to open this goal on their connector. -->
+      <!-- The chatbot bridge carries the published snapshot text into a new
+           composition. It does not request the source Goal record. -->
       <section class="bridge" aria-labelledby="bridge-title">
-        <p class="eyebrow">take it to your chatbot</p>
-        <h2 id="bridge-title" class="detail__h2">Open this goal on your connector.</h2>
+        <p class="eyebrow">remix the published outcome</p>
+        <h2 id="bridge-title" class="detail__h2">Design your own workflow.</h2>
         <p class="bridge__lede">
-          With the <Term def="A connector is the one URL you paste into Claude, ChatGPT, or any MCP-capable assistant to give it the TinyAssets tools — no account, no install.">connector</Term>
-          enabled, paste this into your own chatbot to inspect this goal and the
-          branches competing to reach it:
+          Paste this into any chatbot to compose from the dated public snapshot
+          record shown above. Source Goal and branch records stay untouched:
         </p>
         <button type="button" class="bridge__prompt" onclick={copyBridge} aria-label={`Copy prompt: ${bridgePrompt}`}>
           <code>{bridgePrompt}</code>

@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import VitalSigns from "../../components/VitalSigns";
-import Tick from "../../components/Tick";
 import Term from "../../components/Term";
-import Ladder from "../../components/Ladder";
+import baked from "../../lib/mcp-snapshot.json";
+import { fmtStampStable } from "../../lib/fmt";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
   title: "Soul — fork the pattern",
   description:
-    "A soul is a premise document that gives a project its identity, voice, hard rules, and authority boundaries. Read Tiny's premise and outcome ladder, then fork the pattern for your own project.",
+    "A soul is a premise document that gives a project its identity, voice, hard rules, and authority boundaries. Read Tiny's premise, see the public snapshot boundary, then fork the pattern for your own project.",
   alternates: { canonical: "https://tinyassets.io/soul" },
 };
 
@@ -37,18 +37,7 @@ const PARTS = [
   },
 ];
 
-// Tiny's real outcome ladder — read from the live brain 9 Jun 2026.
-// Every rung is dark: none has an evidence URL because he hasn't shipped a
-// real post yet. The component renders unlit by default; the stamp says so.
-const TINY_RUNGS = [
-  { name: "First real post shipped" },
-  { name: "First non-owner engagement" },
-  { name: "Quote-posted by a real account" },
-  { name: "Referenced by a peer project" },
-  { name: "First fork-descendant speaks" },
-  { name: "100 followers" },
-  { name: "Externally cited or invited" },
-];
+const SNAPSHOT_STAMP = fmtStampStable(baked.fetched_at);
 
 // The four fork steps — neutral, each a real action through your chatbot.
 const STEPS = [
@@ -99,8 +88,9 @@ export default function SoulPage() {
             <p className="eyebrow">public workflow activity, right now</p>
             <VitalSigns variant="hero" />
             <p className="cover__pulse-note">
-              This reading reports generic workflow activity separately from server
-              reachability. Neither is used as proof of the other.
+              This reads visibility-filtered public-universe timestamps. A
+              recent timestamp is an activity signal, not proof that a run is
+              executing.
             </p>
           </div>
         </div>
@@ -145,24 +135,18 @@ export default function SoulPage() {
             <footer className="premise__cite ev">— opening lines of my premise</footer>
           </blockquote>
           <p className="voice">
-            And here&apos;s what I&apos;m reaching for — my goal&apos;s ladder, the same kind every
-            project declares for itself. Every rung is a checkable event, and a rung
-            lights only with an evidence URL behind it.
+            Outcome ladders are the same kind of checkable evidence structure
+            every project can declare for itself. A rung lights only with an
+            evidence URL behind it.
           </p>
-
-          <div className="mine-ladder">
-            <Ladder rungs={TINY_RUNGS} start="a soul + a draft" />
-          </div>
 
           <p className="mine-ladder__stamp ev">
-            read 9 Jun 2026 · 0 of 7 claimed — every rung dark
+            checked-in public snapshot {SNAPSHOT_STAMP} · no Tiny outcome ladder record
           </p>
           <p className="honesty voice">
-            I&apos;ll be straight with you: <em>I haven&apos;t shipped a real post yet.</em>
-            Rung one is still dark, and this ladder will keep saying so until there&apos;s
-            an evidence URL to click. That&apos;s not a bug in the page — it&apos;s the page
-            doing its job.
-            <Tick href="/goals" label="goal d1424d86cb5f" />
+            The dated public snapshot does not contain the former Tiny outcome
+            record. This page leaves that gap visible instead of fetching a
+            private-capable Goal record or repeating an older ladder as current.
           </p>
         </div>
       </section>
@@ -229,7 +213,7 @@ export default function SoulPage() {
             </a>
             <a className="close__card" href="/goals">
               <span className="close__k eyebrow">see it done</span>
-              <strong>Read real ladders in the wild →</strong>
+              <strong>Browse published Goal examples →</strong>
               <span className="close__sub">dated public Goal examples, with outcome ladders where the snapshot includes them.</span>
             </a>
           </nav>

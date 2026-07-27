@@ -15,6 +15,7 @@ import {
   requireCompleteCollection,
   requireObjectResult,
   requirePageBody,
+  sanitizePublicPlaygroundResponse,
   splitFullPageInventory,
   splitPageInventory,
 } from "../../shared/mcp/public-read-contract.js";
@@ -118,15 +119,158 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     assertAnonymousSnapshotUrl("https://tinyassets.io/mcp"),
     "https://tinyassets.io/mcp",
   );
+  assert.equal(
+    assertAnonymousSnapshotUrl(
+      "https://tinyassets.io/mcp?region=us-west&mode=public#documentation",
+    ),
+    "https://tinyassets.io/mcp?region=us-west&mode=public#documentation",
+  );
   for (const unsafe of [
     "https://user:token@tinyassets.io/mcp",
     "https://user@tinyassets.io/mcp",
+    "https://tinyassets.io/mcp?access_token=top-secret",
+    "https://tinyassets.io/mcp?TOKEN=top-secret",
+    "https://tinyassets.io/mcp?api-key=top-secret",
+    "https://tinyassets.io/mcp?key=top-secret",
+    "https://tinyassets.io/mcp?auth=top-secret",
+    "https://tinyassets.io/mcp?authorization=Bearer%20top-secret",
+    "https://tinyassets.io/mcp?signature=top-secret",
+    "https://tinyassets.io/mcp?sig=top-secret",
+    "https://tinyassets.io/mcp?credential=top-secret",
+    "https://tinyassets.io/mcp?password=top-secret",
+    "https://tinyassets.io/mcp?x-amz-credential=top-secret",
+    "https://tinyassets.io/mcp?x-amz-signature=top-secret",
+    "https://tinyassets.io/mcp?session_token=top-secret",
+    "https://tinyassets.io/mcp?oauth_token=top-secret",
+    "https://tinyassets.io/mcp?client_secret=top-secret",
+    "https://tinyassets.io/mcp?jwt=top-secret",
+    "https://tinyassets.io/mcp?authorization_code=top-secret",
+    "https://tinyassets.io/mcp#access_token=top-secret",
+    "https://tinyassets.io/mcp#/callback?refresh_token=top-secret",
+    "https://tinyassets.io/mcp#bearer=top-secret",
+    "https://tinyassets.io/mcp#Bearer%20top-secret",
+    "https://tinyassets.io/mcp?label=Bearer%20top-secret",
   ]) {
     assert.throws(
       () => assertAnonymousSnapshotUrl(unsafe),
       /anonymous.*credentials/i,
     );
   }
+});
+
+test("public Playground responses are validated and reduced to public discovery fields", () => {
+  assert.deepEqual(
+    sanitizePublicPlaygroundResponse(
+      "read_graph",
+      { target: "graphs", limit: 100 },
+      {
+        universes: [
+          {
+            id: "public-one",
+            visibility: "public",
+            has_premise: true,
+            has_soul: false,
+            word_count: 12,
+            phase: "idle",
+            phase_human: "Idle",
+            staleness: "fresh",
+            last_activity_at: "2026-07-27T00:00:00Z",
+            accept_rate: 1,
+            local_path: "C:\\Users\\operator\\private",
+            auth_health: { bearer: "secret" },
+          },
+        ],
+        count: 1,
+        note: "Base directory: C:\\Users\\operator\\private",
+      },
+    ),
+    {
+      universes: [
+        {
+          id: "public-one",
+          visibility: "public",
+          has_premise: true,
+          has_soul: false,
+          word_count: 12,
+          phase: "idle",
+          phase_human: "Idle",
+          staleness: "fresh",
+          last_activity_at: "2026-07-27T00:00:00Z",
+          accept_rate: 1,
+        },
+      ],
+      count: 1,
+    },
+  );
+
+  assert.deepEqual(
+    sanitizePublicPlaygroundResponse(
+      "read_page",
+      pageInventoryCall().args,
+      {
+        results: [
+          {
+            path: "pages/concepts/public.md",
+            title: "Public",
+            type: "concept",
+            updated: "2026-07-27T00:00:00Z",
+            is_draft: false,
+            excerpt: "A published excerpt.",
+            content: "private body must not reach the Playground",
+          },
+        ],
+        count: 1,
+        total_matches: 1,
+        truncated_count: 0,
+        scope: "discovery",
+        scope_note: "Coordination pages are omitted.",
+        operator_state: { token: "secret" },
+      },
+    ),
+    {
+      results: [
+        {
+          path: "pages/concepts/public.md",
+          title: "Public",
+          type: "concept",
+          updated: "2026-07-27T00:00:00Z",
+          is_draft: false,
+          excerpt: "A published excerpt.",
+        },
+      ],
+      count: 1,
+      total_matches: 1,
+      truncated_count: 0,
+      scope: "discovery",
+      scope_note: "Coordination pages are omitted.",
+    },
+  );
+
+  assert.throws(
+    () =>
+      sanitizePublicPlaygroundResponse(
+        "read_graph",
+        { target: "graphs", limit: 100 },
+        { universes: "not-an-array" },
+      ),
+    /universes array/i,
+  );
+  assert.throws(
+    () =>
+      sanitizePublicPlaygroundResponse(
+        "read_page",
+        pageInventoryCall().args,
+        {
+          results: [],
+          count: 0,
+          total_matches: 0,
+          truncated_count: 0,
+          scope: "all",
+          scope_note: "",
+        },
+      ),
+    /incomplete/i,
+  );
 });
 
 test("exact page descriptors require an immutable validated inventory provenance", () => {

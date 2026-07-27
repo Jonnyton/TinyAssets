@@ -99,7 +99,8 @@ async function ensureInit(): Promise<void> {
         Accept: 'application/json, text/event-stream',
         ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {})
       },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      credentials: 'omit'
     });
   } catch {}
   initialized = true;

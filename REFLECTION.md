@@ -520,3 +520,7 @@ fresh-host rollback edges found later.
   migrating names, then lead with negative tests for credentials, exact cap
   fills, truncation, SDK absence, and local-origin leakage. That would have
   prevented a naming cleanup from appearing safer than the underlying data.
+- **Follow-up:** response validation must cover every rendered representation,
+  not only the parsed view; checked-in `visibility=public` also needs an
+  independent publication record when a historical generator could have
+  defaulted it.

@@ -14,13 +14,13 @@ const GH_ISSUES = "https://github.com/Jonnyton/TinyAssets/issues";
 const GH_CONTRIBUTING = "https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md";
 
 // ── Six persona starter prompts — each copyable, each works today
-// via the universe / goals / wiki tools. ──
+// through public discovery or user-authorized composition tools. ──
 type Prompt = { persona: string; flavor: string; text: string };
 const PROMPTS: Prompt[] = [
   {
     persona: "The researcher",
     flavor: "orient first",
-    text: "Inspect my TinyAssets universe and show me what goals exist.",
+    text: "Browse the public commons for research workflows I can inspect, copy, and remix.",
   },
   {
     persona: "The maker",
@@ -260,8 +260,8 @@ export default function StartClient() {
           <h2 id="prompts-title">Bring a first sentence.</h2>
           <p className="prompts__lede voice">
             — connected and not sure what to ask? Here are six openers, one per
-            kind of visitor. Each works today through my universe, goals, and
-            commons tools. Swap the bracketed bits for your own.
+            kind of visitor. Each uses public discovery or asks you to compose
+            user-owned work. Swap the bracketed bits for your own.
           </p>
 
           <ul className="prompts">
@@ -284,9 +284,9 @@ export default function StartClient() {
             ))}
           </ul>
           <p className="prompts__foot">
-            Wondering what a &ldquo;goal&rdquo; or the &ldquo;commons&rdquo; is? Open the live
-            {" "}<a href="/goals">goals board</a> — it reads the real list straight from
-            the engine.
+            Wondering what a &ldquo;goal&rdquo; or the &ldquo;commons&rdquo; is? The
+            {" "}<a href="/goals">goals board</a> shows explicitly public examples
+            from a dated checked-in snapshot.
           </p>
         </div>
       </section>

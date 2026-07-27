@@ -10,7 +10,10 @@
  * Prod: hits /mcp (same-origin Cloudflare worker).
  */
 
-import { assertPublicPlaygroundCall } from '../../../../shared/mcp/public-read-contract.js';
+import {
+  assertPublicPlaygroundCall,
+  sanitizePublicPlaygroundResponse
+} from '../../../../shared/mcp/public-read-contract.js';
 
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
@@ -48,6 +51,53 @@ function headersToObject(h: Headers): Record<string, string> {
     out[k] = v;
   });
   return out;
+}
+
+function safeTrace(trace: WireTrace, responseBody: unknown): WireTrace {
+  const contentType = trace.response.contentType.includes('text/event-stream')
+    ? 'text/event-stream'
+    : trace.response.contentType.includes('json')
+      ? 'application/json'
+      : 'other';
+  return {
+    request: {
+      ...trace.request,
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream'
+      }
+    },
+    response: {
+      ...trace.response,
+      statusText: trace.response.status >= 200 && trace.response.status < 300
+        ? 'OK'
+        : 'Request failed',
+      headers: contentType === 'other' ? {} : { 'content-type': contentType },
+      body: responseBody,
+      contentType
+    }
+  };
+}
+
+function safeToolTrace(trace: WireTrace, parsed: Record<string, any>): WireTrace {
+  const envelope = trace.request.body;
+  const safeEnvelope: Record<string, any> = {
+    jsonrpc: '2.0',
+    result: { structuredContent: parsed }
+  };
+  if (
+    envelope &&
+    typeof envelope === 'object' &&
+    !Array.isArray(envelope) &&
+    (typeof (envelope as any).id === 'number' || typeof (envelope as any).id === 'string')
+  ) {
+    safeEnvelope.id = (envelope as any).id;
+  }
+  return safeTrace(trace, safeEnvelope);
+}
+
+function withheldTrace(trace: WireTrace): WireTrace {
+  return safeTrace(trace, 'Response body withheld because it failed public validation.');
 }
 
 async function rpcWithTrace(method: string, params: unknown): Promise<{ result: any; trace: WireTrace }> {
@@ -122,48 +172,70 @@ async function ensureInit(): Promise<WireTrace | undefined> {
         Accept: 'application/json, text/event-stream',
         ...(sessionId ? { 'Mcp-Session-Id': sessionId } : {})
       },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+      credentials: 'omit'
     });
   } catch {
     /* ignore */
   }
   initialized = true;
-  return init.trace;
+  return safeTrace(init.trace, {
+    jsonrpc: '2.0',
+    result: { protocolVersion: '2025-06-18', initialized: true }
+  });
 }
 
 export async function callTool(name: string, args: Record<string, unknown>): Promise<CallResult> {
   assertPublicPlaygroundCall(name, args);
-  const initTrace = await ensureInit();
-  const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
+  try {
+    const initTrace = await ensureInit();
+    const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
 
-  // The server moved canonical tool output into `structuredContent`; the
-  // text content is now often just a summary or a pointer. Prefer the
-  // structured payload, falling back to parsing the text blob. `raw` still
-  // carries the full envelope so the wire/JSON views show everything.
-  let parsed: any = null;
-  if (result && typeof result === 'object' && result.structuredContent && typeof result.structuredContent === 'object') {
-    parsed = result.structuredContent;
-  } else if (result && typeof result === 'object' && Array.isArray(result.content)) {
-    const textPart = result.content.find((c: any) => c?.type === 'text');
-    if (textPart?.text) {
-      try {
-        parsed = JSON.parse(textPart.text);
-        if (parsed && typeof parsed.result === 'string') {
-          try {
-            parsed = JSON.parse(parsed.result);
-          } catch {
-            /* keep parsed.result string */
+    // Canonical tool output lives in `structuredContent`; older servers may
+    // still return JSON in their text item. Nothing crosses into the UI until
+    // the fixed public response contract validates and reduces it.
+    let parsed: any = null;
+    if (result && typeof result === 'object' && result.structuredContent && typeof result.structuredContent === 'object') {
+      parsed = result.structuredContent;
+    } else if (result && typeof result === 'object' && Array.isArray(result.content)) {
+      const textPart = result.content.find((c: any) => c?.type === 'text');
+      if (textPart?.text) {
+        try {
+          parsed = JSON.parse(textPart.text);
+          if (parsed && typeof parsed.result === 'string') {
+            try {
+              parsed = JSON.parse(parsed.result);
+            } catch {
+              /* invalid nested JSON will fail the public response validator */
+            }
           }
+        } catch {
+          parsed = null;
         }
-      } catch {
-        parsed = textPart.text;
       }
+    } else {
+      parsed = result;
     }
-  } else {
-    parsed = result;
-  }
 
-  return { parsed, raw: result, trace, initTrace };
+    try {
+      const validated = sanitizePublicPlaygroundResponse(name, args, parsed);
+      const publicTrace = safeToolTrace(trace, validated);
+      return {
+        parsed: validated,
+        raw: { structuredContent: validated },
+        trace: publicTrace,
+        initTrace
+      };
+    } catch {
+      throw Object.assign(new Error('MCP response failed public validation.'), { trace });
+    }
+  } catch (error: any) {
+    const trace = error?.trace ? withheldTrace(error.trace) : undefined;
+    throw Object.assign(
+      new Error('MCP response failed public validation or the request could not complete.'),
+      trace ? { trace } : {}
+    );
+  }
 }
 
 // ============ Input parser ============

@@ -11,6 +11,9 @@ const paths = {
   detail: resolve(here, "../src/routes/goals/[id]/+page.svelte"),
   activity: resolve(here, "../src/routes/loop/+page.svelte"),
   atlas: resolve(here, "../src/lib/graph/atlas.ts"),
+  start: resolve(here, "../src/routes/start/+page.svelte"),
+  soul: resolve(here, "../src/routes/soul/+page.svelte"),
+  tinyBot: resolve(here, "../src/lib/components/TinyBot.svelte"),
 };
 const sources = Object.fromEntries(
   Object.entries(paths).map(([name, path]) => [name, readFileSync(path, "utf8")]),
@@ -70,4 +73,40 @@ test("Svelte home derives Goal evidence from the checked-in snapshot instead of 
   );
   assert.match(sources.home, /\bsnapshotLadders\b/);
   assert.match(sources.home, /snapshot does not include ladder records/i);
+});
+
+test("Svelte public copy never invites a connector to read Goal or branch records", () => {
+  for (const name of ["detail", "start", "soul", "tinyBot"]) {
+    const raw = sources[name];
+    const prose = raw.replace(/\s+/g, " ");
+    assert.doesNotMatch(
+      prose,
+      /\b(?:connector|chatbot)\b.{0,100}\b(?:inspect|read|show|open)\b.{0,64}\b(?:Goal|goal|goals|branch|branches)\b|\b(?:inspect|read|show|open)\b.{0,64}\b(?:Goal|goal|goals|branch|branches)\b.{0,100}\b(?:connector|chatbot)\b/i,
+      `${name} must not encourage private-capable Goal or branch reads`,
+    );
+    assert.doesNotMatch(
+      raw,
+      /\bgoals?\b.{0,48}\bread live\b|\bread live\b.{0,48}\bgoals?\b|\blive public goals\b/i,
+      `${name} must describe Goal examples as snapshot data`,
+    );
+  }
+
+  assert.match(sources.detail, /dated public snapshot record/i);
+  assert.match(sources.soul, /checked-in public snapshot/i);
+  assert.doesNotMatch(
+    sources.soul,
+    /\bread real ladders in the wild\b/i,
+    "Soul must not promise ladder evidence that the public snapshot may not contain",
+  );
+  assert.match(sources.tinyBot, /checked-in snapshot/i);
+});
+
+test("Svelte TinyBot activity facts are visibility-filtered timestamp signals only", () => {
+  const prose = sources.tinyBot.replace(/\s+/g, " ");
+  assert.match(prose, /public-universe timestamp/i);
+  assert.doesNotMatch(prose, /\bactiveRun\b|\bqueue\b/);
+  assert.doesNotMatch(
+    prose,
+    /\ba run is moving\b|\bevery run logged\b|\bcounted live\b/i,
+  );
 });

@@ -66,7 +66,7 @@
     } catch (err: any) {
       const elapsedMs = Math.round(performance.now() - t0);
       const trace = err?.trace ?? null;
-      history = [{ ...placeholder, status: 'error', elapsedMs, error: err?.message ?? String(err), trace, initTrace: null, parsed: trace?.response?.body ?? null, raw: null, summary: null }, ...history.slice(1)];
+      history = [{ ...placeholder, status: 'error', elapsedMs, error: err?.message ?? String(err), trace, initTrace: null, parsed: null, raw: null, summary: null }, ...history.slice(1)];
     } finally {
       busy = false;
     }

@@ -283,9 +283,19 @@
   ceiling, so a response that exactly fills that cap is ambiguous and MUST fail
   closed. Snapshot regeneration remains blocked until every retained
   collection has a server-enforced public projection with truthful
-  completeness semantics. The prior snapshot remains byte-identical at
-  SHA-256
+  completeness semantics. The first live fail-closed proof left the
+  pre-review mirrors byte-identical at SHA-256
   `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+  Independent review then found that the historical generator defaulted a
+  missing Goal visibility to `public`; that normalized field was not
+  publication proof. Three Goals without independent explicit-public
+  provenance were removed manually from both mirrors. The sole retained Goal,
+  `dd187997039b`, is independently declared public by
+  `branches/echoes-reddit-source-intake.yaml` and
+  `docs/portfolio/echoes-of-the-cosmos/README.md`; both provenance paths are
+  embedded in and tested against the snapshot. The matching curated mirrors
+  now contain one Goal and have SHA-256
+  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
   **Fail-closed website implementation evidence 2026-07-27:** both public
   browser clients now keep their generic MCP caller module-private and allow
   only bounded, visibility-filtered `read_graph target=graphs` plus the
@@ -295,16 +305,28 @@
   bound to immutable paths from the validated same-refresh inventory, a full
   replacement requires explicit untruncated `scope=all`, and exactly filling
   an unpageable 100-result cap fails closed. Snapshot startup rejects bearer
-  credentials and URL userinfo before connect/logging, requires the MCP SDK,
-  and the repository generator always publishes the canonical public GitHub
-  URL rather than a local Git origin. The focused/full Node suite passes
-  63/63; both production builds pass; Svelte check reports 0 errors and 3
-  unrelated existing warnings; Svelte production dependency audit reports
-  zero vulnerabilities; strict validation passes all 58 OpenSpec items. A
-  live anonymous required/full refresh failed closed on `scope=discovery`
-  with exit 1 and left both prior snapshot mirrors byte-identical at the hash
-  above. This is implementation evidence, not final approval: exact-head
-  opposite-provider review, server-side privacy enforcement, source-data
+  credentials, URL userinfo, credential-like query/hash values, and bearer
+  values before connect/logging; every browser initialization notification
+  omits ambient credentials. The public Playground validates and reduces each
+  tool response before rendering parsed, raw, or wire views, strips response
+  and session headers, and withholds bodies on validation/request failure.
+  The snapshot requires the MCP SDK, and the repository generator always
+  publishes the canonical public GitHub URL rather than a local Git origin.
+  Exact-head Codex review of implementation commit `afb77f12` returned ADAPT
+  on those Playground/credential gaps, residual whole-brain/live-Goal copy,
+  conflated Graph provenance, and a run-execution claim inferred from universe
+  timestamps. Those findings are repaired in this follow-up; public copy now
+  labels bounded discovery, checked-in Goal evidence, and visibility-filtered
+  timestamp signals separately.
+  The full Node suite passes 74/74; both production builds pass; Svelte check
+  reports 0 errors and 3 unrelated existing warnings; Svelte production
+  dependency audit reports zero vulnerabilities; strict validation passes all
+  58 OpenSpec items; and `git diff --check` passes. A fresh live anonymous
+  required/full refresh failed closed on `scope=discovery` with exit 1 and
+  left both curated mirrors byte-identical at
+  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+  This is implementation evidence, not final approval: fresh exact-head Codex
+  and Claude Opus 5 review, server-side privacy enforcement, source-data
   retirement, rendered live proof, and post-fix clean-use evidence remain.
   The probe also proved two remaining source-data blockers: public page
   `pages/concepts/community-patch-loop-as-project-steward.md` still presents

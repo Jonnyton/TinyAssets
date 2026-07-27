@@ -53,7 +53,7 @@
   <meta property="og:url" content="https://tinyassets.io/" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="TinyAssets — the engine that shows its work" />
-  <meta name="twitter:description" content="Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers." />
+  <meta name="twitter:description" content="Provenance-labelled public discovery and dated snapshots: live signals say exactly what they measure." />
   <meta name="twitter:image" content="https://tinyassets.io/og-image.png" />
   {@html `<script type="application/ld+json">${JSON.stringify(jsonLd)}<\/script>`}
 </svelte:head>

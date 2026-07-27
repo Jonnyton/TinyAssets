@@ -26,7 +26,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "TinyAssets — the engine that shows its work",
     description:
-      "Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers.",
+      "Provenance-labelled public discovery and dated snapshots: live signals say exactly what they measure.",
     images: ["/og-image.png"],
   },
 };

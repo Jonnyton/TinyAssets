@@ -1,6 +1,66 @@
 const PAGE_INVENTORY_SINCE = "1970-01-01T00:00:00Z";
 const PAGE_INVENTORY_LIMIT = 100;
 const validatedPathSets = new WeakMap();
+const CREDENTIAL_PARAMETER_NAMES = new Set([
+  "accesstoken",
+  "refreshtoken",
+  "idtoken",
+  "token",
+  "apikey",
+  "key",
+  "auth",
+  "authorization",
+  "signature",
+  "sig",
+  "bearer",
+  "credential",
+  "credentials",
+  "password",
+  "passwd",
+  "secret",
+  "clientsecret",
+  "xamzcredential",
+  "xamzsignature",
+  "xamzsecuritytoken",
+  "xgoogcredential",
+  "xgoogsignature",
+  "jwt",
+  "session",
+  "sessionid",
+  "oauthcode",
+  "authorizationcode",
+  "privatekey",
+]);
+
+/** @param {string} value */
+function normalizedParameterName(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** @param {string} value */
+function isCredentialParameterName(value) {
+  const normalized = normalizedParameterName(value);
+  return (
+    CREDENTIAL_PARAMETER_NAMES.has(normalized) ||
+    /(?:token|secret|password|passwd|credential|signature)$/.test(normalized)
+  );
+}
+
+/**
+ * @param {URLSearchParams} params
+ * @returns {boolean}
+ */
+function containsCredentialMaterial(params) {
+  for (const [name, value] of params) {
+    if (isCredentialParameterName(name)) {
+      return true;
+    }
+    if (/^\s*bearer(?:\s|%20)+\S/i.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 /** @param {string} page */
 function canonicalPagePath(page) {
@@ -42,7 +102,28 @@ export function pageInventoryCall(changedSince = PAGE_INVENTORY_SINCE) {
  */
 export function assertAnonymousSnapshotUrl(value) {
   const parsed = new URL(value);
-  if (parsed.username || parsed.password) {
+  const fragment = parsed.hash.slice(1);
+  let decodedFragment = fragment;
+  try {
+    decodedFragment = decodeURIComponent(fragment);
+  } catch {
+    // URLSearchParams still handles any valid pairs below; malformed escaped
+    // fragments are not treated as credential-free by decoding alone.
+  }
+  const fragmentQueryIndex = fragment.indexOf("?");
+  const fragmentParams = [
+    new URLSearchParams(fragment),
+    ...(fragmentQueryIndex >= 0
+      ? [new URLSearchParams(fragment.slice(fragmentQueryIndex + 1))]
+      : []),
+  ];
+  if (
+    parsed.username ||
+    parsed.password ||
+    containsCredentialMaterial(parsed.searchParams) ||
+    fragmentParams.some(containsCredentialMaterial) ||
+    /^\s*bearer(?:\s|:)+\S/i.test(decodedFragment)
+  ) {
     throw new Error(
       "Public snapshots must run anonymously; MCP URL credentials are forbidden",
     );
@@ -103,6 +184,103 @@ export function assertPublicPlaygroundCall(name, args) {
     "The public Playground only supports read_graph target=graphs with limit " +
       "1-100 and the bounded read_page discovery inventory.",
   );
+}
+
+/**
+ * Copy a known public scalar without allowing nested or unexpected response
+ * data to cross into the browser UI.
+ *
+ * @param {Record<string, any>} source
+ * @param {Record<string, any>} target
+ * @param {string} key
+ * @param {string} type
+ * @param {boolean} [nullable]
+ */
+function copyPublicScalar(source, target, key, type, nullable = false) {
+  if (!(key in source)) return;
+  const value = source[key];
+  if (nullable && value === null) {
+    target[key] = null;
+    return;
+  }
+  if (
+    typeof value !== type ||
+    (type === "number" && !Number.isFinite(value))
+  ) {
+    throw new Error(`public MCP response field ${key} has an invalid type`);
+  }
+  target[key] = value;
+}
+
+/** @param {any} value */
+function sanitizePublicUniverse(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("read_graph graphs returned an invalid universe record");
+  }
+  if (typeof value.id !== "string" || !value.id.trim()) {
+    throw new Error("read_graph graphs returned a universe without an id");
+  }
+  const safe = { id: value.id };
+  copyPublicScalar(value, safe, "visibility", "string");
+  copyPublicScalar(value, safe, "has_premise", "boolean");
+  copyPublicScalar(value, safe, "has_soul", "boolean");
+  copyPublicScalar(value, safe, "word_count", "number");
+  copyPublicScalar(value, safe, "phase", "string", true);
+  copyPublicScalar(value, safe, "phase_human", "string");
+  copyPublicScalar(value, safe, "staleness", "string");
+  copyPublicScalar(value, safe, "last_activity_at", "string", true);
+  copyPublicScalar(value, safe, "accept_rate", "number", true);
+  return safe;
+}
+
+/** @param {any} value */
+function sanitizePublicPageSummary(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("read_page inventory returned an invalid page record");
+  }
+  if (typeof value.path !== "string" || !value.path.trim()) {
+    throw new Error("read_page inventory returned a page without a path");
+  }
+  const safe = { path: value.path.trim() };
+  copyPublicScalar(value, safe, "title", "string");
+  copyPublicScalar(value, safe, "type", "string");
+  copyPublicScalar(value, safe, "updated", "string");
+  copyPublicScalar(value, safe, "is_draft", "boolean");
+  copyPublicScalar(value, safe, "excerpt", "string");
+  return safe;
+}
+
+/**
+ * Validate the response against the same fixed call contract used before the
+ * request, then return only fields suitable for the public Playground.
+ * Unknown top-level and record fields are deliberately dropped.
+ *
+ * @param {string} name
+ * @param {Record<string, unknown>} args
+ * @param {any} payload
+ * @returns {Record<string, any>}
+ */
+export function sanitizePublicPlaygroundResponse(name, args, payload) {
+  assertPublicPlaygroundCall(name, args);
+  if (name === "read_graph") {
+    const universes = requireCollection(
+      payload,
+      "universes",
+      "read_graph graphs",
+    ).map(sanitizePublicUniverse);
+    return { universes, count: universes.length };
+  }
+
+  const inventory = splitPageInventory(payload);
+  const results = payload.results.map(sanitizePublicPageSummary);
+  return {
+    results,
+    count: results.length,
+    total_matches: results.length,
+    truncated_count: 0,
+    scope: inventory.scope,
+    scope_note: inventory.scopeNote,
+  };
 }
 
 /**
