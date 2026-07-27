@@ -1,604 +1,4067 @@
 {
-  "fetched_at": "2026-04-30T02:40:01.448Z",
-  "source": "local git checkout + GitHub remote",
-  "repo": {
-    "id": "repo:TinyAssets",
-    "name": "TinyAssets",
-    "owner": "Jonnyton",
-    "remote_url": "https://github.com/Jonnyton/TinyAssets.git",
-    "current_branch": "cursor/claim-check-session-d",
-    "head": "8980315",
-    "main": "6207949",
-    "dirty_note": "Working tree had 96 changed paths when repo snapshot was generated."
-  },
-  "branches": [
-    {
-      "id": "git:codex/arc-b-phase3",
-      "name": "codex/arc-b-phase3",
-      "kind": "local",
-      "commit": "1ae48ef",
-      "date": "2026-04-29T17:57:55-07:00",
-      "subject": "refactor: remove author rename compatibility shims"
-    },
-    {
-      "id": "git:codex/browser-only-scorched-tanks-pwa",
-      "name": "codex/browser-only-scorched-tanks-pwa",
-      "kind": "local",
-      "commit": "1741a6b",
-      "date": "2026-04-29T18:17:41-07:00",
-      "subject": "docs: track local desktop game install blocker"
-    },
-    {
-      "id": "git:codex/bug037-publish-version-topology",
-      "name": "codex/bug037-publish-version-topology",
-      "kind": "local",
-      "commit": "8980315",
-      "date": "2026-04-28T00:15:25-07:00",
-      "subject": "docs: record autonomous backlog guardrails"
-    },
-    {
-      "id": "git:codex/bug037-publish-version-topology-live",
-      "name": "codex/bug037-publish-version-topology-live",
-      "kind": "local",
-      "commit": "b049f0d",
-      "date": "2026-04-29T18:07:14-07:00",
-      "subject": "chore: retire landed Arc B status rows"
-    },
-    {
-      "id": "git:codex/old-session-consolidation",
-      "name": "codex/old-session-consolidation",
-      "kind": "local",
-      "commit": "adb100f",
-      "date": "2026-04-29T17:29:27-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/old-session-consolidation"
-    },
-    {
-      "id": "git:codex/revert-loop-idle-canary",
-      "name": "codex/revert-loop-idle-canary",
-      "kind": "local",
-      "commit": "d28a381",
-      "date": "2026-04-29T19:34:59-07:00",
-      "subject": "docs: plan live community reiteration loop"
-    },
-    {
-      "id": "git:cursor/claim-check-session-d",
-      "name": "cursor/claim-check-session-d",
-      "kind": "local",
-      "commit": "8980315",
-      "date": "2026-04-28T00:15:25-07:00",
-      "subject": "docs: record autonomous backlog guardrails"
-    },
-    {
-      "id": "git:main",
-      "name": "main",
-      "kind": "local",
-      "commit": "6207949",
-      "date": "2026-04-27T23:40:04-07:00",
-      "subject": "docs: add backlog execution artifacts"
-    },
-    {
-      "id": "git:worktree-agent-a54683e4",
-      "name": "worktree-agent-a54683e4",
-      "kind": "local",
-      "commit": "e473f47",
-      "date": "2026-04-13T08:30:37-07:00",
-      "subject": "Phase 7.3 H2: goals cluster cutover"
-    },
-    {
-      "id": "git:origin/codex/arc-b-phase3",
-      "name": "origin/codex/arc-b-phase3",
-      "kind": "remote",
-      "commit": "1ae48ef",
-      "date": "2026-04-29T17:57:55-07:00",
-      "subject": "refactor: remove author rename compatibility shims"
-    },
-    {
-      "id": "git:origin/codex/local-desktop-game-installer",
-      "name": "origin/codex/local-desktop-game-installer",
-      "kind": "remote",
-      "commit": "1741a6b",
-      "date": "2026-04-29T18:17:41-07:00",
-      "subject": "docs: track local desktop game install blocker"
-    },
-    {
-      "id": "git:origin/codex/old-session-consolidation",
-      "name": "origin/codex/old-session-consolidation",
-      "kind": "remote",
-      "commit": "adb100f",
-      "date": "2026-04-29T17:29:27-07:00",
-      "subject": "Merge remote-tracking branch 'origin/main' into codex/old-session-consolidation"
-    },
-    {
-      "id": "git:origin/codex/revert-loop-idle-canary",
-      "name": "origin/codex/revert-loop-idle-canary",
-      "kind": "remote",
-      "commit": "d28a381",
-      "date": "2026-04-29T19:34:59-07:00",
-      "subject": "docs: plan live community reiteration loop"
-    },
-    {
-      "id": "git:origin/cursor/claim-check-session-d",
-      "name": "origin/cursor/claim-check-session-d",
-      "kind": "remote",
-      "commit": "528eeba",
-      "date": "2026-04-27T23:41:35-07:00",
-      "subject": "docs: add navigator reality sweep update"
-    },
-    {
-      "id": "git:origin/main",
-      "name": "origin/main",
-      "kind": "remote",
-      "commit": "d28a381",
-      "date": "2026-04-29T19:34:59-07:00",
-      "subject": "docs: plan live community reiteration loop"
-    },
-    {
-      "id": "git:origin/website/fix-live-crashes",
-      "name": "origin/website/fix-live-crashes",
-      "kind": "remote",
-      "commit": "29399b8",
-      "date": "2026-04-29T18:36:36Z",
-      "subject": "remove(site): pull all phone references; reframe alliance as async-only"
-    },
-    {
-      "id": "git:origin/website/ship-prototype",
-      "name": "origin/website/ship-prototype",
-      "kind": "remote",
-      "commit": "b54227e",
-      "date": "2026-04-29T08:08:18Z",
-      "subject": "feat(site): pre-ship hardening \u2014 fresh snapshot, error page, deploy guide"
-    }
-  ],
   "areas": [
     {
       "id": "area:repo",
       "label": "Repository",
-      "summary": "GitHub repository, branches, worktrees, and active checkout state.",
       "paths": [
         ".git",
         ".github",
         "AGENTS.md",
         "STATUS.md"
-      ]
+      ],
+      "summary": "GitHub repository, branches, worktrees, and active checkout state."
     },
     {
       "id": "area:mcp-api",
       "label": "MCP/API surface",
-      "summary": "The public connector tools and server adapters that expose TinyAssets to chatbots.",
       "paths": [
         "tinyassets/api",
         "tinyassets/mcp_server.py",
         "tinyassets/cloud_worker.py"
-      ]
+      ],
+      "summary": "The public connector tools and server adapters that expose TinyAssets to chatbots."
     },
     {
       "id": "area:runtime-engine",
       "label": "Runtime engine",
-      "summary": "Daemon, storage, graph execution, branch tasks, retrieval, and producers.",
       "paths": [
         "workflow",
         "branches",
         "nodes",
         "goal_pool"
-      ]
+      ],
+      "summary": "Daemon, storage, graph execution, branch tasks, retrieval, and producers."
     },
     {
       "id": "area:fantasy-domain",
       "label": "Fantasy domain",
-      "summary": "The original long-running authoring domain and live concordance universe.",
       "paths": [
         "fantasy_daemon",
         "fantasy_author",
         "domains/fantasy_daemon",
         "domains/fantasy_author",
         "universes"
-      ]
+      ],
+      "summary": "The original long-running authoring domain and live concordance universe."
     },
     {
       "id": "area:coding-system",
       "label": "Coding system",
-      "summary": "Agent-team coding, patch packets, tests, review gates, and repo-change execution.",
       "paths": [
         "tinyassets/api/runs.py",
         "tinyassets/branch_tasks.py",
         "tests",
         ".agents/skills"
-      ]
-    },
-    {
-      "id": "area:patch-loop",
-      "label": "Patch loop",
-      "summary": "Public bug intake, investigation, gates, coding dispatch, release, and observation.",
-      "paths": [
-        "docs/conventions/gate-branch-shape.md",
-        "ideas",
-        "STATUS.md"
-      ]
+      ],
+      "summary": "Agent-team coding, patch packets, tests, review gates, and repo-change execution."
     },
     {
       "id": "area:website",
       "label": "Website",
-      "summary": "The tinyassets.io public showcase pages and local preview loop.",
       "paths": [
         "WebSite/site",
         "WebSite/preview.bat",
         "WebSite/ship.ps1"
-      ]
+      ],
+      "summary": "The tinyassets.io public showcase pages and local preview loop."
     },
     {
       "id": "area:docs-plans",
       "label": "Docs and plans",
-      "summary": "Design notes, audits, specs, execution plans, and idea pipeline.",
       "paths": [
         "docs",
         "ideas",
         "PLAN.md"
-      ]
+      ],
+      "summary": "Design notes, audits, specs, execution plans, and idea pipeline."
     },
     {
       "id": "area:packaging-ops",
       "label": "Packaging and ops",
-      "summary": "Plugin packaging, deploy scripts, uptime probes, and public-surface operations.",
       "paths": [
         "packaging",
         "deploy",
         "scripts",
         ".github/workflows"
-      ]
+      ],
+      "summary": "Plugin packaging, deploy scripts, uptime probes, and public-surface operations."
     },
     {
       "id": "area:tests-ci",
       "label": "Tests and CI",
-      "summary": "Regression tests, pre-commit invariants, CI workflows, and verification scripts.",
       "paths": [
         "tests",
         ".github/workflows",
         "scripts"
-      ]
+      ],
+      "summary": "Regression tests, pre-commit invariants, CI workflows, and verification scripts."
     }
   ],
-  "workflow_branches": [
+  "branches": [
     {
-      "id": "branch:fantasy_author:universe_cycle_wrapper",
-      "name": "fantasy_author:universe_cycle_wrapper",
-      "area": "fantasy",
-      "state": "wired",
-      "summary": "Fantasy-domain universe cycle wrapper used by the live authoring daemon."
+      "commit": "040aae7a",
+      "date": "2026-07-22T00:25:40-07:00",
+      "id": "git:agent/auth-health-evidence",
+      "kind": "remote",
+      "name": "agent/auth-health-evidence",
+      "subject": "Merge remote-tracking branch 'origin/main' into agent/auth-health-evidence"
     },
     {
-      "id": "branch:change_loop_v1",
-      "name": "change_loop_v1",
-      "area": "coding",
-      "state": "designed",
-      "summary": "Community change loop branch: intake, investigation, gates, coding, release, observation."
+      "commit": "63243eb3",
+      "date": "2026-07-21T18:49:24-07:00",
+      "id": "git:audit/audit-release-chain",
+      "kind": "remote",
+      "name": "audit/audit-release-chain",
+      "subject": "docs(audit): the release reconciler can certify stale production"
     },
     {
-      "id": "branch:bug_to_patch_packet_v1",
-      "name": "bug_to_patch_packet_v1",
-      "area": "coding",
-      "state": "wired",
-      "summary": "Investigation branch that turns a filed TinyAssets bug into a patch packet."
+      "commit": "555f86a9",
+      "date": "2026-07-21T18:50:00-07:00",
+      "id": "git:audit/audit-stale-pr-triage",
+      "kind": "remote",
+      "name": "audit/audit-stale-pr-triage",
+      "subject": "docs(audit): three stale PRs are already-landed or inverted"
     },
     {
-      "id": "branch:agent_team_3node_v4",
-      "name": "agent_team_3node_v4",
-      "area": "coding",
-      "state": "caveated",
-      "summary": "Lead/dev/checker coding-team branch shape referenced by the patch loop."
+      "commit": "114b7436",
+      "date": "2026-07-21T20:33:44-07:00",
+      "id": "git:audit/audit-status-backlog",
+      "kind": "remote",
+      "name": "audit/audit-status-backlog",
+      "subject": "docs(audit): the audit called 5 branches unmerged — 3 had already merged"
     },
     {
-      "id": "branch:live_observation_watch_v1",
-      "name": "live_observation_watch_v1",
-      "area": "coding",
-      "state": "planned",
-      "summary": "Planned watcher that would ratify fixes or loop regressions back into intake."
-    }
-  ],
-  "routes": [
-    {
-      "id": "route:/wiki",
-      "path": "/wiki",
-      "label": "Wiki cockpit",
-      "summary": "Live MCP commons browser."
+      "commit": "d7292025",
+      "date": "2026-07-21T18:49:37-07:00",
+      "id": "git:audit/audit-vacuous-tests",
+      "kind": "remote",
+      "name": "audit/audit-vacuous-tests",
+      "subject": "docs(audit): ten test groups that pass when the code they cover is removed"
     },
     {
-      "id": "route:/graph",
-      "path": "/graph",
-      "label": "Whole-project graph",
-      "summary": "Unified project map across MCP, repo, domains, branches, and pages."
+      "commit": "cee48beb",
+      "date": "2026-07-21T14:47:50-07:00",
+      "id": "git:chore/mutation-probe-coverage",
+      "kind": "remote",
+      "name": "chore/mutation-probe-coverage",
+      "subject": "Merge remote-tracking branch 'origin/main' into chore/mutation-probe-coverage"
     },
     {
-      "id": "route:/connect",
-      "path": "/connect",
-      "label": "Connect",
-      "summary": "Chatbot connector setup."
+      "commit": "88374f01",
+      "date": "2026-07-21T17:40:59-07:00",
+      "id": "git:chore/recover-untracked-docs",
+      "kind": "remote",
+      "name": "chore/recover-untracked-docs",
+      "subject": "Merge branch 'main' into chore/recover-untracked-docs"
     },
     {
-      "id": "route:/host",
-      "path": "/host",
-      "label": "Host",
-      "summary": "Daemon host entry point."
+      "commit": "e10b3380",
+      "date": "2026-07-21T17:55:15-07:00",
+      "id": "git:ci/post-merge-release-trigger",
+      "kind": "remote",
+      "name": "ci/post-merge-release-trigger",
+      "subject": "ci: merged and live were two different things"
     },
     {
-      "id": "route:/goals",
-      "path": "/goals",
-      "label": "Goals",
-      "summary": "Public goal lens backed by MCP goals, commons records, and branch signals."
+      "commit": "a6b4551c",
+      "date": "2026-07-21T18:05:46-07:00",
+      "id": "git:ci/release-reconcile",
+      "kind": "remote",
+      "name": "ci/release-reconcile",
+      "subject": "ci: stop repairing the event chain, reconcile against production instead"
     },
     {
-      "id": "route:/fine-print",
-      "path": "/fine-print",
-      "label": "Status",
-      "summary": "Operations room for public health, current work, and deployment evidence."
+      "commit": "7e1b668f",
+      "date": "2026-07-21T18:50:08-07:00",
+      "id": "git:ci/required-test-gate",
+      "kind": "remote",
+      "name": "ci/required-test-gate",
+      "subject": "ci: one unimportable file must not blind the whole gate"
     },
     {
-      "id": "route:/alliance",
-      "path": "/alliance",
-      "label": "Alliance",
-      "summary": "Async-first community intake and collaboration path."
+      "commit": "9f05c676",
+      "date": "2026-07-21T18:32:37-07:00",
+      "id": "git:ci/required-test-gate-redproof",
+      "kind": "remote",
+      "name": "ci/required-test-gate-redproof",
+      "subject": "test: TEMPORARY deliberate failure to prove the gate goes red"
     },
     {
-      "id": "route:/legal",
-      "path": "/legal",
-      "label": "Legal",
-      "summary": "Terms, privacy, licensing, and token disclosure ledger."
+      "commit": "3f9c5848",
+      "date": "2026-07-21T21:09:50-07:00",
+      "id": "git:claude/activity-log-union-merge",
+      "kind": "remote",
+      "name": "claude/activity-log-union-merge",
+      "subject": "fix(agents): give each lane its own activity file instead of one shared log"
+    },
+    {
+      "commit": "9b96c153",
+      "date": "2026-07-03T15:27:24-07:00",
+      "id": "git:claude/android-universe-conversation",
+      "kind": "remote",
+      "name": "claude/android-universe-conversation",
+      "subject": "fix(android): use a DCR-registered WorkOS client id so sign-in works"
+    },
+    {
+      "commit": "1ea8f9cc",
+      "date": "2026-07-22T00:52:49-07:00",
+      "id": "git:claude/announce-social-path",
+      "kind": "remote",
+      "name": "claude/announce-social-path",
+      "subject": "fix: restore announcement script package paths"
+    },
+    {
+      "commit": "57fdab96",
+      "date": "2026-07-21T22:16:30-07:00",
+      "id": "git:claude/audit-lane-conversion",
+      "kind": "remote",
+      "name": "claude/audit-lane-conversion",
+      "subject": "docs(audit): nothing vanished — 36 finished lanes could not publish, all Codex"
+    },
+    {
+      "commit": "818d30da",
+      "date": "2026-07-21T21:22:39-07:00",
+      "id": "git:claude/audit-stranded-coordination-state",
+      "kind": "remote",
+      "name": "claude/audit-stranded-coordination-state",
+      "subject": "docs(audit): apply cross-family review — two of this audit's own premises were stale"
+    },
+    {
+      "commit": "e18c8368",
+      "date": "2026-07-21T19:15:46-07:00",
+      "id": "git:claude/audit-stranded-work",
+      "kind": "remote",
+      "name": "claude/audit-stranded-work",
+      "subject": "docs(audit): finished work stranded on local disk — and the brief's own premise was stale"
+    },
+    {
+      "commit": "0c45bd08",
+      "date": "2026-07-22T02:27:59-07:00",
+      "id": "git:claude/auth-audit-owner-map",
+      "kind": "remote",
+      "name": "claude/auth-audit-owner-map",
+      "subject": "docs(audit): complete the auth-sweep finding-ownership map — 7 of 9 unowned"
+    },
+    {
+      "commit": "74a125ad",
+      "date": "2026-06-25T17:38:30-07:00",
+      "id": "git:claude/blank-slate-universe-brain-spec",
+      "kind": "remote",
+      "name": "claude/blank-slate-universe-brain-spec",
+      "subject": "Design note: fold OKF-grounded §10 (self-model = OKF bundle, no gate, test-first)"
+    },
+    {
+      "commit": "fd767e55",
+      "date": "2026-07-21T21:38:45-07:00",
+      "id": "git:claude/brain-okf-precedent-note",
+      "kind": "remote",
+      "name": "claude/brain-okf-precedent-note",
+      "subject": "Merge branch 'main' into claude/brain-okf-precedent-note"
+    },
+    {
+      "commit": "a9bbccc7",
+      "date": "2026-07-21T21:38:48-07:00",
+      "id": "git:claude/brain-scratch-root-cleanup",
+      "kind": "remote",
+      "name": "claude/brain-scratch-root-cleanup",
+      "subject": "Merge branch 'main' into claude/brain-scratch-root-cleanup"
+    },
+    {
+      "commit": "c577b48a",
+      "date": "2026-07-21T21:38:56-07:00",
+      "id": "git:claude/carry-0722-audits",
+      "kind": "remote",
+      "name": "claude/carry-0722-audits",
+      "subject": "Merge branch 'main' into claude/carry-0722-audits"
+    },
+    {
+      "commit": "00e618a8",
+      "date": "2026-07-21T23:12:41-07:00",
+      "id": "git:claude/carry-auth-surface-sweep",
+      "kind": "remote",
+      "name": "claude/carry-auth-surface-sweep",
+      "subject": "docs(audit): carry the completed auth surface sweep out of gitignored output/"
+    },
+    {
+      "commit": "7f11cd0a",
+      "date": "2026-07-21T21:28:58-07:00",
+      "id": "git:claude/claude-md-merge-section",
+      "kind": "remote",
+      "name": "claude/claude-md-merge-section",
+      "subject": "docs(claude): attribute the no-build defect to GITHUB_TOKEN, not a new finding"
+    },
+    {
+      "commit": "6f4dbb46",
+      "date": "2026-07-22T00:03:38-07:00",
+      "id": "git:claude/codex-clone-visibility",
+      "kind": "remote",
+      "name": "claude/codex-clone-visibility",
+      "subject": "feat(worktree-status): report the independent clones under .codex-worktrees/"
+    },
+    {
+      "commit": "2e63521c",
+      "date": "2026-07-21T23:25:26-07:00",
+      "id": "git:claude/codex-publish-proof",
+      "kind": "remote",
+      "name": "claude/codex-publish-proof",
+      "subject": "proof: codex lane publication"
+    },
+    {
+      "commit": "f0e35ac8",
+      "date": "2026-07-22T02:11:36-07:00",
+      "id": "git:claude/context-budget-gate",
+      "kind": "remote",
+      "name": "claude/context-budget-gate",
+      "subject": "ci: fix the two CI failures this workflow's own first run surfaced"
+    },
+    {
+      "commit": "a40c9f3c",
+      "date": "2026-07-21T18:59:33-07:00",
+      "id": "git:claude/docs/agents-monitor-contract-rule",
+      "kind": "remote",
+      "name": "claude/docs/agents-monitor-contract-rule",
+      "subject": "docs(agents): monitors are part of the contract (extend Hard Rule 11)"
+    },
+    {
+      "commit": "320e9e9f",
+      "date": "2026-07-21T19:01:51-07:00",
+      "id": "git:claude/docs/audit-canary-false-red-0722",
+      "kind": "remote",
+      "name": "claude/docs/audit-canary-false-red-0722",
+      "subject": "docs(audit): the P0 that never was — 104 red canary runs, 6.15 days, zero outage"
+    },
+    {
+      "commit": "3e3c601a",
+      "date": "2026-07-21T21:11:25-07:00",
+      "id": "git:claude/dr-issue-backlog",
+      "kind": "remote",
+      "name": "claude/dr-issue-backlog",
+      "subject": "docs(audit): verify the docs/design-lane claim instead of inferring it from titles"
+    },
+    {
+      "commit": "50b06181",
+      "date": "2026-07-21T23:31:30-07:00",
+      "id": "git:claude/fix-codex-lane-publication",
+      "kind": "remote",
+      "name": "claude/fix-codex-lane-publication",
+      "subject": "fix(peer-agent): a sandboxed lane cannot publish, and silence called that success"
+    },
+    {
+      "commit": "00ff2f53",
+      "date": "2026-07-21T21:58:27-07:00",
+      "id": "git:claude/fix-codex-mirror-claim",
+      "kind": "remote",
+      "name": "claude/fix-codex-mirror-claim",
+      "subject": "docs(skills): the same false mirror claim survived in two canonical skills"
+    },
+    {
+      "commit": "eaf7ee39",
+      "date": "2026-07-21T23:25:38-07:00",
+      "id": "git:claude/fix-codex-verdict-attribution",
+      "kind": "remote",
+      "name": "claude/fix-codex-verdict-attribution",
+      "subject": "fix(codex-review): make a verdict attributable to its request"
+    },
+    {
+      "commit": "84a6584d",
+      "date": "2026-07-21T22:32:10-07:00",
+      "id": "git:claude/fix-env-catalog",
+      "kind": "remote",
+      "name": "claude/fix-env-catalog",
+      "subject": "docs(env): reject bare-prefix false positive, add regression test"
+    },
+    {
+      "commit": "34f35cae",
+      "date": "2026-07-21T21:58:49-07:00",
+      "id": "git:claude/fix-ideas-pipeline",
+      "kind": "remote",
+      "name": "claude/fix-ideas-pipeline",
+      "subject": "docs(ideas): make every idea document reachable from ideas/INDEX.md"
+    },
+    {
+      "commit": "d1df8f79",
+      "date": "2026-07-21T21:51:21-07:00",
+      "id": "git:claude/fix-plan-citations",
+      "kind": "remote",
+      "name": "claude/fix-plan-citations",
+      "subject": "docs(plan): fix stale design-note path promoted out of proposed/"
+    },
+    {
+      "commit": "8ab6eaf5",
+      "date": "2026-07-21T21:50:38-07:00",
+      "id": "git:claude/fix-retired-agents",
+      "kind": "remote",
+      "name": "claude/fix-retired-agents",
+      "subject": "fix(agents): actually retire the five retired agents"
+    },
+    {
+      "commit": "6004ef68",
+      "date": "2026-07-21T22:56:39-07:00",
+      "id": "git:claude/fix-specs-index",
+      "kind": "remote",
+      "name": "claude/fix-specs-index",
+      "subject": "docs(specs): apply Codex ADAPT verdict on the specs index"
+    },
+    {
+      "commit": "c87c34b3",
+      "date": "2026-06-25T23:03:01-07:00",
+      "id": "git:claude/founder-identity-slice1",
+      "kind": "remote",
+      "name": "claude/founder-identity-slice1",
+      "subject": "Slice 1: sync plugin mirror for WorkOS auth provider"
+    },
+    {
+      "commit": "39519e14",
+      "date": "2026-07-21T21:38:53-07:00",
+      "id": "git:claude/gitignore-scratch-gap",
+      "kind": "remote",
+      "name": "claude/gitignore-scratch-gap",
+      "subject": "Merge branch 'main' into claude/gitignore-scratch-gap"
+    },
+    {
+      "commit": "1189af2c",
+      "date": "2026-07-21T22:37:15-07:00",
+      "id": "git:claude/index-the-audits",
+      "kind": "remote",
+      "name": "claude/index-the-audits",
+      "subject": "docs(audits): index all 102 audits — the one doc dir with no INDEX.md"
+    },
+    {
+      "commit": "5af25af0",
+      "date": "2026-07-21T21:33:55-07:00",
+      "id": "git:claude/issue-1346-triage",
+      "kind": "remote",
+      "name": "claude/issue-1346-triage",
+      "subject": "docs(audit): apply Codex review — ADAPT, 4 of 5 findings accepted"
+    },
+    {
+      "commit": "4e75a0fe",
+      "date": "2026-07-21T21:38:35-07:00",
+      "id": "git:claude/ledger-reconcile",
+      "kind": "remote",
+      "name": "claude/ledger-reconcile",
+      "subject": "Merge branch 'main' into claude/ledger-reconcile"
+    },
+    {
+      "commit": "1a5d45af",
+      "date": "2026-07-22T00:02:36-07:00",
+      "id": "git:claude/legacy-mcp-server-fence",
+      "kind": "remote",
+      "name": "claude/legacy-mcp-server-fence",
+      "subject": "fix(mcp): disable the legacy stdio MCP server by default"
+    },
+    {
+      "commit": "3325582e",
+      "date": "2026-07-25T13:07:20-07:00",
+      "id": "git:claude/o5-agentic-pro-research",
+      "kind": "remote",
+      "name": "claude/o5-agentic-pro-research",
+      "subject": "docs: scope GAP-9 to agent-node tool parity + name invoker wiring a security change (#research)"
+    },
+    {
+      "commit": "486610e0",
+      "date": "2026-07-24T19:45:14-07:00",
+      "id": "git:claude/o5-brain-okf-canonical-store",
+      "kind": "remote",
+      "name": "claude/o5-brain-okf-canonical-store",
+      "subject": "docs: add brain-okf-canonical-store lane report"
+    },
+    {
+      "commit": "0c775921",
+      "date": "2026-07-26T00:42:43-07:00",
+      "id": "git:claude/o5-handoffs",
+      "kind": "remote",
+      "name": "claude/o5-handoffs",
+      "subject": "docs(handoffs): finalize lane evidence and deferred gates"
+    },
+    {
+      "commit": "4c681939",
+      "date": "2026-07-24T20:04:42-07:00",
+      "id": "git:claude/o5-independent-platform-targets",
+      "kind": "remote",
+      "name": "claude/o5-independent-platform-targets",
+      "subject": "spec: fold round-2 cross-family corrections into the target premise record"
+    },
+    {
+      "commit": "6d3cdf91",
+      "date": "2026-07-24T20:31:16-07:00",
+      "id": "git:claude/osx-universe-creation",
+      "kind": "remote",
+      "name": "claude/osx-universe-creation",
+      "subject": "docs: record structural provenance-marker fold (ADAPT round 2) in lane report"
+    },
+    {
+      "commit": "b5f3653a",
+      "date": "2026-07-21T22:52:48-07:00",
+      "id": "git:claude/persona-note-relay-reshape",
+      "kind": "remote",
+      "name": "claude/persona-note-relay-reshape",
+      "subject": "fix(persona): payload note still told the chatbot to run a consent menu"
+    },
+    {
+      "commit": "48c85897",
+      "date": "2026-07-22T01:41:08-07:00",
+      "id": "git:claude/personification-reconcile",
+      "kind": "remote",
+      "name": "claude/personification-reconcile",
+      "subject": "spec: close current-base personification review gate"
+    },
+    {
+      "commit": "0fb5cd26",
+      "date": "2026-07-22T02:29:42-07:00",
+      "id": "git:claude/personification-section-6-defs",
+      "kind": "remote",
+      "name": "claude/personification-section-6-defs",
+      "subject": "openspec: discharge section-6 definition tasks and re-verify all 11 landedness claims"
+    },
+    {
+      "commit": "1891c39d",
+      "date": "2026-07-21T21:38:39-07:00",
+      "id": "git:claude/polsia-handoff-rename",
+      "kind": "remote",
+      "name": "claude/polsia-handoff-rename",
+      "subject": "Merge branch 'main' into claude/polsia-handoff-rename"
+    },
+    {
+      "commit": "85445fcf",
+      "date": "2026-07-21T21:44:34-07:00",
+      "id": "git:claude/pr1506-landedness-fixups",
+      "kind": "remote",
+      "name": "claude/pr1506-landedness-fixups",
+      "subject": "docs(audit): retract the \"budget unreachable\" claim — Codex review was right"
+    },
+    {
+      "commit": "b6479e06",
+      "date": "2026-07-21T21:35:01-07:00",
+      "id": "git:claude/pr1506-verdict-landedness",
+      "kind": "remote",
+      "name": "claude/pr1506-verdict-landedness",
+      "subject": "docs(audit): A5 is arithmetically unreachable, not a janitor task"
+    },
+    {
+      "commit": "81d818db",
+      "date": "2026-07-22T01:56:14-07:00",
+      "id": "git:claude/probe-catalog-exit6-scope-truth",
+      "kind": "remote",
+      "name": "claude/probe-catalog-exit6-scope-truth",
+      "subject": "docs(ops): three refusal shapes, not two — fix the envelope taxonomy"
+    },
+    {
+      "commit": "38ce4a2a",
+      "date": "2026-07-21T22:57:17-07:00",
+      "id": "git:claude/probe-catalog-probe003-truth",
+      "kind": "remote",
+      "name": "claude/probe-catalog-probe003-truth",
+      "subject": "docs(ops): PROBE-003 has been red for 6 days — say so, and split exit 6"
+    },
+    {
+      "commit": "d45f81f3",
+      "date": "2026-07-21T23:28:08-07:00",
+      "id": "git:claude/publish-proof-green",
+      "kind": "remote",
+      "name": "claude/publish-proof-green",
+      "subject": "proof: parent-side publication"
+    },
+    {
+      "commit": "1736186d",
+      "date": "2026-07-21T23:32:28-07:00",
+      "id": "git:claude/publish-proof-green2",
+      "kind": "remote",
+      "name": "claude/publish-proof-green2",
+      "subject": "proof: parent-side publication"
+    },
+    {
+      "commit": "f87feecd",
+      "date": "2026-07-21T22:26:13-07:00",
+      "id": "git:claude/refresh-conventions-counts",
+      "kind": "remote",
+      "name": "claude/refresh-conventions-counts",
+      "subject": "docs(conventions): stop quoting frontmatter compliance counts, compute them"
+    },
+    {
+      "commit": "23024f09",
+      "date": "2026-07-21T19:45:26-07:00",
+      "id": "git:claude/release-chain-log",
+      "kind": "remote",
+      "name": "claude/release-chain-log",
+      "subject": "docs: record the release-chain day, and the one rule worth keeping from it"
+    },
+    {
+      "commit": "b6158b91",
+      "date": "2026-07-21T21:37:16-07:00",
+      "id": "git:claude/required-test-gate",
+      "kind": "remote",
+      "name": "claude/required-test-gate",
+      "subject": "goals.define_ladder: patch-loop-test"
+    },
+    {
+      "commit": "6bdb870f",
+      "date": "2026-07-22T01:30:38-07:00",
+      "id": "git:claude/restore-0bc841aa-stale-index-regression",
+      "kind": "remote",
+      "name": "claude/restore-0bc841aa-stale-index-regression",
+      "subject": "Merge remote-tracking branch 'origin/main' into claude/restore-0bc841aa-stale-index-regression"
+    },
+    {
+      "commit": "ebe41bf2",
+      "date": "2026-07-21T21:34:10-07:00",
+      "id": "git:claude/stale-alarm-issues",
+      "kind": "remote",
+      "name": "claude/stale-alarm-issues",
+      "subject": "docs(audit): alarms that open but never close — 65 issues, and the one stage of three that reconciles"
+    },
+    {
+      "commit": "8ed47da6",
+      "date": "2026-07-22T02:20:41-07:00",
+      "id": "git:claude/stale-nondraft-pr-triage",
+      "kind": "remote",
+      "name": "claude/stale-nondraft-pr-triage",
+      "subject": "docs(audit): dispose of the three stale non-draft PRs — and correct one wrong verdict"
+    },
+    {
+      "commit": "2ccc8e33",
+      "date": "2026-07-21T21:41:13-07:00",
+      "id": "git:claude/status-concerns-audit",
+      "kind": "remote",
+      "name": "claude/status-concerns-audit",
+      "subject": "docs(audit): line 14 — the public leak path is closed by the relay gate, not by F3"
+    },
+    {
+      "commit": "2f1178c0",
+      "date": "2026-07-21T20:53:08-07:00",
+      "id": "git:claude/status-janitor-0722",
+      "kind": "remote",
+      "name": "claude/status-janitor-0722",
+      "subject": "docs(status): correct four false premises the janitor pass left behind"
+    },
+    {
+      "commit": "327d47dc",
+      "date": "2026-07-22T01:38:06-07:00",
+      "id": "git:claude/status-q63-privacy-row-audit",
+      "kind": "remote",
+      "name": "claude/status-q63-privacy-row-audit",
+      "subject": "status: delete the Q6.3 privacy Concern — premise stale, residual is Work row R2-1a"
+    },
+    {
+      "commit": "46ae96e9",
+      "date": "2026-07-21T21:03:57-07:00",
+      "id": "git:claude/status-release-cron-watch",
+      "kind": "remote",
+      "name": "claude/status-release-cron-watch",
+      "subject": "docs: audit release cron reliability"
+    },
+    {
+      "commit": "e0af5ba0",
+      "date": "2026-07-22T01:25:30-07:00",
+      "id": "git:claude/status-write-contention",
+      "kind": "remote",
+      "name": "claude/status-write-contention",
+      "subject": "docs(audit): STATUS.md write contention — 14 writers, not 23; only #1550 is blocked"
+    },
+    {
+      "commit": "8ac922a1",
+      "date": "2026-07-21T22:31:17-07:00",
+      "id": "git:claude/triage-exec-plans",
+      "kind": "remote",
+      "name": "claude/triage-exec-plans",
+      "subject": "docs(exec-plans): classify all 38 active plans, delete a resurrected duplicate"
+    },
+    {
+      "commit": "7fd7765f",
+      "date": "2026-07-21T21:38:33-07:00",
+      "id": "git:claude/ui-test-deployed-build",
+      "kind": "remote",
+      "name": "claude/ui-test-deployed-build",
+      "subject": "Merge branch 'main' into claude/ui-test-deployed-build"
+    },
+    {
+      "commit": "d07112ac",
+      "date": "2026-07-21T21:31:40-07:00",
+      "id": "git:claude/uitest-proof-durability",
+      "kind": "remote",
+      "name": "claude/uitest-proof-durability",
+      "subject": "docs: the final-acceptance proof is written to a path never in git"
+    },
+    {
+      "commit": "e8c83ef8",
+      "date": "2026-07-21T20:55:12-07:00",
+      "id": "git:claude/universe-creation-landedness",
+      "kind": "remote",
+      "name": "claude/universe-creation-landedness",
+      "subject": "@ spec: classify 35 unchecked universe-creation tasks against main (11 already landed)"
+    },
+    {
+      "commit": "b0c3cb38",
+      "date": "2026-07-22T00:45:00-07:00",
+      "id": "git:claude/venv-entrypoint-extract",
+      "kind": "remote",
+      "name": "claude/venv-entrypoint-extract",
+      "subject": "fix: keep container startup on runtime venv"
+    },
+    {
+      "commit": "c98286ac",
+      "date": "2026-07-22T00:25:58-07:00",
+      "id": "git:claude/verify-vacuous-tests",
+      "kind": "remote",
+      "name": "claude/verify-vacuous-tests",
+      "subject": "Merge remote-tracking branch 'github/main' into claude/verify-vacuous-tests"
+    },
+    {
+      "commit": "1631cd7a",
+      "date": "2026-07-22T01:01:48-07:00",
+      "id": "git:claude/worktree-anchor-branch-audit",
+      "kind": "remote",
+      "name": "claude/worktree-anchor-branch-audit",
+      "subject": "docs(audit): fold in Codex's adapt verdict — retention depth is 8-14 refs, and the push is not free"
+    },
+    {
+      "commit": "c40ff942",
+      "date": "2026-07-22T01:20:44-07:00",
+      "id": "git:claude/write-page-commons-residual",
+      "kind": "remote",
+      "name": "claude/write-page-commons-residual",
+      "subject": "docs(audit): fold Codex's partial refutation — the gap is handle-scoped, not platform-wide"
+    },
+    {
+      "commit": "fbc199d2",
+      "date": "2026-07-25T12:37:16-07:00",
+      "id": "git:codex/agent-village-foldback",
+      "kind": "remote",
+      "name": "codex/agent-village-foldback",
+      "subject": "coord: fold back Agent Village containment"
+    },
+    {
+      "commit": "b99baa0e",
+      "date": "2026-07-23T18:21:29-07:00",
+      "id": "git:codex/align-fresh-host-backup-config",
+      "kind": "remote",
+      "name": "codex/align-fresh-host-backup-config",
+      "subject": "fix(backup): align fresh-host rclone configuration"
+    },
+    {
+      "commit": "de4c3f69",
+      "date": "2026-07-22T19:53:51-07:00",
+      "id": "git:codex/backfill-dependent-specs",
+      "kind": "remote",
+      "name": "codex/backfill-dependent-specs",
+      "subject": "coord: link runtime spec backfill PR"
+    },
+    {
+      "commit": "3e0d26c8",
+      "date": "2026-07-23T01:28:47-07:00",
+      "id": "git:codex/backfill-graph-run-coordination",
+      "kind": "remote",
+      "name": "codex/backfill-graph-run-coordination",
+      "subject": "coord: publish graph-run contract backfill"
+    },
+    {
+      "commit": "2ba47920",
+      "date": "2026-07-22T19:09:08-07:00",
+      "id": "git:codex/backfill-independent-specs",
+      "kind": "remote",
+      "name": "codex/backfill-independent-specs",
+      "subject": "spec: record backfill publication gate"
+    },
+    {
+      "commit": "18581685",
+      "date": "2026-07-22T18:59:13-07:00",
+      "id": "git:codex/backfill-shipped-behavior-coverage",
+      "kind": "remote",
+      "name": "codex/backfill-shipped-behavior-coverage",
+      "subject": "coord: gate backfill foldback on correction"
+    },
+    {
+      "commit": "6fd3b5ec",
+      "date": "2026-07-26T15:01:09-07:00",
+      "id": "git:codex/background-branch-authority-foldback",
+      "kind": "remote",
+      "name": "codex/background-branch-authority-foldback",
+      "subject": "status: retire background authority planning claim"
+    },
+    {
+      "commit": "fe88c58a",
+      "date": "2026-07-26T14:59:00-07:00",
+      "id": "git:codex/background-branch-authority-spec",
+      "kind": "remote",
+      "name": "codex/background-branch-authority-spec",
+      "subject": "spec: tighten approved background authority plan"
+    },
+    {
+      "commit": "fdbb7af6",
+      "date": "2026-07-25T16:33:04-07:00",
+      "id": "git:codex/branch-auth-foldback",
+      "kind": "remote",
+      "name": "codex/branch-auth-foldback",
+      "subject": "docs: fold back branch authority spec"
+    },
+    {
+      "commit": "7e46c84d",
+      "date": "2026-07-25T16:42:57-07:00",
+      "id": "git:codex/claim-1691-reconcile",
+      "kind": "remote",
+      "name": "codex/claim-1691-reconcile",
+      "subject": "docs: claim provider authority reconciliation"
+    },
+    {
+      "commit": "df6b6f41",
+      "date": "2026-07-22T15:25:34-07:00",
+      "id": "git:codex/claim-knowledge-memory-reconcile",
+      "kind": "remote",
+      "name": "codex/claim-knowledge-memory-reconcile",
+      "subject": "coord: claim knowledge memory spec reconciliation"
+    },
+    {
+      "commit": "d6677f6b",
+      "date": "2026-07-26T15:55:13-07:00",
+      "id": "git:codex/claim-secret-custody-20260726",
+      "kind": "remote",
+      "name": "codex/claim-secret-custody-20260726",
+      "subject": "status: claim secret custody reconciliation"
+    },
+    {
+      "commit": "08da1863",
+      "date": "2026-07-23T13:54:56-07:00",
+      "id": "git:codex/cleanup-p0-triage-status",
+      "kind": "remote",
+      "name": "codex/cleanup-p0-triage-status",
+      "subject": "chore(status): retire P0 triage lane"
+    },
+    {
+      "commit": "5e8feacd",
+      "date": "2026-07-24T00:44:53-07:00",
+      "id": "git:codex/close-host-uptime-proof",
+      "kind": "remote",
+      "name": "codex/close-host-uptime-proof",
+      "subject": "docs(uptime): record production backup proof"
+    },
+    {
+      "commit": "0e2d6b34",
+      "date": "2026-07-26T19:09:21-07:00",
+      "id": "git:codex/close-release-reconcile-watch-20260726",
+      "kind": "remote",
+      "name": "codex/close-release-reconcile-watch-20260726",
+      "subject": "chore(coord): record release proof PR"
+    },
+    {
+      "commit": "6c2a580c",
+      "date": "2026-07-22T12:57:55-07:00",
+      "id": "git:codex/collapse-mcp-spec-reconcile",
+      "kind": "remote",
+      "name": "codex/collapse-mcp-spec-reconcile",
+      "subject": "coord: retire MCP spec reconciliation claim"
+    },
+    {
+      "commit": "9ba43107",
+      "date": "2026-07-22T00:44:13-07:00",
+      "id": "git:codex/compute-market-frontier-research",
+      "kind": "remote",
+      "name": "codex/compute-market-frontier-research",
+      "subject": "docs: publish research lane handoff"
+    },
+    {
+      "commit": "84ea19b4",
+      "date": "2026-07-22T13:43:20-07:00",
+      "id": "git:codex/connector-manifest-product-split",
+      "kind": "remote",
+      "name": "codex/connector-manifest-product-split",
+      "subject": "coord: retire connector manifest spec claim"
+    },
+    {
+      "commit": "2954e4cb",
+      "date": "2026-07-24T14:32:28-07:00",
+      "id": "git:codex/constrain-engine-providers",
+      "kind": "remote",
+      "name": "codex/constrain-engine-providers",
+      "subject": "spec: refresh provider authority through epoch two"
+    },
+    {
+      "commit": "dae36d17",
+      "date": "2026-07-23T18:52:33-07:00",
+      "id": "git:codex/converge-host-uptime-installers",
+      "kind": "remote",
+      "name": "codex/converge-host-uptime-installers",
+      "subject": "docs(uptime): refresh final rebased proof"
+    },
+    {
+      "commit": "bfa8ed4c",
+      "date": "2026-07-22T19:44:33-07:00",
+      "id": "git:codex/correct-independent-backfill-authority",
+      "kind": "remote",
+      "name": "codex/correct-independent-backfill-authority",
+      "subject": "docs: close provider retry authority gaps"
+    },
+    {
+      "commit": "3cdbbf55",
+      "date": "2026-07-22T19:22:21-07:00",
+      "id": "git:codex/correct-legacy-disposition-review",
+      "kind": "remote",
+      "name": "codex/correct-legacy-disposition-review",
+      "subject": "coord: repair post-backfill authority claims"
+    },
+    {
+      "commit": "8ebac28d",
+      "date": "2026-07-23T13:04:35-07:00",
+      "id": "git:codex/credential-backfill-coordination",
+      "kind": "remote",
+      "name": "codex/credential-backfill-coordination",
+      "subject": "coord: correct credential backfill blockers"
+    },
+    {
+      "commit": "ec85beb8",
+      "date": "2026-07-24T15:46:42-07:00",
+      "id": "git:codex/distributed-execution-current-main-design",
+      "kind": "remote",
+      "name": "codex/distributed-execution-current-main-design",
+      "subject": "spec: rebuild distributed execution from current main"
+    },
+    {
+      "commit": "f646d657",
+      "date": "2026-07-23T20:43:52-07:00",
+      "id": "git:codex/dr-drill-image-pin",
+      "kind": "remote",
+      "name": "codex/dr-drill-image-pin",
+      "subject": "docs(openspec): archive DR runtime image pin"
+    },
+    {
+      "commit": "b08ccb08",
+      "date": "2026-07-24T15:06:49-07:00",
+      "id": "git:codex/establish-public-capacity-envelope",
+      "kind": "remote",
+      "name": "codex/establish-public-capacity-envelope",
+      "subject": "spec: stage public capacity evidence"
+    },
+    {
+      "commit": "be77063f",
+      "date": "2026-07-24T00:26:12-07:00",
+      "id": "git:codex/exercise-host-uptime-jobs",
+      "kind": "remote",
+      "name": "codex/exercise-host-uptime-jobs",
+      "subject": "Merge origin/main into uptime proof lane"
+    },
+    {
+      "commit": "dd71fc1c",
+      "date": "2026-07-22T15:22:18-07:00",
+      "id": "git:codex/fail-closed-provider-auth-overlay",
+      "kind": "remote",
+      "name": "codex/fail-closed-provider-auth-overlay",
+      "subject": "docs: propose fail-closed provider auth overlay"
+    },
+    {
+      "commit": "aab7bc0a",
+      "date": "2026-07-23T22:18:34-07:00",
+      "id": "git:codex/finish-node-enqueue",
+      "kind": "remote",
+      "name": "codex/finish-node-enqueue",
+      "subject": "docs: archive enqueue cap contract"
+    },
+    {
+      "commit": "7a568e47",
+      "date": "2026-07-22T17:38:02-07:00",
+      "id": "git:codex/first-contact-authority-handshake",
+      "kind": "remote",
+      "name": "codex/first-contact-authority-handshake",
+      "subject": "docs: refresh authority audit baseline"
+    },
+    {
+      "commit": "4c6b6640",
+      "date": "2026-07-24T14:36:04-07:00",
+      "id": "git:codex/first-contact-authority-review",
+      "kind": "remote",
+      "name": "codex/first-contact-authority-review",
+      "subject": "docs(auth): refresh first-contact packet through epoch two"
+    },
+    {
+      "commit": "5c499e8a",
+      "date": "2026-07-23T20:21:36-07:00",
+      "id": "git:codex/fix-bootstrap-source-sha",
+      "kind": "remote",
+      "name": "codex/fix-bootstrap-source-sha",
+      "subject": "docs(openspec): archive bootstrap ownership fix"
+    },
+    {
+      "commit": "8778bf54",
+      "date": "2026-07-22T12:14:01-07:00",
+      "id": "git:codex/fix-directory-catalog-drift",
+      "kind": "remote",
+      "name": "codex/fix-directory-catalog-drift",
+      "subject": "openspec: archive external directory catalog repair"
+    },
+    {
+      "commit": "12e1a632",
+      "date": "2026-07-24T20:13:44-07:00",
+      "id": "git:codex/fix-mcp-proof-closeout",
+      "kind": "remote",
+      "name": "codex/fix-mcp-proof-closeout",
+      "subject": "coord: record live canonical mcp proof"
+    },
+    {
+      "commit": "653d3a26",
+      "date": "2026-07-24T20:13:00-07:00",
+      "id": "git:codex/fix-mcp-retirement-proof",
+      "kind": "remote",
+      "name": "codex/fix-mcp-retirement-proof",
+      "subject": "coord: record live canonical mcp proof"
+    },
+    {
+      "commit": "c65d5355",
+      "date": "2026-07-23T13:52:58-07:00",
+      "id": "git:codex/fix-p0-triage-failure-escalation",
+      "kind": "remote",
+      "name": "codex/fix-p0-triage-failure-escalation",
+      "subject": "fix(uptime): preserve P0 escalation after repair failure"
+    },
+    {
+      "commit": "5d7ac3ad",
+      "date": "2026-07-23T13:05:45-07:00",
+      "id": "git:codex/fix-uptime-alarm-unknown-state",
+      "kind": "remote",
+      "name": "codex/fix-uptime-alarm-unknown-state",
+      "subject": "spec: archive uptime unknown-state repair"
+    },
+    {
+      "commit": "800cc49b",
+      "date": "2026-07-23T13:24:24-07:00",
+      "id": "git:codex/fix-wiki-canary-oauth-challenge",
+      "kind": "remote",
+      "name": "codex/fix-wiki-canary-oauth-challenge",
+      "subject": "spec: archive wiki canary OAuth repair"
+    },
+    {
+      "commit": "08eaa5ac",
+      "date": "2026-07-23T20:22:26-07:00",
+      "id": "git:codex/foldback-bootstrap-source-sha",
+      "kind": "remote",
+      "name": "codex/foldback-bootstrap-source-sha",
+      "subject": "docs(openspec): archive bootstrap ownership fix"
+    },
+    {
+      "commit": "fbaf45bb",
+      "date": "2026-07-26T00:04:46-07:00",
+      "id": "git:codex/foldback-engine-os-sandbox-20260726",
+      "kind": "remote",
+      "name": "codex/foldback-engine-os-sandbox-20260726",
+      "subject": "docs: fold back engine admission landing"
+    },
+    {
+      "commit": "94b993cf",
+      "date": "2026-07-22T16:30:44-07:00",
+      "id": "git:codex/foldback-forward-spec-reconcile",
+      "kind": "remote",
+      "name": "codex/foldback-forward-spec-reconcile",
+      "subject": "coord: fold back forward spec reconciliation"
+    },
+    {
+      "commit": "88c249d4",
+      "date": "2026-07-22T16:49:55-07:00",
+      "id": "git:codex/founder-provider-allowlist",
+      "kind": "remote",
+      "name": "codex/founder-provider-allowlist",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/founder-provider-allowlist"
+    },
+    {
+      "commit": "b61ef768",
+      "date": "2026-07-25T16:31:59-07:00",
+      "id": "git:codex/harden-branch-access-authority",
+      "kind": "remote",
+      "name": "codex/harden-branch-access-authority",
+      "subject": "docs: mark branch authority review ready"
+    },
+    {
+      "commit": "9ec1c48c",
+      "date": "2026-07-23T19:33:51-07:00",
+      "id": "git:codex/harden-dr-drill-evidence",
+      "kind": "remote",
+      "name": "codex/harden-dr-drill-evidence",
+      "subject": "fix(uptime): harden DR drill evidence"
+    },
+    {
+      "commit": "ae717200",
+      "date": "2026-07-25T13:30:35-07:00",
+      "id": "git:codex/harden-production-load-evidence",
+      "kind": "remote",
+      "name": "codex/harden-production-load-evidence",
+      "subject": "spec: define honest production load evidence"
+    },
+    {
+      "commit": "6900d518",
+      "date": "2026-07-25T13:39:22-07:00",
+      "id": "git:codex/harden-production-load-evidence-foldback",
+      "kind": "remote",
+      "name": "codex/harden-production-load-evidence-foldback",
+      "subject": "chore: fold back production load evidence proposal"
+    },
+    {
+      "commit": "61140889",
+      "date": "2026-07-23T14:39:51-07:00",
+      "id": "git:codex/harden-volume-restore",
+      "kind": "remote",
+      "name": "codex/harden-volume-restore",
+      "subject": "fix(restore): stage full-volume recovery safely"
+    },
+    {
+      "commit": "150a51fb",
+      "date": "2026-07-25T22:47:38-07:00",
+      "id": "git:codex/host-principal-binding",
+      "kind": "remote",
+      "name": "codex/host-principal-binding",
+      "subject": "docs: record host binding approvals"
+    },
+    {
+      "commit": "864f922b",
+      "date": "2026-07-23T00:23:50-07:00",
+      "id": "git:codex/hyperparameter-science-spec",
+      "kind": "remote",
+      "name": "codex/hyperparameter-science-spec",
+      "subject": "coord: request hyperparameter science design decision"
+    },
+    {
+      "commit": "e199b58d",
+      "date": "2026-07-25T18:33:01-07:00",
+      "id": "git:codex/implement-production-load-harness-main-20260725",
+      "kind": "remote",
+      "name": "codex/implement-production-load-harness-main-20260725",
+      "subject": "coord: record load protocol draft PR"
+    },
+    {
+      "commit": "c932f23a",
+      "date": "2026-07-23T13:41:17-07:00",
+      "id": "git:codex/mcpb-catalog-parity",
+      "kind": "remote",
+      "name": "codex/mcpb-catalog-parity",
+      "subject": "coord: retire completed MCPB parity lane"
+    },
+    {
+      "commit": "99ab18bc",
+      "date": "2026-07-23T20:57:23-07:00",
+      "id": "git:codex/moderation-abuse-runtime",
+      "kind": "remote",
+      "name": "codex/moderation-abuse-runtime",
+      "subject": "docs: record host canonical store direction"
+    },
+    {
+      "commit": "14a3a428",
+      "date": "2026-07-23T20:58:08-07:00",
+      "id": "git:codex/moderation-flag-planner",
+      "kind": "remote",
+      "name": "codex/moderation-flag-planner",
+      "subject": "Merge remote-tracking branch 'origin/codex/moderation-abuse-runtime' into codex/moderation-flag-planner"
+    },
+    {
+      "commit": "49f3f2a3",
+      "date": "2026-07-23T12:46:02-07:00",
+      "id": "git:codex/openspec-conformance-audit2",
+      "kind": "remote",
+      "name": "codex/openspec-conformance-audit2",
+      "subject": "spec: archive canary threshold repair"
+    },
+    {
+      "commit": "af9f0ec6",
+      "date": "2026-07-22T11:49:37-07:00",
+      "id": "git:codex/openspec-conformance-fleet",
+      "kind": "remote",
+      "name": "codex/openspec-conformance-fleet",
+      "subject": "coord: clarify temporary provider capacity"
+    },
+    {
+      "commit": "62aa5569",
+      "date": "2026-07-22T15:04:02-07:00",
+      "id": "git:codex/openspec-core-runtime-foldback",
+      "kind": "remote",
+      "name": "codex/openspec-core-runtime-foldback",
+      "subject": "coord: fold core specs into provider reconciliation"
+    },
+    {
+      "commit": "2a3ae302",
+      "date": "2026-07-22T15:02:41-07:00",
+      "id": "git:codex/openspec-core-runtime-reconcile",
+      "kind": "remote",
+      "name": "codex/openspec-core-runtime-reconcile",
+      "subject": "docs: reconcile core runtime OpenSpec coverage"
+    },
+    {
+      "commit": "78d90710",
+      "date": "2026-07-22T14:35:34-07:00",
+      "id": "git:codex/openspec-full-coverage",
+      "kind": "remote",
+      "name": "codex/openspec-full-coverage",
+      "subject": "docs: reconcile eight as-built OpenSpec capabilities"
+    },
+    {
+      "commit": "77e9d533",
+      "date": "2026-07-22T14:37:48-07:00",
+      "id": "git:codex/openspec-full-coverage-foldback",
+      "kind": "remote",
+      "name": "codex/openspec-full-coverage-foldback",
+      "subject": "coord: fold Batch A into core spec reconciliation"
+    },
+    {
+      "commit": "8b706e9c",
+      "date": "2026-07-22T15:47:38-07:00",
+      "id": "git:codex/openspec-knowledge-memory-foldback",
+      "kind": "remote",
+      "name": "codex/openspec-knowledge-memory-foldback",
+      "subject": "coord: fold back knowledge memory reconciliation"
+    },
+    {
+      "commit": "30168ecb",
+      "date": "2026-07-22T15:45:47-07:00",
+      "id": "git:codex/openspec-knowledge-memory-reconcile",
+      "kind": "remote",
+      "name": "codex/openspec-knowledge-memory-reconcile",
+      "subject": "docs: reconcile knowledge and memory specs"
+    },
+    {
+      "commit": "77fbeccd",
+      "date": "2026-07-22T15:19:21-07:00",
+      "id": "git:codex/openspec-provider-credential-foldback",
+      "kind": "remote",
+      "name": "codex/openspec-provider-credential-foldback",
+      "subject": "coord: promote provider auth overlay repair"
+    },
+    {
+      "commit": "20d64143",
+      "date": "2026-07-22T15:18:09-07:00",
+      "id": "git:codex/openspec-provider-credential-reconcile",
+      "kind": "remote",
+      "name": "codex/openspec-provider-credential-reconcile",
+      "subject": "docs: reconcile provider and credential OpenSpec coverage"
+    },
+    {
+      "commit": "96ffb9f1",
+      "date": "2026-07-22T15:49:36-07:00",
+      "id": "git:codex/openspec-requirement-classification",
+      "kind": "remote",
+      "name": "codex/openspec-requirement-classification",
+      "subject": "coord: claim forward spec classification"
+    },
+    {
+      "commit": "4e43bd14",
+      "date": "2026-07-22T13:59:23-07:00",
+      "id": "git:codex/openspec-uptime-backfill",
+      "kind": "remote",
+      "name": "codex/openspec-uptime-backfill",
+      "subject": "coord: retire uptime reconciliation claim"
+    },
+    {
+      "commit": "0ddcdb62",
+      "date": "2026-07-24T23:06:17-07:00",
+      "id": "git:codex/operator-epoch2-consumer",
+      "kind": "remote",
+      "name": "codex/operator-epoch2-consumer",
+      "subject": "coord: attach epoch2 lane to PR 1741"
+    },
+    {
+      "commit": "25c836a5",
+      "date": "2026-07-24T14:19:31-07:00",
+      "id": "git:codex/operator-epoch2-queue",
+      "kind": "remote",
+      "name": "codex/operator-epoch2-queue",
+      "subject": "fix: trust transaction time for epoch2 leases"
+    },
+    {
+      "commit": "b1102cdc",
+      "date": "2026-07-24T11:55:37-07:00",
+      "id": "git:codex/operator-priority-grant-lifecycle",
+      "kind": "remote",
+      "name": "codex/operator-priority-grant-lifecycle",
+      "subject": "fix: bind priority grants to server transaction time"
+    },
+    {
+      "commit": "830ee8ac",
+      "date": "2026-07-24T12:26:43-07:00",
+      "id": "git:codex/operator-priority-public-admission",
+      "kind": "remote",
+      "name": "codex/operator-priority-public-admission",
+      "subject": "feat: compose operator priority admission authority"
+    },
+    {
+      "commit": "0c2e181b",
+      "date": "2026-07-24T14:14:05-07:00",
+      "id": "git:codex/operator-priority-replay",
+      "kind": "remote",
+      "name": "codex/operator-priority-replay",
+      "subject": "feat: reauthorize operator priority replay"
+    },
+    {
+      "commit": "830ee8ac",
+      "date": "2026-07-24T12:26:43-07:00",
+      "id": "git:codex/operator-priority-verdict",
+      "kind": "remote",
+      "name": "codex/operator-priority-verdict",
+      "subject": "feat: compose operator priority admission authority"
+    },
+    {
+      "commit": "58bbb1aa",
+      "date": "2026-07-24T12:48:16-07:00",
+      "id": "git:codex/operator-priority-verdict-squash",
+      "kind": "remote",
+      "name": "codex/operator-priority-verdict-squash",
+      "subject": "feat: compose operator priority admission authority"
+    },
+    {
+      "commit": "c5a67a63",
+      "date": "2026-07-24T01:34:35-07:00",
+      "id": "git:codex/operator-request-admission-storage",
+      "kind": "remote",
+      "name": "codex/operator-request-admission-storage",
+      "subject": "fix: redact terminal admission details"
+    },
+    {
+      "commit": "034aed87",
+      "date": "2026-07-23T14:50:37-07:00",
+      "id": "git:codex/operator-request-trigger-spec",
+      "kind": "remote",
+      "name": "codex/operator-request-trigger-spec",
+      "subject": "docs: reflect on operator request spec refresh"
+    },
+    {
+      "commit": "42c90e52",
+      "date": "2026-07-24T21:11:06-07:00",
+      "id": "git:codex/operator-v2-eligible-wakeup",
+      "kind": "remote",
+      "name": "codex/operator-v2-eligible-wakeup",
+      "subject": "docs: assign epoch2 recovery activation gate"
+    },
+    {
+      "commit": "94c27bf9",
+      "date": "2026-07-24T17:00:26-07:00",
+      "id": "git:codex/operator-v2-mixed-isolation",
+      "kind": "remote",
+      "name": "codex/operator-v2-mixed-isolation",
+      "subject": "test: prove mixed epoch2 row isolation"
+    },
+    {
+      "commit": "0ce6819f",
+      "date": "2026-07-24T18:27:20-07:00",
+      "id": "git:codex/operator-v2-operational-status",
+      "kind": "remote",
+      "name": "codex/operator-v2-operational-status",
+      "subject": "feat: expose truthful epoch2 operational state"
+    },
+    {
+      "commit": "7f12ba2b",
+      "date": "2026-07-24T16:49:41-07:00",
+      "id": "git:codex/operator-v2-quarantine",
+      "kind": "remote",
+      "name": "codex/operator-v2-quarantine",
+      "subject": "fix: quarantine inconsistent terminal evidence"
+    },
+    {
+      "commit": "2d3a774f",
+      "date": "2026-07-24T15:10:59-07:00",
+      "id": "git:codex/operator-worker-descriptors",
+      "kind": "remote",
+      "name": "codex/operator-worker-descriptors",
+      "subject": "fix: serialize worker runtime registration"
+    },
+    {
+      "commit": "281c6ed9",
+      "date": "2026-07-24T21:02:11-07:00",
+      "id": "git:codex/opus5-first-contact-verdict",
+      "kind": "remote",
+      "name": "codex/opus5-first-contact-verdict",
+      "subject": "review: record Opus 5 first-contact authority verdict"
+    },
+    {
+      "commit": "492d6e86",
+      "date": "2026-07-25T21:27:09-07:00",
+      "id": "git:codex/osx-control-station",
+      "kind": "remote",
+      "name": "codex/osx-control-station",
+      "subject": "docs: finalize control station landing report"
+    },
+    {
+      "commit": "a791830e",
+      "date": "2026-07-24T19:43:34-07:00",
+      "id": "git:codex/osx-credential-vault-backfill",
+      "kind": "remote",
+      "name": "codex/osx-credential-vault-backfill",
+      "subject": "docs: hand off credential backfill review"
+    },
+    {
+      "commit": "57360631",
+      "date": "2026-07-24T19:38:55-07:00",
+      "id": "git:codex/osx-provider-attempt-receipts",
+      "kind": "remote",
+      "name": "codex/osx-provider-attempt-receipts",
+      "subject": "docs: add provider receipt lane report"
+    },
+    {
+      "commit": "cb374b68",
+      "date": "2026-07-24T20:16:22-07:00",
+      "id": "git:codex/osx-test-identity-reset",
+      "kind": "remote",
+      "name": "codex/osx-test-identity-reset",
+      "subject": "fix: preserve status when identity evidence is unavailable"
+    },
+    {
+      "commit": "f21c7f21",
+      "date": "2026-07-24T21:55:31-07:00",
+      "id": "git:codex/osx-vault-clobber-fix",
+      "kind": "remote",
+      "name": "codex/osx-vault-clobber-fix",
+      "subject": "fix: normalize codex auth bundle decoding"
+    },
+    {
+      "commit": "81acf557",
+      "date": "2026-07-24T01:27:24-07:00",
+      "id": "git:codex/plan-target-decisions",
+      "kind": "remote",
+      "name": "codex/plan-target-decisions",
+      "subject": "coord: adapt existing connector retirement lane"
+    },
+    {
+      "commit": "fcc50b95",
+      "date": "2026-07-23T21:18:30-07:00",
+      "id": "git:codex/postgres-control-plane-plan",
+      "kind": "remote",
+      "name": "codex/postgres-control-plane-plan",
+      "subject": "coord: publish PostgreSQL planning lane"
+    },
+    {
+      "commit": "aaad32cd",
+      "date": "2026-07-23T14:20:44-07:00",
+      "id": "git:codex/provider-attempt-receipts",
+      "kind": "remote",
+      "name": "codex/provider-attempt-receipts",
+      "subject": "docs: cover degraded judge receipt outcome"
+    },
+    {
+      "commit": "7e90dc8f",
+      "date": "2026-07-25T21:46:56-07:00",
+      "id": "git:codex/provider-authority-foldback",
+      "kind": "remote",
+      "name": "codex/provider-authority-foldback",
+      "subject": "docs: retire provider authority coordination row"
+    },
+    {
+      "commit": "7ae1cff9",
+      "date": "2026-07-26T12:51:37-07:00",
+      "id": "git:codex/provider-authority-successors",
+      "kind": "remote",
+      "name": "codex/provider-authority-successors",
+      "subject": "docs: keep live status within canonical budget"
+    },
+    {
+      "commit": "1b4e5aee",
+      "date": "2026-07-26T12:54:35-07:00",
+      "id": "git:codex/provider-authority-successors-foldback",
+      "kind": "remote",
+      "name": "codex/provider-authority-successors-foldback",
+      "subject": "docs: fold back provider authority planning lane"
+    },
+    {
+      "commit": "304cd7d6",
+      "date": "2026-07-22T22:32:55-07:00",
+      "id": "git:codex/reassess-direct-owner-specs",
+      "kind": "remote",
+      "name": "codex/reassess-direct-owner-specs",
+      "subject": "spec: fold dependency-cleared direct owners"
+    },
+    {
+      "commit": "6e814c45",
+      "date": "2026-07-22T16:29:06-07:00",
+      "id": "git:codex/reclassify-forward-vision-specs",
+      "kind": "remote",
+      "name": "codex/reclassify-forward-vision-specs",
+      "subject": "docs: reclassify forward OpenSpec vision"
+    },
+    {
+      "commit": "4cf665fb",
+      "date": "2026-07-24T18:15:54-07:00",
+      "id": "git:codex/reconcile-external-connector-manifests",
+      "kind": "remote",
+      "name": "codex/reconcile-external-connector-manifests",
+      "subject": "coord: retire mcp planning claim"
+    },
+    {
+      "commit": "4307ebfe",
+      "date": "2026-07-22T18:23:23-07:00",
+      "id": "git:codex/reconcile-legacy-specs",
+      "kind": "remote",
+      "name": "codex/reconcile-legacy-specs",
+      "subject": "docs: classify legacy specification authority"
+    },
+    {
+      "commit": "0d7877b7",
+      "date": "2026-07-25T21:39:06-07:00",
+      "id": "git:codex/reconcile-provider-authority",
+      "kind": "remote",
+      "name": "codex/reconcile-provider-authority",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/reconcile-provider-authority"
+    },
+    {
+      "commit": "309e37a2",
+      "date": "2026-07-23T21:28:35-07:00",
+      "id": "git:codex/record-dr-drill-pass",
+      "kind": "remote",
+      "name": "codex/record-dr-drill-pass",
+      "subject": "docs(uptime): record green Debian 13 DR proof"
+    },
+    {
+      "commit": "474e62ab",
+      "date": "2026-07-23T19:54:09-07:00",
+      "id": "git:codex/refresh-drill-debian-image",
+      "kind": "remote",
+      "name": "codex/refresh-drill-debian-image",
+      "subject": "fix(uptime): resolve current DR base image"
+    },
+    {
+      "commit": "6f3b2e71",
+      "date": "2026-07-22T01:09:38-07:00",
+      "id": "git:codex/relay-spec-alignment",
+      "kind": "remote",
+      "name": "codex/relay-spec-alignment",
+      "subject": "docs: scope the planned profile-write boundary"
+    },
+    {
+      "commit": "a563bd6c",
+      "date": "2026-07-25T02:06:41-07:00",
+      "id": "git:codex/release-reconcile-ci-cleanup",
+      "kind": "remote",
+      "name": "codex/release-reconcile-ci-cleanup",
+      "subject": "coord: retire landed release reconcile claim"
+    },
+    {
+      "commit": "377d4953",
+      "date": "2026-07-25T02:04:44-07:00",
+      "id": "git:codex/release-reconcile-event",
+      "kind": "remote",
+      "name": "codex/release-reconcile-event",
+      "subject": "fix: install release workflow CI dependencies"
+    },
+    {
+      "commit": "07b25aea",
+      "date": "2026-07-25T11:06:58-07:00",
+      "id": "git:codex/release-reconcile-live-foldback",
+      "kind": "remote",
+      "name": "codex/release-reconcile-live-foldback",
+      "subject": "docs: fold back live release reconcile proof"
+    },
+    {
+      "commit": "ff55cd7e",
+      "date": "2026-07-22T01:49:32-07:00",
+      "id": "git:codex/repair-baseline-task-3-4",
+      "kind": "remote",
+      "name": "codex/repair-baseline-task-3-4",
+      "subject": "openspec: close merged baseline ledger task"
+    },
+    {
+      "commit": "38a8d65c",
+      "date": "2026-07-25T16:18:01-07:00",
+      "id": "git:codex/restack-postgres-control-plane-20260725",
+      "kind": "remote",
+      "name": "codex/restack-postgres-control-plane-20260725",
+      "subject": "coord: record Opus approval for postgres draft"
+    },
+    {
+      "commit": "c3454a9d",
+      "date": "2026-07-25T16:38:07-07:00",
+      "id": "git:codex/retire-1484-status",
+      "kind": "remote",
+      "name": "codex/retire-1484-status",
+      "subject": "docs: retire merged 1484 blocker"
+    },
+    {
+      "commit": "23d75ef1",
+      "date": "2026-07-23T12:48:30-07:00",
+      "id": "git:codex/retire-canary-threshold-status",
+      "kind": "remote",
+      "name": "codex/retire-canary-threshold-status",
+      "subject": "coord: retire landed canary threshold lane"
+    },
+    {
+      "commit": "3fabd2e1",
+      "date": "2026-07-26T17:39:05-07:00",
+      "id": "git:codex/retire-cheat-loop-current-20260726",
+      "kind": "remote",
+      "name": "codex/retire-cheat-loop-current-20260726",
+      "subject": "docs: record current-main cheat retirement approval"
+    },
+    {
+      "commit": "51c71331",
+      "date": "2026-07-26T12:15:12-07:00",
+      "id": "git:codex/retire-cheat-loop-final-20260726",
+      "kind": "remote",
+      "name": "codex/retire-cheat-loop-final-20260726",
+      "subject": "docs: broaden cheat-loop retirement boundary"
+    },
+    {
+      "commit": "e3771a9f",
+      "date": "2026-07-26T19:52:58-07:00",
+      "id": "git:codex/retire-cheat-loop-safe-waves",
+      "kind": "remote",
+      "name": "codex/retire-cheat-loop-safe-waves",
+      "subject": "docs(retirement): correct production proof boundaries"
+    },
+    {
+      "commit": "30492fa3",
+      "date": "2026-07-24T15:50:52-07:00",
+      "id": "git:codex/retire-distexec-design-row",
+      "kind": "remote",
+      "name": "codex/retire-distexec-design-row",
+      "subject": "coord: retire landed distributed execution design lane"
+    },
+    {
+      "commit": "e21cb567",
+      "date": "2026-07-23T22:20:51-07:00",
+      "id": "git:codex/retire-enqueue-status",
+      "kind": "remote",
+      "name": "codex/retire-enqueue-status",
+      "subject": "chore: retire merged enqueue lane"
+    },
+    {
+      "commit": "b0957ab0",
+      "date": "2026-07-24T23:11:56-07:00",
+      "id": "git:codex/retire-epoch2-1741",
+      "kind": "remote",
+      "name": "codex/retire-epoch2-1741",
+      "subject": "coord: retire landed epoch2 materialization lane"
+    },
+    {
+      "commit": "143599a4",
+      "date": "2026-07-24T18:36:50-07:00",
+      "id": "git:codex/retire-epoch2-operational-status",
+      "kind": "remote",
+      "name": "codex/retire-epoch2-operational-status",
+      "subject": "coord: retire landed epoch2 operational lane"
+    },
+    {
+      "commit": "43c09746",
+      "date": "2026-07-24T21:13:45-07:00",
+      "id": "git:codex/retire-epoch2-wakeup-row",
+      "kind": "remote",
+      "name": "codex/retire-epoch2-wakeup-row",
+      "subject": "coord: retire landed epoch2 wakeup lane"
+    },
+    {
+      "commit": "a6376bfe",
+      "date": "2026-07-26T19:28:17-07:00",
+      "id": "git:codex/retire-loop-souls",
+      "kind": "remote",
+      "name": "codex/retire-loop-souls",
+      "subject": "status: publish loop soul retirement stack"
+    },
+    {
+      "commit": "50192892",
+      "date": "2026-07-26T19:02:42-07:00",
+      "id": "git:codex/retire-loop-uptime-skill",
+      "kind": "remote",
+      "name": "codex/retire-loop-uptime-skill",
+      "subject": "status: publish loop skill retirement stack"
+    },
+    {
+      "commit": "536d04dc",
+      "date": "2026-07-24T20:00:57-07:00",
+      "id": "git:codex/retire-mcp-directory",
+      "kind": "remote",
+      "name": "codex/retire-mcp-directory",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/retire-mcp-directory"
+    },
+    {
+      "commit": "68580ae8",
+      "date": "2026-07-24T20:02:42-07:00",
+      "id": "git:codex/retire-mcp-directory-closeout",
+      "kind": "remote",
+      "name": "codex/retire-mcp-directory-closeout",
+      "subject": "coord: close merged mcp retirement lane"
+    },
+    {
+      "commit": "57d3b949",
+      "date": "2026-07-24T11:19:58-07:00",
+      "id": "git:codex/retire-operator-admission-claim",
+      "kind": "remote",
+      "name": "codex/retire-operator-admission-claim",
+      "subject": "coord: retire landed operator admission claim"
+    },
+    {
+      "commit": "a9a2c5ed",
+      "date": "2026-07-24T12:01:05-07:00",
+      "id": "git:codex/retire-operator-priority-grant-claim",
+      "kind": "remote",
+      "name": "codex/retire-operator-priority-grant-claim",
+      "subject": "coord: retire landed priority grant claim"
+    },
+    {
+      "commit": "13fa1cf7",
+      "date": "2026-07-23T13:56:17-07:00",
+      "id": "git:codex/retire-p0-triage-row",
+      "kind": "remote",
+      "name": "codex/retire-p0-triage-row",
+      "subject": "coord: retire landed P0 triage lane"
+    },
+    {
+      "commit": "06b8fb95",
+      "date": "2026-07-22T19:54:59-07:00",
+      "id": "git:codex/retire-runtime-backfill",
+      "kind": "remote",
+      "name": "codex/retire-runtime-backfill",
+      "subject": "coord: retire merged runtime spec lane"
+    },
+    {
+      "commit": "16899d09",
+      "date": "2026-07-25T16:40:40-07:00",
+      "id": "git:codex/retire-superseded-deps",
+      "kind": "remote",
+      "name": "codex/retire-superseded-deps",
+      "subject": "docs: retire superseded coordination deps"
+    },
+    {
+      "commit": "1cfd1755",
+      "date": "2026-07-23T13:06:34-07:00",
+      "id": "git:codex/retire-uptime-unknown-state-status",
+      "kind": "remote",
+      "name": "codex/retire-uptime-unknown-state-status",
+      "subject": "coord: retire landed uptime unknown-state lane"
+    },
+    {
+      "commit": "3773c6d6",
+      "date": "2026-07-23T14:46:11-07:00",
+      "id": "git:codex/retire-volume-restore",
+      "kind": "remote",
+      "name": "codex/retire-volume-restore",
+      "subject": "chore(status): retire restore and disk-remediation lanes"
+    },
+    {
+      "commit": "ceb37e12",
+      "date": "2026-07-23T13:26:49-07:00",
+      "id": "git:codex/retire-wiki-canary-oauth-status",
+      "kind": "remote",
+      "name": "codex/retire-wiki-canary-oauth-status",
+      "subject": "coord: retire landed wiki canary repair"
+    },
+    {
+      "commit": "cbbc2a75",
+      "date": "2026-07-23T12:54:59-07:00",
+      "id": "git:codex/runtime-fiction-openspec",
+      "kind": "remote",
+      "name": "codex/runtime-fiction-openspec",
+      "subject": "coord: record runtime fiction review gate"
+    },
+    {
+      "commit": "a06797c4",
+      "date": "2026-07-22T00:47:33-07:00",
+      "id": "git:codex/sandbox-runner-design",
+      "kind": "remote",
+      "name": "codex/sandbox-runner-design",
+      "subject": "docs: design per-job sandbox runner"
+    },
+    {
+      "commit": "d81f0c45",
+      "date": "2026-07-26T17:10:16-07:00",
+      "id": "git:codex/secret-custody-foldback",
+      "kind": "remote",
+      "name": "codex/secret-custody-foldback",
+      "subject": "chore: fold secret custody into runtime lane"
+    },
+    {
+      "commit": "29132bad",
+      "date": "2026-07-26T17:04:21-07:00",
+      "id": "git:codex/secret-custody-spec",
+      "kind": "remote",
+      "name": "codex/secret-custody-spec",
+      "subject": "docs: record secret custody approval"
+    },
+    {
+      "commit": "85ff644b",
+      "date": "2026-07-25T12:34:20-07:00",
+      "id": "git:codex/secure-agent-village",
+      "kind": "remote",
+      "name": "codex/secure-agent-village",
+      "subject": "docs: archive Agent Village security change"
+    },
+    {
+      "commit": "b4e90ff9",
+      "date": "2026-07-22T22:37:18-07:00",
+      "id": "git:codex/spec-independent-full-platform-targets",
+      "kind": "remote",
+      "name": "codex/spec-independent-full-platform-targets",
+      "subject": "coord: retire independent target spec claim"
+    },
+    {
+      "commit": "6094d196",
+      "date": "2026-07-22T13:29:15-07:00",
+      "id": "git:codex/test-identity-reset-spec-reconcile",
+      "kind": "remote",
+      "name": "codex/test-identity-reset-spec-reconcile",
+      "subject": "coord: retire identity reset spec claim"
+    },
+    {
+      "commit": "d47574b6",
+      "date": "2026-07-17T16:59:02-07:00",
+      "id": "git:codex/tiny-pet-website",
+      "kind": "remote",
+      "name": "codex/tiny-pet-website",
+      "subject": "feat: bring Tiny to life on the website"
+    },
+    {
+      "commit": "dc92f685",
+      "date": "2026-07-26T15:47:41-07:00",
+      "id": "git:codex/universe-creation-foldback-20260726",
+      "kind": "remote",
+      "name": "codex/universe-creation-foldback-20260726",
+      "subject": "status: fold universe creation into implementation lanes"
+    },
+    {
+      "commit": "f619c309",
+      "date": "2026-07-22T12:34:49-07:00",
+      "id": "git:codex/universe-creation-spec-truth",
+      "kind": "remote",
+      "name": "codex/universe-creation-spec-truth",
+      "subject": "coord: retire first-contact truth claim"
+    },
+    {
+      "commit": "fae028f3",
+      "date": "2026-07-26T17:18:01-07:00",
+      "id": "git:codex/universe-visibility-stale-release",
+      "kind": "remote",
+      "name": "codex/universe-visibility-stale-release",
+      "subject": "chore: release stale universe visibility claim"
+    },
+    {
+      "commit": "e1c1d933",
+      "date": "2026-07-23T13:17:04-07:00",
+      "id": "git:codex/uptime-alarm-concurrency-proof-coord",
+      "kind": "remote",
+      "name": "codex/uptime-alarm-concurrency-proof-coord",
+      "subject": "coord: restore uptime concurrency proof lane"
+    },
+    {
+      "commit": "215c1591",
+      "date": "2026-07-24T20:31:26-07:00",
+      "id": "git:codex/uptime-next-20260724",
+      "kind": "remote",
+      "name": "codex/uptime-next-20260724",
+      "subject": "coord: close deploy summary fix lane"
+    },
+    {
+      "commit": "8e7d6aaa",
+      "date": "2026-07-23T13:44:00-07:00",
+      "id": "git:codex/uptime-proof-p0-blocker-coord",
+      "kind": "remote",
+      "name": "codex/uptime-proof-p0-blocker-coord",
+      "subject": "coord: protect uptime proof from P0 triage overlap"
+    },
+    {
+      "commit": "28449dbb",
+      "date": "2026-07-25T01:13:01-07:00",
+      "id": "git:codex/wiki-discovery-proof",
+      "kind": "remote",
+      "name": "codex/wiki-discovery-proof",
+      "subject": "Merge remote-tracking branch 'origin/main' into codex/wiki-discovery-proof"
+    },
+    {
+      "commit": "b752b3b8",
+      "date": "2026-07-25T00:38:35-07:00",
+      "id": "git:codex/wiki-discovery-scope",
+      "kind": "remote",
+      "name": "codex/wiki-discovery-scope",
+      "subject": "spec: archive wiki discovery scope"
+    },
+    {
+      "commit": "a7a62ac9",
+      "date": "2026-07-21T23:16:29-07:00",
+      "id": "git:codex/wiki-discovery-separation",
+      "kind": "remote",
+      "name": "codex/wiki-discovery-separation",
+      "subject": "docs: record wiki discovery release gates"
+    },
+    {
+      "commit": "cb9715df",
+      "date": "2026-07-24T17:04:49-07:00",
+      "id": "git:coord/retire-operator-v2-mixed-isolation",
+      "kind": "remote",
+      "name": "coord/retire-operator-v2-mixed-isolation",
+      "subject": "coord: retire landed epoch2 isolation proof"
+    },
+    {
+      "commit": "b3c0751e",
+      "date": "2026-07-24T16:54:40-07:00",
+      "id": "git:coord/retire-operator-v2-quarantine",
+      "kind": "remote",
+      "name": "coord/retire-operator-v2-quarantine",
+      "subject": "coord: retire landed epoch2 quarantine lane"
+    },
+    {
+      "commit": "dd34453a",
+      "date": "2026-07-23T13:57:54-07:00",
+      "id": "git:docs/archive-1574-research",
+      "kind": "remote",
+      "name": "docs/archive-1574-research",
+      "subject": "coord: retire archived research lane"
+    },
+    {
+      "commit": "b304f0db",
+      "date": "2026-07-21T21:38:42-07:00",
+      "id": "git:docs/dead-branch-sweep",
+      "kind": "remote",
+      "name": "docs/dead-branch-sweep",
+      "subject": "Merge branch 'main' into docs/dead-branch-sweep"
+    },
+    {
+      "commit": "a572c1b4",
+      "date": "2026-07-22T00:29:53-07:00",
+      "id": "git:docs/first-contact-converse-approved",
+      "kind": "remote",
+      "name": "docs/first-contact-converse-approved",
+      "subject": "docs: record the host approval that moved first-contact birth to converse"
+    },
+    {
+      "commit": "943952f1",
+      "date": "2026-07-24T00:11:35-07:00",
+      "id": "git:docs/full-vision-successor-captures",
+      "kind": "remote",
+      "name": "docs/full-vision-successor-captures",
+      "subject": "docs: preserve revocation and review gates"
+    },
+    {
+      "commit": "381563e0",
+      "date": "2026-07-23T15:02:29-07:00",
+      "id": "git:docs/host-uptime-installer-audit",
+      "kind": "remote",
+      "name": "docs/host-uptime-installer-audit",
+      "subject": "docs(audit): bound fresh-host uptime convergence"
+    },
+    {
+      "commit": "7abd0b13",
+      "date": "2026-07-21T18:00:16-07:00",
+      "id": "git:docs/openspec-and-fleet-to-main",
+      "kind": "remote",
+      "name": "docs/openspec-and-fleet-to-main",
+      "subject": "docs: put the full scope on main, where other AIs will actually look"
+    },
+    {
+      "commit": "7f01d2c9",
+      "date": "2026-07-15T18:00:24-07:00",
+      "id": "git:docs/patch-loop-reference-design",
+      "kind": "remote",
+      "name": "docs/patch-loop-reference-design",
+      "subject": "docs(design): Codex round-2 adaptations — G7 uptime reconciliation, intake partial, G4 trigger-not-filing"
+    },
+    {
+      "commit": "227f9240",
+      "date": "2026-07-21T21:38:50-07:00",
+      "id": "git:docs/plan-authority-derivation",
+      "kind": "remote",
+      "name": "docs/plan-authority-derivation",
+      "subject": "Merge branch 'main' into docs/plan-authority-derivation"
+    },
+    {
+      "commit": "547ee332",
+      "date": "2026-07-22T01:15:37-07:00",
+      "id": "git:docs/session-handoff-2026-07-22",
+      "kind": "remote",
+      "name": "docs/session-handoff-2026-07-22",
+      "subject": "docs(activity): session-end handoff — open P0, CI gotcha, and what not to build"
+    },
+    {
+      "commit": "6b997061",
+      "date": "2026-07-23T14:07:58-07:00",
+      "id": "git:docs/supersede-pr1574-references",
+      "kind": "remote",
+      "name": "docs/supersede-pr1574-references",
+      "subject": "coord: retire PR 1574 reference cleanup"
+    },
+    {
+      "commit": "e1d26197",
+      "date": "2026-07-22T00:09:38-07:00",
+      "id": "git:docs/worktree-lane-sweep-audit",
+      "kind": "remote",
+      "name": "docs/worktree-lane-sweep-audit",
+      "subject": "docs(audit): final re-census settles C1 — 3 job-scratch lanes now IN_FLIGHT"
+    },
+    {
+      "commit": "d4ae367e",
+      "date": "2026-07-21T18:21:34-07:00",
+      "id": "git:feat/agent-village-command-center",
+      "kind": "remote",
+      "name": "feat/agent-village-command-center",
+      "subject": "Merge branch 'main' into feat/agent-village-command-center"
+    },
+    {
+      "commit": "befd9421",
+      "date": "2026-07-21T14:47:51-07:00",
+      "id": "git:feat/authority-ci-gates",
+      "kind": "remote",
+      "name": "feat/authority-ci-gates",
+      "subject": "Merge remote-tracking branch 'origin/main' into feat/authority-ci-gates"
+    },
+    {
+      "commit": "f6bee436",
+      "date": "2026-07-21T18:39:31-07:00",
+      "id": "git:feat/blob-locks-v2",
+      "kind": "remote",
+      "name": "feat/blob-locks-v2",
+      "subject": "test: restore complete lease proof regression file"
+    },
+    {
+      "commit": "4b05b3f7",
+      "date": "2026-07-21T20:40:43-07:00",
+      "id": "git:feat/check-stranded-lanes",
+      "kind": "remote",
+      "name": "feat/check-stranded-lanes",
+      "subject": "feat: detect stranded local lanes"
+    },
+    {
+      "commit": "3b5ea0a4",
+      "date": "2026-07-25T23:59:41-07:00",
+      "id": "git:feat/converse-os-sandbox",
+      "kind": "remote",
+      "name": "feat/converse-os-sandbox",
+      "subject": "docs: record exact engine admission approvals"
+    },
+    {
+      "commit": "57a88694",
+      "date": "2026-07-17T11:25:41-07:00",
+      "id": "git:feat/credential-vault",
+      "kind": "remote",
+      "name": "feat/credential-vault",
+      "subject": "fix(credentials): close r11 rollback and grant authority gaps"
+    },
+    {
+      "commit": "a4115dd3",
+      "date": "2026-07-21T14:50:30-07:00",
+      "id": "git:feat/github-effect-route",
+      "kind": "remote",
+      "name": "feat/github-effect-route",
+      "subject": "fix(plugin): regenerate the mirror — the merge left conflict markers in generated files"
+    },
+    {
+      "commit": "7e5f4820",
+      "date": "2026-07-19T19:43:55-07:00",
+      "id": "git:feat/kimi-direct-default",
+      "kind": "remote",
+      "name": "feat/kimi-direct-default",
+      "subject": "tooling: scripts/kimi_review.py — direct Kimi (k3) CLI review dispatcher"
+    },
+    {
+      "commit": "d4bf1364",
+      "date": "2026-07-21T14:52:05-07:00",
+      "id": "git:feat/lease-store-append-only",
+      "kind": "remote",
+      "name": "feat/lease-store-append-only",
+      "subject": "Merge branch 'feat/m1-unbound-denylist' into feat/lease-store-append-only"
+    },
+    {
+      "commit": "9389c1fb",
+      "date": "2026-07-21T14:50:18-07:00",
+      "id": "git:feat/m1-unbound-denylist",
+      "kind": "remote",
+      "name": "feat/m1-unbound-denylist",
+      "subject": "fix(plugin): regenerate the mirror — the merge left conflict markers in generated files"
+    },
+    {
+      "commit": "83deb6dc",
+      "date": "2026-07-21T14:31:08-07:00",
+      "id": "git:feat/migration-crossprocess-lock",
+      "kind": "remote",
+      "name": "feat/migration-crossprocess-lock",
+      "subject": "fix(storage): cross-process migration lock — SQLite rename of an open DB is undefined"
+    },
+    {
+      "commit": "4db75ccd",
+      "date": "2026-07-19T15:45:49-07:00",
+      "id": "git:feat/patch-loop-blobresult",
+      "kind": "remote",
+      "name": "feat/patch-loop-blobresult",
+      "subject": "fix: rehash stored candidates during completion"
+    },
+    {
+      "commit": "609ad42c",
+      "date": "2026-07-19T14:43:44-07:00",
+      "id": "git:feat/patch-loop-capsule",
+      "kind": "remote",
+      "name": "feat/patch-loop-capsule",
+      "subject": "fix: align capsule wire and binding limits"
+    },
+    {
+      "commit": "3a30c14c",
+      "date": "2026-07-19T15:02:48-07:00",
+      "id": "git:feat/patch-loop-device-auth",
+      "kind": "remote",
+      "name": "feat/patch-loop-device-auth",
+      "subject": "fix: require device proof for auth challenges"
+    },
+    {
+      "commit": "b9a13565",
+      "date": "2026-07-18T14:06:48-07:00",
+      "id": "git:feat/patch-loop-integration",
+      "kind": "remote",
+      "name": "feat/patch-loop-integration",
+      "subject": "fix(review): leave legacy projections unbound"
+    },
+    {
+      "commit": "5a307576",
+      "date": "2026-07-19T22:48:46-07:00",
+      "id": "git:feat/patch-loop-leasestore",
+      "kind": "remote",
+      "name": "feat/patch-loop-leasestore",
+      "subject": "fix: S2 fix-4 — replay forgery hardening: unique-event ledger binding, status rederive, corruption taxonomy"
+    },
+    {
+      "commit": "4e0a22e2",
+      "date": "2026-07-21T14:46:47-07:00",
+      "id": "git:feat/patch-loop-leasestore-fix2",
+      "kind": "remote",
+      "name": "feat/patch-loop-leasestore-fix2",
+      "subject": "merge: origin/main into the S2 stack — resolve STATUS Next-list collision"
+    },
+    {
+      "commit": "c11b145b",
+      "date": "2026-07-19T18:09:58-07:00",
+      "id": "git:feat/patch-loop-runner",
+      "kind": "remote",
+      "name": "feat/patch-loop-runner",
+      "subject": "merge: integrate device identity + auth (S3) substrate"
+    },
+    {
+      "commit": "057372fd",
+      "date": "2026-07-17T14:32:43-07:00",
+      "id": "git:feat/patch-loop-s1",
+      "kind": "remote",
+      "name": "feat/patch-loop-s1",
+      "subject": "fix(patch-loop): heal dead-ref retry winners"
+    },
+    {
+      "commit": "5fb6d16a",
+      "date": "2026-07-16T17:41:46-07:00",
+      "id": "git:feat/patch-loop-s2",
+      "kind": "remote",
+      "name": "feat/patch-loop-s2",
+      "subject": "Codex r14 — published-design author filter + remix-provenance-failure security hardening"
+    },
+    {
+      "commit": "79c1e5b0",
+      "date": "2026-07-17T10:29:57-07:00",
+      "id": "git:feat/patch-loop-s3",
+      "kind": "remote",
+      "name": "feat/patch-loop-s3",
+      "subject": "fix(patch-loop): Codex S3 r20 ADAPT #2/#3/#4 — explicit execution scope + workspace-ref lifecycle + strict JSON (#1 held for vault contract)"
+    },
+    {
+      "commit": "8eef71b8",
+      "date": "2026-07-17T10:22:01-07:00",
+      "id": "git:feat/patch-loop-s4",
+      "kind": "remote",
+      "name": "feat/patch-loop-s4",
+      "subject": "S4 r17 rework: platform-enforced owner-review + autonomous reachable + migration"
+    },
+    {
+      "commit": "4427d012",
+      "date": "2026-07-17T12:34:55-07:00",
+      "id": "git:feat/patch-loop-s5",
+      "kind": "remote",
+      "name": "feat/patch-loop-s5",
+      "subject": "fix: fail closed on authoritative run scope"
+    },
+    {
+      "commit": "b4b310e6",
+      "date": "2026-07-21T17:58:09-07:00",
+      "id": "git:feat/per-job-sandbox-runner",
+      "kind": "remote",
+      "name": "feat/per-job-sandbox-runner",
+      "subject": "Merge branch 'main' into feat/per-job-sandbox-runner"
+    },
+    {
+      "commit": "dac43fc0",
+      "date": "2026-07-21T17:42:29-07:00",
+      "id": "git:feat/phase6-workflow-db",
+      "kind": "remote",
+      "name": "feat/phase6-workflow-db",
+      "subject": "Merge branch 'main' into feat/phase6-workflow-db"
+    },
+    {
+      "commit": "e2e0c4ea",
+      "date": "2026-07-21T23:41:30-07:00",
+      "id": "git:feat/universe-first-contact",
+      "kind": "remote",
+      "name": "feat/universe-first-contact",
+      "subject": "chore: drop STATUS.md from this branch to avoid the contended-file collision"
+    },
+    {
+      "commit": "375b0155",
+      "date": "2026-07-21T20:57:21-07:00",
+      "id": "git:feature/test-identity-and-reset-impl",
+      "kind": "remote",
+      "name": "feature/test-identity-and-reset-impl",
+      "subject": "feat: add scoped test identity reset"
+    },
+    {
+      "commit": "7082992d",
+      "date": "2026-07-21T22:15:09-07:00",
+      "id": "git:fix/branch-liveness-report",
+      "kind": "remote",
+      "name": "fix/branch-liveness-report",
+      "subject": "perf: bound branch containment checks"
+    },
+    {
+      "commit": "b49668b2",
+      "date": "2026-07-21T17:43:32-07:00",
+      "id": "git:fix/card-matcher-fallback",
+      "kind": "remote",
+      "name": "fix/card-matcher-fallback",
+      "subject": "Merge branch 'main' into fix/card-matcher-fallback"
+    },
+    {
+      "commit": "c6ad93f1",
+      "date": "2026-07-23T18:07:56-07:00",
+      "id": "git:fix/command-center-lan-auth",
+      "kind": "remote",
+      "name": "fix/command-center-lan-auth",
+      "subject": "docs(command-center): record reviewed verification"
+    },
+    {
+      "commit": "f2769d6b",
+      "date": "2026-07-21T23:19:03-07:00",
+      "id": "git:fix/credential-fail-closed",
+      "kind": "remote",
+      "name": "fix/credential-fail-closed",
+      "subject": "fix(credentials): a universe with no credential ran on the host's subscription"
+    },
+    {
+      "commit": "a6bb147b",
+      "date": "2026-07-21T23:08:14-07:00",
+      "id": "git:fix/credential-vault-fail-closed",
+      "kind": "remote",
+      "name": "fix/credential-vault-fail-closed",
+      "subject": "fix: close alternate universe provider bypasses"
+    },
+    {
+      "commit": "85776b65",
+      "date": "2026-07-21T17:40:43-07:00",
+      "id": "git:fix/declare-typing-extensions",
+      "kind": "remote",
+      "name": "fix/declare-typing-extensions",
+      "subject": "Merge branch 'main' into fix/declare-typing-extensions"
+    },
+    {
+      "commit": "a853c633",
+      "date": "2026-07-24T20:23:58-07:00",
+      "id": "git:fix/deploy-summary-quoting",
+      "kind": "remote",
+      "name": "fix/deploy-summary-quoting",
+      "subject": "coord: publish deploy summary fix PR"
+    },
+    {
+      "commit": "8544edd6",
+      "date": "2026-07-21T23:48:09-07:00",
+      "id": "git:fix/directory-run-graph-gate",
+      "kind": "remote",
+      "name": "fix/directory-run-graph-gate",
+      "subject": "fix(auth): gate directory graph execution inline"
+    },
+    {
+      "commit": "293ae492",
+      "date": "2026-07-23T14:43:31-07:00",
+      "id": "git:fix/disk-watch-remediation-continuity",
+      "kind": "remote",
+      "name": "fix/disk-watch-remediation-continuity",
+      "subject": "fix(uptime): keep disk remediation running after alerts"
+    },
+    {
+      "commit": "f2d6f9e5",
+      "date": "2026-07-21T17:41:27-07:00",
+      "id": "git:fix/l4-reducer-law",
+      "kind": "remote",
+      "name": "fix/l4-reducer-law",
+      "subject": "Merge branch 'main' into fix/l4-reducer-law"
+    },
+    {
+      "commit": "e2a04b80",
+      "date": "2026-07-22T13:48:17-07:00",
+      "id": "git:fix/layer2-windows-hang",
+      "kind": "remote",
+      "name": "fix/layer2-windows-hang",
+      "subject": "fix: make layer-2 canary safe on Windows"
+    },
+    {
+      "commit": "f615cd11",
+      "date": "2026-07-21T23:48:04-07:00",
+      "id": "git:fix/private-goal-read-visibility",
+      "kind": "remote",
+      "name": "fix/private-goal-read-visibility",
+      "subject": "docs: record private Goal verification"
+    },
+    {
+      "commit": "e2aac805",
+      "date": "2026-07-21T18:18:43-07:00",
+      "id": "git:fix/reconcile-against-production",
+      "kind": "remote",
+      "name": "fix/reconcile-against-production",
+      "subject": "fix(ci): the safety net was asking a question it could answer wrongly"
+    },
+    {
+      "commit": "bcb24fc7",
+      "date": "2026-07-22T00:44:35-07:00",
+      "id": "git:fix/reconcile-dispatches-deploy",
+      "kind": "remote",
+      "name": "fix/reconcile-dispatches-deploy",
+      "subject": "fix(ci): quote actionlint shell variables"
+    },
+    {
+      "commit": "5229ec40",
+      "date": "2026-07-21T22:16:49-07:00",
+      "id": "git:fix/release-reconcile-deadman",
+      "kind": "remote",
+      "name": "fix/release-reconcile-deadman",
+      "subject": "fix: add independent release reconcile dead-man"
+    },
+    {
+      "commit": "736cc62b",
+      "date": "2026-07-22T00:25:29-07:00",
+      "id": "git:fix/storage-accounting",
+      "kind": "remote",
+      "name": "fix/storage-accounting",
+      "subject": "Merge remote-tracking branch 'origin/main' into fix/storage-accounting"
+    },
+    {
+      "commit": "c21d2877",
+      "date": "2026-07-22T00:30:56-07:00",
+      "id": "git:fix/test-remote-push",
+      "kind": "remote",
+      "name": "fix/test-remote-push",
+      "subject": "Merge origin/main into fix/test-remote-push"
+    },
+    {
+      "commit": "54c958a7",
+      "date": "2026-07-21T11:59:55-07:00",
+      "id": "git:fix/test-surface-repair",
+      "kind": "remote",
+      "name": "fix/test-surface-repair",
+      "subject": "fix(tests): two \"passing\" tests were vacuous — the STATUS rows described the wrong defect"
+    },
+    {
+      "commit": "42e7dca7",
+      "date": "2026-07-22T00:31:31-07:00",
+      "id": "git:fix/unified-authority-derivation",
+      "kind": "remote",
+      "name": "fix/unified-authority-derivation",
+      "subject": "build(plugin): rebuild the claude-plugin mirror for the runtime/ package"
+    },
+    {
+      "commit": "86c85083",
+      "date": "2026-07-26T19:11:45-07:00",
+      "id": "git:main",
+      "kind": "remote",
+      "name": "main",
+      "subject": "chore(coord): mark release proof lane landed (#1817)"
+    },
+    {
+      "commit": "9fe83dd9",
+      "date": "2026-07-22T01:36:49-07:00",
+      "id": "git:openspec/reconcile-round2",
+      "kind": "remote",
+      "name": "openspec/reconcile-round2",
+      "subject": "spec: narrow first-contact authority proof"
+    },
+    {
+      "commit": "95303ec4",
+      "date": "2026-07-21T23:56:12-07:00",
+      "id": "git:publish/universe-first-contact",
+      "kind": "remote",
+      "name": "publish/universe-first-contact",
+      "subject": "Merge remote-tracking branch 'origin/main' into publish/universe-first-contact"
+    },
+    {
+      "commit": "267f36c8",
+      "date": "2026-07-21T23:10:39-07:00",
+      "id": "git:recover/auto-enroll-behind-branch-fix",
+      "kind": "remote",
+      "name": "recover/auto-enroll-behind-branch-fix",
+      "subject": "fix(ci): reconcile enrolled branches behind main"
+    },
+    {
+      "commit": "84d9a85a",
+      "date": "2026-07-22T00:07:19-07:00",
+      "id": "git:status/release-r2-claims",
+      "kind": "remote",
+      "name": "status/release-r2-claims",
+      "subject": "status: release the R2 claims that were blocking the lanes they described"
+    },
+    {
+      "commit": "b7167ce3",
+      "date": "2026-07-21T20:16:40-07:00",
+      "id": "git:worktree-distexec-resume-spec",
+      "kind": "remote",
+      "name": "worktree-distexec-resume-spec",
+      "subject": "fix(fleet): a lane that vanishes without output was silently dropped"
+    },
+    {
+      "commit": "8a9eea17",
+      "date": "2026-07-19T19:10:47-07:00",
+      "id": "git:worktree-kimi-mcp-docs",
+      "kind": "remote",
+      "name": "worktree-kimi-mcp-docs",
+      "subject": "docs(claude): wire Kimi Code as third model family via MCP shim"
+    },
+    {
+      "commit": "be6188dd",
+      "date": "2026-07-03T15:55:52-07:00",
+      "id": "git:worktree-website-app-download",
+      "kind": "remote",
+      "name": "worktree-website-app-download",
+      "subject": "fix(site): scope the download to the app SDK, not the whole repo"
     }
   ],
   "edges": [
     {
-      "from": "repo:TinyAssets",
-      "to": "git:main",
-      "kind": "git"
+      "from": "area:coding-system",
+      "kind": "verified-by",
+      "to": "area:tests-ci"
     },
     {
-      "from": "repo:TinyAssets",
-      "to": "git:cursor/claim-check-session-d",
-      "kind": "git"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "git:origin/main",
-      "kind": "git"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "git:origin/cursor/claim-check-session-d",
-      "kind": "git"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "git:worktree-agent-a54683e4",
-      "kind": "git"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:mcp-api",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:runtime-engine",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:fantasy-domain",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:coding-system",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:patch-loop",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:website",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:docs-plans",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:packaging-ops",
-      "kind": "contains"
-    },
-    {
-      "from": "repo:TinyAssets",
-      "to": "area:tests-ci",
-      "kind": "contains"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/wiki",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/graph",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/connect",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/host",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/goals",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/fine-print",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/alliance",
-      "kind": "route"
-    },
-    {
-      "from": "area:website",
-      "to": "route:/legal",
-      "kind": "route"
-    },
-    {
-      "from": "area:mcp-api",
-      "to": "goal:4ff5862cc26d",
-      "kind": "exposes"
-    },
-    {
-      "from": "area:mcp-api",
-      "to": "goal:f10caea2e437",
-      "kind": "exposes"
+      "from": "area:coding-system",
+      "kind": "branch",
+      "to": "branch:agent_team_3node_v4"
     },
     {
       "from": "area:fantasy-domain",
-      "to": "universe:concordance",
-      "kind": "runs"
+      "kind": "branch",
+      "to": "branch:fantasy_author:universe_cycle_wrapper"
     },
     {
       "from": "area:fantasy-domain",
-      "to": "branch:fantasy_author:universe_cycle_wrapper",
-      "kind": "branch"
-    },
-    {
-      "from": "area:runtime-engine",
-      "to": "branch:fantasy_author:universe_cycle_wrapper",
-      "kind": "executes"
-    },
-    {
-      "from": "area:coding-system",
-      "to": "goal:454b6e72348b",
-      "kind": "goal"
-    },
-    {
-      "from": "area:coding-system",
-      "to": "branch:agent_team_3node_v4",
-      "kind": "branch"
-    },
-    {
-      "from": "area:coding-system",
-      "to": "area:tests-ci",
-      "kind": "verified-by"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "goal:4ff5862cc26d",
-      "kind": "goal"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "goal:f10caea2e437",
-      "kind": "goal"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "branch:change_loop_v1",
-      "kind": "branch"
-    },
-    {
-      "from": "branch:change_loop_v1",
-      "to": "branch:bug_to_patch_packet_v1",
-      "kind": "calls"
-    },
-    {
-      "from": "branch:change_loop_v1",
-      "to": "branch:agent_team_3node_v4",
-      "kind": "dispatches"
-    },
-    {
-      "from": "branch:change_loop_v1",
-      "to": "branch:live_observation_watch_v1",
-      "kind": "plans"
-    },
-    {
-      "from": "branch:bug_to_patch_packet_v1",
-      "to": "goal:f10caea2e437",
-      "kind": "bound-to"
-    },
-    {
-      "from": "branch:live_observation_watch_v1",
-      "to": "bug:BUG-009",
-      "kind": "blocked-by"
-    },
-    {
-      "from": "branch:agent_team_3node_v4",
-      "to": "bug:BUG-017",
-      "kind": "blocked-by"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "bug:BUG-005",
-      "kind": "blocked-by"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "bug:BUG-009",
-      "kind": "blocked-by"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "bug:BUG-019",
-      "kind": "example"
-    },
-    {
-      "from": "area:patch-loop",
-      "to": "bug:BUG-034",
-      "kind": "scope-case"
-    },
-    {
-      "from": "route:/wiki",
-      "to": "area:mcp-api",
-      "kind": "showcases"
-    },
-    {
-      "from": "route:/graph",
-      "to": "repo:TinyAssets",
-      "kind": "showcases"
-    },
-    {
-      "from": "route:/goals",
-      "to": "area:mcp-api",
-      "kind": "showcases"
-    },
-    {
-      "from": "route:/fine-print",
-      "to": "area:packaging-ops",
-      "kind": "observes"
-    },
-    {
-      "from": "route:/alliance",
-      "to": "area:patch-loop",
-      "kind": "routes-to"
-    },
-    {
-      "from": "route:/legal",
-      "to": "area:docs-plans",
-      "kind": "discloses"
-    },
-    {
-      "from": "area:docs-plans",
-      "to": "goal:4ff5862cc26d",
-      "kind": "documents"
+      "kind": "runs",
+      "to": "universe:concordance"
     },
     {
       "from": "area:packaging-ops",
-      "to": "area:mcp-api",
-      "kind": "ships"
+      "kind": "ships",
+      "to": "area:mcp-api"
+    },
+    {
+      "from": "area:runtime-engine",
+      "kind": "executes",
+      "to": "branch:fantasy_author:universe_cycle_wrapper"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/alliance"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/connect"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/fine-print"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/goals"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/graph"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/host"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/legal"
+    },
+    {
+      "from": "area:website",
+      "kind": "route",
+      "to": "route:/wiki"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:coding-system"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:docs-plans"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:fantasy-domain"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:mcp-api"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:packaging-ops"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:repo"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:runtime-engine"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:tests-ci"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "contains",
+      "to": "area:website"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:agent/auth-health-evidence"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:audit/audit-release-chain"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:audit/audit-stale-pr-triage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:audit/audit-status-backlog"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:audit/audit-vacuous-tests"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:chore/mutation-probe-coverage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:chore/recover-untracked-docs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:ci/post-merge-release-trigger"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:ci/release-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:ci/required-test-gate-redproof"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:ci/required-test-gate"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/activity-log-union-merge"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/android-universe-conversation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/announce-social-path"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/audit-lane-conversion"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/audit-stranded-coordination-state"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/audit-stranded-work"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/auth-audit-owner-map"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/blank-slate-universe-brain-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/brain-okf-precedent-note"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/brain-scratch-root-cleanup"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/carry-0722-audits"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/carry-auth-surface-sweep"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/claude-md-merge-section"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/codex-clone-visibility"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/codex-publish-proof"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/context-budget-gate"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/docs/agents-monitor-contract-rule"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/docs/audit-canary-false-red-0722"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/dr-issue-backlog"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-codex-lane-publication"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-codex-mirror-claim"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-codex-verdict-attribution"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-env-catalog"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-ideas-pipeline"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-plan-citations"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-retired-agents"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/fix-specs-index"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/founder-identity-slice1"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/gitignore-scratch-gap"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/index-the-audits"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/issue-1346-triage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/ledger-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/legacy-mcp-server-fence"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/o5-agentic-pro-research"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/o5-brain-okf-canonical-store"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/o5-handoffs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/o5-independent-platform-targets"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/osx-universe-creation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/persona-note-relay-reshape"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/personification-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/personification-section-6-defs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/polsia-handoff-rename"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/pr1506-landedness-fixups"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/pr1506-verdict-landedness"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/probe-catalog-exit6-scope-truth"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/probe-catalog-probe003-truth"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/publish-proof-green"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/publish-proof-green2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/refresh-conventions-counts"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/release-chain-log"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/required-test-gate"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/restore-0bc841aa-stale-index-regression"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/stale-alarm-issues"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/stale-nondraft-pr-triage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/status-concerns-audit"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/status-janitor-0722"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/status-q63-privacy-row-audit"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/status-release-cron-watch"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/status-write-contention"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/triage-exec-plans"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/ui-test-deployed-build"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/uitest-proof-durability"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/universe-creation-landedness"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/venv-entrypoint-extract"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/verify-vacuous-tests"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/worktree-anchor-branch-audit"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:claude/write-page-commons-residual"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/agent-village-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/align-fresh-host-backup-config"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/backfill-dependent-specs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/backfill-graph-run-coordination"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/backfill-independent-specs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/backfill-shipped-behavior-coverage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/background-branch-authority-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/background-branch-authority-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/branch-auth-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/claim-1691-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/claim-knowledge-memory-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/claim-secret-custody-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/cleanup-p0-triage-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/close-host-uptime-proof"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/close-release-reconcile-watch-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/collapse-mcp-spec-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/compute-market-frontier-research"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/connector-manifest-product-split"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/constrain-engine-providers"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/converge-host-uptime-installers"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/correct-independent-backfill-authority"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/correct-legacy-disposition-review"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/credential-backfill-coordination"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/distributed-execution-current-main-design"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/dr-drill-image-pin"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/establish-public-capacity-envelope"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/exercise-host-uptime-jobs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fail-closed-provider-auth-overlay"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/finish-node-enqueue"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/first-contact-authority-handshake"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/first-contact-authority-review"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-bootstrap-source-sha"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-directory-catalog-drift"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-mcp-proof-closeout"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-mcp-retirement-proof"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-p0-triage-failure-escalation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-uptime-alarm-unknown-state"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/fix-wiki-canary-oauth-challenge"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/foldback-bootstrap-source-sha"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/foldback-engine-os-sandbox-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/foldback-forward-spec-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/founder-provider-allowlist"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/harden-branch-access-authority"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/harden-dr-drill-evidence"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/harden-production-load-evidence-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/harden-production-load-evidence"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/harden-volume-restore"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/host-principal-binding"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/hyperparameter-science-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/implement-production-load-harness-main-20260725"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/mcpb-catalog-parity"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/moderation-abuse-runtime"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/moderation-flag-planner"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-conformance-audit2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-conformance-fleet"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-core-runtime-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-core-runtime-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-full-coverage-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-full-coverage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-knowledge-memory-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-knowledge-memory-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-provider-credential-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-provider-credential-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-requirement-classification"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/openspec-uptime-backfill"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-epoch2-consumer"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-epoch2-queue"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-priority-grant-lifecycle"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-priority-public-admission"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-priority-replay"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-priority-verdict-squash"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-priority-verdict"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-request-admission-storage"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-request-trigger-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-v2-eligible-wakeup"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-v2-mixed-isolation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-v2-operational-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-v2-quarantine"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/operator-worker-descriptors"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/opus5-first-contact-verdict"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/osx-control-station"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/osx-credential-vault-backfill"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/osx-provider-attempt-receipts"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/osx-test-identity-reset"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/osx-vault-clobber-fix"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/plan-target-decisions"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/postgres-control-plane-plan"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/provider-attempt-receipts"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/provider-authority-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/provider-authority-successors-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/provider-authority-successors"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/reassess-direct-owner-specs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/reclassify-forward-vision-specs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/reconcile-external-connector-manifests"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/reconcile-legacy-specs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/reconcile-provider-authority"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/record-dr-drill-pass"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/refresh-drill-debian-image"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/relay-spec-alignment"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/release-reconcile-ci-cleanup"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/release-reconcile-event"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/release-reconcile-live-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/repair-baseline-task-3-4"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/restack-postgres-control-plane-20260725"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-1484-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-canary-threshold-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-cheat-loop-current-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-cheat-loop-final-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-cheat-loop-safe-waves"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-distexec-design-row"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-enqueue-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-epoch2-1741"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-epoch2-operational-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-epoch2-wakeup-row"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-loop-souls"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-loop-uptime-skill"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-mcp-directory-closeout"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-mcp-directory"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-operator-admission-claim"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-operator-priority-grant-claim"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-p0-triage-row"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-runtime-backfill"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-superseded-deps"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-uptime-unknown-state-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-volume-restore"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/retire-wiki-canary-oauth-status"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/runtime-fiction-openspec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/sandbox-runner-design"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/secret-custody-foldback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/secret-custody-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/secure-agent-village"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/spec-independent-full-platform-targets"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/test-identity-reset-spec-reconcile"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/tiny-pet-website"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/universe-creation-foldback-20260726"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/universe-creation-spec-truth"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/universe-visibility-stale-release"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/uptime-alarm-concurrency-proof-coord"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/uptime-next-20260724"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/uptime-proof-p0-blocker-coord"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/wiki-discovery-proof"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/wiki-discovery-scope"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:codex/wiki-discovery-separation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:coord/retire-operator-v2-mixed-isolation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:coord/retire-operator-v2-quarantine"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/archive-1574-research"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/dead-branch-sweep"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/first-contact-converse-approved"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/full-vision-successor-captures"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/host-uptime-installer-audit"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/openspec-and-fleet-to-main"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/patch-loop-reference-design"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/plan-authority-derivation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/session-handoff-2026-07-22"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/supersede-pr1574-references"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:docs/worktree-lane-sweep-audit"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/agent-village-command-center"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/authority-ci-gates"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/blob-locks-v2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/check-stranded-lanes"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/converse-os-sandbox"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/credential-vault"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/github-effect-route"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/kimi-direct-default"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/lease-store-append-only"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/m1-unbound-denylist"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/migration-crossprocess-lock"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-blobresult"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-capsule"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-device-auth"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-integration"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-leasestore-fix2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-leasestore"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-runner"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-s1"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-s2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-s3"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-s4"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/patch-loop-s5"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/per-job-sandbox-runner"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/phase6-workflow-db"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feat/universe-first-contact"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:feature/test-identity-and-reset-impl"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/branch-liveness-report"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/card-matcher-fallback"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/command-center-lan-auth"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/credential-fail-closed"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/credential-vault-fail-closed"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/declare-typing-extensions"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/deploy-summary-quoting"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/directory-run-graph-gate"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/disk-watch-remediation-continuity"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/l4-reducer-law"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/layer2-windows-hang"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/private-goal-read-visibility"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/reconcile-against-production"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/reconcile-dispatches-deploy"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/release-reconcile-deadman"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/storage-accounting"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/test-remote-push"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/test-surface-repair"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:fix/unified-authority-derivation"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:main"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:openspec/reconcile-round2"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:publish/universe-first-contact"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:recover/auto-enroll-behind-branch-fix"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:status/release-r2-claims"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:worktree-distexec-resume-spec"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:worktree-kimi-mcp-docs"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "kind": "git",
+      "to": "git:worktree-website-app-download"
+    },
+    {
+      "from": "route:/fine-print",
+      "kind": "observes",
+      "to": "area:packaging-ops"
+    },
+    {
+      "from": "route:/goals",
+      "kind": "showcases",
+      "to": "area:mcp-api"
+    },
+    {
+      "from": "route:/graph",
+      "kind": "showcases",
+      "to": "repo:TinyAssets"
+    },
+    {
+      "from": "route:/legal",
+      "kind": "discloses",
+      "to": "area:docs-plans"
+    },
+    {
+      "from": "route:/wiki",
+      "kind": "showcases",
+      "to": "area:mcp-api"
+    }
+  ],
+  "fetched_at": "2026-07-27T02:59:50.703Z",
+  "provenance": {
+    "generated_arrays_reused": false,
+    "topology": "src/lib/content/repo-topology.json"
+  },
+  "repo": {
+    "id": "repo:TinyAssets",
+    "main": "86c85083",
+    "name": "TinyAssets",
+    "owner": "Jonnyton",
+    "remote_url": "https://github.com/Jonnyton/TinyAssets"
+  },
+  "routes": [
+    {
+      "id": "route:/wiki",
+      "label": "Wiki cockpit",
+      "path": "/wiki",
+      "summary": "Live MCP commons browser."
+    },
+    {
+      "id": "route:/graph",
+      "label": "Whole-project graph",
+      "path": "/graph",
+      "summary": "Unified project map across MCP, repo, domains, branches, and pages."
+    },
+    {
+      "id": "route:/connect",
+      "label": "Connect",
+      "path": "/connect",
+      "summary": "Chatbot connector setup."
+    },
+    {
+      "id": "route:/host",
+      "label": "Host",
+      "path": "/host",
+      "summary": "Daemon host entry point."
+    },
+    {
+      "id": "route:/goals",
+      "label": "Goals",
+      "path": "/goals",
+      "summary": "Public goal lens backed by MCP goals, commons records, and branch signals."
+    },
+    {
+      "id": "route:/fine-print",
+      "label": "Status",
+      "path": "/fine-print",
+      "summary": "Operations room for public health, current work, and deployment evidence."
+    },
+    {
+      "id": "route:/alliance",
+      "label": "Alliance",
+      "path": "/alliance",
+      "summary": "Async-first community intake and collaboration path."
+    },
+    {
+      "id": "route:/legal",
+      "label": "Legal",
+      "path": "/legal",
+      "summary": "Terms, privacy, licensing, and token disclosure ledger."
+    }
+  ],
+  "source": "public GitHub origin refs · explicit topology",
+  "workflow_branches": [
+    {
+      "area": "fantasy",
+      "id": "branch:fantasy_author:universe_cycle_wrapper",
+      "name": "fantasy_author:universe_cycle_wrapper",
+      "state": "wired",
+      "summary": "Fantasy-domain universe cycle wrapper used by the live authoring daemon."
+    },
+    {
+      "area": "coding",
+      "id": "branch:agent_team_3node_v4",
+      "name": "agent_team_3node_v4",
+      "state": "caveated",
+      "summary": "Reusable lead, developer, and checker coding-team workflow."
     }
   ]
 }

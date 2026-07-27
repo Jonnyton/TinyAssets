@@ -38,6 +38,8 @@ npm run check        # type-check Svelte + TS
 npm run format       # prettier write
 npm run lint         # eslint + prettier check
 npm run test:e2e     # playwright tests (placeholder)
+npm run test:snapshots
+npm run snapshot     # clean MCP + repository snapshot rebuild
 ```
 
 ## Rollback deploy to GitHub Pages
@@ -118,18 +120,33 @@ The Cowork sandbox mounts this folder over FUSE. Two known quirks:
 See `WebSite/HOOKS_FUSE_QUIRKS.md` for details.
 
 
-## Refreshing the MCP snapshot
+## Refreshing the public data snapshots
 
-`/wiki` and `/graph` are baked from `src/lib/content/mcp-snapshot.json`. To pull fresh data:
+`/wiki` and `/graph` are baked from the MCP and repository snapshots. Rebuild
+them from their canonical sources with:
 
 ```powershell
-npm run snapshot   # calls tinyassets.io/mcp, rewrites the JSON
-git add src/lib/content/mcp-snapshot.json
-git commit -m "snapshot: refresh MCP"
+npm run test:snapshots
+npm run snapshot
+git add src/lib/content/*snapshot.json src/lib/content/repo-topology.json ../site-react/lib/mcp-snapshot.json
+git commit -m "snapshot: refresh public data"
 git push           # source update only; does not deploy either site
 ```
 
-The script is `scripts/snapshot-mcp.mjs`. It uses `@modelcontextprotocol/sdk` and fails soft — if the MCP is unreachable, the existing snapshot is kept and the build still ships. If the MCP endpoint requires auth, set `MCP_BEARER` in your shell env (or as a repo secret named the same in CI).
+`scripts/snapshot-mcp.mjs` uses the canonical public `read_graph` and
+`read_page` tools. It performs a clean discovery-scoped rebuild, validates
+counts, scope, truncation, page bounds, and source-read proofs, then replaces
+the Svelte and React MCP snapshots as one process-atomic, byte-identical
+operation. Empty goals are valid and clear stale goals. Any incomplete read or
+write failure exits non-zero and leaves both prior outputs untouched. If the
+endpoint requires auth, set `MCP_BEARER`.
+
+`scripts/snapshot-repo.mjs` reads public `origin/*` refs and the reviewed
+static topology in `src/lib/content/repo-topology.json`. It excludes local-only
+branches, checkout/dirty state, and remote credentials. It never reuses topology
+arrays from a previously generated snapshot and never keyword-filters user or
+historical branch names. Edit the topology source, not
+`repo-snapshot.json`, when the designed repository graph changes.
 
 **Rollback refresh:** `deploy-site.yml` has no cron or push trigger. When a
 rollback specifically needs a fresh Svelte snapshot, dispatch it manually with

@@ -1,1324 +1,1251 @@
 {
-  "fetched_at": "2026-04-30T02:40:04.938Z",
-  "source": "tinyassets.io/mcp",
-  "stats": {
-    "wiki_promoted": 55,
-    "wiki_drafts": 8,
-    "goals": 6,
-    "universes": 3,
-    "edges": 130
-  },
-  "goals": [
+  "crawled": [
+    "drafts/concepts/better-loop-2-designs-autoresearch-lab-plus-v1-x-plus-jonathan-v0-3-synthesis-three-v1-3-candidates-2026-05-17.md",
+    "drafts/concepts/factory-branch-layer-boundaries-convention-2026-05-24.md",
+    "drafts/concepts/factory-branch-substrate-state-ledger-2026-05-24.md",
+    "drafts/concepts/parent-selection-formula-dgm-aligned-for-gates-leaderboard-2026-05-17.md",
+    "drafts/concepts/workflow-patterns.md",
+    "drafts/projects/meridian-ashes.md",
+    "drafts/projects/workflow-redesign-2026-04.md",
+    "drafts/references/factions-sable-cartographers.md",
+    "drafts/references/meridian-ashes-book-1-architecture.md",
+    "drafts/references/meridian-ashes-book-1-character-roles.md",
+    "drafts/references/meridian-ashes-book-1-scene-motif-ledger.md",
+    "drafts/references/meridian-ashes-chronology.md",
+    "drafts/references/meridian-ashes-motif-registry.md",
+    "drafts/references/meridian-ashes-open-questions.md",
+    "drafts/references/meridian-ashes-series-spine.md",
+    "drafts/research/okf-open-knowledge-format-brain-implications-2026-06-25.md",
+    "drafts/research/splitroot-interface-references-pt-commander-wc3-2026-06-10.md",
+    "drafts/research/splitroot-renegade-match-flow-research-2026-06-09.md",
+    "drafts/research/splitroot-savage-2-mechanics-research-2026-06-11.md",
+    "drafts/research/splitroot-ue-native-ai-foundation-research-2026-06-11.md",
+    "drafts/workflow-voice/20260517T035924Z-post_original.md",
+    "drafts/workflow-voice/20260517T040832Z-post_original.md",
+    "drafts/workflow-voice/20260517T162123Z-post_original.md",
+    "drafts/workflow-voice/20260618T013843Z-post_original.md",
+    "drafts/workflow-voice/20260618T013850Z-post_original.md",
+    "drafts/workflow-voice/20260620T015112Z-post_original.md",
+    "drafts/workflow-voice/_outreach_signal.md",
+    "drafts/workflow-voice/_smoke-20260620T011941Z-post_original.md",
+    "drafts/workflow-voice/_smoke-20260620T012001Z-post_original.md",
+    "drafts/workflow-voice/_x_signal.md",
+    "drafts/workflows/agent-teams-as-graphs.md",
+    "drafts/workflows/community-lego-assembly-rule-for-workflow-authoring.md",
+    "drafts/workflows/design-auto-change-queue-drain-convergence-point.md",
+    "drafts/workflows/feature-request-brain-query-cross-reference-graph.md",
+    "drafts/workflows/feature-request-lynx-services-portal-autofill.md",
+    "drafts/workflows/patch-request-branch-builder-schema-dry-run-status-contract.md",
+    "drafts/workflows/patch-request-branch-merge-remix-for-shared-workflow-primitives.md",
+    "drafts/workflows/patch-request-community-assembly-reuse-planner.md",
+    "drafts/workflows/patch-request-wiki-draft-promotion-normalization.md",
+    "pages/concepts/anticipation-gap-and-permission-ladder-jones-2026-05-07.md",
+    "pages/concepts/auto-hydrate-then-invoke-v1.md",
+    "pages/concepts/before-filing-a-patch-request-user-buildable-check.md",
+    "pages/concepts/brain-architecture-deep-dive-synthesis-2026-05-03.md",
+    "pages/concepts/brain-update-001-required-reason-consensus-engagement-lint.md",
+    "pages/concepts/brain-update-002-utc-source-fidelity-split.md",
+    "pages/concepts/brain-update-003-completeness-cursor-enumeration-fallback.md",
+    "pages/concepts/brain-update-005-merge-authorization-state-routing-anomalies-derived-views.md",
+    "pages/concepts/capability-provisioning-via-brain-pages.md",
+    "pages/concepts/chatbot-friction-as-loop-learning-telemetry.md",
+    "pages/concepts/community-patch-loop-as-project-steward.md",
+    "pages/concepts/consumer-ai-anticipation-gap-jones-2026-05-05.md",
+    "pages/concepts/factory-branch-games-directory-substrate-contract-2026-05-24.md",
+    "pages/concepts/factory-branch-remix-proof-stellar-front-2026-05-24.md",
+    "pages/concepts/pages-concepts-cowork-unfinished-central-ambition-audit-and-refactored-direction-2026-05-06.md",
+    "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
+    "pages/concepts/phase-4-multi-user-consensus-design-layer-v2.md",
+    "pages/concepts/pr-103a-release-ship-validator-deterministic-canary-inputs.md",
+    "pages/concepts/semantic-queue-reconciler-v1.md",
+    "pages/concepts/skill-sync-via-brain-pages.md",
+    "pages/concepts/structured-json-node-outputs.md",
+    "pages/concepts/website-as-live-project-observability.md",
+    "pages/concepts/work-primitive-industry-framing-jones-2026-05-06.md",
+    "pages/projects/meet-tiny.md",
+    "pages/projects/outreach-content-engine-forkable-pattern.md",
+    "pages/projects/platform-outreach-strategy.md",
+    "pages/projects/workflow-voice-twitter-daemon.md",
+    "pages/recipes/cross-runtime-skill-and-capability-portability.md",
+    "pages/references/karpathy-llm-wiki-gist.md",
+    "pages/references/ob1-open-brain.md",
+    "pages/references/pages-references-patch-priority-classes.md",
+    "pages/research/local-bubble-galactic-survival-model.md",
+    "pages/research/pages-research-splitroot-rts-fps-hybrid-lineage-research-2026-05-23.md",
+    "pages/research/splitroot-lineage-research-2026-extension-2026-05-24.md",
+    "pages/research/track-a-rung-1-simulator-checkpoint-log.md",
+    "pages/research/track-b-rung-2-literature-reproduction-checkpoint-log.md",
+    "pages/research/track-c-validator-checkpoint-log.md",
+    "pages/research/track-d-modern-public-catalog-data-backbone-checkpoint-log.md",
+    "pages/workflows/echoes-public-source-intake.md"
+  ],
+  "edges": [
     {
-      "id": "62f977e7ff0c",
-      "name": "Play classic games on modern computers",
-      "summary": "Help a user identify an old game from memory, find a legal acquisition path, adapt it for their current machine, install or configure it with approval, create a launcher, and verify the game starts. Community branches under this Goal should be forkable recipes for lawful game restoration and compatibility, not piracy or DRM bypass.",
-      "tags": [
-        "classic-games",
-        "game-preservation",
-        "compatibility",
-        "local-app",
-        "installers",
-        "legal-provenance"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "ref",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
     },
     {
-      "id": "dd187997039b",
-      "name": "Connect public web sources to TinyAssets universes",
-      "summary": "Let a chatbot fetch a public source URL, store the snapshot in a TinyAssets universe through MCP, preserve attribution/provenance, and route proposed changes through branch/gate review before promotion. Echoes of the Cosmos Reddit/RSS is the first live example.",
-      "tags": [
-        "public-source",
-        "mcp",
-        "universe",
-        "echoes",
-        "reddit",
-        "community",
-        "canon-gate"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
     },
     {
-      "id": "4ff5862cc26d",
-      "name": "Route a patch request through investigation, PR, release, and live observation",
-      "summary": "Community-driven live-state loop for TinyAssets changes. Any patch request starts as a wiki report, runs through the best known investigation branch, passes gate review, dispatches a coding-team branch to produce a PR, passes further gates, and is then observed after landing with real or simulated users. The goal is long-horizon self-improvement: gates can send work backward with edits whenever evidence shows the patch did not land or did not work as intended.",
-      "tags": [
-        "patch-loop",
-        "community",
-        "gatekeeping",
-        "pr",
-        "live-observation",
-        "self-improvement"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
     },
     {
-      "id": "f10caea2e437",
-      "name": "Turn a TinyAssets bug into a patch packet",
-      "summary": "Given a filed TinyAssets bug report, produce an actionable patch packet: normalized bug summary, minimal repro, likely root cause map, implementation sketch, regression tests, and attachable maintainer comment. Intended to be run automatically after wiki action=file_bug via the canonical branch for this goal.",
-      "tags": [
-        "bugs",
-        "patch-packet",
-        "workflow-engine",
-        "daemon",
-        "automation"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
     },
     {
-      "id": "454b6e72348b",
-      "name": "Complete a software project end-to-end",
-      "summary": "Take a project brief and acceptance criteria as input; coordinate a team of Claude Code agents (lead, dev, checker, plus optional specialized roles) to plan, implement, test, and iterate until acceptance criteria are met. Human review is optional throughout — the system can run autonomously with retry budgets and task decomposition as escalation mechanisms. Branches bound to this goal range from 3-node minimum (lead/dev/checker) to 20-node production (with security/perf/ops/docs specialization).",
-      "tags": [
-        "agent-teams",
-        "claude-code",
-        "autonomous",
-        "end-to-end"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "ref",
+      "to": "concept:website-as-live-project-observability"
     },
     {
-      "id": "4ce84ff648d4",
-      "name": "Produce a research paper",
-      "summary": "Take a research topic or question as input and produce a full research paper — framed question, landscape survey, evidence synthesis, section outline, prose draft, and critiqued final revision. Branches bound to this goal may vary in depth (position paper vs full survey) but share the outcome: a complete paper draft.",
-      "tags": [],
-      "author": "anonymous",
-      "visibility": "public"
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:website-as-live-project-observability"
+    },
+    {
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "ref",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
+    },
+    {
+      "from": "concept:anticipation-gap-and-permission-ladder-jones-2026-05-07",
+      "kind": "title",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
+    },
+    {
+      "from": "concept:auto-hydrate-then-invoke-v1",
+      "kind": "ref",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:auto-hydrate-then-invoke-v1",
+      "kind": "ref",
+      "to": "concept:semantic-queue-reconciler-v1"
+    },
+    {
+      "from": "concept:before-filing-a-patch-request-user-buildable-check",
+      "kind": "ref",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "concept:before-filing-a-patch-request-user-buildable-check",
+      "kind": "source",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
+      "kind": "ref",
+      "to": "concept:brain-update-002-utc-source-fidelity-split"
+    },
+    {
+      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
+      "kind": "ref",
+      "to": "concept:brain-update-003-completeness-cursor-enumeration-fallback"
+    },
+    {
+      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
+      "kind": "ref",
+      "to": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views"
+    },
+    {
+      "from": "concept:brain-update-001-required-reason-consensus-engagement-lint",
+      "kind": "ref",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:brain-update-002-utc-source-fidelity-split",
+      "kind": "ref",
+      "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
+    },
+    {
+      "from": "concept:brain-update-002-utc-source-fidelity-split",
+      "kind": "ref",
+      "to": "concept:brain-update-003-completeness-cursor-enumeration-fallback"
+    },
+    {
+      "from": "concept:brain-update-002-utc-source-fidelity-split",
+      "kind": "ref",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
+      "kind": "ref",
+      "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
+    },
+    {
+      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
+      "kind": "ref",
+      "to": "concept:brain-update-002-utc-source-fidelity-split"
+    },
+    {
+      "from": "concept:brain-update-003-completeness-cursor-enumeration-fallback",
+      "kind": "ref",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "ref",
+      "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "source",
+      "to": "concept:brain-update-001-required-reason-consensus-engagement-lint"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "ref",
+      "to": "concept:brain-update-002-utc-source-fidelity-split"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "ref",
+      "to": "concept:brain-update-003-completeness-cursor-enumeration-fallback"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "ref",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:brain-update-005-merge-authorization-state-routing-anomalies-derived-views",
+      "kind": "source",
+      "to": "concept:phase-4-multi-user-consensus-design-layer-v2"
+    },
+    {
+      "from": "concept:capability-provisioning-via-brain-pages",
+      "kind": "ref",
+      "to": "concept:skill-sync-via-brain-pages"
+    },
+    {
+      "from": "concept:chatbot-friction-as-loop-learning-telemetry",
+      "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:chatbot-friction-as-loop-learning-telemetry",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:community-patch-loop-as-project-steward",
+      "kind": "ref",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:community-patch-loop-as-project-steward",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:consumer-ai-anticipation-gap-jones-2026-05-05",
+      "kind": "ref",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
+    },
+    {
+      "from": "concept:consumer-ai-anticipation-gap-jones-2026-05-05",
+      "kind": "title",
+      "to": "concept:work-primitive-industry-framing-jones-2026-05-06"
+    },
+    {
+      "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
+      "kind": "ref",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
+      "kind": "source",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "concept:factory-branch-games-directory-substrate-contract-2026-05-24",
+      "kind": "ref",
+      "to": "draft:factory-branch-substrate-state-ledger-2026-05-24"
+    },
+    {
+      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
+      "kind": "ref",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "concept:phase-4-multi-user-consensus-design-layer-v2",
+      "kind": "ref",
+      "to": "concept:semantic-queue-reconciler-v1"
+    },
+    {
+      "from": "concept:skill-sync-via-brain-pages",
+      "kind": "ref",
+      "to": "concept:capability-provisioning-via-brain-pages"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
+      "kind": "ref",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
+      "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:website-as-live-project-observability",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "ref",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
+      "to": "concept:chatbot-friction-as-loop-learning-telemetry"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "ref",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
+      "to": "concept:community-patch-loop-as-project-steward"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "ref",
+      "to": "concept:website-as-live-project-observability"
+    },
+    {
+      "from": "concept:work-primitive-industry-framing-jones-2026-05-06",
+      "kind": "title",
+      "to": "concept:website-as-live-project-observability"
+    },
+    {
+      "from": "draft:better-loop-2-designs-autoresearch-lab-plus-v1-x-plus-jonathan-v0-3-synthesis-three-v1-3-candidates-2026-05-17",
+      "kind": "ref",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "draft:better-loop-2-designs-autoresearch-lab-plus-v1-x-plus-jonathan-v0-3-synthesis-three-v1-3-candidates-2026-05-17",
+      "kind": "ref",
+      "to": "draft:parent-selection-formula-dgm-aligned-for-gates-leaderboard-2026-05-17"
+    },
+    {
+      "from": "draft:factions-sable-cartographers",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:factory-branch-layer-boundaries-convention-2026-05-24",
+      "kind": "ref",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-layer-boundaries-convention-2026-05-24",
+      "kind": "source",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-layer-boundaries-convention-2026-05-24",
+      "kind": "ref",
+      "to": "draft:factory-branch-substrate-state-ledger-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "ref",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "source",
+      "to": "concept:factory-branch-remix-proof-stellar-front-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "ref",
+      "to": "draft:factory-branch-layer-boundaries-convention-2026-05-24"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "ref",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:factory-branch-substrate-state-ledger-2026-05-24",
+      "kind": "title",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-character-roles"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-scene-motif-ledger"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-chronology"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "source",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-open-questions"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-series-spine"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "source",
+      "to": "draft:meridian-ashes-series-spine"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-architecture",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-architecture"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "source",
+      "to": "draft:meridian-ashes-book-1-architecture"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-scene-motif-ledger"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-open-questions"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-character-roles",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-architecture"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "source",
+      "to": "draft:meridian-ashes-book-1-architecture"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-book-1-character-roles"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "source",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-open-questions"
+    },
+    {
+      "from": "draft:meridian-ashes-book-1-scene-motif-ledger",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-chronology",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-chronology",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-open-questions"
+    },
+    {
+      "from": "draft:meridian-ashes-chronology",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-series-spine"
+    },
+    {
+      "from": "draft:meridian-ashes-chronology",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-motif-registry",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-motif-registry",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-open-questions",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-open-questions",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-chronology"
+    },
+    {
+      "from": "draft:meridian-ashes-open-questions",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-series-spine"
+    },
+    {
+      "from": "draft:meridian-ashes-open-questions",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes-series-spine",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:meridian-ashes-series-spine",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-chronology"
+    },
+    {
+      "from": "draft:meridian-ashes-series-spine",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-motif-registry"
+    },
+    {
+      "from": "draft:meridian-ashes-series-spine",
+      "kind": "ref",
+      "to": "draft:meridian-ashes-open-questions"
+    },
+    {
+      "from": "draft:meridian-ashes-series-spine",
+      "kind": "ref",
+      "to": "draft:meridian-ashes"
+    },
+    {
+      "from": "draft:meridian-ashes",
+      "kind": "ref",
+      "to": "draft:factions-sable-cartographers"
+    },
+    {
+      "from": "draft:parent-selection-formula-dgm-aligned-for-gates-leaderboard-2026-05-17",
+      "kind": "ref",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "draft:parent-selection-formula-dgm-aligned-for-gates-leaderboard-2026-05-17",
+      "kind": "source",
+      "to": "concept:pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:community-lego-assembly-rule-for-workflow-authoring"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-branch-builder-schema-dry-run-status-contract"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-branch-merge-remix-for-shared-workflow-primitives"
+    },
+    {
+      "from": "draft:patch-request-wiki-draft-promotion-normalization",
+      "kind": "title",
+      "to": "draft:patch-request-community-assembly-reuse-planner"
+    },
+    {
+      "from": "draft:splitroot-interface-references-pt-commander-wc3-2026-06-10",
+      "kind": "ref",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:splitroot-interface-references-pt-commander-wc3-2026-06-10",
+      "kind": "title",
+      "to": "draft:splitroot-renegade-match-flow-research-2026-06-09"
+    },
+    {
+      "from": "draft:workflow-patterns",
+      "kind": "ref",
+      "to": "draft:agent-teams-as-graphs"
+    },
+    {
+      "from": "draft:workflow-patterns",
+      "kind": "ref",
+      "to": "draft:workflow-redesign-2026-04"
+    },
+    {
+      "from": "draft:workflow-redesign-2026-04",
+      "kind": "title",
+      "to": "draft:agent-teams-as-graphs"
     }
   ],
+  "fetched_at": "2026-07-27T03:17:44.778Z",
+  "goals": [],
+  "provenance": {
+    "complete": true,
+    "endpoint": "https://tinyassets.io/mcp",
+    "exclusions": {
+      "goals": [
+        "4ff5862cc26d",
+        "f10caea2e437"
+      ],
+      "universes": [
+        "patch-loop-live"
+      ]
+    },
+    "goals": "read_graph target=goals",
+    "scope": "discovery",
+    "universes": "read_graph target=graphs",
+    "wiki": "read_page changed_since + direct read_page"
+  },
+  "source": "https://tinyassets.io/mcp · discovery snapshot",
+  "stats": {
+    "edges": 113,
+    "goals": 0,
+    "universes": 14,
+    "wiki_drafts": 39,
+    "wiki_promoted": 39
+  },
+  "tags": {
+    "concept:capability-provisioning-via-brain-pages": [
+      "brain",
+      "capabilities",
+      "lsp",
+      "mcp",
+      "skills",
+      "user-buildable"
+    ],
+    "concept:factory-branch-games-directory-substrate-contract-2026-05-24": [
+      "factory-branch",
+      "games-directory",
+      "hex-coauthored",
+      "multi-canary",
+      "physical-layout",
+      "rook-authored",
+      "second-canary-spawn",
+      "substrate-contract"
+    ],
+    "concept:factory-branch-remix-proof-stellar-front-2026-05-24": [
+      "connector-product",
+      "factory-branch",
+      "north-star-evidence",
+      "remix-proof",
+      "rook-authored",
+      "sci-fi-archon",
+      "splitroot-comparison",
+      "stellar-front",
+      "substrate-validation"
+    ],
+    "concept:skill-sync-via-brain-pages": [
+      "brain",
+      "community-loop",
+      "skills",
+      "user-buildable"
+    ],
+    "concept:structured-json-node-outputs": [
+      "agent-teams",
+      "extensions",
+      "pattern",
+      "workaround"
+    ],
+    "draft:factions-sable-cartographers": [
+      "cross-series",
+      "faction",
+      "meridian-ashes",
+      "motif-bearing",
+      "proposed",
+      "subtle-presence"
+    ],
+    "draft:factory-branch-layer-boundaries-convention-2026-05-24": [
+      "anti-bloat",
+      "convention",
+      "factory-branch",
+      "games-directory",
+      "layer-boundaries",
+      "north-star-evidence",
+      "per-game-instance",
+      "remix-readiness",
+      "rook-authored",
+      "splitroot-cleanup"
+    ],
+    "draft:factory-branch-substrate-state-ledger-2026-05-24": [
+      "factory-branch",
+      "learning-artifact",
+      "north-star-evidence",
+      "primitive-inventory",
+      "remix-readiness",
+      "rook-authored",
+      "shipped-state",
+      "splitroot-snapshot",
+      "substrate-ledger"
+    ],
+    "draft:meridian-ashes": [
+      "meridian-ashes",
+      "multi-book-cycle",
+      "project-root",
+      "science-fantasy",
+      "structural-index"
+    ],
+    "draft:meridian-ashes-book-1-architecture": [
+      "architecture",
+      "book-1",
+      "meridian-ashes",
+      "proposed",
+      "structural",
+      "working"
+    ],
+    "draft:meridian-ashes-book-1-character-roles": [
+      "book-1",
+      "character-roles",
+      "meridian-ashes",
+      "proposed",
+      "structural"
+    ],
+    "draft:meridian-ashes-book-1-scene-motif-ledger": [
+      "book-1",
+      "meridian-ashes",
+      "motif-placement",
+      "proposed",
+      "scene-ledger",
+      "structural"
+    ],
+    "draft:meridian-ashes-chronology": [
+      "blank-slots",
+      "chronology",
+      "meridian-ashes",
+      "proposed",
+      "structural-skeleton"
+    ],
+    "draft:meridian-ashes-motif-registry": [
+      "cross-faction",
+      "meridian-ashes",
+      "motif-registry",
+      "proposed",
+      "structural-index"
+    ],
+    "draft:meridian-ashes-open-questions": [
+      "ambiguity",
+      "continuity-debt",
+      "meridian-ashes",
+      "open-questions",
+      "proposed"
+    ],
+    "draft:meridian-ashes-series-spine": [
+      "long-horizon",
+      "meridian-ashes",
+      "proposed",
+      "series-spine",
+      "structural",
+      "thematic"
+    ],
+    "draft:okf-open-knowledge-format-brain-implications-2026-06-25": [
+      "brain",
+      "external-research",
+      "interop",
+      "knowledge-format",
+      "okf",
+      "souled-universe"
+    ],
+    "draft:splitroot-ue-native-ai-foundation-research-2026-06-11": [
+      "ai-players",
+      "behavior-tree",
+      "eqs",
+      "lyra",
+      "perception",
+      "smart-objects",
+      "splitroot",
+      "unreal-engine",
+      "vector"
+    ]
+  },
   "universes": [
     {
+      "accept_rate": 1,
       "id": "concordance",
+      "last_activity_at": "2026-07-27T03:17:01.748218+00:00",
       "phase": "paused",
-      "word_count": 52187,
-      "last_activity_at": "2026-04-29T23:10:09.235609+00:00",
-      "accept_rate": 1
+      "word_count": 75816
     },
     {
-      "id": "echoes-of-the-cosmos",
-      "phase": "universe_cycle_wrapper",
-      "word_count": 0,
-      "last_activity_at": "2026-04-29T23:04:33.417425+00:00",
-      "accept_rate": null
+      "accept_rate": null,
+      "id": "default-universe",
+      "last_activity_at": "2026-07-15T21:26:47.497334+00:00",
+      "phase": "dormant-no-premise",
+      "word_count": 0
     },
     {
-      "id": "wiki",
-      "phase": "idle-no-premise",
-      "word_count": 0,
+      "accept_rate": null,
+      "id": "earthos",
       "last_activity_at": null,
-      "accept_rate": null
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "echoes-of-the-cosmos",
+      "last_activity_at": "2026-05-05T06:53:51+00:00",
+      "phase": "dormant",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "grandma-bread-recipe",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "local-bubble-galactic-survival-model",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "meridian-ashes",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "paper-notes",
+      "last_activity_at": null,
+      "phase": "starved",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "team-standup-action-tracker",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "tiny",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "u-01kxm1vszd8hwp7em418asq8h9",
+      "last_activity_at": null,
+      "phase": "idle-no-premise",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "u-01ky3gkxg9qmz111v5qk7p2qbm",
+      "last_activity_at": null,
+      "phase": "starved",
+      "word_count": 0
+    },
+    {
+      "accept_rate": null,
+      "id": "u-01ky3zh1arr8qth8jee7zx63pq",
+      "last_activity_at": null,
+      "phase": "starved",
+      "word_count": 0
+    },
+    {
+      "accept_rate": 1,
+      "id": "workflow-voice",
+      "last_activity_at": "2026-05-20T04:14:05+00:00",
+      "phase": "paused",
+      "word_count": 47910
     }
   ],
   "wiki": {
-    "bugs": [
-      {
-        "id": "BUG-001",
-        "title": "patch_branch silently corrupts input_keys/output_keys when passed as strings",
-        "slug": "pages/bugs/BUG-001-patch-branch-silently-corrupts-input-keys-output-keys-when-p.md"
-      },
-      {
-        "id": "BUG-002",
-        "title": "list_branches node_count does not match describe_branch actual count",
-        "slug": "pages/bugs/BUG-002-list-branches-node-count-does-not-match-describe-branch-actu.md"
-      },
-      {
-        "id": "BUG-003",
-        "title": "build_branch and patch_branch do not expose conditional_edges, blocking in-graph routing and iteration loops",
-        "slug": "pages/bugs/BUG-003-build-branch-and-patch-branch-do-not-expose-conditional-edge.md"
-      },
-      {
-        "id": "BUG-004",
-        "title": "run_branch reports completed with empty LLM responses; no error surfaced",
-        "slug": "pages/bugs/BUG-004-run-branch-reports-completed-with-empty-llm-responses-no-err.md"
-      },
-      {
-        "id": "BUG-005",
-        "title": "No way for a node to invoke a sub-branch and receive its output",
-        "slug": "pages/bugs/BUG-005-no-way-for-a-node-to-invoke-a-sub-branch-and-receive-its-out.md"
-      },
-      {
-        "id": "BUG-006",
-        "title": "No per-node LLM policy / override at dispatch time",
-        "slug": "pages/bugs/BUG-006-no-per-node-llm-policy-override-at-dispatch-time.md"
-      },
-      {
-        "id": "BUG-007",
-        "title": "input_keys is not enforced as context isolation; prompt_template can read any state field",
-        "slug": "pages/bugs/BUG-007-input-keys-is-not-enforced-as-context-isolation-prompt-templ.md"
-      },
-      {
-        "id": "BUG-008",
-        "title": "No cross-run state query primitive; historical learning requires O(N) get_run calls",
-        "slug": "pages/bugs/BUG-008-no-cross-run-state-query-primitive-historical-learning-requi.md"
-      },
-      {
-        "id": "BUG-009",
-        "title": "No scheduled or event-triggered branch invocation primitive",
-        "slug": "pages/bugs/BUG-009-no-scheduled-or-event-triggered-branch-invocation-primitive.md"
-      },
-      {
-        "id": "BUG-010",
-        "title": "No project-scope persistent memory primitive; each run starts cold",
-        "slug": "pages/bugs/BUG-010-no-project-scope-persistent-memory-primitive-each-run-starts.md"
-      },
-      {
-        "id": "BUG-011",
-        "title": "Undocumented / missing durable execution across daemon restart",
-        "slug": "pages/bugs/BUG-011-undocumented-missing-durable-execution-across-daemon-restart.md"
-      },
-      {
-        "id": "BUG-012",
-        "title": "No concurrency budget primitive or observability for parallel fan-out bands",
-        "slug": "pages/bugs/BUG-012-no-concurrency-budget-primitive-or-observability-for-paralle.md"
-      },
-      {
-        "id": "BUG-013",
-        "title": "No file_feature_request wiki verb parallel to file_bug",
-        "slug": "pages/bugs/BUG-013-no-file-feature-request-wiki-verb-parallel-to-file-bug.md"
-      },
-      {
-        "id": "BUG-014",
-        "title": "Compiler rejects double-brace literal escapes in prompt_template; missing-key error fires at run time not build time",
-        "slug": "pages/bugs/BUG-014-compiler-rejects-double-brace-literal-escapes-in-prompt-temp.md"
-      },
-      {
-        "id": "BUG-015",
-        "title": "Multi-output_keys node silently drops all but first key into state",
-        "slug": "pages/bugs/BUG-015-multi-output-keys-node-silently-drops-all-but-first-key-into.md"
-      },
-      {
-        "id": "BUG-016",
-        "title": "Typed (non-str) output_keys from prompt-template nodes are not actually written to state",
-        "slug": "pages/bugs/BUG-016-typed-non-str-output-keys-from-prompt-template-nodes-are-not.md"
-      },
-      {
-        "id": "BUG-017",
-        "title": "Daemon sandbox (bubblewrap) lacks user-namespace permissions; dev/checker cannot execute anything",
-        "slug": "pages/bugs/BUG-017-daemon-sandbox-bubblewrap-lacks-user-namespace-permissions-d.md"
-      },
-      {
-        "id": "BUG-018",
-        "title": "No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home",
-        "slug": "pages/bugs/BUG-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes-.md"
-      },
-      {
-        "id": "BUG-019",
-        "title": "conditional_edges routing to END throws KeyError: '__end__' at runtime",
-        "slug": "pages/bugs/BUG-019-conditional-edges-routing-to-end-throws-keyerror-end-at-runt.md"
-      },
-      {
-        "id": "BUG-020",
-        "title": "No long-poll / synchronous-wait mode; chatbot tool-budget exhausted by iterative polling",
-        "slug": "pages/bugs/BUG-020-no-long-poll-synchronous-wait-mode-chatbot-tool-budget-exhau.md"
-      },
-      {
-        "id": "BUG-021",
-        "title": "LangGraph recursion_limit of 25 too tight for iterative loops; not exposed via run_branch",
-        "slug": "pages/bugs/BUG-021-langgraph-recursion-limit-of-25-too-tight-for-iterative-loop.md"
-      },
-      {
-        "id": "BUG-022",
-        "title": "conditional_edges to terminal no-op node dont fire; router falls through to looping target",
-        "slug": "pages/bugs/BUG-022-conditional-edges-to-terminal-no-op-node-dont-fire-router-fa.md"
-      },
-      {
-        "id": "BUG-023",
-        "title": "BUG-023-daemon-disk-full-after-one-heavy-wiki-session-no-storage-bud",
-        "slug": "pages/bugs/BUG-023-daemon-disk-full-after-one-heavy-wiki-session-no-storage-bud.md"
-      },
-      {
-        "id": "BUG-024",
-        "title": "_trim_to_budget trims list length but not string bodies — context overflows survive \"trimming\"",
-        "slug": "pages/bugs/BUG-024-trim-to-budget-trims-list-length-but-not-string-bodies-conte.md"
-      },
-      {
-        "id": "BUG-025",
-        "title": "claude-code provider listed first in writer chain but never available in container image",
-        "slug": "pages/bugs/BUG-025-claude-code-provider-listed-first-in-writer-chain-but-never-.md"
-      },
-      {
-        "id": "BUG-026",
-        "title": "data/world_rules.lp not copied into Docker image — ASPSolver silently degrades to empty base rules on prod",
-        "slug": "pages/bugs/BUG-026-data-world-rules-lp-not-copied-into-docker-image-aspsolver-s.md"
-      },
-      {
-        "id": "BUG-027",
-        "title": "No startup file-probe for required data files — missing artifacts degrade silently instead of failing loud",
-        "slug": "pages/bugs/BUG-027-no-startup-file-probe-for-required-data-files-missing-artifa.md"
-      },
-      {
-        "id": "BUG-028",
-        "title": "wiki action=write cannot update file_bug-created pages due to slug-case mismatch; stale duplicates accumulate",
-        "slug": "pages/bugs/BUG-028-wiki-action-write-cannot-update-file-bug-created-pages-due-t.md"
-      },
-      {
-        "id": "BUG-029",
-        "title": "Failed workflow run error says empty LLM response but gives no clear next action",
-        "slug": "pages/bugs/BUG-029-failed-workflow-run-error-says-empty-llm-response-but-gives-.md"
-      },
-      {
-        "id": "BUG-030",
-        "title": "Rename approval leaves user uncertain and rename does not appear saved",
-        "slug": "pages/bugs/BUG-030-rename-approval-leaves-user-uncertain-and-rename-does-not-ap.md"
-      },
-      {
-        "id": "BUG-031",
-        "title": "describe_branch marks source-code branches valid without warning that unapproved nodes cannot run",
-        "slug": "pages/bugs/BUG-031-describe-branch-marks-source-code-branches-valid-without-war.md"
-      },
-      {
-        "id": "BUG-032",
-        "title": "get_status storage accounting reports zero bytes for populated activity log and universe outputs",
-        "slug": "pages/bugs/BUG-032-get-status-storage-accounting-reports-zero-bytes-for-populat.md"
-      },
-      {
-        "id": "BUG-033",
-        "title": "goals search misses obvious multi-token match across title, tags, and description",
-        "slug": "pages/bugs/BUG-033-goals-search-misses-obvious-multi-token-match-across-title-t.md"
-      },
-      {
-        "id": "BUG-034",
-        "title": "All extensions actions return 'No approval received' while goals/wiki/universe/get_status work normally",
-        "slug": "pages/bugs/BUG-034-all-extensions-actions-return-no-approval-received-while-goa.md"
-      },
-      {
-        "id": "BUG-035",
-        "title": "Compile-time branch errors can collapse into generic background worker crash",
-        "slug": "pages/bugs/bug-035-compile-time-branch-errors-can-collapse-into-generic-backgro.md"
-      },
-      {
-        "id": "BUG-036",
-        "title": "Echoes public-source intake smoke run fails on empty LLM response",
-        "slug": "pages/bugs/bug-036-echoes-public-source-intake-smoke-run-fails-on-empty-llm-res.md"
-      },
-      {
-        "id": "BUG-037",
-        "title": "publish_version drops branch topology when publishing a live branch",
-        "slug": "pages/bugs/bug-037-publish-version-drops-branch-topology-when-publishing-a-live.md"
-      },
-      {
-        "id": "BUG-038",
-        "title": "Live branch run fails provider_exhausted before install-planning nodes",
-        "slug": "pages/bugs/bug-038-live-branch-run-fails-provider-exhausted-before-install-plan.md"
-      },
-      {
-        "id": "BUG-039",
-        "title": "Live provider chain exhaustion blocks Echoes intake output",
-        "slug": "pages/bugs/bug-039-live-provider-chain-exhaustion-blocks-echoes-intake-output.md"
-      },
-      {
-        "id": "BUG-040",
-        "title": "Wiki file_bug MCP schema rejects backend-supported tags field",
-        "slug": "pages/bugs/bug-040-wiki-file-bug-mcp-schema-rejects-backend-supported-tags-fiel.md"
-      },
-      {
-        "id": "BUG-041",
-        "title": "Failed branch run snapshot can leave failed node displayed as running",
-        "slug": "pages/bugs/bug-041-failed-branch-run-snapshot-can-leave-failed-node-displayed-a.md"
-      },
-      {
-        "id": "BUG-042",
-        "title": "Wiki file_bug MCP schema rejects backend-supported kind field",
-        "slug": "pages/bugs/bug-042-wiki-file-bug-mcp-schema-rejects-backend-supported-kind-fiel.md"
-      },
-      {
-        "id": "BUG-043",
-        "title": "Classic-game MCP branch cannot complete local desktop install",
-        "slug": "pages/bugs/bug-043-classic-game-mcp-branch-cannot-complete-local-desktop-instal.md"
-      }
-    ],
+    "bugs": [],
     "concepts": [
       {
-        "slug": "pages/concepts/cross-algorithm-parity-rf-vs-maxent.md",
-        "title": "RF vs MaxEnt Methodological Parity - How Chatbots Catch Invalid Cross-Algorithm Comparisons"
+        "slug": "pages/concepts/anticipation-gap-and-permission-ladder-jones-2026-05-07.md",
+        "title": "anticipation-gap-and-permission-ladder-jones-2026-05-07"
+      },
+      {
+        "slug": "pages/concepts/auto-hydrate-then-invoke-v1.md",
+        "title": "auto_hydrate_then_invoke_v1 — Stage A bridge convention; loop hydrates source_bundle_refs before invoking user-authored classifiers"
+      },
+      {
+        "slug": "pages/concepts/before-filing-a-patch-request-user-buildable-check.md",
+        "title": "Before filing a patch_request — the user-buildable check"
+      },
+      {
+        "slug": "pages/concepts/brain-architecture-deep-dive-synthesis-2026-05-03.md",
+        "title": "brain-architecture-deep-dive-synthesis-2026-05-03"
+      },
+      {
+        "slug": "pages/concepts/brain-update-001-required-reason-consensus-engagement-lint.md",
+        "title": "BrainUpdate BU-001 — Required-reason field on positions + ConsensusEngagementIndex + consensus-marker lint"
+      },
+      {
+        "slug": "pages/concepts/brain-update-002-utc-source-fidelity-split.md",
+        "title": "BrainUpdate BU-002 — UTC universal time + source-fidelity split + sidecar metadata for source/canon docs"
+      },
+      {
+        "slug": "pages/concepts/brain-update-003-completeness-cursor-enumeration-fallback.md",
+        "title": "BrainUpdate BU-003 — Completeness via change_seq + page_version cursor with gap detection; path enumeration as integrity fallback"
+      },
+      {
+        "slug": "pages/concepts/brain-update-005-merge-authorization-state-routing-anomalies-derived-views.md",
+        "title": "BrainUpdate BU-005 — MergeAuthorizationState + RoutingAnomalies derived views from explicit position records (Phase 4 v2.1 view #13 + #14)"
+      },
+      {
+        "slug": "pages/concepts/capability-provisioning-via-brain-pages.md",
+        "title": "Capability Provisioning Via Brain Pages"
+      },
+      {
+        "slug": "pages/concepts/chatbot-friction-as-loop-learning-telemetry.md",
+        "title": "chatbot-friction-as-loop-learning-telemetry"
+      },
+      {
+        "slug": "pages/concepts/community-patch-loop-as-project-steward.md",
+        "title": "community-patch-loop-as-project-steward"
+      },
+      {
+        "slug": "pages/concepts/consumer-ai-anticipation-gap-jones-2026-05-05.md",
+        "title": "consumer-ai-anticipation-gap-jones-2026-05-05"
+      },
+      {
+        "slug": "pages/concepts/factory-branch-games-directory-substrate-contract-2026-05-24.md",
+        "title": "Factory branch games/ directory substrate contract — multi-canary physical layout + second-canary spawn workflow"
+      },
+      {
+        "slug": "pages/concepts/factory-branch-remix-proof-stellar-front-2026-05-24.md",
+        "title": "Factory branch remix proof — \"STELLAR FRONT\" sci-fi canary scoped against SPLITROOT substrate (the factory's product validation)"
+      },
+      {
+        "slug": "pages/concepts/pages-concepts-cowork-unfinished-central-ambition-audit-and-refactored-direction-2026-05-06.md",
+        "title": "Unfinished central ambition audit + refactored direction — brain growth as the next-phase through-line"
+      },
+      {
+        "slug": "pages/concepts/pages-concepts-workflow-substrate-canonical-vocabulary-6-primitives-5-mcp-handles.md",
+        "title": "Workflow substrate canonical vocabulary — 6 primitives + 5 MCP handles + brain-evolves-conventions"
+      },
+      {
+        "slug": "pages/concepts/phase-4-multi-user-consensus-design-layer-v2.md",
+        "title": "Phase 4 multi-user-consensus design layer v2 — full-scale-first"
+      },
+      {
+        "slug": "pages/concepts/pr-103a-release-ship-validator-deterministic-canary-inputs.md",
+        "title": "PR-103a deterministic canary inputs — release_ship_validator should-pass and should-fail packets"
+      },
+      {
+        "slug": "pages/concepts/semantic-queue-reconciler-v1.md",
+        "title": "semantic_queue_reconciler_v1 — user-authored convention for queue self-refactoring"
+      },
+      {
+        "slug": "pages/concepts/skill-sync-via-brain-pages.md",
+        "title": "Skill Sync Via Brain Pages"
       },
       {
         "slug": "pages/concepts/structured-json-node-outputs.md",
         "title": "Structured JSON Node Outputs — a Pattern That Works Today"
-      }
-    ],
-    "notes": [
-      {
-        "slug": "pages/notes/builder-notes-agent-teams.md",
-        "title": "Builder Notes — Agent Team Branches (3/5/10/20-node)"
-      }
-    ],
-    "plans": [
-      {
-        "slug": "pages/plans/chatbot-builder-behaviors.md",
-        "title": "Chatbot Builder Behaviors — How User-Facing Chatbots Should Work on This Project"
       },
       {
-        "slug": "pages/plans/composition-patterns.md",
-        "title": "Composition Patterns - How Chatbots Build Convenience From Primitives"
+        "slug": "pages/concepts/website-as-live-project-observability.md",
+        "title": "website-as-live-project-observability"
       },
       {
-        "slug": "pages/plans/feature-describe-branch-related-wiki-pages.md",
-        "title": "describe_branch + get_branch surface related wiki pages for each branch/node"
-      },
-      {
-        "slug": "pages/plans/feature-prompt-template-literal-braces-and-build-time-validation.md",
-        "title": "Prompt_template literal-brace escape + build-time missing-key validation"
-      },
-      {
-        "slug": "pages/plans/methods-prose-rubric.md",
-        "title": "Methods-Prose Rubric - How Chatbots Validate Publication-Grade Methods Sections"
-      },
-      {
-        "slug": "pages/plans/next-level-primitives-roadmap.md",
-        "title": "Next-Level Primitives — Strategic Roadmap from 22 Filed Bugs"
-      },
-      {
-        "slug": "pages/plans/strategic-synthesis-2026-04-24.md",
-        "title": "Strategic Synthesis — Goals Engine Positioning, Real-World Gates, Swarm-Scale Substrate"
-      },
-      {
-        "slug": "pages/plans/tier-1-investigation-routing-resolver.md",
-        "title": "Tier 1 Investigation Plan — Routing Resolver + Recursion Budget"
+        "slug": "pages/concepts/work-primitive-industry-framing-jones-2026-05-06.md",
+        "title": "work-primitive-industry-framing-jones-2026-05-06"
       }
     ],
     "drafts": [
       {
-        "slug": "drafts/bugs/bug-018-no-maintainer-notes-field-on-nodes-builder-to-builder-notes.md",
-        "title": "No maintainer_notes field on nodes; builder-to-builder notes have no daemon-invisible home"
+        "slug": "drafts/concepts/better-loop-2-designs-autoresearch-lab-plus-v1-x-plus-jonathan-v0-3-synthesis-three-v1-3-candidates-2026-05-17.md",
+        "title": "Better Loop 2 designs — what the production loops on Goal 4ff5862cc26d teach v1.x; three concrete v1.3 candidates synthesizing autoresearch_lab + Jonathan v0.3 + DGM patterns"
+      },
+      {
+        "slug": "drafts/concepts/factory-branch-layer-boundaries-convention-2026-05-24.md",
+        "title": "Factory branch layer boundaries — what belongs in the branch vs the MCP brain vs the per-game local instance (anti-bloat convention; games/&lt;game-id&gt;/ layout)"
+      },
+      {
+        "slug": "drafts/concepts/factory-branch-substrate-state-ledger-2026-05-24.md",
+        "title": "Factory branch substrate state ledger — what the factory can produce today, with shipped/contracted/extension status per primitive (SPLITROOT 2026-05-24 snapshot)"
+      },
+      {
+        "slug": "drafts/concepts/parent-selection-formula-dgm-aligned-for-gates-leaderboard-2026-05-17.md",
+        "title": "Parent-selection formula for Goal-bound branch archives — DGM-aligned (Zhang et al. 2025), adapted for the gates leaderboard substrate"
       },
       {
         "slug": "drafts/concepts/workflow-patterns.md",
-        "title": "TinyAssets Patterns"
+        "title": "Workflow Patterns"
       },
       {
-        "slug": "drafts/notes/community-change-loop-v1-builder-notes.md",
-        "title": "Community Change Loop v1 Builder Notes"
-      },
-      {
-        "slug": "drafts/notes/community-change-loop-v1-piece-map.md",
-        "title": "Community Change Loop v1 Piece Map"
-      },
-      {
-        "slug": "drafts/notes/uptime-probe.md",
-        "title": "uptime-probe"
-      },
-      {
-        "slug": "drafts/plans/swarm-scale-shared-memory-architecture.md",
-        "title": "swarm-scale-shared-memory-architecture"
+        "slug": "drafts/projects/meridian-ashes.md",
+        "title": "The Meridian Ashes"
       },
       {
         "slug": "drafts/projects/workflow-redesign-2026-04.md",
-        "title": "TinyAssets Redesign Session — April 2026"
+        "title": "Workflow Redesign Session — April 2026"
+      },
+      {
+        "slug": "drafts/references/factions-sable-cartographers.md",
+        "title": "Sable Cartographers"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-book-1-architecture.md",
+        "title": "The Meridian Ashes — Book 1 Architecture"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-book-1-character-roles.md",
+        "title": "The Meridian Ashes — Book 1 Character-Role Register"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-book-1-scene-motif-ledger.md",
+        "title": "The Meridian Ashes — Book 1 Scene/Motif Placement Ledger"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-chronology.md",
+        "title": "The Meridian Ashes — Chronology Skeleton"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-motif-registry.md",
+        "title": "The Meridian Ashes — Motif Registry"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-open-questions.md",
+        "title": "The Meridian Ashes — Open Questions and Continuity Debt"
+      },
+      {
+        "slug": "drafts/references/meridian-ashes-series-spine.md",
+        "title": "The Meridian Ashes — Series Spine"
+      },
+      {
+        "slug": "drafts/research/okf-open-knowledge-format-brain-implications-2026-06-25.md",
+        "title": "OKF (Open Knowledge Format) — implications for the per-universe brain"
+      },
+      {
+        "slug": "drafts/research/splitroot-interface-references-pt-commander-wc3-2026-06-10.md",
+        "title": "splitroot-interface-references-pt-commander-wc3-2026-06-10"
+      },
+      {
+        "slug": "drafts/research/splitroot-renegade-match-flow-research-2026-06-09.md",
+        "title": "splitroot-renegade-match-flow-research-2026-06-09"
+      },
+      {
+        "slug": "drafts/research/splitroot-savage-2-mechanics-research-2026-06-11.md",
+        "title": "splitroot-savage-2-mechanics-research-2026-06-11"
+      },
+      {
+        "slug": "drafts/research/splitroot-ue-native-ai-foundation-research-2026-06-11.md",
+        "title": "SPLITROOT UE-native AI foundation research"
+      },
+      {
+        "slug": "drafts/workflow-voice/_outreach_signal.md",
+        "title": "_outreach_signal"
+      },
+      {
+        "slug": "drafts/workflow-voice/_smoke-20260620T011941Z-post_original.md",
+        "title": "_smoke-20260620T011941Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/_smoke-20260620T012001Z-post_original.md",
+        "title": "_smoke-20260620T012001Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/_x_signal.md",
+        "title": "_x_signal"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260517T035924Z-post_original.md",
+        "title": "20260517T035924Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260517T040832Z-post_original.md",
+        "title": "20260517T040832Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260517T162123Z-post_original.md",
+        "title": "20260517T162123Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260618T013843Z-post_original.md",
+        "title": "20260618T013843Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260618T013850Z-post_original.md",
+        "title": "20260618T013850Z-post_original"
+      },
+      {
+        "slug": "drafts/workflow-voice/20260620T015112Z-post_original.md",
+        "title": "20260620T015112Z-post_original"
       },
       {
         "slug": "drafts/workflows/agent-teams-as-graphs.md",
-        "title": "Agent Teams as TinyAssets Graphs"
+        "title": "Agent Teams as Workflow Graphs"
+      },
+      {
+        "slug": "drafts/workflows/community-lego-assembly-rule-for-workflow-authoring.md",
+        "title": "community-lego-assembly-rule-for-workflow-authoring"
+      },
+      {
+        "slug": "drafts/workflows/design-auto-change-queue-drain-convergence-point.md",
+        "title": "\"Queue-drain convergence point: three primitives that compose for cluster autonomy\""
+      },
+      {
+        "slug": "drafts/workflows/feature-request-brain-query-cross-reference-graph.md",
+        "title": "feature-request-brain-query-cross-reference-graph"
+      },
+      {
+        "slug": "drafts/workflows/feature-request-lynx-services-portal-autofill.md",
+        "title": "feature-request-lynx-services-portal-autofill"
+      },
+      {
+        "slug": "drafts/workflows/patch-request-branch-builder-schema-dry-run-status-contract.md",
+        "title": "patch-request-branch-builder-schema-dry-run-status-contract"
+      },
+      {
+        "slug": "drafts/workflows/patch-request-branch-merge-remix-for-shared-workflow-primitives.md",
+        "title": "patch-request-branch-merge-remix-for-shared-workflow-primitives"
+      },
+      {
+        "slug": "drafts/workflows/patch-request-community-assembly-reuse-planner.md",
+        "title": "patch-request-community-assembly-reuse-planner"
+      },
+      {
+        "slug": "drafts/workflows/patch-request-wiki-draft-promotion-normalization.md",
+        "title": "patch-request-wiki-draft-promotion-normalization"
       }
-    ]
-  },
-  "edges": [
-    {
-      "from": "bug:BUG-008",
-      "to": "bug:BUG-005",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-013",
-      "to": "bug:BUG-001",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-016",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-018",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-018",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-018",
-      "to": "bug:BUG-006",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-019",
-      "to": "bug:BUG-003",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-022",
-      "to": "bug:BUG-019",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-026",
-      "to": "bug:BUG-027",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-027",
-      "to": "bug:BUG-025",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-027",
-      "to": "bug:BUG-026",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-028",
-      "to": "bug:BUG-023",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-038",
-      "to": "bug:BUG-025",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-039",
-      "to": "bug:BUG-036",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-040",
-      "to": "bug:BUG-039",
-      "kind": "ref"
-    },
-    {
-      "from": "bug:BUG-042",
-      "to": "bug:BUG-040",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "to": "plan:methods-prose-rubric",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "to": "plan:composition-patterns",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "to": "plan:chatbot-builder-behaviors",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "to": "note:2026-04-27-cross-algorithm-parity-wiki-template",
-      "kind": "source"
-    },
-    {
-      "from": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "to": "note:2026-04-27-cross-algorithm-parity-publication-checklist",
-      "kind": "source"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-016",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-004",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-004",
-      "kind": "source"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-014",
-      "kind": "source"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-015",
-      "kind": "source"
-    },
-    {
-      "from": "concept:structured-json-node-outputs",
-      "to": "bug:BUG-016",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-018",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-003",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-019",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-007",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-016",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-017",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-020",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-021",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "concept:structured-json-node-outputs",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "plan:chatbot-builder-behaviors",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "plan:feature-describe-branch-related-wiki-pages",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "plan:feature-prompt-template-literal-braces-and-build-time-validation",
-      "kind": "ref"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-003",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-004",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-005",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-006",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-007",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-014",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-015",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-016",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-017",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-018",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-019",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-020",
-      "kind": "source"
-    },
-    {
-      "from": "note:builder-notes-agent-teams",
-      "to": "bug:BUG-021",
-      "kind": "source"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-005",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-003",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-018",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-034",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-017",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "concept:structured-json-node-outputs",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "bug:BUG-016",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:chatbot-builder-behaviors",
-      "to": "note:builder-notes-agent-teams",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:feature-prompt-template-literal-braces-and-build-time-validation",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:feature-describe-branch-related-wiki-pages",
-      "to": "bug:BUG-018",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:composition-patterns",
-      "to": "bug:BUG-031",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:composition-patterns",
-      "to": "bug:BUG-028",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:methods-prose-rubric",
-      "to": "plan:composition-patterns",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:methods-prose-rubric",
-      "to": "concept:cross-algorithm-parity-rf-vs-maxent",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:methods-prose-rubric",
-      "to": "plan:chatbot-builder-behaviors",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:methods-prose-rubric",
-      "to": "plan:strategic-synthesis-2026-04-24",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:methods-prose-rubric",
-      "to": "note:2026-04-27-methods-prose-rubric-starter-pack",
-      "kind": "source"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-015",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-016",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-018",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-001",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-004",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-022",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-007",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-002",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-019",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-005",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-006",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-008",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-009",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-010",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-011",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-012",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-017",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-020",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-013",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-021",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-003",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "bug:BUG-001",
-      "kind": "source"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "concept:structured-json-node-outputs",
-      "kind": "source"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "note:builder-notes-agent-teams",
-      "kind": "source"
-    },
-    {
-      "from": "plan:next-level-primitives-roadmap",
-      "to": "draft:drafts/concepts/workflow-patterns (prior-session cross-cutting analysis)",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-019",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-021",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-022",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-003",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-014",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "plan:next-level-primitives-roadmap",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "note:builder-notes-agent-teams",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "plan:chatbot-builder-behaviors",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "plan:next-level-primitives-roadmap",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-003",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-015",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-016",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-019",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-021",
-      "kind": "source"
-    },
-    {
-      "from": "plan:tier-1-investigation-routing-resolver",
-      "to": "bug:BUG-022",
-      "kind": "source"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "plan:next-level-primitives-roadmap",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-023",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-018",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-005",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-006",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-022",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "plan:tier-1-investigation-routing-resolver",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-019",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-021",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-011",
-      "kind": "ref"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-019",
-      "kind": "source"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-021",
-      "kind": "source"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-022",
-      "kind": "source"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "bug:BUG-023",
-      "kind": "source"
-    },
-    {
-      "from": "plan:strategic-synthesis-2026-04-24",
-      "to": "note:builder-notes-agent-teams",
-      "kind": "source"
-    }
-  ],
-  "tags": {
-    "bug:BUG-002": [
-      "bug",
-      "extensions"
     ],
-    "bug:BUG-003": [
-      "bug",
-      "extensions"
+    "notes": [],
+    "other": [
+      {
+        "slug": "pages/projects/meet-tiny.md",
+        "title": "meet-tiny"
+      },
+      {
+        "slug": "pages/projects/outreach-content-engine-forkable-pattern.md",
+        "title": "outreach-content-engine-forkable-pattern"
+      },
+      {
+        "slug": "pages/projects/platform-outreach-strategy.md",
+        "title": "platform-outreach-strategy"
+      },
+      {
+        "slug": "pages/projects/workflow-voice-twitter-daemon.md",
+        "title": "workflow-voice-twitter-daemon"
+      },
+      {
+        "slug": "pages/recipes/cross-runtime-skill-and-capability-portability.md",
+        "title": "cross-runtime-skill-and-capability-portability"
+      },
+      {
+        "slug": "pages/references/karpathy-llm-wiki-gist.md",
+        "title": "Karpathy LLM Wiki Gist"
+      },
+      {
+        "slug": "pages/references/ob1-open-brain.md",
+        "title": "OB1 / Open Brain"
+      },
+      {
+        "slug": "pages/references/pages-references-patch-priority-classes.md",
+        "title": "Patch Priority Classes"
+      },
+      {
+        "slug": "pages/research/local-bubble-galactic-survival-model.md",
+        "title": "Local Bubble Galactic Survival Model — Universe Index"
+      },
+      {
+        "slug": "pages/research/pages-research-splitroot-rts-fps-hybrid-lineage-research-2026-05-23.md",
+        "title": "SPLITROOT lineage research — every prior RTS/FPS hybrid, what each got right and wrong"
+      },
+      {
+        "slug": "pages/research/splitroot-lineage-research-2026-extension-2026-05-24.md",
+        "title": "SPLITROOT lineage research extension — 2026 RTS/FPS hybrids absent from May-23 baseline (Eximius, Silica, Executive Assault 2, Warfare Ultimatum, Savage XR)"
+      },
+      {
+        "slug": "pages/research/track-a-rung-1-simulator-checkpoint-log.md",
+        "title": "Track A — Rung 1 Simulator Checkpoint Log"
+      },
+      {
+        "slug": "pages/research/track-b-rung-2-literature-reproduction-checkpoint-log.md",
+        "title": "Track B — Rung 2 Literature Reproduction Checkpoint Log"
+      },
+      {
+        "slug": "pages/research/track-c-validator-checkpoint-log.md",
+        "title": "Track C — Validator Checkpoint Log"
+      },
+      {
+        "slug": "pages/research/track-d-modern-public-catalog-data-backbone-checkpoint-log.md",
+        "title": "Track D — Modern Public Catalog Data Backbone Checkpoint Log"
+      },
+      {
+        "slug": "pages/workflows/echoes-public-source-intake.md",
+        "title": "Echoes Public Source Intake"
+      }
     ],
-    "bug:BUG-001": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-004": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-005": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-006": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-007": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-009": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-010": [
-      "bug",
-      "extensions state model / universe memory"
-    ],
-    "bug:BUG-008": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-011": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-012": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-013": [
-      "bug",
-      "wiki"
-    ],
-    "bug:BUG-014": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-016": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-015": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-018": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-017": [
-      "bug",
-      "daemon runtime / sandboxing / bubblewrap config"
-    ],
-    "bug:BUG-020": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-019": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-021": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-022": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-024": [
-      "bug",
-      "workflow"
-    ],
-    "bug:BUG-025": [
-      "bug",
-      "providers"
-    ],
-    "bug:BUG-026": [
-      "bug",
-      "constraints"
-    ],
-    "bug:BUG-027": [
-      "bug",
-      "startup"
-    ],
-    "bug:BUG-028": [
-      "bug",
-      "universe_server"
-    ],
-    "bug:BUG-029": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-030": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-031": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-032": [
-      "bug",
-      "get_status"
-    ],
-    "bug:BUG-034": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-033": [
-      "bug",
-      "goals"
-    ],
-    "bug:BUG-035": [
-      "bug",
-      "workflow-runs"
-    ],
-    "bug:BUG-036": [
-      "bug",
-      "workflow-providers"
-    ],
-    "bug:BUG-037": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-038": [
-      "bug",
-      "extensions"
-    ],
-    "bug:BUG-039": [
-      "bug",
-      "workflow-providers"
-    ],
-    "bug:BUG-041": [
-      "bug",
-      "workflow-runs"
-    ],
-    "bug:BUG-040": [
-      "bug",
-      "wiki-mcp"
-    ],
-    "bug:BUG-042": [
-      "bug",
-      "wiki-mcp"
-    ],
-    "bug:BUG-043": [
-      "bug",
-      "workflow"
-    ],
-    "concept:structured-json-node-outputs": [
-      "pattern",
-      "workaround",
-      "agent-teams",
-      "extensions"
-    ],
-    "note:builder-notes-agent-teams": [
-      "builder-notes",
-      "agent-teams",
-      "workflow"
-    ],
-    "plan:feature-prompt-template-literal-braces-and-build-time-validation": [
-      "feature",
-      "compiler",
-      "prompt-template"
-    ],
-    "plan:feature-describe-branch-related-wiki-pages": [
-      "feature",
-      "extensions",
-      "wiki",
-      "convergent-commons"
-    ],
-    "plan:next-level-primitives-roadmap": [
-      "roadmap",
-      "primitives",
-      "architecture",
-      "agent-teams"
-    ],
-    "plan:tier-1-investigation-routing-resolver": [
-      "investigation",
-      "routing",
-      "conditional-edges",
-      "langgraph",
-      "tier-1"
-    ],
-    "plan:strategic-synthesis-2026-04-24": [
-      "strategy",
-      "goals",
-      "gates",
-      "substrate",
-      "positioning",
-      "forkable",
-      "distribution"
-    ],
-    "goal:62f977e7ff0c": [
-      "classic-games",
-      "game-preservation",
-      "compatibility",
-      "local-app",
-      "installers",
-      "legal-provenance"
-    ],
-    "goal:dd187997039b": [
-      "public-source",
-      "mcp",
-      "universe",
-      "echoes",
-      "reddit",
-      "community",
-      "canon-gate"
-    ],
-    "goal:4ff5862cc26d": [
-      "patch-loop",
-      "community",
-      "gatekeeping",
-      "pr",
-      "live-observation",
-      "self-improvement"
-    ],
-    "goal:f10caea2e437": [
-      "bugs",
-      "patch-packet",
-      "workflow-engine",
-      "daemon",
-      "automation"
-    ],
-    "goal:454b6e72348b": [
-      "agent-teams",
-      "claude-code",
-      "autonomous",
-      "end-to-end"
-    ]
+    "plans": []
   }
 }
