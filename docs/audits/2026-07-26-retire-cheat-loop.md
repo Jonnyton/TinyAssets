@@ -126,6 +126,11 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
 - Shipping cleanup `6ae7a473` removes the stale local Svelte bundle-copy helper
   and aligns the retained rollback documentation and mirrored website skill;
   it does not run a deployment.
+- Prompt-asset cleanup removes the exact loop core-team manifest plus the Ada,
+  Elias, Mira, Noor, Soren, and Vera role souls from `docs/souls`. An
+  active-reference scan finds no surviving consumer outside the retirement
+  OpenSpec, historical audit, and coordination record. Task 5.3 remains open
+  on truthful snapshot regeneration and content-level absence.
 - Opposite-provider Claude Opus review of `ace375ab` found remaining
   one-sided Svelte presentation wording after the React port. Cleanup
   `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
