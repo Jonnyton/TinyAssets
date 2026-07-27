@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -31,6 +32,9 @@ const completePages = {
   truncated_count: 0,
   scope: "discovery",
 };
+
+const sha256 = (content) =>
+  createHash("sha256").update(content, "utf8").digest("hex");
 
 test("parseToolResponse prefers structured content and parses JSON text fallback", () => {
   assert.deepEqual(
@@ -167,7 +171,7 @@ test("buildMcpSnapshot requires unique bounded graph IDs and complete direct-pag
       title: page.title,
       updated: page.updated,
       is_draft: false,
-      sha256: "a".repeat(64),
+      sha256: sha256("# Example 🧠"),
     },
   };
 
@@ -207,6 +211,38 @@ test("buildMcpSnapshot requires unique bounded graph IDs and complete direct-pag
         pageBodies: new Map([[page.path, completeBody]]),
       }),
     /duplicate/,
+  );
+  assert.throws(
+    () =>
+      buildMcpSnapshot({
+        ...common,
+        goalsResult: {
+          goals: Array.from({ length: 100 }, (_, index) => ({
+            goal_id: `goal-${index}`,
+          })),
+          count: 100,
+        },
+        pageBodies: new Map([[page.path, completeBody]]),
+      }),
+    /cap/,
+  );
+  assert.throws(
+    () =>
+      buildMcpSnapshot({
+        ...common,
+        pageBodies: new Map([
+          [
+            page.path,
+            {
+              ...completeBody,
+              content: "# Tampered 🧠",
+              total_chars: 12,
+              read_end: 12,
+            },
+          ],
+        ]),
+      }),
+    /sha256/,
   );
 });
 
@@ -350,6 +386,11 @@ test("MCP generator delegates mirror verification to the rollback-capable transa
   );
   assert.equal(generator.includes("readFileSync"), false);
   assert.equal(generator.includes("post-write MCP snapshot"), false);
+  assert.equal(
+    generator.includes("reading canonical public data from ${MCP_URL}"),
+    false,
+  );
+  assert.equal(generator.includes("sanitizePublicMcpUrl"), true);
 });
 
 test("repo topology rejects duplicate edges, dangling endpoints, and retired identities", () => {
@@ -459,7 +500,7 @@ test("frontmatter relationship fields and bounded title mentions remain graph ed
       title: page.title,
       updated: page.updated,
       is_draft: false,
-      sha256: "b".repeat(64),
+      sha256: sha256(content),
     },
   });
   const sourceContent = `---

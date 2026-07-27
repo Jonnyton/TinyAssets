@@ -5,6 +5,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 
 export const RETIRED_EXACT_IDENTIFIERS = new Set([
   "4ff5862cc26d",
@@ -230,6 +231,12 @@ function validatePageBody(page, body) {
       `read_page ${page.path} source proof does not match discovery metadata`,
     );
   }
+  const contentSha256 = createHash("sha256")
+    .update(body.content, "utf8")
+    .digest("hex");
+  if (proof.sha256 !== contentSha256) {
+    throw new Error(`read_page ${page.path} sha256 does not match content`);
+  }
   return body.content;
 }
 
@@ -385,6 +392,16 @@ export function buildMcpSnapshot({
     "universes",
     "read_graph graphs",
   );
+  if (rawGoals.length === 100) {
+    throw new Error(
+      "read_graph goals reached the requested cap; completeness is unknowable",
+    );
+  }
+  if (rawUniverses.length === 100) {
+    throw new Error(
+      "read_graph graphs reached the requested cap; completeness is unknowable",
+    );
+  }
   const pages = validatePageInventory(pagesResult);
   if (!(pageBodies instanceof Map)) throw new Error("pageBodies must be a Map");
 

@@ -16,6 +16,7 @@ import {
   buildMcpSnapshot,
   pageReadHandle,
   parseToolResponse,
+  sanitizePublicMcpUrl,
   serializeSnapshot,
 } from "./snapshot-helpers.mjs";
 
@@ -153,10 +154,11 @@ async function readEveryPage(sdk, pages) {
 }
 
 async function main() {
+  const publicEndpoint = sanitizePublicMcpUrl(MCP_URL);
   const sdk = await loadSdk();
   const client = await connectClient(sdk, "tinyassets-site-snapshot-index");
   try {
-    log(`reading canonical public data from ${MCP_URL}`);
+    log(`reading canonical public data from ${publicEndpoint}`);
     const [goalsResult, graphsResult, pagesResult] = await Promise.all([
       callTyped(client, "read_graph", { target: "goals", limit: MAX_RESULTS }),
       callTyped(client, "read_graph", { target: "graphs", limit: MAX_RESULTS }),
@@ -169,7 +171,7 @@ async function main() {
     const pageBodies = await readEveryPage(sdk, pages);
     const snapshot = buildMcpSnapshot({
       fetchedAt: new Date().toISOString(),
-      sourceUrl: MCP_URL,
+      sourceUrl: publicEndpoint,
       goalsResult,
       graphsResult,
       pagesResult,
