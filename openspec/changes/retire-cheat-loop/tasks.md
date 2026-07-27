@@ -175,7 +175,7 @@
   write authority; isolate any `issues:write` in the independent alarm-sink
   consumer with no dispatch/repair authority.
   **Current evidence (2026-07-26):** the workflow still carries the retired
-  `self_heal` input, `community-loop-red` label, and `actions:write`
+  `self_heal_followup` input, `community-loop-red` label, and `actions:write`
   permission. The focused suite has one red test that still expects
   `createTinyAssetsDispatch`, while a separate green test asserts
   `permissions.get("actions") == "write"`; both pin the retired authority.
@@ -208,13 +208,16 @@
   **Current evidence (2026-07-26):** React and Svelte production builds pass;
   dev-server Chrome renders of 11 affected routes, live refreshes, and narrow
   active-source identifier scans pass. However, `/goals` in both built sites
-  still renders a retired patch-loop narrative and `patch-loop` tag from the
-  checked-in MCP snapshot. Production-exact static previews subsequently
-  rendered every generated React `index.html` route (25) and every generated
-  Svelte HTML route (25) with zero browser warnings/errors, covering the
-  shared-component blast radius. The website-focused tests pass; the
-  alarm-sink failure belongs to task 4.2. This task remains open on task 5.3
-  and content-level absence proof.
+  still renders a retired patch-loop narrative and `patch-loop` tag, while
+  `/graph` renders the retired goal title as a clickable row. Shared client
+  chunks loaded by `/fine-print`, `/goals`, `/graph`, `/host`, and React's
+  `/goal` or Svelte's `/build` also ship the retired name/summary; the React
+  query-param goal detail can render the full narrative. Production-exact
+  static previews rendered every generated React `index.html` route (25) and
+  every generated Svelte HTML route (25) with zero browser warnings/errors.
+  The website-focused tests pass; the alarm-sink failure belongs to task 4.2.
+  This task remains open on task 5.3 and content-level absence proof across
+  rendered routes, query states, and shared assets.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise

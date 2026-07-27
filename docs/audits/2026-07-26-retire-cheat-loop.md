@@ -152,14 +152,18 @@ community-loop/status/watch, bug-investigation, auto-fix/ship, self-patching,
 automatic-pickup, or label-fallback identifiers. They did not prove
 content-level absence: `/goals` in both built artifacts still renders the
 retired patch-loop goal narrative and `patch-loop` tag from
-`mcp-snapshot.json`. Production-exact previews and the shared-component blast
-radius were then tested separately: the React static preview at
+`mcp-snapshot.json`; `/graph` also renders its title as a clickable goal row.
+Production-exact previews and the shared-component blast radius were then
+tested separately: the React static preview at
 `localhost:4322` rendered all 25 generated `index.html` routes, and the Svelte
 Vite production preview at `localhost:4173` rendered all 25 generated HTML
-routes. Both all-route sweeps had zero browser warnings/errors and reproduced
-the retired `/goals` snapshot content only on that route. Independent reviewers
-approved the React, Svelte, and automation/deployment diffs after five residual
-wording/provenance findings were corrected.
+routes. Both all-route sweeps had zero browser warnings/errors. The retired
+snapshot content renders on `/goals` and `/graph`; shared client chunks loaded
+by `/fine-print`, `/goals`, `/graph`, `/host`, and React's `/goal` or Svelte's
+`/build` also ship its name/summary, while the React query-param goal detail can
+render the full narrative. Independent reviewers approved the React, Svelte,
+and automation/deployment diffs after five residual wording/provenance
+findings were corrected.
 
 Read-only GitHub preflight found the latest 30 announcement-workflow runs all
 completed with failure, with no queued or in-progress run. No workflow was
@@ -184,7 +188,8 @@ content. Task 5.3 owns the snapshot/soul source retirement and regeneration.
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
 into the stacked implementation branch without changing any reviewed site,
 workflow, script, or skill content. Fresh current-main verification at
-`c84cb833` passed React's 27-route production build and TypeScript check,
+`c84cb833` passed React's production build (27 Next build-report route entries,
+distinct from the 25 generated `index.html` pages swept above) and TypeScript,
 Svelte's production build and check with zero errors/six existing warnings,
 all 58 strict OpenSpec validations, the active-source absence scan, and
 `git diff --check`. Claude Opus 5 returned APPROVE on the current-main head;
