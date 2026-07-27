@@ -167,6 +167,10 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?next=https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
     "https://tinyassets.io/mcp#next=https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
     "https://tinyassets.io/mcp?next=%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=%20https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=%09https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3A%5C%5Cuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3A%2F%5Cuser%3Atop-secret%40internal.example%2Fcb",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
       "?token=top-secret",

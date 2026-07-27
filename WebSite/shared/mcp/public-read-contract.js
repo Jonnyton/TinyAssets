@@ -55,9 +55,8 @@ function isCredentialParameterName(value) {
 
 /** @param {string} value */
 function containsUrlUserinfo(value) {
-  if (!/^(?:[a-z][a-z0-9+.-]*:)?\/\//i.test(value)) return false;
   try {
-    const parsed = new URL(value.startsWith("//") ? `https:${value}` : value);
+    const parsed = new URL(value, "https://public.invalid");
     return Boolean(parsed.username || parsed.password);
   } catch {
     return false;

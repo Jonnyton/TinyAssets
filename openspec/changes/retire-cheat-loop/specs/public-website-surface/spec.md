@@ -166,7 +166,7 @@ metadata; deleting only the primary Goal row is insufficient.
 - **THEN** it fails before connecting or writing an artifact
 - **AND** credential-like URL query or fragment parameters fail before the URL is logged
 - **AND** recursively encoded query/fragment separators cannot hide credential parameters
-- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials
+- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, control prefixes, or slash/backslash-equivalent WHATWG spellings
 - **AND** the snapshot URL uses HTTPS before the connector opens or logs it
 
 #### Scenario: A browser build configures a public MCP endpoint

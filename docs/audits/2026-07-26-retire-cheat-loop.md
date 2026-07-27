@@ -781,6 +781,11 @@ verdict without pretending the unsafe server projections are public:
   discovery labelled as active/running on Playground and Host; the current
   repair rejects nested URL userinfo, keeps snapshot logs generic, requires
   total/count equality, and uses public shared-engine discovery labels;
+- exact-head general and security review of `3310d0b4` returned ADAPT while
+  public-truth review approved: the nested-userinfo prefilter missed leading
+  whitespace/control characters and WHATWG-equivalent backslash authority
+  spellings; the current repair removes spelling-based prefiltering and parses
+  every nested value with consumer-equivalent WHATWG URL semantics;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte

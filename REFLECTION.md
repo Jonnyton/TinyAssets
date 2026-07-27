@@ -533,3 +533,6 @@ fresh-host rollback edges found later.
 - **Follow-up:** completeness and public audience are orthogonal. `scope=all`
   cannot authorize publication, and failure UI/error channels need the same
   fail-closed review as successful data.
+- **Follow-up:** security validation must model parser equivalence, not only
+  canonical spelling. Feed nested URL values to WHATWG parsing so whitespace,
+  control prefixes, and backslash authority forms cannot bypass userinfo checks.
