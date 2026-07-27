@@ -193,7 +193,7 @@
   print, tests, `community_change_context` caller, and build artifacts; prove
   absence of every retired website reference. Do not delete the production
   tree as a "legacy mirror."
-- [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
+- [x] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
