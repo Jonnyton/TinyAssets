@@ -1507,9 +1507,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-loop-snapshots
-- Lane state: approved; task 5.3 snapshot half complete
+- Lane state: published; task 5.3 snapshot half complete
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-snapshots
-- STATUS/Issue/PR: stacked after draft PR #1818; publish pending
+- STATUS/Issue/PR: draft PR #1819 stacked after draft PR #1818
 - PLAN refs: public discovery truth; user-buildable/remixable automations; no privileged product projection
 - Purpose: rebuild MCP snapshots from canonical discovery-scoped primitives and repository snapshots from deterministic clean topology, failing closed without keyword-filtering user designs
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-snapshots\_PURPOSE.md
@@ -1518,3 +1518,4 @@ Notes:
 - Ship/abandon: stacked draft PR; task 5.3 requires complete live feeds and clean artifacts; stored-role/runtime proof remains under 6.1/6.4
 - Update 2026-07-26: final implementation `67e55866`; 22/22 snapshot tests; live 78/78 discovery rebuild; Svelte/React builds; byte-identical MCP mirrors; 288 public origin refs; exact retired projections removed without keyword censorship
 - Update 2026-07-26: Claude Opus 5 plus three independent exact-head reviewers APPROVE; OpenSpec task 5.3 checked; runtime/stored-role proof remains independently gated by tasks 6.1/6.4
+- Update 2026-07-26: pushed as draft PR #1819; stacked order is #1812 → #1815 → #1818 → #1819
