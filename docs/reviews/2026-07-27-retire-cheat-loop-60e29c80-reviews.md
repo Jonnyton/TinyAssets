@@ -1,7 +1,9 @@
 # Retire Cheat Loop — Exact Source Review Receipt
 
-Date: 2026-07-27  
-Base: `9ea3c9eef9603496a62be64de7b5085312687a70`  
+Date: 2026-07-27
+
+Base: `9ea3c9eef9603496a62be64de7b5085312687a70`
+
 Reviewed source head: `60e29c80f8491792efb9d68c54dcf346284cefa0`
 
 This is the durable receipt for four independent, read-only reviews of the
