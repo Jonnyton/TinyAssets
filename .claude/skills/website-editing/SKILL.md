@@ -19,7 +19,7 @@ as pointers or harness notes.
 1. **Read `WebSite/PREVIEW.md`** — the canonical two-tree preview loop.
 2. **Edit and build React first.** Preview `WebSite/site-react/` at `http://localhost:3000/`; use `WebSite/site-react/PREVIEW.md` for the production-exact and hosted paths.
 3. **Preserve Svelte rollback parity.** Mirror the intended user-visible behavior into `WebSite/site/` and preview it at the hard-pinned `http://localhost:5173/` through `WebSite/preview.bat`.
-4. **Read `WebSite/DEPLOY.md`** if you might ship — it covers the prepared-branch helper, manual React deployment, dispatch-only Svelte rollback, and live verification.
+4. **Read `WebSite/DEPLOY.md`** if you might ship — it covers the normal review/merge path, manual React deployment, dispatch-only Svelte rollback, and live verification.
 5. **Read `WebSite/HOOKS_FUSE_QUIRKS.md`** if you're in Cowork — Edit/Write silently truncate on the FUSE mount; **for any existing file, use bash heredoc**:
    ```bash
    cat > "/full/path/to/file" << 'FILE_EOF'
