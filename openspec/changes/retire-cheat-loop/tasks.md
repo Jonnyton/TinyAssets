@@ -225,10 +225,11 @@
   **Current coordination (2026-07-26):** stacked draft PR #1818 exclusively
   owns the exact seven prompt-asset deletions and has independent Opus 5
   approval; base draft #1812 MUST NOT duplicate them. The task remains open on
-  truthful snapshot regeneration, content-level absence, zero-active proof for
-  the six daemon IDs previously registered in the host-local registry, and
-  cleanup of synthetic retired-role fixture names after broad `tests/` claims
-  release.
+  truthful snapshot regeneration, content-level absence, and cleanup of
+  synthetic retired-role fixture names after broad `tests/` claims release.
+  **Host-local zero-active proved 2026-07-26:** see
+  `docs/audits/2026-07-26-retire-cheat-loop.md` §Host-local registered-role
+  authority proof. Production and third-party hosts remain unproved.
   **Current dependency:** the snapshot generator calls legacy `wiki`, `goals`,
   and `universe` handles that the canonical-seven live MCP surface no longer
   advertises, then swallows tool failures into null/empty output. Regeneration

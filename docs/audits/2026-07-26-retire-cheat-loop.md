@@ -130,8 +130,9 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   manifest and the Ada, Elias, Mira, Noor, Soren, and Vera role souls; Opus 5
   approved its exact deletion head `d311cf03`. A duplicate base-branch attempt
   was reverted, leaving #1812 with zero net soul diff; Opus 5 approved that
-  collision repair at `65e0ae42`. Task 5.3 remains open on snapshots,
-  registered daemon zero-active proof, and residual synthetic-test naming.
+  collision repair at `65e0ae42`. The host-local registered-daemon
+  zero-active gate is now proved below. Task 5.3 remains open on snapshots and
+  residual synthetic-test naming.
 - Opposite-provider Claude Opus review of `ace375ab` found remaining
   one-sided Svelte presentation wording after the React port. Cleanup
   `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
@@ -483,6 +484,35 @@ surface, and it swallows those tool failures into null/empty output. Running it
 before source retirement and migration to supported canonical handles could
 produce a hollow false-green snapshot rather than proving retired content is
 gone.
+
+#### Host-local registered-role authority proof
+
+Freshness-stamped 2026-07-26 on the Windows host whose historical manifest
+registered the six loop roles under
+`C:\Users\Jonathan\AppData\Roaming\TinyAssets`: a read-only SQLite URI scan
+checked all 59 user tables across the five resident databases (61 including
+SQLite's two internal `sqlite_sequence` tables): `.auth.db`, `.node_eval.db`,
+`.runs.db`, `.tinyassets.db`, and `wiki_trigger_attempts.db`. None of the six
+exact daemon IDs appeared in any text or JSON column. Narrow checks of
+`.tinyassets.db` likewise returned zero matching author definitions, runtime
+instances, directed or claimed epoch-2 tasks, preferred-author user requests,
+or capability-grant issuers. Four of those five tables —
+`author_runtime_instances`, `branch_tasks_v2`, `user_requests`, and
+`capability_grants` — hold zero rows of any kind on this host, so they are
+vacuous rather than filtered witnesses. `author_definitions` holds exactly one
+row, `author::house-daemon::9582f5f425f291db`, and is the only narrow check
+with discriminating power. A recursive exact-hash text scan of the host-data
+root returned no flat-file match.
+
+The code treats non-retired runtime rows as controlled runtime slots and
+`pending`, `running`, or `cancel_requested` epoch-2 tasks as live work.
+Therefore, on this inspected host, the roles have neither stored identities
+nor runnable/queued authority. This is host-local evidence, not a claim about
+an uninspected production or third-party host. This host's action, gate-claim,
+admission, escrow, grant, and session tables are likewise empty, so the
+absence bounds current host-local risk to zero but does not prove that a
+populated registry ever dropped these roles. It does not close task 5.3's
+snapshot-regeneration or synthetic-fixture gates.
 
 Generic evaluation code or explicit GitHub-effect authority may remain only
 where it has an independent owner and does not preserve an auto-ship action,
