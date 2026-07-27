@@ -15,15 +15,15 @@ Apply is blocked. As of 2026-07-27, read-only production inventory found:
 - 98 open pull requests, including 21 with auto-merge requests; and
 - workflow database ID `317815472` (`auto-enroll-merge.yml`) still active.
 
-The 2026-07-27 live attribution capture observed 832 workflow
+The 2026-07-27 terminal-proven live attribution receipt captured 832 workflow
 runs, 21 complete job connections, the one-entry reviewed default-branch
 source history, and one exact run/job/step/log proof for each of the 21
 enrollments. All 21 classify `attributed`; none classify explicit or ambiguous.
-The superseded pre-Link-proof inventory-only receipt digest was
-`sha256:ff4a1481c4d27e478204b94ce094ff965560aaaaa1f9c91cd279f5a8a1562406`.
-A fresh receipt must additionally bind the terminal GitHub Link-header
-evidence introduced by the Opus 5 review. This remains historical capture, not
-mutation authority: the workflow is active and `apply_complete=false`.
+Its inventory-only receipt digest is
+`sha256:8af8a24aa3fc42837b5952e1392880e9c9cc2ef0db8b75c2fc0f1614b0213655`,
+bound to implementation revision `c6192dec`. The receipt includes terminal
+GitHub Link-header evidence. This remains historical capture, not mutation
+authority: the workflow is active and `apply_complete=false`.
 
 Closed items remain untouched as history. Generic labels and explicit
 user/maintainer auto-merge requests are preserved.
@@ -164,8 +164,9 @@ or ambiguous open enrollments.
 The 2026-07-27 Claude Opus 5 opposite-provider review required three
 inventory-truthfulness corrections: structured read-only request construction,
 terminal Link-chain receipts, and explicit separation of offline integrity
-verification from external provenance. A later live-adapter change must still
-close these findings before it can apply:
+verification from external provenance. The current reader closes those
+inventory-only findings. A later live-adapter change must still close these
+findings before it can apply:
 
 1. Re-fetch and match the exact source/run/job/step/log identities and archive
    digests in every future live adapter's immediately fresh per-action proof;
