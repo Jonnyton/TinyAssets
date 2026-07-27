@@ -1,7 +1,7 @@
 {
   "title": "Patterns from the canon",
   "subtitle": "Vol. 1 \u2014 community handbook",
-  "intro": "How a chatbot-user thinks about the system. The interface is the chat thread; the iteration pipeline is the community of chatbot-users filing patches via the wiki. An internal user-sim agent (Claude Code role) drafted these diagrams ahead of public launch by dogfooding the same patch + ship channels real users will use.",
+  "intro": "How a chatbot user thinks about the system. The interface is the chat thread; workflows are ordinary designs that people can build, copy, remix, and run. An internal user-sim agent drafted these diagrams ahead of public launch by exercising the same composable primitives available to every user.",
   "diagrams": [
     {
       "n": "01",

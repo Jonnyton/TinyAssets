@@ -193,7 +193,7 @@ function runTimestampMs(run: WorkflowRun): number | null {
 }
 
 function isTerminalRunStatus(status: string): boolean {
-  return ['completed', 'failed', 'cancelled', 'canceled'].includes(status.toLowerCase());
+  return ['completed', 'failed', 'cancelled', 'canceled', 'interrupted'].includes(status.toLowerCase());
 }
 
 export type Vitals = {

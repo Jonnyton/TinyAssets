@@ -207,9 +207,9 @@ export function parseInput(text: string): ParsedInput {
   return { ok: true, tool, args, canonical: canonicalParts.join(' ') };
 }
 
-// ============ Loop voice harvest ============
+// ============ Workflow note harvest ============
 
-export type LoopVoiceQuote = {
+export type WorkflowNote = {
   text: string;
   branch: string;
   runId: string;
@@ -231,9 +231,9 @@ function looksLikeQuote(s: unknown): s is string {
   return typeof s === 'string' && s.length >= 30 && s.length <= 800 && /\s/.test(s);
 }
 
-export async function harvestVoiceQuotes(maxRuns = 6): Promise<{ quotes: LoopVoiceQuote[]; warnings: string[] }> {
+export async function harvestWorkflowNotes(maxRuns = 6): Promise<{ notes: WorkflowNote[]; warnings: string[] }> {
   const warnings: string[] = [];
-  const quotes: LoopVoiceQuote[] = [];
+  const notes: WorkflowNote[] = [];
   try {
     const list = await callTool('extensions', { action: 'list_runs', limit: maxRuns });
     const runs: any[] = (list.parsed?.runs as any[]) ?? [];
@@ -251,9 +251,9 @@ export async function harvestVoiceQuotes(maxRuns = 6): Promise<{ quotes: LoopVoi
           for (const [field, picker] of QUOTE_FIELDS) {
             const val = picker(ev, run);
             if (looksLikeQuote(val)) {
-              quotes.push({
+              notes.push({
                 text: val.trim(),
-                branch: run.branch_def_id ?? run.workflow ?? run.name ?? 'change_loop_v1',
+                branch: run.branch_def_id ?? run.workflow ?? run.name ?? 'unlabeled workflow',
                 runId: run.run_id ?? 'unknown',
                 nodeId: ev?.node_id,
                 field,
@@ -265,21 +265,21 @@ export async function harvestVoiceQuotes(maxRuns = 6): Promise<{ quotes: LoopVoi
       } catch (err) {
         warnings.push(`get_run ${run?.run_id}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      if (quotes.length >= 12) break;
+      if (notes.length >= 12) break;
     }
   } catch (err) {
     warnings.push(`list_runs: ${err instanceof Error ? err.message : String(err)}`);
   }
   // Dedupe by text prefix.
   const seen = new Set<string>();
-  const deduped: LoopVoiceQuote[] = [];
-  for (const q of quotes) {
+  const deduped: WorkflowNote[] = [];
+  for (const q of notes) {
     const key = q.text.slice(0, 80);
     if (seen.has(key)) continue;
     seen.add(key);
     deduped.push(q);
   }
-  return { quotes: deduped, warnings };
+  return { notes: deduped, warnings };
 }
 
 // ============ Recent runs (run picker) ============

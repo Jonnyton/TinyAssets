@@ -1,7 +1,7 @@
 <!--
   Playground — live MCP console, embedded in /connect.
   Type a tool call, watch the JSON-RPC envelope go out, see the response,
-  the loop's voice, and the stage pulse. Same surface a chatbot uses.
+  workflow notes and recent run states. Same surface a chatbot uses.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -10,16 +10,16 @@
     callTool,
     parseInput,
     summarize,
-    harvestVoiceQuotes,
+    harvestWorkflowNotes,
     listRecentRuns,
     type CallResult,
-    type LoopVoiceQuote,
+    type WorkflowNote,
     type RecentRun
   } from '$lib/mcp/playground';
   import { relativeStamp } from '$lib/live/project';
 
   type DisclosureMode = 'pretty' | 'json' | 'wire';
-  type StageId = 'intake' | 'investigation' | 'gate' | 'coding' | 'release' | 'observe';
+  type RunStateId = 'queued' | 'running' | 'completed' | 'failed' | 'interrupted';
 
   type HistoryEntry = {
     id: number; canonical: string; tool: string; args: Record<string, unknown>;
@@ -31,16 +31,18 @@
 
   const CHIPS: Chip[] = [
     { label: 'List the wiki',     sub: 'wiki action=list',                                                                        canonical: 'wiki action=list', color: 'var(--ember-500)' },
-    { label: 'Latest loop run',   sub: 'extensions action=list_runs limit=1',                                                     canonical: 'extensions action=list_runs limit=1', color: 'var(--violet-400)' },
+    { label: 'Latest workflow run', sub: 'extensions action=list_runs limit=1',                                                   canonical: 'extensions action=list_runs limit=1', color: 'var(--violet-400)' },
     { label: 'Active universes',  sub: 'universe action=list',                                                                    canonical: 'universe action=list', color: 'var(--signal-live)' },
     { label: 'Open goals',        sub: 'goals action=list',                                                                       canonical: 'goals action=list', color: 'var(--ember-300)' },
     { label: 'Read a bug page',   sub: 'wiki action=read page=pages/bugs/bug-052',                                                canonical: 'wiki action=read page=pages/bugs/bug-052-wiki-bug-list-contains-duplicate-stale-bug-pages', color: 'var(--ember-500)' }
   ];
 
-  const STAGES: Array<{ id: StageId; label: string }> = [
-    { id: 'intake', label: 'Intake' }, { id: 'investigation', label: 'Invest' },
-    { id: 'gate', label: 'Gate' },     { id: 'coding', label: 'Coding' },
-    { id: 'release', label: 'Release' }, { id: 'observe', label: 'Watch' }
+  const RUN_STATES: Array<{ id: RunStateId; label: string }> = [
+    { id: 'queued', label: 'Queued' },
+    { id: 'running', label: 'Running' },
+    { id: 'completed', label: 'Completed' },
+    { id: 'failed', label: 'Failed' },
+    { id: 'interrupted', label: 'Interrupted' }
   ];
 
   let inputValue = $state('wiki action=list');
@@ -49,23 +51,22 @@
   let mode = $state<DisclosureMode>('pretty');
   let history = $state<HistoryEntry[]>([]);
   let nextHistoryId = 1;
-  let voiceQuotes = $state<LoopVoiceQuote[]>([]);
-  let voiceLoading = $state(false);
+  let workflowNotes = $state<WorkflowNote[]>([]);
+  let notesLoading = $state(false);
   let recentRuns = $state<RecentRun[]>([]);
   let runsLoading = $state(false);
 
   const current = $derived<HistoryEntry | null>(history[0] ?? null);
 
-  const stagePulse = $derived.by(() => {
-    const map: Record<StageId, number> = { intake: 0, investigation: 0, gate: 0, coding: 0, release: 0, observe: 0 };
+  const runStateCounts = $derived.by(() => {
+    const map: Record<RunStateId, number> = { queued: 0, running: 0, completed: 0, failed: 0, interrupted: 0 };
     for (const run of recentRuns) {
       const s = (run.status ?? '').toLowerCase();
-      if (s.includes('complete') || s.includes('success')) map.observe += 1;
-      else if (s.includes('fail') || s.includes('error') || s.includes('block')) map.gate += 1;
-      else if (s.includes('coding') || s.includes('writer')) map.coding += 1;
-      else if (s.includes('release') || s.includes('ship')) map.release += 1;
-      else if (s.includes('investig')) map.investigation += 1;
-      else map.intake += 1;
+      if (s.includes('interrupt') || s.includes('cancel')) map.interrupted += 1;
+      else if (s.includes('fail') || s.includes('error') || s.includes('block')) map.failed += 1;
+      else if (s.includes('complete') || s.includes('success')) map.completed += 1;
+      else if (s.includes('run') || s.includes('active') || s.includes('work')) map.running += 1;
+      else map.queued += 1;
     }
     return map;
   });
@@ -106,9 +107,9 @@
   }
 
   function onKeydown(e: KeyboardEvent) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void run(); } }
-  async function refreshVoice() { voiceLoading = true; try { const h = await harvestVoiceQuotes(6); voiceQuotes = h.quotes; } finally { voiceLoading = false; } }
+  async function refreshNotes() { notesLoading = true; try { const h = await harvestWorkflowNotes(6); workflowNotes = h.notes; } finally { notesLoading = false; } }
   async function refreshRuns() { runsLoading = true; try { recentRuns = await listRecentRuns(10); } finally { runsLoading = false; } }
-  function injectQuoteCall(q: LoopVoiceQuote) { inputValue = q.nodeId ? `extensions action=get_node_output run_id=${q.runId} node_id=${q.nodeId}` : `extensions action=get_run run_id=${q.runId}`; void run(); }
+  function injectNoteCall(q: WorkflowNote) { inputValue = q.nodeId ? `extensions action=get_node_output run_id=${q.runId} node_id=${q.nodeId}` : `extensions action=get_run run_id=${q.runId}`; void run(); }
   function injectRunCall(r: RecentRun) { inputValue = `extensions action=get_run run_id=${r.run_id}`; void run(); }
   function selectChip(c: Chip) { inputValue = c.canonical; void run(); }
   function setMode(m: DisclosureMode) { mode = m; }
@@ -117,9 +118,9 @@
 
   onMount(() => {
     void run();
-    void refreshVoice();
+    void refreshNotes();
     void refreshRuns();
-    const vt = window.setInterval(() => void refreshVoice(), 60000);
+    const vt = window.setInterval(() => void refreshNotes(), 60000);
     const rt = window.setInterval(() => void refreshRuns(), 60000);
     return () => { window.clearInterval(vt); window.clearInterval(rt); };
   });
@@ -162,23 +163,23 @@
 
 <section class="board">
   <div class="board__grid">
-    <aside class="voice" aria-label="Loop voice — verbatim quotes from recent runs">
+    <aside class="voice" aria-label="Workflow notes from recent runs">
       <header class="voice__head">
-        <RitualLabel color="var(--violet-400)">· my own voice ·</RitualLabel>
-        <button class="voice__refresh" type="button" onclick={refreshVoice} disabled={voiceLoading}>{voiceLoading ? 'Listening…' : 'Refresh'}</button>
+        <RitualLabel color="var(--violet-400)">· workflow notes ·</RitualLabel>
+        <button class="voice__refresh" type="button" onclick={refreshNotes} disabled={notesLoading}>{notesLoading ? 'Loading…' : 'Refresh'}</button>
       </header>
       <p class="voice__lede">
-        Verbatim quotes from my recent runs — what I said about my own work in
+        Verbatim notes recorded by recent user-authored workflows in
         <code>reason_for_downgrade</code>, gate verdicts, evolution notes,
         lab logs. Click to replay the call that produced one.
       </p>
-      {#if voiceQuotes.length === 0 && !voiceLoading}
-        <p class="voice__empty">No verbatim quotes visible in the last few runs. I'm quiet right now — try a chip above, or pick a run on the right.</p>
+      {#if workflowNotes.length === 0 && !notesLoading}
+        <p class="voice__empty">No workflow notes are visible in the last few runs. Try a chip above, or pick a run on the right.</p>
       {/if}
       <ul class="voice__list">
-        {#each voiceQuotes as q}
+        {#each workflowNotes as q}
           <li>
-            <button type="button" class="quote" onclick={() => injectQuoteCall(q)}>
+            <button type="button" class="quote" onclick={() => injectNoteCall(q)}>
               <blockquote>{q.text}</blockquote>
               <small>— {q.branch}{q.nodeId ? ` · ${q.nodeId}` : ''} · <code>{q.field}</code>{#if q.at} · {relativeStamp(q.at)}{/if}</small>
             </button>
@@ -270,18 +271,18 @@
       {/if}
     </article>
 
-    <aside class="pulse" aria-label="Loop stage activity and recent runs">
+    <aside class="pulse" aria-label="Workflow run states and recent runs">
       <header class="pulse__head">
-        <RitualLabel color="var(--signal-live)">· stage pulse ·</RitualLabel>
+        <RitualLabel color="var(--signal-live)">· run states ·</RitualLabel>
         <button class="pulse__refresh" type="button" onclick={refreshRuns} disabled={runsLoading}>{runsLoading ? '…' : 'Refresh'}</button>
       </header>
-      <p class="pulse__lede">Six stages of the loop. Each dot lights when a recent run touched that stage. Quiet stages stay dim — that's normal. I only fire on real filings.</p>
+      <p class="pulse__lede">Status counts from recent runs across user-authored workflows. Each workflow defines its own stages and decides when it runs.</p>
       <ul class="pulse__rail">
-        {#each STAGES as stage}
-          {@const count = stagePulse[stage.id]}
+        {#each RUN_STATES as state}
+          {@const count = runStateCounts[state.id]}
           <li>
             <span class="pulse__dot" class:pulse__dot--lit={count > 0}></span>
-            <span class="pulse__name">{stage.label}</span>
+            <span class="pulse__name">{state.label}</span>
             <span class="pulse__count">{count > 0 ? `${count} hit${count === 1 ? '' : 's'}` : 'quiet'}</span>
           </li>
         {/each}
@@ -291,9 +292,9 @@
         <RitualLabel>· walk a run ·</RitualLabel>
         <span>{recentRuns.length} visible</span>
       </header>
-      <p class="pulse__lede">Click any run to load <code>extensions action=get_run</code> into the terminal. Runs persist forever, even when I'm quiet.</p>
+      <p class="pulse__lede">Click any run to load <code>extensions action=get_run</code> into the terminal. The workflow identity comes from the run record.</p>
       {#if recentRuns.length === 0 && !runsLoading}
-        <p class="pulse__empty">No recent runs visible. Try the "Latest loop run" chip — it lists the most recent.</p>
+        <p class="pulse__empty">No recent runs visible. Try the "Latest workflow run" chip — it lists the most recent.</p>
       {/if}
       <ul class="pulse__runs">
         {#each recentRuns.slice(0, 8) as r}
