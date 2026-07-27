@@ -1,8 +1,8 @@
 # Historical loop-uptime incidents
 
-These records document incidents from the retired privileged
-community/patch-loop architecture. They are retained as historical evidence
-only.
+These records document incidents and the former operating model from the
+retired privileged community/patch-loop architecture. They are retained as
+historical evidence only.
 
 This directory is not an agent skill, runbook, automation catalog, or current
 operator instruction. Current uptime work uses the platform's ordinary,
