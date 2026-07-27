@@ -395,6 +395,8 @@
   Exact source head `60e29c80f8491792efb9d68c54dcf346284cefa0`
   subsequently received APPROVE from independent general, security, and
   public-truth Codex reviews plus Claude Opus 5 opposite-provider review.
+  Their durable exact-SHA evidence is recorded in
+  `docs/reviews/2026-07-27-retire-cheat-loop-60e29c80-reviews.md`.
   Opus independently reran every cited gate and directly probed 43 endpoint
   inputs. Its two non-defect accuracy notes preserve the intended provider
   boundary: empty `?` or `#` delimiters carry no query/fragment data, and an

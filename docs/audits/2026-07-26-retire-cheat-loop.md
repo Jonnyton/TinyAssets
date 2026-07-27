@@ -814,10 +814,11 @@ verdict without pretending the unsafe server projections are public:
   that blacklist and requires a bare endpoint with no query or fragment data;
 - exact source head `60e29c80f8491792efb9d68c54dcf346284cefa0`
   received APPROVE from independent general, security, and public-truth Codex
-  reviewers plus Claude Opus 5 opposite-provider review; Opus reran every
-  cited gate and directly probed 43 endpoint inputs. Empty `?`/`#` delimiters
-  carry no data, and operator-selected bare HTTPS providers remain allowed,
-  consistent with the provider-neutral BYOC/market boundary;
+  reviewers plus Claude Opus 5 opposite-provider review, durably recorded at
+  `docs/reviews/2026-07-27-retire-cheat-loop-60e29c80-reviews.md`; Opus reran
+  every cited gate and directly probed 43 endpoint inputs. Empty `?`/`#`
+  delimiters carry no data, and operator-selected bare HTTPS providers remain
+  allowed, consistent with the provider-neutral BYOC/market boundary;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
