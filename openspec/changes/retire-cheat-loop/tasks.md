@@ -222,11 +222,13 @@
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
-  **Current evidence (2026-07-26):** draft PR #1812 removes the exact core-team
-  manifest and six named loop-role souls; an active-reference scan finds no
-  surviving consumer outside the retirement OpenSpec, audit, and coordination
-  record. The task remains open on truthful snapshot regeneration and
-  content-level absence.
+  **Current coordination (2026-07-26):** stacked draft PR #1818 exclusively
+  owns the exact seven prompt-asset deletions and has independent Opus 5
+  approval; base draft #1812 MUST NOT duplicate them. The task remains open on
+  truthful snapshot regeneration, content-level absence, zero-active proof for
+  the six daemon IDs previously registered in the host-local registry, and
+  cleanup of synthetic retired-role fixture names after broad `tests/` claims
+  release.
   **Current dependency:** the snapshot generator calls legacy `wiki`, `goals`,
   and `universe` handles that the canonical-seven live MCP surface no longer
   advertises, then swallows tool failures into null/empty output. Regeneration
