@@ -1485,3 +1485,17 @@ Notes:
 - Ship/abandon: stacked draft PR; do not merge before #1812 or reinterpret historical incidents as active instructions
 - Update 2026-07-26: canonical skill/catalog and PLAN escape-path claim removed; seven historical records moved out of active agent surfaces; mirrors synchronized; active scan clean; 58/58 strict OpenSpec pass
 - Update 2026-07-26: Opus 5 plus three independent exact-head reviewers APPROVE `748a7251`; both review findings were corrected before approval
+
+## 2026-07-26 - retire privileged loop souls
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-loop-souls
+- Lane state: claimed; task 5.3 source-only deletion wave
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-souls
+- STATUS/Issue/PR: stacked after draft PR #1815; no PR yet
+- PLAN refs: user-buildable/remixable automations; no platform-owned role defaults
+- Purpose: delete the seven shipped community-loop role souls without filtering user-authored workflows or claiming the blocked snapshot regeneration is complete
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-souls\_PURPOSE.md
+- Memory refs: target merge 0d50a2d4; parent skill-retirement head 50192892
+- Review gate: exact-head source/reference scan plus independent review
+- Ship/abandon: keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination and live-source projection are truthful
