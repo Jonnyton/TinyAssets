@@ -1386,6 +1386,10 @@ class AttributionTests(unittest.TestCase):
         ignored_run["conclusion"] = None
         ignored_run["created_at"] = "2026-07-25T02:00:00Z"
         ignored_run["updated_at"] = "2026-07-25T02:00:04Z"
+        competing_run = copy.deepcopy(run)
+        competing_run["id"] = 103
+        competing_run["node_id"] = "WR_103"
+        competing_run["html_url"] = "https://example.invalid/actions/runs/103"
         job = {
             "id": 202,
             "name": "Enroll for auto-merge",
@@ -1410,6 +1414,10 @@ class AttributionTests(unittest.TestCase):
 
         class AttributionClient:
             repo = "Jonnyton/TinyAssets"
+
+            def __init__(self, *, competing=False, failed_log_run=None):
+                self.competing = competing
+                self.failed_log_run = failed_log_run
 
             def rest(self, endpoint):
                 if "/git/blobs/" in endpoint:
@@ -1440,19 +1448,32 @@ class AttributionTests(unittest.TestCase):
 
             def rest_collection(self, endpoint, *, list_key):
                 if list_key == "workflow_runs":
-                    return [run, ignored_run], complete_connection(
+                    runs = [run, ignored_run]
+                    if self.competing:
+                        runs.append(competing_run)
+                    return runs, complete_connection(
                         kind="workflow_runs",
                         label_name="",
-                        count=2,
+                        count=len(runs),
                         completion_basis="reported_total_count",
                     )
                 if list_key == "jobs":
                     self.job_endpoint = endpoint
-                    if "/runs/101/" not in endpoint:
+                    matching_run = next(
+                        (
+                            run_id
+                            for run_id in (101, 103)
+                            if f"/runs/{run_id}/" in endpoint
+                        ),
+                        None,
+                    )
+                    if matching_run is None:
                         raise AssertionError(endpoint)
-                    return [job], complete_connection(
+                    matching_job = copy.deepcopy(job)
+                    matching_job["id"] = 202 if matching_run == 101 else 203
+                    return [matching_job], complete_connection(
                         kind="workflow_jobs",
-                        label_name="101",
+                        label_name=str(matching_run),
                         count=1,
                         completion_basis="reported_total_count",
                     )
@@ -1460,6 +1481,11 @@ class AttributionTests(unittest.TestCase):
 
             def bytes(self, endpoint):
                 self.log_endpoint = endpoint
+                if (
+                    self.failed_log_run is not None
+                    and f"/runs/{self.failed_log_run}/" in endpoint
+                ):
+                    raise mod.RetirementError("simulated transient log failure")
                 return enrollment_log_zip()
 
         inventory = {
@@ -1505,6 +1531,44 @@ class AttributionTests(unittest.TestCase):
         )
         self.assertIn("sha=main", client.history_endpoint)
         self.assertTrue(client.log_endpoint.endswith("/actions/runs/101/logs"))
+
+        ambiguous = mod.collect_auto_merge_attribution(
+            AttributionClient(competing=True, failed_log_run=103),
+            inventory,
+        )
+        row = ambiguous["attribution"][0]
+        self.assertEqual("ambiguous_preserve", row["classification"])
+        self.assertEqual(
+            [101, 103],
+            sorted(evidence["run_id"] for evidence in row["evidence"]),
+        )
+        unavailable = [
+            evidence
+            for evidence in row["evidence"]
+            if evidence.get("evidence_status") == "log_unavailable"
+        ]
+        self.assertEqual(1, len(unavailable))
+        self.assertEqual("log_read_failed", unavailable[0]["reason"])
+        ambiguous_receipt = mod.build_receipt(
+            operation=mod.AUTO_MERGE_OPERATION,
+            repo=repo(),
+            source_revision="abc123",
+            inventory=ambiguous,
+        )
+        mod.verify_receipt(ambiguous_receipt)
+        forged = copy.deepcopy(ambiguous)
+        next(
+            evidence
+            for evidence in forged["attribution"][0]["evidence"]
+            if evidence.get("evidence_status") == "log_unavailable"
+        )["reason"] = "pretend_absent"
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=forged,
+            )
 
     def test_actor_query_preserves_ids_for_every_supported_actor_shape(self) -> None:
         for fragment in (
@@ -1575,6 +1639,9 @@ class ReadOnlyClientTests(unittest.TestCase):
             "repos/foreign/repository/issues",
             "orgs/Jonnyton",
             "repos/Jonnyton/TinyAssets/issues -Ftitle=x",
+            "repos/Jonnyton/TinyAssets/%2e%2e/issues",
+            "repos/Jonnyton/TinyAssets/issues%2f1",
+            "repos/Jonnyton/TinyAssets/issues%5c1",
         ):
             with self.subTest(endpoint=endpoint), self.assertRaises(mod.ApplyBlocked):
                 client.rest(endpoint)
@@ -1696,6 +1763,10 @@ class ReadOnlyClientTests(unittest.TestCase):
         )
         self.assertIsNotNone(
             pagination["page_receipts"][0]["next_url_digest"]
+        )
+        self.assertEqual(
+            pagination["page_receipts"][0]["next_url_digest"],
+            pagination["page_receipts"][1]["request_url_digest"],
         )
         self.assertIsNone(pagination["page_receipts"][1]["next_url_digest"])
         self.assertEqual(
@@ -1861,6 +1932,15 @@ class ReadOnlyClientTests(unittest.TestCase):
         with self.assertRaises(mod.RetirementError) as failed:
             client.rest("repos/Jonnyton/TinyAssets")
         self.assertNotIn("top-secret-value", str(failed.exception))
+
+        def missing_runner(args, **kwargs):
+            raise OSError("sensitive local process detail")
+
+        with self.assertRaises(mod.RetirementError) as missing:
+            mod.ReadOnlyGitHub(
+                "Jonnyton/TinyAssets", runner=missing_runner
+            ).bytes("repos/Jonnyton/TinyAssets/actions/runs/1/logs")
+        self.assertNotIn("sensitive local process detail", str(missing.exception))
 
         class MalformedGraphQLClient:
             repo = "Jonnyton/TinyAssets"

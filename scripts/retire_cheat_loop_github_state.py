@@ -246,6 +246,12 @@ def _validate_complete_connections(
                 ):
                     raise PlanError("Link pagination page receipt is malformed")
                 observed += int(page["item_count"])
+            if any(
+                page_receipts[ordinal]["next_url_digest"]
+                != page_receipts[ordinal + 1]["request_url_digest"]
+                for ordinal in range(len(page_receipts) - 1)
+            ):
+                raise PlanError("Link pagination receipt chain is broken")
             if observed != count:
                 raise PlanError("Link pagination count does not match its page receipts")
         elif completion_basis in {
@@ -503,12 +509,43 @@ def _validate_auto_merge_attribution_bindings(
             raise PlanError("attribution is not proven by its bound evidence")
         for bound in evidence:
             run_id = bound.get("run_id")
-            job_id = bound.get("job_id")
-            if not _is_integer(run_id) or not _is_integer(job_id):
-                raise PlanError("attribution evidence lacks run/job identity")
+            if not _is_integer(run_id):
+                raise PlanError("attribution evidence lacks a run identity")
             run = run_by_id.get(int(run_id))
             if run is None:
                 raise PlanError("attribution evidence run was not captured")
+            if bound.get("evidence_status") == "log_unavailable":
+                expected_unavailable = {
+                    "evidence_status": "log_unavailable",
+                    "reason": "log_read_failed",
+                    "workflow_id": run.get("workflow_id"),
+                    "run_id": int(run_id),
+                    "event": run.get("event"),
+                    "run_status": run.get("status"),
+                    "conclusion": run.get("conclusion"),
+                    "pull_request_number": pr_by_id[pr_id].get("number"),
+                    "head_sha": run.get("head_sha"),
+                    "run_created_at": run.get("created_at"),
+                    "run_updated_at": run.get("updated_at"),
+                    "run_url": run.get("html_url"),
+                }
+                if bound != expected_unavailable:
+                    raise PlanError(
+                        "log-unavailable evidence does not match its captured run"
+                    )
+                linked = run.get("pull_requests")
+                if not isinstance(linked, list) or not any(
+                    isinstance(item, Mapping)
+                    and item.get("number") == pr_by_id[pr_id].get("number")
+                    for item in linked
+                ):
+                    raise PlanError(
+                        "log-unavailable run is not linked to its pull request"
+                    )
+                continue
+            job_id = bound.get("job_id")
+            if not _is_integer(job_id):
+                raise PlanError("attribution evidence lacks a job identity")
             run_fields = {
                 "workflow_id": "workflow_id",
                 "workflow_path": "path",
@@ -1608,6 +1645,11 @@ def classify_auto_merge(
         return {"classification": "ambiguous_preserve", "evidence": []}
     enabled_at = _parse_time(request.get("enabled_at"))
     matches: list[dict[str, Any]] = []
+    unavailable = [
+        copy.deepcopy(dict(row))
+        for row in evidence
+        if row.get("evidence_status") == "log_unavailable"
+    ]
     for row in evidence:
         run_start = _parse_time(row.get("run_created_at"))
         run_end = _parse_time(row.get("run_updated_at"))
@@ -1683,6 +1725,11 @@ def classify_auto_merge(
             )
         ):
             matches.append(copy.deepcopy(dict(row)))
+    if unavailable:
+        return {
+            "classification": "ambiguous_preserve",
+            "evidence": [*matches, *unavailable],
+        }
     if len(matches) == 1:
         return {"classification": "attributed", "evidence": matches}
     return {"classification": "ambiguous_preserve", "evidence": matches}
@@ -1723,6 +1770,8 @@ class ReadOnlyGitHub:
             raise ApplyBlocked("read-only GitHub client rejected an unsafe endpoint")
         path = urlsplit(endpoint).path
         root = f"repos/{self.repo}"
+        if "%" in path:
+            raise ApplyBlocked("read-only GitHub client rejected an encoded path")
         if path != root and not path.startswith(root + "/"):
             raise ApplyBlocked("read-only GitHub client rejected a cross-repository endpoint")
         if any(part in {"", ".", ".."} for part in path.split("/")):
@@ -1870,6 +1919,8 @@ class ReadOnlyGitHub:
             raise RetirementError(
                 f"GitHub binary read failed with exit status {exc.returncode}"
             ) from None
+        except OSError:
+            raise RetirementError("GitHub binary read process was unavailable") from None
         value = completed.stdout
         if not isinstance(value, bytes):
             raise RetirementError("GitHub binary read returned non-bytes output")
@@ -1931,7 +1982,11 @@ class ReadOnlyGitHub:
                     ),
                     "response_body_digest": digest(page),
                     "item_count": len(page),
-                    "next_url_digest": digest(next_url) if next_url else None,
+                    "next_url_digest": (
+                        digest({"method": "GET", "endpoint": next_url})
+                        if next_url
+                        else None
+                    ),
                 }
             )
             if next_url is None:
@@ -2467,7 +2522,7 @@ def collect_auto_merge_attribution(
     result["connections"].append(source_history["connection"])
     jobs_by_run: dict[int, list[dict[str, Any]]] = {}
     workflow_jobs: list[dict[str, Any]] = []
-    log_by_run_pr: dict[tuple[int, int], dict[str, Any] | None] = {}
+    log_by_run_pr: dict[tuple[int, int], dict[str, Any]] = {}
     attribution: list[dict[str, Any]] = []
     for pull_request in result.get("pull_requests", []):
         candidate_evidence: list[dict[str, Any]] = []
@@ -2517,9 +2572,23 @@ def collect_auto_merge_attribution(
                             repo_name=client.repo,
                         )
                     except (PlanError, RetirementError):
-                        log_by_run_pr[log_key] = None
+                        log_by_run_pr[log_key] = {
+                            "evidence_status": "log_unavailable",
+                            "reason": "log_read_failed",
+                            "workflow_id": run.get("workflow_id"),
+                            "run_id": run_id,
+                            "event": run.get("event"),
+                            "run_status": run.get("status"),
+                            "conclusion": run.get("conclusion"),
+                            "pull_request_number": pull_request.get("number"),
+                            "head_sha": run.get("head_sha"),
+                            "run_created_at": run.get("created_at"),
+                            "run_updated_at": run.get("updated_at"),
+                            "run_url": run.get("html_url"),
+                        }
                 log_proof = log_by_run_pr[log_key]
-                if log_proof is None:
+                if log_proof.get("evidence_status") == "log_unavailable":
+                    candidate_evidence.append(copy.deepcopy(log_proof))
                     continue
                 for job in jobs_by_run[run_id]:
                     if job.get("name") != "Enroll for auto-merge":

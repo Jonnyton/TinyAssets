@@ -93,7 +93,10 @@ window, and bounded run-log proof of the PR, repository, enrollment command,
 and successful enrollment line; current-source uniqueness alone is
 insufficient. A PR head that advanced after enrollment SHALL remain separately
 bound in the current migration tuple and SHALL NOT erase otherwise exact
-historical enrollment evidence.
+historical enrollment evidence. If any otherwise eligible candidate run's log
+cannot be read or verified, the receipt SHALL bind a typed uncertainty to that
+captured run and preserve the enrollment as ambiguous; a failed read SHALL
+never be treated as evidence that the competing candidate was absent.
 
 The inventory reader SHALL expose structured repository reads rather than
 caller-supplied GitHub CLI arguments. REST reads SHALL explicitly select GET;
@@ -102,7 +105,7 @@ repository variables. Every read SHALL pin the public `github.com` host rather
 than inherit an ambient CLI host. Array-valued REST connections SHALL follow the exact
 GitHub `Link` header chain, validate every next URL remains on the same API
 origin/repository/endpoint/query scope, and bind per-page request, response,
-count, and terminal `rel="next"`-absence evidence into the receipt. Observed
+count, next-request chain, and terminal `rel="next"`-absence evidence into the receipt. Observed
 counts SHALL NOT be copied into a fictitious server total.
 
 Offline receipt verification SHALL verify schema, normalization, bindings, and

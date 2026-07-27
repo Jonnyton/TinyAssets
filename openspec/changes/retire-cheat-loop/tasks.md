@@ -154,7 +154,9 @@
   `Bot/github-actions/MDM6Qm90NDE4OTgyODI=` with historical
   Actions/repository evidence at `enabledAt`; current-source uniqueness is
   insufficient, and a later current PR head does not invalidate exact
-  enrollment-run/log evidence.
+  enrollment-run/log evidence. Bind any candidate log read/verification
+  failure as typed uncertainty and preserve ambiguity; never infer uniqueness
+  by dropping an unreadable competing run.
   Use structured explicit-GET REST reads and only the reviewed GraphQL query;
   receipt-bind Link-chain terminal evidence for array endpoints. Offline
   `plan` must reject attributed imports, and offline `verify` must identify
