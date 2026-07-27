@@ -140,34 +140,46 @@ including `/patch-loop`, and the Svelte build emitted the expected loop,
 patch-loop, and fine-print pages. React TypeScript passed. After residual
 cleanup, Svelte `npm run check` passed with zero errors and six existing
 warnings outside the retired-loop edits. A fresh 2026-07-26 Chrome browser
-sweep against local Next (`localhost:3000`) and Vite (`localhost:5173`)
-rendered all 11 affected routes in both the React production tree and Svelte
-rollback tree with zero console errors or warnings and zero active
-retired-website-token matches. Both `/loop` `Refresh MCP` controls returned
-human-readable explicit empty states without raw placeholders or uptime
-substitution. Both `/patch-loop` routes rendered static user-owned workflow
-landings with real `/patterns` and `/commons` links and no privileged
-automation promise. Active-source scans found zero retired
-`community_change_context`, community-loop/status/watch, bug-investigation,
-auto-fix/ship, self-patching, automatic-pickup, or label-fallback identifiers.
-Independent reviewers approved the React, Svelte, and automation/deployment
-diffs after five residual wording/provenance findings were corrected.
+sweep against local Next dev (`localhost:3000`) and Vite dev
+(`localhost:5173`) rendered 11 affected routes in both the React production
+source tree and Svelte rollback tree with zero console errors or warnings.
+Both `/loop` `Refresh MCP` controls returned human-readable explicit empty
+states without raw placeholders or uptime substitution. Both `/patch-loop`
+routes rendered static user-owned workflow landings with real `/patterns` and
+`/commons` links and no privileged automation promise. Narrow active-source
+identifier scans found zero retired `community_change_context`,
+community-loop/status/watch, bug-investigation, auto-fix/ship, self-patching,
+automatic-pickup, or label-fallback identifiers. They did not prove
+content-level absence: `/goals` in both built artifacts still renders the
+retired patch-loop goal narrative and `patch-loop` tag from
+`mcp-snapshot.json`. Production-exact previews and the shared-component blast
+radius were then tested separately: the React static preview at
+`localhost:4322` rendered all 25 generated `index.html` routes, and the Svelte
+Vite production preview at `localhost:4173` rendered all 25 generated HTML
+routes. Both all-route sweeps had zero browser warnings/errors and reproduced
+the retired `/goals` snapshot content only on that route. Independent reviewers
+approved the React, Svelte, and automation/deployment diffs after five residual
+wording/provenance findings were corrected.
 
 Read-only GitHub preflight found the latest 30 announcement-workflow runs all
-completed, with no queued or in-progress run. No workflow was disabled, no run
-was cancelled, no site was deployed, and no production/GitHub label or
-auto-merge state was mutated. Task 3.5 remains open for the separately claimed
-effector-comment neutralization and final pre-merge run-drain proof. On
-2026-07-26 Windows/Python 3.14.3,
+completed with failure, with no queued or in-progress run. No workflow was
+disabled, no run was cancelled, no site was deployed, and no production/GitHub
+label or auto-merge state was mutated. Task 3.5 remains open for the separately
+claimed effector-comment neutralization and final pre-merge run-drain proof.
+On 2026-07-26 Windows/Python 3.14.3,
 `python -m pytest tests/test_website_rename_surfaces.py
 tests/test_community_loop_watch.py
 tests/test_community_loop_watch_workflow.py -q` reported
 `8 passed, 1 failed`: the remaining failure is
 `test_alarm_sink_dispatches_only_stale_uptime_canary_workflow`, which still
 expects `createTinyAssetsDispatch` in
-`tests/test_community_loop_watch_workflow.py`. That broadly claimed test
-surface keeps task 5.2 open despite the completed build/browser proof. Task 5.3
-separately owns snapshot/soul regeneration and its absence proof.
+`tests/test_community_loop_watch_workflow.py`. A separate green
+`test_alarm_sink_can_dispatch_actions` assertion still requires
+`permissions.get("actions") == "write"`. These contradictory expectations and
+the retired workflow belong to task 4.2, now recorded as a pending exact-file
+STATUS lane behind active broad `tests/` claims; they do not block task 5.2.
+Task 5.2 remains open because the rendered snapshots still expose retired
+content. Task 5.3 owns the snapshot/soul source retirement and regeneration.
 
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
 into the stacked implementation branch without changing any reviewed site,
@@ -445,6 +457,12 @@ post-`file_bug` branch promise, and retired tags:
 
 They are regenerated from the clean source or removed with an unshipped mirror;
 checked-in generated data cannot serve as a compatibility backdoor.
+The current `snapshot-mcp.mjs` generator still invokes legacy `wiki`, `goals`,
+and `universe` handles that are absent from the canonical-seven live MCP
+surface, and it swallows those tool failures into null/empty output. Running it
+before source retirement and migration to supported canonical handles could
+produce a hollow false-green snapshot rather than proving retired content is
+gone.
 
 Generic evaluation code or explicit GitHub-effect authority may remain only
 where it has an independent owner and does not preserve an auto-ship action,

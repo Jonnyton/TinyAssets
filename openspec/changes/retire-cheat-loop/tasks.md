@@ -132,9 +132,9 @@
   `.github/workflows/auto-enroll-merge.yml`.
   **Current evidence (2026-07-26):** the workflow and announcement script are
   deleted on draft PR #1812, `post_x_update.py` is generic, and the latest 30
-  hosted runs are completed with zero active. Completion still requires the
-  separately claimed `validate_patch.py` comment neutralization plus one final
-  immediately-pre-merge run drain.
+  hosted runs all completed with failure and zero active. Completion still
+  requires the separately claimed `validate_patch.py` comment neutralization
+  plus one final immediately-pre-merge run drain.
 - [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 28
   exact retired definitions plus every fully paginated labelled issue/PR (open
   and closed) into a digest-bound receipt. Apply only after task 4.2 and every
@@ -174,6 +174,13 @@
   `contents:read`/`actions:read`/metadata and no actions/content/issues/PR
   write authority; isolate any `issues:write` in the independent alarm-sink
   consumer with no dispatch/repair authority.
+  **Current evidence (2026-07-26):** the workflow still carries the retired
+  `self_heal` input, `community-loop-red` label, and `actions:write`
+  permission. The focused suite has one red test that still expects
+  `createTinyAssetsDispatch`, while a separate green test asserts
+  `permissions.get("actions") == "write"`; both pin the retired authority.
+  The exact workflow/test slice is a pending STATUS lane until the active
+  broad `tests/` claims release.
 - [ ] 4.3 Verify the successor is read-only with respect to workflows, user
   tasks, queues, issues, wiki/repository content, and repairs; separately test
   that the independently owned incident sink consumes bounded evidence without
@@ -198,19 +205,26 @@
   print, tests, `community_change_context` caller, and build artifacts; prove
   absence of every retired website reference. Do not delete the production
   tree as a "legacy mirror."
-  **Current evidence (2026-07-26):** React and Svelte build, Chrome renders,
-  live refreshes, and active website-token scans pass. The focused suite is
-  `8 passed, 1 failed`; the remaining alarm-sink expectation is in
-  `tests/test_community_loop_watch_workflow.py`, currently owned by another
-  active broad-test lane, so this task remains open.
+  **Current evidence (2026-07-26):** React and Svelte production builds pass;
+  dev-server Chrome renders of 11 affected routes, live refreshes, and narrow
+  active-source identifier scans pass. However, `/goals` in both built sites
+  still renders a retired patch-loop narrative and `patch-loop` tag from the
+  checked-in MCP snapshot. Production-exact static previews subsequently
+  rendered every generated React `index.html` route (25) and every generated
+  Svelte HTML route (25) with zero browser warnings/errors, covering the
+  shared-component blast radius. The website-focused tests pass; the
+  alarm-sink failure belongs to task 4.2. This task remains open on task 5.3
+  and content-level absence proof.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
-  **Current dependency:** the live snapshot generator still reads retired
-  privileged-loop source data through legacy MCP tools. Regeneration before
-  source-data retirement and canonical-tool migration would re-import the
-  content; do not create a false-green filtered snapshot.
+  **Current dependency:** the snapshot generator calls legacy `wiki`, `goals`,
+  and `universe` handles that the canonical-seven live MCP surface no longer
+  advertises, then swallows tool failures into null/empty output. Regeneration
+  before source-data retirement and migration to supported canonical handles
+  could create a hollow false-green snapshot. Do not regenerate until both
+  dependencies are satisfied and the resulting content is proved.
 - [x] 5.4 Build/test the production React/Next site and retained Svelte rollback
   site; correct `deploy-site-react.yml` header, active runbook, and website
   skill prose that reverse their deployment ownership; prove platform uptime
