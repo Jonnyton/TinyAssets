@@ -130,6 +130,11 @@
   preserve `tinyassets/effectors/validate_patch.py` only after neutralizing
   retired product comments. Task 3.7 exclusively owns disabling and deleting
   `.github/workflows/auto-enroll-merge.yml`.
+  **Current evidence (2026-07-26):** the workflow and announcement script are
+  deleted on draft PR #1812, `post_x_update.py` is generic, and the latest 30
+  hosted runs are completed with zero active. Completion still requires the
+  separately claimed `validate_patch.py` comment neutralization plus one final
+  immediately-pre-merge run drain.
 - [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 28
   exact retired definitions plus every fully paginated labelled issue/PR (open
   and closed) into a digest-bound receipt. Apply only after task 4.2 and every
@@ -193,10 +198,19 @@
   print, tests, `community_change_context` caller, and build artifacts; prove
   absence of every retired website reference. Do not delete the production
   tree as a "legacy mirror."
+  **Current evidence (2026-07-26):** React and Svelte build, Chrome renders,
+  live refreshes, and active website-token scans pass. The focused suite is
+  `8 passed, 1 failed`; the remaining alarm-sink expectation is in
+  `tests/test_community_loop_watch_workflow.py`, currently owned by another
+  active broad-test lane, so this task remains open.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
+  **Current dependency:** the live snapshot generator still reads retired
+  privileged-loop source data through legacy MCP tools. Regeneration before
+  source-data retirement and canonical-tool migration would re-import the
+  content; do not create a false-green filtered snapshot.
 - [x] 5.4 Build/test the production React/Next site and retained Svelte rollback
   site; correct `deploy-site-react.yml` header, active runbook, and website
   skill prose that reverse their deployment ownership; prove platform uptime
