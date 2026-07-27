@@ -1,5 +1,6 @@
 ---
 incident_date: 2026-05-03
+record_status: historical-retired-system
 short_name: stuck-pending-after-bug-054
 severity: p1
 time_to_recovery_minutes: TBD

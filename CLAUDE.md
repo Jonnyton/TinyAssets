@@ -248,7 +248,7 @@ shape doesn't fit), follow the same primitives: fresh temp index, no
 pushing.
 
 **Spec reference:** incident log at
-`.agents/skills/loop-uptime-maintenance/incidents/2026-05-04-cowork-stale-index-regression.md`
+`docs/historical/loop-uptime-maintenance/2026-05-04-cowork-stale-index-regression.md`
 (720-file regression on 66e7c6a, recovered to 631bae9, root cause was
 `cp .git/index` pattern). Same kitchen-sink-diff failure mode that affects
 auto-change writers — both share the structural vulnerability of capturing

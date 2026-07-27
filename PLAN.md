@@ -470,7 +470,7 @@ _Last audited: 2026-05-19_
 
 **Purpose:** The complete system — MCP surface + node execution + collaboration surfaces + paid-market + moderation — stays up 24/7 with zero hosts online. The host machine being asleep for 24h must not extend any outage window past the pager's escalation ladder.
 
-**In scope:** Self-heal layers, alarm ladder, DR drill, canonical canary, loop-uptime-maintenance escape.
+**In scope:** Self-heal layers, alarm ladder, DR drill, canonical canary, and provenance-labelled generic observation.
 
 **Out of scope:** Application-level bugs (other modules); deploy mechanics (Distribution).
 
@@ -479,7 +479,7 @@ _Last audited: 2026-05-19_
 - *Three self-heal layers, each catches a different class.* 1. Container restart (`systemd Restart=always` + `tinyassets-watchdog.timer`) — transient crashes, OOM recovery, hung-but-not-crashed. 2. GHA `p0-outage-triage.yml` auto-repair — six classes covered (OOM, disk-full, image-pull, watchdog-hot-loop, tunnel-token-manual, env-unreadable). 3. Deploy-side invariants — `deploy-prod.yml` asserts `/etc/tinyassets/env` is readable by the daemon user post-mutation and post-restart, then publishes `/data/release-state.json` for live status reconciliation.
 - *Alarm ladder, host-phone-independent.* Pushover paging from GHA `alarm-sink` at threshold-cross (2 consecutive reds ≈ 10 min outage), `priority=2` + vibrate-tier initial, escalating re-page at 1h / 4h / 24h if `p0-outage` issue stays open with no human comment. Probe-without-paging is not an alarm path (2026-04-21 lesson).
 - *DR validated end-to-end.* Weekly drill provisions a fresh VM, bootstraps, restores `/etc/tinyassets/env` + data volume from offsite, starts daemon, asserts canary-green within SLA. Decoupled restore + start, exit-code propagation, SSH-tunnel probe; no host keystrokes bridge any step.
-- *Loop-uptime-maintenance is the authorized escape.* Skill at `.agents/skills/loop-uptime-maintenance/SKILL.md` handles failure classes not yet graduated to layers 1-3. Entry condition: the loop is too broken to self-heal via its own loop. Success metric: usage trends to zero — every incident graduates a failure class out of the skill into layers 1-3.
+- *Uptime response uses ordinary primitives, never a privileged escape path.* Observation, alarms, diagnosis, approval, and remediation remain user-buildable and remixable workflow designs. Historical incidents may inform new designs but authorize no hidden task dispatch, repair, filing, merge, or deployment behavior.
 - *Public-surface canary is required evidence, not final proof.* MCP/chatbot-facing changes also require live Claude.ai `ui-test` for final acceptance (Hard Rule #11).
 
 **Substrate:** `deploy/`, `.github/workflows/uptime-canary.yml`, `.github/workflows/p0-outage-triage.yml`, `.github/workflows/deploy-prod.yml`, `.github/workflows/dr-drill.yml`, `scripts/uptime_canary.py`, `scripts/mcp_public_canary.py`. Acceptance probe catalog: `docs/ops/acceptance-probe-catalog.md`.

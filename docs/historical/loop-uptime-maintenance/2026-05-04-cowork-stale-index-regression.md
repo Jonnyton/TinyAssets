@@ -1,5 +1,8 @@
 # Incident — Cowork stale-index regression on 66e7c6a
 
+> Historical record from the retired privileged loop; not a current skill or
+> operator instruction.
+
 Filed by Cowork-busyclever, 2026-05-04 ~00:35Z.
 Skill: `.agents/skills/loop-uptime-maintenance/SKILL.md` (entry condition: substrate broken via own action; loop-side dispatcher healthy throughout but main-branch trees broke).
 
