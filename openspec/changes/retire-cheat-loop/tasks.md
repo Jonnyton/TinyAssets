@@ -392,6 +392,14 @@
   and ticket parameter names remained open-ended. The current repair removes
   the blacklist and requires a bare public MCP endpoint with no query or
   fragment data.
+  Exact source head `60e29c80f8491792efb9d68c54dcf346284cefa0`
+  subsequently received APPROVE from independent general, security, and
+  public-truth Codex reviews plus Claude Opus 5 opposite-provider review.
+  Opus independently reran every cited gate and directly probed 43 endpoint
+  inputs. Its two non-defect accuracy notes preserve the intended provider
+  boundary: empty `?` or `#` delimiters carry no query/fragment data, and an
+  operator-selected bare HTTPS provider remains allowed rather than pinning
+  TinyAssets as the compute or API host.
   The full Node suite passes 81/81 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production
@@ -401,10 +409,9 @@
   left the then-current curated mirrors byte-identical at
   `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
   That live proof is historical and does not authorize regenerating the new
-  fail-closed mirrors. This is implementation evidence, not final approval:
-  fresh exact-head Codex
-  and Claude Opus 5 review, server-side privacy enforcement, source-data
-  retirement, rendered live proof, and post-fix clean-use evidence remain.
+  fail-closed mirrors. This is reviewed implementation evidence, not final
+  live acceptance: server-side privacy enforcement, source-data retirement,
+  rendered live proof, and post-fix clean-use evidence remain.
   The probe also proved two remaining source-data blockers: public page
   `pages/concepts/community-patch-loop-as-project-steward.md` still presents
   the retired loop as future platform guidance, and public universe

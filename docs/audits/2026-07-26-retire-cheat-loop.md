@@ -812,6 +812,12 @@ verdict without pretending the unsafe server projections are public:
   blacklist cannot establish anonymity because standard OAuth, OIDC, SAML,
   cloud, and ticket fields remained open-ended; the current repair removes
   that blacklist and requires a bare endpoint with no query or fragment data;
+- exact source head `60e29c80f8491792efb9d68c54dcf346284cefa0`
+  received APPROVE from independent general, security, and public-truth Codex
+  reviewers plus Claude Opus 5 opposite-provider review; Opus reran every
+  cited gate and directly probed 43 endpoint inputs. Empty `?`/`#` delimiters
+  carry no data, and operator-selected bare HTTPS providers remain allowed,
+  consistent with the provider-neutral BYOC/market boundary;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
@@ -824,10 +830,10 @@ verdict without pretending the unsafe server projections are public:
   curated snapshots byte-identical at SHA-256
   `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
 
-These are implementation and fail-closed proofs, not final acceptance.
-Server-side Goal/run/status/exact-page privacy, live source-data retirement,
-fresh exact-head Codex and Claude Opus approval, rendered connector/browser
-proof, and post-fix clean-use evidence remain release gates.
+These are reviewed implementation and fail-closed proofs, not final live
+acceptance. Server-side Goal/run/status/exact-page privacy, live source-data
+retirement, rendered connector/browser proof, and post-fix clean-use evidence
+remain release gates.
 
 ### Plugin payload
 
