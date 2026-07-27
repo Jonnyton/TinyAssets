@@ -1490,9 +1490,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-loop-souls
-- Lane state: claimed; task 5.3 source-only deletion wave
+- Lane state: published; task 5.3 source-only deletion wave approved
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-souls
-- STATUS/Issue/PR: stacked after draft PR #1815; no PR yet
+- STATUS/Issue/PR: draft PR #1818 stacked after draft PR #1815
 - PLAN refs: user-buildable/remixable automations; no platform-owned role defaults
 - Purpose: delete the seven shipped community-loop role souls without filtering user-authored workflows or claiming the blocked snapshot regeneration is complete
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-souls\_PURPOSE.md
@@ -1501,3 +1501,4 @@ Notes:
 - Ship/abandon: keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination and live-source projection are truthful
 - Update 2026-07-26: source-only deletion committed at `d311cf03`; Claude Opus 5 plus three independent exact-head reviewers APPROVE; 58/58 strict OpenSpec and 22/22 daemon-registry tests pass
 - Remaining proof: snapshots/source provenance and stored-role zero-active runtime state; source deletion is not production deregistration evidence
+- Update 2026-07-26: pushed as draft PR #1818; stacked order is #1812 → #1815 → #1818
