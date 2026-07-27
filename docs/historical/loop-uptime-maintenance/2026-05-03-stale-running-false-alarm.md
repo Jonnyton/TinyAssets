@@ -1,5 +1,6 @@
 ---
 incident_date: 2026-05-03
+record_status: historical-retired-system
 short_name: stale-running-false-alarm-canary
 severity: p2
 time_to_recovery_minutes: <5 (self-recovered)

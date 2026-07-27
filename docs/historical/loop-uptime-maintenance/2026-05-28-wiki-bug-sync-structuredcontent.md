@@ -1,5 +1,6 @@
 ---
 date: 2026-05-28
+record_status: historical-retired-system
 severity: P0
 status: pending-merge
 related_issue: https://github.com/Jonnyton/TinyAssets/issues/1118

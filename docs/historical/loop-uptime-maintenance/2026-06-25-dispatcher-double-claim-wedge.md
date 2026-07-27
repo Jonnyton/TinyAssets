@@ -1,5 +1,6 @@
 ---
 incident_date: 2026-06-25
+record_status: historical-retired-system
 short_name: dispatcher-double-claim-wedge
 severity: p1
 time_to_recovery_minutes: 30

@@ -1,5 +1,8 @@
 # Cheat log — substrate intervention discipline ledger
 
+> Historical ledger from the retired privileged-loop operating model. Do not
+> use it as current authorization, a task template, or an automation route.
+
 Per `docs/design-notes/2026-05-04-operating-model-and-four-agent-topology.md`. Append-only structured log of substrate interventions (cheats) by Cowork + Codex. Cheat-rate trends to zero as substrate matures = project success metric.
 
 Format per entry:

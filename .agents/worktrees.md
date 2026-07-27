@@ -1483,3 +1483,18 @@ Notes:
 - Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
 - Review gate: Claude Opus 5 APPROVE after two correction passes; no runtime/workflow changes
 - Ship/abandon: landed at `970c1d57`; no further release action
+
+## 2026-07-27 - restack privileged loop uptime-skill retirement
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-loop-uptime-skill
+- Lane state: task 6.2 restacked; independent exact-head review pending
+- Build worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-20260727
+- STATUS/Issue/PR: stacked draft PR #1815 against codex/retire-cheat-loop-safe-waves
+- PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
+- Purpose: delete the active loop-uptime escape-hatch skill and catalog routes while retaining incident records only as historical non-skill evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-20260727\_PURPOSE.md
+- Memory refs: approved parent head 287049e1; prior payload head 50192892
+- Review gate: skill sync/parity, active-surface scan, strict OpenSpec, independent exact-head review
+- Ship/abandon: stacked draft PR; do not merge before #1812 or reinterpret historical incidents as active instructions
+- Update 2026-07-27: canonical skill/catalog and PLAN escape-path claim restacked; seven historical records moved out of active agent surfaces

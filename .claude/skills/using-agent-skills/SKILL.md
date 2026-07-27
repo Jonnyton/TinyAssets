@@ -54,7 +54,6 @@ Task arrives
     |-- Committing / branching / worktrees / merge? -> git-workflow-and-versioning
     |-- CI gates / deploy / launch / rollout? -------> shipping-and-launch
     |-- Cloudflare / GoDaddy / DNS / domain ops? ----> infra-ops
-    |-- Loop cannot self-heal its own break? --------> loop-uptime-maintenance
     |-- Writing docs or rationale? ------------------> documentation-and-adrs
     |-- Create/update a skill? ----------------------> skill-authoring
     `-- Recurring agent failure / tune the team? ----> auto-iterate
@@ -131,6 +130,5 @@ code-review-and-quality`.
 | Ship | shipping-and-launch | CI gates, staged rollout, monitoring, rollback |
 | Ship | documentation-and-adrs | Record durable design context and rationale |
 | Ops | infra-ops | Cloudflare/GoDaddy DNS, domains, Workers, SSL |
-| Ops | loop-uptime-maintenance | Handle loop outages that can't self-heal via the loop |
 | Meta | skill-authoring | Create/update project skills correctly |
 | Meta | auto-iterate | Ratchet recurring failures into guards; tune the agent team |

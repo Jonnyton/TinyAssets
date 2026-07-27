@@ -234,6 +234,18 @@ the implementation content that the merge left byte-identical. The foldback
 imported the separate provider-secret-deposit OpenSpec only as `main` history
 and did not broaden this lane.
 
+Task 6.2 was implemented in a separate stack on 2026-07-26. The canonical
+`loop-uptime-maintenance` skill, template, and both active catalog routes were
+deleted; the skill synchronizer removed the complete Claude mirror. Its six
+incident records and the former cheat ledger moved out of active agent
+surfaces into `docs/historical/loop-uptime-maintenance/`, where directory and
+inline notices identify them as historical evidence from the retired system,
+not current automation or operator instruction. PLAN's authorized-escape
+design claim and CLAUDE's stale skill-tree pointer were also removed. A second
+skill sync was idempotent, the cross-provider drift guard passed, active
+`.agents` and `.claude` scans found no retired skill/escape-hatch instruction,
+and all 58 strict OpenSpec validations passed.
+
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
 `renamed=1, modified=2`, contained the renamed requirement, and replaced the
