@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import base64
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -31,6 +32,47 @@ def repo() -> dict:
     }
 
 
+def complete_connection(
+    *,
+    kind: str,
+    label_name: str,
+    count: int,
+    completion_basis: str,
+    pages: int = 1,
+) -> dict:
+    value = {
+        "kind": kind,
+        "label_name": label_name,
+        "pages": pages,
+        "count": count,
+        "total_count": (
+            None
+            if completion_basis == "github_link_header_chain_v1"
+            else count
+        ),
+        "complete": True,
+        "completion_basis": completion_basis,
+    }
+    if completion_basis == "github_link_header_chain_v1":
+        value["pagination"] = {
+            "mode": "github_link_header_chain_v1",
+            "page_receipts": [
+                {
+                    "ordinal": 0,
+                    "request_id": "fixture-request-id",
+                    "request_url_digest": mod.digest({"fixture": kind, "page": 0}),
+                    "response_body_digest": mod.digest(
+                        {"fixture": kind, "count": count}
+                    ),
+                    "item_count": count,
+                    "next_url_digest": None,
+                }
+            ],
+            "terminal": {"oracle": "rel_next_absent", "page_ordinal": 0},
+        }
+    return value
+
+
 def label_inventory() -> dict:
     definitions = [
         {
@@ -55,23 +97,19 @@ def label_inventory() -> dict:
             }
         ],
         "connections": [
-            {
-                "kind": "label_definitions",
-                "label_name": "",
-                "pages": 1,
-                "count": 28,
-                "total_count": 28,
-                "complete": True,
-            },
+            complete_connection(
+                kind="label_definitions",
+                label_name="",
+                count=28,
+                completion_basis="github_link_header_chain_v1",
+            ),
             *[
-            {
-                "kind": "retired_label_associations",
-                "label_name": name,
-                "pages": 1,
-                "count": 1 if name == "auto-bug" else 0,
-                "total_count": 1 if name == "auto-bug" else 0,
-                "complete": True,
-            }
+            complete_connection(
+                kind="retired_label_associations",
+                label_name=name,
+                count=1 if name == "auto-bug" else 0,
+                completion_basis="github_link_header_chain_v1",
+            )
             for name in reversed(mod.RETIRED_LABELS)
             ],
         ],
@@ -222,6 +260,20 @@ def trusted_workflow_blob_response(
     }
 
 
+def included_json_response(
+    rows: list[dict],
+    *,
+    request_id: str | None = "REQ_fixture",
+    link: str | None = None,
+) -> str:
+    headers = ["HTTP/2.0 200 OK", "content-type: application/json"]
+    if request_id is not None:
+        headers.append(f"x-github-request-id: {request_id}")
+    if link is not None:
+        headers.append(f"link: {link}")
+    return "\r\n".join(headers) + "\r\n\r\n" + json.dumps(rows)
+
+
 def complete_auto_receipt() -> tuple[dict, dict]:
     pr = auto_pr()
     after = copy.deepcopy(pr)
@@ -236,38 +288,30 @@ def complete_auto_receipt() -> tuple[dict, dict]:
     inventory = {
         "pull_requests": [pr],
         "connections": [
-            {
-                "kind": "open_pull_requests",
-                "label_name": "",
-                "pages": 1,
-                "count": 1,
-                "total_count": 1,
-                "complete": True,
-            },
-            {
-                "kind": "workflow_runs",
-                "label_name": "",
-                "pages": 1,
-                "count": 1,
-                "total_count": 1,
-                "complete": True,
-            },
-            {
-                "kind": "workflow_source_history",
-                "label_name": mod.AUTO_ENROLL_WORKFLOW_PATH,
-                "pages": 1,
-                "count": 1,
-                "total_count": 1,
-                "complete": True,
-            },
-            {
-                "kind": "workflow_jobs",
-                "label_name": "101",
-                "pages": 1,
-                "count": 1,
-                "total_count": 1,
-                "complete": True,
-            },
+            complete_connection(
+                kind="open_pull_requests",
+                label_name="",
+                count=1,
+                completion_basis="graphql_total_count",
+            ),
+            complete_connection(
+                kind="workflow_runs",
+                label_name="",
+                count=1,
+                completion_basis="reported_total_count",
+            ),
+            complete_connection(
+                kind="workflow_source_history",
+                label_name=mod.AUTO_ENROLL_WORKFLOW_PATH,
+                count=1,
+                completion_basis="github_link_header_chain_v1",
+            ),
+            complete_connection(
+                kind="workflow_jobs",
+                label_name="101",
+                count=1,
+                completion_basis="reported_total_count",
+            ),
         ],
         "workflow": {
             "id": mod.AUTO_ENROLL_WORKFLOW_ID,
@@ -403,14 +447,12 @@ def complete_two_action_receipt() -> tuple[dict, list[dict]]:
         }
     )
     inventory["connections"].append(
-        {
-            "kind": "workflow_jobs",
-            "label_name": "102",
-            "pages": 1,
-            "count": 1,
-            "total_count": 1,
-            "complete": True,
-        }
+        complete_connection(
+            kind="workflow_jobs",
+            label_name="102",
+            count=1,
+            completion_basis="reported_total_count",
+        )
     )
     inventory["planned_actions"] = [first, second]
     return (
@@ -1335,37 +1377,41 @@ class AttributionTests(unittest.TestCase):
                     }
                 raise AssertionError(endpoint)
 
-            def rest_pages(self, endpoint):
+            def rest_array_collection(self, endpoint, *, max_pages=1000):
                 self.history_endpoint = endpoint
-                return [
-                    [
-                        {
-                            "sha": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
-                            "commit": {
-                                "committer": {"date": "2026-07-22T00:38:24Z"}
-                            },
-                        }
-                    ]
+                rows = [
+                    {
+                        "sha": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+                        "commit": {
+                            "committer": {"date": "2026-07-22T00:38:24Z"}
+                        },
+                    }
                 ]
+                return rows, complete_connection(
+                    kind="workflow_source_history",
+                    label_name=mod.AUTO_ENROLL_WORKFLOW_PATH,
+                    count=1,
+                    completion_basis="github_link_header_chain_v1",
+                )
 
             def rest_collection(self, endpoint, *, list_key):
                 if list_key == "workflow_runs":
-                    return [run, ignored_run], {
-                        "pages": 1,
-                        "count": 2,
-                        "total_count": 2,
-                        "complete": True,
-                    }
+                    return [run, ignored_run], complete_connection(
+                        kind="workflow_runs",
+                        label_name="",
+                        count=2,
+                        completion_basis="reported_total_count",
+                    )
                 if list_key == "jobs":
                     self.job_endpoint = endpoint
                     if "/runs/101/" not in endpoint:
                         raise AssertionError(endpoint)
-                    return [job], {
-                        "pages": 1,
-                        "count": 1,
-                        "total_count": 1,
-                        "complete": True,
-                    }
+                    return [job], complete_connection(
+                        kind="workflow_jobs",
+                        label_name="101",
+                        count=1,
+                        completion_basis="reported_total_count",
+                    )
                 raise AssertionError((endpoint, list_key))
 
             def bytes(self, endpoint):
@@ -1375,14 +1421,12 @@ class AttributionTests(unittest.TestCase):
         inventory = {
             "pull_requests": [pr],
             "connections": [
-                {
-                    "kind": "open_pull_requests",
-                    "label_name": "",
-                    "pages": 1,
-                    "count": 1,
-                    "total_count": 1,
-                    "complete": True,
-                }
+                complete_connection(
+                    kind="open_pull_requests",
+                    label_name="",
+                    count=1,
+                    completion_basis="graphql_total_count",
+                )
             ],
             "workflow": {
                 "id": mod.AUTO_ENROLL_WORKFLOW_ID,
@@ -1430,7 +1474,46 @@ class AttributionTests(unittest.TestCase):
 
 
 class ReadOnlyClientTests(unittest.TestCase):
-    def test_client_has_no_mutator_and_rejects_mutating_options(self) -> None:
+    def test_client_exposes_only_structured_reads_and_rest_forces_get(self) -> None:
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(
+                args, 0, stdout=included_json_response([])
+            )
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        self.assertFalse(hasattr(client, "mutate"))
+        self.assertFalse(hasattr(client, "_json"))
+        self.assertFalse(hasattr(client, "_run"))
+        self.assertEqual([], client.rest("repos/Jonnyton/TinyAssets"))
+        self.assertEqual(
+            [
+                [
+                    "gh",
+                    "api",
+                    "--include",
+                    "--method",
+                    "GET",
+                    "repos/Jonnyton/TinyAssets",
+                ]
+            ],
+            calls,
+        )
+
+    def test_invalid_repositories_and_rest_endpoints_never_reach_runner(self) -> None:
+        for invalid_repo in (
+            "Jonnyton",
+            "Jonnyton/TinyAssets/extra",
+            "@owner/TinyAssets",
+            "Jonnyton/@repo",
+            "Jonny ton/TinyAssets",
+            "-Jonnyton/TinyAssets",
+        ):
+            with self.subTest(repo=invalid_repo), self.assertRaises(ValueError):
+                mod.ReadOnlyGitHub(invalid_repo)
+
         calls = []
 
         def runner(args, **kwargs):
@@ -1438,26 +1521,218 @@ class ReadOnlyClientTests(unittest.TestCase):
             return subprocess.CompletedProcess(args, 0, stdout="{}")
 
         client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
-        self.assertFalse(hasattr(client, "mutate"))
-        with self.assertRaises(mod.ApplyBlocked):
-            client._json(["-X", "DELETE", "repos/x/y"])
-        with self.assertRaises(mod.ApplyBlocked):
-            client._json(["--method=DELETE", "repos/x/y"])
-        with self.assertRaises(mod.ApplyBlocked):
-            client._json(["-XDELETE", "repos/x/y"])
-        with self.assertRaises(mod.ApplyBlocked):
-            client._json(["repos/x/y", "-f", "state=closed"])
-        with self.assertRaises(mod.ApplyBlocked):
-            client._json(["repos/x/y", "--field=state=closed"])
+        for endpoint in (
+            "-Ftitle=x",
+            "-ftitle=x",
+            "--field=title=x",
+            "https://api.github.com/repos/Jonnyton/TinyAssets",
+            "repos/foreign/repository/issues",
+            "orgs/Jonnyton",
+            "repos/Jonnyton/TinyAssets/issues -Ftitle=x",
+        ):
+            with self.subTest(endpoint=endpoint), self.assertRaises(mod.ApplyBlocked):
+                client.rest(endpoint)
         self.assertEqual([], calls)
 
-    def test_rest_pagination_requires_page_arrays(self) -> None:
+    def test_graphql_accepts_only_exact_query_and_plain_owner_name(self) -> None:
+        calls = []
+
         def runner(args, **kwargs):
-            return subprocess.CompletedProcess(args, 0, stdout='[{"not":"a page"}]')
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout="[]")
 
         client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
-        with self.assertRaises(mod.PlanError):
-            client.rest_pages("repos/Jonnyton/TinyAssets/labels?per_page=100")
+        self.assertEqual(
+            [],
+            client.graphql_pages(
+                mod.AUTO_MERGE_QUERY,
+                {"owner": "Jonnyton", "name": "TinyAssets"},
+            ),
+        )
+        self.assertEqual(1, len(calls))
+        self.assertNotIn("-F", calls[0])
+        self.assertIn(f"query={mod.AUTO_MERGE_QUERY}", calls[0])
+
+        rejected = (
+            (
+                mod.AUTO_MERGE_QUERY + "\n",
+                {"owner": "Jonnyton", "name": "TinyAssets"},
+            ),
+            (
+                mod.AUTO_MERGE_QUERY,
+                {"owner": "Jonnyton", "name": "TinyAssets", "query": "@payload.graphql"},
+            ),
+            (mod.AUTO_MERGE_QUERY, {"owner": "@payload", "name": "TinyAssets"}),
+            (mod.AUTO_MERGE_QUERY, {"owner": "Jonnyton", "name": "@-"}),
+            (mod.AUTO_MERGE_QUERY, {"owner": "Jonnyton"}),
+        )
+        for query, fields in rejected:
+            with self.subTest(query=query, fields=fields), self.assertRaises(
+                mod.ApplyBlocked
+            ):
+                client.graphql_pages(query, fields)
+        self.assertEqual(1, len(calls))
+
+    def test_link_pagination_follows_next_after_short_page_and_proves_terminal(self) -> None:
+        endpoint = (
+            "repos/Jonnyton/TinyAssets/issues"
+            "?state=all&labels=auto-bug&per_page=100"
+        )
+        next_url = (
+            "https://api.github.com/repositories/42/issues"
+            "?state=all&labels=auto-bug&per_page=100&page=2"
+        )
+        responses = [
+            included_json_response(
+                [{"id": 1}],
+                request_id="REQ_page_1",
+                link=f'<{next_url}>; rel="next"',
+            ),
+            included_json_response([{"id": 2}], request_id="REQ_page_2"),
+        ]
+        calls = []
+
+        def runner(args, **kwargs):
+            calls.append(args)
+            return subprocess.CompletedProcess(args, 0, stdout=responses.pop(0))
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        client.bind_repo_database_id(42)
+        rows, connection = client.rest_array_collection(endpoint)
+        self.assertEqual([{"id": 1}, {"id": 2}], rows)
+        self.assertEqual(
+            [
+                ["gh", "api", "--include", "--method", "GET", endpoint],
+                ["gh", "api", "--include", "--method", "GET", next_url],
+            ],
+            calls,
+        )
+        self.assertEqual(2, connection["pages"])
+        self.assertEqual(2, connection["count"])
+        self.assertIsNone(connection["total_count"])
+        self.assertTrue(connection["complete"])
+        self.assertEqual(
+            "github_link_header_chain_v1", connection["completion_basis"]
+        )
+        pagination = connection["pagination"]
+        self.assertEqual("github_link_header_chain_v1", pagination["mode"])
+        self.assertEqual(
+            [0, 1],
+            [page["ordinal"] for page in pagination["page_receipts"]],
+        )
+        self.assertEqual(
+            [1, 1],
+            [page["item_count"] for page in pagination["page_receipts"]],
+        )
+        self.assertIsNotNone(
+            pagination["page_receipts"][0]["next_url_digest"]
+        )
+        self.assertIsNone(pagination["page_receipts"][1]["next_url_digest"])
+        self.assertEqual(
+            {"oracle": "rel_next_absent", "page_ordinal": 1},
+            pagination["terminal"],
+        )
+
+    def test_link_pagination_rejects_untrusted_or_incomplete_chains(self) -> None:
+        endpoint = (
+            "repos/Jonnyton/TinyAssets/issues"
+            "?state=all&labels=auto-bug&per_page=100"
+        )
+        valid_next = (
+            "https://api.github.com/repositories/42/issues"
+            "?state=all&labels=auto-bug&per_page=100&page=2"
+        )
+        cases = {
+            "missing_request_id": [
+                included_json_response([{"id": 1}], request_id=None)
+            ],
+            "malformed_link": [
+                included_json_response(
+                    [{"id": 1}], link="this is not an RFC 8288 link"
+                )
+            ],
+            "foreign_host": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://evil.invalid/repositories/42/issues'
+                        '?state=all&labels=auto-bug&per_page=100&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "foreign_repo": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/99/issues'
+                        '?state=all&labels=auto-bug&per_page=100&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "scope_change": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/42/issues'
+                        '?state=all&labels=other&per_page=100&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "loop": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/42/issues'
+                        '?state=all&labels=auto-bug&per_page=100>; rel="next"'
+                    ),
+                )
+            ],
+            "duplicate_item": [
+                included_json_response(
+                    [{"id": 1}], link=f'<{valid_next}>; rel="next"'
+                ),
+                included_json_response([{"id": 1}], request_id="REQ_page_2"),
+            ],
+        }
+        for name, configured_responses in cases.items():
+            responses = list(configured_responses)
+
+            def runner(args, **kwargs):
+                return subprocess.CompletedProcess(args, 0, stdout=responses.pop(0))
+
+            client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+            client.bind_repo_database_id(42)
+            with self.subTest(name=name), self.assertRaises(mod.RetirementError):
+                client.rest_array_collection(endpoint)
+
+    def test_link_pagination_rejects_a_chain_beyond_the_page_bound(self) -> None:
+        endpoint = "repos/Jonnyton/TinyAssets/labels?per_page=100"
+        page_2 = (
+            "https://api.github.com/repositories/42/labels"
+            "?per_page=100&page=2"
+        )
+        page_3 = (
+            "https://api.github.com/repositories/42/labels"
+            "?per_page=100&page=3"
+        )
+        responses = [
+            included_json_response(
+                [{"id": 1}], link=f'<{page_2}>; rel="next"'
+            ),
+            included_json_response(
+                [{"id": 2}],
+                request_id="REQ_page_2",
+                link=f'<{page_3}>; rel="next"',
+            ),
+        ]
+
+        def runner(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout=responses.pop(0))
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        client.bind_repo_database_id(42)
+        with self.assertRaises(mod.RetirementError):
+            client.rest_array_collection(endpoint, max_pages=2)
 
     def test_rest_collection_rejects_truncated_object_pages(self) -> None:
         def runner(args, **kwargs):
@@ -1489,6 +1764,9 @@ class ReadOnlyClientTests(unittest.TestCase):
 
         class MalformedGraphQLClient:
             repo = "Jonnyton/TinyAssets"
+
+            def bind_repo_database_id(self, database_id):
+                self.database_id = database_id
 
             def rest(self, endpoint):
                 return {
@@ -1533,6 +1811,9 @@ class ReadOnlyClientTests(unittest.TestCase):
         class FakeClient:
             repo = "Jonnyton/TinyAssets"
 
+            def bind_repo_database_id(self, database_id):
+                self.database_id = database_id
+
             def rest(self, endpoint):
                 if endpoint.endswith(str(mod.AUTO_ENROLL_WORKFLOW_ID)):
                     return {
@@ -1575,6 +1856,54 @@ class ReadOnlyClientTests(unittest.TestCase):
         with self.assertRaises(mod.RetirementError) as failed:
             mod.collect_auto_merge_inventory(ErrorClient())
         self.assertNotIn("remote details", str(failed.exception))
+
+
+class CliTests(unittest.TestCase):
+    def test_offline_plan_rejects_attribution_bearing_auto_merge_inventory(self) -> None:
+        value, _ = complete_auto_receipt()
+        inventory = copy.deepcopy(value["plan"]["inventory"])
+        inventory["apply_complete"] = False
+        inventory["planned_actions"] = []
+        inventory["workflow"]["state"] = "active"
+        inventory["quiescence"] = None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo_path = root / "repo.json"
+            inventory_path = root / "inventory.json"
+            output_path = root / "receipt.json"
+            repo_path.write_text(json.dumps(repo()), encoding="utf-8")
+            inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+            with self.assertRaises(mod.PlanError):
+                mod.main(
+                    [
+                        "plan",
+                        "--operation",
+                        mod.AUTO_MERGE_OPERATION,
+                        "--repo-json",
+                        str(repo_path),
+                        "--inventory-json",
+                        str(inventory_path),
+                        "--source-revision",
+                        "abc123",
+                        "--out",
+                        str(output_path),
+                    ]
+                )
+            self.assertFalse(output_path.exists())
+
+    def test_verify_reports_integrity_without_claiming_external_evidence(self) -> None:
+        value, _ = complete_auto_receipt()
+        with tempfile.TemporaryDirectory() as tmp:
+            receipt_path = Path(tmp) / "receipt.json"
+            receipt_path.write_text(json.dumps(value), encoding="utf-8")
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = mod.main(["verify", str(receipt_path)])
+        self.assertEqual(0, result)
+        response = json.loads(output.getvalue())
+        self.assertTrue(response["integrity_valid"])
+        self.assertFalse(response["external_evidence_verified"])
+        self.assertEqual(value["receipt_digest"], response["receipt_digest"])
 
 
 if __name__ == "__main__":

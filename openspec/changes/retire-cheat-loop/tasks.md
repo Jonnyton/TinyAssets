@@ -132,7 +132,9 @@
   `.github/workflows/auto-enroll-merge.yml`.
 - [ ] 3.6 Add a dry-run/apply GitHub-label retirement migrator. Snapshot the 28
   exact retired definitions plus every fully paginated labelled issue/PR (open
-  and closed) into a digest-bound receipt. Apply only after task 4.2 and every
+  and closed) into a digest-bound receipt. Array inventory must receipt the
+  exact GitHub Link-header chain and terminal absence of `rel="next"`; never
+  synthesize a server total from the observed count. Apply only after task 4.2 and every
   other retired-label producer are disabled/removed and queued/in-progress
   runs are drained; record that quiescence. Strip retired labels from open
   items without closing or rewriting them; publish one idempotent
@@ -153,6 +155,10 @@
   Actions/repository evidence at `enabledAt`; current-source uniqueness is
   insufficient, and a later current PR head does not invalidate exact
   enrollment-run/log evidence.
+  Use structured explicit-GET REST reads and only the reviewed GraphQL query;
+  receipt-bind Link-chain terminal evidence for array endpoints. Offline
+  `plan` must reject attributed imports, and offline `verify` must identify
+  itself as integrity-only rather than re-verifying GitHub provenance.
   Persist each per-PR intent before its exact tuple pre-read, skip changes,
   disable attributed enrollment, persist post-read outcome, and reconcile
   already-disabled planned tuples on restart. Preserve user/maintainer

@@ -15,14 +15,15 @@ Apply is blocked. As of 2026-07-27, read-only production inventory found:
 - 98 open pull requests, including 21 with auto-merge requests; and
 - workflow database ID `317815472` (`auto-enroll-merge.yml`) still active.
 
-The 2026-07-27 strict attribution receipt exhaustively captured 832 workflow
+The 2026-07-27 live attribution capture observed 832 workflow
 runs, 21 complete job connections, the one-entry reviewed default-branch
 source history, and one exact run/job/step/log proof for each of the 21
 enrollments. All 21 classify `attributed`; none classify explicit or ambiguous.
-The verified inventory-only receipt digest is
+The superseded pre-Link-proof inventory-only receipt digest was
 `sha256:ff4a1481c4d27e478204b94ce094ff965560aaaaa1f9c91cd279f5a8a1562406`.
-This is historical proof, not mutation authority: the workflow remains active
-and `apply_complete=false`.
+A fresh receipt must additionally bind the terminal GitHub Link-header
+evidence introduced by the Opus 5 review. This remains historical capture, not
+mutation authority: the workflow is active and `apply_complete=false`.
 
 Closed items remain untouched as history. Generic labels and explicit
 user/maintainer auto-merge requests are preserved.
@@ -37,13 +38,19 @@ inventory drained before label apply.
 ## Safety model
 
 `scripts/retire_cheat_loop_github_state.py` has a read-only command-line
-surface. Its GitHub reader type exposes no mutation method and rejects
-mutating HTTP options and GraphQL mutations. It can produce and verify RFC
-8785/JCS receipts. There is deliberately no live GitHub mutator in this
+surface. Its GitHub reader exposes structured operations instead of arbitrary
+arguments: REST calls always synthesize explicit GET requests, and GraphQL
+accepts only the reviewed query with exact plain repository variables. It can
+produce RFC 8785/JCS receipts. Offline `verify` checks schema, normalization,
+bindings, and digest integrity; it explicitly does not re-verify external
+GitHub provenance. There is deliberately no live GitHub mutator in this
 increment.
 
-Every plan binds the repository node identity, source revision, complete
-paginated inventory, operation, and plan digest. The apply key is derived from
+Every live plan binds the repository node identity, source revision,
+terminal-proven paginated inventory, operation, and plan digest. Array-valued
+REST reads receipt each GitHub Link-header hop and the terminal absence of
+`rel="next"`; they never copy an observed count into a fictitious server
+total. The apply key is derived from
 that body. A dedicated SQLite journal uses WAL, `synchronous=FULL`,
 `busy_timeout`, and `BEGIN IMMEDIATE`. Immutable per-target intent is committed
 before an exact remote pre-read. Drift is held for replanning; the engine never
@@ -76,9 +83,10 @@ python scripts/retire_cheat_loop_github_state.py inventory `
 ```
 
 The label reader uses the repository issues endpoint once per exact label,
-with `state=all`, `per_page=100`, `--paginate`, and `--slurp`. GitHub Search is
-not used, so its 1,000-result cap cannot truncate the receipt. The resulting
-page arrays are flattened only after their structure is validated.
+with `state=all` and `per_page=100`. It follows each exact `rel="next"` URL,
+validates API origin, repository, endpoint, query scope, order, uniqueness, and
+the bounded terminal page, and receipts per-page request/response digests.
+GitHub Search is not used, so its 1,000-result cap cannot truncate the receipt.
 
 The auto-merge reader fully pages open pull requests and records the exact PR
 identity, current head, repositories, draft/state tuple, and full
@@ -153,16 +161,16 @@ or ambiguous open enrollments.
 
 ## Obligations before a live mutator
 
-The 2026-07-26 Codex independent gate and Claude Opus 5 opposite-provider
-review approve this increment only as read-only inventory infrastructure. A
-later live-adapter change must close these review findings before it can apply:
+The 2026-07-27 Claude Opus 5 opposite-provider review required three
+inventory-truthfulness corrections: structured read-only request construction,
+terminal Link-chain receipts, and explicit separation of offline integrity
+verification from external provenance. A later live-adapter change must still
+close these findings before it can apply:
 
-1. Capture authoritative terminal evidence for each REST label connection
-   instead of treating `gh --paginate` completion as a total-count oracle.
-2. Re-fetch and match the exact source/run/job/step/log identities and archive
+1. Re-fetch and match the exact source/run/job/step/log identities and archive
    digests in every future live adapter's immediately fresh per-action proof;
    the inventory receipt alone never authorizes mutation.
-3. Move the focused suite into the normal `tests/` collection after the active
+2. Move the focused suite into the normal `tests/` collection after the active
    broad test-file claims release.
 
 The earlier recovery, executor fencing, row-count, per-action freshness, and
@@ -181,6 +189,11 @@ python scripts/retire_cheat_loop_github_state_test.py
 python scripts/retire_cheat_loop_github_state.py verify `
   output/github-label-retirement-plan.json
 ```
+
+Successful offline verification reports `integrity_valid=true` and
+`external_evidence_verified=false`. Attribution-bearing auto-merge receipts
+can only be produced by live `inventory --with-attribution`; offline `plan`
+rejects imported attribution evidence.
 
 Receipt JSON and journal errors exclude credentials, authorization headers, raw
 GraphQL bodies, and log output. Any 401, 403, 429, 5xx, secondary-rate-limit,

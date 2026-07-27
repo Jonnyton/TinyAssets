@@ -27,7 +27,7 @@ import subprocess
 import sys
 import tempfile
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlsplit
 import uuid
 import zipfile
 
@@ -55,6 +55,7 @@ AUTO_ENROLL_EXACT_COMMAND = 'gh pr merge "$PR" --repo "$REPO" --auto --squash'
 MAX_LOG_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_LOG_UNCOMPRESSED_BYTES = 25 * 1024 * 1024
 MAX_LOG_ENTRIES = 1_000
+MAX_REST_PAGES = 1_000
 
 RETIRED_LABELS = (
     "auto-bug",
@@ -141,6 +142,13 @@ def digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
 
 
+def _is_sha256_digest(value: Any) -> bool:
+    return bool(
+        isinstance(value, str)
+        and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+    )
+
+
 def _without(mapping: Mapping[str, Any], *keys: str) -> dict[str, Any]:
     result = copy.deepcopy(dict(mapping))
     for key in keys:
@@ -185,13 +193,70 @@ def _validate_complete_connections(
         count = connection.get("count")
         total = connection.get("total_count")
         pages = connection.get("pages")
-        if not all(
-            _is_integer(value) and value >= 0 for value in (count, total, pages)
-        ):
+        if not all(_is_integer(value) and value >= 0 for value in (count, pages)):
             raise PlanError(
-                "connection count, total_count, and pages must be non-negative integers"
+                "connection count and pages must be non-negative integers"
             )
-        if count != total:
+        completion_basis = connection.get("completion_basis")
+        if completion_basis == "github_link_header_chain_v1":
+            if total is not None:
+                raise PlanError(
+                    "Link-paginated array connections cannot invent a server total"
+                )
+            pagination = connection.get("pagination")
+            page_receipts = (
+                pagination.get("page_receipts")
+                if isinstance(pagination, Mapping)
+                else None
+            )
+            terminal = (
+                pagination.get("terminal")
+                if isinstance(pagination, Mapping)
+                else None
+            )
+            if (
+                not isinstance(page_receipts, list)
+                or len(page_receipts) != pages
+                or not isinstance(terminal, Mapping)
+                or terminal.get("oracle") != "rel_next_absent"
+                or terminal.get("page_ordinal") != pages - 1
+            ):
+                raise PlanError("Link pagination lacks exact terminal evidence")
+            observed = 0
+            for ordinal, page in enumerate(page_receipts):
+                if (
+                    not isinstance(page, Mapping)
+                    or page.get("ordinal") != ordinal
+                    or not _is_integer(page.get("item_count"))
+                    or page["item_count"] < 0
+                    or not isinstance(page.get("request_id"), str)
+                    or not page["request_id"]
+                    or not _is_sha256_digest(page.get("request_url_digest"))
+                    or not _is_sha256_digest(page.get("response_body_digest"))
+                    or (
+                        ordinal < pages - 1
+                        and not _is_sha256_digest(page.get("next_url_digest"))
+                    )
+                    or (
+                        ordinal == pages - 1
+                        and page.get("next_url_digest") is not None
+                    )
+                ):
+                    raise PlanError("Link pagination page receipt is malformed")
+                observed += int(page["item_count"])
+            if observed != count:
+                raise PlanError("Link pagination count does not match its page receipts")
+        elif completion_basis in {
+            "reported_total_count",
+            "graphql_total_count",
+        }:
+            if not _is_integer(total) or total < 0:
+                raise PlanError(
+                    "server-counted connection total must be a non-negative integer"
+                )
+        else:
+            raise PlanError("paginated connection lacks a recognized completion basis")
+        if total is not None and count != total:
             raise PlanError(
                 f"paginated connection count mismatch: observed {count}, expected {total}"
             )
@@ -803,6 +868,23 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
     }
 
 
+def _validate_auto_merge_repository_binding(
+    inventory: Mapping[str, Any], repo: Mapping[str, Any]
+) -> None:
+    expected = {
+        "id": repo["node_id"],
+        "nameWithOwner": repo["name_with_owner"],
+    }
+    for pull_request in inventory.get("pull_requests", []):
+        if any(
+            pull_request.get(field) != expected
+            for field in ("repository", "base_repository", "head_repository")
+        ):
+            raise PlanError(
+                "auto-merge pull request repository tuple is not receipt-bound"
+            )
+
+
 def build_receipt(
     *,
     operation: str,
@@ -822,6 +904,8 @@ def build_receipt(
         if operation == LABEL_OPERATION
         else _normalize_auto_merge_inventory(inventory)
     )
+    if operation == AUTO_MERGE_OPERATION:
+        _validate_auto_merge_repository_binding(normalized_inventory, normalized_repo)
     plan = {
         "operation": operation,
         "repo": normalized_repo,
@@ -865,6 +949,8 @@ def verify_receipt(receipt: Mapping[str, Any]) -> None:
         if operation == LABEL_OPERATION
         else _normalize_auto_merge_inventory(plan.get("inventory", {}))
     )
+    if operation == AUTO_MERGE_OPERATION:
+        _validate_auto_merge_repository_binding(normalized_inventory, repo)
     expected_plan = {
         "operation": operation,
         "repo": repo,
@@ -1601,65 +1687,155 @@ def classify_auto_merge(
 
 
 class ReadOnlyGitHub:
-    """Read-only ``gh api`` adapter.  No mutating method exists."""
+    """Structured read-only ``gh api`` adapter.  No caller supplies argv."""
 
     def __init__(
         self,
         repo: str,
         runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     ):
-        if repo.count("/") != 1:
+        if not re.fullmatch(
+            r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9][A-Za-z0-9_.-]*",
+            repo,
+        ):
             raise ValueError("repo must be OWNER/NAME")
         self.repo = repo
         self._runner = runner
+        self._repo_database_id: int | None = None
 
-    def _json(self, args: Sequence[str]) -> Any:
-        is_graphql_query = bool(args) and args[0] == "graphql"
-        if any(
-            arg == "-X"
-            or arg.startswith("-X")
-            or arg == "--method"
-            or arg.startswith("--method=")
-            or arg == "--input"
-            or arg.startswith("--input=")
-            for arg in args
+    def bind_repo_database_id(self, database_id: Any) -> None:
+        if not _is_integer(database_id) or database_id <= 0:
+            raise PlanError("repository database identity is invalid")
+        if self._repo_database_id not in (None, database_id):
+            raise PlanError("repository database identity changed during inventory")
+        self._repo_database_id = int(database_id)
+
+    def _validate_repo_endpoint(self, endpoint: str) -> str:
+        if (
+            not isinstance(endpoint, str)
+            or not endpoint
+            or any(character.isspace() for character in endpoint)
+            or "\\" in endpoint
+            or endpoint.startswith(("-", "@", "/", "http:", "https:"))
         ):
-            raise ApplyBlocked("read-only GitHub client rejected a mutating option")
-        if not is_graphql_query and any(
-            arg in {"-f", "-F", "--field", "--raw-field"}
-            or arg.startswith("--field=")
-            or arg.startswith("--raw-field=")
-            for arg in args
+            raise ApplyBlocked("read-only GitHub client rejected an unsafe endpoint")
+        path = urlsplit(endpoint).path
+        root = f"repos/{self.repo}"
+        if path != root and not path.startswith(root + "/"):
+            raise ApplyBlocked("read-only GitHub client rejected a cross-repository endpoint")
+        if any(part in {"", ".", ".."} for part in path.split("/")):
+            raise ApplyBlocked("read-only GitHub client rejected an ambiguous endpoint")
+        return endpoint
+
+    def _parse_included_json(
+        self, completed: subprocess.CompletedProcess[Any]
+    ) -> tuple[Any, dict[str, str]]:
+        stdout = completed.stdout
+        if not isinstance(stdout, str):
+            raise RetirementError("GitHub read returned non-text output")
+        parts = re.split(r"\r?\n\r?\n", stdout, maxsplit=1)
+        if len(parts) != 2:
+            raise RetirementError("GitHub read omitted response headers")
+        header_text, body_text = parts
+        header_lines = header_text.splitlines()
+        if not header_lines or not re.fullmatch(
+            r"HTTP/\S+\s+2\d\d(?:\s+.*)?", header_lines[0], flags=re.IGNORECASE
         ):
-            raise ApplyBlocked(
-                "read-only REST client rejected fields that make gh api use POST"
-            )
-        if any("mutation" in arg.lower() for arg in args):
-            raise ApplyBlocked("read-only GitHub client rejected a GraphQL mutation")
+            raise RetirementError("GitHub read returned a non-success response")
+        headers: dict[str, str] = {}
+        for line in header_lines[1:]:
+            if ":" not in line:
+                raise RetirementError("GitHub read returned malformed response headers")
+            name, value = line.split(":", 1)
+            key = name.strip().lower()
+            if not key or key in headers:
+                raise RetirementError("GitHub read returned duplicate response headers")
+            headers[key] = value.strip()
+        try:
+            return json.loads(body_text), headers
+        except (json.JSONDecodeError, TypeError):
+            raise RetirementError("GitHub read returned invalid JSON") from None
+
+    def _rest_page(
+        self, endpoint: str, *, linked: bool = False
+    ) -> tuple[Any, dict[str, str]]:
+        if not linked:
+            endpoint = self._validate_repo_endpoint(endpoint)
         try:
             completed = self._runner(
-                ["gh", "api", *args],
+                ["gh", "api", "--include", "--method", "GET", endpoint],
                 check=True,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
             )
-            return json.loads(completed.stdout)
         except subprocess.CalledProcessError as exc:
             raise RetirementError(
                 f"GitHub read failed with exit status {exc.returncode}"
             ) from None
-        except (json.JSONDecodeError, TypeError):
-            raise RetirementError("GitHub read returned invalid JSON") from None
+        except OSError:
+            raise RetirementError("GitHub read process was unavailable") from None
+        return self._parse_included_json(completed)
+
+    @staticmethod
+    def _next_link(link_header: str | None) -> str | None:
+        if link_header is None:
+            return None
+        relationships: dict[str, str] = {}
+        for part in link_header.split(","):
+            match = re.fullmatch(
+                r'\s*<([^>]+)>\s*;\s*rel="([^"]+)"\s*',
+                part,
+                flags=re.IGNORECASE,
+            )
+            if match is None:
+                raise PlanError("GitHub Link header is malformed")
+            url, relationship = match.groups()
+            relationship = relationship.lower()
+            if relationship in relationships:
+                raise PlanError("GitHub Link header repeats a relationship")
+            relationships[relationship] = url
+        return relationships.get("next")
+
+    def _validate_next_link(
+        self, initial_endpoint: str, next_url: str, *, expected_page: int
+    ) -> str:
+        if self._repo_database_id is None:
+            raise PlanError("repository database identity is not bound for pagination")
+        parsed = urlsplit(next_url)
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "api.github.com"
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.port is not None
+            or parsed.fragment
+        ):
+            raise PlanError("GitHub pagination left the trusted API origin")
+        initial = urlsplit(initial_endpoint)
+        prefix = f"repos/{self.repo}/"
+        if not initial.path.startswith(prefix):
+            raise PlanError("initial pagination endpoint is outside the repository")
+        suffix = initial.path[len(prefix) :]
+        if parsed.path != f"/repositories/{self._repo_database_id}/{suffix}":
+            raise PlanError("GitHub pagination changed repository or endpoint scope")
+        initial_pairs = sorted(parse_qsl(initial.query, keep_blank_values=True))
+        next_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        page_values = [value for key, value in next_pairs if key == "page"]
+        if page_values != [str(expected_page)]:
+            raise PlanError("GitHub pagination did not advance one exact page")
+        scoped_next = sorted((key, value) for key, value in next_pairs if key != "page")
+        if scoped_next != initial_pairs:
+            raise PlanError("GitHub pagination changed query scope")
+        return next_url
 
     def bytes(self, endpoint: str) -> bytes:
         """Read one binary REST response without exposing a mutation option."""
 
-        if endpoint.startswith("-"):
-            raise ApplyBlocked("read-only GitHub client rejected an option endpoint")
+        endpoint = self._validate_repo_endpoint(endpoint)
         try:
             completed = self._runner(
-                ["gh", "api", endpoint],
+                ["gh", "api", "--method", "GET", endpoint],
                 check=True,
                 capture_output=True,
                 text=False,
@@ -1674,20 +1850,114 @@ class ReadOnlyGitHub:
         return value
 
     def rest(self, endpoint: str) -> Any:
-        return self._json([endpoint])
+        value, _headers = self._rest_page(endpoint)
+        return value
 
-    def rest_pages(self, endpoint: str) -> list[list[dict[str, Any]]]:
-        result = self._json(["--paginate", "--slurp", endpoint])
-        if not isinstance(result, list) or any(not isinstance(page, list) for page in result):
-            raise PlanError("paginated REST response was not an array of page arrays")
-        return result
+    def rest_array_collection(
+        self, endpoint: str, *, max_pages: int = MAX_REST_PAGES
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Follow and receipt-bind one REST array's exact GitHub Link chain."""
+
+        initial_endpoint = self._validate_repo_endpoint(endpoint)
+        if not _is_integer(max_pages) or max_pages <= 0:
+            raise ValueError("max_pages must be a positive integer")
+        current_endpoint = initial_endpoint
+        linked = False
+        seen_urls: set[str] = set()
+        seen_identities: set[tuple[str, Any]] = set()
+        rows: list[dict[str, Any]] = []
+        page_receipts: list[dict[str, Any]] = []
+        while True:
+            if len(page_receipts) >= max_pages:
+                raise PlanError("GitHub pagination exceeded its page bound")
+            if current_endpoint in seen_urls:
+                raise PlanError("GitHub pagination contains a URL loop")
+            seen_urls.add(current_endpoint)
+            page, headers = self._rest_page(current_endpoint, linked=linked)
+            if not isinstance(page, list) or any(
+                not isinstance(row, Mapping) for row in page
+            ):
+                raise PlanError("paginated REST response page is not an object array")
+            for row in page:
+                if _is_integer(row.get("id")):
+                    identity = ("id", int(row["id"]))
+                elif isinstance(row.get("sha"), str) and row["sha"]:
+                    identity = ("sha", row["sha"])
+                elif isinstance(row.get("node_id"), str) and row["node_id"]:
+                    identity = ("node_id", row["node_id"])
+                else:
+                    raise PlanError("paginated REST row lacks a stable identity")
+                if identity in seen_identities:
+                    raise PlanError("paginated REST response contains duplicate identities")
+                seen_identities.add(identity)
+                rows.append(copy.deepcopy(dict(row)))
+            request_id = headers.get("x-github-request-id")
+            if not request_id:
+                raise PlanError("GitHub pagination response lacks a request identity")
+            next_url = self._next_link(headers.get("link"))
+            ordinal = len(page_receipts)
+            page_receipts.append(
+                {
+                    "ordinal": ordinal,
+                    "request_id": request_id,
+                    "request_url_digest": digest(
+                        {"method": "GET", "endpoint": current_endpoint}
+                    ),
+                    "response_body_digest": digest(page),
+                    "item_count": len(page),
+                    "next_url_digest": digest(next_url) if next_url else None,
+                }
+            )
+            if next_url is None:
+                break
+            current_endpoint = self._validate_next_link(
+                initial_endpoint,
+                next_url,
+                expected_page=ordinal + 2,
+            )
+            linked = True
+        return rows, {
+            "pages": len(page_receipts),
+            "count": len(rows),
+            "total_count": None,
+            "complete": True,
+            "completion_basis": "github_link_header_chain_v1",
+            "snapshot_consistency": "single_pass_live",
+            "mutation_authority": False,
+            "pagination": {
+                "mode": "github_link_header_chain_v1",
+                "page_receipts": page_receipts,
+                "terminal": {
+                    "oracle": "rel_next_absent",
+                    "page_ordinal": len(page_receipts) - 1,
+                },
+            },
+        }
 
     def rest_collection(
         self, endpoint: str, *, list_key: str
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Exhaust a REST object connection and validate its total count."""
 
-        result = self._json(["--paginate", "--slurp", endpoint])
+        endpoint = self._validate_repo_endpoint(endpoint)
+        try:
+            completed = self._runner(
+                ["gh", "api", "--method", "GET", "--paginate", "--slurp", endpoint],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RetirementError(
+                f"GitHub read failed with exit status {exc.returncode}"
+            ) from None
+        except OSError:
+            raise RetirementError("GitHub read process was unavailable") from None
+        try:
+            result = json.loads(completed.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RetirementError("GitHub read returned invalid JSON") from None
         if not isinstance(result, list) or not result:
             raise PlanError("paginated REST object response has no pages")
         rows: list[dict[str, Any]] = []
@@ -1723,15 +1993,49 @@ class ReadOnlyGitHub:
             "count": len(rows),
             "total_count": total,
             "complete": True,
+            "completion_basis": "reported_total_count",
         }
 
     def graphql_pages(
         self, query: str, fields: Mapping[str, str]
     ) -> list[dict[str, Any]]:
-        args = ["graphql", "--paginate", "--slurp", "-f", f"query={query}"]
-        for key, value in fields.items():
-            args.extend(["-F", f"{key}={value}"])
-        result = self._json(args)
+        owner, name = self.repo.split("/", 1)
+        if (
+            query != AUTO_MERGE_QUERY
+            or fields != {"owner": owner, "name": name}
+            or any(value.startswith("@") for value in fields.values())
+        ):
+            raise ApplyBlocked("read-only GraphQL client rejected an unreviewed query")
+        try:
+            completed = self._runner(
+                [
+                    "gh",
+                    "api",
+                    "graphql",
+                    "--paginate",
+                    "--slurp",
+                    "-f",
+                    f"query={AUTO_MERGE_QUERY}",
+                    "-f",
+                    f"owner={owner}",
+                    "-f",
+                    f"name={name}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RetirementError(
+                f"GitHub read failed with exit status {exc.returncode}"
+            ) from None
+        except OSError:
+            raise RetirementError("GitHub read process was unavailable") from None
+        try:
+            result = json.loads(completed.stdout)
+        except (json.JSONDecodeError, TypeError):
+            raise RetirementError("GitHub read returned invalid JSON") from None
         if not isinstance(result, list) or any(not isinstance(page, dict) for page in result):
             raise PlanError("paginated GraphQL response was not an array of pages")
         return result
@@ -1739,14 +2043,16 @@ class ReadOnlyGitHub:
 
 def collect_label_inventory(client: ReadOnlyGitHub) -> tuple[dict[str, Any], dict[str, Any]]:
     repo_raw = client.rest(f"repos/{client.repo}")
+    client.bind_repo_database_id(repo_raw["id"])
     repo = {
         "node_id": repo_raw["node_id"],
         "database_id": repo_raw["id"],
         "name_with_owner": repo_raw["full_name"],
         "default_branch": repo_raw["default_branch"],
     }
-    label_pages = client.rest_pages(f"repos/{client.repo}/labels?per_page=100")
-    all_definitions = [row for page in label_pages for row in page]
+    all_definitions, definition_connection = client.rest_array_collection(
+        f"repos/{client.repo}/labels?per_page=100"
+    )
     selected = {
         row["name"]: {
             "node_id": row["node_id"],
@@ -1764,25 +2070,18 @@ def collect_label_inventory(client: ReadOnlyGitHub) -> tuple[dict[str, Any], dic
         {
             "kind": "label_definitions",
             "label_name": "",
-            "pages": len(label_pages),
-            "count": len(all_definitions),
-            "total_count": len(all_definitions),
-            "complete": True,
+            **definition_connection,
         }
     ]
     for label_name in RETIRED_LABELS:
-        pages = client.rest_pages(
+        rows, association_connection = client.rest_array_collection(
             f"repos/{client.repo}/issues?state=all&labels={quote(label_name, safe='')}&per_page=100"
         )
-        rows = [row for page in pages for row in page]
         connections.append(
             {
                 "kind": "retired_label_associations",
                 "label_name": label_name,
-                "pages": len(pages),
-                "count": len(rows),
-                "total_count": len(rows),
-                "complete": True,
+                **association_connection,
             }
         )
         definition = selected.get(label_name)
@@ -1995,13 +2294,12 @@ def _normalized_workflow_run(raw: Mapping[str, Any]) -> dict[str, Any]:
 def collect_workflow_source_history(client: ReadOnlyGitHub) -> dict[str, Any]:
     """Bind the reviewed blob to complete default-branch path history."""
 
-    pages = client.rest_pages(
+    rows, connection = client.rest_array_collection(
         (
             f"repos/{client.repo}/commits?sha=main&path="
             f"{quote(AUTO_ENROLL_WORKFLOW_PATH, safe='')}&per_page=100"
         )
     )
-    rows = [row for page in pages for row in page]
     if any(not isinstance(row, Mapping) for row in rows):
         raise PlanError("workflow source history contains a malformed commit")
     commits = []
@@ -2049,10 +2347,7 @@ def collect_workflow_source_history(client: ReadOnlyGitHub) -> dict[str, Any]:
         "connection": {
             "kind": "workflow_source_history",
             "label_name": AUTO_ENROLL_WORKFLOW_PATH,
-            "pages": len(pages),
-            "count": len(commits),
-            "total_count": len(commits),
-            "complete": bool(pages) and len(pages[-1]) < 100,
+            **connection,
         },
     }
 
@@ -2265,6 +2560,7 @@ def collect_auto_merge_inventory(
     with_attribution: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     repo_raw = client.rest(f"repos/{client.repo}")
+    client.bind_repo_database_id(repo_raw["id"])
     repo = {
         "node_id": repo_raw["node_id"],
         "database_id": repo_raw["id"],
@@ -2369,6 +2665,7 @@ def collect_auto_merge_inventory(
                     "hasNextPage"
                 ]
                 is False,
+                "completion_basis": "graphql_total_count",
             }
         ],
         "workflow": {
@@ -2432,7 +2729,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     plan_parser.add_argument("--source-revision", required=True)
     plan_parser.add_argument("--out", type=Path, required=True)
 
-    verify_parser = sub.add_parser("verify", help="verify a receipt without mutation")
+    verify_parser = sub.add_parser(
+        "verify",
+        help="verify receipt integrity without re-verifying external GitHub evidence",
+    )
     verify_parser.add_argument("receipt", type=Path)
 
     args = parser.parse_args(argv)
@@ -2467,17 +2767,39 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 0
     if args.command == "plan":
+        captured_inventory = _load_json(args.inventory_json)
+        if args.operation == AUTO_MERGE_OPERATION and any(
+            captured_inventory.get(field)
+            for field in (
+                "attribution",
+                "source_history",
+                "workflow_jobs",
+            )
+        ):
+            raise PlanError(
+                "offline plan cannot mint auto-merge attribution; "
+                "use live inventory --with-attribution"
+            )
         receipt = build_receipt(
             operation=args.operation,
             repo=_load_json(args.repo_json),
             source_revision=args.source_revision,
-            inventory=_load_json(args.inventory_json),
+            inventory=captured_inventory,
         )
         atomically_write_json(args.out, receipt)
         return 0
     receipt = _load_json(args.receipt)
     verify_receipt(receipt)
-    print(json.dumps({"valid": True, "receipt_digest": receipt["receipt_digest"]}))
+    print(
+        json.dumps(
+            {
+                "integrity_valid": True,
+                "external_evidence_verified": False,
+                "receipt_digest": receipt["receipt_digest"],
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 
