@@ -1467,3 +1467,4 @@ Notes:
 - Memory refs: exact approved target 8ef99451; target draft PR #1810; safe-wave commits 5e8e5e39/594a9287/255e83cf
 - Review gate: focused builds/scans plus independent diff review; rendered connector and post-fix clean-use remain later acceptance gates
 - Ship/abandon: stacked draft PR against codex/retire-cheat-loop-current-20260726; retarget after #1810 lands
+- Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
