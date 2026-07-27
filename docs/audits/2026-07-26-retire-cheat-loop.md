@@ -98,6 +98,44 @@ confirming the exact Files set overlaps only this lane's own active claim.
 cutover dependency. The draft state prevents automatic merge enrollment while
 the staged migrations and rendered acceptance gates remain incomplete.
 
+### Collision-safe implementation evidence
+
+Freshness-stamped 2026-07-26 on Windows, stacked branch
+`codex/retire-cheat-loop-safe-waves`:
+
+- Svelte rollback cleanup `5e8e5e39` removes the privileged caller/feed,
+  `ChatDemo.svelte`, `community-loop-status.json`, automatic filing promises,
+  and product presentation. `/loop` now shows provenance-labelled generic
+  user workflow activity and `/patch-loop` is a static retirement landing.
+- React production cleanup `594a9287` removes the same privileged product
+  composition and GitHub/status fallbacks, preserves independent uptime and
+  release evidence, classifies interrupted runs as historical, and adds the
+  static `/patch-loop` landing.
+- Automation/deployment cleanup `255e83cf` deletes
+  `announce-patch.yml` and `patch_announcement.py`, preserves
+  `post_x_update.py` as an explicit generic outbound primitive, and makes every
+  assigned workflow/runbook/skill agree that React is manual production while
+  Svelte is dispatch-only rollback.
+
+Both site production builds passed; the React build emitted 27 static routes
+including `/patch-loop`, and the Svelte build emitted the expected loop,
+patch-loop, and fine-print pages. React TypeScript passed. Svelte's optional
+`npm run check` still reports only three pre-existing errors in untouched
+`src/lib/mcp/playground.ts`; browser smoke remains unavailable until Playwright
+Chromium is installed. Active-source scans found zero retired
+`community_change_context`, community-loop/status/watch, bug-investigation,
+auto-fix/ship, self-patching, automatic-pickup, or label-fallback identifiers.
+Independent reviewers approved the React, Svelte, and automation/deployment
+diffs after five residual wording/provenance findings were corrected.
+
+Read-only GitHub preflight found the latest 30 announcement-workflow runs all
+completed, with no queued or in-progress run. No workflow was disabled, no run
+was cancelled, no site was deployed, and no production/GitHub label or
+auto-merge state was mutated. Task 3.5 remains open for the separately claimed
+effector-comment neutralization and final pre-merge run-drain proof; task 5.2
+remains open for claimed tests/snapshot-dependent absence proof; task 5.3 owns
+snapshot/soul regeneration.
+
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
 `renamed=1, modified=2`, contained the renamed requirement, and replaced the

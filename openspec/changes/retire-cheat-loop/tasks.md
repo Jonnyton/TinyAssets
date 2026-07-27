@@ -91,7 +91,7 @@
   explicit requester pickup incentives, authorized directed-daemon selection,
   `_universe_loop_dispatch`, `TINYASSETS_SOUL_LOOP_DISPATCH`, and user-owned
   soul `loop_branch_def_id` execution under their independent authority.
-- [ ] 2.7 Before `retire-legacy-live-mcp-tools` task 4.1, remove the
+- [x] 2.7 Before `retire-legacy-live-mcp-tools` task 4.1, remove the
   `community_change_context` wire callers from both the production React/Next
   and Svelte rollback sites and prove no supported site caller remains.
 - [ ] 2.8 After `retire-legacy-live-mcp-tools` tasks 4.1/4.4 remove and rebuild
@@ -182,7 +182,7 @@
 
 ## 5. Remove Public Product Presentation
 
-- [ ] 5.1 Remove the retained Svelte rollback site's patch-loop application,
+- [x] 5.1 Remove the retained Svelte rollback site's patch-loop application,
   `community-loop-status.json`, community workflow/label/issue fallbacks, and
   fine-print branding; remove `WebSite/site/src/lib/components/ChatDemo.svelte`
   privileged file-to-daemon-to-gates-to-live narrative and the canonical
@@ -197,7 +197,7 @@
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
-- [ ] 5.4 Build/test the production React/Next site and retained Svelte rollback
+- [x] 5.4 Build/test the production React/Next site and retained Svelte rollback
   site; correct `deploy-site-react.yml` header, active runbook, and website
   skill prose that reverse their deployment ownership; prove platform uptime
   evidence is separately labeled and never presented as privileged task-loop

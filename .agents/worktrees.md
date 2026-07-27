@@ -1458,12 +1458,12 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-safe-waves
-- Lane state: claimed; React/Svelte/deployment-truth implementation starting
+- Lane state: claimed; website/deployment waves reviewed, announcement deletion staged
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves
 - STATUS/Issue/PR: stacked implementation lane on draft target PR #1810
 - PLAN refs: user-authored/remixable automations; public website surface; complete-system uptime
 - Purpose: remove retired product presentation and callers from production React, rollback Svelte, and deployment guidance without touching runtime/queue or external GitHub state
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves\_PURPOSE.md
-- Memory refs: exact approved target 8ef99451; target draft PR #1810
+- Memory refs: exact approved target 8ef99451; target draft PR #1810; safe-wave commits 5e8e5e39/594a9287/255e83cf
 - Review gate: focused builds/scans plus independent diff review; rendered connector and post-fix clean-use remain later acceptance gates
 - Ship/abandon: stacked draft PR against codex/retire-cheat-loop-current-20260726; retarget after #1810 lands
