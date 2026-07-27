@@ -80,23 +80,23 @@ function containsCredentialMaterial(params) {
 function decodedComponentVariants(value) {
   const variants = [value];
   let current = value;
-  for (let round = 0; round < 3; round += 1) {
+  for (let round = 0; round < 16; round += 1) {
     let decoded;
     try {
       decoded = decodeURIComponent(current);
     } catch {
-      throw new Error("Public MCP URL contains an undecodable fragment");
+      throw new Error("Public MCP URL contains an undecodable component");
     }
-    if (decoded === current) break;
+    if (decoded === current) return variants;
     variants.push(decoded);
     current = decoded;
   }
-  return variants;
+  throw new Error("Public MCP URL is excessively encoded");
 }
 
-/** @param {string} fragment */
-function fragmentContainsCredentialMaterial(fragment) {
-  for (const variant of decodedComponentVariants(fragment)) {
+/** @param {string} component */
+function componentContainsCredentialMaterial(component) {
+  for (const variant of decodedComponentVariants(component)) {
     if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
     if (containsCredentialMaterial(new URLSearchParams(variant))) return true;
     const queryIndex = variant.indexOf("?");
@@ -157,7 +157,8 @@ export function assertAnonymousSnapshotUrl(value) {
     parsed.username ||
     parsed.password ||
     containsCredentialMaterial(parsed.searchParams) ||
-    fragmentContainsCredentialMaterial(fragment)
+    componentContainsCredentialMaterial(parsed.search.slice(1)) ||
+    componentContainsCredentialMaterial(fragment)
   ) {
     throw new Error(
       "Public snapshots must run anonymously; MCP URL credentials are forbidden",
@@ -178,8 +179,16 @@ export function assertPublicBrowserEndpoint(value) {
     throw new Error("Public MCP browser endpoint must be a non-empty string");
   }
   const endpoint = value.trim();
+  if (endpoint.includes("\\")) {
+    throw new Error("Public MCP browser endpoint cannot contain backslashes");
+  }
   if (endpoint.startsWith("/") && !endpoint.startsWith("//")) {
-    assertAnonymousSnapshotUrl(new URL(endpoint, "https://public.invalid").href);
+    const base = new URL("https://public.invalid");
+    const resolved = new URL(endpoint, base);
+    if (resolved.origin !== base.origin) {
+      throw new Error("Public MCP browser endpoint must remain same-origin");
+    }
+    assertAnonymousSnapshotUrl(resolved.href);
     return endpoint;
   }
   const parsed = new URL(assertAnonymousSnapshotUrl(endpoint));
@@ -397,6 +406,23 @@ export function requireCollection(payload, key, source) {
 }
 
 /**
+ * @param {Record<string, any>} result
+ * @param {string} source
+ */
+function assertNoIncompleteCollectionMetadata(result, source) {
+  if (
+    ("truncated_count" in result &&
+      (!Number.isInteger(result.truncated_count) ||
+        result.truncated_count !== 0)) ||
+    ("truncated" in result && result.truncated !== false) ||
+    ("has_more" in result && result.has_more !== false) ||
+    ("next_cursor" in result && result.next_cursor != null)
+  ) {
+    throw new Error(`${source} returned an incomplete collection`);
+  }
+}
+
+/**
  * Require explicit-public records and strict bounded metadata before a public
  * browser renders any universe discovery response.
  *
@@ -413,12 +439,13 @@ export function requirePublicUniverseCollection(payload, source, requestLimit) {
     result.count !== universes.length ||
     !Number.isInteger(requestLimit) ||
     requestLimit < 1 ||
-    universes.length > requestLimit
+    universes.length >= requestLimit
   ) {
     throw new Error(
       `${source} returned inconsistent or over-limit collection metadata`,
     );
   }
+  assertNoIncompleteCollectionMetadata(result, source);
   return universes.map(sanitizePublicUniverse);
 }
 
@@ -439,16 +466,7 @@ export function requireCompleteCollection(payload, key, source, requestLimit) {
   if (!Number.isInteger(result.count) || result.count !== collection.length) {
     throw new Error(`${source} returned inconsistent collection metadata`);
   }
-  if (
-    ("truncated_count" in result &&
-      (!Number.isInteger(result.truncated_count) ||
-        result.truncated_count !== 0)) ||
-    ("truncated" in result && result.truncated !== false) ||
-    ("has_more" in result && result.has_more !== false) ||
-    ("next_cursor" in result && result.next_cursor != null)
-  ) {
-    throw new Error(`${source} returned an incomplete collection`);
-  }
+  assertNoIncompleteCollectionMetadata(result, source);
   if (collection.length >= requestLimit) {
     throw new Error(
       `${source} cannot prove completeness at request limit of ${requestLimit}`,
@@ -546,7 +564,7 @@ function splitInventory(payload, requiredScope) {
       "read_page inventory returned inconsistent completeness metadata",
     );
   }
-  if (count === PAGE_INVENTORY_LIMIT) {
+  if (count >= PAGE_INVENTORY_LIMIT) {
     throw new Error(
       `read_page inventory cannot prove completeness at request limit of ${PAGE_INVENTORY_LIMIT}`,
     );
@@ -573,6 +591,7 @@ function splitInventory(payload, requiredScope) {
       `read_page inventory truncated ${truncated} of ${total} pages`,
     );
   }
+  assertNoIncompleteCollectionMetadata(result, "read_page inventory");
 
   const canonicalPaths = results.map((page) => canonicalPagePath(page?.path));
   if (new Set(canonicalPaths).size !== canonicalPaths.length) {

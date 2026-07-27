@@ -114,6 +114,12 @@ metadata; deleting only the primary Goal row is insufficient.
 - **AND** a retained Goal names the independent checked-in public-publication evidence that authorizes it
 - **AND** no orphaned `goal:<id>` tag, edge, or descriptive metadata remains
 
+#### Scenario: A checked-in discovery row lacks publication proof
+
+- **WHEN** a historical public snapshot contains wiki, draft, universe, edge, or tag metadata without explicit audience-safe publication evidence
+- **THEN** both public snapshot mirrors remove that row and every dependent edge or tag before rendering
+- **AND** a former anonymous server response is not treated as durable publication authority
+
 #### Scenario: Browser initialization sends its completion notification
 
 - **WHEN** a public browser completes MCP session initialization

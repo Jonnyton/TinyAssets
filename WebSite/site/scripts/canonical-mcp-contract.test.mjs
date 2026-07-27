@@ -157,12 +157,30 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?code=abc123",
     "https://tinyassets.io/mcp?access_key=abc123",
     "https://tinyassets.io/mcp?label=Bearer%20top-secret",
+    "https://tinyassets.io/mcp?%2574oken=top-secret",
+    "https://tinyassets.io/mcp?next=%253Ftoken%253Dtop-secret",
+    "https://tinyassets.io/mcp?redirect=%2Fcb%3Faccess_token%3Dtop-secret",
+    `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
+      (value) => encodeURIComponent(value),
+      "?token=top-secret",
+    )}`,
   ]) {
     assert.throws(
       () => assertAnonymousSnapshotUrl(unsafe),
       /anonymous.*credentials/i,
     );
   }
+  const excessivelyEncodedCredential = Array.from({ length: 20 }).reduce(
+    (value) => encodeURIComponent(value),
+    "?token=top-secret",
+  );
+  assert.throws(
+    () =>
+      assertAnonymousSnapshotUrl(
+        `https://tinyassets.io/mcp#${excessivelyEncodedCredential}`,
+      ),
+    /excessively encoded/i,
+  );
   assert.equal(assertPublicBrowserEndpoint("/mcp"), "/mcp");
   assert.equal(
     assertPublicBrowserEndpoint("https://tinyassets.io/mcp?mode=public"),
@@ -170,6 +188,7 @@ test("public snapshot URL rejects embedded caller credentials", () => {
   );
   for (const unsafeBrowserEndpoint of [
     "//token@evil.example/mcp",
+    String.raw`/\\evil.example/mcp`,
     "http://tinyassets.io/mcp",
     "https://tinyassets.io/mcp?code=abc123",
   ]) {
@@ -305,7 +324,7 @@ test("public Playground responses are validated and reduced to public discovery 
   assert.deepEqual(
     sanitizePublicPlaygroundResponse(
       "read_graph",
-      { target: "graphs", limit: 1 },
+      { target: "graphs", limit: 2 },
       {
         universes: [{ id: "metadata-one", visibility: "metadata_only" }],
         count: 1,
@@ -331,6 +350,26 @@ test("public Playground responses are validated and reduced to public discovery 
       ),
     /over-limit/i,
   );
+  for (const incomplete of [
+    { truncated_count: 1 },
+    { truncated: true },
+    { has_more: true },
+    { next_cursor: "private-next-page" },
+  ]) {
+    assert.throws(
+      () =>
+        sanitizePublicPlaygroundResponse(
+          "read_graph",
+          { target: "graphs", limit: 100 },
+          {
+            universes: [{ id: "public-one", visibility: "public" }],
+            count: 1,
+            ...incomplete,
+          },
+        ),
+      /incomplete collection/i,
+    );
+  }
 });
 
 test("exact page descriptors require an immutable validated inventory provenance", () => {
@@ -520,6 +559,40 @@ test("page inventory fails closed when the response exactly fills the request ca
       }),
     /cannot prove completeness.*request limit of 100/i,
   );
+  const overLimitResults = Array.from({ length: 101 }, (_, index) => ({
+    path: `pages/concepts/over-limit-${index}.md`,
+    is_draft: false,
+  }));
+  assert.throws(
+    () =>
+      splitPageInventory({
+        results: overLimitResults,
+        count: 101,
+        total_matches: 101,
+        truncated_count: 0,
+        scope: "discovery",
+        scope_note: "Default discovery scope omitted coordination pages.",
+      }),
+    /cannot prove completeness.*request limit of 100/i,
+  );
+  for (const continuation of [
+    { has_more: true },
+    { next_cursor: "private-next-page" },
+  ]) {
+    assert.throws(
+      () =>
+        splitPageInventory({
+          results: [],
+          count: 0,
+          total_matches: 0,
+          truncated_count: 0,
+          scope: "discovery",
+          scope_note: "Default discovery scope omitted coordination pages.",
+          ...continuation,
+        }),
+      /incomplete collection/i,
+    );
+  }
 });
 
 test("page inventory rejects missing scope and structured errors", () => {

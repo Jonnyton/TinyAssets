@@ -94,8 +94,14 @@ test("public copy never totalizes a scoped, dated, or unavailable source", () =>
     "WebSite/site/src/routes/+page.svelte",
     "WebSite/site-react/app/graph/_components/GraphClient.tsx",
     "WebSite/site/src/routes/graph/+page.svelte",
+    "WebSite/site-react/app/commons/_components/CommonsClient.tsx",
+    "WebSite/site/src/routes/commons/+page.svelte",
     "WebSite/site-react/components/Footer.tsx",
     "WebSite/site/src/lib/components/Footer.svelte",
+    "WebSite/site-react/components/VitalSigns.tsx",
+    "WebSite/site/src/lib/components/VitalSigns.svelte",
+    "WebSite/site-react/lib/live.ts",
+    "WebSite/site/src/lib/mcp/live.ts",
     "WebSite/site-react/app/goals/page.tsx",
     "WebSite/site/src/routes/goals/+page.svelte",
     "WebSite/site-react/components/TinyBot.tsx",
@@ -119,6 +125,7 @@ test("public copy never totalizes a scoped, dated, or unavailable source", () =>
   );
   assert.doesNotMatch(globalCopy, /Today zero rungs/i);
   assert.doesNotMatch(globalCopy, /pick it up today|that one(?:'|’)s open|no workflow is moving/i);
+  assert.doesNotMatch(globalCopy, /a run is moving|\bactiveRun\b/i);
   assert.doesNotMatch(
     globalCopy,
     /live brain|something(?:'|’)s happening right now|my memory, not a screenshot|a universe was active/i,

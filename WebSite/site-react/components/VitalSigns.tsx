@@ -58,9 +58,7 @@ export function VitalSigns({ variant = "strip" }: { variant?: "hero" | "strip" }
           </span>
           <span className={styles.cell}>
             <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true" />
-            {vitals.workflowActive && vitals.activeRun ? (
-              <span className={styles.k}>workflow active · a run is moving</span>
-            ) : vitals.workflowActive ? (
+            {vitals.workflowActive ? (
               <>
                 <span className={styles.k}>recent workflow activity</span>
                 {vitals.lastMovedAt && (

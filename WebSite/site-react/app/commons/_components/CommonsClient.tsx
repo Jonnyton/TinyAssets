@@ -314,7 +314,7 @@ export default function CommonsClient() {
           <h2 id="close-title">Two ways to keep looking.</h2>
           <div className="close__cards">
             <a className="close__card" href="/graph">
-              <span className="close__k eyebrow">open the full map</span>
+              <span className="close__k eyebrow">open the discovery map</span>
               <strong>The brain has a shape.</strong>
               <span className="close__sub">Pages are nodes; references are edges. The graph shows what's tightly wired and what's a lonely draft.</span>
             </a>

@@ -116,6 +116,12 @@ test("React workflow activity uses only the public graph collection", () => {
     `${loopClient} must use the proven-safe public universe reader`,
   );
   assert.doesNotMatch(
+    client,
+    /\bfetchPublicUniverses\(\s*\d+/,
+    `${loopClient} must not pass a limit the server currently ignores`,
+  );
+  assert.match(client, /\.slice\(\s*0\s*,\s*16\s*\)/);
+  assert.doesNotMatch(
     combined,
     /\bfetchWorkflowActivity\b|\bWorkflowActivity\b|\bWorkflowRun\b/,
     "the React activity surface must not preserve a run-shaped public API",

@@ -760,15 +760,25 @@ verdict without pretending the unsafe server projections are public:
   encoded URL credentials, configurable browser endpoints, contradictory or
   private collection data, misrouted/unproved page bodies, orphan Goal/draft
   metadata, stale Goal copy, and totalizing global/alias/ARIA labels; the
-  follow-up fails closed on every data boundary and removes every identified
-  residue or overclaim;
-- the full Node website suite passes 78/78, both production builds pass,
+  follow-up attempted those repairs;
+- exact-head general, security, and public-truth review of `e4126458` returned
+  ADAPT on nested/deep encoded query credentials, a backslash-relative
+  cross-origin endpoint, continuation metadata and 101-row page inventories,
+  residual full-map/run-moving copy, a React `/loop` limit the server ignores,
+  and unproven coordination metadata in the old checked-in snapshot; the next
+  repair rejects those inputs, removes the totalizing/run inference, uses the
+  full validated graph result before presentation slicing, and strips all unproven wiki, draft, universe,
+  edge, and dependent tag rows from both mirrors;
+- the full Node website suite passes 78/78 on the repaired working head; both
+  production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
   production dependency audit reports zero vulnerabilities, strict OpenSpec
   validation passes all 58 items, and `git diff --check` passes;
-- a live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh exits 1 on
-  the server's `scope=discovery` response and leaves both curated snapshots
-  byte-identical at SHA-256
+- both new fail-closed curated snapshots are byte-identical at SHA-256
+  `29EB970F36C52A4E624932C8AEF78E1D24B5F5220BF08A8AF6EADE82E8952777`;
+  a historical live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh
+  exited 1 on the server's `scope=discovery` response and left the prior
+  curated snapshots byte-identical at SHA-256
   `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
 
 These are implementation and fail-closed proofs, not final acceptance.

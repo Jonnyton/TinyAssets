@@ -40,7 +40,7 @@ for (const clientPath of clients) {
   test(`${clientPath} does not derive vitals from the unsafe run projection`, () => {
     assert.doesNotMatch(source, /lastSignalSource\?:\s*["']run["']/);
     assert.doesNotMatch(source, /lastSignalSource\s*=\s*["']run["']/);
-    assert.match(source, /activeRun:\s*false/);
+    assert.doesNotMatch(source, /\bactiveRun\b/);
   });
 
   test(`${clientPath} does not download the operator get_status payload`, () => {

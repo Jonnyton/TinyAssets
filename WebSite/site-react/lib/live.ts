@@ -228,7 +228,6 @@ export type Vitals = {
   universeCount?: number;
   goalCount?: number | null;
   workflowActive?: boolean;
-  activeRun?: boolean;
   lastSignalSource?: "universe-activity" | null;
   error?: string;
 };
@@ -274,7 +273,6 @@ export async function fetchVitals(): Promise<Vitals> {
       universeCount: publicUniverses.length,
       goalCount: null,
       workflowActive,
-      activeRun: false,
       lastSignalSource,
     };
   } catch (error) {

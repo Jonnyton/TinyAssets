@@ -326,20 +326,33 @@
   collection counts/visibility, and exact-body response proofs needed stricter
   validation; removed Goal/draft metadata remained; and global/alias/ARIA
   copy still totalized bounded discovery or inferred current Goal/run/release
-  evidence. Every finding is repaired in this follow-up. Public collections
+  evidence. Commit `e4126458` attempted those repairs, but fresh exact-head
+  general, security, and public-truth review returned ADAPT: nested/deep query
+  credentials, backslash-relative cross-origin URLs, continuation metadata and
+  101-row page inventories still passed; Commons/VitalSigns retained totalizing
+  map/run copy; React `/loop` passed a limit the server ignores; and the old
+  snapshot still published unproven coordination
+  wiki, draft, universe, edge, and tag metadata. The next follow-up repairs
+  those exact cases. Public collections
   now require exact counts and explicit discoverable visibility; body path/proof/hash
   must match before extraction; browser endpoints and recursively decoded URL
   credentials fail closed; snapshot residues are gone; and public copy labels
   bounded discovery, checked-in evidence, or unavailability on every tested
-  surface.
-  The full Node suite passes 78/78; both production builds pass; Svelte check
+  surface. Both curated mirrors now retain only the independently published
+  Goal and remove all unproven wiki, draft, universe, edge, and dependent tag
+  rows; their SHA-256 is
+  `29EB970F36C52A4E624932C8AEF78E1D24B5F5220BF08A8AF6EADE82E8952777`.
+  The full Node suite passes 78/78 on the repaired working head. Both
+  production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production
   dependency audit reports zero vulnerabilities; strict validation passes all
   58 OpenSpec items; and `git diff --check` passes. A fresh live anonymous
   required/full refresh failed closed on `scope=discovery` with exit 1 and
-  left both curated mirrors byte-identical at
+  left the then-current curated mirrors byte-identical at
   `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
-  This is implementation evidence, not final approval: fresh exact-head Codex
+  That live proof is historical and does not authorize regenerating the new
+  fail-closed mirrors. This is implementation evidence, not final approval:
+  fresh exact-head Codex
   and Claude Opus 5 review, server-side privacy enforcement, source-data
   retirement, rendered live proof, and post-fix clean-use evidence remain.
   The probe also proved two remaining source-data blockers: public page

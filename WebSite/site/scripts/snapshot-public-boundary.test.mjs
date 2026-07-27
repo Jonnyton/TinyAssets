@@ -90,6 +90,19 @@ test('retired change-loop drafts and their metadata stay out of public snapshots
     const serialized = JSON.stringify(snapshot);
 
     assert.equal(snapshot.stats.wiki_drafts, snapshot.wiki.drafts.length);
+    assert.deepEqual(snapshot.universes, []);
+    assert.deepEqual(snapshot.wiki, {
+      bugs: [],
+      concepts: [],
+      notes: [],
+      plans: [],
+      drafts: [],
+    });
+    assert.deepEqual(snapshot.edges, []);
+    assert.deepEqual(Object.keys(snapshot.tags), ["goal:dd187997039b"]);
+    assert.equal(snapshot.stats.wiki_promoted, 0);
+    assert.equal(snapshot.stats.universes, 0);
+    assert.equal(snapshot.stats.edges, 0);
     assert.doesNotMatch(
       serialized,
       /Community Change Loop v1 (?:Builder Notes|Piece Map)|community-change-loop-v1-(?:builder-notes|piece-map)/i

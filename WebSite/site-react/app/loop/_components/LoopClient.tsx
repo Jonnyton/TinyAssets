@@ -30,9 +30,11 @@ export default function LoopClient() {
   const refresh = React.useCallback(async () => {
     setReading(true);
     try {
-      const universes = (await fetchPublicUniverses(16)) as PublicUniverse[];
+      const universes = (await fetchPublicUniverses()) as PublicUniverse[];
       setActivity({
-        universes: [...universes].sort((left, right) => activityTime(right) - activityTime(left)),
+        universes: [...universes]
+          .sort((left, right) => activityTime(right) - activityTime(left))
+          .slice(0, 16),
         fetchedAt: new Date().toISOString(),
       });
     } catch (error) {

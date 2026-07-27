@@ -527,3 +527,6 @@ fresh-host rollback edges found later.
 - **Follow-up:** retirement must remove derived identifiers and draft metadata,
   not only primary rows; URL credential checks must inspect bounded recursive
   decodings so encoded separators cannot hide parameters.
+- **Follow-up:** a historical anonymous response is not durable publication
+  proof. Checked-in wiki, draft, universe, edge, and tag rows fail closed unless
+  independent audience-safe provenance authorizes them.
