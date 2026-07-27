@@ -201,6 +201,12 @@ function validatePageBody(page, body) {
       `read_page path mismatch: requested ${page.path}, received ${String(body.path)}`,
     );
   }
+  const discoveryIsDraft = page.is_draft === true;
+  if (body.is_draft !== discoveryIsDraft) {
+    throw new Error(
+      `read_page ${page.path} is_draft does not match discovery metadata`,
+    );
+  }
   if (body.truncated !== false) {
     throw new Error(
       `read_page ${page.path} is truncated or lacks completeness proof`,
@@ -222,7 +228,7 @@ function validatePageBody(page, body) {
   if (
     !proof ||
     proof.path !== page.path ||
-    proof.is_draft !== (page.is_draft === true) ||
+    proof.is_draft !== discoveryIsDraft ||
     proof.title !== page.title ||
     proof.updated !== page.updated ||
     !/^[0-9a-f]{64}$/.test(String(proof.sha256 ?? ""))
@@ -236,7 +242,7 @@ function validatePageBody(page, body) {
     .digest("hex");
   const draftDecoration = "[DRAFT] ";
   const rawDraftSha256 =
-    body.is_draft === true && body.content.startsWith(draftDecoration)
+    discoveryIsDraft && body.content.startsWith(draftDecoration)
       ? createHash("sha256")
           .update(body.content.slice(draftDecoration.length), "utf8")
           .digest("hex")

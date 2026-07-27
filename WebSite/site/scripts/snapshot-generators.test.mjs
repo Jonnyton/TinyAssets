@@ -230,6 +230,20 @@ test("buildMcpSnapshot requires unique bounded graph IDs and complete direct-pag
     () =>
       buildMcpSnapshot({
         ...common,
+        graphsResult: {
+          universes: Array.from({ length: 100 }, (_, index) => ({
+            id: `universe-${index}`,
+          })),
+          count: 100,
+        },
+        pageBodies: new Map([[page.path, completeBody]]),
+      }),
+    /cap/,
+  );
+  assert.throws(
+    () =>
+      buildMcpSnapshot({
+        ...common,
         pageBodies: new Map([
           [
             page.path,
@@ -301,6 +315,55 @@ test("draft source proofs allow exactly the server-added draft marker", () => {
     () => build("[DRAFT] Tampered body", "Different raw body"),
     /sha256/,
   );
+});
+
+test("direct-page draft state must match discovery metadata in both directions", () => {
+  const buildMismatch = (discoveryIsDraft, bodyIsDraft) => {
+    const page = {
+      path: discoveryIsDraft ? "drafts/notes/state.md" : "pages/notes/state.md",
+      title: "State",
+      updated: "2026-07-26T00:00:00Z",
+      is_draft: discoveryIsDraft,
+    };
+    const content = "# State";
+    return () =>
+      buildMcpSnapshot({
+        fetchedAt: "2026-07-26T00:00:00.000Z",
+        goalsResult: { goals: [], count: 0 },
+        graphsResult: { universes: [], count: 0 },
+        pagesResult: {
+          ...completePages,
+          results: [page],
+          count: 1,
+          total_matches: 1,
+        },
+        pageBodies: new Map([
+          [
+            page.path,
+            {
+              path: page.path,
+              is_draft: bodyIsDraft,
+              content,
+              truncated: false,
+              total_chars: [...content].length,
+              read_start: 0,
+              read_end: [...content].length,
+              next_offset: null,
+              source_read_proof: {
+                path: page.path,
+                title: page.title,
+                updated: page.updated,
+                is_draft: discoveryIsDraft,
+                sha256: sha256(content),
+              },
+            },
+          ],
+        ]),
+      });
+  };
+
+  assert.throws(buildMismatch(true, false), /is_draft/);
+  assert.throws(buildMismatch(false, true), /is_draft/);
 });
 
 test("repo snapshot is rebuilt from explicit clean topology and retains the generic coding branch", () => {
