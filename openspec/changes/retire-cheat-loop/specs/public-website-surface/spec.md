@@ -168,7 +168,7 @@ metadata; deleting only the primary Goal row is insufficient.
 - **THEN** it fails before connecting or writing an artifact
 - **AND** credential-like URL query or fragment parameters fail before the URL is logged
 - **AND** recursively encoded query/fragment separators cannot hide credential parameters
-- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, control prefixes, malformed authorities, or zero/single/double slash/backslash-equivalent WHATWG spellings
+- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, WHATWG-removable controls, arbitrary schemes, malformed authorities, or zero/single/multiple slash/backslash-equivalent spellings
 - **AND** the snapshot URL uses HTTPS before the connector opens or logs it
 
 #### Scenario: A browser build configures a public MCP endpoint
@@ -194,6 +194,12 @@ metadata; deleting only the primary Goal row is insufficient.
 - **WHEN** `read_page` returns `scope=discovery` with a missing or empty omission note
 - **THEN** a discovery-only surface may use the result with a bounded no-omission-reported label
 - **AND** it does not treat the absent note as proof that discovery is a complete inventory
+
+#### Scenario: Discovery returns malformed omission metadata
+
+- **WHEN** `read_page` returns a present `scope_note` that is not a string
+- **THEN** the public reader rejects the response as invalid
+- **AND** it does not relabel the malformed value as a trusted missing-note state
 
 #### Scenario: An anonymous caller supplies a known omitted page path
 

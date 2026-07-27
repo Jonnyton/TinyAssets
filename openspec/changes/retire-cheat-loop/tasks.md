@@ -377,6 +377,12 @@
   restores the claims, removes one landed STATUS row and folds one concern to
   stay at 60 lines, accepts successful empty discovery with bounded trusted
   omission labels, makes boundary errors generic, and bounds Build copy.
+  Exact-head security and public-truth review of `a2a387dd` returned ADAPT:
+  malformed authority checks still missed arbitrary schemes and
+  WHATWG-removable controls inside a URL, while a present wrong-typed
+  `scope_note` was treated as missing. The current repair normalizes those
+  controls, uses a scheme-generic apparent-authority check, and rejects
+  malformed omission metadata.
   The full Node suite passes 81/81 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production

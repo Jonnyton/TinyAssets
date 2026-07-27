@@ -63,9 +63,10 @@ function containsUrlUserinfo(value) {
     const absolute = new URL(value);
     return Boolean(absolute.username || absolute.password);
   } catch {
+    const normalized = value.replace(/[\t\n\r]/g, "");
     if (
-      /^[\u0000-\u0020]*(?:(?:https?|wss?|ftp):[\\/]{0,2}|[\\/]{2})[^/?#\\]*@/i.test(
-        value,
+      /^[\u0000-\u0020]*(?:(?:[a-z][a-z0-9+.-]*:[\\/]+)|(?:(?:https?|wss?|ftp):)|(?:[\\/]{2,}))[^/?#\\]*@/i.test(
+        normalized,
       )
     ) {
       return true;
@@ -630,6 +631,12 @@ function splitInventory(payload, requiredScope) {
     typeof result.scope === "string" && result.scope.trim()
       ? result.scope.trim()
       : "unknown";
+  if (
+    Object.prototype.hasOwnProperty.call(result, "scope_note") &&
+    typeof result.scope_note !== "string"
+  ) {
+    throw new Error("read_page inventory returned invalid scope metadata");
+  }
   const reportedScopeNote =
     typeof result.scope_note === "string" ? result.scope_note.trim() : "";
   const validScope =

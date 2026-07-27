@@ -798,6 +798,12 @@ verdict without pretending the unsafe server projections are public:
   response-controlled scope echoed in errors; the current repair restores the
   claims within the 60-line board, returns bounded trusted omission labels,
   makes boundary errors generic, and bounds Build copy;
+- exact-head security and public-truth review of `a2a387dd` returned ADAPT
+  because malformed authority checks missed arbitrary schemes and
+  WHATWG-removable controls inside URLs, while present wrong-typed
+  `scope_note` values were treated as missing; the current repair normalizes
+  those controls, applies scheme-generic apparent-authority rejection, and
+  rejects malformed omission metadata;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte

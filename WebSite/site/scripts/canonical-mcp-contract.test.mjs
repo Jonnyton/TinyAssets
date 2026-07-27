@@ -177,6 +177,12 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?next=https%3A%2F%2Fuser%3Atop-secret%40%5B",
     "https://tinyassets.io/mcp?next=%2F%2Fuser%3Atop-secret%40%5B",
     "https://tinyassets.io/mcp#next=https%3A%2F%2Fuser%3Atop-secret%40%5B",
+    "https://tinyassets.io/mcp?next=ssh%3A%2F%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp#next=ftps%3A%2F%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp?next=git%2Bssh%3A%2F%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp?next=h%09ttps%3A%2F%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp#next=https%3A%2F%0A%2Fuser%3Ahunter2%40%5B",
+    "https://tinyassets.io/mcp?next=https%3A%2F%2F%2Fuser%3Ahunter2%40%5B",
     "https://alice:s3cr3t@[::1",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
@@ -218,6 +224,11 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     String.raw`/\\evil.example/mcp`,
     "http://tinyassets.io/mcp",
     "https://tinyassets.io/mcp?code=abc123",
+    `/mcp?next=${encodeURIComponent("h\tttps://alice:hunter2@[")}`,
+    `/mcp?next=${encodeURIComponent("https:/\n/alice:hunter2@[")}`,
+    `https://tinyassets.io/mcp#next=${encodeURIComponent(
+      "git://alice:hunter2@host.invalid:99999/cb",
+    )}`,
   ]) {
     assert.throws(() => assertPublicBrowserEndpoint(unsafeBrowserEndpoint));
   }
@@ -550,6 +561,24 @@ test("page inventory rejects non-discovery scope and handles a missing omission 
     }).scopeNote,
     "Discovery scope reports no omitted coordination pages.",
   );
+  for (const scopeNote of [
+    42,
+    { private: "operator detail" },
+    ["omitted"],
+  ]) {
+    assert.throws(
+      () =>
+        splitPageInventory({
+          results: [],
+          count: 0,
+          total_matches: 0,
+          truncated_count: 0,
+          scope: "discovery",
+          scope_note: scopeNote,
+        }),
+      /invalid scope metadata/i,
+    );
+  }
 });
 
 test("page inventory rejects truncation and inconsistent completeness metadata", () => {

@@ -542,3 +542,6 @@ fresh-host rollback edges found later.
 - **Follow-up:** a scoped response can be valid with nothing omitted. Preserve
   the bounded scope, convert server prose to trusted status labels, and keep
   successful-empty distinct from unavailable without implying completeness.
+- **Follow-up:** parser normalization includes removable characters inside a
+  URL, and credential-bearing authority syntax is not confined to common web
+  schemes. Fail closed generically; never use a finite scheme allowlist.
