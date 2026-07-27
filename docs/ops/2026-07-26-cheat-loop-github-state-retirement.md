@@ -10,18 +10,22 @@ copyable, remixable designs.
 Apply is blocked. As of 2026-07-27, read-only production inventory found:
 
 - all 28 exact retired label definitions;
-- 1,962 retired-label associations across 883 unique items;
+- 1,963 retired-label associations across 883 unique items;
 - 221 open issues, 296 closed issues, and 366 closed or merged pull requests;
 - 98 open pull requests, including 21 with auto-merge requests; and
 - workflow database ID `317815472` (`auto-enroll-merge.yml`) still active.
 
-The 2026-07-27 terminal-proven live attribution receipt captured 832 workflow
+The terminal-proven label receipt binds all 29 Link-header connections (six
+multi-page) at digest
+`sha256:2f1fc9f45344990ffffb1de676290e2bf2b463ea58373bf3d5055b5de1c42406`.
+
+The 2026-07-27 terminal-proven live attribution receipt captured 833 workflow
 runs, 21 complete job connections, the one-entry reviewed default-branch
 source history, and one exact run/job/step/log proof for each of the 21
 enrollments. All 21 classify `attributed`; none classify explicit or ambiguous.
 Its inventory-only receipt digest is
-`sha256:8af8a24aa3fc42837b5952e1392880e9c9cc2ef0db8b75c2fc0f1614b0213655`,
-bound to implementation revision `c6192dec`. The receipt includes terminal
+`sha256:ac2fcb69bb553d4b238f7944aefa473eab1cfe737c60c6a9b5ac5b343304869e`.
+Both receipts are bound to implementation revision `77cef3bc` and include terminal
 GitHub Link-header evidence. This remains historical capture, not mutation
 authority: the workflow is active and `apply_complete=false`.
 
@@ -40,7 +44,8 @@ inventory drained before label apply.
 `scripts/retire_cheat_loop_github_state.py` has a read-only command-line
 surface. Its GitHub reader exposes structured operations instead of arbitrary
 arguments: REST calls always synthesize explicit GET requests, and GraphQL
-accepts only the reviewed query with exact plain repository variables. It can
+accepts only the reviewed query with exact plain repository variables. Every
+read pins `github.com` rather than inheriting an ambient CLI host. It can
 produce RFC 8785/JCS receipts. Offline `verify` checks schema, normalization,
 bindings, and digest integrity; it explicitly does not re-verify external
 GitHub provenance. There is deliberately no live GitHub mutator in this

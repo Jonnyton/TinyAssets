@@ -98,7 +98,8 @@ historical enrollment evidence.
 The inventory reader SHALL expose structured repository reads rather than
 caller-supplied GitHub CLI arguments. REST reads SHALL explicitly select GET;
 the GraphQL reader SHALL accept only the reviewed query and exact plain
-repository variables. Array-valued REST connections SHALL follow the exact
+repository variables. Every read SHALL pin the public `github.com` host rather
+than inherit an ambient CLI host. Array-valued REST connections SHALL follow the exact
 GitHub `Link` header chain, validate every next URL remains on the same API
 origin/repository/endpoint/query scope, and bind per-page request, response,
 count, and terminal `rel="next"`-absence evidence into the receipt. Observed
