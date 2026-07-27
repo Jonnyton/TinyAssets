@@ -181,7 +181,7 @@ export function parseInput(text: string): ParsedInput {
   if (!trimmed) return { ok: false, error: 'Type a tool call (e.g. `wiki action=list`).' };
   const tokens = trimmed.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
   if (!tokens.length) return { ok: false, error: 'No tool name found.' };
-  const tool = tokens[0];
+  const tool = tokens[0]!;
   if (!/^[a-zA-Z_][\w-]*$/.test(tool)) {
     return { ok: false, error: `Tool name "${tool}" looks malformed.` };
   }
