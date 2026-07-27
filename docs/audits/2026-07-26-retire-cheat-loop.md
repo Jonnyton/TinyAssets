@@ -135,11 +135,13 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   described the deleted component and misclassified `/loop`; the mirrored
   instruction was corrected before final approval.
 
-Both site production builds passed; the React build emitted 27 static routes
-including `/patch-loop`, and the Svelte build emitted the expected loop,
-patch-loop, and fine-print pages. React TypeScript passed. After residual
-cleanup, Svelte `npm run check` passed with zero errors and six existing
-warnings outside the retired-loop edits. A fresh 2026-07-26 Chrome browser
+Both site production builds passed. A fresh React build reported
+`Generating static pages (27/27)`, printed a 25-row route table, and emitted
+25 generated `index.html` route pages including `/patch-loop`; these are
+different build counters, not 27 distinct routes. The Svelte build emitted the
+expected loop, patch-loop, and fine-print pages. React TypeScript passed. After
+residual cleanup, Svelte `npm run check` passed with zero errors and six
+existing warnings outside the retired-loop edits. A fresh 2026-07-26 Chrome browser
 sweep against local Next dev (`localhost:3000`) and Vite dev
 (`localhost:5173`) rendered 11 affected routes in both the React production
 source tree and Svelte rollback tree with zero console errors or warnings.
@@ -188,14 +190,14 @@ content. Task 5.3 owns the snapshot/soul source retirement and regeneration.
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
 into the stacked implementation branch without changing any reviewed site,
 workflow, script, or skill content. Fresh current-main verification at
-`c84cb833` passed React's production build (27 Next build-report route entries,
-distinct from the 25 generated `index.html` pages swept above) and TypeScript,
-Svelte's production build and check with zero errors/six existing warnings,
-all 58 strict OpenSpec validations, the active-source absence scan, and
-`git diff --check`. Claude Opus 5 returned APPROVE on the current-main head;
-three pre-merge exact APPROVEs cover the implementation content that the merge
-left byte-identical. The foldback imported the separate provider-secret-deposit
-OpenSpec only as `main` history and did not broaden this lane.
+`c84cb833` passed React's production build and TypeScript, Svelte's production
+build and check with zero errors/six existing warnings, all 58 strict OpenSpec
+validations, the active-source absence scan, and `git diff --check`. The fresh
+current-head React counters are recorded separately above. Claude Opus 5
+returned APPROVE on the current-main head; three pre-merge exact APPROVEs cover
+the implementation content that the merge left byte-identical. The foldback
+imported the separate provider-secret-deposit OpenSpec only as `main` history
+and did not broaden this lane.
 
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
