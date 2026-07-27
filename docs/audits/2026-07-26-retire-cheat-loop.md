@@ -237,11 +237,15 @@ and did not broaden this lane.
 Task 6.2 was implemented in a separate stack on 2026-07-26. The canonical
 `loop-uptime-maintenance` skill, template, and both active catalog routes were
 deleted; the skill synchronizer removed the complete Claude mirror. Its six
-incident records and the former cheat ledger moved out of active agent
-surfaces into `docs/historical/loop-uptime-maintenance/`, where directory and
-inline notices identify them as historical evidence from the retired system,
-not current automation or operator instruction. PLAN's authorized-escape
-design claim and CLAUDE's stale skill-tree pointer were also removed. A second
+incident records, legacy cheat-ledger entries, and the living design note that
+authorized the escape moved out of active agent surfaces into
+`docs/historical/loop-uptime-maintenance/`, where directory and inline notices
+identify them as historical evidence from the retired system, not current
+automation or operator instruction. A lean active intervention-ledger template
+retains only the independently valid coordination/review/host-directive
+justifications and explicitly rejects the retired skill as authority. PLAN's
+authorized-escape design claim and CLAUDE's stale skill-tree pointer were also
+removed. A second
 skill sync was idempotent, the cross-provider drift guard passed, active
 `.agents` and `.claude` scans found no retired skill/escape-hatch instruction,
 and all 58 strict OpenSpec validations passed.
