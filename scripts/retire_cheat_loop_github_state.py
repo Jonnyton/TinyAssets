@@ -197,10 +197,10 @@ def _validate_complete_connections(
             raise PlanError(
                 "connection count and pages must be non-negative integers"
             )
+        if pages < 1:
+            raise PlanError("complete pagination requires one response page")
         completion_basis = connection.get("completion_basis")
         if completion_basis == "github_link_header_chain_v1":
-            if pages < 1:
-                raise PlanError("Link pagination requires one terminal response page")
             if total is not None:
                 raise PlanError(
                     "Link-paginated array connections cannot invent a server total"

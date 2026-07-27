@@ -563,6 +563,25 @@ class ReceiptTests(unittest.TestCase):
                 inventory=inventory,
             )
 
+        for completion_basis in (
+            "reported_total_count",
+            "graphql_total_count",
+        ):
+            with self.subTest(completion_basis=completion_basis), self.assertRaises(
+                mod.PlanError
+            ):
+                mod._validate_complete_connections(
+                    [
+                        complete_connection(
+                            kind="fixture",
+                            label_name="",
+                            count=0,
+                            pages=0,
+                            completion_basis=completion_basis,
+                        )
+                    ]
+                )
+
         inventory = label_inventory()
         empty_connection = inventory["connections"][2]
         empty_connection.update(
