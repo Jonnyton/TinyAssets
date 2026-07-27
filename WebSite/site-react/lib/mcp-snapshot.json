@@ -4,7 +4,7 @@
   "stats": {
     "wiki_promoted": 55,
     "wiki_drafts": 8,
-    "goals": 6,
+    "goals": 4,
     "universes": 3,
     "edges": 130
   },
@@ -36,35 +36,6 @@
         "reddit",
         "community",
         "canon-gate"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
-    },
-    {
-      "id": "4ff5862cc26d",
-      "name": "Route a patch request through investigation, PR, release, and live observation",
-      "summary": "Community-driven live-state loop for TinyAssets changes. Any patch request starts as a wiki report, runs through the best known investigation branch, passes gate review, dispatches a coding-team branch to produce a PR, passes further gates, and is then observed after landing with real or simulated users. The goal is long-horizon self-improvement: gates can send work backward with edits whenever evidence shows the patch did not land or did not work as intended.",
-      "tags": [
-        "patch-loop",
-        "community",
-        "gatekeeping",
-        "pr",
-        "live-observation",
-        "self-improvement"
-      ],
-      "author": "anonymous",
-      "visibility": "public"
-    },
-    {
-      "id": "f10caea2e437",
-      "name": "Turn a TinyAssets bug into a patch packet",
-      "summary": "Given a filed TinyAssets bug report, produce an actionable patch packet: normalized bug summary, minimal repro, likely root cause map, implementation sketch, regression tests, and attachable maintainer comment. Intended to be run automatically after wiki action=file_bug via the canonical branch for this goal.",
-      "tags": [
-        "bugs",
-        "patch-packet",
-        "workflow-engine",
-        "daemon",
-        "automation"
       ],
       "author": "anonymous",
       "visibility": "public"
@@ -1298,21 +1269,6 @@
       "reddit",
       "community",
       "canon-gate"
-    ],
-    "goal:4ff5862cc26d": [
-      "patch-loop",
-      "community",
-      "gatekeeping",
-      "pr",
-      "live-observation",
-      "self-improvement"
-    ],
-    "goal:f10caea2e437": [
-      "bugs",
-      "patch-packet",
-      "workflow-engine",
-      "daemon",
-      "automation"
     ],
     "goal:454b6e72348b": [
       "agent-teams",

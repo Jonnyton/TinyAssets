@@ -216,8 +216,12 @@
   static previews rendered every generated React `index.html` route (25) and
   every generated Svelte HTML route (25) with zero browser warnings/errors.
   The website-focused tests pass; the alarm-sink failure belongs to task 4.2.
-  This task remains open on task 5.3 and content-level absence proof across
-  rendered routes, query states, and shared assets.
+  A follow-up 2026-07-26 slice removed the two privileged TinyAssets goals
+  from both checked-in MCP snapshot mirrors and removed unsourced repository
+  graph carry-forward. React and Svelte production `/goals` and `/graph`
+  previews now render four retained generic goals, neither retired goal, and
+  zero browser warnings/errors. This task remains open on task 5.3's source
+  retirement and final query-state proof.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
@@ -225,8 +229,18 @@
   **Current coordination (2026-07-26):** stacked draft PR #1818 exclusively
   owns the exact seven prompt-asset deletions and has independent Opus 5
   approval; base draft #1812 MUST NOT duplicate them. The task remains open on
-  truthful snapshot regeneration, content-level absence, and cleanup of
-  synthetic retired-role fixture names after broad `tests/` claims release.
+  truthful live MCP snapshot regeneration and cleanup of synthetic retired-role
+  fixture names after broad `tests/` claims release.
+  **Checked-in snapshot cleanup proved 2026-07-26:** both MCP mirrors now omit
+  goals `4ff5862cc26d` and `f10caea2e437`, their tags, retired promises, and
+  inconsistent stats. The repository generator no longer carries forward
+  unsourced areas/workflow branches/routes/edges or local/provider branch
+  state; it rebuilds from an explicit schema, fails closed without
+  `origin/main`, and its regenerated snapshot contains only that canonical
+  reference. Node retirement tests pass 5/5, the retained Svelte deployment
+  runs them after any optional refresh and warns that the legacy refresh must
+  not be used, both production builds pass, and rendered `/goals` + `/graph`
+  proof is clean in both sites.
   **Host-local zero-active proved 2026-07-26:** see
   `docs/audits/2026-07-26-retire-cheat-loop.md` §Host-local registered-role
   authority proof. Production and third-party hosts remain unproved.
@@ -234,8 +248,10 @@
   and `universe` handles that the canonical-seven live MCP surface no longer
   advertises, then swallows tool failures into null/empty output. Regeneration
   before source-data retirement and migration to supported canonical handles
-  could create a hollow false-green snapshot. Do not regenerate until both
-  dependencies are satisfied and the resulting content is proved.
+  could create a hollow false-green snapshot. The static MCP payload cleanup
+  above is not represented as live regeneration. Do not run that legacy
+  generator until its source contract is migrated and the resulting content
+  is proved.
 - [x] 5.4 Build/test the production React/Next site and retained Svelte rollback
   site; correct `deploy-site-react.yml` header, active runbook, and website
   skill prose that reverse their deployment ownership; prove platform uptime

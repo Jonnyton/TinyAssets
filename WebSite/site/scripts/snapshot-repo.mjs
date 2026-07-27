@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -36,41 +36,37 @@ function refRows() {
         subject: subjectParts.join('|')
       };
     })
-    .filter((branch) => branch.name !== 'origin');
+    .filter((branch) => branch.name === 'origin/main');
 }
 
 const branches = refRows();
-const currentBranch = git(['branch', '--show-current']) || 'detached';
+if (branches.length === 0) {
+  throw new Error(
+    'refs/remotes/origin/main not found — fetch before generating the repo snapshot'
+  );
+}
 const remote = git(['remote', 'get-url', 'origin']);
-const head = git(['rev-parse', '--short', 'HEAD']);
-const main = branches.find((branch) => branch.name === 'main')?.commit ?? '';
-const dirty = git(['status', '--short']).split(/\r?\n/).filter(Boolean).length;
-
-const previous = existsSync(outFile) ? JSON.parse(readFileSync(outFile, 'utf8')) : {};
+const head = branches[0].commit;
+const main = head;
 
 const snapshot = {
-  ...previous,
   fetched_at: new Date().toISOString(),
-  source: 'local git checkout + GitHub remote',
+  source: 'canonical origin/main git reference',
   repo: {
-    ...(previous.repo ?? {}),
     id: 'repo:TinyAssets',
     name: 'TinyAssets',
     owner: 'Jonnyton',
     remote_url: remote,
-    current_branch: currentBranch,
+    current_branch: 'origin/main',
     head,
     main,
-    dirty_note:
-      dirty === 0
-        ? 'Working tree clean when repo snapshot was generated.'
-        : `Working tree had ${dirty} changed paths when repo snapshot was generated.`
+    dirty_note: 'Generated from the canonical origin/main reference.'
   },
   branches,
-  areas: previous.areas ?? [],
-  workflow_branches: previous.workflow_branches ?? [],
-  routes: previous.routes ?? [],
-  edges: previous.edges ?? []
+  areas: [],
+  workflow_branches: [],
+  routes: [],
+  edges: []
 };
 
 writeFileSync(outFile, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');

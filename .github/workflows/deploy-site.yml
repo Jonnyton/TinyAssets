@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       refresh_snapshot:
-        description: 'Rollback only: re-bake the Svelte MCP snapshot before build'
+        description: 'Rollback only — DO NOT USE until snapshot-mcp.mjs migrates to canonical handles (retire-cheat-loop 5.3)'
         required: false
         default: 'false'
         type: choice
@@ -53,6 +53,9 @@ jobs:
           MCP_BEARER: ${{ secrets.MCP_BEARER }}
           SNAPSHOT_FULL: '1'
         run: npm run snapshot
+
+      - name: Test snapshot retirement invariants
+        run: npm test
 
       - name: Build
         run: npm run build

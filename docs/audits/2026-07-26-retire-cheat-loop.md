@@ -181,6 +181,25 @@ generated Svelte HTML pages. The two preceding ADAPT passes are preserved in
 PR #1812's review record; their attribution and rendered-residue findings are
 incorporated above rather than hidden.
 
+The follow-up checked-in snapshot slice uses deletion rather than inventing a
+replacement web product. Both MCP snapshot mirrors remove privileged goals
+`4ff5862cc26d` and `f10caea2e437`, their tag-map entries, the automatic
+post-`file_bug` promise, and the inconsistent goal count. The repository
+snapshot generator now drops unsourced prior `areas`, `workflow_branches`,
+`routes`, and `edges`, and emits only canonical `origin/main` rather than local
+or provider branch state. It no longer spreads any prior top-level/repository
+keys and fails closed when `refs/remotes/origin/main` is absent; the checked-in
+repository snapshot was regenerated through that path. Shape-aware
+real-generator and mirror/repository-absence tests went red then green and pass
+5/5. The retained Svelte deployment runs them after any optional refresh, and
+its manual refresh input now says not to use the legacy generator until task
+5.3 migrates it to canonical handles. React and Svelte production builds pass.
+Fresh production-preview Chrome renders of `/goals` and `/graph` in both sites
+show four retained generic goals, neither retired goal, and zero browser
+warnings/errors. This is static payload/content proof, not live MCP
+regeneration: the legacy `snapshot-mcp.mjs` source contract remains open as
+described below, as does final retired-ID query-state proof.
+
 Read-only GitHub preflight found the latest 30 announcement-workflow runs all
 completed with failure, with no queued or in-progress run. No workflow was
 disabled, no run was cancelled, no site was deployed, and no production/GitHub
@@ -198,8 +217,8 @@ expects `createTinyAssetsDispatch` in
 `permissions.get("actions") == "write"`. These contradictory expectations and
 the retired workflow belong to task 4.2, now recorded as a pending exact-file
 STATUS lane behind active broad `tests/` claims; they do not block task 5.2.
-Task 5.2 remains open because the rendered snapshots still expose retired
-content. Task 5.3 owns the snapshot/soul source retirement and regeneration.
+Task 5.2 remains open on final query-state proof and task 5.3's source
+retirement. Task 5.3 owns the snapshot/soul source retirement and regeneration.
 
 After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
 into the stacked implementation branch without changing any reviewed site,
