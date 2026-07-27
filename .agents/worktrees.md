@@ -1467,3 +1467,17 @@ Notes:
 - Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
 - Review gate: Claude Opus 5 APPROVE after two correction passes; no runtime/workflow changes
 - Ship/abandon: landed at `970c1d57`; no further release action
+
+## 2026-07-27 - canonical public-read completeness
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/public-read-completeness
+- Lane state: active spec-only
+- Worktree: C:\Users\Jonathan\Projects\wf-public-read-completeness
+- STATUS/Issue/PR: Specify canonical public-read completeness; draft PR pending
+- PLAN refs: canonical seven handles; Tier-1 chatbot-first surface; wiki discovery; shared goals; §14 load proof; Village deferred
+- Purpose: specify visibility-safe full-scope pagination and completeness receipts for canonical public reads without adding an MCP handle
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-public-read-completeness\_PURPOSE.md
+- Memory refs: PR #1812 blocker evidence; `docs/audits/2026-07-25-full-product-vision-completion-audit.md`
+- Review gate: exact-current Claude Opus 5 review; runtime remains blocked on active file owners
+- Ship/abandon: ship reviewed strict-valid artifacts; abandon if an equivalent current owner lands first
