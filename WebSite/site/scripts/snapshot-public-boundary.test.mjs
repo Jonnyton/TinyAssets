@@ -7,6 +7,10 @@ const snapshotSource = readFileSync(
   resolve('scripts', 'snapshot-mcp.mjs'),
   'utf8'
 );
+const publicContractSource = readFileSync(
+  resolve('..', 'shared', 'mcp', 'public-read-contract.js'),
+  'utf8'
+);
 const deployWorkflow = readFileSync(
   resolve('..', '..', '.github', 'workflows', 'deploy-site.yml'),
   'utf8'
@@ -127,7 +131,7 @@ test('page crawling rejects truncated bodies before extracting references', () =
   assert.match(snapshotSource, /content did not match its source-read proof/);
 });
 
-test('full snapshot replacement requires a complete all-scope inventory', () => {
+test('full snapshot replacement stays disabled without audience-safe publication evidence', () => {
   assert.match(snapshotSource, /\bsplitFullPageInventory\s*\(/);
   assert.match(
     snapshotSource,
@@ -137,5 +141,9 @@ test('full snapshot replacement requires a complete all-scope inventory', () => 
   assert.match(
     snapshotSource,
     /requireCompleteCollection\([\s\S]{0,240}['"]universes['"][\s\S]{0,240}100\s*,?\s*\)/
+  );
+  assert.match(
+    publicContractSource,
+    /Full public snapshot replacement requires independent audience-safe publication evidence/
   );
 });

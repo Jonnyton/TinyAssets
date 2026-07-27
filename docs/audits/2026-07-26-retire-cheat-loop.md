@@ -769,7 +769,14 @@ verdict without pretending the unsafe server projections are public:
   repair rejects those inputs, removes the totalizing/run inference, uses the
   full validated graph result before presentation slicing, and strips all unproven wiki, draft, universe,
   edge, and dependent tag rows from both mirrors;
-- the full Node website suite passes 78/78 on the repaired working head; both
+- exact-head general and security review of `773cd24f` returned ADAPT while
+  public-truth review approved: nested value/fragment credential assignments,
+  plaintext snapshot transport, `scope=all` without independent audience
+  proof, raw public error detail, Host failure-as-empty rendering, missing
+  visibility defaulting, and one Svelte dated-Goal overclaim remained; the
+  current repair closes those cases and keeps full wiki regeneration disabled
+  until a separate audience-safe publication manifest exists;
+- the full Node website suite passes 80/80 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
   production dependency audit reports zero vulnerabilities, strict OpenSpec

@@ -78,7 +78,10 @@ currently return known coordination paths omitted from discovery. A public
 browser therefore MUST NOT accept arbitrary exact page paths. Any snapshot
 body read MUST be provenance-bound to a path returned by the already-validated
 inventory for that same refresh, and a full snapshot replacement MUST require
-an audience-safe complete inventory rather than discovery scope.
+an audience-safe complete inventory rather than discovery scope. Until a
+separate audience-safe publication manifest or equivalent attestation exists,
+full wiki snapshot regeneration MUST remain disabled even when `scope=all` is
+complete. Public snapshot transport MUST use HTTPS.
 Checked-in Goal data is not self-authenticating: a historical normalizer
 defaulting a missing visibility field to `public` is not publication proof.
 Every retained Goal row MUST have independent, explicit public-publication
@@ -101,6 +104,12 @@ metadata; deleting only the primary Goal row is insufficient.
 - **WHEN** an MCP request returns HTTP 502, 503, or 504 on an early attempt
 - **THEN** the client retries with bounded incremental delay and ultimately exposes an error if all three attempts fail
 
+#### Scenario: A public read returns private error detail
+
+- **WHEN** HTTP status text, JSON-RPC error text, a structured error, or an SDK exception contains a path, token, stack, or operator detail
+- **THEN** browser surfaces and snapshot logs expose only a generic public-read failure plus a safe numeric status or code
+- **AND** no raw error message, arguments, stack, or response body reaches public UI or CI logs
+
 #### Scenario: A graph projection lacks public visibility enforcement
 
 - **WHEN** `read_graph target=goal|goals|run|runs` can return caller-owned or cross-user private state
@@ -119,6 +128,7 @@ metadata; deleting only the primary Goal row is insufficient.
 - **WHEN** a historical public snapshot contains wiki, draft, universe, edge, or tag metadata without explicit audience-safe publication evidence
 - **THEN** both public snapshot mirrors remove that row and every dependent edge or tag before rendering
 - **AND** a former anonymous server response is not treated as durable publication authority
+- **AND** `scope=all` proves completeness only, so wiki regeneration stays disabled without a separate audience-safe publication manifest
 
 #### Scenario: Browser initialization sends its completion notification
 
@@ -156,6 +166,7 @@ metadata; deleting only the primary Goal row is insufficient.
 - **THEN** it fails before connecting or writing an artifact
 - **AND** credential-like URL query or fragment parameters fail before the URL is logged
 - **AND** recursively encoded query/fragment separators cannot hide credential parameters
+- **AND** the snapshot URL uses HTTPS before the connector opens or logs it
 
 #### Scenario: A browser build configures a public MCP endpoint
 
@@ -233,6 +244,12 @@ observation; it MUST NOT be used as evidence that user task work is moving.
 - **WHEN** status and public reads succeed but there is no active or recent user-authored workflow signal
 - **THEN** the site reports the server as reachable and workflow activity as absent or asleep
 - **AND** generic uptime evidence is not relabeled as task-loop movement
+
+#### Scenario: Public discovery fails with an empty checked-in universe set
+
+- **WHEN** live public-universe discovery fails and the fail-closed snapshot contains no independently published universe rows
+- **THEN** Host and status surfaces render discovery as unavailable rather than as a successful empty result
+- **AND** missing universe visibility is never defaulted to public
 
 #### Scenario: Last extension run is historical
 

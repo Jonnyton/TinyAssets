@@ -530,3 +530,6 @@ fresh-host rollback edges found later.
 - **Follow-up:** a historical anonymous response is not durable publication
   proof. Checked-in wiki, draft, universe, edge, and tag rows fail closed unless
   independent audience-safe provenance authorizes them.
+- **Follow-up:** completeness and public audience are orthogonal. `scope=all`
+  cannot authorize publication, and failure UI/error channels need the same
+  fail-closed review as successful data.

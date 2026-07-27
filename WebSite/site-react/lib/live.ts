@@ -41,8 +41,6 @@ async function rpc(method: string, params: any = {}): Promise<any> {
   if (sessionId) headers["Mcp-Session-Id"] = sessionId;
 
   const body = { jsonrpc: "2.0", id: nextId++, method, params };
-  let lastError: unknown = null;
-
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const res = await fetch(MCP_PATH, {
@@ -60,7 +58,7 @@ async function rpc(method: string, params: any = {}): Promise<any> {
           await sleep(350 * (attempt + 1));
           continue;
         }
-        throw new Error(`MCP HTTP ${res.status}: ${res.statusText}`);
+        throw new Error(`Public MCP request failed (HTTP ${res.status})`);
       }
 
       const contentType = res.headers.get("Content-Type") ?? "";
@@ -72,10 +70,12 @@ async function rpc(method: string, params: any = {}): Promise<any> {
       }
 
       const json = JSON.parse(text) as RpcResp;
-      if (json.error) throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
+      if (json.error) {
+        const code = Number.isInteger(json.error.code) ? ` (code ${json.error.code})` : "";
+        throw new Error(`Public MCP request failed${code}`);
+      }
       return json.result;
     } catch (error) {
-      lastError = error;
       if (attempt < 2) {
         await sleep(350 * (attempt + 1));
         continue;
@@ -83,7 +83,7 @@ async function rpc(method: string, params: any = {}): Promise<any> {
     }
   }
 
-  throw lastError instanceof Error ? lastError : new Error("MCP request failed");
+  throw new Error("Public MCP read is unavailable");
 }
 
 async function ensureInit(): Promise<void> {
@@ -279,7 +279,7 @@ export async function fetchVitals(): Promise<Vitals> {
     return {
       reachable: false,
       fetchedAt: new Date().toISOString(),
-      error: error instanceof Error ? error.message : String(error),
+      error: "Public MCP read is unavailable",
     };
   }
 }

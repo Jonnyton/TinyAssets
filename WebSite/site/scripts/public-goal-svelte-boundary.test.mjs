@@ -92,6 +92,8 @@ test("Svelte public copy never invites a connector to read Goal or branch record
   }
 
   assert.match(sources.detail, /dated public snapshot record/i);
+  assert.doesNotMatch(sources.start, /what(?:'|’)s already running/i);
+  assert.match(sources.start, /Browse published goal examples/i);
   assert.match(sources.soul, /checked-in public snapshot/i);
   assert.doesNotMatch(
     sources.soul,

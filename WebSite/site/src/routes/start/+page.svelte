@@ -336,8 +336,8 @@
     <nav class="close__cards">
       <a class="close__card" href="/goals">
         <span class="close__k eyebrow">the goals board</span>
-        <strong>See what's already running →</strong>
-        <span class="close__sub">dated public Goal examples, with ladders only where the snapshot includes them.</span>
+        <strong>Browse published goal examples →</strong>
+        <span class="close__sub">A dated public snapshot, with outcome ladders where evidence is included.</span>
       </a>
       <a class="close__card" href="/loop">
         <span class="close__k eyebrow">workflow activity</span>

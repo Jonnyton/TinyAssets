@@ -160,6 +160,10 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?%2574oken=top-secret",
     "https://tinyassets.io/mcp?next=%253Ftoken%253Dtop-secret",
     "https://tinyassets.io/mcp?redirect=%2Fcb%3Faccess_token%3Dtop-secret",
+    "https://tinyassets.io/mcp?next=token%253Dtop-secret",
+    "https://tinyassets.io/mcp?next=%2561ccess_token%253Dtop-secret",
+    "https://tinyassets.io/mcp?redirect=cb%2523token%253Dtop-secret%2526next%253Dok",
+    "https://tinyassets.io/mcp#redirect=cb%2523token%253Dtop-secret%2526next%253Dok",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
       "?token=top-secret",
@@ -181,6 +185,15 @@ test("public snapshot URL rejects embedded caller credentials", () => {
       ),
     /excessively encoded/i,
   );
+  for (const insecureSnapshotUrl of [
+    "http://tinyassets.io/mcp",
+    "file:///tmp/tinyassets-mcp",
+  ]) {
+    assert.throws(
+      () => assertAnonymousSnapshotUrl(insecureSnapshotUrl),
+      /HTTPS MCP URL/i,
+    );
+  }
   assert.equal(assertPublicBrowserEndpoint("/mcp"), "/mcp");
   assert.equal(
     assertPublicBrowserEndpoint("https://tinyassets.io/mcp?mode=public"),
@@ -428,18 +441,25 @@ test("page inventory accepts only explicit discovery scope with its omission not
   );
 });
 
-test("full snapshot inventory requires explicit all scope with no omissions", () => {
-  const full = splitFullPageInventory({
-    results: [
-      { path: "pages/concepts/one.md", title: "One", is_draft: false },
-    ],
-    count: 1,
-    total_matches: 1,
-    truncated_count: 0,
-    scope: "all",
-    scope_note: "",
-  });
-  assert.deepEqual([...full.validatedPaths], ["pages/concepts/one"]);
+test("full snapshot inventory requires independent audience-safe publication evidence", () => {
+  assert.throws(
+    () =>
+      splitFullPageInventory({
+        results: [
+          {
+            path: "pages/plans/operator-secret.md",
+            title: "Operator Secret",
+            is_draft: false,
+          },
+        ],
+        count: 1,
+        total_matches: 1,
+        truncated_count: 0,
+        scope: "all",
+        scope_note: "",
+      }),
+    /independent audience-safe publication evidence/i,
+  );
 
   assert.throws(
     () =>
@@ -453,6 +473,24 @@ test("full snapshot inventory requires explicit all scope with no omissions", ()
       }),
     /full snapshot.*scope:\s*discovery/i,
   );
+});
+
+test("public clients and snapshot logs never surface untrusted error detail", () => {
+  for (const path of [
+    resolve(here, "../src/lib/mcp/live.ts"),
+    resolve(here, "../../site-react/lib/live.ts"),
+  ]) {
+    const client = readFileSync(path, "utf8");
+    assert.doesNotMatch(client, /json\.error\.message|res\.statusText/);
+    assert.doesNotMatch(client, /error:\s*error(?:\?\.|\.)(?:message|stack)/);
+    assert.match(client, /Public MCP read is unavailable/);
+  }
+  const snapshotSource = readFileSync(snapshotSourcePath, "utf8");
+  assert.doesNotMatch(
+    snapshotSource,
+    /tool \$\{name\}.*JSON\.stringify\(args\).*e\.message|refresh failed: \$\{/,
+  );
+  assert.match(snapshotSource, /Required public snapshot refresh failed/);
 });
 
 test("page inventory rejects non-discovery scope or a missing discovery note", () => {
@@ -608,7 +646,7 @@ test("page inventory rejects missing scope and structured errors", () => {
   );
   assert.throws(
     () => splitPageInventory({ error: "read denied" }),
-    /read denied/,
+    /read_page inventory returned an error/,
   );
 });
 
@@ -623,7 +661,7 @@ test("canonical collection reads reject structured errors and missing arrays", (
   );
   assert.throws(
     () => requireCollection({ error: "denied" }, "goals", "read_graph goals"),
-    /denied/,
+    /read_graph goals returned an error/,
   );
   assert.throws(
     () => requireCollection({}, "universes", "read_graph graphs"),
@@ -631,7 +669,7 @@ test("canonical collection reads reject structured errors and missing arrays", (
   );
   assert.throws(
     () => requireObjectResult({ error: "unavailable" }, "get_status"),
-    /unavailable/,
+    /get_status returned an error/,
   );
   assert.deepEqual(
     requirePageBody({ content: "# Public page" }, "read_page body"),
@@ -639,7 +677,7 @@ test("canonical collection reads reject structured errors and missing arrays", (
   );
   assert.throws(
     () => requirePageBody({ error: "not found" }, "read_page body"),
-    /not found/,
+    /read_page body returned an error/,
   );
   assert.throws(
     () => requirePageBody({}, "read_page body"),

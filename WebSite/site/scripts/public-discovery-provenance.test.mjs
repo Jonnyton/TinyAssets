@@ -167,6 +167,33 @@ test("global paired surfaces carry bounded source labels", () => {
   }
 });
 
+test("Host surfaces distinguish unavailable discovery from a proven empty result", () => {
+  for (const path of [
+    "WebSite/site-react/app/host/_components/HostClient.tsx",
+    "WebSite/site/src/routes/host/+page.svelte",
+  ]) {
+    const body = source(path);
+    assert.doesNotMatch(
+      body,
+      /visibility\s*\?\?\s*["']public["']/,
+      `${path} must not default missing universe visibility to public`,
+    );
+    assert.match(body, /public["'],\s*["']metadata_only/);
+    assert.match(body, /Public universe discovery is unavailable/);
+    assert.match(body, /no independently published universe rows/i);
+    const unavailableState = body.indexOf("rows.length === 0 && liveErr && !live");
+    const successfulEmptyState = Math.max(
+      body.indexOf("rows.length === 0 && live ?"),
+      body.indexOf("rows.length === 0 && live}"),
+    );
+    assert.ok(unavailableState >= 0, `${path} must render an unavailable state`);
+    assert.ok(
+      successfulEmptyState > unavailableState,
+      `${path} must check failed discovery before successful empty discovery`,
+    );
+  }
+});
+
 test("proof and status aliases promise only the public Fine Print boundary", () => {
   for (const path of [
     "WebSite/site-react/app/proof/page.tsx",

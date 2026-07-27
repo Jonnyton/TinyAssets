@@ -96,17 +96,29 @@ function decodedComponentVariants(value) {
 
 /** @param {string} component */
 function componentContainsCredentialMaterial(component) {
-  for (const variant of decodedComponentVariants(component)) {
-    if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
-    if (containsCredentialMaterial(new URLSearchParams(variant))) return true;
-    const queryIndex = variant.indexOf("?");
-    if (
-      queryIndex >= 0 &&
-      containsCredentialMaterial(
-        new URLSearchParams(variant.slice(queryIndex + 1)),
-      )
-    ) {
-      return true;
+  const pending = [component];
+  const seen = new Set();
+  while (pending.length > 0) {
+    const candidate = pending.shift();
+    if (candidate === undefined) break;
+    for (const variant of decodedComponentVariants(candidate)) {
+      if (seen.has(variant)) continue;
+      seen.add(variant);
+      if (seen.size > 64) {
+        throw new Error("Public MCP URL has excessive nested components");
+      }
+      if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
+      const params = new URLSearchParams(variant);
+      if (containsCredentialMaterial(params)) return true;
+      for (const [, value] of params) {
+        if (value && value !== variant) pending.push(value);
+      }
+      for (const separator of ["?", "#"]) {
+        const index = variant.indexOf(separator);
+        if (index >= 0 && index + 1 < variant.length) {
+          pending.push(variant.slice(index + 1));
+        }
+      }
     }
   }
   return false;
@@ -152,6 +164,9 @@ export function pageInventoryCall(changedSince = PAGE_INVENTORY_SINCE) {
  */
 export function assertAnonymousSnapshotUrl(value) {
   const parsed = new URL(value);
+  if (parsed.protocol !== "https:") {
+    throw new Error("Public snapshots require an HTTPS MCP URL");
+  }
   const fragment = parsed.hash.slice(1);
   if (
     parsed.username ||
@@ -386,7 +401,7 @@ export function requireObjectResult(payload, source) {
     throw new Error(`${source} returned no structured result`);
   }
   if (payload.error) {
-    throw new Error(`${source} failed: ${String(payload.error)}`);
+    throw new Error(`${source} returned an error`);
   }
   return payload;
 }
@@ -625,5 +640,8 @@ export function splitPageInventory(payload) {
  * @returns {{ promoted: any[], drafts: any[], validatedPaths: Set<string>, scope: 'all', scopeNote: string }}
  */
 export function splitFullPageInventory(payload) {
-  return splitInventory(payload, "all");
+  splitInventory(payload, "all");
+  throw new Error(
+    "Full public snapshot replacement requires independent audience-safe publication evidence",
+  );
 }

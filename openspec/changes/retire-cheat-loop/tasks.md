@@ -342,7 +342,16 @@
   Goal and remove all unproven wiki, draft, universe, edge, and dependent tag
   rows; their SHA-256 is
   `29EB970F36C52A4E624932C8AEF78E1D24B5F5220BF08A8AF6EADE82E8952777`.
-  The full Node suite passes 78/78 on the repaired working head. Both
+  Exact-head general and security review of `773cd24f` then returned ADAPT
+  while public-truth review approved: nested value/fragment credential
+  assignments, plaintext snapshot transport, `scope=all` without independent
+  audience proof, raw error detail, Host failure-as-empty rendering, missing
+  visibility defaulting, and one Svelte dated-Goal overclaim remained. The
+  current repair recursively scans nested values and both separator families,
+  requires HTTPS, disables full wiki regeneration without a separate
+  publication manifest, emits generic errors, distinguishes unavailable Host
+  state, requires explicit discoverable visibility, and restores Start parity.
+  The full Node suite passes 80/80 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production
   dependency audit reports zero vulnerabilities; strict validation passes all

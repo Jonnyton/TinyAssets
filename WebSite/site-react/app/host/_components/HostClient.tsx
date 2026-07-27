@@ -19,7 +19,7 @@ const bakedUniverses = ((baked as any).universes ?? []) as any[];
 
 // Public-commons only: drop private + any SUPERSEDED/RETRACTED/smoke rows.
 function isPublicUniverse(u: any): boolean {
-  if ((u?.visibility ?? "public") === "private") return false;
+  if (!["public", "metadata_only"].includes(u?.visibility)) return false;
   return !/SUPERSEDED|RETRACTED|smoke/i.test(String(u?.id ?? ""));
 }
 
@@ -297,10 +297,14 @@ export default function HostClient() {
           <div className="rooms" aria-live="polite">
             {rows.length === 0 && reading ? (
               <p className="rooms__state ev">reading the live universe list…</p>
+            ) : rows.length === 0 && liveErr && !live ? (
+              <p className="rooms__state ev">Public universe discovery is unavailable. The checked-in snapshot carries no independently published universe rows.</p>
+            ) : rows.length === 0 && liveErr && live ? (
+              <p className="rooms__state ev">The latest refresh failed. The most recent successful read contained no public universes.</p>
             ) : rows.length === 0 && live ? (
               <p className="rooms__state ev">quiet right now — no public universes visible at this read ({rel(live.fetchedAt, mounted)}).</p>
             ) : rows.length === 0 ? (
-              <p className="rooms__state ev">no public universes in view.</p>
+              <p className="rooms__state ev">The checked-in snapshot carries no independently published universe rows; live discovery is pending.</p>
             ) : (
               <>
                 <ul className="rooms__list">

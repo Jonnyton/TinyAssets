@@ -246,7 +246,7 @@ async function main() {
         const r = await client.callTool({ name, arguments: args });
         return parseToolResponse(r);
       } catch (e) {
-        warn(`tool ${name}(${JSON.stringify(args)}) failed: ${e.message}`);
+        warn(`public snapshot tool ${name} failed`);
         return null;
       }
     }
@@ -532,15 +532,15 @@ async function main() {
     renameSync(tmpPath, SNAPSHOT_PATH);
     log(`wrote ${SNAPSHOT_PATH} (${promoted} promoted, ${wiki.drafts.length} drafts, ${goals.length} goals, ${universes.length} universes, ${edges.length} edges)`);
   } catch (err) {
-    warn(`refresh failed: ${err?.message ?? err}`);
+    warn('public snapshot refresh failed');
     if (existsSync(SNAPSHOT_PATH)) {
       try {
         const stat = JSON.parse(readFileSync(SNAPSHOT_PATH, 'utf-8'));
-        warn(`keeping existing snapshot from ${stat.fetched_at}`);
+        warn('keeping existing checked-in snapshot');
       } catch {}
     }
     if (process.env.SNAPSHOT_REQUIRED === '1') {
-      throw err;
+      throw new Error('Required public snapshot refresh failed');
     }
   } finally {
     try { await client.close(); } catch {}
