@@ -1446,7 +1446,7 @@ Notes:
 - Branch: codex/retire-cheat-loop-current-20260726
 - Lane state: target merged as PR #1810; implementation gates remain in the safe-waves lane
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
-- STATUS/Issue/PR: host-directed retirement; draft PR #1810
+- STATUS/Issue/PR: host-directed retirement; merged PR #1810
 - PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
 - Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
