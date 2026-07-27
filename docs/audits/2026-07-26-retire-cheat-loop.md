@@ -184,7 +184,9 @@ skill/escape-hatch instruction. Append-only dated activity logs and uploaded
 historical transcripts were deliberately excluded rather than rewritten. All
 58 strict OpenSpec validations passed. Claude Opus 5 and three independent
 exact-head reviewers approved `748a7251` after the living-design-note and
-active-ledger findings were corrected.
+active-ledger findings were corrected. The reviewed stack is published as
+draft PR #1815 on draft PR #1812; neither stack authorizes deployment or
+runtime/external-state retirement.
 
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported

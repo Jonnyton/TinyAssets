@@ -1476,7 +1476,7 @@ Notes:
 - Branch: codex/retire-loop-uptime-skill
 - Lane state: claimed; task 6.2 approved at `748a7251`
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-uptime-skill
-- STATUS/Issue/PR: pending stacked draft PR against codex/retire-cheat-loop-safe-waves
+- STATUS/Issue/PR: draft PR #1815 stacked on codex/retire-cheat-loop-safe-waves / #1812
 - PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
 - Purpose: delete the active loop-uptime escape-hatch skill and catalog routes while retaining incident records only as historical non-skill evidence
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-uptime-skill\_PURPOSE.md
