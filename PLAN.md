@@ -1,6 +1,6 @@
 # TinyAssets — Plan
 
-How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, the auto-change loop, user chatbots — consults before building, so that the applicable module's shape is known before code is written.
+How the system should work and why. Architecture, principles, and the working theory of every module. PLAN.md is the reference everyone — humans, AI provider sessions, user chatbots, and user-authored automations — consults before building, so that the applicable module's shape is known before code is written.
 
 For live state, see STATUS.md. For how to work on the project, see AGENTS.md. **Changes here require user approval.**
 
@@ -37,6 +37,8 @@ Depth: lead memory `project_minimal_primitives_principle.md`.
 ### 2. Community-build over platform-build
 
 **Rule:** When a feature is proposed, the FIRST question is "could the community evolve this?" — not "should we build this?" Platform-build is the fallback, not the default. Imagine the implementation; sketch how a chatbot would compose it from existing primitives + wiki rubrics + remix material; if that sketch works, don't ship platform code.
+
+**Task-automation corollary (host-confirmed 2026-07-26):** Recurring task loops, schedulers, and similar automations are user-authored designs composed from platform primitives, published to the commons when their authors choose, and copied, remixed, or combined like any other workflow. TinyAssets does not ship a privileged product-specific automation loop. The historical cheat/community-patch loop is retired and must be absent from runtime, packaging, configuration, and shipped fallback paths; retained uptime canaries and deploy observability are infrastructure checks, not a user-task automation product.
 
 **Why:** TinyAssets' product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
 
@@ -151,7 +153,7 @@ These principles apply to every module. They do not own a module each; they cons
 
 ## How to Use This PLAN
 
-PLAN.md is the working theory of what each module is and how it works. **Everyone references it before building** — human contributors, the auto-change loop, the user chatbots, the agent teams. If your work doesn't fit one of the modules below, that gap is the design conversation.
+PLAN.md is the working theory of what each module is and how it works. **Everyone references it before building** — human contributors, AI provider sessions, user chatbots, user-authored automations, and agent teams. If your work doesn't fit one of the modules below, that gap is the design conversation.
 
 **Skill anchors.** Each named project skill ties into one PLAN.md surface; invoke the skill before or during module work, not after:
 

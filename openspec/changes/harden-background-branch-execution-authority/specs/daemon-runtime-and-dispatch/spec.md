@@ -206,8 +206,8 @@ The branch-task garbage collector SHALL, under the queue file lock, move only te
 
 ## ADDED Requirements
 
-### Requirement: Request, producer, and wiki forward-trigger task admission commits target authority
-The daemon task-ingress layer SHALL commit one background target binding with every authenticated protocol-v2 Request/admission/task aggregate, every producer task derived from a current authenticated goal subscription or landed accepted paid-market execution contract, and every authenticated wiki `file_bug` investigation forward-trigger. Market producer output MUST remain held/non-pickable until `paid-market-track-e-wave-2-transport` supplies that accepted contract generation. The binding reference/digest MUST be present before a task becomes pickable. The existing epoch-2 claim remains only a scheduling reservation; the selected worker MUST claim the exact `BackgroundBranchAttempt` before branch resolution, and the B2 handoff required by `operator-request-trigger-contract` remains an additional independent gate. Target-authority clauses MUST remain dark until the live-activation requirement and all named owners have landed.
+### Requirement: Request and producer task admission commits target authority
+The daemon task-ingress layer SHALL commit one background target binding with every authenticated protocol-v2 Request/admission/task aggregate and every producer task derived from a current authenticated goal subscription or landed accepted paid-market execution contract. Market producer output MUST remain held/non-pickable until `paid-market-track-e-wave-2-transport` supplies that accepted contract generation. The binding reference/digest MUST be present before a task becomes pickable. The existing epoch-2 claim remains only a scheduling reservation; the selected worker MUST claim the exact `BackgroundBranchAttempt` before branch resolution, and the B2 handoff required by `operator-request-trigger-contract` remains an additional independent gate. Target-authority clauses MUST remain dark until the live-activation requirement and all named owners, including the `retire-cheat-loop` filing-only/legacy-migration dependency, have landed.
 
 #### Scenario: Protocol request is all or nothing
 - **WHEN** authenticated Request admission resolves an exact branch target
@@ -217,10 +217,10 @@ The daemon task-ingress layer SHALL commit one background target binding with ev
 - **WHEN** a goal-pool or paid-market producer emits a task whose source lacks a current authenticated subscription/contract target delegation
 - **THEN** no pickable task or target binding is created even if pool YAML, `posted_by`, or producer identity looks authorized
 
-#### Scenario: Wiki bug forwarding is authenticated and atomic
-- **WHEN** an authenticated wiki write commits a `file_bug` revision that requests investigation
-- **THEN** the filing revision, exact investigation binding, and task commit as one transaction or recoverable pair
-- **AND** no bare `bug_investigation.append_task` row becomes pickable
+#### Scenario: Wiki filing never enters background task admission
+- **WHEN** an authenticated wiki write commits a `file_bug` revision
+- **THEN** no background binding, attempt, task, queue entry, or trigger receipt is created
+- **AND** historical `bug_investigation` work is preserved only for the retirement migration and never becomes pickable
 
 #### Scenario: Target attempt precedes B2
 - **WHEN** an epoch-2 worker wins the scheduling claim
