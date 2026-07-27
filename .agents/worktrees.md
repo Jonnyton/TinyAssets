@@ -1469,3 +1469,17 @@ Notes:
 - Ship/abandon: keep PR #1812 draft and gate any merge on task 3.5's final announcement-run drain; do not deploy or authorize runtime/external-state retirement
 - Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
 - Update 2026-07-26: parent #1810 folded in; React/Svelte builds, 58/58 strict OpenSpec, active-source scans, and exact current-main reviews pass at `c84cb833`
+
+## 2026-07-26 - close release-reconcile production drift watch
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/close-release-reconcile-watch-20260726
+- Lane state: landed via PR #1816
+- Worktree: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch
+- STATUS/Issue/PR: resolved monitoring row retired in merged PR #1816
+- PLAN refs: Uptime & Alarms; complete-system 24/7 uptime
+- Purpose: preserve the first end-to-end drift-to-build-to-explicit-deploy convergence under the #1749/#1750 logic; drift detection itself predates it.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-close-release-reconcile-watch\_PURPOSE.md
+- Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
+- Review gate: Claude Opus 5 APPROVE after two correction passes; no runtime/workflow changes
+- Ship/abandon: landed at `970c1d57`; no further release action
