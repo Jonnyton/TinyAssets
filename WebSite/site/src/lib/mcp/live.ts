@@ -205,7 +205,7 @@ export type Vitals = {
   lastMovedAt?: string | null;
   universeCount?: number;
   goalCount?: number | null;
-  loopAwake?: boolean;
+  workflowActive?: boolean;
   activeRun?: boolean;
   lastSignalSource?: 'run' | 'universe-activity' | null;
   error?: string;
@@ -277,7 +277,7 @@ export async function fetchVitals(): Promise<Vitals> {
       lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
       universeCount: publicUniverses.length,
       goalCount: Array.isArray(goalsList?.goals) ? goalsList.goals.length : null,
-      loopAwake: runIsActive || running > 0 || recentSignal,
+      workflowActive: runIsActive || running > 0 || recentSignal,
       activeRun: runIsActive,
       lastSignalSource
     };

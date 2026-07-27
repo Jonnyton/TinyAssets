@@ -316,11 +316,11 @@
     </p>
     <p class="log__now" aria-live="polite">
       {#if vitals?.reachable}
-        <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
-        {#if vitals.loopAwake && vitals.activeRun}
+        <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
+        {#if vitals.workflowActive && vitals.activeRun}
           <span>right now: <strong>workflow activity · a run is moving</strong></span>
           <span class="ev">read {fmtRel(vitals.fetchedAt)}</span>
-        {:else if vitals.loopAwake}
+        {:else if vitals.workflowActive}
           <span>right now: <strong>recent public workflow activity</strong></span>
           {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)} · read {fmtRel(vitals.fetchedAt)}</span>{/if}
         {:else}

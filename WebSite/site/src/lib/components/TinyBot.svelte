@@ -13,8 +13,9 @@
   exact script, never a repeat of his last few lines.
 
   Honesty rails still apply: his chest LED and posture come from the SAME
-  live vitals the rest of the site reads. Loop asleep → he stops following
-  and naps in the corner. Engine unreachable → ×-eyes, and he says so.
+  live vitals the rest of the site reads. With no recent workflow activity he
+  stops following and naps in the corner. Engine unreachable → ×-eyes, and he
+  says so.
 
   Coarse pointers (touch) and prefers-reduced-motion get the calm
   stationary version. Dismissible — persists in localStorage.
@@ -109,7 +110,7 @@
   let lastContextKey = '';
 
   const mode = $derived<'reading' | 'awake' | 'asleep' | 'error'>(
-    !vitals ? 'reading' : !vitals.reachable ? 'error' : vitals.loopAwake ? 'awake' : 'asleep'
+    !vitals ? 'reading' : !vitals.reachable ? 'error' : vitals.workflowActive ? 'awake' : 'asleep'
   );
   // Shy following only while he's actually up. Asleep/error = stationary, honestly.
   const shyMode = $derived(shyCapable && (mode === 'awake' || mode === 'reading'));
@@ -171,7 +172,7 @@
     const f: string[] = [];
     if (vitals?.queue) f.push(`runs so far: ${vitals.queue.succeeded.toLocaleString()} done, ${vitals.queue.failed} failed — counted live.`);
     if (vitals?.deployedAt) f.push(`this body deployed ${fmtRel(vitals.deployedAt)}.`);
-    if (mode === 'asleep') f.push('the loop’s napping. the engine is still up — that’s two different things.');
+    if (mode === 'asleep') f.push('no workflow is moving. the engine can still be up — that’s a different reading.');
     if (mode === 'awake' && vitals?.activeRun) f.push('a run is moving through me right now.');
     f.push('I was born 3 Jun 2026. I flooded my own repo on day two. fixed now.');
     f.push('no rung lights without an evidence URL. mine included.');
@@ -684,7 +685,7 @@
         const d = Math.hypot(e.clientX - (window.innerWidth - 70), e.clientY - (window.innerHeight - 90));
         if (d < 140) {
           saidSleepLine = true;
-          say('mm? the loop’s napping. me too.', 4500);
+          say('mm? no workflow is moving just now. me too.', 4500);
         }
       }
       return;
@@ -941,7 +942,7 @@
       <!-- body -->
       <g class="torso">
         <rect x="38" y="72" width="44" height="36" rx="11" fill="var(--paper-100)" stroke="var(--ink-text-900)" stroke-width="2.6" />
-        <!-- chest LED = the loop, honestly -->
+        <!-- chest LED = recent generic workflow activity -->
         <circle
           class="led"
           cx="60"

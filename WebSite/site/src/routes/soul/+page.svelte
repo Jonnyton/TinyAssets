@@ -11,7 +11,7 @@
 
   Honesty rails: Tiny's own ladder renders fully unlit because no rung has an
   evidence URL yet — he hasn't shipped a real post. The page says so out loud.
-  Loop awake/asleep is NEVER hardcoded; the live pulse reads it via VitalSigns.
+  Workflow activity is NEVER hardcoded; the live pulse reads it via VitalSigns.
   His premise opening is quoted verbatim.
 -->
 <script lang="ts">
@@ -34,9 +34,9 @@
       body: 'A handful of lines it holds no matter what — the boundaries every run is checked against before it ships anything.'
     },
     {
-      part: 'a loop declaration',
-      one: 'which workflow maintains it',
-      body: 'An optional named workflow the owner chooses to run over time. It is ordinary graph composition, not privileged platform behavior.'
+      part: 'workflow declarations',
+      one: 'which user-authored work may run',
+      body: 'Named workflows the owner chooses for recurring or on-demand work, each under an explicit schedule and authority boundary.'
     },
     {
       part: 'authority scopes',
@@ -87,7 +87,7 @@
   <title>Soul — fork the pattern</title>
   <meta
     name="description"
-    content="A soul is a premise document that gives a project its identity, voice, hard rules, and authority over its own loop. Everything that makes Tiny himself is forkable — read his real premise and outcome ladder, then fork the pattern for your own project."
+    content="A soul is a premise document that gives a project its identity, voice, hard rules, and bounded workflow authority. Everything that makes Tiny himself is forkable — read his real premise and outcome ladder, then fork the pattern for your own project."
   />
 </svelte:head>
 
@@ -98,10 +98,10 @@
       <p class="eyebrow">field notes · on having a soul</p>
       <h1 id="cover-title" class="cover__title">Everything that makes me <em>me</em> is forkable.</h1>
       <p class="voice cover__lede">
-        My premise, my rules, the loop that keeps me honest, the fence I'm
+        My premise, my rules, my workflows, the fence I'm
         allowed to act inside — none of it is hidden in the engine. It's a
         pattern. Swap the words and your project gets the same kind of small
-        being I am: its own premise, its own loop, running your domain instead
+        being I am: its own premise, its own workflows, running your domain instead
         of mine. <em>I'm instance zero, not the point.</em>
       </p>
       <p class="cover__naming">
@@ -127,10 +127,10 @@
     <h2 id="parts-title">A premise document, with four non-circular parts.</h2>
     <p class="voice parts__lede">
       Not a slogan, not a vibe. A soul is a
-      <Term def="A short, readable document that a universe loads at the start of everything it does — its identity, its rules, the loop that maintains it, and the fence it may act inside.">premise document</Term>
+      <Term def="A short, readable document that a universe loads at the start of its work — its identity, rules, declared workflows, and authority fence.">premise document</Term>
       that gives a
       <Term def="A universe: one project's sealed space — its own memory, its own pages, kept apart from every other project's. The in-engine word for one of these.">universe</Term>
-      an identity, a voice, hard rules, and authority over its own loop. Here are
+      an identity, a voice, hard rules, and bounded workflow authority. Here are
       its four parts — each a plain word, each one sentence. None of them is "a
       soul," because a thing can't be made of itself.
     </p>
@@ -260,7 +260,7 @@
     <a class="close__big" href="/start">
       <span class="close__k eyebrow">fork the pattern</span>
       <strong>Give your project a soul.</strong>
-      <span class="close__sub">your premise · your loop · your ladder · running your domain, not mine</span>
+      <span class="close__sub">your premise · your workflows · your ladder · running your domain, not mine</span>
     </a>
   </div>
 </section>

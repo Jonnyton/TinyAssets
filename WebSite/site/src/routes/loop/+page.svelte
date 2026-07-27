@@ -145,7 +145,7 @@
 <section class="ch ch--goals" aria-labelledby="goals-title">
   <div class="container">
     <p class="eyebrow">designs with owners</p>
-    <h2 id="goals-title">Start from a goal, then choose the loop.</h2>
+    <h2 id="goals-title">Start from a goal, then choose a workflow.</h2>
     <p class="voice section__lede">
       Goals describe outcomes. Patterns provide reusable shapes. The person
       doing the work chooses which graph runs, which evidence matters, and

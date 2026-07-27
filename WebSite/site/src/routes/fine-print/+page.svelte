@@ -141,7 +141,7 @@
   // real Actions tab; neutral one-liners, no claimed pass/fail state here
   // (the Actions tab is the live truth, and the receipt above carries the
   // engine's own canary verdict).
-  const WATCHDOGS = [
+  const UPTIME_CHECKS = [
     {
       file: 'uptime-canary.yml',
       what: 'Probes the public MCP endpoint on a schedule and after any DNS, tunnel, or Worker change — platform reachability evidence, separate from user-workflow activity.'
@@ -319,7 +319,7 @@
       work is moving.
     </p>
     <ul class="watch">
-      {#each WATCHDOGS as w (w.file)}
+      {#each UPTIME_CHECKS as w (w.file)}
         <li class="watch__item">
           <code class="watch__file">{w.file}</code>
           <p class="watch__what">{w.what}</p>
@@ -491,7 +491,7 @@
   .receipt__refresh--inline { padding: 3px 10px; }
   .receipt__refresh:hover { border-color: var(--live-600); background: var(--live-100); }
 
-  /* ── Public watchdogs ── */
+  /* ── Public uptime checks ── */
   .watch__lede { font-size: 15px; line-height: 1.6; color: var(--fg-2); max-width: 64ch; margin: 0 0 8px; }
   .watch { list-style: none; margin: 24px 0 0; padding: 0; display: grid; gap: 12px; }
   .watch__item {

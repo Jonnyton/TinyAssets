@@ -4,9 +4,9 @@
 
   Two truths, never collapsed into one dot:
     server  — is the engine reachable right now? (green / red)
-    loop    — is work actually moving? (awake green / asleep amber)
+    workflow — is user-authored work moving? (active green / quiet amber)
 
-  Asleep is a first-class, honestly-labeled state. No fake liveness:
+  Quiet is a first-class, honestly-labeled state. No fake liveness:
   before the live read lands, the strip says it's reading — it never
   renders baked numbers as current.
 -->
@@ -44,14 +44,14 @@
       {#if vitals.deployedAt}<span class="ev">deployed {fmtRel(vitals.deployedAt)}{#if vitals.gitSha}&nbsp;· {vitals.gitSha}{/if}</span>{/if}
     </span>
     <span class="cell">
-      <span class="dot" class:live={vitals.loopAwake} class:idle={!vitals.loopAwake} aria-hidden="true"></span>
-      {#if vitals.loopAwake && vitals.activeRun}
-        <span class="k">loop awake · a run is moving</span>
-      {:else if vitals.loopAwake}
-        <span class="k">loop awake</span>
+      <span class="dot" class:live={vitals.workflowActive} class:idle={!vitals.workflowActive} aria-hidden="true"></span>
+      {#if vitals.workflowActive && vitals.activeRun}
+        <span class="k">workflow active · a run is moving</span>
+      {:else if vitals.workflowActive}
+        <span class="k">recent workflow activity</span>
         {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)}</span>{/if}
       {:else}
-        <span class="k">loop asleep</span>
+        <span class="k">no recent workflow activity</span>
         {#if vitals.lastMovedAt}<span class="ev">last signal {fmtRel(vitals.lastMovedAt)}</span>{/if}
       {/if}
     </span>

@@ -81,8 +81,7 @@ src/
 │   │   ├── TinyAssetsMark.svelte        TinyAssets brand mark
 │   │   ├── TopNav.svelte                sticky-translucent nav
 │   │   ├── Footer.svelte                footer chrome + contact
-│   │   ├── ChatDemo.svelte              faux Claude.ai transcript (hero showcase)
-│   │   ├── Hero.svelte                  landing hero (copy + ChatDemo)
+│   │   ├── Hero.svelte                  landing hero
 │   │   ├── ThreeLayer.svelte            Goal · Branch · Daemon trinity
 │   │   └── TokenStrip.svelte            tinyassets economy + 3-chain addresses
 │   ├── content/
