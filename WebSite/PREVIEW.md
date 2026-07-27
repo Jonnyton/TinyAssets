@@ -70,9 +70,8 @@ The React build and rendered React preview are the production evidence.
 
 ## Shipping
 
-`WebSite/ship.ps1` transfers the prepared website bundle/branch to GitHub. It
-does not build or deploy either site. Merging the branch also does not deploy
-the website.
+Publish the reviewed website branch through the normal pull-request path.
+Merging the branch does not deploy the website.
 
 After review and merge, a host manually runs
 `.github/workflows/deploy-site-react.yml` with `confirm: deploy`. The
@@ -92,7 +91,6 @@ fallback; platform uptime evidence is separate and explicitly labeled.
 | `WebSite/site/` | Retained Svelte rollback source |
 | `WebSite/preview.bat` | Svelte rollback preview launcher |
 | `WebSite/preview-stop.bat` | Stops the Svelte preview server |
-| `WebSite/ship.ps1` | Pushes the prepared bundle/branch; does not deploy |
 | `.github/workflows/deploy-site-react.yml` | Manual current-production deployment |
 | `.github/workflows/deploy-site.yml` | Dispatch-only Svelte rollback |
 | `WebSite/DEPLOY.md` | Deployment and rollback playbook |

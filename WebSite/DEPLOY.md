@@ -48,9 +48,6 @@ React production build or authorize a Svelte deployment.
 5. Record the deployed source identity. A green merge or local build alone is
    not a shipped result.
 
-`WebSite/ship.ps1` can push a prepared bundle/branch. It does not run this
-workflow and does not publish `tinyassets.io`.
-
 ## Verify production
 
 Run the public MCP canary after the deployment:

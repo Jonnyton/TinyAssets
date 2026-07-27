@@ -93,10 +93,10 @@ Required when capturing a real conversation for the site:
   `svelte.config.js` must list every route. Its static output is `build/`.
 - New assets and route configuration belong in both trees when the production
   change requires rollback parity.
-- **Shipping helper:** `WebSite/ship.ps1` clones a fresh `main`, fetches the
-  prepared bundle, and pushes its branch. It does not build or deploy either
-  tree. After review and merge, follow `WebSite/DEPLOY.md` for the manual React
-  deployment and rendered live verification.
+- Publish the reviewed website branch through the normal pull-request path.
+  A merge does not deploy either tree. After merge, follow
+  `WebSite/DEPLOY.md` for the manual React deployment and rendered live
+  verification.
 - `deploy-site.yml` is dispatch-only Svelte rollback. Never add push or cron
   triggers or treat it as a second production pipeline.
 
@@ -147,8 +147,6 @@ Concrete examples that have already ratcheted:
 | `WebSite/preview.bat`                         | Svelte rollback preview launcher               |
 | `WebSite/preview-stop.bat`                    | Stops the Svelte Vite server                   |
 | `WebSite/PREVIEW.md`                          | Canonical two-tree preview loop                |
-| `WebSite/ship.ps1`                            | Pushes the prepared branch; does not deploy    |
-| `WebSite/website-ship.bundle`                 | Prepared branch bundle                         |
 | `WebSite/DEPLOY.md`                           | React deploy and Svelte rollback playbook      |
 | `.github/workflows/deploy-site-react.yml`     | Manual current-production deployment           |
 | `.github/workflows/deploy-site.yml`           | Dispatch-only Svelte rollback                  |
