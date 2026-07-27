@@ -195,8 +195,10 @@ real-generator and mirror/repository-absence tests went red then green and pass
 its manual refresh input now says not to use the legacy generator until task
 5.3 migrates it to canonical handles. React and Svelte production builds pass.
 Fresh production-preview Chrome renders of `/goals` and `/graph` in both sites
-show four retained generic goals, neither retired goal, and zero browser
-warnings/errors. This is static payload/content proof, not live MCP
+then showed four retained generic goals, neither retired goal, and zero browser
+warnings/errors. **Superseded 2026-07-27:** publication-provenance review later
+retained only the one independently proven-public Goal documented below. This
+is static payload/content proof, not live MCP
 regeneration: the legacy `snapshot-mcp.mjs` source contract remains open as
 described below, as does final retired-ID query-state proof.
 
@@ -571,9 +573,12 @@ without an independent explicit-public record were therefore removed manually
 from both mirrors. The sole retained Goal, `dd187997039b`, cites and is tested
 against two independent publication records:
 `branches/echoes-reddit-source-intake.yaml` and
-`docs/portfolio/echoes-of-the-cosmos/README.md`. The matching curated mirrors
-contain one Goal at SHA-256
-`0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+`docs/portfolio/echoes-of-the-cosmos/README.md`. Exact review then found
+orphaned `goal:<id>` tags for removed Goals and two retired Community Change
+Loop draft records. Those residues were removed; every Goal identity now
+resolves to `dd187997039b`, draft stats match the retained rows, and the
+matching curated mirrors have SHA-256
+`2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
 No 2026-07-27 evidence established safe full regeneration, rendered-browser
 acceptance, or post-fix clean use.
 
@@ -750,14 +755,21 @@ verdict without pretending the unsafe server projections are public:
   universe timestamps; the follow-up repairs every finding and separates
   bounded live discovery, checked-in Goal/edge evidence, and
   visibility-filtered timestamp signals;
-- the full Node website suite passes 74/74, both production builds pass,
+- cumulative exact-head `4b80da18` review by full-diff, security,
+  public-truth, and Claude Opus 5 reviewers returned ADAPT on recursively
+  encoded URL credentials, configurable browser endpoints, contradictory or
+  private collection data, misrouted/unproved page bodies, orphan Goal/draft
+  metadata, stale Goal copy, and totalizing global/alias/ARIA labels; the
+  follow-up fails closed on every data boundary and removes every identified
+  residue or overclaim;
+- the full Node website suite passes 78/78, both production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
   production dependency audit reports zero vulnerabilities, strict OpenSpec
   validation passes all 58 items, and `git diff --check` passes;
 - a live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh exits 1 on
   the server's `scope=discovery` response and leaves both curated snapshots
   byte-identical at SHA-256
-  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+  `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
 
 These are implementation and fail-closed proofs, not final acceptance.
 Server-side Goal/run/status/exact-page privacy, live source-data retirement,

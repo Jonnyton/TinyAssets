@@ -24,7 +24,6 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { fetchVitals, type Vitals } from '$lib/mcp/live';
-  import { fmtRel } from '$lib/fmt';
 
   type Dir = 'up' | 'left' | 'right';
   type Spot = { x: number; y: number; w: number; h: number; dir: Dir };
@@ -124,7 +123,7 @@
     { match: (p) => p.startsWith('/goals'), line: 'dated goal examples from the checked-in snapshot.' },
     { match: (p) => p.startsWith('/loop'), line: 'public workflows, with their source labels intact.' },
     { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'published discovery, with its omissions labelled.' },
-    { match: (p) => p.startsWith('/graph'), line: 'my head, seen from above.' },
+    { match: (p) => p.startsWith('/graph'), line: 'a discovery-scoped published map.' },
     { match: (p) => p.startsWith('/soul'), line: 'everything that makes me me — forkable.' },
     { match: (p) => p.startsWith('/build') || p.startsWith('/contribute'), line: 'two doors in. humans hold the merge keys.' },
     { match: (p) => p.startsWith('/host'), line: 'you don’t have to host me. but you can.' },
@@ -170,7 +169,6 @@
 
   function facts(): string[] {
     const f: string[] = [];
-    if (vitals?.deployedAt) f.push(`this body deployed ${fmtRel(vitals.deployedAt)}.`);
     if (mode === 'asleep') f.push('no recent public-universe timestamp. the engine can still be up — that’s a different reading.');
     if (mode === 'awake') f.push('a visibility-filtered public-universe timestamp moved within the last hour.');
     f.push('a timestamp signal is not proof that a run is executing.');
@@ -200,11 +198,11 @@
     if (el.closest('.readout, [class*="stat"]'))
       return { key: 'readout', lines: ['those readings are live. I feel each one.', 'that panel’s my instrument face — no makeup.', 'live the moment you look. I can’t fake a flat line.'] };
     if (el.closest('[class*="vital"]'))
-      return { key: 'vitals', lines: ['those numbers are my actual pulse.', 'that’s me, measured — not a sales figure.', 'green means I’m really awake; amber means napping.'] };
+      return { key: 'vitals', lines: ['those public readings carry their sources.', 'measured signals — not proof that a run is executing.', 'recent public timestamps and reachability stay separate.'] };
     if (el.closest('[class*="ladder"], [class*="rung"]'))
       return { key: 'ladder', lines: ['unlit rungs. I only light them with evidence.', 'no rung lights without a real URL behind it.', 'I can’t fake a single step on that.'] };
     if (el.closest('[class*="goal"]'))
-      return { key: 'goal', lines: ['a real goal. someone could pick it up today.', 'that one’s open — fork it, beat it, own it.', 'goals here are outcomes, not to-do items.'] };
+      return { key: 'goal', lines: ['a published goal example from a dated snapshot.', 'you can use this outcome as a starting point.', 'goals here are outcomes, not to-do items.'] };
     if (el.closest('[class*="log"], [class*="event"]'))
       return { key: 'log', lines: ['published history, with its source attached.', 'a timestamp is a signal, not an executing run.', 'receipts should say where they came from.'] };
     if (el.closest('table'))
@@ -685,7 +683,7 @@
         const d = Math.hypot(e.clientX - (window.innerWidth - 70), e.clientY - (window.innerHeight - 90));
         if (d < 140) {
           saidSleepLine = true;
-          say('mm? no workflow is moving just now. me too.', 4500);
+          say('mm? the public timestamp signal is quiet just now. me too.', 4500);
         }
       }
       return;

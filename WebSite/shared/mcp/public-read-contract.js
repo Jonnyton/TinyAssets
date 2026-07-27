@@ -1,6 +1,10 @@
 const PAGE_INVENTORY_SINCE = "1970-01-01T00:00:00Z";
 const PAGE_INVENTORY_LIMIT = 100;
 const validatedPathSets = new WeakMap();
+const DISCOVERABLE_UNIVERSE_VISIBILITIES = new Set([
+  "public",
+  "metadata_only",
+]);
 const CREDENTIAL_PARAMETER_NAMES = new Set([
   "accesstoken",
   "refreshtoken",
@@ -29,6 +33,9 @@ const CREDENTIAL_PARAMETER_NAMES = new Set([
   "sessionid",
   "oauthcode",
   "authorizationcode",
+  "code",
+  "accesskey",
+  "secretkey",
   "privatekey",
 ]);
 
@@ -56,6 +63,49 @@ function containsCredentialMaterial(params) {
       return true;
     }
     if (/^\s*bearer(?:\s|%20)+\S/i.test(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Decode a URL component repeatedly so encoded separators cannot hide
+ * credential parameters. The small bound handles ordinary browser/OAuth
+ * double encoding without turning malformed input into an unbounded parser.
+ *
+ * @param {string} value
+ * @returns {string[]}
+ */
+function decodedComponentVariants(value) {
+  const variants = [value];
+  let current = value;
+  for (let round = 0; round < 3; round += 1) {
+    let decoded;
+    try {
+      decoded = decodeURIComponent(current);
+    } catch {
+      throw new Error("Public MCP URL contains an undecodable fragment");
+    }
+    if (decoded === current) break;
+    variants.push(decoded);
+    current = decoded;
+  }
+  return variants;
+}
+
+/** @param {string} fragment */
+function fragmentContainsCredentialMaterial(fragment) {
+  for (const variant of decodedComponentVariants(fragment)) {
+    if (/^\s*bearer(?:\s|:)+\S/i.test(variant)) return true;
+    if (containsCredentialMaterial(new URLSearchParams(variant))) return true;
+    const queryIndex = variant.indexOf("?");
+    if (
+      queryIndex >= 0 &&
+      containsCredentialMaterial(
+        new URLSearchParams(variant.slice(queryIndex + 1)),
+      )
+    ) {
       return true;
     }
   }
@@ -103,32 +153,40 @@ export function pageInventoryCall(changedSince = PAGE_INVENTORY_SINCE) {
 export function assertAnonymousSnapshotUrl(value) {
   const parsed = new URL(value);
   const fragment = parsed.hash.slice(1);
-  let decodedFragment = fragment;
-  try {
-    decodedFragment = decodeURIComponent(fragment);
-  } catch {
-    // URLSearchParams still handles any valid pairs below; malformed escaped
-    // fragments are not treated as credential-free by decoding alone.
-  }
-  const fragmentQueryIndex = fragment.indexOf("?");
-  const fragmentParams = [
-    new URLSearchParams(fragment),
-    ...(fragmentQueryIndex >= 0
-      ? [new URLSearchParams(fragment.slice(fragmentQueryIndex + 1))]
-      : []),
-  ];
   if (
     parsed.username ||
     parsed.password ||
     containsCredentialMaterial(parsed.searchParams) ||
-    fragmentParams.some(containsCredentialMaterial) ||
-    /^\s*bearer(?:\s|:)+\S/i.test(decodedFragment)
+    fragmentContainsCredentialMaterial(fragment)
   ) {
     throw new Error(
       "Public snapshots must run anonymously; MCP URL credentials are forbidden",
     );
   }
   return value;
+}
+
+/**
+ * Browser public endpoints may be same-origin paths or credential-free HTTPS
+ * URLs. This validation happens at module load, before any request or logging.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export function assertPublicBrowserEndpoint(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw new Error("Public MCP browser endpoint must be a non-empty string");
+  }
+  const endpoint = value.trim();
+  if (endpoint.startsWith("/") && !endpoint.startsWith("//")) {
+    assertAnonymousSnapshotUrl(new URL(endpoint, "https://public.invalid").href);
+    return endpoint;
+  }
+  const parsed = new URL(assertAnonymousSnapshotUrl(endpoint));
+  if (parsed.protocol !== "https:") {
+    throw new Error("Public MCP browser endpoint must use HTTPS");
+  }
+  return endpoint;
 }
 
 /**
@@ -213,12 +271,17 @@ function copyPublicScalar(source, target, key, type, nullable = false) {
 }
 
 /** @param {any} value */
-function sanitizePublicUniverse(value) {
+export function sanitizePublicUniverse(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("read_graph graphs returned an invalid universe record");
   }
   if (typeof value.id !== "string" || !value.id.trim()) {
     throw new Error("read_graph graphs returned a universe without an id");
+  }
+  if (!DISCOVERABLE_UNIVERSE_VISIBILITIES.has(value.visibility)) {
+    throw new Error(
+      "read_graph graphs returned a universe without explicit discoverable visibility",
+    );
   }
   const safe = { id: value.id };
   copyPublicScalar(value, safe, "visibility", "string");
@@ -263,11 +326,13 @@ function sanitizePublicPageSummary(value) {
 export function sanitizePublicPlaygroundResponse(name, args, payload) {
   assertPublicPlaygroundCall(name, args);
   if (name === "read_graph") {
-    const universes = requireCollection(
+    const requestedLimit =
+      typeof args.limit === "number" ? args.limit : 0;
+    const universes = requirePublicUniverseCollection(
       payload,
-      "universes",
       "read_graph graphs",
-    ).map(sanitizePublicUniverse);
+      requestedLimit,
+    );
     return { universes, count: universes.length };
   }
 
@@ -332,6 +397,32 @@ export function requireCollection(payload, key, source) {
 }
 
 /**
+ * Require explicit-public records and strict bounded metadata before a public
+ * browser renders any universe discovery response.
+ *
+ * @param {any} payload
+ * @param {string} source
+ * @param {number} requestLimit
+ * @returns {any[]}
+ */
+export function requirePublicUniverseCollection(payload, source, requestLimit) {
+  const result = requireObjectResult(payload, source);
+  const universes = requireCollection(result, "universes", source);
+  if (
+    !Number.isInteger(result.count) ||
+    result.count !== universes.length ||
+    !Number.isInteger(requestLimit) ||
+    requestLimit < 1 ||
+    universes.length > requestLimit
+  ) {
+    throw new Error(
+      `${source} returned inconsistent or over-limit collection metadata`,
+    );
+  }
+  return universes.map(sanitizePublicUniverse);
+}
+
+/**
  * Require a complete collection from a read surface that has a request cap but
  * no cursor or total-count metadata. Filling the cap is ambiguous and cannot
  * replace a full checked-in snapshot.
@@ -343,7 +434,21 @@ export function requireCollection(payload, key, source) {
  * @returns {any[]}
  */
 export function requireCompleteCollection(payload, key, source, requestLimit) {
-  const collection = requireCollection(payload, key, source);
+  const result = requireObjectResult(payload, source);
+  const collection = requireCollection(result, key, source);
+  if (!Number.isInteger(result.count) || result.count !== collection.length) {
+    throw new Error(`${source} returned inconsistent collection metadata`);
+  }
+  if (
+    ("truncated_count" in result &&
+      (!Number.isInteger(result.truncated_count) ||
+        result.truncated_count !== 0)) ||
+    ("truncated" in result && result.truncated !== false) ||
+    ("has_more" in result && result.has_more !== false) ||
+    ("next_cursor" in result && result.next_cursor != null)
+  ) {
+    throw new Error(`${source} returned an incomplete collection`);
+  }
   if (collection.length >= requestLimit) {
     throw new Error(
       `${source} cannot prove completeness at request limit of ${requestLimit}`,
@@ -355,12 +460,42 @@ export function requireCompleteCollection(payload, key, source, requestLimit) {
 /**
  * @param {any} payload
  * @param {string} source
+ * @param {string} [expectedPath]
  * @returns {Record<string, any> & { content: string }}
  */
-export function requirePageBody(payload, source) {
+export function requirePageBody(payload, source, expectedPath) {
   const result = requireObjectResult(payload, source);
   if (typeof result.content !== "string") {
     throw new Error(`${source} did not return a content string`);
+  }
+  if (expectedPath !== undefined) {
+    const expected = canonicalPagePath(expectedPath);
+    if (
+      typeof result.path !== "string" ||
+      canonicalPagePath(result.path) !== expected
+    ) {
+      throw new Error(`${source} returned a different page path`);
+    }
+    const proof = result.source_read_proof;
+    if (
+      !proof ||
+      typeof proof !== "object" ||
+      Array.isArray(proof) ||
+      typeof proof.path !== "string" ||
+      canonicalPagePath(proof.path) !== expected ||
+      typeof proof.sha256 !== "string" ||
+      !/^[a-f0-9]{64}$/i.test(proof.sha256)
+    ) {
+      throw new Error(`${source} returned invalid source-read proof`);
+    }
+    if (
+      result.truncated !== false ||
+      typeof result.is_draft !== "boolean" ||
+      typeof proof.is_draft !== "boolean" ||
+      result.is_draft !== proof.is_draft
+    ) {
+      throw new Error(`${source} returned inconsistent page completeness proof`);
+    }
   }
   return /** @type {Record<string, any> & { content: string }} */ (result);
 }

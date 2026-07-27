@@ -6,14 +6,15 @@
   <title>Fine print — Tiny</title>
   <link rel="canonical" href="https://tinyassets.io/fine-print" />
   <meta http-equiv="refresh" content="2;url=/fine-print" />
-  <meta name="description" content="Live status, deploy receipts, and the legal links now live in the Fine print — Tiny's ops room." />
+  <meta name="description" content="Public reachability and timestamp signals, explicitly unavailable operator fields, and legal links now live in Tiny's Fine print." />
 </svelte:head>
 
 <section class="moved">
   <p class="eyebrow">this page moved</p>
   <p class="moved__line">
-    Live status now lives in the <em>Fine print</em> — Tiny's ops room, with
-    deploy receipts and the legal links alongside it.
+    Public reachability and timestamp signals now live in the
+    <em>Fine print</em>, with unavailable operator fields and legal links
+    labelled plainly.
   </p>
   <a class="moved__cta" href="/fine-print">Open the Fine print →</a>
   <p class="moved__sub ev">/status → /fine-print · taking you there in a moment</p>

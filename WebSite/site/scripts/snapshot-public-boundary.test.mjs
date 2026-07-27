@@ -47,11 +47,24 @@ test('checked-in Goal rows require independent public-publication provenance', (
   assert.deepEqual(snapshots[0], snapshots[1], 'public snapshot mirrors must match');
 
   for (const snapshot of snapshots) {
+    const serialized = JSON.stringify(snapshot);
+    const goalIdentities = new Set([
+      ...snapshot.goals.map((goal) => goal.id),
+      ...[...serialized.matchAll(/"goal:([a-f0-9]{12})"/g)].map(
+        (match) => match[1]
+      )
+    ]);
+
     assert.equal(snapshot.stats.goals, snapshot.goals.length);
     assert.deepEqual(
-      snapshot.goals.map((goal) => goal.id),
+      [...goalIdentities],
       ['dd187997039b'],
-      'unproven historical Goal rows must stay out of the public artifact'
+      'only independently proven Goal identity may appear anywhere in the public artifact'
+    );
+    assert.doesNotMatch(
+      serialized,
+      /62f977e7ff0c|454b6e72348b|4ce84ff648d4/,
+      'known orphaned Goal identities must not survive in public metadata'
     );
     for (const goal of snapshot.goals) {
       assert.equal(goal.visibility, 'public');
@@ -71,6 +84,19 @@ test('checked-in Goal rows require independent public-publication provenance', (
   }
 });
 
+test('retired change-loop drafts and their metadata stay out of public snapshots', () => {
+  for (const path of snapshotPaths) {
+    const snapshot = JSON.parse(readFileSync(path, 'utf8'));
+    const serialized = JSON.stringify(snapshot);
+
+    assert.equal(snapshot.stats.wiki_drafts, snapshot.wiki.drafts.length);
+    assert.doesNotMatch(
+      serialized,
+      /Community Change Loop v1 (?:Builder Notes|Piece Map)|community-change-loop-v1-(?:builder-notes|piece-map)/i
+    );
+  }
+});
+
 test('required snapshots fail when the MCP SDK is unavailable', () => {
   assert.match(
     snapshotSource,
@@ -81,8 +107,11 @@ test('required snapshots fail when the MCP SDK is unavailable', () => {
 test('page crawling rejects truncated bodies before extracting references', () => {
   assert.match(
     snapshotSource,
-    /if\s*\(body\?\.truncated\s*!==\s*false\)\s*\{\s*throw new Error\([^)]*truncated[^)]*\)/s
+    /requirePageBody\(\s*parseToolResponse\(r\)\s*,\s*['"]read_page page body['"]\s*,\s*page\.path\s*\)/
   );
+  assert.match(snapshotSource, /\bassertBodyMatchesSourceHash\(body\)/);
+  assert.match(snapshotSource, /createHash\(['"]sha256['"]\)/);
+  assert.match(snapshotSource, /content did not match its source-read proof/);
 });
 
 test('full snapshot replacement requires a complete all-scope inventory', () => {

@@ -6,14 +6,14 @@
   <title>Fine print — Tiny</title>
   <link rel="canonical" href="https://tinyassets.io/fine-print" />
   <meta http-equiv="refresh" content="2;url=/fine-print" />
-  <meta name="description" content="The evidence — deploy receipts, run records, and the legal links — now lives in the Fine print, Tiny's ops room." />
+  <meta name="description" content="Public readings, source limits, explicitly unavailable operator fields, and legal links now live in Tiny's Fine print." />
 </svelte:head>
 
 <section class="moved">
   <p class="eyebrow">this page moved</p>
   <p class="moved__line">
-    The evidence now lives in the <em>Fine print</em> — deploy receipts, run
-    records, and the legal links, all in Tiny's ops room.
+    Public readings now live in the <em>Fine print</em> — with source limits,
+    unavailable operator fields, and legal links labelled plainly.
   </p>
   <a class="moved__cta" href="/fine-print">Open the Fine print →</a>
   <p class="moved__sub ev">/proof → /fine-print · taking you there in a moment</p>

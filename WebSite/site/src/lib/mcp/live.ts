@@ -10,7 +10,7 @@ import type { Snapshot } from '$lib/mcp/types';
 import {
   pageInventoryCall,
   publicGraphCall,
-  requireCollection,
+  requirePublicUniverseCollection,
   splitPageInventory
 } from '../../../../shared/mcp/public-read-contract.js';
 
@@ -142,10 +142,10 @@ export type LiveResult = {
 
 export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
   const universesCall = publicGraphCall('graphs', limit);
-  return requireCollection(
+  return requirePublicUniverseCollection(
     await callTool(universesCall.name, universesCall.args),
-    'universes',
-    'read_graph graphs'
+    'read_graph graphs',
+    limit
   );
 }
 
@@ -222,10 +222,10 @@ const ACTIVITY_WINDOW_MS = 60 * 60 * 1000;
 export async function fetchVitals(): Promise<Vitals> {
   try {
     const universesCall = publicGraphCall('graphs', 100);
-    const publicUniverses = requireCollection(
+    const publicUniverses = requirePublicUniverseCollection(
       await callTool(universesCall.name, universesCall.args),
-      'universes',
-      'read_graph graphs'
+      'read_graph graphs',
+      100
     );
     let universeMovedMs: number | null = null;
     for (const universe of publicUniverses) {

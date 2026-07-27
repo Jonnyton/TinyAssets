@@ -88,6 +88,98 @@ test("global navigation and metadata never relabel discovery as the whole brain"
   assert.doesNotMatch(copy, /browse every page in the commons/i);
 });
 
+test("public copy never totalizes a scoped, dated, or unavailable source", () => {
+  const globalCopy = [
+    "WebSite/site-react/app/_components/HomeClient.tsx",
+    "WebSite/site/src/routes/+page.svelte",
+    "WebSite/site-react/app/graph/_components/GraphClient.tsx",
+    "WebSite/site/src/routes/graph/+page.svelte",
+    "WebSite/site-react/components/Footer.tsx",
+    "WebSite/site/src/lib/components/Footer.svelte",
+    "WebSite/site-react/app/goals/page.tsx",
+    "WebSite/site/src/routes/goals/+page.svelte",
+    "WebSite/site-react/components/TinyBot.tsx",
+    "WebSite/site/src/lib/components/TinyBot.svelte",
+    "WebSite/site/src/lib/components/MoodPill.svelte",
+  ].map(source).join("\n").replace(/\s+/g, " ");
+
+  assert.doesNotMatch(
+    globalCopy,
+    /whole[- ]brain|whole map|every wiki page|one dot per wiki page|my head.{0,30}seen from above/i,
+  );
+  assert.doesNotMatch(globalCopy, /same surface.{0,40}every number/i);
+  assert.doesNotMatch(
+    globalCopy,
+    /what Tiny is working on|what(?:'|’)s being worked on|what's on me right now/i,
+  );
+  assert.doesNotMatch(
+    globalCopy,
+    /goals for restoring classic games.{0,180}producing research papers/i,
+    "the FAQ must derive its claim from the curated snapshot rather than naming removed Goals",
+  );
+  assert.doesNotMatch(globalCopy, /Today zero rungs/i);
+  assert.doesNotMatch(globalCopy, /pick it up today|that one(?:'|’)s open|no workflow is moving/i);
+  assert.doesNotMatch(
+    globalCopy,
+    /live brain|something(?:'|’)s happening right now|my memory, not a screenshot|a universe was active/i,
+  );
+});
+
+test("global paired surfaces carry bounded source labels", () => {
+  const pairs = [
+    [
+      "WebSite/site-react/app/_components/HomeClient.tsx",
+      "WebSite/site/src/routes/+page.svelte",
+      /checked-in public snapshot/i,
+    ],
+    [
+      "WebSite/site-react/app/graph/_components/GraphClient.tsx",
+      "WebSite/site/src/routes/graph/+page.svelte",
+      /discovery-scoped/i,
+    ],
+    [
+      "WebSite/site-react/components/Footer.tsx",
+      "WebSite/site/src/lib/components/Footer.svelte",
+      /published discovery/i,
+    ],
+    [
+      "WebSite/site-react/app/goals/page.tsx",
+      "WebSite/site/src/routes/goals/+page.svelte",
+      /dated public/i,
+    ],
+    [
+      "WebSite/site-react/components/TinyBot.tsx",
+      "WebSite/site/src/lib/components/TinyBot.svelte",
+      /timestamp signal/i,
+    ],
+  ];
+
+  for (const [reactPath, sveltePath, label] of pairs) {
+    assert.match(source(reactPath), label, `${reactPath} must carry the bounded label`);
+    assert.match(source(sveltePath), label, `${sveltePath} must carry the bounded label`);
+  }
+});
+
+test("proof and status aliases promise only the public Fine Print boundary", () => {
+  for (const path of [
+    "WebSite/site-react/app/proof/page.tsx",
+    "WebSite/site/src/routes/proof/+page.svelte",
+    "WebSite/site-react/app/status/page.tsx",
+    "WebSite/site/src/routes/status/+page.svelte",
+  ]) {
+    const body = source(path).replace(/\s+/g, " ");
+    assert.doesNotMatch(body, /deploy receipts?|run records?|live status/i);
+    assert.match(body, /unavailable/i);
+  }
+
+  const svelteFinePrint = source("WebSite/site/src/routes/fine-print/+page.svelte");
+  assert.doesNotMatch(
+    svelteFinePrint,
+    /content="[^"]*engine(?:'|’)s own release receipt/i,
+  );
+  assert.match(svelteFinePrint, /release-receipt unavailability/i);
+});
+
 test("public Fine Print pages never download or advertise raw get_status", () => {
   for (const path of [
     "WebSite/site-react/app/fine-print/_components/FinePrintClient.tsx",

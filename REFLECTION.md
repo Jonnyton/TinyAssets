@@ -524,3 +524,6 @@ fresh-host rollback edges found later.
   not only the parsed view; checked-in `visibility=public` also needs an
   independent publication record when a historical generator could have
   defaulted it.
+- **Follow-up:** retirement must remove derived identifiers and draft metadata,
+  not only primary rows; URL credential checks must inspect bounded recursive
+  decodings so encoded separators cannot hide parameters.

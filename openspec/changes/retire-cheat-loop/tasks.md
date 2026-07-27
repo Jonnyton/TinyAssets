@@ -219,8 +219,10 @@
   A follow-up 2026-07-26 slice removed the two privileged TinyAssets goals
   from both checked-in MCP snapshot mirrors and removed unsourced repository
   graph carry-forward. React and Svelte production `/goals` and `/graph`
-  previews now render four retained generic goals, neither retired goal, and
-  zero browser warnings/errors. This task remains open on task 5.3's source
+  previews then rendered four retained generic goals, neither retired goal,
+  and zero browser warnings/errors. **Superseded 2026-07-27:** later
+  publication-provenance review retained only one independently proven-public
+  Goal, as recorded under task 5.3. This task remains open on task 5.3's source
   retirement and final query-state proof.
 - [ ] 5.3 Remove the loop core-team manifest and its six shipped loop-role
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
@@ -293,9 +295,12 @@
   `dd187997039b`, is independently declared public by
   `branches/echoes-reddit-source-intake.yaml` and
   `docs/portfolio/echoes-of-the-cosmos/README.md`; both provenance paths are
-  embedded in and tested against the snapshot. The matching curated mirrors
-  now contain one Goal and have SHA-256
-  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+  embedded in and tested against the snapshot. Exact review then found
+  orphaned `goal:<id>` tag records for removed Goals plus two retired
+  Community Change Loop draft records. Those residues were removed; every
+  remaining Goal identity now resolves to `dd187997039b`, draft stats match
+  the retained rows, and the matching curated mirrors have SHA-256
+  `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
   **Fail-closed website implementation evidence 2026-07-27:** both public
   browser clients now keep their generic MCP caller module-private and allow
   only bounded, visibility-filtered `read_graph target=graphs` plus the
@@ -313,18 +318,27 @@
   The snapshot requires the MCP SDK, and the repository generator always
   publishes the canonical public GitHub URL rather than a local Git origin.
   Exact-head Codex review of implementation commit `afb77f12` returned ADAPT
-  on those Playground/credential gaps, residual whole-brain/live-Goal copy,
+  on Playground/credential gaps, residual whole-brain/live-Goal copy,
   conflated Graph provenance, and a run-execution claim inferred from universe
-  timestamps. Those findings are repaired in this follow-up; public copy now
-  labels bounded discovery, checked-in Goal evidence, and visibility-filtered
-  timestamp signals separately.
-  The full Node suite passes 74/74; both production builds pass; Svelte check
+  timestamps. Cumulative-head `4b80da18` then received ADAPT from full-diff,
+  security, public-truth, and Claude Opus 5 reviewers: encoded fragment
+  separators bypassed credential detection; configurable browser endpoints,
+  collection counts/visibility, and exact-body response proofs needed stricter
+  validation; removed Goal/draft metadata remained; and global/alias/ARIA
+  copy still totalized bounded discovery or inferred current Goal/run/release
+  evidence. Every finding is repaired in this follow-up. Public collections
+  now require exact counts and explicit discoverable visibility; body path/proof/hash
+  must match before extraction; browser endpoints and recursively decoded URL
+  credentials fail closed; snapshot residues are gone; and public copy labels
+  bounded discovery, checked-in evidence, or unavailability on every tested
+  surface.
+  The full Node suite passes 78/78; both production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production
   dependency audit reports zero vulnerabilities; strict validation passes all
   58 OpenSpec items; and `git diff --check` passes. A fresh live anonymous
   required/full refresh failed closed on `scope=discovery` with exit 1 and
   left both curated mirrors byte-identical at
-  `0859FE0D1A873D4E6B07105AC863762C82B5A1FD0CAC51E882FD628FEB9ABB12`.
+  `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
   This is implementation evidence, not final approval: fresh exact-head Codex
   and Claude Opus 5 review, server-side privacy enforcement, source-data
   retirement, rendered live proof, and post-fix clean-use evidence remain.

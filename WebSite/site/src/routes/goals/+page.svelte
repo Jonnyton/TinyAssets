@@ -1,5 +1,5 @@
 <!--
-  /goals — the living board of what's being worked on. "Field Notes"
+  /goals — a dated board of published Goal examples. "Field Notes"
   rebuild, 2026-06-09.
 
   Crawl fixes applied: jargon wall removed (goal / workflow / ladder each
@@ -140,7 +140,7 @@
 </script>
 
 <svelte:head>
-  <title>Goals — the board of what Tiny is working on</title>
+  <title>Goals — dated public examples</title>
   <meta
     name="description"
     content="A checked-in snapshot of public goals on Tiny. Goals describe outcomes; user-authored workflows compete to serve them; evidence-gated ladders make progress checkable."
@@ -172,7 +172,7 @@
     <header class="board__head">
       <div>
         <p class="eyebrow">entry · the public board</p>
-        <h2 id="board-title">What's on me right now.</h2>
+        <h2 id="board-title">Published examples in this snapshot.</h2>
       </div>
       <div class="board__meta" aria-live="polite">
         <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>{realGoals.length} public goals · checked-in snapshot {bakedStampDate}</span>

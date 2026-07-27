@@ -3,7 +3,7 @@
   "source": "tinyassets.io/mcp",
   "stats": {
     "wiki_promoted": 55,
-    "wiki_drafts": 8,
+    "wiki_drafts": 6,
     "goals": 1,
     "universes": 3,
     "edges": 130
@@ -329,14 +329,6 @@
       {
         "slug": "drafts/concepts/workflow-patterns.md",
         "title": "TinyAssets Patterns"
-      },
-      {
-        "slug": "drafts/notes/community-change-loop-v1-builder-notes.md",
-        "title": "Community Change Loop v1 Builder Notes"
-      },
-      {
-        "slug": "drafts/notes/community-change-loop-v1-piece-map.md",
-        "title": "Community Change Loop v1 Piece Map"
       },
       {
         "slug": "drafts/notes/uptime-probe.md",
@@ -1221,14 +1213,6 @@
       "forkable",
       "distribution"
     ],
-    "goal:62f977e7ff0c": [
-      "classic-games",
-      "game-preservation",
-      "compatibility",
-      "local-app",
-      "installers",
-      "legal-provenance"
-    ],
     "goal:dd187997039b": [
       "public-source",
       "mcp",
@@ -1237,12 +1221,6 @@
       "reddit",
       "community",
       "canon-gate"
-    ],
-    "goal:454b6e72348b": [
-      "agent-teams",
-      "claude-code",
-      "autonomous",
-      "end-to-end"
     ]
   }
 }

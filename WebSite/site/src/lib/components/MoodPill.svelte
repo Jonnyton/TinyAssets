@@ -107,24 +107,24 @@
       <dl class="pop__legend">
         <div>
           <dt class="t-drafting">drafting</dt>
-          <dd>a universe was active in the last hour. something's happening right now.</dd>
+          <dd>a public-universe timestamp moved within the last hour; that does not prove a run is executing.</dd>
         </div>
         <div>
           <dt class="t-watching">watching</dt>
-          <dd>a universe was active in the last 24h. recent work, quiet at this moment.</dd>
+          <dd>a public-universe timestamp moved within the last 24h; no current-run claim is available.</dd>
         </div>
         <div>
           <dt class="t-quiet">quiet</dt>
-          <dd>nothing in the last day. the daemon's still here, just resting.</dd>
+          <dd>no public-universe timestamp moved in the last day; server reachability is a separate reading.</dd>
         </div>
         <div>
           <dt class="t-summoned">summoned</dt>
-          <dd>the live brain is unreachable. mood reading is whatever we last knew.</dd>
+          <dd>live public-universe discovery is unreachable. mood reading is whatever we last knew.</dd>
         </div>
       </dl>
       <p class="pop__source">
         Source: <code>read_graph target="graphs"</code> via <code>tinyassets.io/mcp</code>.
-        Reading the {source === 'live' ? 'live brain' : source === 'snapshot' ? 'baked snapshot (live refresh pending)' : 'last good cache'}.
+        Reading {source === 'live' ? 'live public-universe discovery' : source === 'snapshot' ? 'the baked snapshot (live refresh pending)' : 'the last good cache'}.
       </p>
     </aside>
   {/if}

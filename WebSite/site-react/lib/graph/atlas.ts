@@ -2,7 +2,7 @@
  * atlas.ts — turns the MCP snapshot (or a live re-read of the same shape)
  * into a SMALL, designed constellation instead of a 1,000-dot hairball.
  *
- * The old /graph baked every wiki page as its own node (1,183 of them) and
+ * The old /graph baked each page in its selected snapshot as a node and
  * force-directed the result into a meaningless blob. The atlas aggregates:
  *
  *   - each public goal           -> one labelled node   (~19)
@@ -253,7 +253,7 @@ export function buildAtlas(snap: Snapshotish): Atlas {
 
   const nodes: AtlasNode[] = [];
 
-  // ── Repo hub at the centre. The whole brain hangs off the project. ──
+  // ── Repo hub at the centre. The selected public evidence hangs off the project. ──
   nodes.push({
     id: REPO_ID,
     kind: 'repo',

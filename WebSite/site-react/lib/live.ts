@@ -7,14 +7,16 @@
 
 import type { Snapshot } from "./types";
 import {
+  assertPublicBrowserEndpoint,
   pageInventoryCall,
   publicGraphCall,
-  requireCollection,
+  requirePublicUniverseCollection,
   splitPageInventory,
 } from "../../shared/mcp/public-read-contract.js";
 
-const MCP_PATH =
-  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MCP_PATH) || "/mcp";
+const MCP_PATH = assertPublicBrowserEndpoint(
+  (typeof process !== "undefined" && process.env.NEXT_PUBLIC_MCP_PATH) || "/mcp",
+);
 
 let initialized = false;
 let sessionId: string | null = null;
@@ -142,10 +144,10 @@ export type LiveResult = {
 
 export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
   const universesCall = publicGraphCall("graphs", limit);
-  return requireCollection(
+  return requirePublicUniverseCollection(
     await callTool(universesCall.name, universesCall.args),
-    "universes",
     "read_graph graphs",
+    limit,
   );
 }
 
@@ -241,10 +243,10 @@ const VITALS_SIGNAL_WINDOW_MS = 60 * 60 * 1000;
 export async function fetchVitals(): Promise<Vitals> {
   try {
     const universesCall = publicGraphCall("graphs", 100);
-    const publicUniverses = requireCollection(
+    const publicUniverses = requirePublicUniverseCollection(
       await callTool(universesCall.name, universesCall.args),
-      "universes",
       "read_graph graphs",
+      100,
     );
     let universeMovedMs: number | null = null;
     for (const universe of publicUniverses) {

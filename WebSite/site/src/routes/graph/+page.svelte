@@ -1,11 +1,12 @@
 <!--
   /graph — the living map. Obsidian-style force graph, 2026-06-10 rebuild.
 
-  Every wiki page is its own dot (1,200+), clustered around category hubs
-  the way Obsidian notes cluster around tags. Goals and universes are their
-  own constellations. The layout is a real physics settle (d3-force), not a
-  designed diagram — you watch it breathe into place, then pan, zoom, hover
-  to focus a neighbourhood, and drag nodes around.
+  Each page included in the dated or discovery-scoped view is a dot,
+  clustered around category hubs the way Obsidian notes cluster around tags.
+  Checked-in Goals and discoverable universes form their own constellations.
+  The layout is a real physics settle (d3-force), not a designed diagram —
+  you watch it breathe into place, then pan, zoom, hover to focus a
+  neighbourhood, and drag nodes around.
 
   Honesty rails:
     - bright lines are REAL page→page references from the snapshot;
@@ -517,7 +518,7 @@
 <section class="cover">
   <div class="container">
     <p class="eyebrow">field notes · the living map</p>
-    <h1 class="cover__title">My head, <em>seen from above</em>.</h1>
+    <h1 class="cover__title">A published map, <em>seen from above</em>.</h1>
     <p class="voice cover__lede">
       Each of the {wikiTotal.toLocaleString()} pages in this view is a dot,
       settling around its category the way notes cluster around tags. The
@@ -559,7 +560,7 @@
 <!-- 2 · The sky + side panel ──────────────────────────────────────────── -->
 <section class="atlas">
   <div class="container atlas__shell">
-    <figure class="map" aria-label="Force-directed map: every wiki page, goal, and universe as a dot; lines are real references">
+    <figure class="map" aria-label="Force-directed map of discovery-scoped public pages and universes plus checked-in Goal evidence; recorded references appear as lines">
       <div class="map__wrap" bind:this={wrapEl}>
         <canvas
           bind:this={canvasEl}
@@ -631,14 +632,14 @@
           <h2 class="panel__title">Read it like a night sky.</h2>
         </header>
         <ul class="legend">
-          <li><span class="swatch swatch--page"></span><span><strong>pages</strong> — one dot per wiki page, {dotCount.toLocaleString()} of them, sized by how often other pages actually reference them. Hover one to see its title; zoom in and titles appear on their own.</span></li>
+          <li><span class="swatch swatch--page"></span><span><strong>pages</strong> — one dot for each page included in this view, {dotCount.toLocaleString()} in total, sized by how often other included pages reference it. Hover one to see its title; zoom in and titles appear on their own.</span></li>
           <li><span class="swatch swatch--hub"></span><span><strong>category hubs</strong> — the labelled anchors each page files under. Click one to read its newest pages the way your chatbot would.</span></li>
           <li><span class="swatch swatch--goal"></span><span><strong>goals</strong> — {atlas.publicGoalCount} public goals in ember. Click one to open its page.</span></li>
           <li><span class="swatch swatch--universe"></span><span><strong>universes</strong> — {atlas.universeCount} tailored memory containers in violet. Click one for its phase and last activity.</span></li>
         </ul>
         <p class="panel__note voice">
           Three kinds of lines, honestly drawn: the bright ones are the
-          {refCount} real page-to-page references in my memory; the faint
+          {refCount} recorded page-to-page references in the checked-in snapshot; the faint
           spokes are filing (a page to its category) and shared-tag clusters
           (pages carrying the same tag). Filing and tags aren't citations, so
           they're drawn like they barely exist.
@@ -647,7 +648,7 @@
           <Tick href="/commons" label="browse the discovery view of the commons" />
         </p>
         <p class="panel__foot">
-          <Tick href={REPO_URL} label="the repo behind all of it" external />
+          <Tick href={REPO_URL} label="the repository behind this public site" external />
         </p>
       {/if}
     </aside>

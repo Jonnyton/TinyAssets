@@ -26,7 +26,7 @@ export function Footer() {
           <span className="eyebrow">Use him</span>
           <ul>
             <li><Link href="/start">Start — connect a chatbot</Link></li>
-            <li><Link href="/goals">Goals — what&apos;s being worked on</Link></li>
+            <li><Link href="/goals">Goals — dated public examples</Link></li>
             <li><Link href="/host">Host a daemon</Link></li>
             <li><Link href="/alliance">Work with us</Link></li>
           </ul>
@@ -34,9 +34,9 @@ export function Footer() {
         <div className={styles.col}>
           <span className="eyebrow">Watch him</span>
           <ul>
-            <li><Link href="/loop">Workflow activity — public run provenance</Link></li>
-            <li><Link href="/commons">Commons — the public brain</Link></li>
-            <li><Link href="/graph">Graph — the whole map</Link></li>
+            <li><Link href="/loop">Workflow activity — public timestamp signals</Link></li>
+            <li><Link href="/commons">Commons — published discovery</Link></li>
+            <li><Link href="/graph">Graph — discovery-scoped map</Link></li>
             <li><Link href="/fine-print">Vital signs &amp; fine print</Link></li>
           </ul>
         </div>

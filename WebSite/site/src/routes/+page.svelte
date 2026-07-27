@@ -71,12 +71,12 @@
       a: 'Yes. Paste https://tinyassets.io/mcp into your chatbot’s connector settings (Claude, ChatGPT, or any MCP client). Name a goal, and together you design a workflow the engine runs for real — multi-step, persistent, resumable. No account, no install.'
     },
     {
-      q: 'What is actually running on it today?',
-      a: 'The dated snapshot contains only Goal examples explicitly marked public; its count and date are shown on the page. Live public workflow-space activity is shown separately.'
+      q: 'What public work does the site show?',
+      a: 'The checked-in public snapshot contains only Goal examples with independent publication provenance. Its count and date are shown on the page; this public page does not request Goal records from the connector.'
     },
     {
       q: 'How do I know outcomes are real and not claimed?',
-      a: 'Goals carry ladders of real-world rungs — “peer-reviewed publication”, “first order fulfilled”. A rung only lights with an evidence URL attached. Today zero rungs are lit, and the site shows that rather than pretending.'
+      a: 'Goals can carry ladders of real-world rungs, and a rung only lights with an evidence URL attached. The checked-in snapshot has no ladder records, so the site labels that evidence unavailable instead of guessing.'
     },
     {
       q: 'Do I need to write code?',
@@ -195,14 +195,14 @@
         <h3 class="path__h">Watch the work</h3>
         <p class="path__p">
           The goals board labels its checked-in public snapshot. Workflow
-          activity and the whole-brain graph label their own live sources and
+          activity and the discovery-scoped graph label their own live sources and
           honest empty states.
         </p>
         <a class="path__cta" href="/goals">open the goals board →</a>
         <p class="path__live ev">
           {publicGoals.length} public goals · checked-in snapshot {bakedStampDate}
         </p>
-        <p class="path__voice voice">— my memory, not a screenshot of it.</p>
+        <p class="path__voice voice">— one dated public record, with its source attached.</p>
       </li>
       <li class="path">
         <span class="path__n">03</span>
@@ -374,7 +374,7 @@
     <a class="close__cta" href="/start">
       <span class="close__k eyebrow">put me to work</span>
       <strong>Paste my URL into your chatbot.</strong>
-      <span class="close__sub">one link · no account · no install · the same surface every number on this page came from</span>
+      <span class="close__sub">one link · no account · no install · each public reading labels its own source</span>
     </a>
   </div>
 </section>

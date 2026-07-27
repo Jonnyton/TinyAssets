@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   assertAnonymousSnapshotUrl,
+  assertPublicBrowserEndpoint,
   assertPublicPlaygroundCall,
   assertCompleteCrawl,
   pageInventoryCall,
@@ -149,12 +150,30 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp#/callback?refresh_token=top-secret",
     "https://tinyassets.io/mcp#bearer=top-secret",
     "https://tinyassets.io/mcp#Bearer%20top-secret",
+    "https://tinyassets.io/mcp#access_token%3Dabc123",
+    "https://tinyassets.io/mcp#callback%3Frefresh_token%3Dabc123",
+    "https://tinyassets.io/mcp#session_id%3Dabc123",
+    "https://tinyassets.io/mcp#access_token%253Dabc123",
+    "https://tinyassets.io/mcp?code=abc123",
+    "https://tinyassets.io/mcp?access_key=abc123",
     "https://tinyassets.io/mcp?label=Bearer%20top-secret",
   ]) {
     assert.throws(
       () => assertAnonymousSnapshotUrl(unsafe),
       /anonymous.*credentials/i,
     );
+  }
+  assert.equal(assertPublicBrowserEndpoint("/mcp"), "/mcp");
+  assert.equal(
+    assertPublicBrowserEndpoint("https://tinyassets.io/mcp?mode=public"),
+    "https://tinyassets.io/mcp?mode=public",
+  );
+  for (const unsafeBrowserEndpoint of [
+    "//token@evil.example/mcp",
+    "http://tinyassets.io/mcp",
+    "https://tinyassets.io/mcp?code=abc123",
+  ]) {
+    assert.throws(() => assertPublicBrowserEndpoint(unsafeBrowserEndpoint));
   }
 });
 
@@ -270,6 +289,47 @@ test("public Playground responses are validated and reduced to public discovery 
         },
       ),
     /incomplete/i,
+  );
+  assert.throws(
+    () =>
+      sanitizePublicPlaygroundResponse(
+        "read_graph",
+        { target: "graphs", limit: 100 },
+        {
+          universes: [{ id: "private-one", visibility: "private" }],
+          count: 1,
+        },
+      ),
+    /explicit discoverable visibility/i,
+  );
+  assert.deepEqual(
+    sanitizePublicPlaygroundResponse(
+      "read_graph",
+      { target: "graphs", limit: 1 },
+      {
+        universes: [{ id: "metadata-one", visibility: "metadata_only" }],
+        count: 1,
+      },
+    ),
+    {
+      universes: [{ id: "metadata-one", visibility: "metadata_only" }],
+      count: 1,
+    },
+  );
+  assert.throws(
+    () =>
+      sanitizePublicPlaygroundResponse(
+        "read_graph",
+        { target: "graphs", limit: 1 },
+        {
+          universes: [
+            { id: "public-one", visibility: "public" },
+            { id: "public-two", visibility: "public" },
+          ],
+          count: 2,
+        },
+      ),
+    /over-limit/i,
   );
 });
 
@@ -512,12 +572,59 @@ test("canonical collection reads reject structured errors and missing arrays", (
     () => requirePageBody({}, "read_page body"),
     /content string/,
   );
+  const provenPage = {
+    path: "pages/concepts/public.md",
+    is_draft: false,
+    content: "# Public page",
+    truncated: false,
+    source_read_proof: {
+      path: "pages/concepts/public.md",
+      is_draft: false,
+      sha256: "a".repeat(64),
+    },
+  };
+  assert.deepEqual(
+    requirePageBody(
+      provenPage,
+      "read_page body",
+      "pages/concepts/public",
+    ),
+    provenPage,
+  );
+  for (const unproven of [
+    { ...provenPage, path: "pages/private.md" },
+    {
+      ...provenPage,
+      source_read_proof: {
+        ...provenPage.source_read_proof,
+        path: "pages/private.md",
+      },
+    },
+    {
+      ...provenPage,
+      source_read_proof: {
+        ...provenPage.source_read_proof,
+        sha256: "not-a-hash",
+      },
+    },
+    { ...provenPage, truncated: true },
+  ]) {
+    assert.throws(
+      () =>
+        requirePageBody(
+          unproven,
+          "read_page body",
+          "pages/concepts/public",
+        ),
+      /different page path|source-read proof|completeness proof/i,
+    );
+  }
 });
 
 test("snapshot collections fail closed when an unpageable request fills its cap", () => {
   assert.deepEqual(
     requireCompleteCollection(
-      { universes: [{ id: "u-1" }] },
+      { universes: [{ id: "u-1" }], count: 1 },
       "universes",
       "read_graph graphs",
       100,
@@ -531,6 +638,7 @@ test("snapshot collections fail closed when an unpageable request fills its cap"
           universes: Array.from({ length: 100 }, (_, index) => ({
             id: `u-${index}`,
           })),
+          count: 100,
         },
         "universes",
         "read_graph graphs",
@@ -538,6 +646,23 @@ test("snapshot collections fail closed when an unpageable request fills its cap"
       ),
     /cannot prove completeness.*limit of 100/i,
   );
+  for (const inconsistent of [
+    { universes: [{ id: "u-1" }], count: 2 },
+    { universes: [{ id: "u-1" }], count: "1" },
+    { universes: [{ id: "u-1" }], count: 1, truncated_count: 1 },
+    { universes: [{ id: "u-1" }], count: 1, has_more: true },
+  ]) {
+    assert.throws(
+      () =>
+        requireCompleteCollection(
+          inconsistent,
+          "universes",
+          "read_graph graphs",
+          100,
+        ),
+      /inconsistent|incomplete/i,
+    );
+  }
 });
 
 test("snapshot page crawl cannot succeed with skipped or failed bodies", () => {
@@ -605,6 +730,15 @@ test("shared contract works in dev and gates both React preview and deploy", () 
   assert.match(reactDeploy, /working-directory:\s*WebSite\/site[\s\S]*npm test/);
   assert.match(preview, /working-directory:\s*WebSite\/site[\s\S]*npm test/);
   assert.match(preview, /WebSite\/shared\/\*\*/);
+
+  const reactLive = readFileSync(
+    resolve(here, "../../site-react/lib/live.ts"),
+    "utf8",
+  );
+  assert.match(
+    reactLive,
+    /assertPublicBrowserEndpoint\([\s\S]{0,160}NEXT_PUBLIC_MCP_PATH/,
+  );
 });
 
 test("explicit snapshot refresh reports a refused refresh as failure", () => {

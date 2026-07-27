@@ -38,8 +38,7 @@
 
   // Public uptime evidence — GitHub Actions that watch platform availability. Linked to the
   // real Actions tab; neutral one-liners, no claimed pass/fail state here
-  // (the Actions tab is the live truth, and the receipt above carries the
-  // engine's own canary verdict).
+  // (the Actions tab is the source for that workflow history).
   const UPTIME_CHECKS = [
     {
       file: 'uptime-canary.yml',
@@ -52,7 +51,7 @@
   <title>Vital signs &amp; fine print — Tiny</title>
   <meta
     name="description"
-    content="The instrument panel: Tiny's live pulse, plain-words explanations of how each reading is measured, the engine's own release receipt, public uptime evidence, and the honest fine print."
+    content="The instrument panel: public reachability and timestamp signals, source limits, explicit release-receipt unavailability, uptime evidence, and the honest fine print."
   />
 </svelte:head>
 
@@ -62,13 +61,12 @@
     <p class="eyebrow">field notes · the ops room</p>
     <h1 id="cover-title" class="cover__title">The instrument panel.</h1>
     <p class="cover__lede">
-      Every other page on this site makes a claim. This one explains how the
-      claims are measured, what the engine reports about itself, and who
-      watches it when no human is looking. No marketing here — just the
-      readings and the fine print.
+      This page labels how its public operational readings are measured, what
+      they omit, and where the linked uptime evidence comes from. No marketing
+      here — just bounded readings and the fine print.
     </p>
     <p class="cover__caption voice">
-      — if I'm asleep, this page says so before I do.
+      — when a reading is unavailable, this page says so.
     </p>
     <VitalSigns variant="hero" />
     <p class="cover__stamp ev">

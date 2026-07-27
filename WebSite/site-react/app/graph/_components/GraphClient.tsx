@@ -1,11 +1,12 @@
 /*
   /graph — the living map. Obsidian-style force graph, 2026-06-10 rebuild.
 
-  Every wiki page is its own dot (1,200+), clustered around category hubs
-  the way Obsidian notes cluster around tags. Goals and universes are their
-  own constellations. The layout is a real physics settle (d3-force), not a
-  designed diagram — you watch it breathe into place, then pan, zoom, hover
-  to focus a neighbourhood, and drag nodes around.
+  Each page included in the dated or discovery-scoped view is a dot,
+  clustered around category hubs the way Obsidian notes cluster around tags.
+  Checked-in Goals and discoverable universes form their own constellations.
+  The layout is a real physics settle (d3-force), not a designed diagram —
+  you watch it breathe into place, then pan, zoom, hover to focus a
+  neighbourhood, and drag nodes around.
 
   Honesty rails:
     - bright lines are REAL page→page references from the snapshot;
@@ -586,7 +587,7 @@ export default function GraphClient() {
         <div className="container">
           <p className="eyebrow">field notes · the living map</p>
           <h1 className="cover__title">
-            My head, <em>seen from above</em>.
+            A published map, <em>seen from above</em>.
           </h1>
           <p className="voice cover__lede">
             Each of the {fmtCount(wikiTotal)} pages in this view is a dot, settling
@@ -632,7 +633,7 @@ export default function GraphClient() {
         <div className="container atlas__shell">
           <figure
             className="map"
-            aria-label="Force-directed map: every wiki page, goal, and universe as a dot; lines are real references"
+            aria-label="Force-directed map of discovery-scoped public pages and universes plus checked-in Goal evidence; recorded references appear as lines"
           >
             <div className="map__wrap" ref={wrapRef}>
               <canvas
@@ -733,9 +734,9 @@ export default function GraphClient() {
                   <li>
                     <span className="swatch swatch--page"></span>
                     <span>
-                      <strong>pages</strong> — one dot per wiki page, {fmtCount(dotCount)} of them, sized by how
-                      often other pages actually reference them. Hover one to see its title; zoom in and titles appear
-                      on their own.
+                      <strong>pages</strong> — one dot for each page included in this view, {fmtCount(dotCount)} in
+                      total, sized by how often other included pages reference it. Hover one to see its title; zoom in
+                      and titles appear on their own.
                     </span>
                   </li>
                   <li>
@@ -761,15 +762,16 @@ export default function GraphClient() {
                   </li>
                 </ul>
                 <p className="panel__note voice">
-                  Three kinds of lines, honestly drawn: the bright ones are the {refCount} real page-to-page references
-                  in my memory; the faint spokes are filing (a page to its category) and shared-tag clusters (pages
-                  carrying the same tag). Filing and tags aren't citations, so they're drawn like they barely exist.
+                  Three kinds of lines, honestly drawn: the bright ones are the {refCount} recorded page-to-page
+                  references in the checked-in snapshot; the faint spokes are filing (a page to its category) and
+                  shared-tag clusters (pages carrying the same tag). Filing and tags aren't citations, so they're
+                  drawn like they barely exist.
                 </p>
                 <p className="panel__foot">
                   <Tick href="/commons" label="browse the discovery view of the commons" />
                 </p>
                 <p className="panel__foot">
-                  <Tick href={REPO_URL} label="the repo behind all of it" external />
+                  <Tick href={REPO_URL} label="the repository behind this public site" external />
                 </p>
               </>
             )}

@@ -16,6 +16,7 @@
  */
 
 import { writeFileSync, readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -26,6 +27,8 @@ import {
   publicGraphCall,
   publicPageCall,
   requireCompleteCollection,
+  requirePageBody,
+  sanitizePublicUniverse,
   splitFullPageInventory
 } from '../../shared/mcp/public-read-contract.js';
 
@@ -43,6 +46,21 @@ const FORCE_FULL = process.env.SNAPSHOT_FULL === '1';
 
 function log(msg) { console.log(`[snapshot] ${msg}`); }
 function warn(msg) { console.warn(`[snapshot] WARN: ${msg}`); }
+
+function assertBodyMatchesSourceHash(body) {
+  const expected = body.source_read_proof.sha256.toLowerCase();
+  const candidates = [body.content];
+  if (body.is_draft && body.content.startsWith('[DRAFT] ')) {
+    candidates.push(body.content.slice('[DRAFT] '.length));
+  }
+  const matches = candidates.some(
+    (candidate) =>
+      createHash('sha256').update(candidate, 'utf8').digest('hex') === expected
+  );
+  if (!matches) {
+    throw new Error('read_page content did not match its source-read proof');
+  }
+}
 
 async function loadSdk() {
   try {
@@ -246,7 +264,7 @@ async function main() {
       'universes',
       'read_graph graphs',
       100
-    );
+    ).map(sanitizePublicUniverse);
 
     // Shape data
     // The current Goal projection does not enforce public visibility
@@ -410,13 +428,12 @@ async function main() {
             cl.callTool({ name: pageCall.name, arguments: pageCall.args }),
             new Promise((_, rej) => setTimeout(() => rej(new Error('read timeout')), 20000))
           ]);
-          const body = parseToolResponse(r);
-          if (body?.truncated !== false) {
-            throw new Error('read_page returned truncated or unproven page content');
-          }
-          if (typeof body?.content !== 'string') {
-            throw new Error('read_page returned no page content');
-          }
+          const body = requirePageBody(
+            parseToolResponse(r),
+            'read_page page body',
+            page.path
+          );
+          assertBodyMatchesSourceHash(body);
           extractFor(page, body);
         } catch {
           failed += 1;

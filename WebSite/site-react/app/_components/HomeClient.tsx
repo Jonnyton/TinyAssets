@@ -29,7 +29,7 @@ const faqs = [
   },
   {
     q: "What public work does the site show?",
-    a: "The checked-in public snapshot includes goals for restoring classic games lawfully, connecting public web sources, completing software projects, and producing research papers. This public page does not request Goal records from the connector."
+    a: "The checked-in public snapshot contains only Goal examples with independent publication provenance. Its count and date are shown on the page; this public page does not request Goal records from the connector."
   },
   {
     q: "How do I know outcomes are real and not claimed?",
@@ -176,7 +176,7 @@ export default function HomeClient() {
               <h3 className="path__h">Watch the work</h3>
               <p className="path__p">
                 The goals board shows a dated public snapshot. Workflow activity
-                and the whole-brain graph carry their own provenance and honest
+                and the discovery-scoped graph carry their own provenance and honest
                 empty states when current public data is unavailable.
               </p>
               <a className="path__cta" href="/goals">open the goals board →</a>
@@ -345,7 +345,7 @@ export default function HomeClient() {
           <a className="close__cta" href="/start">
             <span className="close__k eyebrow">put me to work</span>
             <strong>Paste my URL into your chatbot.</strong>
-            <span className="close__sub">one link · no account · no install · the same surface every number on this page came from</span>
+            <span className="close__sub">one link · no account · no install · each public reading labels its own source</span>
           </a>
         </div>
       </section>

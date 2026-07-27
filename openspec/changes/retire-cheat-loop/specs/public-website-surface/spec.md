@@ -83,7 +83,8 @@ Checked-in Goal data is not self-authenticating: a historical normalizer
 defaulting a missing visibility field to `public` is not publication proof.
 Every retained Goal row MUST have independent, explicit public-publication
 provenance or be removed from every public snapshot mirror and rendered
-surface.
+surface. Removal includes derived Goal IDs, tag keys, edges, and descriptive
+metadata; deleting only the primary Goal row is insufficient.
 
 #### Scenario: Tool response includes structured content
 
@@ -111,6 +112,7 @@ surface.
 - **WHEN** a Goal snapshot says `visibility=public` but its historical generator could have defaulted a missing value and no independent publication record exists
 - **THEN** the Goal is removed from every public snapshot mirror and rendered surface
 - **AND** a retained Goal names the independent checked-in public-publication evidence that authorizes it
+- **AND** no orphaned `goal:<id>` tag, edge, or descriptive metadata remains
 
 #### Scenario: Browser initialization sends its completion notification
 
@@ -136,11 +138,24 @@ surface.
 - **THEN** it may call only the server-filtered `read_graph target=graphs` projection
 - **AND** it does not infer Goal or run visibility from that result
 
+#### Scenario: Graph discovery carries contradictory or private records
+
+- **WHEN** a `read_graph target=graphs` result has a non-integer or mismatched count, exceeds the requested limit, signals truncation/cursor continuation, or contains a record without explicit discoverable visibility (`public` or `metadata_only`)
+- **THEN** the public browser, Playground, or snapshot worker rejects the collection before rendering or writing
+- **AND** client-side omission of private fields is not treated as a substitute for rejecting the record
+
 #### Scenario: A public snapshot is given caller credentials
 
 - **WHEN** a snapshot refresh is started with an MCP bearer or other caller credential
 - **THEN** it fails before connecting or writing an artifact
 - **AND** credential-like URL query or fragment parameters fail before the URL is logged
+- **AND** recursively encoded query/fragment separators cannot hide credential parameters
+
+#### Scenario: A browser build configures a public MCP endpoint
+
+- **WHEN** a public browser bundle reads an environment-configured MCP endpoint
+- **THEN** it accepts only a same-origin relative path or a credential-free HTTPS URL
+- **AND** validation runs before the first request or log
 
 #### Scenario: A repository snapshot records its public remote
 
@@ -164,6 +179,8 @@ surface.
 
 - **WHEN** a snapshot worker prepares an exact `read_page` call
 - **THEN** the requested path must belong to the validated inventory from that refresh
+- **AND** the returned path and source-read proof path must match that request
+- **AND** the returned content must match the source-read proof hash before reference extraction
 - **AND** discovery scope alone cannot authorize replacing the full checked-in snapshot
 
 #### Scenario: A body or bounded collection cannot prove completeness
@@ -185,6 +202,11 @@ server as reachable. It MUST NOT fetch raw `get_status` while that response can
 include operator or private detail. Goal, run, release, queue, cost, persona,
 and authentication-health evidence SHALL remain absent or come from a clearly
 labelled checked-in public projection while their live projections are unsafe.
+Copy, metadata, accessibility labels, global navigation, and soft-landing
+aliases MUST NOT relabel bounded discovery as the whole brain/map or every
+page, a dated Goal as current/open work, or a timestamp signal as an executing
+run. Each mixed-provenance surface MUST identify which values are live
+discovery, checked-in evidence, or unavailable.
 The generic `/loop` presentation MAY derive workflow activity from the
 visibility-filtered public universe discovery when it labels that discovery
 provenance. It MAY add active run, queue-item, or run-recency signals only after
