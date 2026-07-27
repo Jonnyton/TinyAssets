@@ -121,6 +121,14 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   user-authored workflow, replaces remaining loop-routing copy, and treats
   interrupted runs as terminal. Follow-up `33fb617b` proves the already-guarded
   parser token to TypeScript without changing parser behavior.
+- Shipping cleanup `6ae7a473` removes the stale local Svelte bundle-copy helper
+  and aligns the retained rollback documentation and mirrored website skill;
+  it does not run a deployment.
+- Opposite-provider Claude Opus review of `ace375ab` found remaining
+  one-sided Svelte presentation wording after the React port. Cleanup
+  `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
+  and README residue with user-authored workflow language and removes the
+  remaining `loopAwake`, `WATCHDOGS`, and deleted `ChatDemo` identifiers.
 
 Both site production builds passed; the React build emitted 27 static routes
 including `/patch-loop`, and the Svelte build emitted the expected loop,
@@ -170,7 +178,7 @@ historical source vocabulary.
 
 This inventory records the audited `origin/main` state before the stacked
 site/deployment implementation commits `5e8e5e39`, `594a9287`, `255e83cf`,
-`49192987`, and `33fb617b`.
+`49192987`, `33fb617b`, `6ae7a473`, and `d035cf76`.
 It remains here as historical removal evidence, not as a claim that each
 consumer is still present on the current stacked branch. Unless a paragraph
 explicitly says otherwise, present-tense descriptions below refer to that
@@ -488,9 +496,10 @@ The baseline consumers were:
 - canonical site requirements named `/patch-loop` and the community-watch
   fallback.
 
-On the current stacked branch, commits `5e8e5e39`, `594a9287`, and `49192987`
-remove those exact product callers, feeds, snapshot, and presentation surfaces
-from the Svelte and React trees. `/patch-loop` is now a static soft landing to
+On the current stacked branch, commits `5e8e5e39`, `594a9287`, `49192987`,
+`6ae7a473`, and `d035cf76` remove those exact product callers, feeds, snapshot,
+shipping helper, and presentation surfaces from the Svelte and React trees.
+`/patch-loop` is now a static soft landing to
 user-authored patterns/commons, and `/loop` is provenance-labeled generic
 workflow activity. Commit `255e83cf` also corrects the deployment workflow,
 runbook, and website-skill truth: React is manual production and Svelte is
