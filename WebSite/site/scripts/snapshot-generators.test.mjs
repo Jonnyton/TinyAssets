@@ -18,6 +18,7 @@ import {
   normalizePublicOriginRefs,
   pageReadHandle,
   parseToolResponse,
+  sanitizePublicMcpUrl,
   sanitizePublicRemoteUrl,
   serializeSnapshot,
 } from "./snapshot-helpers.mjs";
@@ -327,6 +328,28 @@ test("public remote URL removes credentials and normalizes SSH syntax", () => {
     sanitizePublicRemoteUrl("git@github.com:Jonnyton/TinyAssets.git"),
     "https://github.com/Jonnyton/TinyAssets",
   );
+});
+
+test("public MCP URL strips credentials, query, and fragment and rejects non-http schemes", () => {
+  assert.equal(
+    sanitizePublicMcpUrl(
+      "https://user:secret@example.test:8443/mcp?token=private#debug",
+    ),
+    "https://example.test:8443/mcp",
+  );
+  assert.throws(
+    () => sanitizePublicMcpUrl("file:///private/tinyassets.sock"),
+    /http/,
+  );
+});
+
+test("MCP generator delegates mirror verification to the rollback-capable transaction", () => {
+  const generator = readFileSync(
+    new URL("./snapshot-mcp.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.equal(generator.includes("readFileSync"), false);
+  assert.equal(generator.includes("post-write MCP snapshot"), false);
 });
 
 test("repo topology rejects duplicate edges, dangling endpoints, and retired identities", () => {

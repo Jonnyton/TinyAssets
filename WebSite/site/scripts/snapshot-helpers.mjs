@@ -110,6 +110,19 @@ export function sanitizePublicRemoteUrl(remote) {
   return `https://${parsed.hostname}/${path}`;
 }
 
+export function sanitizePublicMcpUrl(endpoint) {
+  let parsed;
+  try {
+    parsed = new URL(String(endpoint ?? ""));
+  } catch {
+    throw new Error("MCP endpoint is not a valid http(s) URL");
+  }
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error(`MCP endpoint must use http(s), got ${parsed.protocol}`);
+  }
+  return `${parsed.protocol}//${parsed.host}${parsed.pathname || "/"}`;
+}
+
 function requireObject(value, label) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} did not return a structured object`);
@@ -361,6 +374,7 @@ export function buildMcpSnapshot({
   pagesResult,
   pageBodies,
 }) {
+  const publicSourceUrl = sanitizePublicMcpUrl(sourceUrl);
   const rawGoals = requireCompleteCollection(
     goalsResult,
     "goals",
@@ -516,9 +530,9 @@ export function buildMcpSnapshot({
     wiki.other.length;
   const snapshot = {
     fetched_at: fetchedAt,
-    source: `${sourceUrl} · discovery snapshot`,
+    source: `${publicSourceUrl} · discovery snapshot`,
     provenance: {
-      endpoint: sourceUrl,
+      endpoint: publicSourceUrl,
       scope: "discovery",
       complete: true,
       goals: "read_graph target=goals",

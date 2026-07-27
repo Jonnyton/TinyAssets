@@ -7,7 +7,6 @@
  * outputs untouched and exit non-zero.
  */
 
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -180,16 +179,6 @@ async function main() {
     const bytes = serializeSnapshot(snapshot);
 
     atomicWriteMirrors(OUTPUTS, bytes);
-    const [svelteBytes, reactBytes] = OUTPUTS.map((path) =>
-      readFileSync(path, "utf8"),
-    );
-    if (
-      svelteBytes !== bytes ||
-      reactBytes !== bytes ||
-      svelteBytes !== reactBytes
-    ) {
-      throw new Error("post-write MCP snapshot byte-parity check failed");
-    }
     log(
       `wrote byte-identical snapshots (${snapshot.stats.wiki_promoted} promoted, ` +
         `${snapshot.stats.wiki_drafts} drafts, ${snapshot.stats.goals} goals, ` +
