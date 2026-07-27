@@ -199,6 +199,8 @@ def _validate_complete_connections(
             )
         completion_basis = connection.get("completion_basis")
         if completion_basis == "github_link_header_chain_v1":
+            if pages < 1:
+                raise PlanError("Link pagination requires one terminal response page")
             if total is not None:
                 raise PlanError(
                     "Link-paginated array connections cannot invent a server total"
@@ -1824,7 +1826,14 @@ class ReadOnlyGitHub:
         page_values = [value for key, value in next_pairs if key == "page"]
         if page_values != [str(expected_page)]:
             raise PlanError("GitHub pagination did not advance one exact page")
-        scoped_next = sorted((key, value) for key, value in next_pairs if key != "page")
+        cursor_values = [value for key, value in next_pairs if key == "after"]
+        if len(cursor_values) > 1 or any(not value for value in cursor_values):
+            raise PlanError("GitHub pagination contains an invalid forward cursor")
+        scoped_next = sorted(
+            (key, value)
+            for key, value in next_pairs
+            if key not in {"after", "page"}
+        )
         if scoped_next != initial_pairs:
             raise PlanError("GitHub pagination changed query scope")
         return next_url

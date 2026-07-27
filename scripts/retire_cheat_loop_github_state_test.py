@@ -563,6 +563,31 @@ class ReceiptTests(unittest.TestCase):
                 inventory=inventory,
             )
 
+        inventory = label_inventory()
+        empty_connection = inventory["connections"][2]
+        empty_connection.update(
+            {
+                "pages": 0,
+                "count": 0,
+                "total_count": None,
+                "pagination": {
+                    "mode": "github_link_header_chain_v1",
+                    "page_receipts": [],
+                    "terminal": {
+                        "oracle": "rel_next_absent",
+                        "page_ordinal": -1,
+                    },
+                },
+            }
+        )
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.LABEL_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
     def test_float_ordinals_and_naive_quiescence_times_are_rejected(self) -> None:
         value, _ = complete_auto_receipt()
         inventory = copy.deepcopy(value["plan"]["inventory"])
@@ -1580,7 +1605,8 @@ class ReadOnlyClientTests(unittest.TestCase):
         )
         next_url = (
             "https://api.github.com/repositories/42/issues"
-            "?state=all&labels=auto-bug&per_page=100&page=2"
+            "?state=all&labels=auto-bug&per_page=100"
+            "&after=opaque-github-cursor&page=2"
         )
         responses = [
             included_json_response(
@@ -1675,6 +1701,36 @@ class ReadOnlyClientTests(unittest.TestCase):
                     link=(
                         '<https://api.github.com/repositories/42/issues'
                         '?state=all&labels=other&per_page=100&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "unexpected_query_key": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/42/issues'
+                        '?state=all&labels=auto-bug&per_page=100'
+                        '&unexpected=value&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "duplicate_cursor": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/42/issues'
+                        '?state=all&labels=auto-bug&per_page=100'
+                        '&after=one&after=two&page=2>; rel="next"'
+                    ),
+                )
+            ],
+            "blank_cursor": [
+                included_json_response(
+                    [{"id": 1}],
+                    link=(
+                        '<https://api.github.com/repositories/42/issues'
+                        '?state=all&labels=auto-bug&per_page=100'
+                        '&after=&page=2>; rel="next"'
                     ),
                 )
             ],
