@@ -1469,3 +1469,17 @@ Notes:
 - Ship/abandon: keep PR #1812 draft and gate any merge on task 3.5's final announcement-run drain; do not deploy or authorize runtime/external-state retirement
 - Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
 - Update 2026-07-26: parent #1810 folded in; React/Svelte builds, 58/58 strict OpenSpec, active-source scans, and exact current-main reviews pass at `c84cb833`
+
+## 2026-07-26 - retire privileged loop uptime skill
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-loop-uptime-skill
+- Lane state: claimed; task 6.2 stacked on draft PR #1812
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-uptime-skill
+- STATUS/Issue/PR: pending stacked draft PR against codex/retire-cheat-loop-safe-waves
+- PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
+- Purpose: delete the active loop-uptime escape-hatch skill and catalog routes while retaining incident records only as historical non-skill evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-loop-uptime-skill\_PURPOSE.md
+- Memory refs: target merge 0d50a2d4; parent implementation head 8401c89b
+- Review gate: skill sync/parity, active-surface scan, strict OpenSpec, independent exact-head review
+- Ship/abandon: stacked draft PR; do not merge before #1812 or reinterpret historical incidents as active instructions
