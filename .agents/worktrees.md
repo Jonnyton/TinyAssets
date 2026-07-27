@@ -1474,7 +1474,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-loop-uptime-skill
-- Lane state: claimed; task 6.2 implemented, independent review pending
+- Lane state: claimed; task 6.2 approved at `748a7251`
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-loop-uptime-skill
 - STATUS/Issue/PR: pending stacked draft PR against codex/retire-cheat-loop-safe-waves
 - PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
@@ -1484,3 +1484,4 @@ Notes:
 - Review gate: skill sync/parity, active-surface scan, strict OpenSpec, independent exact-head review
 - Ship/abandon: stacked draft PR; do not merge before #1812 or reinterpret historical incidents as active instructions
 - Update 2026-07-26: canonical skill/catalog and PLAN escape-path claim removed; seven historical records moved out of active agent surfaces; mirrors synchronized; active scan clean; 58/58 strict OpenSpec pass
+- Update 2026-07-26: Opus 5 plus three independent exact-head reviewers APPROVE `748a7251`; both review findings were corrected before approval

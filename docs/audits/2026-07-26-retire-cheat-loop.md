@@ -178,9 +178,13 @@ retains only the independently valid coordination/review/host-directive
 justifications and explicitly rejects the retired skill as authority. PLAN's
 authorized-escape design claim and CLAUDE's stale skill-tree pointer were also
 removed. A second
-skill sync was idempotent, the cross-provider drift guard passed, active
-`.agents` and `.claude` scans found no retired skill/escape-hatch instruction,
-and all 58 strict OpenSpec validations passed.
+skill sync was idempotent, the cross-provider drift guard passed, and scans of
+active skill trees, PLAN, CLAUDE, and living design notes found no retired
+skill/escape-hatch instruction. Append-only dated activity logs and uploaded
+historical transcripts were deliberately excluded rather than rewritten. All
+58 strict OpenSpec validations passed. Claude Opus 5 and three independent
+exact-head reviewers approved `748a7251` after the living-design-note and
+active-ledger findings were corrected.
 
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
