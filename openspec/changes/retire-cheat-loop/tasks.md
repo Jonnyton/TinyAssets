@@ -148,8 +148,11 @@
   `autoMergeRequest` tuple into a digest-bound write-ahead receipt with an
   idempotency apply key. Before snapshot/mutation, disable and verify the live
   workflow and cancel/drain queued/in-progress runs. Attribute only exact
-  eligible `app/github-actions` tuples with historical Actions/repository
-  evidence at `enabledAt`; current-source uniqueness is insufficient.
+  eligible raw GraphQL actor tuples
+  `Bot/github-actions/MDM6Qm90NDE4OTgyODI=` with historical
+  Actions/repository evidence at `enabledAt`; current-source uniqueness is
+  insufficient, and a later current PR head does not invalidate exact
+  enrollment-run/log evidence.
   Persist each per-PR intent before its exact tuple pre-read, skip changes,
   disable attributed enrollment, persist post-read outcome, and reconcile
   already-disabled planned tuples on restart. Preserve user/maintainer

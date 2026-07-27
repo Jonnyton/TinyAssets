@@ -11,13 +11,17 @@ as different types makes a dry run incapable of mutating GitHub.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import copy
 import contextlib
 import datetime as dt
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -25,6 +29,7 @@ import tempfile
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
 from urllib.parse import quote
 import uuid
+import zipfile
 
 import rfc8785
 
@@ -36,6 +41,20 @@ AUTO_MERGE_OPERATION = "auto_merge_v1"
 OPERATIONS = frozenset({LABEL_OPERATION, AUTO_MERGE_OPERATION})
 APPLY_DOMAIN = "tinyassets/github-state-retirement/apply/v1"
 AUTO_ENROLL_WORKFLOW_ID = 317815472
+GITHUB_ACTIONS_BOT_NODE_ID = "MDM6Qm90NDE4OTgyODI="
+GITHUB_ACTIONS_BOT_LOGIN = "github-actions"
+TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS = (
+    "1e3d8996644756a8fedf1baacd473cffd614c91b",
+)
+TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA = TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS[-1]
+AUTO_ENROLL_WORKFLOW_PATH = ".github/workflows/auto-enroll-merge.yml"
+AUTO_ENROLL_PATH_INTRODUCTION_COMMIT = (
+    "0efd2a34cd9d479bd16da84b4aef8dafed304d0e"
+)
+AUTO_ENROLL_EXACT_COMMAND = 'gh pr merge "$PR" --repo "$REPO" --auto --squash'
+MAX_LOG_ARCHIVE_BYTES = 50 * 1024 * 1024
+MAX_LOG_UNCOMPRESSED_BYTES = 25 * 1024 * 1024
+MAX_LOG_ENTRIES = 1_000
 
 RETIRED_LABELS = (
     "auto-bug",
@@ -166,8 +185,12 @@ def _validate_complete_connections(
         count = connection.get("count")
         total = connection.get("total_count")
         pages = connection.get("pages")
-        if not all(isinstance(value, int) and value >= 0 for value in (count, total, pages)):
-            raise PlanError("connection count, total_count, and pages must be non-negative integers")
+        if not all(
+            _is_integer(value) and value >= 0 for value in (count, total, pages)
+        ):
+            raise PlanError(
+                "connection count, total_count, and pages must be non-negative integers"
+            )
         if count != total:
             raise PlanError(
                 f"paginated connection count mismatch: observed {count}, expected {total}"
@@ -309,6 +332,177 @@ def _normalize_planned_actions(
     return normalized
 
 
+def _validate_auto_merge_attribution_bindings(
+    *,
+    pull_requests: Sequence[Mapping[str, Any]],
+    connections: Sequence[Mapping[str, Any]],
+    workflow_runs: Any,
+    workflow_jobs: Sequence[Mapping[str, Any]],
+    source_history: Any,
+    attribution: Sequence[Mapping[str, Any]],
+) -> None:
+    """Validate collected attribution even when it cannot authorize apply."""
+
+    if not attribution:
+        return
+    expected_source_history = {
+        "source_commit": None,
+        "source_commit_status": "unavailable_from_stable_api",
+        "default_branch": "main",
+        "workflow_path": AUTO_ENROLL_WORKFLOW_PATH,
+        "path_introduction_commit": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+        "active_blob_sha": TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+        "mapping_basis": "unchanged-default-branch-path-history",
+        "commits": [
+            {
+                "sha": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+                "committed_at": "2026-07-22T00:38:24Z",
+            }
+        ],
+    }
+    if source_history != expected_source_history:
+        raise PlanError("attribution lacks the reviewed workflow source history")
+    source_connections = [
+        row for row in connections if row.get("kind") == "workflow_source_history"
+    ]
+    if (
+        len(source_connections) != 1
+        or source_connections[0].get("label_name") != AUTO_ENROLL_WORKFLOW_PATH
+        or source_connections[0].get("count") != 1
+    ):
+        raise PlanError("attribution lacks one source-history connection")
+    if not isinstance(workflow_runs, list):
+        raise PlanError("attribution lacks the workflow-run inventory")
+    run_connection = [
+        row
+        for row in connections
+        if row.get("kind") == "workflow_runs" and row.get("label_name") == ""
+    ]
+    if len(run_connection) != 1 or run_connection[0].get("count") != len(
+        workflow_runs
+    ):
+        raise PlanError("attribution lacks one exact workflow-run connection")
+    run_by_id: dict[int, Mapping[str, Any]] = {}
+    for run in workflow_runs:
+        if not isinstance(run, Mapping) or not _is_integer(run.get("id")):
+            raise PlanError("attribution workflow run lacks an integer id")
+        run_id = int(run["id"])
+        if run_id in run_by_id:
+            raise PlanError("attribution workflow runs contain duplicate ids")
+        run_by_id[run_id] = run
+    job_by_identity: dict[tuple[int, int], Mapping[str, Any]] = {}
+    jobs_per_run: dict[int, int] = {}
+    for job in workflow_jobs:
+        run_id = job.get("run_id")
+        job_id = job.get("id")
+        if not _is_integer(run_id) or not _is_integer(job_id):
+            raise PlanError("attribution workflow job lacks exact identity")
+        identity = (int(run_id), int(job_id))
+        if identity in job_by_identity:
+            raise PlanError("attribution workflow jobs contain duplicate identities")
+        job_by_identity[identity] = job
+        jobs_per_run[int(run_id)] = jobs_per_run.get(int(run_id), 0) + 1
+    job_connections = {
+        int(row["label_name"]): row
+        for row in connections
+        if row.get("kind") == "workflow_jobs"
+        and isinstance(row.get("label_name"), str)
+        and row["label_name"].isdigit()
+    }
+    if set(job_connections) != set(jobs_per_run) or any(
+        job_connections[run_id].get("count") != count
+        for run_id, count in jobs_per_run.items()
+    ):
+        raise PlanError("attribution lacks exact workflow-job connections")
+    pr_by_id = {str(row["node_id"]): row for row in pull_requests}
+    attr_by_id = {
+        str(row.get("pull_request_node_id")): row for row in attribution
+    }
+    if (
+        len(pr_by_id) != len(pull_requests)
+        or len(attr_by_id) != len(attribution)
+        or set(attr_by_id) != set(pr_by_id)
+    ):
+        raise PlanError("attribution does not cover each captured enrollment exactly")
+    for pr_id, row in attr_by_id.items():
+        evidence = row.get("evidence")
+        if not isinstance(evidence, list):
+            raise PlanError("attribution evidence must be an array")
+        recomputed = classify_auto_merge(pr_by_id[pr_id], evidence)
+        if (
+            row.get("classification") != recomputed["classification"]
+            or canonical_bytes(evidence) != canonical_bytes(recomputed["evidence"])
+        ):
+            raise PlanError("attribution is not proven by its bound evidence")
+        for bound in evidence:
+            run_id = bound.get("run_id")
+            job_id = bound.get("job_id")
+            if not _is_integer(run_id) or not _is_integer(job_id):
+                raise PlanError("attribution evidence lacks run/job identity")
+            run = run_by_id.get(int(run_id))
+            if run is None:
+                raise PlanError("attribution evidence run was not captured")
+            run_fields = {
+                "workflow_id": "workflow_id",
+                "workflow_path": "path",
+                "event": "event",
+                "run_status": "status",
+                "conclusion": "conclusion",
+                "head_sha": "head_sha",
+                "run_created_at": "created_at",
+                "run_updated_at": "updated_at",
+                "run_url": "html_url",
+            }
+            if any(
+                bound.get(evidence_field) != run.get(run_field)
+                for evidence_field, run_field in run_fields.items()
+            ):
+                raise PlanError("attribution evidence does not match its run")
+            linked = run.get("pull_requests")
+            if not isinstance(linked, list) or not any(
+                isinstance(item, Mapping)
+                and item.get("number") == pr_by_id[pr_id].get("number")
+                for item in linked
+            ):
+                raise PlanError("attribution run is not linked to its pull request")
+            job = job_by_identity.get((int(run_id), int(job_id)))
+            if (
+                job is None
+                or bound.get("job_name") != job.get("name")
+                or bound.get("job_status") != job.get("status")
+                or bound.get("job_conclusion") != job.get("conclusion")
+                or bound.get("job_started_at") != job.get("started_at")
+                or bound.get("job_completed_at") != job.get("completed_at")
+            ):
+                raise PlanError("attribution evidence does not match its job")
+            steps = job.get("steps")
+            matching_steps = (
+                [
+                    step
+                    for step in steps
+                    if isinstance(step, Mapping)
+                    and step.get("number") == bound.get("step_number")
+                ]
+                if isinstance(steps, list)
+                else []
+            )
+            if len(matching_steps) != 1:
+                raise PlanError("attribution evidence lacks one captured step")
+            step = matching_steps[0]
+            step_fields = {
+                "step_name": "name",
+                "step_status": "status",
+                "step_conclusion": "conclusion",
+                "step_started_at": "started_at",
+                "step_completed_at": "completed_at",
+            }
+            if any(
+                bound.get(evidence_field) != step.get(step_field)
+                for evidence_field, step_field in step_fields.items()
+            ):
+                raise PlanError("attribution evidence does not match its step")
+
+
 def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
     pull_requests = _sorted_json_records(
         inventory.get("pull_requests", []),
@@ -348,6 +542,19 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
     attribution = _sorted_json_records(
         inventory.get("attribution", []),
         key=lambda row: str(row.get("pull_request_node_id", "")),
+    )
+    workflow_jobs = _sorted_json_records(
+        inventory.get("workflow_jobs", []),
+        key=lambda row: (int(row.get("run_id", 0)), int(row.get("id", 0))),
+    )
+    source_history = copy.deepcopy(inventory.get("source_history"))
+    _validate_auto_merge_attribution_bindings(
+        pull_requests=pull_requests,
+        connections=connections,
+        workflow_runs=inventory.get("workflow_runs"),
+        workflow_jobs=workflow_jobs,
+        source_history=source_history,
+        attribution=attribution,
     )
     planned_actions = _normalize_planned_actions(
         inventory.get("planned_actions", [])
@@ -392,6 +599,54 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
                 raise PlanError(
                     "workflow-run inventory contains a nonterminal or unknown status"
                 )
+        expected_source_history = {
+            "source_commit": None,
+            "source_commit_status": "unavailable_from_stable_api",
+            "default_branch": "main",
+            "workflow_path": AUTO_ENROLL_WORKFLOW_PATH,
+            "path_introduction_commit": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+            "active_blob_sha": TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+            "mapping_basis": "unchanged-default-branch-path-history",
+            "commits": [
+                {
+                    "sha": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+                    "committed_at": "2026-07-22T00:38:24Z",
+                }
+            ],
+        }
+        if source_history != expected_source_history:
+            raise PlanError("complete plan lacks the reviewed workflow source history")
+        source_connections = [
+            row for row in connections if row["kind"] == "workflow_source_history"
+        ]
+        if (
+            len(source_connections) != 1
+            or source_connections[0]["label_name"] != AUTO_ENROLL_WORKFLOW_PATH
+            or source_connections[0]["count"] != 1
+        ):
+            raise PlanError("complete plan lacks one workflow source-history connection")
+        job_by_identity: dict[tuple[int, int], dict[str, Any]] = {}
+        jobs_per_run: dict[int, int] = {}
+        for job in workflow_jobs:
+            run_id = job.get("run_id")
+            job_id = job.get("id")
+            if not _is_integer(run_id) or not _is_integer(job_id):
+                raise PlanError("workflow job lacks exact run/job identity")
+            identity = (run_id, job_id)
+            if identity in job_by_identity:
+                raise PlanError("workflow-job inventory contains duplicate identities")
+            job_by_identity[identity] = job
+            jobs_per_run[run_id] = jobs_per_run.get(run_id, 0) + 1
+        job_connections = {
+            int(row["label_name"]): row
+            for row in connections
+            if row["kind"] == "workflow_jobs" and row["label_name"].isdigit()
+        }
+        if set(job_connections) != set(jobs_per_run) or any(
+            job_connections[run_id]["count"] != count
+            for run_id, count in jobs_per_run.items()
+        ):
+            raise PlanError("complete plan lacks exact workflow-job connections")
         quiescence = inventory.get("quiescence")
         if not isinstance(quiescence, Mapping):
             raise PlanError("complete plan lacks ordered quiescence evidence")
@@ -404,6 +659,7 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
         ):
             raise PlanError("workflow disable must be verified before the run scan")
         pr_by_id = {str(row["node_id"]): row for row in pull_requests}
+        run_by_id = {int(row["id"]): row for row in workflow_runs}
         if len(pr_by_id) != len(pull_requests):
             raise PlanError("auto-merge inventory contains duplicate pull requests")
         attr_by_id = {
@@ -434,6 +690,77 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
                 or evidence[0].get("run_id") not in run_ids
             ):
                 raise PlanError("attribution is not bound to a captured workflow run")
+            if row.get("classification") == "attributed":
+                bound = evidence[0]
+                run = run_by_id[int(bound["run_id"])]
+                run_fields = {
+                    "workflow_id": "workflow_id",
+                    "workflow_path": "path",
+                    "event": "event",
+                    "run_status": "status",
+                    "conclusion": "conclusion",
+                    "head_sha": "head_sha",
+                    "run_created_at": "created_at",
+                    "run_updated_at": "updated_at",
+                    "run_url": "html_url",
+                }
+                if any(
+                    bound.get(evidence_field) != run.get(run_field)
+                    for evidence_field, run_field in run_fields.items()
+                ):
+                    raise PlanError(
+                        "attribution evidence does not match its captured workflow run"
+                    )
+                linked_pull_requests = run.get("pull_requests")
+                if not isinstance(linked_pull_requests, list) or not any(
+                    isinstance(linked, Mapping)
+                    and linked.get("number") == pr_by_id[pr_id].get("number")
+                    for linked in linked_pull_requests
+                ):
+                    raise PlanError(
+                        "captured workflow run is not linked to the attributed pull request"
+                    )
+                job = job_by_identity.get(
+                    (int(bound["run_id"]), int(bound.get("job_id", -1)))
+                )
+                if (
+                    job is None
+                    or bound.get("job_name") != job.get("name")
+                    or bound.get("job_status") != job.get("status")
+                    or bound.get("job_conclusion") != job.get("conclusion")
+                    or bound.get("job_started_at") != job.get("started_at")
+                    or bound.get("job_completed_at") != job.get("completed_at")
+                ):
+                    raise PlanError(
+                        "attribution evidence does not match its captured workflow job"
+                    )
+                steps = job.get("steps")
+                matching_steps = [
+                    step
+                    for step in steps
+                    if isinstance(steps, list)
+                    and isinstance(step, Mapping)
+                    and step.get("number") == bound.get("step_number")
+                ] if isinstance(steps, list) else []
+                if len(matching_steps) != 1:
+                    raise PlanError(
+                        "attribution evidence lacks one captured workflow step"
+                    )
+                step = matching_steps[0]
+                step_fields = {
+                    "step_name": "name",
+                    "step_status": "status",
+                    "step_conclusion": "conclusion",
+                    "step_started_at": "started_at",
+                    "step_completed_at": "completed_at",
+                }
+                if any(
+                    bound.get(evidence_field) != step.get(step_field)
+                    for evidence_field, step_field in step_fields.items()
+                ):
+                    raise PlanError(
+                        "attribution evidence does not match its captured workflow step"
+                    )
         attributed_ids = {
             pr_id
             for pr_id, row in attr_by_id.items()
@@ -467,6 +794,8 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
             inventory.get("workflow_runs", []),
             key=lambda row: int(row.get("id", 0)),
         ),
+        "workflow_jobs": workflow_jobs,
+        "source_history": source_history,
         "attribution": attribution,
         "quiescence": copy.deepcopy(inventory.get("quiescence")),
         "planned_actions": planned_actions,
@@ -1145,6 +1474,25 @@ def _parse_time(value: str | None) -> dt.datetime | None:
     return parsed
 
 
+def _is_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_sha256_hex(value: Any) -> bool:
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _is_safe_log_member_name(value: Any) -> bool:
+    if not isinstance(value, str) or not value or len(value) > 1_024:
+        return False
+    path = Path(value)
+    return (
+        not path.is_absolute()
+        and ".." not in path.parts
+        and not value.endswith(("/", "\\"))
+    )
+
+
 def classify_auto_merge(
     pr: Mapping[str, Any], evidence: Sequence[Mapping[str, Any]]
 ) -> dict[str, Any]:
@@ -1156,7 +1504,11 @@ def classify_auto_merge(
     actor = request.get("enabled_by") or {}
     if actor.get("__typename") == "User":
         return {"classification": "explicit_preserve", "evidence": []}
-    if actor.get("login") != "app/github-actions" or actor.get("__typename") != "Bot":
+    if (
+        actor.get("__typename") != "Bot"
+        or actor.get("login") != GITHUB_ACTIONS_BOT_LOGIN
+        or actor.get("id") != GITHUB_ACTIONS_BOT_NODE_ID
+    ):
         return {"classification": "ambiguous_preserve", "evidence": []}
     eligible = (
         pr.get("state") == "OPEN"
@@ -1171,34 +1523,76 @@ def classify_auto_merge(
     for row in evidence:
         run_start = _parse_time(row.get("run_created_at"))
         run_end = _parse_time(row.get("run_updated_at"))
+        job_start = _parse_time(row.get("job_started_at"))
+        job_end = _parse_time(row.get("job_completed_at"))
         step_start = _parse_time(row.get("step_started_at"))
         step_end = _parse_time(row.get("step_completed_at"))
         if (
             enabled_at is not None
             and row.get("workflow_id") == AUTO_ENROLL_WORKFLOW_ID
             and row.get("event") == "pull_request_target"
+            and row.get("run_status") == "completed"
             and row.get("conclusion") == "success"
             and row.get("pull_request_number") == pr.get("number")
-            and row.get("head_sha") == pr.get("head_ref_oid")
+            and isinstance(row.get("head_sha"), str)
+            and bool(row.get("head_sha"))
+            and row.get("current_head_sha") == pr.get("head_ref_oid")
             and row.get("job_name") == "Enroll for auto-merge"
             and row.get("step_name") == "Enable auto-merge"
+            and row.get("job_status") == "completed"
+            and row.get("job_conclusion") == "success"
+            and row.get("step_status") == "completed"
             and row.get("step_conclusion") == "success"
-            and isinstance(row.get("run_id"), int)
-            and isinstance(row.get("job_id"), int)
-            and isinstance(row.get("step_number"), int)
-            and row.get("workflow_path")
-            == ".github/workflows/auto-enroll-merge.yml"
-            and isinstance(row.get("workflow_source_sha"), str)
-            and bool(row.get("workflow_source_sha"))
+            and _is_integer(row.get("run_id"))
+            and _is_integer(row.get("job_id"))
+            and _is_integer(row.get("step_number"))
+            and row.get("workflow_path") == AUTO_ENROLL_WORKFLOW_PATH
+            and row.get("workflow_blob_shas")
+            == list(TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS)
+            and row.get("workflow_blobs_verified") is True
+            and row.get("historical_source_commit_status")
+            == "unavailable_from_stable_api"
+            and row.get("source_commit") is None
+            and row.get("default_branch") == "main"
+            and row.get("path_introduction_commit")
+            == AUTO_ENROLL_PATH_INTRODUCTION_COMMIT
+            and row.get("active_blob_sha")
+            == TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA
+            and row.get("mapping_basis")
+            == "unchanged-default-branch-path-history"
+            and row.get("enrollment_source_identical_across_trusted_blobs") is True
             and isinstance(row.get("run_url"), str)
             and bool(row.get("run_url"))
             and row.get("source_contains_exact_auto_squash_command") is True
+            and _is_sha256_hex(row.get("log_archive_sha256"))
+            and _is_safe_log_member_name(row.get("log_member_name"))
+            and _is_sha256_hex(row.get("log_member_sha256"))
+            and _is_integer(row.get("log_matching_member_count"))
+            and row.get("log_matching_member_count") == 1
+            and row.get("log_pr_number_matches") is True
+            and row.get("log_repo_matches") is True
+            and row.get("log_contains_enrollment_success") is True
+            and row.get("log_contains_exact_auto_squash_command") is True
             and all(
                 stamp is not None
-                for stamp in (run_start, run_end, step_start, step_end)
+                for stamp in (
+                    run_start,
+                    run_end,
+                    job_start,
+                    job_end,
+                    step_start,
+                    step_end,
+                )
             )
-            and run_start <= enabled_at <= run_end
-            and step_start <= enabled_at <= step_end
+            and (
+                run_start
+                <= job_start
+                <= step_start
+                <= enabled_at
+                <= step_end
+                <= job_end
+                <= run_end
+            )
         ):
             matches.append(copy.deepcopy(dict(row)))
     if len(matches) == 1:
@@ -1212,7 +1606,7 @@ class ReadOnlyGitHub:
     def __init__(
         self,
         repo: str,
-        runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+        runner: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     ):
         if repo.count("/") != 1:
             raise ValueError("repo must be OWNER/NAME")
@@ -1258,6 +1652,27 @@ class ReadOnlyGitHub:
         except (json.JSONDecodeError, TypeError):
             raise RetirementError("GitHub read returned invalid JSON") from None
 
+    def bytes(self, endpoint: str) -> bytes:
+        """Read one binary REST response without exposing a mutation option."""
+
+        if endpoint.startswith("-"):
+            raise ApplyBlocked("read-only GitHub client rejected an option endpoint")
+        try:
+            completed = self._runner(
+                ["gh", "api", endpoint],
+                check=True,
+                capture_output=True,
+                text=False,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RetirementError(
+                f"GitHub binary read failed with exit status {exc.returncode}"
+            ) from None
+        value = completed.stdout
+        if not isinstance(value, bytes):
+            raise RetirementError("GitHub binary read returned non-bytes output")
+        return value
+
     def rest(self, endpoint: str) -> Any:
         return self._json([endpoint])
 
@@ -1266,6 +1681,49 @@ class ReadOnlyGitHub:
         if not isinstance(result, list) or any(not isinstance(page, list) for page in result):
             raise PlanError("paginated REST response was not an array of page arrays")
         return result
+
+    def rest_collection(
+        self, endpoint: str, *, list_key: str
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Exhaust a REST object connection and validate its total count."""
+
+        result = self._json(["--paginate", "--slurp", endpoint])
+        if not isinstance(result, list) or not result:
+            raise PlanError("paginated REST object response has no pages")
+        rows: list[dict[str, Any]] = []
+        total: int | None = None
+        for page in result:
+            if not isinstance(page, Mapping):
+                raise PlanError("paginated REST object page is not an object")
+            page_rows = page.get(list_key)
+            page_total = page.get("total_count")
+            if (
+                not isinstance(page_rows, list)
+                or not _is_integer(page_total)
+                or page_total < 0
+                or any(not isinstance(row, Mapping) for row in page_rows)
+            ):
+                raise PlanError("paginated REST object page has an invalid shape")
+            if total is None:
+                total = page_total
+            elif page_total != total:
+                raise PlanError("paginated REST total_count changed between pages")
+            rows.extend(copy.deepcopy(dict(row)) for row in page_rows)
+        if len(rows) != total:
+            raise PlanError(
+                f"paginated REST count mismatch: observed {len(rows)}, expected {total}"
+            )
+        row_ids = [row.get("id") for row in rows]
+        if any(not _is_integer(row_id) for row_id in row_ids):
+            raise PlanError("paginated REST object row lacks an integer id")
+        if len(row_ids) != len(set(row_ids)):
+            raise PlanError("paginated REST object response contains duplicate ids")
+        return rows, {
+            "pages": len(result),
+            "count": len(rows),
+            "total_count": total,
+            "complete": True,
+        }
 
     def graphql_pages(
         self, query: str, fields: Mapping[str, str]
@@ -1367,6 +1825,9 @@ query($owner:String!, $name:String!, $endCursor:String) {
             __typename
             login
             ... on Bot { id }
+            ... on EnterpriseUserAccount { id }
+            ... on Mannequin { id }
+            ... on Organization { id }
             ... on User { id }
           }
         }
@@ -1377,8 +1838,431 @@ query($owner:String!, $name:String!, $endCursor:String) {
 """
 
 
+def verify_trusted_workflow_blob(
+    client: ReadOnlyGitHub,
+    blob_sha: str = TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+) -> dict[str, Any]:
+    """Verify one reviewed workflow blob from its exact Git object bytes."""
+
+    if blob_sha not in TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS:
+        raise PlanError("workflow blob is outside the reviewed allowlist")
+    raw = client.rest(f"repos/{client.repo}/git/blobs/{blob_sha}")
+    if not isinstance(raw, Mapping):
+        raise PlanError("workflow blob response is not an object")
+    content = raw.get("content")
+    size = raw.get("size")
+    if (
+        raw.get("sha") != blob_sha
+        or raw.get("encoding") != "base64"
+        or not _is_integer(size)
+        or size < 0
+        or not isinstance(content, str)
+    ):
+        raise PlanError("workflow blob response has an invalid identity or encoding")
+    try:
+        decoded = base64.b64decode("".join(content.split()), validate=True)
+    except (ValueError, binascii.Error):
+        raise PlanError("workflow blob content is not valid base64") from None
+    if len(decoded) != size:
+        raise PlanError("workflow blob size does not match decoded content")
+    git_header = f"blob {len(decoded)}\0".encode("ascii")
+    if hashlib.sha1(git_header + decoded).hexdigest() != blob_sha:
+        raise PlanError("workflow blob bytes do not match the reviewed Git object")
+    try:
+        source = decoded.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PlanError("workflow blob is not valid UTF-8") from None
+    if AUTO_ENROLL_EXACT_COMMAND not in source:
+        raise PlanError("reviewed workflow blob lacks the exact auto-squash command")
+    return {
+        "workflow_blob_sha": blob_sha,
+        "workflow_blob_size": size,
+        "workflow_blob_verified": True,
+        "source_contains_exact_auto_squash_command": True,
+    }
+
+
+def inspect_enrollment_log_archive(
+    payload: bytes,
+    *,
+    pull_request_number: int,
+    repo_name: str,
+) -> dict[str, Any]:
+    """Inspect bounded run logs without retaining raw output or secret-bearing env."""
+
+    if not isinstance(payload, bytes) or len(payload) > MAX_LOG_ARCHIVE_BYTES:
+        raise PlanError("workflow log archive is unavailable or exceeds its bound")
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            infos = archive.infolist()
+            if not infos or len(infos) > MAX_LOG_ENTRIES:
+                raise PlanError("workflow log archive has an invalid entry count")
+            total_size = 0
+            matches: list[dict[str, Any]] = []
+            for info in infos:
+                if (
+                    info.flag_bits & 0x1
+                    or not _is_safe_log_member_name(info.filename)
+                    or info.file_size < 0
+                ):
+                    raise PlanError("workflow log archive contains an unsafe entry")
+                total_size += info.file_size
+                if total_size > MAX_LOG_UNCOMPRESSED_BYTES:
+                    raise PlanError("workflow log archive exceeds its expanded bound")
+                try:
+                    member = archive.read(info).decode("utf-8")
+                except (RuntimeError, UnicodeDecodeError, zipfile.BadZipFile):
+                    raise PlanError("workflow log archive member is unreadable") from None
+                normalized_lines = []
+                for line in member.splitlines():
+                    line = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", line).lstrip(
+                        "\ufeff"
+                    )
+                    line = re.sub(
+                        r"^\d{4}-\d{2}-\d{2}T\S+Z\s+", "", line
+                    ).strip()
+                    normalized_lines.append(line)
+                pr_marker = f"PR: {pull_request_number}"
+                repo_marker = f"REPO: {repo_name}"
+                success_marker = (
+                    f"PR #{pull_request_number} enrolled for auto-merge (squash)."
+                )
+                proof = {
+                    "log_member_name": info.filename,
+                    "log_member_sha256": hashlib.sha256(
+                        member.encode("utf-8")
+                    ).hexdigest(),
+                    "log_pr_number_matches": pr_marker in normalized_lines,
+                    "log_repo_matches": repo_marker in normalized_lines,
+                    "log_contains_enrollment_success": (
+                        success_marker in normalized_lines
+                    ),
+                    "log_contains_exact_auto_squash_command": any(
+                        AUTO_ENROLL_EXACT_COMMAND in line
+                        and line.startswith(("if gh pr merge", "gh pr merge"))
+                        for line in normalized_lines
+                    ),
+                }
+                if all(
+                    proof[field] is True
+                    for field in (
+                        "log_pr_number_matches",
+                        "log_repo_matches",
+                        "log_contains_enrollment_success",
+                        "log_contains_exact_auto_squash_command",
+                    )
+                ):
+                    matches.append(proof)
+    except zipfile.BadZipFile:
+        raise PlanError("workflow log archive is not a valid ZIP") from None
+    result: dict[str, Any] = {
+        "log_archive_sha256": hashlib.sha256(payload).hexdigest(),
+        "log_matching_member_count": len(matches),
+        "log_pr_number_matches": False,
+        "log_repo_matches": False,
+        "log_contains_enrollment_success": False,
+        "log_contains_exact_auto_squash_command": False,
+    }
+    if len(matches) == 1:
+        result.update(matches[0])
+    return result
+
+
+def _normalized_workflow_run(raw: Mapping[str, Any]) -> dict[str, Any]:
+    fields = (
+        "id",
+        "node_id",
+        "workflow_id",
+        "path",
+        "event",
+        "status",
+        "conclusion",
+        "run_number",
+        "run_attempt",
+        "created_at",
+        "run_started_at",
+        "updated_at",
+        "head_branch",
+        "head_sha",
+        "actor",
+        "triggering_actor",
+        "pull_requests",
+        "html_url",
+    )
+    return {field: copy.deepcopy(raw.get(field)) for field in fields}
+
+
+def collect_workflow_source_history(client: ReadOnlyGitHub) -> dict[str, Any]:
+    """Bind the reviewed blob to complete default-branch path history."""
+
+    pages = client.rest_pages(
+        (
+            f"repos/{client.repo}/commits?sha=main&path="
+            f"{quote(AUTO_ENROLL_WORKFLOW_PATH, safe='')}&per_page=100"
+        )
+    )
+    rows = [row for page in pages for row in page]
+    if any(not isinstance(row, Mapping) for row in rows):
+        raise PlanError("workflow source history contains a malformed commit")
+    commits = []
+    for row in rows:
+        commit = row.get("commit")
+        committer = commit.get("committer") if isinstance(commit, Mapping) else None
+        commits.append(
+            {
+                "sha": row.get("sha"),
+                "committed_at": (
+                    committer.get("date") if isinstance(committer, Mapping) else None
+                ),
+            }
+        )
+    expected = [
+        {
+            "sha": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+            "committed_at": "2026-07-22T00:38:24Z",
+        }
+    ]
+    if commits != expected:
+        raise PlanError("default-branch workflow path history is not the reviewed set")
+    encoded_path = quote(AUTO_ENROLL_WORKFLOW_PATH, safe="/")
+    content = client.rest(
+        (
+            f"repos/{client.repo}/contents/{encoded_path}"
+            f"?ref={AUTO_ENROLL_PATH_INTRODUCTION_COMMIT}"
+        )
+    )
+    if (
+        not isinstance(content, Mapping)
+        or content.get("sha") != TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA
+        or content.get("size") != 4255
+    ):
+        raise PlanError("workflow introduction commit is not bound to the trusted blob")
+    return {
+        "source_commit": None,
+        "source_commit_status": "unavailable_from_stable_api",
+        "default_branch": "main",
+        "workflow_path": AUTO_ENROLL_WORKFLOW_PATH,
+        "path_introduction_commit": AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+        "active_blob_sha": TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+        "mapping_basis": "unchanged-default-branch-path-history",
+        "commits": commits,
+        "connection": {
+            "kind": "workflow_source_history",
+            "label_name": AUTO_ENROLL_WORKFLOW_PATH,
+            "pages": len(pages),
+            "count": len(commits),
+            "total_count": len(commits),
+            "complete": bool(pages) and len(pages[-1]) < 100,
+        },
+    }
+
+
+def _run_matches_pull_request(
+    run: Mapping[str, Any], pull_request: Mapping[str, Any]
+) -> bool:
+    linked = run.get("pull_requests")
+    if not isinstance(linked, list):
+        return False
+    for row in linked:
+        if not isinstance(row, Mapping):
+            continue
+        if row.get("number") == pull_request.get("number"):
+            return True
+    return False
+
+
+def _run_can_explain_enrollment(
+    run: Mapping[str, Any], pull_request: Mapping[str, Any]
+) -> bool:
+    request = pull_request.get("auto_merge_request") or {}
+    enabled_at = _parse_time(request.get("enabled_at"))
+    created_at = _parse_time(run.get("created_at"))
+    updated_at = _parse_time(run.get("updated_at"))
+    return (
+        enabled_at is not None
+        and created_at is not None
+        and updated_at is not None
+        and run.get("workflow_id") == AUTO_ENROLL_WORKFLOW_ID
+        and run.get("path") == AUTO_ENROLL_WORKFLOW_PATH
+        and run.get("event") == "pull_request_target"
+        and run.get("status") == "completed"
+        and run.get("conclusion") == "success"
+        and created_at <= enabled_at <= updated_at
+        and _run_matches_pull_request(run, pull_request)
+    )
+
+
+def collect_auto_merge_attribution(
+    client: ReadOnlyGitHub,
+    inventory: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Add conservative historical evidence to an inventory without mutations."""
+
+    result = copy.deepcopy(dict(inventory))
+    blob_proofs = [
+        verify_trusted_workflow_blob(client, blob_sha)
+        for blob_sha in TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS
+    ]
+    if any(
+        proof.get("source_contains_exact_auto_squash_command") is not True
+        for proof in blob_proofs
+    ):
+        raise PlanError("reviewed workflow blobs do not share the enrollment command")
+    source_history = collect_workflow_source_history(client)
+    result["source_history"] = {
+        key: copy.deepcopy(value)
+        for key, value in source_history.items()
+        if key != "connection"
+    }
+    raw_runs, run_connection = client.rest_collection(
+        (
+            f"repos/{client.repo}/actions/workflows/{AUTO_ENROLL_WORKFLOW_ID}"
+            "/runs?per_page=100"
+        ),
+        list_key="workflow_runs",
+    )
+    runs = [_normalized_workflow_run(run) for run in raw_runs]
+    result["workflow_runs"] = runs
+    result["connections"] = [
+        row
+        for row in result.get("connections", [])
+        if row.get("kind") != "workflow_runs"
+    ]
+    result["connections"].append(
+        {"kind": "workflow_runs", "label_name": "", **run_connection}
+    )
+    result["connections"].append(source_history["connection"])
+    jobs_by_run: dict[int, list[dict[str, Any]]] = {}
+    workflow_jobs: list[dict[str, Any]] = []
+    log_by_run_pr: dict[tuple[int, int], dict[str, Any] | None] = {}
+    attribution: list[dict[str, Any]] = []
+    for pull_request in result.get("pull_requests", []):
+        candidate_evidence: list[dict[str, Any]] = []
+        request = pull_request.get("auto_merge_request") or {}
+        actor = request.get("enabled_by") or {}
+        exact_bot = (
+            actor.get("__typename") == "Bot"
+            and actor.get("login") == GITHUB_ACTIONS_BOT_LOGIN
+            and actor.get("id") == GITHUB_ACTIONS_BOT_NODE_ID
+        )
+        if exact_bot:
+            for run in runs:
+                run_id = run.get("id")
+                if (
+                    not _is_integer(run_id)
+                    or not _run_can_explain_enrollment(run, pull_request)
+                ):
+                    continue
+                if run_id not in jobs_by_run:
+                    jobs, job_connection = client.rest_collection(
+                        (
+                            f"repos/{client.repo}/actions/runs/{run_id}"
+                            "/jobs?filter=all&per_page=100"
+                        ),
+                        list_key="jobs",
+                    )
+                    jobs_by_run[run_id] = jobs
+                    result["connections"].append(
+                        {
+                            "kind": "workflow_jobs",
+                            "label_name": str(run_id),
+                            **job_connection,
+                        }
+                    )
+                    workflow_jobs.extend(
+                        {"run_id": run_id, **copy.deepcopy(dict(job))}
+                        for job in jobs
+                    )
+                log_key = (run_id, int(pull_request["number"]))
+                if log_key not in log_by_run_pr:
+                    try:
+                        log_by_run_pr[log_key] = inspect_enrollment_log_archive(
+                            client.bytes(
+                                f"repos/{client.repo}/actions/runs/{run_id}/logs"
+                            ),
+                            pull_request_number=int(pull_request["number"]),
+                            repo_name=client.repo,
+                        )
+                    except (PlanError, RetirementError):
+                        log_by_run_pr[log_key] = None
+                log_proof = log_by_run_pr[log_key]
+                if log_proof is None:
+                    continue
+                for job in jobs_by_run[run_id]:
+                    if job.get("name") != "Enroll for auto-merge":
+                        continue
+                    steps = job.get("steps")
+                    if not isinstance(steps, list):
+                        continue
+                    for step in steps:
+                        if (
+                            not isinstance(step, Mapping)
+                            or step.get("name") != "Enable auto-merge"
+                        ):
+                            continue
+                        candidate_evidence.append(
+                            {
+                                "workflow_id": run["workflow_id"],
+                                "run_id": run_id,
+                                "job_id": job.get("id"),
+                                "step_number": step.get("number"),
+                                "workflow_path": run["path"],
+                                "workflow_blob_shas": list(
+                                    TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS
+                                ),
+                                "workflow_blobs_verified": True,
+                                "historical_source_commit_status": (
+                                    "unavailable_from_stable_api"
+                                ),
+                                "source_commit": None,
+                                "default_branch": source_history["default_branch"],
+                                "path_introduction_commit": source_history[
+                                    "path_introduction_commit"
+                                ],
+                                "active_blob_sha": source_history["active_blob_sha"],
+                                "mapping_basis": source_history["mapping_basis"],
+                                "enrollment_source_identical_across_trusted_blobs": True,
+                                "run_url": run.get("html_url"),
+                                "event": run.get("event"),
+                                "run_status": run.get("status"),
+                                "conclusion": run.get("conclusion"),
+                                "pull_request_number": pull_request.get("number"),
+                                "head_sha": run.get("head_sha"),
+                                "current_head_sha": pull_request.get("head_ref_oid"),
+                                "run_created_at": run.get("created_at"),
+                                "run_updated_at": run.get("updated_at"),
+                                "job_name": job.get("name"),
+                                "job_status": job.get("status"),
+                                "job_conclusion": job.get("conclusion"),
+                                "job_started_at": job.get("started_at"),
+                                "job_completed_at": job.get("completed_at"),
+                                "step_name": step.get("name"),
+                                "step_status": step.get("status"),
+                                "step_conclusion": step.get("conclusion"),
+                                "step_started_at": step.get("started_at"),
+                                "step_completed_at": step.get("completed_at"),
+                                "source_contains_exact_auto_squash_command": True,
+                                **log_proof,
+                            }
+                        )
+        classified = classify_auto_merge(pull_request, candidate_evidence)
+        attribution.append(
+            {
+                "pull_request_node_id": pull_request.get("node_id"),
+                **classified,
+            }
+        )
+    result["attribution"] = attribution
+    result["workflow_jobs"] = workflow_jobs
+    result["planned_actions"] = []
+    result["apply_complete"] = False
+    return result
+
+
 def collect_auto_merge_inventory(
     client: ReadOnlyGitHub,
+    *,
+    with_attribution: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     repo_raw = client.rest(f"repos/{client.repo}")
     repo = {
@@ -1389,27 +2273,56 @@ def collect_auto_merge_inventory(
     }
     owner, name = client.repo.split("/", 1)
     pages = client.graphql_pages(AUTO_MERGE_QUERY, {"owner": owner, "name": name})
+    if not pages:
+        raise PlanError("GitHub GraphQL returned no open-PR pages")
     nodes: list[dict[str, Any]] = []
     expected_total: int | None = None
     observed_total = 0
-    for page in pages:
+    seen_node_ids: set[str] = set()
+    seen_numbers: set[int] = set()
+    for page_index, page in enumerate(pages):
+        if page.get("errors"):
+            raise RetirementError("GitHub GraphQL returned an error response")
         try:
             connection = page["data"]["repository"]["pullRequests"]
             page_nodes = connection["nodes"]
             page_total = connection["totalCount"]
+            page_info = connection["pageInfo"]
         except (KeyError, TypeError):
             raise RetirementError(
                 "GitHub GraphQL response omitted the pull-request connection"
             ) from None
+        if (
+            not isinstance(connection, Mapping)
+            or not isinstance(page_nodes, list)
+            or not _is_integer(page_total)
+            or page_total < 0
+            or not isinstance(page_info, Mapping)
+            or not isinstance(page_info.get("hasNextPage"), bool)
+            or page_info["hasNextPage"] != (page_index < len(pages) - 1)
+        ):
+            raise PlanError("GitHub GraphQL pull-request connection is malformed")
         if expected_total is None:
             expected_total = page_total
+        elif page_total != expected_total:
+            raise PlanError("GitHub GraphQL totalCount changed between pages")
         observed_total += len(page_nodes)
         for raw in page_nodes:
+            if (
+                not isinstance(raw, Mapping)
+                or not isinstance(raw.get("id"), str)
+                or not _is_integer(raw.get("number"))
+                or raw["id"] in seen_node_ids
+                or raw["number"] in seen_numbers
+            ):
+                raise PlanError("GitHub GraphQL returned a duplicate or invalid PR")
+            seen_node_ids.add(raw["id"])
+            seen_numbers.add(raw["number"])
             request = raw.get("autoMergeRequest")
             if request is None:
                 continue
-            nodes.append(
-                {
+            try:
+                node = {
                     "node_id": raw["id"],
                     "number": raw["number"],
                     "state": raw["state"],
@@ -1429,11 +2342,20 @@ def collect_auto_merge_inventory(
                         "enabled_by": request["enabledBy"],
                     },
                 }
-            )
+            except (KeyError, TypeError):
+                raise RetirementError(
+                    "GitHub GraphQL auto-merge tuple is incomplete"
+                ) from None
+            nodes.append(node)
+    if observed_total != expected_total:
+        raise PlanError(
+            f"open-PR GraphQL count mismatch: observed {observed_total}, "
+            f"expected {expected_total}"
+        )
     workflow = client.rest(
         f"repos/{client.repo}/actions/workflows/{AUTO_ENROLL_WORKFLOW_ID}"
     )
-    return repo, {
+    inventory = {
         "pull_requests": nodes,
         "connections": [
             {
@@ -1460,6 +2382,9 @@ def collect_auto_merge_inventory(
         "planned_actions": [],
         "apply_complete": False,
     }
+    if with_attribution:
+        inventory = collect_auto_merge_attribution(client, inventory)
+    return repo, inventory
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -1492,6 +2417,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     inventory_parser.add_argument("--repo", default="Jonnyton/TinyAssets")
     inventory_parser.add_argument("--source-revision")
     inventory_parser.add_argument("--out", type=Path, required=True)
+    inventory_parser.add_argument(
+        "--with-attribution",
+        action="store_true",
+        help="collect read-only Actions/blob/log evidence for auto-merge inventory",
+    )
 
     plan_parser = sub.add_parser(
         "plan", help="build a receipt from an already-captured inventory"
@@ -1507,11 +2437,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "inventory":
+        if args.with_attribution and args.operation != AUTO_MERGE_OPERATION:
+            parser.error("--with-attribution is only valid for auto_merge_v1")
         client = ReadOnlyGitHub(args.repo)
         if args.operation == LABEL_OPERATION:
             repo, inventory = collect_label_inventory(client)
         else:
-            repo, inventory = collect_auto_merge_inventory(client)
+            repo, inventory = collect_auto_merge_inventory(
+                client, with_attribution=args.with_attribution
+            )
         receipt = build_receipt(
             operation=args.operation,
             repo=repo,

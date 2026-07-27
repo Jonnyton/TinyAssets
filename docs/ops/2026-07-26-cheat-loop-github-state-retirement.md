@@ -7,13 +7,22 @@ copyable, remixable designs.
 
 ## Current disposition
 
-Apply is blocked. As of 2026-07-26, read-only production inventory found:
+Apply is blocked. As of 2026-07-27, read-only production inventory found:
 
 - all 28 exact retired label definitions;
 - 1,962 retired-label associations across 883 unique items;
 - 221 open issues, 296 closed issues, and 366 closed or merged pull requests;
-- 21 open pull requests with auto-merge requests; and
+- 98 open pull requests, including 21 with auto-merge requests; and
 - workflow database ID `317815472` (`auto-enroll-merge.yml`) still active.
+
+The 2026-07-27 strict attribution receipt exhaustively captured 832 workflow
+runs, 21 complete job connections, the one-entry reviewed default-branch
+source history, and one exact run/job/step/log proof for each of the 21
+enrollments. All 21 classify `attributed`; none classify explicit or ambiguous.
+The verified inventory-only receipt digest is
+`sha256:ff4a1481c4d27e478204b94ce094ff965560aaaaa1f9c91cd279f5a8a1562406`.
+This is historical proof, not mutation authority: the workflow remains active
+and `apply_complete=false`.
 
 Closed items remain untouched as history. Generic labels and explicit
 user/maintainer auto-merge requests are preserved.
@@ -62,6 +71,7 @@ python scripts/retire_cheat_loop_github_state.py inventory `
 python scripts/retire_cheat_loop_github_state.py inventory `
   --operation auto_merge_v1 `
   --repo Jonnyton/TinyAssets `
+  --with-attribution `
   --out output/github-auto-merge-retirement-plan.json
 ```
 
@@ -71,10 +81,24 @@ not used, so its 1,000-result cap cannot truncate the receipt. The resulting
 page arrays are flattened only after their structure is validated.
 
 The auto-merge reader fully pages open pull requests and records the exact PR
-identity, head, repositories, draft/state tuple, and full
-`autoMergeRequest`. A later increment must add the historical workflow
-run/job/step/source evidence to the receipt before apply can be authorized.
-An `app/github-actions` actor alone is always ambiguous.
+identity, current head, repositories, draft/state tuple, and full
+`autoMergeRequest`. With `--with-attribution`, it also fully pages workflow
+runs and candidate jobs, verifies the reviewed default-branch workflow Git
+blob, and hashes bounded run-log archives while retaining only non-secret proof
+markers. The exact raw GraphQL Actions identity is
+`Bot/github-actions/MDM6Qm90NDE4OTgyODI=`. That actor alone remains ambiguous:
+attribution additionally requires one matching run/job/step window and one log
+member proving the exact PR, repository, auto-squash command, and successful
+enrollment line.
+
+Stable GitHub APIs do not expose the exact historical default-branch commit
+used by a `pull_request_target` run. The collector therefore never substitutes
+`run.head_sha` or mutable pull-request association data as a workflow-source
+commit. It verifies reviewed blob
+`1e3d8996644756a8fedf1baacd473cffd614c91b`, whose enrollment command was the
+only default-branch implementation governing these runs. Historical run head
+and current PR head remain separate fields: #1505 and #1558 advanced after
+enrollment and are not made ambiguous merely by that later change.
 
 ## Gates before any live adapter may be added or used
 
@@ -133,19 +157,18 @@ The 2026-07-26 Codex independent gate and Claude Opus 5 opposite-provider
 review approve this increment only as read-only inventory infrastructure. A
 later live-adapter change must close these review findings before it can apply:
 
-1. Reconcile already-terminal actions in a partially successful multi-action
-   plan without overwriting their success state.
-2. Fence every intent/pre-read/outcome journal write with the active executor
-   token; explicit recovery must not race a live executor.
-3. Assert every journal state update changed exactly one row.
-4. Recheck fresh run-level authority during a long apply, in addition to the
-   exact per-target pre/post-read.
-5. Capture authoritative terminal evidence for each REST label connection
+1. Capture authoritative terminal evidence for each REST label connection
    instead of treating `gh --paginate` completion as a total-count oracle.
-6. Confirm the live GraphQL `Bot.login` form for the Actions bot and keep all
-   unrecognized bots ambiguous.
-7. Move the focused suite into the normal `tests/` collection after the active
+2. Re-fetch and match the exact source/run/job/step/log identities and archive
+   digests in every future live adapter's immediately fresh per-action proof;
+   the inventory receipt alone never authorizes mutation.
+3. Move the focused suite into the normal `tests/` collection after the active
    broad test-file claims release.
+
+The earlier recovery, executor fencing, row-count, per-action freshness, and
+raw Actions-actor-form findings are closed in the current read-only
+implementation and focused suite. They remain mandatory invariants for any
+future adapter.
 
 These are not authorization to add the adapter. OpenSpec tasks 3.6/3.7, task
 4.2, producer shutdown, workflow disable/drain, and opposite-provider review

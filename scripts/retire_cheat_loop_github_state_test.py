@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+import zipfile
 
 
 MODULE_PATH = Path(__file__).with_name("retire_cheat_loop_github_state.py")
@@ -87,7 +91,7 @@ def receipt() -> dict:
 
 def auto_pr(
     actor_type="Bot",
-    login="app/github-actions",
+    login=mod.GITHUB_ACTIONS_BOT_LOGIN,
     *,
     node_id="PR_1",
     number=7,
@@ -114,33 +118,107 @@ def auto_pr(
             "enabled_by": {
                 "__typename": actor_type,
                 "login": login,
-                "id": "B_1",
+                "id": mod.GITHUB_ACTIONS_BOT_NODE_ID,
             },
         },
     }
 
 
-def exact_evidence(*, pull_request_number=7, head_sha="deadbeef") -> dict:
+def exact_evidence(
+    *,
+    pull_request_number=7,
+    head_sha="deadbeef",
+    run_id=101,
+    job_id=202,
+) -> dict:
     return {
         "workflow_id": mod.AUTO_ENROLL_WORKFLOW_ID,
-        "run_id": 101,
-        "job_id": 202,
+        "run_id": run_id,
+        "job_id": job_id,
         "step_number": 3,
         "workflow_path": ".github/workflows/auto-enroll-merge.yml",
-        "workflow_source_sha": "workflow-source-sha",
-        "run_url": "https://example.invalid/actions/runs/101",
+        "workflow_blob_shas": list(mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHAS),
+        "workflow_blobs_verified": True,
+        "historical_source_commit_status": "unavailable_from_stable_api",
+        "source_commit": None,
+        "default_branch": "main",
+        "path_introduction_commit": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+        "active_blob_sha": mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+        "mapping_basis": "unchanged-default-branch-path-history",
+        "enrollment_source_identical_across_trusted_blobs": True,
+        "run_url": f"https://example.invalid/actions/runs/{run_id}",
         "event": "pull_request_target",
+        "run_status": "completed",
         "conclusion": "success",
         "pull_request_number": pull_request_number,
         "head_sha": head_sha,
+        "current_head_sha": head_sha,
         "run_created_at": "2026-07-25T01:00:00Z",
         "run_updated_at": "2026-07-25T01:00:04Z",
         "job_name": "Enroll for auto-merge",
+        "job_status": "completed",
+        "job_conclusion": "success",
+        "job_started_at": "2026-07-25T01:00:00Z",
+        "job_completed_at": "2026-07-25T01:00:04Z",
         "step_name": "Enable auto-merge",
+        "step_status": "completed",
         "step_conclusion": "success",
         "step_started_at": "2026-07-25T01:00:01Z",
         "step_completed_at": "2026-07-25T01:00:03Z",
         "source_contains_exact_auto_squash_command": True,
+        "log_archive_sha256": "a" * 64,
+        "log_member_name": "0_Enroll for auto-merge.txt",
+        "log_member_sha256": "b" * 64,
+        "log_matching_member_count": 1,
+        "log_pr_number_matches": True,
+        "log_repo_matches": True,
+        "log_contains_enrollment_success": True,
+        "log_contains_exact_auto_squash_command": True,
+    }
+
+
+def enrollment_log_zip(
+    *,
+    number: int = 7,
+    repo_name: str = "Jonnyton/TinyAssets",
+    include_success: bool = True,
+    success_number: int | None = None,
+) -> bytes:
+    lines = [
+        f"  PR: {number}",
+        f"  REPO: {repo_name}",
+        'if gh pr merge "$PR" --repo "$REPO" --auto --squash 2>err.txt; then',
+    ]
+    if include_success:
+        lines.append(
+            f"PR #{success_number if success_number is not None else number} "
+            "enrolled for auto-merge (squash)."
+        )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("0_Enroll for auto-merge.txt", "\n".join(lines))
+    return buffer.getvalue()
+
+
+def trusted_workflow_blob_response(
+    blob_sha: str = mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+) -> dict:
+    source = subprocess.run(
+        ["git", "cat-file", "-p", blob_sha],
+        cwd=MODULE_PATH.parents[1],
+        check=True,
+        capture_output=True,
+    ).stdout
+    header = f"blob {len(source)}\0".encode("ascii")
+    assert hashlib.sha1(header + source).hexdigest() == blob_sha
+    encoded = base64.b64encode(source).decode("ascii")
+    return {
+        "sha": blob_sha,
+        "size": len(source),
+        "encoding": "base64",
+        "content": "\n".join(
+            encoded[index : index + 60] for index in range(0, len(encoded), 60)
+        ),
     }
 
 
@@ -174,6 +252,22 @@ def complete_auto_receipt() -> tuple[dict, dict]:
                 "total_count": 1,
                 "complete": True,
             },
+            {
+                "kind": "workflow_source_history",
+                "label_name": mod.AUTO_ENROLL_WORKFLOW_PATH,
+                "pages": 1,
+                "count": 1,
+                "total_count": 1,
+                "complete": True,
+            },
+            {
+                "kind": "workflow_jobs",
+                "label_name": "101",
+                "pages": 1,
+                "count": 1,
+                "total_count": 1,
+                "complete": True,
+            },
         ],
         "workflow": {
             "id": mod.AUTO_ENROLL_WORKFLOW_ID,
@@ -184,10 +278,54 @@ def complete_auto_receipt() -> tuple[dict, dict]:
         "workflow_runs": [
             {
                 "id": 101,
+                "workflow_id": mod.AUTO_ENROLL_WORKFLOW_ID,
+                "path": mod.AUTO_ENROLL_WORKFLOW_PATH,
+                "event": "pull_request_target",
                 "status": "completed",
                 "conclusion": "success",
+                "head_sha": "deadbeef",
+                "pull_requests": [{"number": 7}],
+                "created_at": "2026-07-25T01:00:00Z",
+                "updated_at": "2026-07-25T01:00:04Z",
+                "html_url": "https://example.invalid/actions/runs/101",
             }
         ],
+        "workflow_jobs": [
+            {
+                "run_id": 101,
+                "id": 202,
+                "name": "Enroll for auto-merge",
+                "status": "completed",
+                "conclusion": "success",
+                "started_at": "2026-07-25T01:00:00Z",
+                "completed_at": "2026-07-25T01:00:04Z",
+                "steps": [
+                    {
+                        "number": 3,
+                        "name": "Enable auto-merge",
+                        "status": "completed",
+                        "conclusion": "success",
+                        "started_at": "2026-07-25T01:00:01Z",
+                        "completed_at": "2026-07-25T01:00:03Z",
+                    }
+                ],
+            }
+        ],
+        "source_history": {
+            "source_commit": None,
+            "source_commit_status": "unavailable_from_stable_api",
+            "default_branch": "main",
+            "workflow_path": mod.AUTO_ENROLL_WORKFLOW_PATH,
+            "path_introduction_commit": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+            "active_blob_sha": mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+            "mapping_basis": "unchanged-default-branch-path-history",
+            "commits": [
+                {
+                    "sha": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+                    "committed_at": "2026-07-22T00:38:24Z",
+                }
+            ],
+        },
         "attribution": [
             {
                 "pull_request_node_id": pr["node_id"],
@@ -234,8 +372,44 @@ def complete_two_action_receipt() -> tuple[dict, list[dict]]:
             "pull_request_node_id": second_pr["node_id"],
             "classification": "attributed",
             "evidence": [
-                exact_evidence(pull_request_number=8, head_sha="cafebabe")
+                exact_evidence(
+                    pull_request_number=8,
+                    head_sha="cafebabe",
+                    run_id=102,
+                    job_id=203,
+                )
             ],
+        }
+    )
+    inventory["workflow_runs"].append(
+        {
+            **copy.deepcopy(inventory["workflow_runs"][0]),
+            "id": 102,
+            "head_sha": "cafebabe",
+            "pull_requests": [{"number": 8}],
+            "html_url": "https://example.invalid/actions/runs/102",
+        }
+    )
+    run_connection = next(
+        row for row in inventory["connections"] if row["kind"] == "workflow_runs"
+    )
+    run_connection["count"] = 2
+    run_connection["total_count"] = 2
+    inventory["workflow_jobs"].append(
+        {
+            **copy.deepcopy(inventory["workflow_jobs"][0]),
+            "run_id": 102,
+            "id": 203,
+        }
+    )
+    inventory["connections"].append(
+        {
+            "kind": "workflow_jobs",
+            "label_name": "102",
+            "pages": 1,
+            "count": 1,
+            "total_count": 1,
+            "complete": True,
         }
     )
     inventory["planned_actions"] = [first, second]
@@ -804,7 +978,7 @@ class ApplyTests(unittest.TestCase):
 
 
 class AttributionTests(unittest.TestCase):
-    def pr(self, actor_type="Bot", login="app/github-actions") -> dict:
+    def pr(self, actor_type="Bot", login=mod.GITHUB_ACTIONS_BOT_LOGIN) -> dict:
         return auto_pr(actor_type, login)
 
     def evidence(self) -> dict:
@@ -822,6 +996,12 @@ class AttributionTests(unittest.TestCase):
         result = mod.classify_auto_merge(self.pr("Bot", "another-app"), [])
         self.assertEqual("ambiguous_preserve", result["classification"])
 
+    def test_exact_bot_login_with_wrong_node_id_is_ambiguous(self) -> None:
+        pr = self.pr()
+        pr["auto_merge_request"]["enabled_by"]["id"] = "B_wrong"
+        result = mod.classify_auto_merge(pr, [self.evidence()])
+        self.assertEqual("ambiguous_preserve", result["classification"])
+
     def test_exact_unique_historical_evidence_attributes(self) -> None:
         result = mod.classify_auto_merge(self.pr(), [self.evidence()])
         self.assertEqual("attributed", result["classification"])
@@ -829,6 +1009,12 @@ class AttributionTests(unittest.TestCase):
             self.pr(), [self.evidence(), self.evidence()]
         )
         self.assertEqual("ambiguous_preserve", result["classification"])
+
+    def test_historical_enrollment_head_may_precede_current_pr_head(self) -> None:
+        evidence = self.evidence()
+        evidence["head_sha"] = "historical-head"
+        result = mod.classify_auto_merge(self.pr(), [evidence])
+        self.assertEqual("attributed", result["classification"])
 
     def test_complete_plan_cannot_target_human_preserved_enrollment(self) -> None:
         valid, _ = complete_auto_receipt()
@@ -873,6 +1059,40 @@ class AttributionTests(unittest.TestCase):
                 inventory=inventory,
             )
 
+    def test_complete_plan_rejects_fabricated_run_or_job_binding(self) -> None:
+        valid, _ = complete_auto_receipt()
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["attribution"][0]["evidence"][0]["job_id"] = 999
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["workflow_runs"][0]["pull_requests"] = [{"number": 999}]
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["attribution"][0]["evidence"][0]["run_url"] = (
+            "https://example.invalid/actions/runs/fabricated"
+        )
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
         inventory = copy.deepcopy(valid["plan"]["inventory"])
         inventory["workflow_runs"][0]["status"] = "in_progress"
         with self.assertRaises(mod.PlanError):
@@ -892,6 +1112,321 @@ class AttributionTests(unittest.TestCase):
                 source_revision="abc123",
                 inventory=inventory,
             )
+
+    def test_inventory_only_receipt_still_binds_attribution_evidence(self) -> None:
+        valid, _ = complete_auto_receipt()
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["apply_complete"] = False
+        inventory["workflow"]["state"] = "active"
+        inventory["planned_actions"] = []
+        inventory["quiescence"] = None
+        inventory["attribution"][0]["evidence"][0]["job_id"] = 999
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+        malformed_fields = (
+            ("log_archive_sha256", "z" * 64),
+            ("log_member_sha256", "z" * 64),
+            ("log_matching_member_count", True),
+            ("log_member_name", ""),
+            ("log_member_name", "../escaped.txt"),
+        )
+        for field, malformed in malformed_fields:
+            with self.subTest(field=field, malformed=malformed):
+                inventory = copy.deepcopy(valid["plan"]["inventory"])
+                inventory["apply_complete"] = False
+                inventory["workflow"]["state"] = "active"
+                inventory["planned_actions"] = []
+                inventory["quiescence"] = None
+                inventory["attribution"][0]["evidence"][0][field] = malformed
+                with self.assertRaises(mod.PlanError):
+                    mod.build_receipt(
+                        operation=mod.AUTO_MERGE_OPERATION,
+                        repo=repo(),
+                        source_revision="abc123",
+                        inventory=inventory,
+                    )
+
+        for target in ("run", "job", "step"):
+            with self.subTest(nonterminal_target=target):
+                inventory = copy.deepcopy(valid["plan"]["inventory"])
+                inventory["apply_complete"] = False
+                inventory["workflow"]["state"] = "active"
+                inventory["planned_actions"] = []
+                inventory["quiescence"] = None
+                if target == "run":
+                    inventory["workflow_runs"][0]["status"] = "in_progress"
+                elif target == "job":
+                    inventory["workflow_jobs"][0]["status"] = "in_progress"
+                else:
+                    inventory["workflow_jobs"][0]["steps"][0]["status"] = (
+                        "in_progress"
+                    )
+                with self.assertRaises(mod.PlanError):
+                    mod.build_receipt(
+                        operation=mod.AUTO_MERGE_OPERATION,
+                        repo=repo(),
+                        source_revision="abc123",
+                        inventory=inventory,
+                    )
+
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["apply_complete"] = False
+        inventory["workflow"]["state"] = "active"
+        inventory["planned_actions"] = []
+        inventory["quiescence"] = None
+        early = "2026-07-24T01:00:01Z"
+        inventory["workflow_jobs"][0]["steps"][0]["started_at"] = early
+        inventory["attribution"][0]["evidence"][0]["step_started_at"] = early
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+        inventory = copy.deepcopy(valid["plan"]["inventory"])
+        inventory["apply_complete"] = False
+        inventory["workflow"]["state"] = "active"
+        inventory["planned_actions"] = []
+        inventory["quiescence"] = None
+        source_connection = next(
+            row
+            for row in inventory["connections"]
+            if row["kind"] == "workflow_source_history"
+        )
+        source_connection.update({"pages": True, "count": True, "total_count": True})
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.AUTO_MERGE_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+    def test_workflow_blob_is_verified_as_the_exact_git_object(self) -> None:
+        class BlobClient:
+            repo = "Jonnyton/TinyAssets"
+
+            def rest(self, endpoint):
+                self.endpoint = endpoint
+                return trusted_workflow_blob_response()
+
+        client = BlobClient()
+        proof = mod.verify_trusted_workflow_blob(client)
+        self.assertEqual(
+            mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA, proof["workflow_blob_sha"]
+        )
+        self.assertTrue(proof["workflow_blob_verified"])
+        self.assertTrue(proof["source_contains_exact_auto_squash_command"])
+        self.assertTrue(client.endpoint.endswith(proof["workflow_blob_sha"]))
+
+        bad = trusted_workflow_blob_response()
+        bad["content"] = base64.b64encode(b"changed").decode("ascii")
+
+        class BadBlobClient:
+            repo = "Jonnyton/TinyAssets"
+
+            def rest(self, endpoint):
+                return bad
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_trusted_workflow_blob(BadBlobClient())
+
+    def test_log_archive_requires_exact_pr_repo_command_and_success(self) -> None:
+        payload = enrollment_log_zip()
+        proof = mod.inspect_enrollment_log_archive(
+            payload, pull_request_number=7, repo_name="Jonnyton/TinyAssets"
+        )
+        self.assertEqual(hashlib.sha256(payload).hexdigest(), proof["log_archive_sha256"])
+        self.assertTrue(proof["log_pr_number_matches"])
+        self.assertTrue(proof["log_repo_matches"])
+        self.assertTrue(proof["log_contains_exact_auto_squash_command"])
+        self.assertTrue(proof["log_contains_enrollment_success"])
+
+        no_success = mod.inspect_enrollment_log_archive(
+            enrollment_log_zip(include_success=False),
+            pull_request_number=7,
+            repo_name="Jonnyton/TinyAssets",
+        )
+        self.assertFalse(no_success["log_contains_enrollment_success"])
+
+        confused = enrollment_log_zip(number=70, success_number=7)
+        confused_proof = mod.inspect_enrollment_log_archive(
+            confused,
+            pull_request_number=7,
+            repo_name="Jonnyton/TinyAssets",
+        )
+        self.assertFalse(confused_proof["log_pr_number_matches"])
+
+    def test_attribution_collector_binds_run_job_step_log_and_blob(self) -> None:
+        pr = self.pr()
+        run = {
+            "id": 101,
+            "node_id": "WR_101",
+            "workflow_id": mod.AUTO_ENROLL_WORKFLOW_ID,
+            "path": ".github/workflows/auto-enroll-merge.yml",
+            "event": "pull_request_target",
+            "status": "completed",
+            "conclusion": "success",
+            "run_number": 1,
+            "run_attempt": 1,
+            "created_at": "2026-07-25T01:00:00Z",
+            "run_started_at": "2026-07-25T01:00:00Z",
+            "updated_at": "2026-07-25T01:00:04Z",
+            "head_branch": "feature",
+            "head_sha": "historical-head",
+            "actor": {"login": "jonnyton", "id": 1, "node_id": "U_1"},
+            "triggering_actor": {"login": "jonnyton", "id": 1, "node_id": "U_1"},
+            "pull_requests": [
+                {
+                    "number": 7,
+                    "head": {"sha": "historical-head"},
+                    "base": {"ref": "main"},
+                }
+            ],
+            "html_url": "https://example.invalid/actions/runs/101",
+        }
+        ignored_run = copy.deepcopy(run)
+        ignored_run["id"] = 102
+        ignored_run["node_id"] = "WR_102"
+        ignored_run["status"] = "in_progress"
+        ignored_run["conclusion"] = None
+        ignored_run["created_at"] = "2026-07-25T02:00:00Z"
+        ignored_run["updated_at"] = "2026-07-25T02:00:04Z"
+        job = {
+            "id": 202,
+            "name": "Enroll for auto-merge",
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-07-25T01:00:00Z",
+            "completed_at": "2026-07-25T01:00:04Z",
+            "head_branch": "feature",
+            "head_sha": "deadbeef",
+            "html_url": "https://example.invalid/jobs/202",
+            "steps": [
+                {
+                    "number": 3,
+                    "name": "Enable auto-merge",
+                    "status": "completed",
+                    "conclusion": "success",
+                    "started_at": "2026-07-25T01:00:01Z",
+                    "completed_at": "2026-07-25T01:00:03Z",
+                }
+            ],
+        }
+
+        class AttributionClient:
+            repo = "Jonnyton/TinyAssets"
+
+            def rest(self, endpoint):
+                if "/git/blobs/" in endpoint:
+                    return trusted_workflow_blob_response(endpoint.rsplit("/", 1)[-1])
+                if "/contents/" in endpoint:
+                    return {
+                        "sha": mod.TRUSTED_AUTO_ENROLL_WORKFLOW_BLOB_SHA,
+                        "size": 4255,
+                    }
+                raise AssertionError(endpoint)
+
+            def rest_pages(self, endpoint):
+                self.history_endpoint = endpoint
+                return [
+                    [
+                        {
+                            "sha": mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+                            "commit": {
+                                "committer": {"date": "2026-07-22T00:38:24Z"}
+                            },
+                        }
+                    ]
+                ]
+
+            def rest_collection(self, endpoint, *, list_key):
+                if list_key == "workflow_runs":
+                    return [run, ignored_run], {
+                        "pages": 1,
+                        "count": 2,
+                        "total_count": 2,
+                        "complete": True,
+                    }
+                if list_key == "jobs":
+                    self.job_endpoint = endpoint
+                    if "/runs/101/" not in endpoint:
+                        raise AssertionError(endpoint)
+                    return [job], {
+                        "pages": 1,
+                        "count": 1,
+                        "total_count": 1,
+                        "complete": True,
+                    }
+                raise AssertionError((endpoint, list_key))
+
+            def bytes(self, endpoint):
+                self.log_endpoint = endpoint
+                return enrollment_log_zip()
+
+        inventory = {
+            "pull_requests": [pr],
+            "connections": [
+                {
+                    "kind": "open_pull_requests",
+                    "label_name": "",
+                    "pages": 1,
+                    "count": 1,
+                    "total_count": 1,
+                    "complete": True,
+                }
+            ],
+            "workflow": {
+                "id": mod.AUTO_ENROLL_WORKFLOW_ID,
+                "node_id": "W_auto",
+                "path": ".github/workflows/auto-enroll-merge.yml",
+                "state": "active",
+            },
+            "workflow_runs": [],
+            "attribution": [],
+            "planned_actions": [],
+            "apply_complete": False,
+        }
+        client = AttributionClient()
+        result = mod.collect_auto_merge_attribution(client, inventory)
+        self.assertEqual("attributed", result["attribution"][0]["classification"])
+        evidence = result["attribution"][0]["evidence"]
+        self.assertEqual(1, len(evidence))
+        self.assertEqual(101, evidence[0]["run_id"])
+        self.assertEqual(202, evidence[0]["job_id"])
+        self.assertTrue(evidence[0]["workflow_blobs_verified"])
+        self.assertTrue(evidence[0]["log_contains_enrollment_success"])
+        self.assertEqual("historical-head", evidence[0]["head_sha"])
+        self.assertEqual("deadbeef", evidence[0]["current_head_sha"])
+        connections = {
+            (row["kind"], row["label_name"]): row for row in result["connections"]
+        }
+        self.assertEqual(2, connections[("workflow_runs", "")]["count"])
+        self.assertEqual(1, connections[("workflow_jobs", "101")]["count"])
+        self.assertEqual(
+            mod.AUTO_ENROLL_PATH_INTRODUCTION_COMMIT,
+            result["source_history"]["path_introduction_commit"],
+        )
+        self.assertIn("sha=main", client.history_endpoint)
+        self.assertTrue(client.log_endpoint.endswith("/actions/runs/101/logs"))
+
+    def test_actor_query_preserves_ids_for_every_supported_actor_shape(self) -> None:
+        for fragment in (
+            "... on Bot { id }",
+            "... on EnterpriseUserAccount { id }",
+            "... on Mannequin { id }",
+            "... on Organization { id }",
+            "... on User { id }",
+        ):
+            self.assertIn(fragment, mod.AUTO_MERGE_QUERY)
 
 
 class ReadOnlyClientTests(unittest.TestCase):
@@ -923,6 +1458,23 @@ class ReadOnlyClientTests(unittest.TestCase):
         client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
         with self.assertRaises(mod.PlanError):
             client.rest_pages("repos/Jonnyton/TinyAssets/labels?per_page=100")
+
+    def test_rest_collection_rejects_truncated_object_pages(self) -> None:
+        def runner(args, **kwargs):
+            value = [
+                {
+                    "total_count": 2,
+                    "workflow_runs": [{"id": 1}],
+                }
+            ]
+            return subprocess.CompletedProcess(args, 0, stdout=json.dumps(value))
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        with self.assertRaises(mod.PlanError):
+            client.rest_collection(
+                "repos/Jonnyton/TinyAssets/actions/runs?per_page=100",
+                list_key="workflow_runs",
+            )
 
     def test_gh_failure_and_graphql_structure_are_sanitized(self) -> None:
         def failing_runner(args, **kwargs):
@@ -999,14 +1551,30 @@ class ReadOnlyClientTests(unittest.TestCase):
             def graphql_pages(self, query, fields):
                 return [page]
 
-        repo_value, inventory = mod.collect_auto_merge_inventory(FakeClient())
         with self.assertRaises(mod.PlanError):
-            mod.build_receipt(
-                operation=mod.AUTO_MERGE_OPERATION,
-                repo=repo_value,
-                source_revision="abc123",
-                inventory=inventory,
-            )
+            mod.collect_auto_merge_inventory(FakeClient())
+
+        duplicate_page = copy.deepcopy(page)
+        duplicate_page["data"]["repository"]["pullRequests"]["totalCount"] = 2
+        duplicate_page["data"]["repository"]["pullRequests"]["nodes"] *= 2
+
+        class DuplicateClient(FakeClient):
+            def graphql_pages(self, query, fields):
+                return [duplicate_page]
+
+        with self.assertRaises(mod.PlanError):
+            mod.collect_auto_merge_inventory(DuplicateClient())
+
+        error_page = copy.deepcopy(page)
+        error_page["errors"] = [{"message": "do not expose remote details"}]
+
+        class ErrorClient(FakeClient):
+            def graphql_pages(self, query, fields):
+                return [error_page]
+
+        with self.assertRaises(mod.RetirementError) as failed:
+            mod.collect_auto_merge_inventory(ErrorClient())
+        self.assertNotIn("remote details", str(failed.exception))
 
 
 if __name__ == "__main__":

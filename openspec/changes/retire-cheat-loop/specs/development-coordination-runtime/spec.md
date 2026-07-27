@@ -85,9 +85,15 @@ number, node id, exact head SHA, state, base/head repositories, draft flag, and
 full `autoMergeRequest` tuple (enabled actor/time, merge method, commit
 headline/body, and author email) plus attribution evidence into that receipt.
 Attribution SHALL require the exact same-repository, non-draft, `main`-target
-eligibility tuple, `app/github-actions` actor, and historical repository/Actions
-evidence at `enabledAt` tying the enrollment to this workflow; current-source
-uniqueness alone is insufficient.
+eligibility tuple, exact raw GraphQL actor tuple
+`Bot/github-actions/MDM6Qm90NDE4OTgyODI=`, and historical repository/Actions
+evidence at `enabledAt` tying the enrollment to this workflow. That evidence
+SHALL include the reviewed default-branch workflow blob, exact run/job/step
+window, and bounded run-log proof of the PR, repository, enrollment command,
+and successful enrollment line; current-source uniqueness alone is
+insufficient. A PR head that advanced after enrollment SHALL remain separately
+bound in the current migration tuple and SHALL NOT erase otherwise exact
+historical enrollment evidence.
 
 Before each disable, apply SHALL atomically persist the per-PR intent and
 planned tuple, then re-read that tuple. GitHub's disable mutation has no
