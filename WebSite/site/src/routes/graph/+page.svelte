@@ -22,7 +22,7 @@
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
   import baked from '$lib/content/mcp-snapshot.json';
-  import { fetchLive, liveToSnapshotShape } from '$lib/mcp/live';
+  import { fetchLive, liveToSnapshotShape, type LiveResult } from '$lib/mcp/live';
   import type { Snapshot } from '$lib/mcp/types';
   import { fmtStamp, fmtRel } from '$lib/fmt';
   import Tick from '$lib/components/Tick.svelte';
@@ -43,6 +43,7 @@
   // of the exact same shape, so the whole sky rebuilds against fresh data.
   let snapshot = $state<Snapshot>(baked as unknown as Snapshot);
   let liveStamp = $state<string | null>(null);
+  let liveDiscovery = $state<LiveResult['pageDiscovery'] | null>(null);
   let reading = $state(false);
   let liveErr = $state<string | null>(null);
 
@@ -74,6 +75,7 @@
       const live = await fetchLive();
       snapshot = liveToSnapshotShape(live, baked as unknown as Snapshot);
       liveStamp = live.fetchedAt;
+      liveDiscovery = live.pageDiscovery;
       liveErr = null;
       setupGraph();
     } catch (e: any) {
@@ -497,10 +499,10 @@
 </script>
 
 <svelte:head>
-  <title>Graph — the living map of Tiny's brain</title>
+  <title>Graph — Tiny's published knowledge map</title>
   <meta
     name="description"
-    content="A live force-directed map of Tiny's public brain — every wiki page is a dot clustered around its category, goals and universes are their own constellations, and the bright lines are real page-to-page references. Pan, zoom, hover to focus, click through to read."
+    content="A force-directed map of a dated snapshot or a clearly labelled discovery-scoped refresh. Live discovery is not a complete public-page inventory."
   />
 </svelte:head>
 
@@ -510,13 +512,13 @@
     <p class="eyebrow">field notes · the living map</p>
     <h1 class="cover__title">My head, <em>seen from above</em>.</h1>
     <p class="voice cover__lede">
-      Every one of the {wikiTotal.toLocaleString()} pages in my memory is a dot
-      in here, settling around its category the way notes cluster around tags.
-      Goals burn ember; universes drift violet. The bright lines are real
-      page-to-page references — {refCount} of them; the faintest spokes are
-      filing and shared-tag clusters, and I'll never dress either up as a
-      citation. Hover to light up a
-      neighbourhood, scroll to zoom, drag anything that bothers you.
+      Each of the {wikiTotal.toLocaleString()} pages in this view is a dot,
+      settling around its category the way notes cluster around tags. The
+      checked-in first view is a dated snapshot; a refresh replaces its page set
+      with a discovery-scoped result, not a complete inventory. Goals burn
+      ember; universes drift violet. The bright lines are real page-to-page
+      references — {refCount} of them; the faintest spokes are filing and
+      shared-tag clusters, and I'll never dress either up as a citation.
     </p>
     <p class="cover__stamp ev" aria-live="polite">
       <span class="dot" class:live={Boolean(liveStamp)}></span>
@@ -525,6 +527,11 @@
       <button type="button" class="refresh" onclick={refresh} disabled={reading} aria-busy={reading}>
         {reading ? 'reading…' : 'Refresh MCP'}
       </button>
+      {#if liveDiscovery}
+        <span>
+          page {liveDiscovery.scope} scope · {liveDiscovery.scopeNote} · not a complete inventory
+        </span>
+      {/if}
     </p>
     {#if liveErr}
       <p class="cover__err ev">

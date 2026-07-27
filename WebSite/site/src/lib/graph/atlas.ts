@@ -130,7 +130,7 @@ export const REPO_URL = 'https://github.com/Jonnyton/TinyAssets';
 
 /** The same public filter the rest of the site uses. */
 export function isPublicGoal(g: { name?: string; visibility?: string }): boolean {
-  return (g.visibility ?? 'public') === 'public' && !/SUPERSEDED|RETRACTED|smoke/i.test(g.name ?? '');
+  return String(g.visibility ?? '').toLowerCase() === 'public' && !/SUPERSEDED|RETRACTED|smoke/i.test(g.name ?? '');
 }
 
 /** Map an edge endpoint (`plan:slug`, `bug:slug`, …) to a wiki category. */

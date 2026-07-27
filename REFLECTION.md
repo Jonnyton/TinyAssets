@@ -505,3 +505,18 @@ fresh-host rollback edges found later.
 - **What I would do differently:** inventory both runtime call sites and
   existing OpenSpec requirement ownership before drafting the first delta,
   then separate the core shared helper boundary from dependent surfaces.
+
+## 2026-07-27 - public retirement boundary
+
+- **What surprised me:** canonical MCP handles were not a public-data
+  boundary. Visibility-filtered universe discovery was safe, while adjacent
+  Goal, run, exact-page, and operator-status reads exposed private or
+  operational state.
+- **Pattern worth capturing:** public callers need an allowlisted descriptor
+  layer, server-enforced visibility, explicit completeness metadata, and
+  provenance-bound follow-up reads. Discovery with an omission note is useful
+  but must never be relabeled as a complete snapshot.
+- **What I would do differently:** threat-model every public projection before
+  migrating names, then lead with negative tests for credentials, exact cap
+  fills, truncation, SDK absence, and local-origin leakage. That would have
+  prevented a naming cleanup from appearing safer than the underlying data.

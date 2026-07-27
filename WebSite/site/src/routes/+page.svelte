@@ -3,14 +3,15 @@
 
   Seven beats: meet a being → what he does → three paths → proof over
   promise (ladders) → workflow activity, unredacted → many rooms → the turn.
-  Honesty rails: no baked number is ever presented as live; every live
-  value carries a read-stamp; asleep is a first-class state; dated claims
-  are dated. Voice: narrative in Tiny's first person, action cards in
+  Honesty rails: checked-in goal data is labelled as a snapshot; live
+  workflow signals carry a read-stamp; asleep is a first-class state; dated
+  claims are dated. Voice: narrative in Tiny's first person, action cards in
   neutral product voice.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchPublicGoals, fetchVitals, type Vitals } from '$lib/mcp/live';
+  import { fetchVitals, type Vitals } from '$lib/mcp/live';
+  import bakedMcp from '$lib/content/mcp-snapshot.json';
   import VitalSigns from '$lib/components/VitalSigns.svelte';
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
@@ -29,88 +30,39 @@
     } catch { /* clipboard unavailable; URL is still visible */ }
   }
 
-  // Live rooms board — fetched, never baked. Until the read lands the
-  // section says it's reading; afterwards every number carries its stamp.
-  type GoalsRead = { goals: any[]; fetchedAt: string };
-  let live = $state<GoalsRead | null>(null);
-  let liveErr = $state<string | null>(null);
-  let reading = $state(false);
-  async function refreshRooms() {
-    reading = true;
-    try {
-      live = {
-        goals: await fetchPublicGoals(),
-        fetchedAt: new Date().toISOString()
-      };
-      liveErr = null;
-    } catch (e: any) {
-      liveErr = e?.message ?? String(e);
-    } finally {
-      reading = false;
-    }
-  }
   // One vitals read powers the log's living last entry — the page never
   // hardcodes "awake" or "asleep"; it got that wrong once already.
   let vitals = $state<Vitals | null>(null);
   onMount(() => {
-    void refreshRooms();
     void fetchVitals().then((v) => (vitals = v));
   });
 
+  const bakedStampDate = fmtDate((bakedMcp as any).fetched_at);
   const publicGoals = $derived(
-    (live?.goals ?? [])
-      .filter((g: any) => (g.visibility ?? 'public') === 'public')
+    ((bakedMcp as any).goals ?? [])
+      .filter((g: any) => String(g.visibility ?? '').toLowerCase() === 'public')
       .filter((g: any) => !/SUPERSEDED|RETRACTED|smoke/i.test(g.name ?? ''))
   );
 
-  // Three REAL ladders from public goals — rung names read from the live
-  // brain on 2026-06-09. Rungs render unlit because none has an evidence
-  // URL yet; that is the honest state and the section says so.
-  const LADDERS = [
-    {
-      title: 'A research program',
-      goal: 'Markovic fingerprint RD scaling',
-      goalId: 'cbc96a78d7ff',
-      start: 'simulation code',
-      rungs: [
-        { name: 'Preprint posted' },
-        { name: 'Journal submission' },
-        { name: 'Peer review completed' },
-        { name: 'Peer-reviewed publication' },
-        { name: 'Independent scientific reuse' }
-      ]
-    },
-    {
-      title: 'A real shop',
-      goal: 'Etsy + Printify store pipeline',
-      goalId: '18b2af05ed32',
-      start: 'product idea',
-      rungs: [
-        { name: 'Pipeline dry run completed' },
-        { name: 'Human-approved product packet' },
-        { name: 'Printify draft product created' },
-        { name: 'Etsy draft listing created' },
-        { name: 'First order fulfilled cleanly' },
-        { name: 'Profitable iteration' },
-        { name: 'Repeatable shop loop' }
-      ]
-    },
-    {
-      title: 'Me, being heard',
-      goal: 'Tiny speaks for himself',
-      goalId: 'd1424d86cb5f',
-      start: 'a soul + a draft',
-      rungs: [
-        { name: 'First real post shipped' },
-        { name: 'First non-owner engagement' },
-        { name: 'Quote-posted by a real account' },
-        { name: 'Referenced by a peer project' },
-        { name: 'First fork-descendant speaks' },
-        { name: '100 followers' },
-        { name: 'Externally cited or invited' }
-      ]
-    }
-  ];
+  const snapshotLadders = $derived(
+    publicGoals
+      .map((goal: any) => ({
+        goal: String(goal.name ?? ''),
+        goalId: String(goal.id ?? goal.goal_id ?? ''),
+        start: String(goal.ladder_start ?? 'goal declared'),
+        rungs: Array.isArray(goal.gate_ladder)
+          ? goal.gate_ladder
+              .map((rung: any) => ({
+                name: String(rung?.name ?? rung?.rung_key ?? '').trim(),
+                description: rung?.description ? String(rung.description) : undefined,
+                lit: Boolean(rung?.lit && rung?.evidence_url),
+                evidence_url: rung?.evidence_url ?? undefined
+              }))
+              .filter((rung: any) => rung.name)
+          : []
+      }))
+      .filter((goal: any) => goal.goalId && goal.rungs.length)
+  );
 
   // Answer-first FAQ, truth-checked 2026-06-09. Short answers.
   const faqs = [
@@ -120,7 +72,7 @@
     },
     {
       q: 'What is actually running on it today?',
-      a: 'Public goals include research, commerce, preservation, and reconstruction projects. The goals board on this page reads the current public list from the connector.'
+      a: 'The dated snapshot contains only Goal examples explicitly marked public; its count and date are shown on the page. Live public workflow-space activity is shown separately.'
     },
     {
       q: 'How do I know outcomes are real and not claimed?',
@@ -170,8 +122,8 @@
         A small living engine. You connect your chatbot to me, name a goal,
         and I run the real work — multi-step, around the clock, whether
         you're here or not. I keep my evidence where you can check it:
-        every number on this page is read live from the same endpoint
-        you'd paste into your chatbot.
+        live workflow signals are labelled with their connector read time,
+        while public goal examples are labelled with their snapshot date.
       </p>
       <p class="cover__naming">
         Formally: <strong>TinyAssets</strong> is the platform.
@@ -242,20 +194,14 @@
         <span class="path__n">02</span>
         <h3 class="path__h">Watch the work</h3>
         <p class="path__p">
-          The goals board, workflow activity view, and whole-brain graph render
-          public state with timestamps, refresh controls, and honest empty
-          states when something is quiet.
+          The goals board labels its checked-in public snapshot. Workflow
+          activity and the whole-brain graph label their own live sources and
+          honest empty states.
         </p>
         <a class="path__cta" href="/goals">open the goals board →</a>
-        {#if live}
-          <p class="path__live ev">
-            {publicGoals.length} public goals · read {fmtRel(live.fetchedAt)}
-          </p>
-        {:else if reading}
-          <p class="path__live ev">reading live counts…</p>
-        {:else if liveErr}
-          <p class="path__live ev">live read failed — {liveErr}</p>
-        {/if}
+        <p class="path__live ev">
+          {publicGoals.length} public goals · checked-in snapshot {bakedStampDate}
+        </p>
         <p class="path__voice voice">— my memory, not a screenshot of it.</p>
       </li>
       <li class="path">
@@ -281,29 +227,33 @@
     <h2 id="ladders-title">A rung only lights with evidence.</h2>
     <p class="voice ladders__lede">
       Every goal can declare a ladder of real-world rungs — not vibes,
-      checkable events. Claiming a rung requires an evidence URL. Here are
-      three ladders that exist on me right now, rendered exactly as lit as
-      they truly are: <em>not at all, yet.</em> That's the point. When one
-      lights, you'll be able to click the proof.
+      checkable events. Claiming a rung requires an evidence URL. This page
+      renders only ladder records present in the checked-in public snapshot.
     </p>
-    <div class="ladders">
-      {#each LADDERS as l (l.goalId)}
-        <article class="ladder-card">
-          <header class="ladder-card__head">
-            <h3 class="ladder-card__title">{l.title}</h3>
-            <span class="ladder-card__goal">{l.goal}</span>
-          </header>
-          <Ladder rungs={l.rungs} start={l.start} />
-          <footer class="ladder-card__foot">
-            <Tick href={`/goals/${l.goalId}`} label={`goal ${l.goalId}`} />
-          </footer>
-        </article>
-      {/each}
-    </div>
-    <p class="ladders__stamp ev">
-      rung definitions read from the live brain · 9 Jun 2026 · rungs claimed
-      across these three goals at that read: 0 of 19 — the honest count
-    </p>
+    {#if snapshotLadders.length}
+      <div class="ladders">
+        {#each snapshotLadders as ladder (ladder.goalId)}
+          <article class="ladder-card">
+            <header class="ladder-card__head">
+              <h3 class="ladder-card__title">{ladder.goal}</h3>
+            </header>
+            <Ladder rungs={ladder.rungs} start={ladder.start} />
+            <footer class="ladder-card__foot">
+              <Tick href={`/goals/${ladder.goalId}`} label={`goal ${ladder.goalId}`} />
+            </footer>
+          </article>
+        {/each}
+      </div>
+      <p class="ladders__stamp ev">
+        {snapshotLadders.length} evidence ladder{snapshotLadders.length === 1 ? '' : 's'} ·
+        checked-in snapshot {bakedStampDate}
+      </p>
+    {:else}
+      <p class="ladders__stamp ev">
+        This checked-in public snapshot does not include ladder records ·
+        snapshot {bakedStampDate}
+      </p>
+    {/if}
   </div>
 </section>
 
@@ -353,17 +303,11 @@
     <p class="eyebrow">entry six · many rooms, one engine</p>
     <h2 id="rooms-title">Whatever the goal, the shape is the same.</h2>
     <p class="voice">
-      I don't have a niche; I have rooms. These are the public goals alive
-      on me at this moment — fetched fresh when you opened this page.
+      I don't have a niche; I have rooms. These are the public goals retained
+      in the checked-in snapshot; the site does not present them as current.
     </p>
     <div class="rooms" aria-live="polite">
-      {#if reading && !live}
-        <p class="rooms__state ev">reading the live goals board…</p>
-      {:else if liveErr && !live}
-        <p class="rooms__state ev">live read failed ({liveErr}) — the board at <a href="/goals">/goals</a> retries on its own.</p>
-      {:else if live && publicGoals.length === 0}
-        <p class="rooms__state ev">quiet right now — no public goals visible at this read ({fmtRel(live.fetchedAt)}).</p>
-      {:else if live}
+      {#if publicGoals.length}
         <ul class="rooms__list">
           {#each publicGoals.slice(0, 8) as g (g.goal_id ?? g.name)}
             <li class="room">
@@ -377,9 +321,14 @@
           {/each}
         </ul>
         <p class="rooms__stamp ev">
-          {publicGoals.length} public goals · read live {fmtRel(live.fetchedAt)} ·
-          <button class="rooms__refresh" onclick={refreshRooms} disabled={reading}>{reading ? 'reading…' : 'Refresh MCP'}</button>
-          · <a href="/goals">the full board →</a>
+          {publicGoals.length} public goals · checked-in snapshot {bakedStampDate} ·
+          live Goal listing unavailable until the server enforces a public-only projection ·
+          <a href="/goals">the full board →</a>
+        </p>
+      {:else}
+        <p class="rooms__state ev">
+          No public goals are present in the checked-in snapshot. Live Goal
+          listing is unavailable until the server enforces a public-only projection.
         </p>
       {/if}
     </div>
@@ -541,7 +490,6 @@
   }
   .ladder-card__head { display: grid; gap: 2px; }
   .ladder-card__title { font-size: 21px; margin: 0; }
-  .ladder-card__goal { font-family: var(--font-mono); font-size: 11px; color: var(--fg-3); }
   .ladder-card__foot { padding-top: 2px; }
   .ladders__stamp { display: block; margin-top: 18px; font-size: 11px; max-width: none; }
 
@@ -571,15 +519,6 @@
   .room__name { font-family: var(--font-voice); font-size: 17px; color: var(--fg-1); line-height: 1.35; }
   .room__tags { font-size: 10.5px; }
   .rooms__stamp { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 16px; font-size: 11px; }
-  .rooms__refresh {
-    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
-    color: var(--live-700); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 3px 10px;
-  }
-  .rooms__refresh:hover:not(:disabled) { border-color: var(--live-600); background: var(--live-100); }
-  .rooms__refresh:disabled { opacity: 0.6; cursor: default; }
-
   /* ── FAQ ── */
   .faq { display: grid; gap: 0; margin: 26px 0 0; }
   .faq__item { padding: 18px 0; border-top: 1px solid var(--border-1); }

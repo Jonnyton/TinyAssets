@@ -5,10 +5,11 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { fetchPublicGoals, fetchPublicUniverses } from '$lib/mcp/live';
+  import { fetchPublicUniverses } from '$lib/mcp/live';
+  import bakedMcp from '$lib/content/mcp-snapshot.json';
   import { fmtRel } from '$lib/fmt';
 
-  type ActivityRead = { goals: any[]; universes: any[]; fetchedAt: string };
+  type ActivityRead = { universes: any[]; fetchedAt: string };
   let live = $state<ActivityRead | null>(null);
   let error = $state<string | null>(null);
   let reading = $state(false);
@@ -19,8 +20,7 @@
       // The shared browser MCP session initializes lazily, so keep the first
       // public graph reads sequential.
       const universes = await fetchPublicUniverses();
-      const goals = await fetchPublicGoals();
-      live = { universes, goals, fetchedAt: new Date().toISOString() };
+      live = { universes, fetchedAt: new Date().toISOString() };
       error = null;
     } catch (cause: any) {
       error = cause?.message ?? String(cause);
@@ -44,9 +44,10 @@
       .slice(0, 8)
   );
 
-  const publicGoals = $derived(
-    (live?.goals ?? [])
-      .filter((goal) => goal?.visibility !== 'private')
+  const snapshotGoals = $derived(
+    ((bakedMcp as any).goals ?? [])
+      .filter((goal: any) => String(goal?.visibility ?? '').toLowerCase() === 'public')
+      .filter((goal: any) => !/SUPERSEDED|RETRACTED|smoke/i.test(goal?.name ?? ''))
       .slice(0, 6)
   );
 
@@ -157,20 +158,24 @@
       whether anything repeats.
     </p>
 
-    {#if publicGoals.length}
+    {#if snapshotGoals.length}
       <ul class="goals">
-        {#each publicGoals as goal (goal.goal_id ?? goal.id ?? goalName(goal))}
+        {#each snapshotGoals as goal (goal.goal_id ?? goal.id ?? goalName(goal))}
           <li>
             <strong>{goalName(goal)}</strong>
             {#if goal.description}<p>{goal.description}</p>{/if}
           </li>
         {/each}
       </ul>
-      <p class="provenance ev">goal names from the same live MCP read</p>
-    {:else if live}
-      <p class="empty">No public goals were returned in this read.</p>
+      <p class="provenance ev">
+        goals · checked-in snapshot {(bakedMcp as any).fetched_at ?? 'date unavailable'} ·
+        current Goal listing unavailable until the server enforces a public-only projection
+      </p>
     {:else}
-      <p class="empty">Connect to load the current public goal list.</p>
+      <p class="empty">
+        No public goals are present in the checked-in snapshot. Current Goal
+        listing is unavailable until the server enforces a public-only projection.
+      </p>
     {/if}
   </div>
 </section>

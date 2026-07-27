@@ -5,17 +5,20 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  assertAnonymousSnapshotUrl,
+  assertPublicPlaygroundCall,
   assertCompleteCrawl,
-  publicGoalCall,
   pageInventoryCall,
   publicGraphCall,
   publicPageCall,
-  publicRunCall,
   requireCollection,
+  requireCompleteCollection,
   requireObjectResult,
   requirePageBody,
+  splitFullPageInventory,
   splitPageInventory,
 } from "../../shared/mcp/public-read-contract.js";
+import * as publicReadContract from "../../shared/mcp/public-read-contract.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const snapshotSourcePath = resolve(here, "snapshot-mcp.mjs");
@@ -46,7 +49,7 @@ function readPublicSourceTree(directory) {
     .join("\n");
 }
 
-test("canonical public read descriptors use only advertised MCP handles", () => {
+test("canonical public read descriptors allowlist only proven-safe graph discovery", () => {
   assert.deepEqual(pageInventoryCall(), {
     name: "read_page",
     args: {
@@ -61,35 +64,105 @@ test("canonical public read descriptors use only advertised MCP handles", () => 
       max_results: 100,
     },
   });
-  assert.deepEqual(publicGraphCall("goals", 30), {
-    name: "read_graph",
-    args: { target: "goals", limit: 30 },
-  });
   assert.deepEqual(publicGraphCall("graphs", 8), {
     name: "read_graph",
     args: { target: "graphs", limit: 8 },
   });
-  assert.deepEqual(publicGraphCall("runs", 8), {
-    name: "read_graph",
-    args: { target: "runs", limit: 8 },
+  for (const unsafeTarget of ["goal", "goals", "run", "runs"]) {
+    assert.throws(
+      () => publicGraphCall(unsafeTarget, 8),
+      /only supports target=graphs/i,
+    );
+  }
+  for (const invalidLimit of [0, 101, 1.5, "8"]) {
+    assert.throws(
+      () => publicGraphCall("graphs", invalidLimit),
+      /limit.*1-100/i,
+    );
+  }
+  assert.equal("publicGoalCall" in publicReadContract, false);
+  assert.equal("publicRunCall" in publicReadContract, false);
+});
+
+test("public Playground execution contract accepts only bounded discovery reads", () => {
+  assert.doesNotThrow(() =>
+    assertPublicPlaygroundCall("read_graph", { target: "graphs", limit: 100 }),
+  );
+  assert.doesNotThrow(() =>
+    assertPublicPlaygroundCall("read_page", pageInventoryCall().args),
+  );
+
+  for (const [tool, args] of [
+    ["get_status", {}],
+    ["get_status", { universe_id: "private-universe" }],
+    ["read_graph", { target: "goals", limit: 100 }],
+    ["read_graph", { target: "graphs", limit: 101 }],
+    ["read_graph", { target: "graphs", limit: 100, universe_id: "private" }],
+    ["read_page", { page: "pages/plans/private-coordination" }],
+    ["read_page", { query: "private coordination" }],
+    ["read_page", { category: "plans" }],
+    ["read_page", { changed_since: "1970-01-01T00:00:00Z", max_results: 99 }],
+    ["read_page", { ...pageInventoryCall().args, scope: "all" }],
+    ["unknown_tool", {}],
+  ]) {
+    assert.throws(
+      () => assertPublicPlaygroundCall(tool, args),
+      /public playground/i,
+      `${tool} ${JSON.stringify(args)} must fail closed`,
+    );
+  }
+});
+
+test("public snapshot URL rejects embedded caller credentials", () => {
+  assert.equal(
+    assertAnonymousSnapshotUrl("https://tinyassets.io/mcp"),
+    "https://tinyassets.io/mcp",
+  );
+  for (const unsafe of [
+    "https://user:token@tinyassets.io/mcp",
+    "https://user@tinyassets.io/mcp",
+  ]) {
+    assert.throws(
+      () => assertAnonymousSnapshotUrl(unsafe),
+      /anonymous.*credentials/i,
+    );
+  }
+});
+
+test("exact page descriptors require an immutable validated inventory provenance", () => {
+  const inventory = splitPageInventory({
+    results: [
+      { path: "pages/concepts/example.md", title: "Example", is_draft: false },
+    ],
+    count: 1,
+    total_matches: 1,
+    truncated_count: 0,
+    scope: "discovery",
+    scope_note: "Default discovery scope omitted coordination pages.",
   });
-  assert.deepEqual(publicGoalCall("goal-123"), {
-    name: "read_graph",
-    args: { target: "goal", goal_id: "goal-123" },
-  });
-  assert.deepEqual(publicRunCall("run-123"), {
-    name: "read_graph",
-    args: { target: "run", run_id: "run-123" },
-  });
-  assert.deepEqual(publicPageCall("pages/concepts/example.md"), {
+
+  assert.deepEqual(publicPageCall("pages/concepts/example.md", inventory.validatedPaths), {
     name: "read_page",
     args: { page: "pages/concepts/example" },
   });
+  assert.throws(
+    () => publicPageCall("pages/plans/private-coordination", inventory.validatedPaths),
+    /validated inventory/i,
+  );
+  assert.throws(
+    () => publicPageCall("pages/concepts/example", new Set(["pages/concepts/example"])),
+    /validated inventory/i,
+  );
+  inventory.validatedPaths.add("pages/plans/private-coordination");
+  assert.throws(
+    () => publicPageCall("pages/plans/private-coordination", inventory.validatedPaths),
+    /validated inventory/i,
+    "mutating the exposed set must not widen its validated provenance",
+  );
 });
 
-test("page inventory preserves promoted/draft identity and fails closed on scope or truncation", () => {
-  assert.deepEqual(
-    splitPageInventory({
+test("page inventory accepts only explicit discovery scope with its omission note", () => {
+  const inventory = splitPageInventory({
       results: [
         { path: "pages/concepts/one.md", title: "One", is_draft: false },
         { path: "drafts/notes/two.md", title: "Two", is_draft: true },
@@ -97,17 +170,88 @@ test("page inventory preserves promoted/draft identity and fails closed on scope
       count: 2,
       total_matches: 2,
       truncated_count: 0,
-      scope: "all",
-      scope_note: "",
-    }),
-    {
-      promoted: [
-        { path: "pages/concepts/one.md", title: "One", is_draft: false },
-      ],
-      drafts: [{ path: "drafts/notes/two.md", title: "Two", is_draft: true }],
-    },
+      scope: "discovery",
+      scope_note: "Default discovery scope omitted coordination pages.",
+    });
+  assert.deepEqual(inventory.promoted, [
+    { path: "pages/concepts/one.md", title: "One", is_draft: false },
+  ]);
+  assert.deepEqual(inventory.drafts, [
+    { path: "drafts/notes/two.md", title: "Two", is_draft: true },
+  ]);
+  assert.deepEqual(
+    [...inventory.validatedPaths],
+    ["pages/concepts/one", "drafts/notes/two"],
   );
+});
 
+test("full snapshot inventory requires explicit all scope with no omissions", () => {
+  const full = splitFullPageInventory({
+    results: [
+      { path: "pages/concepts/one.md", title: "One", is_draft: false },
+    ],
+    count: 1,
+    total_matches: 1,
+    truncated_count: 0,
+    scope: "all",
+    scope_note: "",
+  });
+  assert.deepEqual([...full.validatedPaths], ["pages/concepts/one"]);
+
+  assert.throws(
+    () =>
+      splitFullPageInventory({
+        results: [],
+        count: 0,
+        total_matches: 0,
+        truncated_count: 0,
+        scope: "discovery",
+        scope_note: "Default discovery scope omitted coordination pages.",
+      }),
+    /full snapshot.*scope:\s*discovery/i,
+  );
+});
+
+test("page inventory rejects non-discovery scope or a missing discovery note", () => {
+  assert.throws(
+    () =>
+      splitPageInventory({
+        results: [],
+        count: 0,
+        total_matches: 0,
+        truncated_count: 0,
+        scope: "all",
+        scope_note: "",
+      }),
+    /incomplete.*scope:\s*all/i,
+  );
+  assert.throws(
+    () =>
+      splitPageInventory({
+        results: [],
+        count: 0,
+        total_matches: 0,
+        truncated_count: 0,
+        scope: "coordination",
+        scope_note: "Only coordination pages were returned.",
+      }),
+    /incomplete.*scope:\s*coordination/i,
+  );
+  assert.throws(
+    () =>
+      splitPageInventory({
+        results: [],
+        count: 0,
+        total_matches: 0,
+        truncated_count: 0,
+        scope: "discovery",
+        scope_note: "",
+      }),
+    /incomplete.*scope:\s*discovery/i,
+  );
+});
+
+test("page inventory rejects truncation and inconsistent completeness metadata", () => {
   assert.throws(
     () =>
       splitPageInventory({
@@ -115,8 +259,8 @@ test("page inventory preserves promoted/draft identity and fails closed on scope
         count: 0,
         total_matches: 101,
         truncated_count: 101,
-        scope: "all",
-        scope_note: "",
+        scope: "discovery",
+        scope_note: "Default discovery scope omitted coordination pages.",
       }),
     /truncated 101 of 101/,
   );
@@ -132,18 +276,49 @@ test("page inventory preserves promoted/draft identity and fails closed on scope
       }),
     /inconsistent completeness metadata/,
   );
+});
+
+test("page inventory rejects coerced completeness metadata values", () => {
+  for (const field of ["count", "total_matches", "truncated_count"]) {
+    for (const invalidValue of [null, "0", false]) {
+      const payload = {
+        results: [],
+        count: 0,
+        total_matches: 0,
+        truncated_count: 0,
+        scope: "discovery",
+        scope_note: "Default discovery scope omitted coordination pages.",
+        [field]: invalidValue,
+      };
+      assert.throws(
+        () => splitPageInventory(payload),
+        /inconsistent completeness metadata/,
+        `${field}=${JSON.stringify(invalidValue)} must be rejected`,
+      );
+    }
+  }
+});
+
+test("page inventory fails closed when the response exactly fills the request cap", () => {
+  const results = Array.from({ length: 100 }, (_, index) => ({
+    path: `pages/concepts/page-${index}.md`,
+    is_draft: false,
+  }));
   assert.throws(
     () =>
       splitPageInventory({
-        results: [{ path: "pages/concepts/one.md", is_draft: false }],
-        count: 1,
-        total_matches: 1,
+        results,
+        count: 100,
+        total_matches: 100,
         truncated_count: 0,
         scope: "discovery",
         scope_note: "Default discovery scope omitted coordination pages.",
       }),
-    /incomplete.*scope:\s*discovery/i,
+    /cannot prove completeness.*request limit of 100/i,
   );
+});
+
+test("page inventory rejects missing scope and structured errors", () => {
   assert.throws(
     () =>
       splitPageInventory({
@@ -195,6 +370,32 @@ test("canonical collection reads reject structured errors and missing arrays", (
   );
 });
 
+test("snapshot collections fail closed when an unpageable request fills its cap", () => {
+  assert.deepEqual(
+    requireCompleteCollection(
+      { universes: [{ id: "u-1" }] },
+      "universes",
+      "read_graph graphs",
+      100,
+    ),
+    [{ id: "u-1" }],
+  );
+  assert.throws(
+    () =>
+      requireCompleteCollection(
+        {
+          universes: Array.from({ length: 100 }, (_, index) => ({
+            id: `u-${index}`,
+          })),
+        },
+        "universes",
+        "read_graph graphs",
+        100,
+      ),
+    /cannot prove completeness.*limit of 100/i,
+  );
+});
+
 test("snapshot page crawl cannot succeed with skipped or failed bodies", () => {
   assert.doesNotThrow(() => assertCompleteCrawl(2, 2, 0));
   assert.throws(() => assertCompleteCrawl(2, 1, 0), /attempted 1 of 2/);
@@ -202,6 +403,13 @@ test("snapshot page crawl cannot succeed with skipped or failed bodies", () => {
   assert.doesNotMatch(
     readFileSync(snapshotSourcePath, "utf8"),
     /SNAPSHOT_MAX_PAGES|MAX_CRAWL_PAGES/,
+  );
+  const snapshotSource = readFileSync(snapshotSourcePath, "utf8");
+  assert.match(snapshotSource, /\bsplitFullPageInventory\s*\(/);
+  assert.match(snapshotSource, /\brequireCompleteCollection\s*\(/);
+  assert.match(
+    snapshotSource,
+    /publicPageCall\(\s*page\.path\s*,\s*wikiList\.validatedPaths\s*\)/,
   );
 });
 
@@ -228,7 +436,7 @@ test("website readers contain no calls to retired MCP tool names", () => {
   assert.doesNotMatch(source, /\b(?:wiki|goals|universe|extensions)\s+action=/);
 });
 
-test("home goal boards do not depend on the incomplete page inventory", () => {
+test("home goal boards fail closed without unenforced live goal readers", () => {
   const svelteHome = readFileSync(resolve(here, "../src/routes/+page.svelte"), "utf8");
   const reactHome = readFileSync(
     resolve(here, "../../site-react/app/_components/HomeClient.tsx"),
@@ -236,8 +444,8 @@ test("home goal boards do not depend on the incomplete page inventory", () => {
   );
   assert.doesNotMatch(svelteHome, /\bfetchLive\b/);
   assert.doesNotMatch(reactHome, /\bfetchLive\b/);
-  assert.match(svelteHome, /\bfetchPublicGoals\b/);
-  assert.match(reactHome, /\bfetchPublicGoals\b/);
+  assert.doesNotMatch(svelteHome, /\bfetchPublicGoals?\b/);
+  assert.doesNotMatch(reactHome, /\bfetchPublicGoals?\b/);
 });
 
 test("shared contract works in dev and gates both React preview and deploy", () => {

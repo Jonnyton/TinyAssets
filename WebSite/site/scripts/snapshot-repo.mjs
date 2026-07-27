@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '../../..');
 const outFile = resolve(here, '../src/lib/content/repo-snapshot.json');
+const canonicalPublicRemote =
+  'https://github.com/Jonnyton/TinyAssets.git';
 
 function git(args) {
   return execFileSync('git', args, {
@@ -45,7 +47,6 @@ if (branches.length === 0) {
     'refs/remotes/origin/main not found — fetch before generating the repo snapshot'
   );
 }
-const remote = git(['remote', 'get-url', 'origin']);
 const head = branches[0].commit;
 const main = head;
 
@@ -56,7 +57,7 @@ const snapshot = {
     id: 'repo:TinyAssets',
     name: 'TinyAssets',
     owner: 'Jonnyton',
-    remote_url: remote,
+    remote_url: canonicalPublicRemote,
     current_branch: 'origin/main',
     head,
     main,

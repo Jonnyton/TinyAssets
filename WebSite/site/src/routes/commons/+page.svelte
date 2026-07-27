@@ -1,8 +1,9 @@
 <!--
-  /commons — Tiny's public brain. "Field Notes" rebuild, 2026-06-09.
+  /commons — Tiny's discoverable published commons. "Field Notes" rebuild,
+  2026-06-09.
 
   Canonical replacement for /wiki (which stays as a redirect alias later;
-  not touched here). Four beats: everything-I-know-is-public hero → live
+  not touched here). Four beats: published-commons hero → live discovery
   browse of the commons grouped by kind, with copyable chatbot prompts per
   row → the canonical glossary → close-out to /graph and /patterns.
 
@@ -154,28 +155,27 @@
 </script>
 
 <svelte:head>
-  <title>Commons — everything Tiny knows, in public</title>
+  <title>Commons — Tiny's discoverable published knowledge</title>
   <meta
     name="description"
-    content="Tiny’s public brain: goals, workflow designs, run notes, patch requests, and how-tos — written by chatbots and humans working through TinyAssets, readable here or through your own chatbot. Private universes never appear. The canonical TinyAssets glossary lives here too."
+    content="A discovery-scoped view of published TinyAssets knowledge, with the server omission note shown beside live counts. It is not a complete inventory."
   />
 </svelte:head>
 
 <!-- 1 · Hero ──────────────────────────────────────────────────────────── -->
 <section class="cover" aria-labelledby="cover-title">
   <div class="container">
-    <p class="eyebrow">field notes · the open brain</p>
-    <h1 id="cover-title" class="cover__title">Everything I know<br />is <em>public</em>.</h1>
+    <p class="eyebrow">field notes · the published commons</p>
+    <h1 id="cover-title" class="cover__title">Published knowledge<br />is <em>discoverable</em>.</h1>
     <p class="voice cover__lede">
       My commons holds the goals people set, the
       <Term def="A workflow: a graph of steps with typed state and checks, designed in plain language through your chatbot.">workflow</Term>
       designs they build, the run notes I leave behind, the
       <Term def="An ordinary change filing — a bug, a feature, or a rough edge — recorded through a chatbot without silently launching work.">patch requests</Term>
       that change me, and the how-tos that explain it all — written by
-      chatbots and humans working through me. Anyone can read it here, or
-      through their own chatbot. The one thing you'll never find:
-      <em>private universes never appear here.</em> Those live on their
-      keepers' machines, not in mine.
+      chatbots and humans working through me. This public discovery view shows
+      what its server-declared scope includes; it is not a complete inventory.
+      Private data remains outside this public view.
     </p>
     <div class="cover__actions">
       <a class="btn btn--ghost" href="#browse">browse the commons ↓</a>
@@ -190,11 +190,10 @@
     <p class="eyebrow">entry one · what's in here right now</p>
     <h2 id="browse-title">Read it the way your chatbot does.</h2>
     <p class="voice browse__lede">
-      Every page below was fetched fresh when you opened this. I don't ship
-      an in-site reader yet — and I'd rather be honest about that than fake
-      one. So each row hands you the exact line to paste into a chatbot
-      that's connected to me. <em>That bridge isn't a workaround; it's the
-      product.</em>
+      The pages below were returned by a fresh, bounded discovery read.
+      Discovery deliberately omits content named in the server note, so these
+      counts are not a complete inventory. Each row hands you the exact line
+      to paste into a connected chatbot.
     </p>
 
     <div class="browse__bar">
@@ -223,6 +222,7 @@
         live read failed — {liveErr}. The same data is reachable directly at
         <a href={MCP_URL}>{MCP_URL.replace('https://', '')}</a> through any MCP client.
       {:else if live}
+        discovery scope · {live.pageDiscovery.scopeNote} ·
         {totalPromoted.toLocaleString()} promoted pages · {totalDrafts.toLocaleString()} drafts ·
         {filtered.length.toLocaleString()} shown{query ? ` for “${query}”` : ''} ·
         read {rel(live.fetchedAt)}
@@ -235,7 +235,7 @@
           {#if query}
             no pages match “{query}” at this read ({rel(live.fetchedAt)}). Try a broader term.
           {:else}
-            the commons read as quiet right now — no public pages at this read ({rel(live.fetchedAt)}).
+            the discovery view returned no pages at this read ({rel(live.fetchedAt)}); it is not a complete inventory.
           {/if}
         </p>
       {:else}

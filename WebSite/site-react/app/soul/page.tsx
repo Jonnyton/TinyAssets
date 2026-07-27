@@ -230,7 +230,7 @@ export default function SoulPage() {
             <a className="close__card" href="/goals">
               <span className="close__k eyebrow">see it done</span>
               <strong>Read real ladders in the wild →</strong>
-              <span className="close__sub">live public goals, each with the outcome ladder it bound itself to.</span>
+              <span className="close__sub">dated public Goal examples, with outcome ladders where the snapshot includes them.</span>
             </a>
           </nav>
         </div>

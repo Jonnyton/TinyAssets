@@ -1,8 +1,9 @@
 /*
-  /commons — Tiny's public brain. "Field Notes" rebuild, 2026-06-09.
+  /commons — Tiny's discoverable published commons. "Field Notes" rebuild,
+  2026-06-09.
 
   Canonical replacement for /wiki (which stays as a redirect alias later;
-  not touched here). Four beats: everything-I-know-is-public hero → live
+  not touched here). Four beats: published-commons hero → live discovery
   browse of the commons grouped by kind, with copyable chatbot prompts per
   row → the canonical glossary → close-out to /graph and /loop activity.
 
@@ -65,7 +66,7 @@ const GLOSSARY: Array<{ term: string; def: string }> = [
   { term: "soul", def: "A premise file that gives a daemon its identity and judgement — what it’s for, what it values, what it’s allowed to decide. Swap the soul and you get a different being on the same engine." },
   { term: "daemon", def: "The agent that runs a workflow — summoned, bound to a universe, driven by a soul. “Tiny” is one souled daemon; you can fork the pattern to summon your own." },
   { term: "patch request", def: "A public request for a change — a bug, a missing feature, or a rough edge. Filing records the request; any investigation or implementation is separate work." },
-  { term: "workflow activity", def: "Recent user-authored runs read from the public connector, with live and historical provenance kept distinct from platform uptime." },
+  { term: "workflow activity", def: "Activity timestamps on public workflow graphs, read with explicit provenance. They show graph changes, not run history or proof of execution." },
   { term: "commons", def: "This public record — goals, workflows, run notes, patch requests, how-tos — written by chatbots and humans working through me, readable by anyone, forkable by anyone. Private universes never appear here." },
 ];
 
@@ -162,18 +163,17 @@ export default function CommonsClient() {
       {/* 1 · Hero ──────────────────────────────────────────────────────────── */}
       <section className="cover" aria-labelledby="cover-title">
         <div className="container">
-          <p className="eyebrow">field notes · the open brain</p>
-          <h1 id="cover-title" className="cover__title">Everything I know<br />is <em>public</em>.</h1>
+          <p className="eyebrow">field notes · the published commons</p>
+          <h1 id="cover-title" className="cover__title">Published knowledge<br />is <em>discoverable</em>.</h1>
           <p className="voice cover__lede">
             My commons holds the goals people set, the{" "}
             <Term def="A workflow: a graph of steps with typed state and checks, designed in plain language through your chatbot.">workflow</Term>{" "}
             designs they build, the run notes I leave behind, the{" "}
             <Term def="A public request for a change — a bug, a feature, or a rough edge. Filing records it without implying hidden follow-up automation.">patch requests</Term>{" "}
             that change me, and the how-tos that explain it all — written by
-            chatbots and humans working through me. Anyone can read it here, or
-            through their own chatbot. The one thing you'll never find:{" "}
-            <em>private universes never appear here.</em> Those live on their
-            keepers' machines, not in mine.
+            chatbots and humans working through me. This public discovery view
+            shows what its server-declared scope includes; it is not a complete
+            inventory. Private data remains outside this public view.
           </p>
           <div className="cover__actions">
             <a className="btn btn--ghost" href="#browse">browse the commons ↓</a>
@@ -188,11 +188,10 @@ export default function CommonsClient() {
           <p className="eyebrow">entry one · what's in here right now</p>
           <h2 id="browse-title">Read it the way your chatbot does.</h2>
           <p className="voice browse__lede">
-            Every page below was fetched fresh when you opened this. I don't ship
-            an in-site reader yet — and I'd rather be honest about that than fake
-            one. So each row hands you the exact line to paste into a chatbot
-            that's connected to me. <em>That bridge isn't a workaround; it's the
-            product.</em>
+            The pages below were returned by a fresh, bounded discovery read.
+            Discovery deliberately omits content named in the server note, so
+            these counts are not a complete inventory. Each row hands you the
+            exact line to paste into a connected chatbot.
           </p>
 
           <div className="browse__bar">
@@ -225,6 +224,7 @@ export default function CommonsClient() {
               </>
             ) : live ? (
               <>
+                discovery scope · {live.pageDiscovery.scopeNote} ·{" "}
                 {totalPromoted.toLocaleString()} promoted pages · {totalDrafts.toLocaleString()} drafts ·{" "}
                 {filtered.length.toLocaleString()} shown{query ? ` for “${query}”` : ""} ·{" "}
                 read {rel(live.fetchedAt)}
@@ -237,7 +237,7 @@ export default function CommonsClient() {
               <p className="browse__empty ev">
                 {query
                   ? `no pages match “${query}” at this read (${rel(live.fetchedAt)}). Try a broader term.`
-                  : `the commons read as quiet right now — no public pages at this read (${rel(live.fetchedAt)}).`}
+                  : `the discovery view returned no pages at this read (${rel(live.fetchedAt)}); it is not a complete inventory.`}
               </p>
             ) : (
               <div className="groups">
@@ -320,8 +320,8 @@ export default function CommonsClient() {
             </a>
             <a className="close__card" href="/loop">
               <strong>See workflow activity.</strong>
-              <span className="close__k eyebrow">recent user-authored runs</span>
-              <span className="close__sub">Live and historical activity from the connector, labelled separately from platform uptime.</span>
+              <span className="close__k eyebrow">public graph activity</span>
+              <span className="close__sub">Public workflow spaces and their activity timestamps, labelled separately from platform uptime.</span>
             </a>
           </div>
         </div>

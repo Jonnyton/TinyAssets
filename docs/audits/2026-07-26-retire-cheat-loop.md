@@ -498,54 +498,74 @@ post-`file_bug` branch promise, and retired tags:
 They are regenerated from the clean source or removed with an unshipped mirror;
 checked-in generated data cannot serve as a compatibility backdoor.
 
-Freshness-stamped 2026-07-27: `snapshot-mcp.mjs`, both production React and
-rollback Svelte browser readers, both goal surfaces, host copy, and the live
-playground now use only the canonical `read_page`, `read_graph`, and
-`get_status` handles through one shared public-read contract. The contract
-rejects truncation, inconsistent collection metadata, missing required arrays,
-missing or invalid page bodies, an incomplete page-body crawl, and any
-inventory whose server-declared scope is not `all`. Node tests pass 13/13,
-React TypeScript and its 27-route production build pass, Svelte check has zero
-errors (six existing warnings), and its static build passes. The React preview
-and production deployment workflows both run that cross-tree invariant suite.
-A direct Vite dev probe reproduced HTTP 200 for both the transformed Svelte
-client and the shared module; the earlier external-root 403 is fixed.
+Freshness-stamped 2026-07-27: migrating website callers to the consolidated
+handles did not by itself create a public-read boundary. Independent exact-head
+reviews of draft PR #1812 at
+`9ea3c9eef9603496a62be64de7b5085312687a70` both returned **ADAPT**:
 
-Canonical graph reads are independently available while page inventory remains
-incomplete: the home goals board, host, ordinary workflow activity, and mood
-surfaces now read goals/universes without depending on `read_page`.
-`LiveSourceBar` remains an intentionally all-collections refresh and therefore
-keeps its prior snapshot when page inventory is incomplete. Single-page bodies
-require a real content string, discovery summaries disclose any
-server-reported truncation, and the public playground accepts only
-`get_status`, `read_graph`, and `read_page`. An explicitly requested rollback
-snapshot refresh now exits non-zero when the completeness guard refuses
-regeneration; ordinary local refresh remains fail-soft and keeps the last
-complete file.
+- Codex proved with an isolated temporary database that an anonymous viewer
+  could list another actor's private Goal and read its exact private
+  description through `read_graph target=goals|goal`. It separately proved
+  that `Number(...)` coercion accepted `null`, string, and boolean
+  completeness fields as valid zeros, identified the unprovable 100-Goal cap,
+  and flagged both credentialed snapshot publication and raw Git-origin
+  userinfo as public-artifact risks.
+- Claude Opus 5 found that rejecting every `scope=discovery` response inverted
+  the intended disclosure contract: an explicit discovery scope plus omission
+  note is acceptable for a discovery-only view, though never as a complete
+  wiki replacement. It also found that truncated page bodies were accepted and
+  could replace that page's prior incremental edges, and that a required
+  snapshot silently exited zero when the MCP SDK was unavailable. Opus
+  corroborated the Goal-visibility, raw-origin, and unpageable completeness
+  concerns.
+- A later independent Codex privacy audit extended the boundary to
+  `read_graph target=runs|run`: `_run_read_allowed` returns true for every
+  actor not encoded as `universe:<id>`, so non-universe and cross-user run
+  records are not a server-enforced public projection. This run finding is
+  Codex evidence, not attributed to the earlier Opus review.
+- A follow-up anonymous exact-page proof found that discovery correctly omitted
+  a coordination plan, yet `read_page page=<known path>` returned its full
+  2,667-character body; a known BUG path likewise returned 2,003 characters.
+  Root-wiki exact reads bypass the universe ACL and pages without visibility
+  frontmatter default readable. The public playground must therefore reject
+  arbitrary exact paths at its execution boundary, not only hide a UI chip.
+- The same follow-up found that anonymous `get_status` returns raw activity
+  records and recent calls, task and worker identifiers, daemon names and cost
+  data, local paths, persona self-model state, and authentication health after
+  only the metadata gate. Public browser clients and the playground must not
+  download that operator payload until the server exposes a bounded public
+  status projection.
 
-The canonical goals list still has a separate server-side completeness gap:
-`read_graph target=goals limit=100` exposes neither a total/truncated field nor
-a cursor. The website cannot distinguish a complete list from the first 100
-visible goals, so it must not be treated as full-inventory proof until the
-server adds bounded pagination/completeness metadata.
+These are unresolved review findings, not final approval. Anonymous browser
+and public-snapshot callers MUST NOT invoke raw `get_status`, `goal`, `goals`,
+`run`, or `runs` until the server enforces both public visibility and bounded
+completeness.
+Among the `read_graph` collection/detail projections, only `target=graphs`
+discovery is currently proven to enforce visibility; it is not completeness
+proof at an unpageable cap. Checked-in Goal data may remain only as an
+explicitly labelled snapshot; client-side filtering after a private-capable
+response is not a confidentiality boundary. Arbitrary anonymous exact-page
+reads are likewise forbidden; body reads must be bound to a path returned by a
+validated inventory, and discovery scope cannot replace the full snapshot.
+Snapshot generation must run without caller credentials, and required refresh
+must fail before writing on SDK absence, strict-metadata failure, an ambiguous
+request cap, or a truncated body.
 
 A live anonymous probe of `https://tinyassets.io/mcp` returned 78/78
-**discovery-scope** pages with zero truncation and a `scope_note` saying
-coordination pages were omitted; it also read a page body and returned the
-canonical goals/graphs/runs shapes. That response is not a complete public-page
-inventory. The current public `read_page` handle exposes neither `scope=all`
-nor a cursor/offset beyond its 100-result ceiling, so the shared contract now
-fails closed: `/graph` keeps its explicitly labeled baked snapshot,
-`/commons` shows an empty live browse plus the read error rather than
-mislabeling baked rows as live, and snapshot regeneration keeps the previous
-file rather than publishing a complete-looking partial result. A server-side
-full-scope, paginated read successor is required before canonical regeneration
-can pass.
-Running `npm run snapshot` against the live endpoint on 2026-07-27 produced
-that incomplete-inventory error, retained the 2026-04-30 snapshot, and preserved its
-SHA-256
-`597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`
-byte-for-byte.
+**discovery-scope** pages with zero truncation and an explicit `scope_note`
+that coordination pages were omitted. That result is acceptable for a
+discovery-only surface that preserves the scope and omission note. It is not a
+complete public-page inventory and cannot replace the current full-scope
+snapshot. Because public `read_page` has no cursor beyond its 100-result
+ceiling, a response that exactly fills the cap is ambiguous and must fail
+closed. A page body with `truncated=true` is likewise incomplete even when
+`content` is a string; it must not be reference-extracted or overwrite prior
+edges.
+
+The checked-in 2026-04-30 snapshot remains the labelled fallback at SHA-256
+`597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+No 2026-07-27 review established safe full regeneration, rendered-browser
+acceptance, or post-fix clean use.
 
 The same probe found two source records that stop truthful regeneration:
 `pages/concepts/community-patch-loop-as-project-steward.md` still describes
@@ -683,7 +703,45 @@ The 2026-07-27 canonical-read slice removes every remaining production React
 and rollback Svelte website call and public example for the retired `wiki`,
 `goals`, `universe`, and `extensions` tool names. Existing site behavior is
 expressed through the advertised handles; no new Village or web-product
-architecture was introduced.
+architecture was introduced. The later exact-head ADAPT reviews above
+supersede any inference that canonical naming made every target safe:
+raw `get_status`, arbitrary exact pages, and `goal|goals|run|runs` remain
+forbidden to anonymous browser/snapshot callers, while `graphs` is the only
+`read_graph` discovery projection currently proven to enforce visibility. That
+visibility result is not complete-inventory proof when an unpageable cap is
+hit.
+
+The follow-up fail-closed implementation on 2026-07-27 applies that ADAPT
+verdict without pretending the unsafe server projections are public:
+
+- the two browser clients keep their generic MCP caller private and expose
+  only bounded `read_graph target=graphs` discovery plus a validated
+  discovery-scoped page inventory;
+- Commons, Graph, and shared source indicators visibly render the validated
+  server omission note and say the refresh is not a complete inventory;
+- public browser code contains no raw `get_status`,
+  `goal|goals|run|runs`, or arbitrary exact-page read;
+- snapshot exact-page descriptors require immutable path provenance from the
+  validated same-refresh inventory, full replacement requires explicit
+  untruncated `scope=all`, and an exactly-full 100-result response fails
+  closed as ambiguous;
+- snapshot startup rejects bearer credentials and URL userinfo before
+  connection or logging, requires the MCP SDK, and repository regeneration
+  emits only `https://github.com/Jonnyton/TinyAssets.git` rather than copying
+  a local Git origin;
+- the full Node website suite passes 63/63, both production builds pass,
+  Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
+  production dependency audit reports zero vulnerabilities, strict OpenSpec
+  validation passes all 58 items, and `git diff --check` passes;
+- a live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh exits 1 on
+  the server's `scope=discovery` response and leaves both checked-in snapshots
+  byte-identical at SHA-256
+  `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+
+These are implementation and fail-closed proofs, not final acceptance.
+Server-side Goal/run/status/exact-page privacy, live source-data retirement,
+fresh exact-head Codex and Claude Opus approval, rendered connector/browser
+proof, and post-fix clean-use evidence remain release gates.
 
 ### Plugin payload
 
@@ -785,8 +843,9 @@ The target modifies seven capabilities:
 - `uptime-and-alarms`: gains the generic read-only observation successor.
 - `public-website-surface`: removes the privileged patch-loop route/status
   fallback from the React production and Svelte rollback trees, corrects their
-  deployment ownership, and keeps only provenance-correct generic
-  workflow/uptime truth.
+  deployment ownership, keeps only provenance-correct generic workflow/uptime
+  truth, and requires server-enforced visibility plus bounded completeness
+  before an anonymous browser or snapshot consumes a Goal or run projection.
 
 There is no new product capability, compatibility period, replacement loop, or
 runtime alias.
@@ -809,8 +868,11 @@ Implementation is not complete until all of the following are fresh and green:
    workflow-owned open enrollment and no hidden ambiguity;
 7. rendered chatbot `ui-test` through `https://tinyassets.io/mcp` proving
    filing-only behavior and absence of the status projection;
-8. canonical website plus any retained mirror build/absence evidence and normal
-   public MCP, Tier-3 clone, production deploy, and website deploy observation;
+8. canonical website plus any retained mirror build/absence evidence; anonymous
+   browser/snapshot absence for unsafe raw status, arbitrary exact-page, and
+   `goal|goals|run|runs` reads; server-enforced visibility/completeness before
+   those reads return; and normal public MCP, Tier-3 clone, production deploy,
+   and website deploy observation;
 9. post-fix real-user evidence, or an explicit short watch item if none exists.
 
 This audit authorizes no runtime edit. It records the verified target boundary

@@ -25,7 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Simulation } from "d3-force";
 import baked from "../../../lib/mcp-snapshot.json";
-import { fetchLive, liveToSnapshotShape } from "../../../lib/live";
+import { fetchLive, liveToSnapshotShape, type LiveResult } from "../../../lib/live";
 import type { Snapshot } from "../../../lib/types";
 import { fmtCount, fmtRel, fmtStamp, fmtStampStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
@@ -82,6 +82,7 @@ export default function GraphClient() {
   // of the exact same shape, so the whole sky rebuilds against fresh data.
   const [snapshot, setSnapshot] = useState<Snapshot>(baked as unknown as Snapshot);
   const [liveStamp, setLiveStamp] = useState<string | null>(null);
+  const [liveDiscovery, setLiveDiscovery] = useState<LiveResult["pageDiscovery"] | null>(null);
   const [reading, setReading] = useState(false);
   const [liveErr, setLiveErr] = useState<string | null>(null);
 
@@ -111,6 +112,7 @@ export default function GraphClient() {
       const live = await fetchLive();
       setSnapshot(liveToSnapshotShape(live, baked as unknown as Snapshot));
       setLiveStamp(live.fetchedAt);
+      setLiveDiscovery(live.pageDiscovery);
       setLiveErr(null);
     } catch (e: any) {
       setLiveErr(e?.message ?? String(e));
@@ -577,11 +579,13 @@ export default function GraphClient() {
             My head, <em>seen from above</em>.
           </h1>
           <p className="voice cover__lede">
-            Every one of the {fmtCount(wikiTotal)} pages in my memory is a dot in here, settling around its
-            category the way notes cluster around tags. Goals burn ember; universes drift violet. The bright lines are
-            real page-to-page references — {refCount} of them; the faintest spokes are filing and shared-tag clusters,
-            and I'll never dress either up as a citation. Hover to light up a neighbourhood, scroll to zoom, drag
-            anything that bothers you.
+            Each of the {fmtCount(wikiTotal)} pages in this view is a dot, settling
+            around its category the way notes cluster around tags. The checked-in
+            first view is a dated snapshot; a refresh replaces its page set with a
+            discovery-scoped result, not a complete inventory. Goals burn ember;
+            universes drift violet. The bright lines are real page-to-page
+            references — {refCount} of them; the faintest spokes are filing and
+            shared-tag clusters, and I'll never dress either up as a citation.
           </p>
           <p className="cover__stamp ev" aria-live="polite">
             <span className={liveStamp ? "dot live" : "dot"}></span>
@@ -590,6 +594,11 @@ export default function GraphClient() {
             <button type="button" className="refresh" onClick={refresh} disabled={reading} aria-busy={reading}>
               {reading ? "reading…" : "Refresh MCP"}
             </button>
+            {liveDiscovery && (
+              <span>
+                page {liveDiscovery.scope} scope · {liveDiscovery.scopeNote} · not a complete inventory
+              </span>
+            )}
           </p>
           {liveErr && (
             <p className="cover__err ev">

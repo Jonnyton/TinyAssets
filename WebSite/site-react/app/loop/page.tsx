@@ -4,7 +4,7 @@ import LoopClient from "./_components/LoopClient";
 export const metadata: Metadata = {
   title: "Workflow activity — Tiny",
   description:
-    "Recent user-authored workflow activity, read from the TinyAssets MCP connector with explicit live and historical provenance.",
+    "Public workflow-graph activity from TinyAssets, read through the public graphs collection with explicit provenance.",
 };
 
 export default function LoopPage() {

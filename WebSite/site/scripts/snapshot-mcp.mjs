@@ -12,7 +12,7 @@
  * (temp + rename) avoids FUSE chunked-write truncation.
  *
  * Run:    npm run snapshot
- * Env:    MCP_URL, MCP_BEARER (optional)
+ * Env:    MCP_URL
  */
 
 import { writeFileSync, readFileSync, existsSync, renameSync, unlinkSync } from 'node:fs';
@@ -20,19 +20,19 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
+  assertAnonymousSnapshotUrl,
   assertCompleteCrawl,
   pageInventoryCall,
   publicGraphCall,
   publicPageCall,
-  requireCollection,
-  splitPageInventory
+  requireCompleteCollection,
+  splitFullPageInventory
 } from '../../shared/mcp/public-read-contract.js';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(SCRIPT_DIR, '..');
 const SNAPSHOT_PATH = resolve(ROOT, 'src', 'lib', 'content', 'mcp-snapshot.json');
 const MCP_URL = process.env.MCP_URL ?? 'https://tinyassets.io/mcp';
-const BEARER = process.env.MCP_BEARER ?? '';
 const PAGE_FETCH_CONCURRENCY = Number(process.env.SNAPSHOT_CONCURRENCY ?? 8);
 // Crawl every page body for edge extraction. A caller-controlled cap would
 // silently create a complete-looking graph with missing links.
@@ -191,13 +191,26 @@ function extractRefs(content) {
 }
 
 async function main() {
+  if (process.env.MCP_BEARER) {
+    warn('public snapshots must run anonymously; MCP_BEARER is forbidden');
+    process.exit(1);
+    return;
+  }
+  try {
+    assertAnonymousSnapshotUrl(MCP_URL);
+  } catch {
+    warn('public snapshots must run anonymously; MCP_URL credentials are forbidden');
+    process.exit(1);
+    return;
+  }
   const sdk = await loadSdk();
-  if (!sdk) { process.exit(0); return; }
+  if (!sdk) {
+    process.exit(process.env.SNAPSHOT_REQUIRED === '1' ? 1 : 0);
+    return;
+  }
 
   log(`fetching from ${MCP_URL} ...`);
-  const transport = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
-    requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
-  });
+  const transport = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL));
   const client = new sdk.Client(
     { name: 'tinyassets-site-snapshot', version: '0.2.0' },
     { capabilities: {} }
@@ -220,32 +233,26 @@ async function main() {
       }
     }
 
-    log('listing pages / goals / universes through canonical handles ...');
+    log('listing pages / universes through canonical handles ...');
     // A single SDK client/session owns these calls; keep failure order
     // deterministic so a partial collection can never be mistaken for a bake.
     const inventoryCall = pageInventoryCall();
-    const goalsCall = publicGraphCall('goals', 100);
     const universesCall = publicGraphCall('graphs', 100);
     const pageInventory = await tool(inventoryCall.name, inventoryCall.args);
-    const wikiList = splitPageInventory(pageInventory);
-    const goalsList = await tool(goalsCall.name, goalsCall.args);
+    const wikiList = splitFullPageInventory(pageInventory);
     const universesList = await tool(universesCall.name, universesCall.args);
-    const goalRows = requireCollection(goalsList, 'goals', 'read_graph goals');
-    const universeRows = requireCollection(
+    const universeRows = requireCompleteCollection(
       universesList,
       'universes',
-      'read_graph graphs'
+      'read_graph graphs',
+      100
     );
 
     // Shape data
-    const goals = goalRows.map((g) => ({
-      id: g.goal_id ?? g.id,
-      name: g.name ?? '',
-      summary: g.description ?? '',
-      tags: typeof g.tags === 'string' ? g.tags.split(',').map((t) => t.trim()).filter(Boolean) : (g.tags ?? []),
-      author: g.author ?? 'anonymous',
-      visibility: g.visibility ?? 'public'
-    }));
+    // The current Goal projection does not enforce public visibility
+    // server-side. Never fetch it for a public artifact: even an anonymous
+    // caller can receive cross-user private goal descriptions.
+    const goals = [];
 
     const universes = universeRows.map((u) => ({
       id: u.id,
@@ -337,7 +344,7 @@ async function main() {
     let crawlSet;
     if (prior && prior.fetched_at) {
       const sinceCall = pageInventoryCall(prior.fetched_at);
-      const since = splitPageInventory(
+      const since = splitFullPageInventory(
         await tool(sinceCall.name, sinceCall.args)
       );
       const changed = new Set(
@@ -384,9 +391,7 @@ async function main() {
       pageMeta[page.path] = meta;
     }
     async function crawlWorker() {
-      const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL), {
-        requestInit: BEARER ? { headers: { Authorization: `Bearer ${BEARER}` } } : {}
-      });
+      const tr = new sdk.StreamableHTTPClientTransport(new URL(MCP_URL));
       const cl = new sdk.Client({ name: 'tinyassets-site-snapshot-worker', version: '0.2.0' }, { capabilities: {} });
       try {
         await Promise.race([
@@ -400,12 +405,15 @@ async function main() {
         const page = queue.shift();
         if (!page) break;
         try {
-          const pageCall = publicPageCall(page.path);
+          const pageCall = publicPageCall(page.path, wikiList.validatedPaths);
           const r = await Promise.race([
             cl.callTool({ name: pageCall.name, arguments: pageCall.args }),
             new Promise((_, rej) => setTimeout(() => rej(new Error('read timeout')), 20000))
           ]);
           const body = parseToolResponse(r);
+          if (body?.truncated !== false) {
+            throw new Error('read_page returned truncated or unproven page content');
+          }
           if (typeof body?.content !== 'string') {
             throw new Error('read_page returned no page content');
           }

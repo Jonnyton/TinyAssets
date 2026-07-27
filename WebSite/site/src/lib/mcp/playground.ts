@@ -10,10 +10,7 @@
  * Prod: hits /mcp (same-origin Cloudflare worker).
  */
 
-import {
-  publicGraphCall,
-  publicRunCall
-} from '../../../../shared/mcp/public-read-contract.js';
+import { assertPublicPlaygroundCall } from '../../../../shared/mcp/public-read-contract.js';
 
 const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
 
@@ -135,6 +132,7 @@ async function ensureInit(): Promise<WireTrace | undefined> {
 }
 
 export async function callTool(name: string, args: Record<string, unknown>): Promise<CallResult> {
+  assertPublicPlaygroundCall(name, args);
   const initTrace = await ensureInit();
   const { result, trace } = await rpcWithTrace('tools/call', { name, arguments: args });
 
@@ -174,13 +172,11 @@ export type ParsedInput =
   | { ok: true; tool: string; args: Record<string, unknown>; canonical: string }
   | { ok: false; error: string };
 
-const PUBLIC_READ_TOOLS = new Set(['get_status', 'read_graph', 'read_page']);
+const PUBLIC_READ_TOOLS = new Set(['read_graph', 'read_page']);
 
 /**
  * Parse playground input like:
  *   read_page changed_since=1970-01-01T00:00:00Z max_results=100
- *   read_graph target=run run_id=abc123
- *   read_page page=pages/bugs/bug-052
  *   read_graph target=graphs limit=5
  */
 export function parseInput(text: string): ParsedInput {
@@ -195,7 +191,7 @@ export function parseInput(text: string): ParsedInput {
   if (!PUBLIC_READ_TOOLS.has(tool)) {
     return {
       ok: false,
-      error: `The public playground only runs get_status, read_graph, and read_page.`
+      error: `The public Playground only runs read_graph and bounded read_page discovery.`
     };
   }
   const args: Record<string, unknown> = {};
@@ -217,113 +213,15 @@ export function parseInput(text: string): ParsedInput {
     args[key] = val;
     canonicalParts.push(`${key}=${rawVal}`);
   }
+  try {
+    assertPublicPlaygroundCall(tool, args);
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'That call is not available in the public Playground.'
+    };
+  }
   return { ok: true, tool, args, canonical: canonicalParts.join(' ') };
-}
-
-// ============ Workflow note harvest ============
-
-export type WorkflowNote = {
-  text: string;
-  branch: string;
-  runId: string;
-  nodeId?: string;
-  field: string;
-  at?: string;
-};
-
-const QUOTE_FIELDS: Array<[string, (ev: any, run: any) => unknown]> = [
-  ['reason_for_downgrade', (ev) => ev?.coding_packet?.reason_for_downgrade ?? ev?.reason_for_downgrade],
-  ['release_gate_reason', (ev) => ev?.release_gate_result?.reason ?? ev?.gate_reason],
-  ['evolution_notes', (ev) => ev?.evolution_notes],
-  ['lab_log_entry', (ev) => ev?.lab_log_entry ?? ev?.lab_log],
-  ['rationale', (ev) => ev?.output_summary ?? ev?.rationale],
-  ['suggested_action', (ev, run) => ev?.suggested_action ?? run?.suggested_action]
-];
-
-function looksLikeQuote(s: unknown): s is string {
-  return typeof s === 'string' && s.length >= 30 && s.length <= 800 && /\s/.test(s);
-}
-
-export async function harvestWorkflowNotes(maxRuns = 6): Promise<{ notes: WorkflowNote[]; warnings: string[] }> {
-  const warnings: string[] = [];
-  const notes: WorkflowNote[] = [];
-  try {
-    const runsCall = publicGraphCall('runs', maxRuns);
-    const list = await callTool(runsCall.name, runsCall.args);
-    const runs: any[] = (list.parsed?.runs as any[]) ?? [];
-    if (!runs.length) warnings.push('read_graph target=runs returned no runs');
-
-    for (const run of runs.slice(0, maxRuns)) {
-      try {
-        const runCall = publicRunCall(run.run_id);
-        const detail = await callTool(runCall.name, runCall.args);
-        const events: any[] =
-          (detail.parsed?.events as any[]) ??
-          (detail.parsed?.timeline as any[]) ??
-          (detail.parsed?.steps as any[]) ??
-          [];
-        for (const ev of events) {
-          for (const [field, picker] of QUOTE_FIELDS) {
-            const val = picker(ev, run);
-            if (looksLikeQuote(val)) {
-              notes.push({
-                text: val.trim(),
-                branch: run.branch_def_id ?? run.workflow ?? run.name ?? 'unlabeled workflow',
-                runId: run.run_id ?? 'unknown',
-                nodeId: ev?.node_id,
-                field,
-                at: ev?.created_at ?? ev?.timestamp ?? run?.finished_at ?? run?.started_at
-              });
-            }
-          }
-        }
-      } catch (err) {
-        warnings.push(`read_graph target=run ${run?.run_id}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      if (notes.length >= 12) break;
-    }
-  } catch (err) {
-    warnings.push(`read_graph target=runs: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  // Dedupe by text prefix.
-  const seen = new Set<string>();
-  const deduped: WorkflowNote[] = [];
-  for (const q of notes) {
-    const key = q.text.slice(0, 80);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    deduped.push(q);
-  }
-  return { notes: deduped, warnings };
-}
-
-// ============ Recent runs (run picker) ============
-
-export type RecentRun = {
-  run_id: string;
-  name?: string;
-  branch_def_id?: string;
-  status: string;
-  started_at?: string;
-  finished_at?: string;
-};
-
-export async function listRecentRuns(limit = 10): Promise<RecentRun[]> {
-  try {
-    const runsCall = publicGraphCall('runs', limit);
-    const list = await callTool(runsCall.name, runsCall.args);
-    const runs: any[] = (list.parsed?.runs as any[]) ?? [];
-    return runs.map((r) => ({
-      run_id: r.run_id ?? r.id ?? 'unknown',
-      name: r.name ?? r.run_name,
-      branch_def_id: r.branch_def_id ?? r.workflow,
-      status: (r.status ?? 'unknown').toString(),
-      started_at: r.started_at,
-      finished_at: r.finished_at
-    }));
-  } catch {
-    return [];
-  }
 }
 
 // ============ Pretty summarizer ============
@@ -370,11 +268,6 @@ export function summarize(tool: string, parsed: any): string | null {
   }
 
   if (tool === 'read_graph') {
-    if (Array.isArray(parsed?.goals)) {
-      const n = parsed.goals.length;
-      const names = parsed.goals.slice(0, 3).map((g: any) => g.name ?? g.id).filter(Boolean).join(', ');
-      return `${n} active goal${n === 1 ? '' : 's'}${names ? `: ${names}${n > 3 ? ', …' : ''}` : ''}.`;
-    }
     if (Array.isArray(parsed?.universes)) {
       const n = parsed.universes.length;
       const phases = parsed.universes.slice(0, 3).map((u: any) => `${u.id} (${u.phase ?? u.phase_human ?? '?'})`).join(', ');
@@ -386,15 +279,6 @@ export function summarize(tool: string, parsed: any): string | null {
     }
     if (parsed?.alive !== undefined) {
       return `Daemon ${parsed.alive ? 'alive' : 'inactive'}${parsed.last_activity_at ? `, last activity ${parsed.last_activity_at}` : ''}.`;
-    }
-    if (Array.isArray(parsed?.runs)) {
-      const n = parsed.runs.length;
-      const recent = parsed.runs[0];
-      const stamp = recent?.finished_at ?? recent?.started_at ?? 'unknown';
-      return `${n} run${n === 1 ? '' : 's'} returned. Most recent: ${recent?.run_id ?? '?'} — ${recent?.status ?? '?'} at ${stamp}.`;
-    }
-    if (Array.isArray(parsed?.events)) {
-      return `${parsed.events.length} event${parsed.events.length === 1 ? '' : 's'} for run ${parsed?.run_id ?? '(unspecified)'}.`;
     }
   }
 

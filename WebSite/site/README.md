@@ -129,12 +129,17 @@ git commit -m "snapshot: refresh MCP"
 git push           # source update only; does not deploy either site
 ```
 
-The script is `scripts/snapshot-mcp.mjs`. It uses `@modelcontextprotocol/sdk` and fails soft — if the MCP is unreachable, the existing snapshot is kept and the build still ships. If the MCP endpoint requires auth, set `MCP_BEARER` in your shell env (or as a repo secret named the same in CI).
+The script is `scripts/snapshot-mcp.mjs`. It uses
+`@modelcontextprotocol/sdk`; snapshot refreshes run anonymously so a
+caller-specific grant can never be baked into a public artifact. If the MCP is
+unreachable, the existing snapshot is kept unless `SNAPSHOT_REQUIRED=1`.
+`MCP_BEARER` is forbidden and makes the snapshot command fail.
 
 **Rollback refresh:** `deploy-site.yml` has no cron or push trigger. When a
 rollback specifically needs a fresh Svelte snapshot, dispatch it manually with
-`refresh_snapshot=true` (and provide the required `MCP_BEARER` repository
-secret). Production React deployment does not use this snapshot step.
+`refresh_snapshot=true`. The workflow performs the read anonymously and fails
+closed if it cannot prove a complete public snapshot. Production React
+deployment does not use this snapshot step.
 
 ## Open TODOs
 

@@ -1,12 +1,9 @@
 "use client";
 
-import * as React from "react";
 import Term from "../../../components/Term";
 import VitalSigns from "../../../components/VitalSigns";
-import { callTool } from "../../../lib/live";
 import baked from "../../../lib/mcp-snapshot.json";
 import { fmtStampStable } from "../../../lib/fmt";
-import { useMounted } from "../../../lib/useMounted";
 import styles from "../page.module.css";
 
 const GH_ACTIONS = "https://github.com/Jonnyton/TinyAssets/actions";
@@ -20,80 +17,8 @@ const UPTIME_CHECKS = [
   },
 ];
 
-type ReceiptState = "reading" | "ok" | "empty" | "error";
-
-function rel(s?: string | null): string {
-  if (!s) return "unknown";
-  const ms = Date.parse(s);
-  if (Number.isNaN(ms)) return s;
-  const diff = Date.now() - ms;
-  if (diff < 90_000) return "just now";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-  return `${Math.floor(diff / 86_400_000)}d ago`;
-}
-
-function stamp(s?: string | null): string {
-  if (!s) return "";
-  const ms = Date.parse(s);
-  if (Number.isNaN(ms)) return s;
-  return new Date(ms).toLocaleString(undefined, {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function pick(obj: Record<string, unknown> | null, ...keys: string[]): string | undefined {
-  if (!obj) return undefined;
-  for (const k of keys) {
-    const value = obj[k];
-    if (value !== undefined && value !== null && value !== "") return String(value);
-  }
-  return undefined;
-}
-
 export default function FinePrintClient() {
-  const mounted = useMounted();
-  const [rcState, setRcState] = React.useState<ReceiptState>("reading");
-  const [rcError, setRcError] = React.useState<string | null>(null);
-  const [rcFetchedAt, setRcFetchedAt] = React.useState<string | null>(null);
-  const [release, setRelease] = React.useState<Record<string, unknown> | null>(null);
-
-  const readReceipt = React.useCallback(async () => {
-    setRcState("reading");
-    setRcError(null);
-    try {
-      const payload = await callTool("get_status", {});
-      const relState = payload?.release_state ?? null;
-      setRcFetchedAt(new Date().toISOString());
-      if (relState && typeof relState === "object" && Object.keys(relState).length) {
-        setRelease(relState as Record<string, unknown>);
-        setRcState("ok");
-      } else {
-        setRelease(null);
-        setRcState("empty");
-      }
-    } catch (err) {
-      setRcError(err instanceof Error ? err.message : String(err));
-      setRcState("error");
-      setRelease(null);
-    }
-  }, []);
-
-  React.useEffect(() => {
-    void readReceipt();
-  }, [readReceipt]);
-
-  const gitSha = pick(release, "git_sha", "gitSha", "sha", "commit");
-  const deployedAt = pick(release, "deployed_at", "deployedAt");
-  const imageTag = pick(release, "image_tag", "imageTag", "image", "tag");
-  const canaryStatus = pick(release, "canary_bundle_status", "canaryBundleStatus", "canary_status");
-  const buildRunUrl = pick(release, "build_run_url", "buildRunUrl", "build_url");
-  const deployRunUrl = pick(release, "deploy_run_url", "deployRunUrl", "deploy_url");
-  const bakedStamp = bakedFetchedAt ? (mounted ? stamp(bakedFetchedAt) : fmtStampStable(bakedFetchedAt)) : "";
+  const bakedStamp = bakedFetchedAt ? fmtStampStable(bakedFetchedAt) : "";
 
   return (
     <div className={styles.page}>
@@ -152,20 +77,16 @@ export default function FinePrintClient() {
             <div className="measure">
               <dt><span className="dot" aria-hidden="true"></span> lifetime runs</dt>
               <dd>
-                The engine&apos;s queue keeps running counters of work it has taken
-                through: <em>succeeded</em>, <em>failed</em>, and <em>pending</em>.
-                The strip reports those numbers as the engine reports them — failures
-                included, because a counter that only counts wins isn&apos;t a counter.
+                Public queue counters are unavailable. This browser does not
+                request operator status merely to display lifetime run totals.
               </dd>
             </div>
             <div className="measure">
               <dt><span className="dot" aria-hidden="true"></span> deployed</dt>
               <dd>
-                The engine&apos;s own release receipt: the git commit it&apos;s running and the
-                time it says it deployed that commit. It&apos;s the engine describing
-                itself, not the website guessing. The full receipt — image, canary
-                verdict, and the GitHub Actions runs that built and shipped it — is
-                read live just below.
+                A public release receipt is unavailable. The checked-in site
+                snapshot is page provenance, not proof of which engine image is
+                deployed.
               </dd>
             </div>
           </dl>
@@ -174,80 +95,26 @@ export default function FinePrintClient() {
 
       <section className="ch ch--receipt" aria-labelledby="receipt-title">
         <div className="container ch__inner">
-          <p className="eyebrow">entry two · the engine&apos;s own receipt</p>
-          <h2 id="receipt-title">What&apos;s actually deployed, by its own account.</h2>
+          <p className="eyebrow">entry two · release provenance</p>
+          <h2 id="receipt-title">Public release receipt unavailable.</h2>
           <p className="receipt__lede">
-            Read live from <code>get_status</code> when you opened this page. These
-            are the engine&apos;s words about its own release — not a value typed into
-            this site.
+            This browser does not download the operator status payload. The
+            checked-in public site snapshot is dated {bakedStamp}, but that date
+            is not a deployment attestation.
           </p>
 
-          <div className="receipt" aria-live="polite" data-state={rcState}>
-            {rcState === "reading" ? (
-              <p className="receipt__msg ev"><span className="dot idle" aria-hidden="true"></span> reading the release receipt from <code>{MCP_BARE}</code>…</p>
-            ) : rcState === "error" ? (
-              <>
-                <p className="receipt__msg ev"><span className="dot error" aria-hidden="true"></span> couldn&apos;t read the receipt — this is a true reading.</p>
-                <p className="receipt__err ev">{rcError}</p>
-                <button className="receipt__refresh" onClick={() => void readReceipt()}>Refresh MCP</button>
-              </>
-            ) : rcState === "empty" ? (
-              <>
-                <p className="receipt__msg ev"><span className="dot idle" aria-hidden="true"></span> the engine answered, but reported no release_state in this read.</p>
-                <p className="receipt__note">That&apos;s an honest gap, not a deployment claim. Read again, or check the build &amp; deploy runs on GitHub Actions directly.</p>
-                <div className="receipt__links">
-                  <a href={GH_ACTIONS} target="_blank" rel="noreferrer">GitHub Actions ↗</a>
-                  <button className="receipt__refresh" onClick={() => void readReceipt()}>Refresh MCP</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <table className="rc-table">
-                  <tbody>
-                    <tr>
-                      <th scope="row">git sha</th>
-                      <td>{gitSha ?? "—"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">deployed at</th>
-                      <td>{deployedAt ? `${stamp(deployedAt)} · ${rel(deployedAt)}` : "—"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">image tag</th>
-                      <td>{imageTag ?? "—"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">canary bundle</th>
-                      <td>{canaryStatus ?? "—"}</td>
-                    </tr>
-                    <tr>
-                      <th scope="row">build run</th>
-                      <td>
-                        {buildRunUrl ? (
-                          <a href={buildRunUrl} target="_blank" rel="noreferrer">build workflow run ↗</a>
-                        ) : (
-                          <span className="rc-none">not in this read — <a href={GH_ACTIONS} target="_blank" rel="noreferrer">all Actions ↗</a></span>
-                        )}
-                      </td>
-                    </tr>
-                    <tr>
-                      <th scope="row">deploy run</th>
-                      <td>
-                        {deployRunUrl ? (
-                          <a href={deployRunUrl} target="_blank" rel="noreferrer">deploy workflow run ↗</a>
-                        ) : (
-                          <span className="rc-none">not in this read — <a href={GH_ACTIONS} target="_blank" rel="noreferrer">all Actions ↗</a></span>
-                        )}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <p className="receipt__stamp ev">
-                  read live {rel(rcFetchedAt)} ·
-                  <button className="receipt__refresh receipt__refresh--inline" onClick={() => void readReceipt()}>Refresh MCP</button>
-                </p>
-              </>
-            )}
+          <div className="receipt" aria-live="polite" data-state="unavailable">
+            <p className="receipt__msg ev">
+              <span className="dot idle" aria-hidden="true"></span>
+              release details unavailable on the public website
+            </p>
+            <p className="receipt__note">
+              Build and deploy workflow history remains available from GitHub
+              without treating it as an engine-signed release receipt.
+            </p>
+            <div className="receipt__links">
+              <a href={GH_ACTIONS} target="_blank" rel="noreferrer">GitHub Actions ↗</a>
+            </div>
           </div>
         </div>
       </section>
@@ -301,8 +168,8 @@ export default function FinePrintClient() {
           <nav className="close__cards">
             <a className="close__card" href="/loop">
               <span className="close__k eyebrow">workflow activity</span>
-              <strong>See recent user-authored runs →</strong>
-              <span className="close__sub">live and historical activity, labelled separately from uptime evidence.</span>
+              <strong>See public workflow graphs →</strong>
+              <span className="close__sub">Public graph activity with explicit provenance, kept separate from uptime evidence.</span>
             </a>
             <a className="close__card" href="/commons">
               <span className="close__k eyebrow">the public commons</span>

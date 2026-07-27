@@ -4,16 +4,15 @@
   This is the instrument panel. Tiny's pulse up top, then plain-words
   explanations of exactly how each reading is measured (this page is the
   canonical target the VitalSigns "how this is measured" tick points at →
-  section id="vitals"), the engine's own release receipt read live, the
+  section id="vitals"), an explicit unavailable public release receipt, the
   public uptime evidence, and the honest fine print.
 
-  Honesty rails: nothing baked is shown as live. The release receipt is a
-  live read with explicit reading / failure / empty states. Every external
+  Honesty rails: nothing baked is shown as live. Operator status is not
+  downloaded by this public page. Every external
   link goes somewhere real. No money-as-investment language. Generic workflow
   activity is never hardcoded — VitalSigns derives it from a live read.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
   import VitalSigns from '$lib/components/VitalSigns.svelte';
   import Tick from '$lib/components/Tick.svelte';
   import Term from '$lib/components/Term.svelte';
@@ -27,17 +26,6 @@
   // with its own fetched-at stamp so it can't be mistaken for a live read.
   const bakedFetchedAt: string = (baked as any).fetched_at ?? '';
 
-  function rel(s?: string | null): string {
-    if (!s) return 'unknown';
-    const ms = Date.parse(s);
-    if (Number.isNaN(ms)) return s;
-    const diff = Date.now() - ms;
-    if (diff < 90_000) return 'just now';
-    if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
-    if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
-    return `${Math.floor(diff / 86_400_000)}d ago`;
-  }
-
   function stamp(s?: string | null): string {
     if (!s) return '';
     const ms = Date.parse(s);
@@ -46,96 +34,6 @@
       day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit'
     });
   }
-
-  // ── Release receipt — read live from the engine's own get_status. ──
-  // The engine reports about itself: which commit is deployed, when, which
-  // image, and whether its release canary bundle passed. Never baked.
-  const MCP_PATH = import.meta.env.DEV ? '/mcp-live' : '/mcp';
-  let rcState = $state<'reading' | 'ok' | 'empty' | 'error'>('reading');
-  let rcError = $state<string | null>(null);
-  let rcFetchedAt = $state<string | null>(null);
-  let release = $state<Record<string, any> | null>(null);
-
-  // The engine's get_status payload uses snake_case; we read the fields the
-  // receipt cares about with small fallbacks, and only render a link when a
-  // real URL is present.
-  function pick(obj: Record<string, any> | null, ...keys: string[]): any {
-    if (!obj) return undefined;
-    for (const k of keys) if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') return obj[k];
-    return undefined;
-  }
-
-  let sessionId: string | null = null;
-  async function mcpRpc(method: string, params: any, id: number): Promise<any> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      Accept: 'application/json, text/event-stream'
-    };
-    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
-    const res = await fetch(MCP_PATH, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
-      credentials: 'omit'
-    });
-    const sid = res.headers.get('Mcp-Session-Id');
-    if (sid && !sessionId) sessionId = sid;
-    if (!res.ok) throw new Error(`MCP HTTP ${res.status}: ${res.statusText}`);
-    let text = await res.text();
-    if ((res.headers.get('Content-Type') ?? '').includes('text/event-stream')) {
-      const line = text.split('\n').find((l) => l.startsWith('data:'));
-      if (!line) throw new Error('SSE response missing data line');
-      text = line.replace(/^data:\s*/, '');
-    }
-    const json = JSON.parse(text);
-    if (json.error) throw new Error(`MCP error ${json.error.code}: ${json.error.message}`);
-    return json.result;
-  }
-
-  async function readReceipt() {
-    rcState = 'reading';
-    rcError = null;
-    sessionId = null;
-    try {
-      await mcpRpc('initialize', {
-        protocolVersion: '2025-06-18',
-        clientInfo: { name: 'tinyassets-fine-print', version: '0.1.0' },
-        capabilities: {}
-      }, 1);
-      const result = await mcpRpc('tools/call', { name: 'get_status', arguments: {} }, 2);
-      const payload =
-        result?.structuredContent && typeof result.structuredContent === 'object'
-          ? result.structuredContent
-          : (() => {
-              const t = result?.content?.find((c: any) => c?.type === 'text');
-              if (!t?.text) return null;
-              try { return JSON.parse(t.text); } catch { return null; }
-            })();
-      const rel = payload?.release_state ?? null;
-      rcFetchedAt = new Date().toISOString();
-      if (rel && typeof rel === 'object' && Object.keys(rel).length) {
-        release = rel;
-        rcState = 'ok';
-      } else {
-        release = null;
-        rcState = 'empty';
-      }
-    } catch (err: any) {
-      rcError = err?.message ?? String(err);
-      rcState = 'error';
-      release = null;
-    }
-  }
-
-  onMount(() => { void readReceipt(); });
-
-  // Receipt rows — derived from the live payload, links only when real.
-  let gitSha = $derived(pick(release, 'git_sha', 'gitSha', 'sha', 'commit'));
-  let deployedAt = $derived(pick(release, 'deployed_at', 'deployedAt'));
-  let imageTag = $derived(pick(release, 'image_tag', 'imageTag', 'image', 'tag'));
-  let canaryStatus = $derived(pick(release, 'canary_bundle_status', 'canaryBundleStatus', 'canary_status'));
-  let buildRunUrl = $derived(pick(release, 'build_run_url', 'buildRunUrl', 'build_url'));
-  let deployRunUrl = $derived(pick(release, 'deploy_run_url', 'deployRunUrl', 'deploy_url'));
 
   // Public uptime evidence — GitHub Actions that watch platform availability. Linked to the
   // real Actions tab; neutral one-liners, no claimed pass/fail state here
@@ -213,20 +111,15 @@
       <div class="measure">
         <dt><span class="dot" aria-hidden="true"></span> lifetime runs</dt>
         <dd>
-          The engine's queue keeps running counters of work it has taken
-          through: <em>succeeded</em>, <em>failed</em>, and <em>pending</em>.
-          The strip reports those numbers as the engine reports them — failures
-          included, because a counter that only counts wins isn't a counter.
+          Public queue counters are unavailable. This browser does not request
+          operator status merely to display lifetime run totals.
         </dd>
       </div>
       <div class="measure">
         <dt><span class="dot" aria-hidden="true"></span> deployed</dt>
         <dd>
-          The engine's own release receipt: the git commit it's running and the
-          time it says it deployed that commit. It's the engine describing
-          itself, not the website guessing. The full receipt — image, canary
-          verdict, and the GitHub Actions runs that built and shipped it — is
-          read live just below.
+          A public release receipt is unavailable. The checked-in site snapshot
+          is page provenance, not proof of which engine image is deployed.
         </dd>
       </div>
     </dl>
@@ -236,74 +129,26 @@
 <!-- 3 · Release receipt ─────────────────────────────────────────────────── -->
 <section class="ch ch--receipt" aria-labelledby="receipt-title">
   <div class="container ch__inner">
-    <p class="eyebrow">entry two · the engine's own receipt</p>
-    <h2 id="receipt-title">What's actually deployed, by its own account.</h2>
+    <p class="eyebrow">entry two · release provenance</p>
+    <h2 id="receipt-title">Public release receipt unavailable.</h2>
     <p class="receipt__lede">
-      Read live from <code>get_status</code> when you opened this page. These
-      are the engine's words about its own release — not a value typed into
-      this site.
+      This browser does not download the operator status payload. The checked-in
+      public site snapshot is dated {stamp(bakedFetchedAt)}, but that date is
+      not a deployment attestation.
     </p>
 
-    <div class="receipt" aria-live="polite" data-state={rcState}>
-      {#if rcState === 'reading'}
-        <p class="receipt__msg ev"><span class="dot idle" aria-hidden="true"></span> reading the release receipt from <code>{MCP_BARE}</code>…</p>
-      {:else if rcState === 'error'}
-        <p class="receipt__msg ev"><span class="dot error" aria-hidden="true"></span> couldn't read the receipt — this is a true reading.</p>
-        <p class="receipt__err ev">{rcError}</p>
-        <button class="receipt__refresh" onclick={() => void readReceipt()}>Refresh MCP</button>
-      {:else if rcState === 'empty'}
-        <p class="receipt__msg ev"><span class="dot idle" aria-hidden="true"></span> the engine answered, but reported no release_state in this read.</p>
-        <p class="receipt__note">That's an honest gap, not a deployment claim. Read again, or check the build &amp; deploy runs on GitHub Actions directly.</p>
-        <div class="receipt__links">
-          <a href={GH_ACTIONS} target="_blank" rel="noreferrer">GitHub Actions ↗</a>
-          <button class="receipt__refresh" onclick={() => void readReceipt()}>Refresh MCP</button>
-        </div>
-      {:else}
-        <table class="rc-table">
-          <tbody>
-            <tr>
-              <th scope="row">git sha</th>
-              <td>{gitSha ?? '—'}</td>
-            </tr>
-            <tr>
-              <th scope="row">deployed at</th>
-              <td>{deployedAt ? `${stamp(deployedAt)} · ${rel(deployedAt)}` : '—'}</td>
-            </tr>
-            <tr>
-              <th scope="row">image tag</th>
-              <td>{imageTag ?? '—'}</td>
-            </tr>
-            <tr>
-              <th scope="row">canary bundle</th>
-              <td>{canaryStatus ?? '—'}</td>
-            </tr>
-            <tr>
-              <th scope="row">build run</th>
-              <td>
-                {#if buildRunUrl}
-                  <a href={buildRunUrl} target="_blank" rel="noreferrer">build workflow run ↗</a>
-                {:else}
-                  <span class="rc-none">not in this read — <a href={GH_ACTIONS} target="_blank" rel="noreferrer">all Actions ↗</a></span>
-                {/if}
-              </td>
-            </tr>
-            <tr>
-              <th scope="row">deploy run</th>
-              <td>
-                {#if deployRunUrl}
-                  <a href={deployRunUrl} target="_blank" rel="noreferrer">deploy workflow run ↗</a>
-                {:else}
-                  <span class="rc-none">not in this read — <a href={GH_ACTIONS} target="_blank" rel="noreferrer">all Actions ↗</a></span>
-                {/if}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="receipt__stamp ev">
-          read live {rel(rcFetchedAt)} ·
-          <button class="receipt__refresh receipt__refresh--inline" onclick={() => void readReceipt()}>Refresh MCP</button>
-        </p>
-      {/if}
+    <div class="receipt" aria-live="polite" data-state="unavailable">
+      <p class="receipt__msg ev">
+        <span class="dot idle" aria-hidden="true"></span>
+        release details unavailable on the public website
+      </p>
+      <p class="receipt__note">
+        Build and deploy workflow history remains available from GitHub without
+        treating it as an engine-signed release receipt.
+      </p>
+      <div class="receipt__links">
+        <a href={GH_ACTIONS} target="_blank" rel="noreferrer">GitHub Actions ↗</a>
+      </div>
     </div>
   </div>
 </section>
@@ -446,50 +291,10 @@
     border-radius: var(--radius-lg);
     display: grid; gap: 12px;
   }
-  .receipt[data-state="error"] { border-color: rgba(182, 39, 68, 0.4); }
   .receipt__msg { display: inline-flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--fg-2); margin: 0; }
   .receipt__msg .dot { align-self: center; }
-  .receipt__msg code { font-size: 0.92em; }
-  .receipt__err {
-    color: var(--signal-error); font-size: 11.5px; margin: 0;
-    overflow-wrap: anywhere; padding-left: 16px;
-  }
   .receipt__note { font-size: 13px; line-height: 1.55; color: var(--fg-3); margin: 0; max-width: 64ch; }
   .receipt__links { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
-  .rc-table { width: 100%; border-collapse: collapse; }
-  .rc-table tr { border-top: 1px solid var(--border-1); }
-  .rc-table tr:first-child { border-top: none; }
-  .rc-table th {
-    text-align: left; vertical-align: top;
-    width: 130px;
-    padding: 10px 14px 10px 0;
-    font-family: var(--font-mono);
-    font-size: 10.5px; font-weight: 500;
-    letter-spacing: 0.1em; text-transform: uppercase;
-    color: var(--fg-3);
-    white-space: nowrap;
-  }
-  .rc-table td {
-    padding: 10px 0;
-    font-family: var(--font-mono);
-    font-size: 13px;
-    color: var(--fg-1);
-    overflow-wrap: anywhere;
-  }
-  .rc-table a { color: var(--live-700); border-bottom: 1px dashed rgba(31, 138, 92, 0.5); }
-  .rc-table a:hover { color: var(--live-600); text-decoration: none; }
-  .rc-none { color: var(--fg-3); font-size: 11.5px; }
-  .rc-none a { font-size: inherit; }
-  .receipt__stamp { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--fg-3); margin: 0; }
-  .receipt__refresh {
-    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
-    color: var(--live-700); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 4px 12px;
-    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
-  }
-  .receipt__refresh--inline { padding: 3px 10px; }
-  .receipt__refresh:hover { border-color: var(--live-600); background: var(--live-100); }
 
   /* ── Public uptime checks ── */
   .watch__lede { font-size: 15px; line-height: 1.6; color: var(--fg-2); max-width: 64ch; margin: 0 0 8px; }
@@ -551,19 +356,7 @@
   /* ── Release receipt → dark readout card: the lede above is the claim (paper);
      this card is the engine's own evidence, read live. ── */
   .receipt { background: var(--panel); border-color: var(--panel-line); }
-  .receipt[data-state="error"] { border-color: var(--ember-300); }
   .receipt__msg { color: var(--on-panel-soft); }
   .receipt__note { color: var(--on-panel-soft); }
-  .receipt__err { color: var(--ember-300); }
-  .rc-table tr { border-top-color: var(--panel-line); }
-  .rc-table th { color: var(--on-panel-soft); }
-  .rc-table td { color: var(--on-panel); }
-  .rc-table a { color: var(--ember-300); border-bottom-color: rgba(233, 138, 160, 0.5); }
-  .rc-table a:hover { color: var(--on-panel); }
-  .rc-none, .rc-none a { color: var(--on-panel-soft); }
-  .receipt__stamp { color: var(--on-panel-soft); }
   .receipt__links a { color: var(--ember-300); }
-  .receipt__refresh { border-color: var(--panel-line); color: var(--on-panel-soft); }
-  .receipt__refresh:hover { border-color: var(--live-bright); background: rgba(70, 180, 131, 0.12); color: var(--on-panel); }
-  .receipt .dot.live { background: var(--live-bright); box-shadow: 0 0 0 3px rgba(70, 180, 131, 0.22); }
 </style>

@@ -244,38 +244,68 @@
   **Host-local zero-active proved 2026-07-26:** see
   `docs/audits/2026-07-26-retire-cheat-loop.md` §Host-local registered-role
   authority proof. Production and third-party hosts remain unproved.
-  **Canonical source contract proved 2026-07-27:** the snapshot generator,
-  production React and rollback Svelte browser clients, goal pages, host
-  presentation, and live playground use only `read_page`, `read_graph`, and
-  `get_status` through one shared contract. It rejects truncation, missing or
-  inconsistent collections/crawls, missing or invalid page bodies, and any
-  page inventory whose declared scope is not `all`; Node
-  contract/retirement tests pass 13/13, React TypeScript and its 27-route
-  production build pass, Svelte type-check has zero errors (six existing
-  warnings), and its static build passes. React preview/deploy both run the
-  cross-tree invariant suite, and a direct Vite dev probe returned HTTP 200
-  for the transformed client and external shared module.
-  Canonical graph reads remain independently live while page inventory is
-  incomplete: the home goals board, host, ordinary activity, and mood surfaces
-  no longer depend on the page crawl. `LiveSourceBar` remains an intentional
-  all-collections refresh and keeps its prior snapshot when page inventory is
-  incomplete. The playground is public-read-only and discloses server-reported
-  truncation. Explicit rollback refresh now fails its workflow when
-  completeness prevents regeneration; ordinary local refresh remains
-  fail-soft.
-  The goals list has a separate server gap: `read_graph target=goals limit=100`
-  exposes neither a total/truncated field nor a cursor, so a 100-row response
-  cannot prove full inventory. Server-side bounded pagination/completeness
-  metadata remains required.
+  **Public-read boundary review 2026-07-27 — ADAPT, not final approval:**
+  independent Codex and Claude Opus 5 exact-head reviews of draft PR #1812 at
+  `9ea3c9eef9603496a62be64de7b5085312687a70` both returned ADAPT. Codex proved
+  with a temporary database that anonymous `read_graph target=goals|goal`
+  disclosed another actor's private Goal and exact description; it also proved
+  that coercive `Number(...)` validation accepted `null`, string, and boolean
+  completeness metadata, and identified the ambiguous 100-Goal ceiling and
+  raw-origin credential footgun. A separate Codex privacy audit confirmed that
+  `target=runs|run` is also unsafe because `_run_read_allowed` permits every
+  non-`universe:` actor. A follow-up anonymous proof showed exact `read_page`
+  returned full coordination plan and BUG bodies omitted from discovery, so
+  public exact-page calls also require an execution-level deny/provenance gate.
+  It also found raw `get_status` returning activity/recent-call records, task
+  and worker identifiers, names/costs/paths, persona state, and auth health.
+  Opus independently found the inverted discovery-scope rejection, acceptance
+  of truncated page bodies that could overwrite prior incremental edges, and a
+  required snapshot silently exiting zero when the MCP SDK was unavailable; it
+  corroborated the Goal-privacy, raw Git-origin, and unpageable completeness
+  concerns.
+  The durable boundary is therefore: anonymous browser/snapshot callers MUST
+  NOT invoke raw `get_status`, `goal`, `goals`, `run`, or `runs` until the
+  server enforces public visibility and bounded completeness. Among
+  `read_graph` projections,
+  `target=graphs` discovery is the only graph read currently proven to enforce
+  visibility; it is not complete-inventory proof when an unpageable cap is hit.
+  Checked-in Goal data may remain only as an explicitly labelled snapshot, and
+  exact page bodies must be bound to the validated inventory from the same
+  refresh. Required regeneration must run without caller credentials, require
+  full-scope inventory before replacing the full snapshot, and fail before
+  writing on malformed/ambiguous metadata, SDK absence, or truncated bodies.
+  This review does not complete task 5.3.
   A live anonymous probe returned 78/78 **discovery-scope** pages with no
-  truncation and an explicit `scope_note` that coordination pages were omitted;
-  it successfully read a page body but did not prove a complete public
-  inventory. Public `read_page` exposes neither `scope=all` nor pagination
-  beyond its 100-result ceiling, so website live collection upgrades and
-  regeneration now fail closed until a full-scope paginated successor exists.
-  A live `npm run snapshot` attempt proved the guard and preserved the prior
-  snapshot byte-for-byte at SHA-256
+  truncation and an explicit `scope_note` that coordination pages were omitted.
+  That is an acceptable bounded discovery projection when the omission remains
+  visible; it is not a complete wiki inventory and cannot replace the existing
+  full-scope snapshot. Public `read_page` has no cursor beyond its 100-result
+  ceiling, so a response that exactly fills that cap is ambiguous and MUST fail
+  closed. Snapshot regeneration remains blocked until every retained
+  collection has a server-enforced public projection with truthful
+  completeness semantics. The prior snapshot remains byte-identical at
+  SHA-256
   `597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+  **Fail-closed website implementation evidence 2026-07-27:** both public
+  browser clients now keep their generic MCP caller module-private and allow
+  only bounded, visibility-filtered `read_graph target=graphs` plus the
+  discovery-scoped page inventory. Every page-count surface renders the
+  server's validated omission note; arbitrary exact-page, raw `get_status`,
+  and `goal|goals|run|runs` reads are absent. Exact snapshot page bodies are
+  bound to immutable paths from the validated same-refresh inventory, a full
+  replacement requires explicit untruncated `scope=all`, and exactly filling
+  an unpageable 100-result cap fails closed. Snapshot startup rejects bearer
+  credentials and URL userinfo before connect/logging, requires the MCP SDK,
+  and the repository generator always publishes the canonical public GitHub
+  URL rather than a local Git origin. The focused/full Node suite passes
+  63/63; both production builds pass; Svelte check reports 0 errors and 3
+  unrelated existing warnings; Svelte production dependency audit reports
+  zero vulnerabilities; strict validation passes all 58 OpenSpec items. A
+  live anonymous required/full refresh failed closed on `scope=discovery`
+  with exit 1 and left both prior snapshot mirrors byte-identical at the hash
+  above. This is implementation evidence, not final approval: exact-head
+  opposite-provider review, server-side privacy enforcement, source-data
+  retirement, rendered live proof, and post-fix clean-use evidence remain.
   The probe also proved two remaining source-data blockers: public page
   `pages/concepts/community-patch-loop-as-project-steward.md` still presents
   the retired loop as future platform guidance, and public universe
@@ -341,7 +371,7 @@
   the physical-delete audit and never write its zero-requirement rebuild;
   `buildUpdatedSpec` all six survivors; validate every rebuilt spec with
   `Validator.validateSpecContent`; require counts daemon `added=2`,
-  coordination `added=2`, graph `added=4`, website `renamed=1, modified=2`,
+  coordination `added=2`, graph `added=4`, website `renamed=1, modified=3`,
   uptime `added=1`, and wiki `added=1, removed=1`; only after every build,
   validation, and count check succeeds may `writeUpdatedSpec` write those exact
   six. Resolve/import those engine symbols from the installed module files;

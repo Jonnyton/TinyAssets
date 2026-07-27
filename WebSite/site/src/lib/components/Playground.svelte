@@ -1,7 +1,7 @@
 <!--
   Playground — live MCP console, embedded in /connect.
   Type a tool call, watch the JSON-RPC envelope go out, see the response,
-  workflow notes and recent run states. Same surface a chatbot uses.
+  and inspect the same public discovery surface a chatbot uses.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -10,16 +10,10 @@
     callTool,
     parseInput,
     summarize,
-    harvestWorkflowNotes,
-    listRecentRuns,
-    type CallResult,
-    type WorkflowNote,
-    type RecentRun
+    type CallResult
   } from '$lib/mcp/playground';
-  import { relativeStamp } from '$lib/live/project';
 
   type DisclosureMode = 'pretty' | 'json' | 'wire';
-  type RunStateId = 'queued' | 'running' | 'completed' | 'failed' | 'interrupted';
 
   type HistoryEntry = {
     id: number; canonical: string; tool: string; args: Record<string, unknown>;
@@ -31,18 +25,7 @@
 
   const CHIPS: Chip[] = [
     { label: 'Browse discovery pages', sub: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', canonical: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', color: 'var(--ember-500)' },
-    { label: 'Latest workflow run', sub: 'read_graph target=runs limit=1', canonical: 'read_graph target=runs limit=1', color: 'var(--violet-400)' },
-    { label: 'Active universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' },
-    { label: 'Open goals', sub: 'read_graph target=goals limit=100', canonical: 'read_graph target=goals limit=100', color: 'var(--ember-300)' },
-    { label: 'Read a public concept', sub: 'read_page page=pages/concepts/structured-json-node-outputs', canonical: 'read_page page=pages/concepts/structured-json-node-outputs', color: 'var(--ember-500)' }
-  ];
-
-  const RUN_STATES: Array<{ id: RunStateId; label: string }> = [
-    { id: 'queued', label: 'Queued' },
-    { id: 'running', label: 'Running' },
-    { id: 'completed', label: 'Completed' },
-    { id: 'failed', label: 'Failed' },
-    { id: 'interrupted', label: 'Interrupted' }
+    { label: 'Active universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' }
   ];
 
   let inputValue = $state('read_graph target=graphs limit=100');
@@ -51,25 +34,8 @@
   let mode = $state<DisclosureMode>('pretty');
   let history = $state<HistoryEntry[]>([]);
   let nextHistoryId = 1;
-  let workflowNotes = $state<WorkflowNote[]>([]);
-  let notesLoading = $state(false);
-  let recentRuns = $state<RecentRun[]>([]);
-  let runsLoading = $state(false);
 
   const current = $derived<HistoryEntry | null>(history[0] ?? null);
-
-  const runStateCounts = $derived.by(() => {
-    const map: Record<RunStateId, number> = { queued: 0, running: 0, completed: 0, failed: 0, interrupted: 0 };
-    for (const run of recentRuns) {
-      const s = (run.status ?? '').toLowerCase();
-      if (s.includes('interrupt') || s.includes('cancel')) map.interrupted += 1;
-      else if (s.includes('fail') || s.includes('error') || s.includes('block')) map.failed += 1;
-      else if (s.includes('complete') || s.includes('success')) map.completed += 1;
-      else if (s.includes('run') || s.includes('active') || s.includes('work')) map.running += 1;
-      else map.queued += 1;
-    }
-    return map;
-  });
 
   function nowStamp(): string {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -107,10 +73,6 @@
   }
 
   function onKeydown(e: KeyboardEvent) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void run(); } }
-  async function refreshNotes() { notesLoading = true; try { const h = await harvestWorkflowNotes(6); workflowNotes = h.notes; } finally { notesLoading = false; } }
-  async function refreshRuns() { runsLoading = true; try { recentRuns = await listRecentRuns(10); } finally { runsLoading = false; } }
-  function injectNoteCall(q: WorkflowNote) { inputValue = `read_graph target=run run_id=${q.runId}`; void run(); }
-  function injectRunCall(r: RecentRun) { inputValue = `read_graph target=run run_id=${r.run_id}`; void run(); }
   function selectChip(c: Chip) { inputValue = c.canonical; void run(); }
   function setMode(m: DisclosureMode) { mode = m; }
   function jsonPretty(v: unknown): string { if (v == null) return 'null'; try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
@@ -118,11 +80,6 @@
 
   onMount(() => {
     void run();
-    void refreshNotes();
-    void refreshRuns();
-    const vt = window.setInterval(() => void refreshNotes(), 60000);
-    const rt = window.setInterval(() => void refreshRuns(), 60000);
-    return () => { window.clearInterval(vt); window.clearInterval(rt); };
   });
 </script>
 
@@ -163,28 +120,18 @@
 
 <section class="board">
   <div class="board__grid">
-    <aside class="voice" aria-label="Workflow notes from recent runs">
+    <aside class="voice" aria-label="User-buildable workflow design">
       <header class="voice__head">
-        <RitualLabel color="var(--violet-400)">· workflow notes ·</RitualLabel>
-        <button class="voice__refresh" type="button" onclick={refreshNotes} disabled={notesLoading}>{notesLoading ? 'Loading…' : 'Refresh'}</button>
+        <RitualLabel color="var(--violet-400)">· user-buildable ·</RitualLabel>
       </header>
       <p class="voice__lede">
-        Verbatim notes recorded by recent user-authored workflows in
-        <code>reason_for_downgrade</code>, gate verdicts, evolution notes,
-        lab logs. Click to replay the call that produced one.
+        Each universe is user-buildable. Define the stages, tools, and review
+        gates that fit the work instead of inheriting a fixed pipeline.
       </p>
-      {#if workflowNotes.length === 0 && !notesLoading}
-        <p class="voice__empty">No workflow notes are visible in the last few runs. Try a chip above, or pick a run on the right.</p>
-      {/if}
-      <ul class="voice__list">
-        {#each workflowNotes as q}
-          <li>
-            <button type="button" class="quote" onclick={() => injectNoteCall(q)}>
-              <blockquote>{q.text}</blockquote>
-              <small>— {q.branch}{q.nodeId ? ` · ${q.nodeId}` : ''} · <code>{q.field}</code>{#if q.at} · {relativeStamp(q.at)}{/if}</small>
-            </button>
-          </li>
-        {/each}
+      <ul class="guide__list">
+        <li>Start with the shape of your own project.</li>
+        <li>Give the daemon tools without scripting every decision.</li>
+        <li>Keep human review where the work needs judgment.</li>
       </ul>
     </aside>
 
@@ -271,41 +218,18 @@
       {/if}
     </article>
 
-    <aside class="pulse" aria-label="Workflow run states and recent runs">
+    <aside class="pulse" aria-label="Remixable universe discovery">
       <header class="pulse__head">
-        <RitualLabel color="var(--signal-live)">· run states ·</RitualLabel>
-        <button class="pulse__refresh" type="button" onclick={refreshRuns} disabled={runsLoading}>{runsLoading ? '…' : 'Refresh'}</button>
+        <RitualLabel color="var(--signal-live)">· remixable ·</RitualLabel>
       </header>
-      <p class="pulse__lede">Status counts from recent runs across user-authored workflows. Each workflow defines its own stages and decides when it runs.</p>
-      <ul class="pulse__rail">
-        {#each RUN_STATES as state}
-          {@const count = runStateCounts[state.id]}
-          <li>
-            <span class="pulse__dot" class:pulse__dot--lit={count > 0}></span>
-            <span class="pulse__name">{state.label}</span>
-            <span class="pulse__count">{count > 0 ? `${count} hit${count === 1 ? '' : 's'}` : 'quiet'}</span>
-          </li>
-        {/each}
-      </ul>
-
-      <header class="pulse__head pulse__head--secondary">
-        <RitualLabel>· walk a run ·</RitualLabel>
-        <span>{recentRuns.length} visible</span>
-      </header>
-      <p class="pulse__lede">Click any run to load <code>read_graph target=run</code> into the terminal. The workflow identity comes from the run record.</p>
-      {#if recentRuns.length === 0 && !runsLoading}
-        <p class="pulse__empty">No recent runs visible. Try the "Latest workflow run" chip — it lists the most recent.</p>
-      {/if}
-      <ul class="pulse__runs">
-        {#each recentRuns.slice(0, 8) as r}
-          <li>
-            <button type="button" onclick={() => injectRunCall(r)}>
-              <strong>{r.run_id.slice(0, 14)}</strong>
-              <span class="pulse__run-meta">{r.status}{r.branch_def_id ? ` · ${r.branch_def_id.slice(0, 16)}` : ''}</span>
-              <small>{relativeStamp(r.finished_at ?? r.started_at)}</small>
-            </button>
-          </li>
-        {/each}
+      <p class="pulse__lede">
+        Public graph discovery shows which universes are available to explore.
+        Open one as a pattern, then remix its structure for a different domain.
+      </p>
+      <ul class="guide__list">
+        <li>Discover public universe metadata.</li>
+        <li>Study the workflow shape and its declared purpose.</li>
+        <li>Remix the useful pattern without copying private state.</li>
       </ul>
     </aside>
   </div>
@@ -435,32 +359,9 @@
     min-height: 200px;
   }
   .voice__head, .pulse__head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .voice__refresh, .pulse__refresh {
-    background: transparent; border: 1px solid var(--border-1); border-radius: 5px;
-    color: var(--fg-2); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.1em;
-    padding: 4px 8px; text-transform: uppercase;
-  }
-  .voice__refresh:hover:not(:disabled), .pulse__refresh:hover:not(:disabled) { border-color: var(--border-2); color: var(--fg-1); }
-  .voice__refresh:disabled, .pulse__refresh:disabled { opacity: 0.5; cursor: wait; }
   .voice__lede, .pulse__lede { color: var(--fg-3); font-size: 12px; line-height: 1.55; margin: 0 0 12px; }
-  .voice__lede code, .pulse__lede code { background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); padding: 0 4px; border-radius: 3px; color: var(--violet-200); font-family: var(--font-mono); font-size: 10.5px; }
-  .voice__empty, .pulse__empty { color: var(--fg-3); font-size: 12px; font-style: italic; line-height: 1.55; }
-  .voice__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; max-height: 540px; overflow-y: auto; }
-  .quote {
-    background: var(--bg-inset); border: 1px solid var(--border-1); border-left: 2px solid var(--violet-400);
-    border-radius: 6px; color: inherit; cursor: pointer; display: grid; gap: 6px;
-    padding: 10px 12px; text-align: left; width: 100%;
-    transition: border-color var(--dur-fast) var(--ease-standard);
-  }
-  .quote:hover { border-color: var(--border-2); border-left-color: var(--violet-200); }
-  .quote blockquote {
-    color: var(--fg-1);
-    font-family: var(--font-display); font-size: 14px; font-style: italic; line-height: 1.45;
-    margin: 0; text-wrap: pretty;
-  }
-  .quote small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
-  .quote small code { background: transparent; border: 0; padding: 0; color: var(--violet-400); font-size: 10px; }
+  .guide__list { color: var(--fg-2); display: grid; font-size: 12px; gap: 8px; line-height: 1.5; margin: 0; padding-left: 18px; }
+  .guide__list li::marker { color: var(--signal-live); }
 
   /* ── Terminal ─────────────────────────────────────────────────────── */
   .terminal {
@@ -562,33 +463,5 @@
     overflow: hidden; padding: 0; text-overflow: ellipsis; white-space: nowrap;
   }
   .terminal__history small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; }
-
-  /* ── Pulse ────────────────────────────────────────────────────────── */
-  .pulse__head--secondary { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-1); }
-  .pulse__head span { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
-  .pulse__rail { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 6px; }
-  .pulse__rail li {
-    align-items: center; background: var(--bg-inset);
-    border: 1px solid var(--border-1); border-radius: 6px;
-    display: grid; gap: 10px; grid-template-columns: 14px 1fr auto;
-    padding: 8px 10px;
-  }
-  .pulse__dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--fg-4); box-shadow: 0 0 0 2px rgba(255,255,255,0.03);
-  }
-  .pulse__dot--lit { background: var(--signal-live); box-shadow: 0 0 10px rgba(109,211,166,0.6); }
-  .pulse__name { color: var(--fg-1); font-family: var(--font-mono); font-size: 12px; }
-  .pulse__count { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .pulse__runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 360px; overflow-y: auto; }
-  .pulse__runs button {
-    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 6px;
-    color: inherit; cursor: pointer; display: grid; gap: 3px;
-    padding: 9px 11px; text-align: left; width: 100%;
-  }
-  .pulse__runs button:hover { border-color: var(--border-2); background: rgba(255,255,255,0.04); }
-  .pulse__runs strong { color: var(--fg-1); font-family: var(--font-mono); font-size: 11.5px; }
-  .pulse__run-meta { color: var(--fg-2); font-family: var(--font-mono); font-size: 10.5px; }
-  .pulse__runs small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; }
 
 </style>

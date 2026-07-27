@@ -6,21 +6,19 @@
   get a first-use <Term>; "commons records", "branch signals", "canon-gate",
   "Goal lens" all dropped). No repo-internals readouts — the old
   "GitHub source: local git checkout" leak is gone entirely. The board is
-  not empty without JS: it paints from the baked snapshot immediately,
-  visibly stamped with its fetched date, then upgrades to a live read on
-  mount. Every live value carries a read-stamp; baked is labelled baked.
+  not empty without JS: it paints from the checked-in snapshot and visibly
+  stamps its fetched date. No browser Goal read is attempted until the server
+  exposes a public-only projection.
   Public-commons only: private / SUPERSEDED / RETRACTED / smoke filtered out.
 -->
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import { fetchPublicGoals } from '$lib/mcp/live';
   import bakedMcp from '$lib/content/mcp-snapshot.json';
-  import { fmtDate, fmtRel } from '$lib/fmt';
+  import { fmtDate } from '$lib/fmt';
   import Ladder from '$lib/components/Ladder.svelte';
   import Term from '$lib/components/Term.svelte';
   import Tick from '$lib/components/Tick.svelte';
 
-  // ── A board goal, normalized from either the baked snapshot or a live read.
+  // ── A board goal normalized from the checked-in snapshot.
   type Rung = { key?: string; name: string; description?: string; lit?: boolean; evidence_url?: string };
   type BoardGoal = {
     id: string;
@@ -34,7 +32,7 @@
 
   // Public-commons rail: nothing private, nothing retired, no smoke tests.
   function isPublicGoal(name: string, visibility: string): boolean {
-    if ((visibility ?? 'public').toLowerCase() === 'private') return false;
+    if (String(visibility ?? '').toLowerCase() !== 'public') return false;
     return !/SUPERSEDED|RETRACTED|smoke/i.test(name ?? '');
   }
 
@@ -44,9 +42,8 @@
     return [];
   }
 
-  // Live goals carry a gate_ladder of {name, rung_key, description}. No rung
-  // arrives with evidence attached today, so every rung renders unlit — that
-  // is the honest state, and the section copy owns it.
+  // Snapshot goals may carry a gate_ladder. A rung renders lit only when the
+  // snapshot includes a real evidence URL.
   function toRungs(raw: unknown): Rung[] {
     if (!Array.isArray(raw)) return [];
     return raw
@@ -61,7 +58,7 @@
       .filter((r) => r.name);
   }
 
-  // Live timestamps are Unix epoch SECONDS (floats); baked goals carry none.
+  // Snapshot timestamps may be ISO strings or Unix epoch seconds.
   function toMs(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value * 1000;
     if (typeof value === 'string') {
@@ -79,59 +76,18 @@
       .map((g: any) => ({
         id: String(g.id ?? g.goal_id ?? ''),
         name: String(g.name ?? ''),
-        // Baked snapshot calls the body "summary"; live calls it "description".
+        // The checked-in snapshot normally calls the body "summary".
         description: String(g.summary ?? g.description ?? ''),
         tags: toTags(g.tags),
-        visibility: String(g.visibility ?? 'public'),
+        visibility: String(g.visibility),
         rungs: toRungs(g.gate_ladder),
         updatedMs: toMs(g.updated_at ?? g.created_at)
       }));
   }
 
-  function normalizeLive(liveGoals: any[]): BoardGoal[] {
-    return liveGoals
-      .filter((g: any) => isPublicGoal(g.name, g.visibility))
-      .map((g: any) => ({
-        id: String(g.goal_id ?? g.id ?? ''),
-        name: String(g.name ?? ''),
-        description: String(g.description ?? g.summary ?? ''),
-        tags: toTags(g.tags),
-        visibility: String(g.visibility ?? 'public'),
-        rungs: toRungs(g.gate_ladder),
-        updatedMs: toMs(g.updated_at ?? g.created_at)
-      }))
-      // Newest-updated first; goals with no timestamp sink to the bottom.
-      .sort((a: BoardGoal, b: BoardGoal) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
-  }
-
-  // First paint: baked, stamped with the snapshot's own fetched date. The
-  // page is never blank-without-JS — these render server-side. The stamp goes
-  // through $lib/fmt so it reads in the visitor's own local time.
+  // The board is server-rendered from the checked-in public snapshot.
   const bakedStampDate = fmtDate((bakedMcp as any).fetched_at);
-  let goals = $state<BoardGoal[]>(normalizeBaked(bakedMcp));
-
-  // 'baked' until a live read lands; then 'live' with a read-stamp.
-  let phase = $state<'baked' | 'reading' | 'live' | 'error'>('baked');
-  let readAt = $state<string | null>(null);
-  let errMsg = $state<string | null>(null);
-
-  async function refreshMcp() {
-    phase = 'reading';
-    errMsg = null;
-    try {
-      const next = normalizeLive(await fetchPublicGoals());
-      goals = next;
-      readAt = new Date().toISOString();
-      phase = 'live';
-    } catch (e: any) {
-      errMsg = e?.message ?? String(e);
-      phase = 'error';
-    }
-  }
-
-  onMount(() => {
-    void refreshMcp();
-  });
+  const goals: BoardGoal[] = normalizeBaked(bakedMcp);
 
   // ── Curation: keep the board honest without lying. Obvious internal test
   // debris (smoke/probe/post-redaction fixtures) is split into a labelled,
@@ -187,7 +143,7 @@
   <title>Goals — the board of what Tiny is working on</title>
   <meta
     name="description"
-    content="The living board of public goals on Tiny. A goal is an outcome; workflows compete to serve it; evidence-gated ladders make the outcome checkable. Read live from the same MCP endpoint your chatbot uses."
+    content="A checked-in snapshot of public goals on Tiny. Goals describe outcomes; user-authored workflows compete to serve them; evidence-gated ladders make progress checkable."
   />
   <link rel="canonical" href="https://tinyassets.io/goals" />
 </svelte:head>
@@ -204,8 +160,8 @@
       compete to reach it — and a goal's
       <Term def="A ladder is a sequence of real-world rungs toward the outcome ('preprint posted', 'peer-reviewed', 'first order fulfilled'). A rung only lights with an evidence URL attached, so the outcome stays checkable instead of merely claimed.">ladder</Term>
       keeps the whole thing honest: each rung is a checkable event, and a rung
-      only lights once there's evidence behind it. The board below reads from
-      the same endpoint your chatbot would.
+      only lights once there's evidence behind it. The board below is the
+      checked-in public snapshot, not a current connector reading.
     </p>
   </div>
 </section>
@@ -219,24 +175,14 @@
         <h2 id="board-title">What's on me right now.</h2>
       </div>
       <div class="board__meta" aria-live="polite">
-        {#if phase === 'live'}
-          <span class="board__stamp ev"><span class="dot live" aria-hidden="true"></span>{realGoals.length} public goals · read live {fmtRel(readAt)}</span>
-        {:else if phase === 'reading'}
-          <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>reading the live board… (showing snapshot {bakedStampDate})</span>
-        {:else if phase === 'error'}
-          <span class="board__stamp ev"><span class="dot error" aria-hidden="true"></span>live read failed — showing snapshot {bakedStampDate}</span>
-        {:else}
-          <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>{realGoals.length} public goals · snapshot {bakedStampDate}</span>
-        {/if}
-        <button class="board__refresh" onclick={refreshMcp} disabled={phase === 'reading'}>
-          {phase === 'reading' ? 'reading…' : 'Refresh MCP'}
-        </button>
+        <span class="board__stamp ev"><span class="dot" aria-hidden="true"></span>{realGoals.length} public goals · checked-in snapshot {bakedStampDate}</span>
       </div>
     </header>
 
-    {#if phase === 'error' && errMsg}
-      <p class="board__err ev">The live read errored ({errMsg}). The cards below are the last good snapshot from {bakedStampDate}, not a live reading. Try Refresh MCP.</p>
-    {/if}
+    <p class="board__err ev">
+      Current Goal listing is unavailable until the server enforces a
+      public-only projection. These cards remain useful as a dated snapshot.
+    </p>
 
     <!-- Domain filter chips. Match on tags, client-side, over the public set. -->
     <div class="board__filter" role="group" aria-label="Filter goals by domain">
@@ -254,7 +200,7 @@
     {#if visibleGoals.length === 0}
       <p class="board__empty ev">
         {#if realGoals.length === 0}
-          Quiet right now — no public goals visible at this read. The board retries on its own; you can also press Refresh MCP.
+          No public goals are present in the checked-in snapshot.
         {:else}
           No public goals match <strong>{DOMAINS.find((d) => d.id === activeDomain)?.label}</strong> in this read. Try <button class="linkish" onclick={() => (activeDomain = 'all')}>All</button>.
         {/if}
@@ -262,7 +208,7 @@
     {:else}
       <ul class="board">
         {#each visibleGoals as g (g.id || g.name)}
-          <li class="goal" class:goal--baked={phase !== 'live'}>
+          <li class="goal goal--baked">
             <div class="goal__top">
               <h3 class="goal__name">
                 <a class="goal__link" href="/goals/{g.id}">{g.name}</a>
@@ -298,12 +244,9 @@
       </ul>
 
       <p class="board__foot ev">
-        {#if phase === 'live'}
-          {visibleGoals.length} public goal{visibleGoals.length === 1 ? '' : 's'} shown{activeDomain === 'all' ? '' : ` · ${DOMAINS.find((d) => d.id === activeDomain)?.label} filter`} ·
-          {ladderGoals} carry an outcome ladder · {litCount} rung{litCount === 1 ? '' : 's'} lit — the honest count · read {fmtRel(readAt)}
-        {:else}
-          showing the {bakedStampDate} snapshot · ladders and exact counts upgrade once the live read lands
-        {/if}
+        {visibleGoals.length} public goal{visibleGoals.length === 1 ? '' : 's'} shown{activeDomain === 'all' ? '' : ` · ${DOMAINS.find((d) => d.id === activeDomain)?.label} filter`} ·
+        {ladderGoals} carry an outcome ladder · {litCount} rung{litCount === 1 ? '' : 's'} lit ·
+        checked-in snapshot {bakedStampDate}
       </p>
       <p class="board__honest ev">
         {visibleGoals.length} public goal{visibleGoals.length === 1 ? '' : 's'} shown · private goals exist but never render here — they live on a host's own machine and never publish to the public commons.
@@ -358,7 +301,8 @@
           </button>
           <p class="add__note">
             Your chatbot proposes it; you and it design a workflow toward it
-            from there. The new goal shows up on this board on its next read.
+            from there. Publication belongs to the server-owned public
+            projection; this dated board changes only when its snapshot is rebuilt.
           </p>
         </div>
       </li>
@@ -420,16 +364,6 @@
   .board__head h2 { margin: 6px 0 0; }
   .board__meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .board__stamp { display: inline-flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--fg-3); }
-  .board__refresh {
-    background: transparent; border: 1px solid var(--border-2); border-radius: var(--radius-pill);
-    color: var(--live-700); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
-    padding: 4px 12px;
-    transition: border-color var(--dur-fast) var(--ease-standard), background var(--dur-fast) var(--ease-standard);
-  }
-  .board__refresh:hover:not(:disabled) { border-color: var(--live-600); background: var(--live-100); }
-  .board__refresh:disabled { opacity: 0.6; cursor: default; }
-
   .board__err {
     margin: 0 0 18px; padding: 12px 14px;
     background: var(--ember-100); border: 1px solid rgba(182, 39, 68, 0.32);
@@ -478,7 +412,7 @@
     transition: border-color var(--dur-fast) var(--ease-standard), box-shadow var(--dur-fast) var(--ease-standard), opacity var(--dur-base) var(--ease-standard);
   }
   .goal:hover { border-color: var(--border-2); box-shadow: var(--shadow-md); }
-  /* While still on baked data, dim very slightly so live feels like an upgrade. */
+  /* Snapshot cards are slightly muted to keep their dated status visible. */
   .goal--baked { opacity: 0.92; }
 
   .goal__top { display: grid; gap: 8px; }

@@ -50,7 +50,6 @@ jobs:
       - name: Refresh MCP snapshot (full)
         if: github.event.inputs.refresh_snapshot == 'true'
         env:
-          MCP_BEARER: ${{ secrets.MCP_BEARER }}
           SNAPSHOT_FULL: '1'
           SNAPSHOT_REQUIRED: '1'
         run: npm run snapshot

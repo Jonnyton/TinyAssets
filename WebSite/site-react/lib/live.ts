@@ -8,12 +8,8 @@
 import type { Snapshot } from "./types";
 import {
   pageInventoryCall,
-  publicGoalCall,
   publicGraphCall,
-  publicPageCall,
   requireCollection,
-  requireObjectResult,
-  requirePageBody,
   splitPageInventory,
 } from "../../shared/mcp/public-read-contract.js";
 
@@ -109,7 +105,7 @@ async function ensureInit(): Promise<void> {
   initialized = true;
 }
 
-export async function callTool(name: string, args: Record<string, any>): Promise<any> {
+async function callTool(name: string, args: Record<string, any>): Promise<any> {
   await ensureInit();
   const result = await rpc("tools/call", { name, arguments: args });
   if (result?.structuredContent && typeof result.structuredContent === "object") {
@@ -136,25 +132,12 @@ export type LiveResult = {
   goals: any[];
   universes: any[];
   wiki: { promoted: any[]; drafts: any[] };
+  pageDiscovery: {
+    scope: "discovery";
+    scopeNote: string;
+  };
   fetchedAt: string;
 };
-
-export async function fetchPublicGoals(limit = 100): Promise<any[]> {
-  const goalsCall = publicGraphCall("goals", limit);
-  return requireCollection(
-    await callTool(goalsCall.name, goalsCall.args),
-    "goals",
-    "read_graph goals",
-  );
-}
-
-export async function fetchPublicGoal(goalId: string): Promise<Record<string, any>> {
-  const goalCall = publicGoalCall(goalId);
-  return requireObjectResult(
-    await callTool(goalCall.name, goalCall.args),
-    "read_graph goal",
-  );
-}
 
 export async function fetchPublicUniverses(limit = 100): Promise<any[]> {
   const universesCall = publicGraphCall("graphs", limit);
@@ -172,45 +155,24 @@ export async function fetchLive(): Promise<LiveResult> {
   const inventoryCall = pageInventoryCall();
   const pageInventory = await callTool(inventoryCall.name, inventoryCall.args);
   const wiki = splitPageInventory(pageInventory);
-  const goals = await fetchPublicGoals();
   const universes = await fetchPublicUniverses();
   return {
-    goals,
+    // Goals remain checked-in snapshot data until the server exposes a
+    // server-enforced public-only projection.
+    goals: [],
     universes,
     wiki: {
       promoted: wiki.promoted,
       drafts: wiki.drafts,
     },
+    // splitPageInventory already proved this exact scope/note pair.
+    pageDiscovery: {
+      scope: wiki.scope,
+      scopeNote: wiki.scopeNote,
+    },
     fetchedAt: new Date().toISOString(),
   };
 }
-
-/** Fetch a single public page body for graph reference extraction. */
-export async function fetchPageBody(page: string): Promise<{ content?: string } | null> {
-  const pageCall = publicPageCall(page);
-  return requirePageBody(
-    await callTool(pageCall.name, pageCall.args),
-    "read_page body",
-  );
-}
-
-export type WorkflowRun = {
-  runId: string;
-  workflowId: string;
-  name: string;
-  status: string;
-  actor?: string;
-  startedAt?: string | null;
-  finishedAt?: string | null;
-};
-
-export type WorkflowActivity = {
-  source: string;
-  fetchedAt: string;
-  active: boolean;
-  runs: WorkflowRun[];
-  warnings: string[];
-};
 
 function stringify(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -253,64 +215,6 @@ function timestampMs(value: unknown): number | null {
   return Number.isNaN(parsed) ? null : parsed;
 }
 
-function normalizeWorkflowRun(raw: any): WorkflowRun {
-  return {
-    runId: firstString(raw?.run_id, raw?.id, raw?.runId),
-    workflowId: firstString(
-      raw?.branch_def_id,
-      raw?.branchDefId,
-      raw?.branch_id,
-      raw?.workflow,
-      raw?.branch,
-    ),
-    name: firstString(raw?.run_name, raw?.name, raw?.title, raw?.run_id, raw?.id),
-    status: firstString(raw?.status, raw?.state, "unknown").toLowerCase(),
-    actor: firstString(raw?.actor, raw?.author, raw?.claimed_by) || undefined,
-    startedAt: normalizeTimestamp(raw?.started_at ?? raw?.startedAt ?? raw?.created_at),
-    finishedAt: normalizeTimestamp(raw?.finished_at ?? raw?.finishedAt ?? raw?.completed_at),
-  };
-}
-
-function runTimestampMs(run: WorkflowRun): number | null {
-  return timestampMs(run.finishedAt) ?? timestampMs(run.startedAt);
-}
-
-function isTerminalRunStatus(status: string): boolean {
-  return ["completed", "failed", "cancelled", "canceled", "interrupted"].includes(status.toLowerCase());
-}
-
-/**
- * Read recent user-authored workflow activity from the generic run surface.
- * This intentionally has no product-specific branch filter or GitHub fallback.
- */
-export async function fetchWorkflowActivity(limit = 12): Promise<WorkflowActivity> {
-  try {
-    const runsCall = publicGraphCall("runs", limit);
-    const runs = requireCollection(
-      await callTool(runsCall.name, runsCall.args),
-      "runs",
-      "read_graph runs",
-    )
-      .map(normalizeWorkflowRun)
-      .sort((a: WorkflowRun, b: WorkflowRun) => (runTimestampMs(b) ?? 0) - (runTimestampMs(a) ?? 0));
-    return {
-      source: "MCP read_graph runs",
-      fetchedAt: new Date().toISOString(),
-      active: runs.some((run: WorkflowRun) => !isTerminalRunStatus(run.status)),
-      runs,
-      warnings: [],
-    };
-  } catch (error) {
-    return {
-      source: "MCP read_graph runs",
-      fetchedAt: new Date().toISOString(),
-      active: false,
-      runs: [],
-      warnings: [error instanceof Error ? error.message : String(error)],
-    };
-  }
-}
-
 export type Vitals = {
   reachable: boolean;
   fetchedAt: string;
@@ -322,40 +226,25 @@ export type Vitals = {
   goalCount?: number | null;
   workflowActive?: boolean;
   activeRun?: boolean;
-  lastSignalSource?: "run" | "universe-activity" | null;
+  lastSignalSource?: "universe-activity" | null;
   error?: string;
 };
 
 const VITALS_SIGNAL_WINDOW_MS = 60 * 60 * 1000;
 
-/** Read server reachability, release truth, and generic workflow activity separately. */
+/**
+ * Read reachability and activity only from the public universe projection.
+ * The operator get_status payload includes raw logs and identifiers, so public
+ * browsers must not download it merely to select a few aggregate fields.
+ */
 export async function fetchVitals(): Promise<Vitals> {
   try {
-    // Keep the shared browser MCP session deterministic; optional reads still
-    // degrade independently after the required status/universe reads succeed.
     const universesCall = publicGraphCall("graphs", 100);
-    const runsCall = publicGraphCall("runs", 8);
-    const status = requireObjectResult(await callTool("get_status", {}), "get_status");
     const publicUniverses = requireCollection(
       await callTool(universesCall.name, universesCall.args),
       "universes",
       "read_graph graphs",
     );
-    let goalsList: any[] | null = null;
-    let runsList: any[] | null = null;
-    try {
-      goalsList = await fetchPublicGoals();
-    } catch {}
-    try {
-      runsList = requireCollection(
-        await callTool(runsCall.name, runsCall.args),
-        "runs",
-        "read_graph runs",
-      );
-    } catch {}
-    const queueState = status?.supervisor_liveness?.queue_state ?? null;
-    const release = status?.release_state ?? null;
-
     let universeMovedMs: number | null = null;
     for (const universe of publicUniverses) {
       const ms = timestampMs(universe?.last_activity_at);
@@ -364,49 +253,25 @@ export async function fetchVitals(): Promise<Vitals> {
       }
     }
 
-    const runs: WorkflowRun[] = runsList ? runsList.map(normalizeWorkflowRun) : [];
-    const runIsActive = runs.some((run) => !isTerminalRunStatus(run.status));
-    let newestRunMs: number | null = null;
-    for (const run of runs) {
-      const ms = runTimestampMs(run);
-      if (ms !== null && (newestRunMs === null || ms > newestRunMs)) newestRunMs = ms;
-    }
-
-    const running = Number(queueState?.running ?? 0);
-    let lastMovedMs: number | null = null;
-    let lastSignalSource: "run" | "universe-activity" | null = null;
-    if (newestRunMs !== null) {
-      lastMovedMs = newestRunMs;
-      lastSignalSource = "run";
-    }
-    if (universeMovedMs !== null && (lastMovedMs === null || universeMovedMs > lastMovedMs)) {
-      lastMovedMs = universeMovedMs;
-      lastSignalSource = "universe-activity";
-    }
+    const lastMovedMs = universeMovedMs;
+    const lastSignalSource: "universe-activity" | null =
+      universeMovedMs === null ? null : "universe-activity";
 
     const recentSignal =
       lastMovedMs !== null && Date.now() - lastMovedMs < VITALS_SIGNAL_WINDOW_MS;
-    const workflowActive = runIsActive || running > 0 || recentSignal;
+    const workflowActive = recentSignal;
 
     return {
       reachable: true,
       fetchedAt: new Date().toISOString(),
-      deployedAt: release?.deployed_at ?? null,
-      gitSha: typeof release?.git_sha === "string" ? release.git_sha.slice(0, 8) : null,
-      queue: queueState
-        ? {
-            pending: Number(queueState.pending ?? 0),
-            running,
-            succeeded: Number(queueState.succeeded ?? 0),
-            failed: Number(queueState.failed ?? 0),
-            depth: Number(queueState.depth ?? 0),
-          }
-        : null,
+      deployedAt: null,
+      gitSha: null,
+      queue: null,
       lastMovedAt: lastMovedMs !== null ? new Date(lastMovedMs).toISOString() : null,
       universeCount: publicUniverses.length,
-      goalCount: goalsList?.length ?? null,
+      goalCount: null,
       workflowActive,
-      activeRun: runIsActive,
+      activeRun: false,
       lastSignalSource,
     };
   } catch (error) {
@@ -476,34 +341,15 @@ export function liveToSnapshotShape(live: LiveResult, baked: Snapshot): Snapshot
 
   return {
     fetched_at: live.fetchedAt,
-    source: "tinyassets.io/mcp · live",
+    source: "tinyassets.io/mcp · live; goals · checked-in snapshot",
     stats: {
       wiki_promoted: promoted,
       wiki_drafts: wiki.drafts.length,
-      goals: live.goals.length,
+      goals: baked.goals?.length ?? 0,
       universes: live.universes.length,
       edges: baked.edges?.length ?? 0,
     },
-    goals: [...live.goals]
-      .sort(
-        (a, b) =>
-          (Date.parse(b.updated_at ?? b.created_at ?? "") || 0) -
-          (Date.parse(a.updated_at ?? a.created_at ?? "") || 0),
-      )
-      .map((goal) => ({
-        id: goal.goal_id ?? goal.id,
-        name: goal.name ?? "",
-        summary: goal.description ?? "",
-        tags:
-          typeof goal.tags === "string"
-            ? goal.tags
-                .split(",")
-                .map((tag: string) => tag.trim())
-                .filter(Boolean)
-            : (goal.tags ?? []),
-        author: goal.author ?? "anonymous",
-        visibility: goal.visibility ?? "public",
-      })),
+    goals: baked.goals ?? [],
     universes: [...live.universes]
       .sort(
         (a, b) =>

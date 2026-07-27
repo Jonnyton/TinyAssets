@@ -1,43 +1,66 @@
 "use client";
 
 import * as React from "react";
-import { fetchWorkflowActivity, type WorkflowActivity } from "../../../lib/live";
+import { fetchPublicUniverses } from "../../../lib/live";
 import { fmtRel } from "../../../lib/fmt";
 import styles from "../page.module.css";
 
-const TERMINAL = new Set(["completed", "failed", "cancelled", "canceled", "interrupted"]);
+type PublicUniverse = {
+  id?: string;
+  name?: string;
+  phase?: string;
+  last_activity_at?: string | null;
+};
 
-function runStamp(run: WorkflowActivity["runs"][number]): string | null {
-  return run.finishedAt ?? run.startedAt ?? null;
+type PublicGraphRead = {
+  universes: PublicUniverse[];
+  fetchedAt: string;
+  error?: string;
+};
+
+function activityTime(universe: PublicUniverse): number {
+  const parsed = Date.parse(universe.last_activity_at ?? "");
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
 
 export default function LoopClient() {
-  const [activity, setActivity] = React.useState<WorkflowActivity | null>(null);
+  const [activity, setActivity] = React.useState<PublicGraphRead | null>(null);
   const [reading, setReading] = React.useState(false);
 
   const refresh = React.useCallback(async () => {
     setReading(true);
-    setActivity(await fetchWorkflowActivity(16));
-    setReading(false);
+    try {
+      const universes = (await fetchPublicUniverses(16)) as PublicUniverse[];
+      setActivity({
+        universes: [...universes].sort((left, right) => activityTime(right) - activityTime(left)),
+        fetchedAt: new Date().toISOString(),
+      });
+    } catch (error) {
+      setActivity({
+        universes: [],
+        fetchedAt: new Date().toISOString(),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setReading(false);
+    }
   }, []);
 
   React.useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const newestRun = activity?.runs[0] ?? null;
-
   return (
     <div className={styles.page}>
       <section className="cover" aria-labelledby="loop-title">
         <div className="container ch__inner">
-          <p className="eyebrow">workflow activity · public read</p>
-          <h1 id="loop-title">Ordinary workflows, moving when users run them.</h1>
+          <p className="eyebrow">workflow activity · public graph read</p>
+          <h1 id="loop-title">Ordinary workflows belong to their users.</h1>
           <p className="voice cover__lede">
-            Every automation here is a user-authored workflow. People compose,
-            publish, copy, and remix them from the same public building blocks. This
-            page shows recent activity from the connector and labels the source and
-            read time explicitly.
+            Every automation is a user-authored workflow. People compose, publish,
+            copy, and remix them from the same public building blocks. This page
+            shows activity timestamps from public workflow spaces and labels the
+            source and read time explicitly.
           </p>
         </div>
       </section>
@@ -71,8 +94,8 @@ export default function LoopClient() {
         <div className="container">
           <div className="live__head">
             <div>
-              <p className="eyebrow">recent activity · MCP provenance</p>
-              <h2 id="activity-title">What users have run recently.</h2>
+              <p className="eyebrow">public graph activity · MCP provenance</p>
+              <h2 id="activity-title">Public workflow spaces.</h2>
             </div>
             <button className="refresh" onClick={() => void refresh()} disabled={reading}>
               {reading ? "reading…" : "Refresh MCP"}
@@ -82,73 +105,75 @@ export default function LoopClient() {
           {reading && !activity ? (
             <div className="state state--reading">
               <span className="dot" aria-hidden="true" />
-              <p className="state__k">reading recent workflow runs from the connector…</p>
+              <p className="state__k">reading the public graph collection…</p>
             </div>
-          ) : activity?.warnings.length && !activity.runs.length ? (
+          ) : activity?.error ? (
             <div className="state state--error">
               <span className="dot error" aria-hidden="true" />
               <div>
-                <p className="state__k">Recent workflow activity is unavailable.</p>
+                <p className="state__k">Public graph activity is unavailable.</p>
                 <p className="state__sub ev">
-                  source {activity.source} · read {fmtRel(activity.fetchedAt)}
+                  source read_graph target=graphs · read {fmtRel(activity.fetchedAt)}
                 </p>
-                <p className="state__sub">{activity.warnings.join(" · ")}</p>
+                <p className="state__sub">{activity.error}</p>
               </div>
             </div>
-          ) : activity?.active ? (
-            <div className="state state--awake">
-              <span className="dot live" aria-hidden="true" />
-              <div>
-                <p className="state__k">A user workflow is active.</p>
-                <p className="state__sub ev">
-                  source {activity.source} · read {fmtRel(activity.fetchedAt)}
-                </p>
+          ) : activity?.universes.length ? (
+            <>
+              <div className="state state--awake">
+                <span className="dot live" aria-hidden="true" />
+                <div>
+                  <p className="state__k">
+                    {activity.universes.length} public workflow space
+                    {activity.universes.length === 1 ? "" : "s"} visible.
+                  </p>
+                  <p className="state__sub ev">
+                    source read_graph target=graphs · read {fmtRel(activity.fetchedAt)}
+                  </p>
+                  <p className="state__sub">
+                    Activity timestamps describe public graph changes. They are not
+                    run records or proof that a workflow is executing now.
+                  </p>
+                </div>
               </div>
-            </div>
+              <div className="events" aria-label="Public workflow spaces">
+                <ul className="events__list">
+                  {activity.universes.map((universe, index) => {
+                    const id = universe.id || universe.name || `public-graph-${index + 1}`;
+                    return (
+                      <li className="event" key={id}>
+                        <span className="event__stage ev">public graph</span>
+                        <div className="event__body">
+                          <p className="event__title">{universe.name || universe.id || "Unnamed public workflow space"}</p>
+                          <p className="event__detail">
+                            {universe.phase ? `reported phase ${universe.phase}` : "phase unavailable"}
+                          </p>
+                        </div>
+                        <span className="event__at ev">
+                          {universe.last_activity_at
+                            ? `activity ${fmtRel(universe.last_activity_at)}`
+                            : "activity time unavailable"}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            </>
           ) : activity ? (
             <div className="state state--asleep">
               <span className="dot idle" aria-hidden="true" />
               <div>
-                <p className="state__k">No active workflow is visible in this read.</p>
+                <p className="state__k">No public workflow spaces are visible in this read.</p>
                 <p className="state__sub ev">
-                  latest visible run {fmtRel(newestRun ? runStamp(newestRun) : null)} ·
-                  source {activity.source} · read {fmtRel(activity.fetchedAt)}
+                  source read_graph target=graphs · read {fmtRel(activity.fetchedAt)}
                 </p>
                 <p className="state__sub">
-                  Historical runs below are provenance-labelled activity, not platform
-                  uptime evidence and not a promise that work is moving now.
+                  Public graph activity is unavailable until a user publishes a
+                  graph visible through this collection.
                 </p>
               </div>
             </div>
-          ) : null}
-
-          {activity?.runs.length ? (
-            <div className="events" aria-label="Recent user workflow runs">
-              <ul className="events__list">
-                {activity.runs.map((run) => (
-                  <li className="event" key={run.runId || `${run.workflowId}:${runStamp(run)}`}>
-                    <span className="event__stage ev">
-                      {TERMINAL.has(run.status) ? "history" : "active"}
-                    </span>
-                    <div className="event__body">
-                      <p className="event__title">{run.name || "Unnamed workflow run"}</p>
-                      <p className="event__detail">
-                        {run.workflowId ? `workflow ${run.workflowId}` : "workflow id unavailable"}
-                        {run.runId ? ` · run ${run.runId}` : ""}
-                        {run.actor ? ` · actor ${run.actor}` : ""}
-                      </p>
-                    </div>
-                    <span className="event__at ev">
-                      {run.status} · {fmtRel(runStamp(run))}
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ) : activity && !activity.warnings.length ? (
-            <p className="events__empty ev">
-              The connector answered, but returned no recent workflow runs.
-            </p>
           ) : null}
         </div>
       </section>

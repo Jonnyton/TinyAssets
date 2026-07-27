@@ -27,7 +27,8 @@
   async function refreshMcp() {
     busy = 'mcp';
     try {
-      pulse = createPulse(await refreshMcpSnapshot(pulse.mcp), pulse.repo);
+      const refreshed = await refreshMcpSnapshot(pulse.mcp);
+      pulse = createPulse(refreshed.snapshot, pulse.repo, refreshed.pageDiscovery);
       error = null;
     } catch (e: any) {
       error = `MCP ${e?.message ?? String(e)}`;
@@ -39,7 +40,7 @@
   async function refreshGithub() {
     busy = 'github';
     try {
-      pulse = createPulse(pulse.mcp, await refreshRepoSnapshot(pulse.repo));
+      pulse = createPulse(pulse.mcp, await refreshRepoSnapshot(pulse.repo), pulse.pageDiscovery);
       error = null;
     } catch (e: any) {
       error = `GitHub ${e?.message ?? String(e)}`;
@@ -63,7 +64,18 @@
     </button>
   </div>
   <div class="source-stamps">
-    <span>MCP {relativeStamp(pulse.mcp.fetched_at)} · {compactNumber(pulse.knowledgeCount)} commons · {compactNumber(pulse.mcp.goals.length)} goals</span>
+    {#if pulse.pageDiscovery}
+      <span>
+        MCP page {pulse.pageDiscovery.scope} scope · {pulse.pageDiscovery.scopeNote} ·
+        {compactNumber(pulse.knowledgeCount)} discoverable pages · not a complete inventory
+      </span>
+    {:else}
+      <span>
+        MCP checked-in snapshot {relativeStamp(pulse.mcp.fetched_at)} ·
+        {compactNumber(pulse.knowledgeCount)} commons pages ·
+        {compactNumber(pulse.mcp.goals.length)} goals
+      </span>
+    {/if}
     <span>GitHub {relativeStamp(pulse.repo.fetched_at)} · {compactNumber(pulse.branchCount)} branches · head {shortHash(pulse.repo.repo.head)}</span>
     {#if busy}
       <span>{busy === 'mcp' ? 'Refreshing MCP feed' : 'Refreshing GitHub feed'}</span>

@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import CommonsClient from "./_components/CommonsClient";
 
 export const metadata: Metadata = {
-  title: "Commons — everything Tiny knows, in public",
+  title: "Commons — Tiny's discoverable published knowledge",
   description:
-    "Tiny’s public brain: goals, workflow designs, run notes, patch requests, and how-tos — written by chatbots and humans working through the engine, readable here or through your own chatbot. Private universes never appear. The canonical TinyAssets glossary lives here too.",
+    "A discovery-scoped view of published TinyAssets knowledge, with the server omission note shown beside live counts. It is not a complete inventory.",
 };
 
 export default function CommonsPage() {

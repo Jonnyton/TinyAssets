@@ -1,5 +1,5 @@
 /*
-  /goals — the living board of what's being worked on. "Field Notes"
+  /goals — the dated public board of published work. "Field Notes"
   rebuild, 2026-06-09.
 
   Crawl fixes applied: jargon wall removed (goal / workflow / ladder each
@@ -7,37 +7,34 @@
   "Goal lens" all dropped). No repo-internals readouts — the old
   "GitHub source: local git checkout" leak is gone entirely. The board is
   not empty without JS: it paints from the baked snapshot immediately,
-  visibly stamped with its fetched date, then upgrades to a live read on
-  mount. Every live value carries a read-stamp; baked is labelled baked.
-  Public-commons only: private / SUPERSEDED / RETRACTED / smoke filtered out.
+  visibly stamped with its snapshot date. The browser does not request Goal
+  records until a server-enforced public projection exists. Public-snapshot
+  only: private / SUPERSEDED / RETRACTED / smoke filtered out.
 */
 "use client";
 
 import * as React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { fetchPublicGoals } from "../../../lib/live";
+import { useMemo, useRef, useState } from "react";
 import bakedMcp from "../../../lib/mcp-snapshot.json";
-import { fmtDate, fmtDateStable, fmtRel } from "../../../lib/fmt";
+import { fmtDate, fmtDateStable } from "../../../lib/fmt";
 import { useMounted } from "../../../lib/useMounted";
 import Ladder from "../../../components/Ladder";
 import Term from "../../../components/Term";
 import Tick from "../../../components/Tick";
 
-// ── A board goal, normalized from either the baked snapshot or a live read.
+// ── A board goal normalized from the checked-in public snapshot.
 type Rung = { key?: string; name: string; description?: string; lit?: boolean; evidence_url?: string };
 type BoardGoal = {
   id: string;
   name: string;
   description: string;
   tags: string[];
-  visibility: string;
   rungs: Rung[];
-  updatedMs: number | null;
 };
 
 // Public-commons rail: nothing private, nothing retired, no smoke tests.
 function isPublicGoal(name: string, visibility: string): boolean {
-  if ((visibility ?? "public").toLowerCase() === "private") return false;
+  if (String(visibility ?? "").toLowerCase() !== "public") return false;
   return !/SUPERSEDED|RETRACTED|smoke/i.test(name ?? "");
 }
 
@@ -47,9 +44,8 @@ function toTags(raw: unknown): string[] {
   return [];
 }
 
-// Live goals carry a gate_ladder of {name, rung_key, description}. No rung
-// arrives with evidence attached today, so every rung renders unlit — that
-// is the honest state, and the section copy owns it.
+// Snapshot goals may carry a gate_ladder of {name, rung_key, description}.
+// A rung renders lit only when the snapshot includes an evidence URL.
 function toRungs(raw: unknown): Rung[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -64,47 +60,17 @@ function toRungs(raw: unknown): Rung[] {
     .filter((r) => r.name);
 }
 
-// Live timestamps are Unix epoch SECONDS (floats); baked goals carry none.
-function toMs(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value * 1000;
-  if (typeof value === "string") {
-    const n = Number(value);
-    if (Number.isFinite(n) && n > 0) return n * 1000;
-    const p = Date.parse(value);
-    if (!Number.isNaN(p)) return p;
-  }
-  return null;
-}
-
 function normalizeBaked(raw: any): BoardGoal[] {
   return (raw?.goals ?? [])
     .filter((g: any) => isPublicGoal(g.name, g.visibility))
     .map((g: any) => ({
       id: String(g.id ?? g.goal_id ?? ""),
       name: String(g.name ?? ""),
-      // Baked snapshot calls the body "summary"; live calls it "description".
+      // The checked-in snapshot normally calls the body "summary".
       description: String(g.summary ?? g.description ?? ""),
       tags: toTags(g.tags),
-      visibility: String(g.visibility ?? "public"),
       rungs: toRungs(g.gate_ladder),
-      updatedMs: toMs(g.updated_at ?? g.created_at),
     }));
-}
-
-function normalizeLive(goals: any[]): BoardGoal[] {
-  return goals
-    .filter((g: any) => isPublicGoal(g.name, g.visibility))
-    .map((g: any) => ({
-      id: String(g.goal_id ?? g.id ?? ""),
-      name: String(g.name ?? ""),
-      description: String(g.description ?? g.summary ?? ""),
-      tags: toTags(g.tags),
-      visibility: String(g.visibility ?? "public"),
-      rungs: toRungs(g.gate_ladder),
-      updatedMs: toMs(g.updated_at ?? g.created_at),
-    }))
-    // Newest-updated first; goals with no timestamp sink to the bottom.
-    .sort((a: BoardGoal, b: BoardGoal) => (b.updatedMs ?? 0) - (a.updatedMs ?? 0));
 }
 
 // ── Domain filter. Each chip maps to a set of tag substrings; a goal matches
@@ -146,30 +112,7 @@ export default function GoalsClient() {
   // through $lib/fmt so it reads in the visitor's own local time.
   const mounted = useMounted();
   const bakedStampDate = mounted ? fmtDate((bakedMcp as any).fetched_at) : fmtDateStable((bakedMcp as any).fetched_at);
-  const [goals, setGoals] = useState<BoardGoal[]>(() => normalizeBaked(bakedMcp));
-
-  // 'baked' until a live read lands; then 'live' with a read-stamp.
-  const [phase, setPhase] = useState<"baked" | "reading" | "live" | "error">("baked");
-  const [readAt, setReadAt] = useState<string | null>(null);
-  const [errMsg, setErrMsg] = useState<string | null>(null);
-
-  async function refreshMcp() {
-    setPhase("reading");
-    setErrMsg(null);
-    try {
-      const next = normalizeLive(await fetchPublicGoals());
-      setGoals(next);
-      setReadAt(new Date().toISOString());
-      setPhase("live");
-    } catch (e: any) {
-      setErrMsg(e?.message ?? String(e));
-      setPhase("error");
-    }
-  }
-
-  useEffect(() => {
-    void refreshMcp();
-  }, []);
+  const goals = useMemo(() => normalizeBaked(bakedMcp), []);
 
   const realGoals = useMemo(() => goals.filter((g) => !isTestDebris(g)), [goals]);
   const debrisGoals = useMemo(() => goals.filter(isTestDebris), [goals]);
@@ -216,8 +159,9 @@ export default function GoalsClient() {
             compete to reach it — and a goal's{" "}
             <Term def="A ladder is a sequence of real-world rungs toward the outcome ('preprint posted', 'peer-reviewed', 'first order fulfilled'). A rung only lights with an evidence URL attached, so the outcome stays checkable instead of merely claimed.">ladder</Term>{" "}
             keeps the whole thing honest: each rung is a checkable event, and a rung
-            only lights once there's evidence behind it. The board below reads from
-            the same endpoint your chatbot would.
+            only lights once there&apos;s evidence behind it. The board below is
+            the checked-in public snapshot. This browser does not request Goal
+            records from the connector.
           </p>
         </div>
       </section>
@@ -228,27 +172,15 @@ export default function GoalsClient() {
           <header className="board__head">
             <div>
               <p className="eyebrow">entry · the public board</p>
-              <h2 id="board-title">What's on me right now.</h2>
+              <h2 id="board-title">What&apos;s in the public snapshot.</h2>
             </div>
-            <div className="board__meta" aria-live="polite">
-              {phase === "live" ? (
-                <span className="board__stamp ev"><span className="dot live" aria-hidden="true"></span>{realGoals.length} public goals · read live {fmtRel(readAt)}</span>
-              ) : phase === "reading" ? (
-                <span className="board__stamp ev"><span className="dot" aria-hidden="true"></span>reading the live board… (showing snapshot {bakedStampDate})</span>
-              ) : phase === "error" ? (
-                <span className="board__stamp ev"><span className="dot error" aria-hidden="true"></span>live read failed — showing snapshot {bakedStampDate}</span>
-              ) : (
-                <span className="board__stamp ev"><span className="dot" aria-hidden="true"></span>{realGoals.length} public goals · snapshot {bakedStampDate}</span>
-              )}
-              <button className="board__refresh" onClick={refreshMcp} disabled={phase === "reading"}>
-                {phase === "reading" ? "reading…" : "Refresh MCP"}
-              </button>
+            <div className="board__meta">
+              <span className="board__stamp ev">
+                <span className="dot" aria-hidden="true"></span>
+                {realGoals.length} public goals · checked-in snapshot {bakedStampDate}
+              </span>
             </div>
           </header>
-
-          {phase === "error" && errMsg && (
-            <p className="board__err ev">The live read errored ({errMsg}). The cards below are the last good snapshot from {bakedStampDate}, not a live reading. Try Refresh MCP.</p>
-          )}
 
           {/* Domain filter chips. Match on tags, client-side, over the public set. */}
           <div className="board__filter" role="group" aria-label="Filter goals by domain">
@@ -266,10 +198,10 @@ export default function GoalsClient() {
           {visibleGoals.length === 0 ? (
             <p className="board__empty ev">
               {realGoals.length === 0 ? (
-                "Quiet right now — no public goals visible at this read. The board retries on its own; you can also press Refresh MCP."
+                "No public goals are included in the checked-in snapshot."
               ) : (
                 <>
-                  No public goals match <strong>{DOMAINS.find((d) => d.id === activeDomain)?.label}</strong> in this read. Try <button className="linkish" onClick={() => setActiveDomain("all")}>All</button>.
+                  No public goals match <strong>{DOMAINS.find((d) => d.id === activeDomain)?.label}</strong> in this snapshot. Try <button className="linkish" onClick={() => setActiveDomain("all")}>All</button>.
                 </>
               )}
             </p>
@@ -277,7 +209,7 @@ export default function GoalsClient() {
             <>
               <ul className="board">
                 {visibleGoals.map((g) => (
-                  <li key={g.id || g.name} className={`goal${phase !== "live" ? " goal--baked" : ""}`}>
+                  <li key={g.id || g.name} className="goal goal--baked">
                     <div className="goal__top">
                       <h3 className="goal__name">
                         <a className="goal__link" href={`/goal/?id=${g.id}`}>{g.name}</a>
@@ -313,17 +245,13 @@ export default function GoalsClient() {
               </ul>
 
               <p className="board__foot ev">
-                {phase === "live" ? (
-                  <>
-                    {visibleGoals.length} public goal{visibleGoals.length === 1 ? "" : "s"} shown{activeDomain === "all" ? "" : ` · ${DOMAINS.find((d) => d.id === activeDomain)?.label} filter`} ·{" "}
-                    {ladderGoals} carry an outcome ladder · {litCount} rung{litCount === 1 ? "" : "s"} lit — the honest count · read {fmtRel(readAt)}
-                  </>
-                ) : (
-                  `showing the ${bakedStampDate} snapshot · ladders and exact counts upgrade once the live read lands`
-                )}
+                {visibleGoals.length} public goal{visibleGoals.length === 1 ? "" : "s"} shown{activeDomain === "all" ? "" : ` · ${DOMAINS.find((d) => d.id === activeDomain)?.label} filter`} ·{" "}
+                {ladderGoals} carry an outcome ladder · {litCount} rung{litCount === 1 ? "" : "s"} lit in the {bakedStampDate} snapshot
               </p>
               <p className="board__honest ev">
-                {visibleGoals.length} public goal{visibleGoals.length === 1 ? "" : "s"} shown · private goals exist but never render here — they live on a host's own machine and never publish to the public commons.
+                Only records explicitly marked public in the checked-in
+                snapshot render here. This browser does not request Goal
+                records from the MCP endpoint.
               </p>
             </>
           )}
@@ -376,7 +304,8 @@ export default function GoalsClient() {
                 </button>
                 <p className="add__note">
                   Your chatbot proposes it; you and it design a workflow toward it
-                  from there. The new goal shows up on this board on its next read.
+                  from there. A public goal can appear here after the next reviewed
+                  snapshot is checked in.
                 </p>
               </div>
             </li>
@@ -391,8 +320,8 @@ export default function GoalsClient() {
           <nav className="close__cards">
             <a className="close__card" href="/loop">
               <span className="close__k eyebrow">workflow activity</span>
-              <strong>See recent user-authored runs →</strong>
-              <span className="close__sub">live and historical activity, labelled with its MCP provenance.</span>
+              <strong>See public workflow graphs →</strong>
+              <span className="close__sub">public graph activity, labelled with its MCP provenance.</span>
             </a>
             <a className="close__card" href="/commons">
               <span className="close__k eyebrow">the public commons</span>

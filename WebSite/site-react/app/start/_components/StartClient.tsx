@@ -331,13 +331,13 @@ export default function StartClient() {
           <nav className="close__cards">
             <a className="close__card" href="/goals">
               <span className="close__k eyebrow">the goals board</span>
-              <strong>See what&apos;s already running →</strong>
-              <span className="close__sub">live public goals, each with its outcome ladder.</span>
+              <strong>Browse published goal examples →</strong>
+              <span className="close__sub">A dated public snapshot, with outcome ladders where evidence is included.</span>
             </a>
             <a className="close__card" href="/loop">
               <span className="close__k eyebrow">workflow activity</span>
-              <strong>See recent user-authored runs →</strong>
-              <span className="close__sub">live and historical activity, labelled with its MCP provenance.</span>
+              <strong>See public workflow graphs →</strong>
+              <span className="close__sub">Public graph activity, labelled with its MCP provenance.</span>
             </a>
           </nav>
         </div>
