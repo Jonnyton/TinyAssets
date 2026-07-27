@@ -154,6 +154,17 @@ effector-comment neutralization and final pre-merge run-drain proof; task 5.2
 remains open for claimed tests/snapshot-dependent absence proof; task 5.3 owns
 snapshot/soul regeneration.
 
+After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
+into the stacked implementation branch without changing any reviewed site,
+workflow, script, or skill content. Fresh current-main verification at
+`c84cb833` passed React's 27-route production build and TypeScript check,
+Svelte's production build and check with zero errors/six existing warnings,
+all 58 strict OpenSpec validations, the active-source absence scan, and
+`git diff --check`. Claude Opus 5 returned APPROVE on the current-main head;
+three pre-merge exact APPROVEs cover the implementation content that the merge
+left byte-identical. The foldback imported the separate provider-secret-deposit
+OpenSpec only as `main` history and did not broaden this lane.
+
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
 `renamed=1, modified=2`, contained the renamed requirement, and replaced the
