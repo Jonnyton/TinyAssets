@@ -264,9 +264,9 @@
         <span class="close__sub">read the public brain — proposals, notes, and decisions, all forkable.</span>
       </a>
       <a class="close__card" href="/graph">
-        <span class="close__k eyebrow">the map of everything</span>
-        <strong>See the whole graph.</strong>
-        <span class="close__sub">how every goal, workflow, and commons page connects.</span>
+        <span class="close__k eyebrow">the public discovery map</span>
+        <strong>See the public graph.</strong>
+        <span class="close__sub">how published goals and discovery pages connect.</span>
       </a>
     </div>
   </div>

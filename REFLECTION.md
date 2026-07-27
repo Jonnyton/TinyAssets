@@ -536,3 +536,9 @@ fresh-host rollback edges found later.
 - **Follow-up:** security validation must model parser equivalence, not only
   canonical spelling. Feed nested URL values to WHATWG parsing so whitespace,
   control prefixes, and backslash authority forms cannot bypass userinfo checks.
+- **Follow-up:** URL parsing context is itself security-sensitive. Parse
+  absolute candidates without a base first, and never turn a malformed
+  credential-looking authority into an affirmative safe result.
+- **Follow-up:** a scoped response can be valid with nothing omitted. Preserve
+  the bounded scope, convert server prose to trusted status labels, and keep
+  successful-empty distinct from unavailable without implying completeness.

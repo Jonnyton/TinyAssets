@@ -363,6 +363,20 @@
   whitespace/control characters and WHATWG-equivalent backslash authority
   spellings. The current repair removes spelling-based prefiltering and parses
   every nested value with the same WHATWG URL semantics as the consumer.
+  Exact-head review of `40c9f895` returned ADAPT on two remaining boundaries:
+  same-scheme base parsing hid zero/single-separator absolute userinfo, parse
+  errors treated malformed credential authorities as safe, and rollback docs
+  still advertised the deliberately disabled full-snapshot refresh. The
+  current repair parses absolute candidates first, rejects apparent
+  credential authorities when parsing fails, and directs rollback operators
+  to the checked-in vetted snapshot.
+  A delayed Claude Opus review of `3310d0b4` also found three coordination and
+  truth gaps: this branch had dropped three live STATUS claims, discovery with
+  no reported omissions was treated as unavailable, and Build/error copy
+  totalized discovery or echoed response-controlled scope. The current repair
+  restores the claims, removes one landed STATUS row and folds one concern to
+  stay at 60 lines, accepts successful empty discovery with bounded trusted
+  omission labels, makes boundary errors generic, and bounds Build copy.
   The full Node suite passes 81/81 on the repaired working head. Both
   production builds pass; Svelte check
   reports 0 errors and 3 unrelated existing warnings; Svelte production

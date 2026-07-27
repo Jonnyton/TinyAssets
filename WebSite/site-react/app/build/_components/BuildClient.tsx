@@ -278,9 +278,9 @@ export default function BuildClient() {
               <span className="close__sub">read the public brain — proposals, notes, and decisions, all forkable.</span>
             </a>
             <a className="close__card" href="/graph">
-              <span className="close__k eyebrow">the map of everything</span>
-              <strong>See the whole graph.</strong>
-              <span className="close__sub">how every goal, workflow, and commons page connects.</span>
+              <span className="close__k eyebrow">the public discovery map</span>
+              <strong>See the public graph.</strong>
+              <span className="close__sub">how published goals and discovery pages connect.</span>
             </a>
           </div>
         </div>

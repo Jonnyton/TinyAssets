@@ -786,6 +786,18 @@ verdict without pretending the unsafe server projections are public:
   whitespace/control characters and WHATWG-equivalent backslash authority
   spellings; the current repair removes spelling-based prefiltering and parses
   every nested value with consumer-equivalent WHATWG URL semantics;
+- exact-head review of `40c9f895` returned ADAPT because same-scheme base
+  parsing hid zero/single-separator absolute userinfo, malformed credential
+  authorities failed open on parser error, and rollback docs still advertised
+  the deliberately disabled full-snapshot refresh; the current repair parses
+  absolute candidates first, fails closed on apparent malformed userinfo, and
+  retains the checked-in vetted snapshot during rollback;
+- a delayed Claude Opus review of `3310d0b4` also found three live STATUS
+  claims missing from the branch, successful discovery with no reported
+  omissions misclassified as unavailable, totalizing Build copy, and
+  response-controlled scope echoed in errors; the current repair restores the
+  claims within the 60-line board, returns bounded trusted omission labels,
+  makes boundary errors generic, and bounds Build copy;
 - the full Node website suite passes 81/81 on the repaired working head; both
   production builds pass,
   Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte

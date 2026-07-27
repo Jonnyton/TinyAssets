@@ -71,8 +71,9 @@ Use the Svelte workflow only when an explicit production rollback is required.
 
 1. Select a revision whose Svelte tree has the required parity.
 2. Run `npm run check` and `npm run build` in `WebSite/site`.
-3. Dispatch `deploy-site`. Set `refresh_snapshot=true` only if the rollback
-   specifically requires a freshly baked Svelte MCP snapshot.
+3. Dispatch `deploy-site` with `refresh_snapshot=false`. Full snapshot
+   regeneration is intentionally disabled until an audience-safe publication
+   manifest exists; retain the checked-in vetted snapshot.
 4. Re-run the public canary and rendered browser checks.
 5. Fix the React production source first, restore Svelte parity, and manually
    redeploy React through `deploy-site-react`.

@@ -118,28 +118,20 @@ The Cowork sandbox mounts this folder over FUSE. Two known quirks:
 See `WebSite/HOOKS_FUSE_QUIRKS.md` for details.
 
 
-## Refreshing the MCP snapshot
+## MCP snapshot safety
 
-`/wiki` and `/graph` are baked from `src/lib/content/mcp-snapshot.json`. To pull fresh data:
+`/wiki` and `/graph` use the checked-in, independently vetted
+`src/lib/content/mcp-snapshot.json`. Full snapshot regeneration is
+intentionally unavailable until an audience-safe publication manifest can
+prove every included record is public. `npm run snapshot` validates the
+anonymous source boundary but refuses to replace the artifact; with
+`SNAPSHOT_REQUIRED=1`, that refusal fails the command.
 
-```powershell
-npm run snapshot   # calls tinyassets.io/mcp, rewrites the JSON
-git add src/lib/content/mcp-snapshot.json
-git commit -m "snapshot: refresh MCP"
-git push           # source update only; does not deploy either site
-```
-
-The script is `scripts/snapshot-mcp.mjs`. It uses
-`@modelcontextprotocol/sdk`; snapshot refreshes run anonymously so a
-caller-specific grant can never be baked into a public artifact. If the MCP is
-unreachable, the existing snapshot is kept unless `SNAPSHOT_REQUIRED=1`.
-`MCP_BEARER` is forbidden and makes the snapshot command fail.
-
-**Rollback refresh:** `deploy-site.yml` has no cron or push trigger. When a
-rollback specifically needs a fresh Svelte snapshot, dispatch it manually with
-`refresh_snapshot=true`. The workflow performs the read anonymously and fails
-closed if it cannot prove a complete public snapshot. Production React
-deployment does not use this snapshot step.
+The validator is `scripts/snapshot-mcp.mjs` and uses
+`@modelcontextprotocol/sdk`. Snapshot refreshes run anonymously, and
+`MCP_BEARER` is forbidden. Keep the existing vetted snapshot during a Svelte
+rollback and leave the dispatch-only `refresh_snapshot` input set to `false`.
+Production React deployment does not use this snapshot step.
 
 ## Open TODOs
 

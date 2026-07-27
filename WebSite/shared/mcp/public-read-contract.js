@@ -1,5 +1,9 @@
 const PAGE_INVENTORY_SINCE = "1970-01-01T00:00:00Z";
 const PAGE_INVENTORY_LIMIT = 100;
+const DISCOVERY_OMISSION_REPORTED =
+  "Discovery scope reports omitted coordination pages.";
+const DISCOVERY_NO_OMISSION_REPORTED =
+  "Discovery scope reports no omitted coordination pages.";
 const validatedPathSets = new WeakMap();
 const DISCOVERABLE_UNIVERSE_VISIBILITIES = new Set([
   "public",
@@ -56,8 +60,20 @@ function isCredentialParameterName(value) {
 /** @param {string} value */
 function containsUrlUserinfo(value) {
   try {
-    const parsed = new URL(value, "https://public.invalid");
-    return Boolean(parsed.username || parsed.password);
+    const absolute = new URL(value);
+    return Boolean(absolute.username || absolute.password);
+  } catch {
+    if (
+      /^[\u0000-\u0020]*(?:(?:https?|wss?|ftp):[\\/]{0,2}|[\\/]{2})[^/?#\\]*@/i.test(
+        value,
+      )
+    ) {
+      return true;
+    }
+  }
+  try {
+    const relative = new URL(value, "https://public.invalid");
+    return Boolean(relative.username || relative.password);
   } catch {
     return false;
   }
@@ -174,7 +190,17 @@ export function pageInventoryCall(changedSince = PAGE_INVENTORY_SINCE) {
  * @returns {string}
  */
 export function assertAnonymousSnapshotUrl(value) {
-  const parsed = new URL(value);
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    if (containsUrlUserinfo(value)) {
+      throw new Error(
+        "Public snapshots must run anonymously; MCP URL credentials are forbidden",
+      );
+    }
+    throw new Error("Public snapshots require a valid HTTPS MCP URL");
+  }
   if (parsed.protocol !== "https:") {
     throw new Error("Public snapshots require an HTTPS MCP URL");
   }
@@ -604,18 +630,16 @@ function splitInventory(payload, requiredScope) {
     typeof result.scope === "string" && result.scope.trim()
       ? result.scope.trim()
       : "unknown";
-  const scopeNote =
+  const reportedScopeNote =
     typeof result.scope_note === "string" ? result.scope_note.trim() : "";
   const validScope =
     requiredScope === "discovery"
-      ? scope === "discovery" && Boolean(scopeNote)
-      : scope === "all" && !scopeNote;
+      ? scope === "discovery"
+      : scope === "all" && !reportedScopeNote;
   if (!validScope) {
     const purpose =
       requiredScope === "all" ? "full snapshot inventory" : "read_page inventory";
-    throw new Error(
-      `${purpose} is incomplete (scope: ${scope})`,
-    );
+    throw new Error(`${purpose} is incomplete`);
   }
   if (truncated > 0) {
     throw new Error(
@@ -635,7 +659,12 @@ function splitInventory(payload, requiredScope) {
     drafts: results.filter((page) => Boolean(page.is_draft)),
     validatedPaths,
     scope: requiredScope,
-    scopeNote,
+    scopeNote:
+      requiredScope === "discovery"
+        ? reportedScopeNote
+          ? DISCOVERY_OMISSION_REPORTED
+          : DISCOVERY_NO_OMISSION_REPORTED
+        : "",
   };
 }
 

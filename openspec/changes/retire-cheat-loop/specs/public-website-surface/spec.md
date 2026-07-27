@@ -70,10 +70,12 @@ Among the graph collection/detail targets, only `target=graphs` discovery is
 currently proven to apply its server-side visibility boundary. It remains
 discovery rather than proof of a complete inventory when the result cap is
 reached without pagination. A
-`read_page` inventory that explicitly declares `scope=discovery` and carries
-an omission note MAY support a discovery-only view when that scope and note
-remain visible; it MUST NOT be relabelled as a complete wiki inventory or
-replace a full-scope checked-in snapshot. Anonymous exact `read_page` can
+`read_page` inventory that explicitly declares `scope=discovery` MAY support
+a discovery-only view when that scope and a bounded omission-status label
+remain visible. A missing or empty server omission note means only that no
+omission was reported; it does not make discovery complete. The inventory
+MUST NOT be relabelled as a complete wiki inventory or replace a full-scope
+checked-in snapshot. Anonymous exact `read_page` can
 currently return known coordination paths omitted from discovery. A public
 browser therefore MUST NOT accept arbitrary exact page paths. Any snapshot
 body read MUST be provenance-bound to a path returned by the already-validated
@@ -166,7 +168,7 @@ metadata; deleting only the primary Goal row is insufficient.
 - **THEN** it fails before connecting or writing an artifact
 - **AND** credential-like URL query or fragment parameters fail before the URL is logged
 - **AND** recursively encoded query/fragment separators cannot hide credential parameters
-- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, control prefixes, or slash/backslash-equivalent WHATWG spellings
+- **AND** a nested absolute or protocol-relative URL cannot hide userinfo credentials through whitespace, control prefixes, malformed authorities, or zero/single/double slash/backslash-equivalent WHATWG spellings
 - **AND** the snapshot URL uses HTTPS before the connector opens or logs it
 
 #### Scenario: A browser build configures a public MCP endpoint
@@ -184,8 +186,14 @@ metadata; deleting only the primary Goal row is insufficient.
 #### Scenario: A page inventory is explicitly discovery-scoped
 
 - **WHEN** `read_page` returns `scope=discovery` with an explicit note naming omitted coordination content
-- **THEN** a discovery-only surface may use the result while preserving that scope and omission note
+- **THEN** a discovery-only surface may use the result while preserving that scope and a bounded omission-reported label
 - **AND** a full-wiki view or snapshot replacement treats it as insufficient
+
+#### Scenario: Discovery reports no omitted coordination content
+
+- **WHEN** `read_page` returns `scope=discovery` with a missing or empty omission note
+- **THEN** a discovery-only surface may use the result with a bounded no-omission-reported label
+- **AND** it does not treat the absent note as proof that discovery is a complete inventory
 
 #### Scenario: An anonymous caller supplies a known omitted page path
 

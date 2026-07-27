@@ -171,6 +171,13 @@ test("public snapshot URL rejects embedded caller credentials", () => {
     "https://tinyassets.io/mcp?next=%09https%3A%2F%2Fuser%3Atop-secret%40internal.example%2Fcb",
     "https://tinyassets.io/mcp?next=https%3A%5C%5Cuser%3Atop-secret%40internal.example%2Fcb",
     "https://tinyassets.io/mcp?next=https%3A%2F%5Cuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3Auser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3A%2Fuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3A%5Cuser%3Atop-secret%40internal.example%2Fcb",
+    "https://tinyassets.io/mcp?next=https%3A%2F%2Fuser%3Atop-secret%40%5B",
+    "https://tinyassets.io/mcp?next=%2F%2Fuser%3Atop-secret%40%5B",
+    "https://tinyassets.io/mcp#next=https%3A%2F%2Fuser%3Atop-secret%40%5B",
+    "https://alice:s3cr3t@[::1",
     `https://tinyassets.io/mcp#${Array.from({ length: 10 }).reduce(
       (value) => encodeURIComponent(value),
       "?token=top-secret",
@@ -300,7 +307,7 @@ test("public Playground responses are validated and reduced to public discovery 
       total_matches: 1,
       truncated_count: 0,
       scope: "discovery",
-      scope_note: "Coordination pages are omitted.",
+      scope_note: "Discovery scope reports omitted coordination pages.",
     },
   );
 
@@ -426,7 +433,7 @@ test("exact page descriptors require an immutable validated inventory provenance
   );
 });
 
-test("page inventory accepts only explicit discovery scope with its omission note", () => {
+test("page inventory accepts explicit discovery scope with bounded omission copy", () => {
   const inventory = splitPageInventory({
       results: [
         { path: "pages/concepts/one.md", title: "One", is_draft: false },
@@ -447,6 +454,10 @@ test("page inventory accepts only explicit discovery scope with its omission not
   assert.deepEqual(
     [...inventory.validatedPaths],
     ["pages/concepts/one", "drafts/notes/two"],
+  );
+  assert.equal(
+    inventory.scopeNote,
+    "Discovery scope reports omitted coordination pages.",
   );
 });
 
@@ -480,7 +491,7 @@ test("full snapshot inventory requires independent audience-safe publication evi
         scope: "discovery",
         scope_note: "Default discovery scope omitted coordination pages.",
       }),
-    /full snapshot.*scope:\s*discovery/i,
+    /full snapshot.*incomplete/i,
   );
 });
 
@@ -503,7 +514,7 @@ test("public clients and snapshot logs never surface untrusted error detail", ()
   assert.match(snapshotSource, /Required public snapshot refresh failed/);
 });
 
-test("page inventory rejects non-discovery scope or a missing discovery note", () => {
+test("page inventory rejects non-discovery scope and handles a missing omission note", () => {
   assert.throws(
     () =>
       splitPageInventory({
@@ -514,7 +525,7 @@ test("page inventory rejects non-discovery scope or a missing discovery note", (
         scope: "all",
         scope_note: "",
       }),
-    /incomplete.*scope:\s*all/i,
+    /incomplete/i,
   );
   assert.throws(
     () =>
@@ -526,19 +537,18 @@ test("page inventory rejects non-discovery scope or a missing discovery note", (
         scope: "coordination",
         scope_note: "Only coordination pages were returned.",
       }),
-    /incomplete.*scope:\s*coordination/i,
+    /incomplete/i,
   );
-  assert.throws(
-    () =>
-      splitPageInventory({
-        results: [],
-        count: 0,
-        total_matches: 0,
-        truncated_count: 0,
-        scope: "discovery",
-        scope_note: "",
-      }),
-    /incomplete.*scope:\s*discovery/i,
+  assert.equal(
+    splitPageInventory({
+      results: [],
+      count: 0,
+      total_matches: 0,
+      truncated_count: 0,
+      scope: "discovery",
+      scope_note: "",
+    }).scopeNote,
+    "Discovery scope reports no omitted coordination pages.",
   );
 });
 
@@ -652,7 +662,7 @@ test("page inventory rejects missing scope and structured errors", () => {
         total_matches: 0,
         truncated_count: 0,
       }),
-    /incomplete.*scope:\s*unknown/i,
+    /incomplete/i,
   );
   assert.throws(
     () => splitPageInventory({ error: "read denied" }),
