@@ -128,9 +128,10 @@ Freshness-stamped 2026-07-26 on Windows, stacked branch
   it does not run a deployment.
 - Stacked draft PR #1818 exclusively owns deletion of the loop core-team
   manifest and the Ada, Elias, Mira, Noor, Soren, and Vera role souls; Opus 5
-  approved its exact deletion head `d311cf03`. Base draft #1812 deliberately
-  does not duplicate that wave. Task 5.3 remains open on snapshots, registered
-  daemon zero-active proof, and residual synthetic-test naming.
+  approved its exact deletion head `d311cf03`. A duplicate base-branch attempt
+  was reverted, leaving #1812 with zero net soul diff; Opus 5 approved that
+  collision repair at `65e0ae42`. Task 5.3 remains open on snapshots,
+  registered daemon zero-active proof, and residual synthetic-test naming.
 - Opposite-provider Claude Opus review of `ace375ab` found remaining
   one-sided Svelte presentation wording after the React port. Cleanup
   `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
