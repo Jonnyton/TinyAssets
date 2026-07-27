@@ -1,0 +1,214 @@
+{
+  "schema_version": 1,
+  "areas": [
+    {
+      "id": "area:repo",
+      "label": "Repository",
+      "summary": "GitHub repository, branches, worktrees, and active checkout state.",
+      "paths": [".git", ".github", "AGENTS.md", "STATUS.md"]
+    },
+    {
+      "id": "area:mcp-api",
+      "label": "MCP/API surface",
+      "summary": "The public connector tools and server adapters that expose TinyAssets to chatbots.",
+      "paths": [
+        "tinyassets/api",
+        "tinyassets/mcp_server.py",
+        "tinyassets/cloud_worker.py"
+      ]
+    },
+    {
+      "id": "area:runtime-engine",
+      "label": "Runtime engine",
+      "summary": "Daemon, storage, graph execution, branch tasks, retrieval, and producers.",
+      "paths": ["workflow", "branches", "nodes", "goal_pool"]
+    },
+    {
+      "id": "area:fantasy-domain",
+      "label": "Fantasy domain",
+      "summary": "The original long-running authoring domain and live concordance universe.",
+      "paths": [
+        "fantasy_daemon",
+        "fantasy_author",
+        "domains/fantasy_daemon",
+        "domains/fantasy_author",
+        "universes"
+      ]
+    },
+    {
+      "id": "area:coding-system",
+      "label": "Coding system",
+      "summary": "Agent-team coding, patch packets, tests, review gates, and repo-change execution.",
+      "paths": [
+        "tinyassets/api/runs.py",
+        "tinyassets/branch_tasks.py",
+        "tests",
+        ".agents/skills"
+      ]
+    },
+    {
+      "id": "area:website",
+      "label": "Website",
+      "summary": "The tinyassets.io public showcase pages and local preview loop.",
+      "paths": ["WebSite/site", "WebSite/preview.bat", "WebSite/ship.ps1"]
+    },
+    {
+      "id": "area:docs-plans",
+      "label": "Docs and plans",
+      "summary": "Design notes, audits, specs, execution plans, and idea pipeline.",
+      "paths": ["docs", "ideas", "PLAN.md"]
+    },
+    {
+      "id": "area:packaging-ops",
+      "label": "Packaging and ops",
+      "summary": "Plugin packaging, deploy scripts, uptime probes, and public-surface operations.",
+      "paths": ["packaging", "deploy", "scripts", ".github/workflows"]
+    },
+    {
+      "id": "area:tests-ci",
+      "label": "Tests and CI",
+      "summary": "Regression tests, pre-commit invariants, CI workflows, and verification scripts.",
+      "paths": ["tests", ".github/workflows", "scripts"]
+    }
+  ],
+  "workflow_branches": [
+    {
+      "id": "branch:fantasy_author:universe_cycle_wrapper",
+      "name": "fantasy_author:universe_cycle_wrapper",
+      "area": "fantasy",
+      "state": "wired",
+      "summary": "Fantasy-domain universe cycle wrapper used by the live authoring daemon."
+    },
+    {
+      "id": "branch:agent_team_3node_v4",
+      "name": "agent_team_3node_v4",
+      "area": "coding",
+      "state": "caveated",
+      "summary": "Reusable lead, developer, and checker coding-team workflow."
+    }
+  ],
+  "routes": [
+    {
+      "id": "route:/wiki",
+      "path": "/wiki",
+      "label": "Wiki cockpit",
+      "summary": "Live MCP commons browser."
+    },
+    {
+      "id": "route:/graph",
+      "path": "/graph",
+      "label": "Whole-project graph",
+      "summary": "Unified project map across MCP, repo, domains, branches, and pages."
+    },
+    {
+      "id": "route:/connect",
+      "path": "/connect",
+      "label": "Connect",
+      "summary": "Chatbot connector setup."
+    },
+    {
+      "id": "route:/host",
+      "path": "/host",
+      "label": "Host",
+      "summary": "Daemon host entry point."
+    },
+    {
+      "id": "route:/goals",
+      "path": "/goals",
+      "label": "Goals",
+      "summary": "Public goal lens backed by MCP goals, commons records, and branch signals."
+    },
+    {
+      "id": "route:/fine-print",
+      "path": "/fine-print",
+      "label": "Status",
+      "summary": "Operations room for public health, current work, and deployment evidence."
+    },
+    {
+      "id": "route:/alliance",
+      "path": "/alliance",
+      "label": "Alliance",
+      "summary": "Async-first community intake and collaboration path."
+    },
+    {
+      "id": "route:/legal",
+      "path": "/legal",
+      "label": "Legal",
+      "summary": "Terms, privacy, licensing, and token disclosure ledger."
+    }
+  ],
+  "edges": [
+    { "from": "repo:TinyAssets", "to": "area:mcp-api", "kind": "contains" },
+    {
+      "from": "repo:TinyAssets",
+      "to": "area:runtime-engine",
+      "kind": "contains"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "to": "area:fantasy-domain",
+      "kind": "contains"
+    },
+    {
+      "from": "repo:TinyAssets",
+      "to": "area:coding-system",
+      "kind": "contains"
+    },
+    { "from": "repo:TinyAssets", "to": "area:website", "kind": "contains" },
+    { "from": "repo:TinyAssets", "to": "area:docs-plans", "kind": "contains" },
+    {
+      "from": "repo:TinyAssets",
+      "to": "area:packaging-ops",
+      "kind": "contains"
+    },
+    { "from": "repo:TinyAssets", "to": "area:tests-ci", "kind": "contains" },
+    { "from": "area:website", "to": "route:/wiki", "kind": "route" },
+    { "from": "area:website", "to": "route:/graph", "kind": "route" },
+    { "from": "area:website", "to": "route:/connect", "kind": "route" },
+    { "from": "area:website", "to": "route:/host", "kind": "route" },
+    { "from": "area:website", "to": "route:/goals", "kind": "route" },
+    { "from": "area:website", "to": "route:/fine-print", "kind": "route" },
+    { "from": "area:website", "to": "route:/alliance", "kind": "route" },
+    { "from": "area:website", "to": "route:/legal", "kind": "route" },
+    {
+      "from": "area:fantasy-domain",
+      "to": "universe:concordance",
+      "kind": "runs"
+    },
+    {
+      "from": "area:fantasy-domain",
+      "to": "branch:fantasy_author:universe_cycle_wrapper",
+      "kind": "branch"
+    },
+    {
+      "from": "area:runtime-engine",
+      "to": "branch:fantasy_author:universe_cycle_wrapper",
+      "kind": "executes"
+    },
+    {
+      "from": "area:coding-system",
+      "to": "branch:agent_team_3node_v4",
+      "kind": "branch"
+    },
+    {
+      "from": "area:coding-system",
+      "to": "area:tests-ci",
+      "kind": "verified-by"
+    },
+    {
+      "from": "branch:agent_team_3node_v4",
+      "to": "bug:BUG-017",
+      "kind": "blocked-by"
+    },
+    { "from": "route:/wiki", "to": "area:mcp-api", "kind": "showcases" },
+    { "from": "route:/graph", "to": "repo:TinyAssets", "kind": "showcases" },
+    { "from": "route:/goals", "to": "area:mcp-api", "kind": "showcases" },
+    {
+      "from": "route:/fine-print",
+      "to": "area:packaging-ops",
+      "kind": "observes"
+    },
+    { "from": "route:/legal", "to": "area:docs-plans", "kind": "discloses" },
+    { "from": "area:packaging-ops", "to": "area:mcp-api", "kind": "ships" }
+  ]
+}

@@ -13,7 +13,10 @@
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
     "test:e2e": "playwright test",
-    "snapshot": "node scripts/snapshot-mcp.mjs"
+    "test:snapshots": "node --test scripts/snapshot-generators.test.mjs",
+    "snapshot:mcp": "node scripts/snapshot-mcp.mjs",
+    "snapshot:repo": "node scripts/snapshot-repo.mjs",
+    "snapshot": "npm run snapshot:mcp && npm run snapshot:repo"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0",
