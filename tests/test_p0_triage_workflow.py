@@ -9,7 +9,7 @@ Covers:
   (f) Re-probe uses canonical CANARY_URL
   (g) Green path closes issue
   (h) Red path adds needs-human label (not closes)
-  (i) Concurrency group is issue-scoped (prevents concurrent restarts)
+  (i) Production host mutations share one repository-wide concurrency group
 """
 
 from __future__ import annotations
@@ -228,16 +228,13 @@ def test_red_path_does_not_close_issue():
 
 
 # ---------------------------------------------------------------------------
-# (i) Concurrency group is issue-scoped
+# (i) Production host mutation concurrency
 # ---------------------------------------------------------------------------
 
-def test_concurrency_group_is_issue_scoped():
+def test_concurrency_group_serializes_production_host_mutations():
     wf = _load()
     concurrency = wf.get("concurrency", {})
-    group = str(concurrency.get("group", ""))
-    assert "issue" in group.lower() or "number" in group.lower(), (
-        "concurrency group must be scoped per issue to prevent concurrent restarts"
-    )
+    assert concurrency.get("group") == "production-host-mutation"
 
 
 def test_concurrency_not_cancel_in_progress():

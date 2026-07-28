@@ -28,8 +28,8 @@ permissions:
   issues: write
 
 concurrency:
-  # One triage run per issue — prevents concurrent restarts on the same box.
-  group: p0-triage-${{ github.event.issue.number }}
+  # Serialize every workflow that mutates the production host.
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:

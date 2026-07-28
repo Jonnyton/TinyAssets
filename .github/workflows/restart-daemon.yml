@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: restart-daemon
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:
