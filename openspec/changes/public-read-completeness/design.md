@@ -566,9 +566,10 @@ shipped predicates or file-line instructions.
 
 The implementation sequence is:
 
-1. **Slice 0A:** immediately close anonymous private-Goal leakage in both list
-   and ranked search, independent of snapshot, key, substrate, Worker, scope,
-   or quota gates;
+1. **Slice 0A:** immediately close anonymous private-Goal leakage in every
+   read-effect action that resolves caller-supplied `goal_id`, Goal-bound
+   record enumeration, and cross-Goal aggregation, independent of snapshot,
+   key, substrate, Worker, scope, or quota gates;
 2. **Slice 1A:** exact-page hash-bound chunks and exact-read category forwarding;
 3. **Slice 1B:** after the host approves anonymous
    `scope=coordination|all`, expose public wiki scope across ranked search,
@@ -588,9 +589,11 @@ neither the scope host decision nor either retained-snapshot substrate.
 Removal of the legacy `wiki` tool must not land before slice 1A exposes
 equivalent exact-page continuation through canonical `read_page`; it does not
 wait on the independent new-scope decision.
-The current spec-only branch does not claim runtime or broad tests; a later
-lane must rerun `claim_check.py` and either wait for or receive a handoff from
-the active owners.
+The current local slice-0A lane claims only the exact runtime and focused-test
+seams recorded in `STATUS.md`. It re-runs `claim_check.py` before every
+write-set expansion, keeps unrelated active-owner files out of scope, and
+remains under the publication hold until deployment and as-built sync close
+the live privacy gap.
 
 ## Risks / Trade-offs
 

@@ -3172,16 +3172,12 @@ def list_goals(
     *,
     author: str = "",
     tag: str = "",
-    include_deleted: bool = False,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """List Goals with optional filters. Soft-deleted Goals are hidden
-    unless ``include_deleted=True`` (used by admin surfaces + get)."""
+    """List public Goals with optional filters."""
     initialize_author_server(base_path)
-    clauses: list[str] = []
+    clauses: list[str] = ["visibility = 'public'"]
     params: list[Any] = []
-    if not include_deleted:
-        clauses.append("visibility != 'deleted'")
     if author:
         clauses.append("author = ?")
         params.append(author)
@@ -3200,6 +3196,30 @@ def list_goals(
         results = [_goal_from_row(row) for row in rows]
         _apply_canonical_bindings_cutover(conn, results)
     return results
+
+
+def public_goal_ids(base_path: str | Path) -> set[str]:
+    """Return IDs for Goals whose visibility is exactly public."""
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT goal_id FROM goals WHERE visibility = 'public'"
+        ).fetchall()
+    return {str(row["goal_id"]) for row in rows}
+
+
+def non_public_goal_ids(base_path: str | Path) -> set[str]:
+    """Return IDs for every Goal whose visibility is not exactly public."""
+    initialize_author_server(base_path)
+    with _connect(base_path) as conn:
+        rows = conn.execute(
+            "SELECT goal_id, visibility FROM goals"
+        ).fetchall()
+    return {
+        str(row["goal_id"])
+        for row in rows
+        if row["visibility"] != "public"
+    }
 
 
 _GOAL_SEARCH_TOKEN_RE = re.compile(r"[a-z0-9]+")
@@ -3231,10 +3251,10 @@ def search_goals(
     Multi-word queries are split into individual tokens; each token is
     matched case-insensitively against name + description + tags_json.
     Rows that match at least one token are returned, ranked by how many
-    tokens matched (descending), then by recency.
+    tokens matched (descending).
 
     Single-token queries behave identically to the original LIKE search.
-    Hidden Goals (visibility='deleted') are excluded.
+    Only Goals with exactly ``visibility='public'`` are searched.
     """
     initialize_author_server(base_path)
     tokens = _goal_search_tokens(query or "")
@@ -3242,10 +3262,10 @@ def search_goals(
         return []
 
     with _connect(base_path) as conn:
-        # Fetch all non-deleted goals then score in Python.
+        # Fetch public goals then score in Python.
         # For v1 scale this is fine; swap to FTS5 if row count grows large.
         all_rows = conn.execute(
-            "SELECT * FROM goals WHERE visibility != 'deleted'",
+            "SELECT * FROM goals WHERE visibility = 'public'",
         ).fetchall()
 
         scored: list[tuple[int, dict[str, Any]]] = []
@@ -3936,6 +3956,7 @@ def list_gate_claims(
     branch_def_id: str = "",
     goal_id: str = "",
     include_retracted: bool = False,
+    public_only: bool = False,
     limit: int = 100,
 ) -> list[dict[str, Any]]:
     """List gate claims filtered by branch OR goal.
@@ -3957,6 +3978,12 @@ def list_gate_claims(
     if goal_id:
         clauses.append("goal_id = ?")
         params.append(goal_id)
+    if public_only:
+        clauses.append(
+            "goal_id IN ("
+            "SELECT goal_id FROM goals WHERE visibility = 'public'"
+            ")"
+        )
     if not include_retracted:
         clauses.append("retracted_at IS NULL")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
@@ -4282,6 +4309,7 @@ def goal_common_nodes_all(
     min_branches: int = 2,
     limit: int = 20,
     viewer: str = "",
+    public_goals_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Return NodeDefinitions that appear in at least ``min_branches``
     Branches across ALL Goals (cross-Goal aggregation).
@@ -4295,13 +4323,28 @@ def goal_common_nodes_all(
     ``goal_common_nodes`` didn't see both.
 
     Phase 6.2.2: ``viewer`` filters private Branches owned by other
-    actors out of the aggregation.
+    actors out of the aggregation. Public action callers set
+    ``public_goals_only`` so branches bound to non-public Goals cannot
+    contribute IDs, nodes, counts, or ranks; unbound branches still count.
     """
     branches = list_branch_definitions(base_path, viewer=viewer)
+    public_goal_ids: set[str] | None = None
+    if public_goals_only:
+        with _connect(base_path) as conn:
+            rows = conn.execute(
+                "SELECT goal_id FROM goals WHERE visibility = 'public'",
+            ).fetchall()
+        public_goal_ids = {str(row["goal_id"]) for row in rows}
     counters: dict[str, dict[str, Any]] = {}
     for branch in branches:
         seen_this_branch: set[str] = set()
         branch_goal = branch.get("goal_id") or ""
+        if (
+            public_goal_ids is not None
+            and branch_goal
+            and branch_goal not in public_goal_ids
+        ):
+            continue
         for node in branch.get("node_defs") or []:
             nid = node.get("node_id") or ""
             if not nid or nid in seen_this_branch:
@@ -4335,6 +4378,7 @@ def search_nodes(
     role: str = "",
     limit: int = 20,
     viewer: str | None = None,
+    public_goals_only: bool = False,
 ) -> list[dict[str, Any]]:
     """Search NodeDefinitions across every Branch by free-text ``query``
     and optional ``role`` (phase) filter.
@@ -4355,6 +4399,13 @@ def search_nodes(
     branch list via ``list_branch_definitions``.
     """
     branches = list_branch_definitions(base_path, viewer=viewer or "")
+    public_goal_ids: set[str] | None = None
+    if public_goals_only:
+        with _connect(base_path) as conn:
+            rows = conn.execute(
+                "SELECT goal_id FROM goals WHERE visibility = 'public'",
+            ).fetchall()
+        public_goal_ids = {str(row["goal_id"]) for row in rows}
     q = (query or "").strip().lower()
     q_tokens = [t for t in q.split() if t]
     phase_filter = (role or "").strip().lower()
@@ -4364,6 +4415,12 @@ def search_nodes(
     node_goals: dict[str, list[str]] = {}
     for branch in branches:
         branch_goal = branch.get("goal_id") or ""
+        if (
+            public_goal_ids is not None
+            and branch_goal
+            and branch_goal not in public_goal_ids
+        ):
+            continue
         seen_in_branch: set[str] = set()
         for node in branch.get("node_defs") or []:
             nid = node.get("node_id") or ""

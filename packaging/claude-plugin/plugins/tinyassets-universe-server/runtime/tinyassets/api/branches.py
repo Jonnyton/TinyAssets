@@ -548,6 +548,7 @@ def _ext_branch_get(kwargs: dict[str, Any]) -> str:
             _base_path(),
             branch_def_id=bid,
             include_retracted=False,
+            public_only=True,
         )
     else:
         branch["gate_claims"] = []
@@ -3096,6 +3097,7 @@ def _ext_branch_search_nodes(kwargs: dict[str, Any]) -> str:
         role=role,
         limit=limit,
         viewer=_request_branch_actor(),
+        public_goals_only=True,
     )
 
     header = "**Reusable nodes**"

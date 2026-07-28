@@ -12,6 +12,7 @@ from tinyassets.branch_versions import publish_branch_version
 from tinyassets.daemon_server import (
     initialize_author_server,
     save_branch_definition,
+    save_goal,
 )
 from tinyassets.runs import initialize_runs_db
 
@@ -35,12 +36,24 @@ def _seed_bv(base_path, branch_id: str = "b1", publisher: str = "alice") -> str:
     return v.branch_version_id
 
 
+def _seed_public_goal(base_path, goal_id: str = "g1") -> None:
+    save_goal(
+        base_path,
+        goal={
+            "goal_id": goal_id,
+            "name": "Public gate-event Goal",
+            "visibility": "public",
+        },
+    )
+
+
 class TestAttestGateEvent:
     def test_attest_returns_event_id(self, tmp_path, monkeypatch):
         from tinyassets.api.market import _action_attest_gate_event
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
+        _seed_public_goal(tmp_path)
         initialize_runs_db(tmp_path)
 
         result = json.loads(_action_attest_gate_event({
@@ -95,6 +108,7 @@ class TestVerifyGateEvent:
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
+        _seed_public_goal(tmp_path)
         initialize_runs_db(tmp_path)
 
         att = json.loads(_action_attest_gate_event({
@@ -212,6 +226,7 @@ class TestGetListGateEvents:
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
+        _seed_public_goal(tmp_path)
         initialize_runs_db(tmp_path)
 
         att = json.loads(_action_attest_gate_event({
@@ -244,6 +259,7 @@ class TestGetListGateEvents:
 
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
         bvid = _seed_bv(tmp_path)
+        _seed_public_goal(tmp_path)
         initialize_runs_db(tmp_path)
 
         for _ in range(3):
@@ -278,6 +294,7 @@ class TestGetListGateEvents:
     def test_extensions_routes_list(self, tmp_path, monkeypatch):
         from tinyassets.universe_server import extensions
         monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+        _seed_public_goal(tmp_path)
         initialize_runs_db(tmp_path)
 
         result = json.loads(extensions(
