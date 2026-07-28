@@ -16,6 +16,7 @@ Schema migration is idempotent via migrate_gate_event_schema().
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -274,6 +275,7 @@ def list_gate_events(
     goal_id: str = "",
     branch_version_id: str = "",
     include_retracted: bool = True,
+    public_goal_ids: set[str] | None = None,
     limit: int = 50,
 ) -> list[GateEvent]:
     """List gate events filtered by goal_id and/or branch_version_id."""
@@ -293,6 +295,12 @@ def list_gate_events(
             if goal_id:
                 query += " AND ge.goal_id = ?"
                 params.append(goal_id)
+            if public_goal_ids is not None:
+                query += (
+                    " AND ge.goal_id IN "
+                    "(SELECT value FROM json_each(?))"
+                )
+                params.append(json.dumps(sorted(public_goal_ids)))
             if not include_retracted:
                 query += " AND ge.verification_status != 'retracted'"
             query += " ORDER BY ge.attested_at DESC LIMIT ?"
@@ -304,6 +312,11 @@ def list_gate_events(
             if goal_id:
                 clauses.append("goal_id = ?")
                 params.append(goal_id)
+            if public_goal_ids is not None:
+                clauses.append(
+                    "goal_id IN (SELECT value FROM json_each(?))"
+                )
+                params.append(json.dumps(sorted(public_goal_ids)))
             if not include_retracted:
                 clauses.append("verification_status != 'retracted'")
             if clauses:

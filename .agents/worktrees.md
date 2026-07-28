@@ -1565,3 +1565,17 @@ Notes:
 - Review gate: 45 focused tests, py_compile, strict OpenSpec, no-live-mutator inspection, exact-head Codex and Claude Opus 5 review
 - Ship/abandon: keep tasks 3.6/3.7 unchecked; open against main, then close #1820 as superseded with replacement link; do not import or close sibling snapshot PR #1819
 - Update 2026-07-27: PR #1830 opened against main at `fab12790`; #1820 closed as superseded; #1819 remains parked for the separate snapshot/task-5.3 lane
+
+## 2026-07-27 - canonical public-read completeness
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/public-read-completeness-current
+- Lane state: slice 0A local runtime approved; deploy/sync/live connector proof pending
+- Worktree: C:\Users\Jonathan\Projects\wf-public-read-completeness-current
+- STATUS/Issue/PR: Implement canonical public-read completeness; no public PR before the privacy deployment gate
+- PLAN refs: canonical seven handles; Tier-1 chatbot-first surface; wiki discovery; shared goals; §14 load proof; Village deferred
+- Purpose: close every public private-Goal read oracle, then define visibility-safe full-scope pagination and completeness receipts without adding an MCP handle
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-public-read-completeness-current\_PURPOSE.md
+- Memory refs: PR #1812 blocker evidence; `docs/audits/2026-07-25-full-product-vision-completion-audit.md`
+- Review gate: spec Opus 5 round 18 APPROVE; runtime Opus 5 round 8b APPROVE after every blocking finding was folded
+- Ship/abandon: private deploy first, then sync/publish and rendered connector acceptance; never publish the live privacy gap ahead of deployment
