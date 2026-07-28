@@ -937,14 +937,13 @@ capabilities.
 compaction/handoffs, project rule-file budgets, external implementation
 research
 
-**Next home:** opposite-provider review artifact, then an OpenSpec change if the
-reviewer concludes the cross-skill behavioral change is substantive under the
-current host directive
+**Next home:** canonical skills in `.agents/skills/` and generated Claude
+mirrors; no OpenSpec change was required for this process-only revision
 
 **Queue mirror:** `ideas/PIPELINE.md` Active Promotions
 
-**Exact next action:** recheck research and issue an
-`approve | adapt | defer | reject` verdict
+**Exact next action:** fold the verified branch into the current integration
+branch through the normal PR/merge path
 
 **Review write boundary:** new review artifact only; do not edit the proposed
 skills during review
@@ -953,17 +952,17 @@ skills during review
 mirrors listed in the header; optional tests/helper only if justified by the
 approved plan
 
-**Build blocked on review:** yes
+**Build blocked on review:** no — Claude returned **ADAPT** and the blocking
+changes were incorporated
 
 **Exit check:** fresh-agent scenario suite, skill validation, mirror parity,
 diff check, and context-budget report
 
 ## Worktree landing packet
 
-**Proposed implementation branch:** `codex/context-engineering-revision` or
-reviewer-adapted equivalent
+**Implementation branch:** `codex/context-engineering-handoff`
 
-**Proposed worktree:** `../wf-context-engineering-revision`
+**Worktree:** `../wf-context-engineering-handoff-20260728`
 
 **Base:** current `origin/main` after review
 
@@ -973,9 +972,8 @@ reviewer-adapted equivalent
 
 **Research refs:** this handoff and the required Claude review
 
-**First independent slice:** baseline scenarios plus rewrite of
-`context-engineering`; do not add the scout skill until the core lifecycle and
-boundary are stable
+**Independent slices completed:** baseline scenarios, core lifecycle rewrite,
+precedent scout, cross-skill routing, mirror sync, and live adversarial dispatch
 
 **Before-commit gates:** targeted fresh-agent scenarios, skill validation,
 mirror sync, diff check
@@ -987,11 +985,14 @@ scope
 when landed; capture deferred caching/automation only if scenario evidence
 justifies it
 
-**GitHub state:** draft PR while research review or scenario validation remains
-open; ready only after both pass
+**GitHub state:** branch is ready for the normal fold-back path; no PR was
+opened by this implementation session
 
 ## Completion state
 
-This handoff records a proposed, research-backed direction. It does not modify
-the context-engineering skill, project architecture, or runtime. Implementation
-remains blocked on the required opposite-provider research review.
+Implemented in `ca852f55` after Claude **ADAPT** research review and independent
+implementation review. The rewritten context skill, new precedent scout,
+planning/router/subagent/research/peer boundaries, Claude mirrors, scenario
+evidence, and validation are complete. Live testing caught and closed the
+read-only peer artifact-delivery and raw-JSON formatting loopholes. No product
+architecture/runtime or OpenSpec capability changed.
