@@ -1557,10 +1557,11 @@ Notes:
 - Branch: codex/restack-retire-loop-github-state-20260727
 - Lane state: selective main-based squash in progress
 - Worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727
-- STATUS/Issue/PR: replacement for parked draft PR #1820; new main-based draft PR not yet opened
+- STATUS/Issue/PR: main-based draft PR #1830; old draft PR #1820 closed as superseded with replacement link
 - PLAN refs: user-buildable/remixable automation; retire only privileged GitHub residue; preserve generic effectors and explicit GitHub primitives
 - Purpose: import only the fail-closed inventory/planning/verifier payload and exact 3.6/3.7 spec delta; exclude old snapshot/site/coordination ancestry
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727\_PURPOSE.md
 - Memory refs: base 66006cf4; PR #1829 audit; source payload d40173a2; draft PR #1820
 - Review gate: 45 focused tests, py_compile, strict OpenSpec, no-live-mutator inspection, exact-head Codex and Claude Opus 5 review
 - Ship/abandon: keep tasks 3.6/3.7 unchecked; open against main, then close #1820 as superseded with replacement link; do not import or close sibling snapshot PR #1819
+- Update 2026-07-27: PR #1830 opened against main at `fab12790`; #1820 closed as superseded; #1819 remains parked for the separate snapshot/task-5.3 lane

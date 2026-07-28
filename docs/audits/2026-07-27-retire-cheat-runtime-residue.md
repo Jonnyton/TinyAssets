@@ -109,6 +109,9 @@ Selective-restack verification on
 - Strict target and all-OpenSpec validation: 59/59 pass.
 - CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
   3.6/3.7 remain unchecked and no live apply was invoked.
+- Main-based draft PR #1830 now carries the replacement; draft PR #1820 was
+  closed as superseded with a link, while sibling snapshot PR #1819 remains
+  parked under the separate task-5.3 proof boundary.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
