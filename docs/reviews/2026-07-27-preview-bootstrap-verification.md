@@ -2,16 +2,16 @@
 
 Freshness: 2026-07-27 America/Los_Angeles, Windows 11 host,
 `origin/main`-based worktree `wf-preview-boundary-bootstrap-20260727`.
-Implementation/evidence anchor: `753e3763` (`fix(preview): split source
-bootstrap from activation`); tree:
-`4c74cdb97e4f3b6cf9f83e8cdce1311d82206798`. The credentialed `workflow_run`
+Implementation/evidence anchor: `6d01e2cc` (`fix(preview): close residual
+discovery edges`); tree:
+`ddb9ebf1cba9349b08fe45d0731a54f62b9b9a86`. The credentialed `workflow_run`
 consumer cannot run until its trusted definition lands on the default branch.
 
 ## Source Verification
 
 | Check | Command | Result |
 |---|---|---|
-| Preview contract + hostile validators | `cd WebSite/site; npm ci; npm test` | 197 total; 193 passed, 0 failed, 4 Windows capability skips |
+| Preview contract + hostile validators | `cd WebSite/site; npm ci; npm test` | 201 total; 197 passed, 0 failed, 4 Windows capability skips |
 | Design system build | `cd WebSite/design-system; npm ci; npm run build` | passed; 123 tokens and 6 component schemas generated |
 | React static export | `cd WebSite/site-react; npm ci; npm run build` | passed; 26 static routes |
 | Trusted deployment toolchain | `cd WebSite/site-react/preview-deploy-tools; npm ci --ignore-scripts --no-audit --no-fund; npm exec --no -- wrangler --version; npm audit --omit=dev` | Wrangler `4.114.0`; 0 vulnerabilities |
@@ -20,11 +20,11 @@ consumer cannot run until its trusted definition lands on the default branch.
 | OpenSpec | strict validation of `harden-hosted-preview-trust-boundary` and its unsynced `activate-hosted-preview-publication` successor | both valid |
 | Parsed target/authority scan | `preview-worker-security.test.mjs` over all three workflows and trusted Worker/config/tool lock | passed |
 | Deployed-tree receipt | fixed SHA-256 fixture over the exact pretty-JSON manifest bytes; byte, path, and ordering mutations | expected digest matched; every mutation changed it |
-| Worker routing matrix | dynamically imported trusted Worker with an ASSETS spy; 43 literal/case/slash/dot/encoded/double-encoded/malformed MCP, discovery, and residual-percent paths plus 4 benign paths | every blocked path returned no-store `503` with zero ASSETS calls; unrelated `.well-known` and ordinary paths delegated once |
+| Worker routing matrix | dynamically imported trusted Worker with an ASSETS spy; 47 literal/case/slash/dot/encoded/double-encoded/malformed MCP, OAuth/OIDC/MCP-discovery, empty-segment, and residual-percent paths plus 4 benign paths | every blocked path returned no-store `503` with zero ASSETS calls; unrelated `.well-known` and ordinary paths delegated once |
 | Wrangler command parse/bundle | pinned Wrangler `versions upload ... --preview-alias p16-r5m-a3 --experimental-provision=false --experimental-auto-create=false --dry-run` | passed; assets binding recognized |
 | Wrangler receipt parser | `validate-preview-upload.test.mjs` against the exact 4.114.0 labels/URL shapes plus hostile duplicates, controls, hosts, aliases, and subdomains | passed |
 | GitHub head-shape audit | `gh api` for current run `30316290900` and prior PR #1812 runs | current `head_sha`, associated head, and PR head agree at `287049e1`; historical run heads remain old while associated heads drift current |
-| Exact diff/status | `git diff --check a204d96e..753e3763`; `git status --porcelain`; `docview.py stat STATUS.md` | implementation diff clean; only this evidence update remained when captured; STATUS exactly 60 lines |
+| Exact diff/status | `git diff --check 44694b1d..6d01e2cc`; `git status --porcelain`; `docview.py stat STATUS.md` | final implementation diff clean; only this evidence update remained when captured; STATUS exactly 60 lines |
 
 The representative React export contained 111 files, 54 directories,
 165 total entries, 2,861,047 uncompressed bytes, maximum depth 6, and a longest
@@ -88,5 +88,14 @@ remains required merge evidence.
   upload required a host-held credential. `81912aa0` now forbids production
   credentials while permitting exactly one least-privilege preview-only
   host-held bootstrap credential outside GitHub until Access proof is accepted.
+- Three exact-head Codex lanes and Claude Opus 5 approved `44694b1d` for the
+  dormant source merge. Opus left only non-blocking defense-in-depth notes:
+  empty-after-dot/space segments fell through to an unreachable 404, OIDC
+  discovery was not explicit, and GitHub may materialize an empty environment
+  before activation.
+- `6d01e2cc` closes those notes: empty-after-normalization segments fail closed,
+  `/.well-known/openid-*` joins the blocked discovery surface, fixtures pin both,
+  and operator/successor guidance says to create or harden the possibly
+  pre-existing empty environment only after Access proof.
 - Exact-head Codex and Opus rereviews remain required after this evidence commit
   and the source-only OpenSpec-generated archive/sync diff.
