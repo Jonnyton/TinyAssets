@@ -581,3 +581,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** inventory all provider discovery roots
   before checking the OpenSpec task. The tracked-tree scan was correct but too
   narrow to prove that the active host had stopped teaching the old behavior.
+
+## 2026-07-27 - privileged loop soul source retirement
+
+- **What surprised me:** the source deletion itself is intentionally much
+  smaller than task 5.3. Removing seven platform-owned prompt assets does not
+  prove generated snapshots, stored role identities, or third-party hosts are
+  clean.
+- **Pattern worth capturing:** split source retirement from data retirement,
+  and keep the parent task open until every projection and live store has its
+  own provenance-aware proof. A deleted default must not become a filter that
+  blocks equivalent user-authored designs.
+- **What I would do differently:** name the PR “source-only” from its first
+  commit so reviewers do not have to infer that live deregistration remains a
+  separate gate.

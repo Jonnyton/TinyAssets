@@ -1504,15 +1504,32 @@ Notes:
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/restack-retire-loop-uptime-final-20260727
 - Publish branch: codex/retire-loop-uptime-skill (PR #1815 force-with-lease target)
-- Lane state: task 6.2 replayed on corrected main; independent exact-head review pending
+- Lane state: landed as PR #1815
 - Build worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-final-20260727
-- STATUS/Issue/PR: draft PR #1815 against main after #1812 and #1827 landed
+- STATUS/Issue/PR: PR #1815 merged to main as `d024e479`
 - PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
 - Purpose: delete the active loop-uptime escape-hatch skill and catalog routes while retaining incident records only as historical non-skill evidence
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-final-20260727\_PURPOSE.md
 - Memory refs: base 18abe542; prior payload head 50192892; prepared review heads b71f1b70/fae3842b
 - Review gate: skill sync/parity, active-surface scan, strict OpenSpec, independent exact-head review
-- Ship/abandon: force-with-lease PR #1815 only after exact-head approval; never reinterpret historical incidents as active instructions
+- Ship/abandon: landed at `d024e479`; never reinterpret historical incidents as active instructions
 - Host checkout obligation: after #1815 lands, safely reconcile primary checkout `0bc841aa` to merged main so the exact discovery-only `.agents`/`.claude` deletions cease to be uncommitted; do not restore the retired route or overwrite unrelated dirty files
 - Update 2026-07-27: canonical skill/catalog and PLAN escape-path claim replayed; seven historical records moved out of active agent surfaces
 - Update 2026-07-27: pre-review head 328a98e6 passed idempotent skill sync, drift/skill gates, zero active/runtime route scans, 59/59 strict OpenSpec, and fresh-session host-catalog proof; `test_validate_skills.py` retains only the two known main-baseline `zoom-out` fixture failures
+- Update 2026-07-27: exact head a3c8cb7d received Codex and Claude Opus 5 APPROVE and landed through PR #1815 as `d024e479`
+
+## 2026-07-27 - restack privileged loop soul retirement
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/restack-retire-loop-souls-final-20260727
+- Publish branch: codex/retire-loop-souls (PR #1818 force-with-lease target)
+- Lane state: source-only deletion replayed on main; exact-head review pending
+- Worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-souls-final-20260727
+- STATUS/Issue/PR: draft PR #1818 to be retargeted from the landed #1815 branch to main
+- PLAN refs: user-buildable/remixable automations; generic soul/daemon machinery; no platform-owned loop-team defaults
+- Purpose: delete the seven shipped loop-team soul documents without filtering user-authored workflows or claiming live snapshot/data retirement
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-souls-final-20260727\_PURPOSE.md
+- Memory refs: base d024e479; prior PR head a6376bfe; source deletion d311cf03 replayed as 29486b98
+- Review gate: exact absence/reference scans, daemon-registry tests, strict OpenSpec, Codex and Claude Opus 5 exact-head review
+- Ship/abandon: keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination, live-source disposition, stored-role, and synthetic-fixture proof are complete
+- Remaining proof: source deletion is not production deregistration or generated-snapshot evidence
