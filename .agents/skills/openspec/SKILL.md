@@ -26,6 +26,10 @@ never assume repo-local paths. If status reports
 operation isn't supported in this slice — treat linked repos/folders as read-only
 and STOP before editing.
 
+At dispatch/triage time, also run `python scripts/openspec_flow.py audit` and
+finish existing delivery WIP before admitting more. This is on-demand flow
+control, not a mandatory session-start step.
+
 ## explore — a thinking partner
 
 A stance, not a workflow: curious, visual (ASCII diagrams liberally), adaptive,
@@ -48,6 +52,18 @@ ready artifacts in dependency order: `openspec instructions <artifact-id>
 these blocks into the file). Read completed dependencies for context, write each
 artifact, re-check status, until every `applyRequires` artifact is `done`. Verify
 each file exists before moving on.
+
+A delivery change has one intent expressible in one sentence, one owner, one
+branch, one PR, explicit acceptance/verification, and at most 12 total task
+checkboxes. Reference full-product vision in PLAN/design/audits; never
+bulk-convert it into active changes. Park incidental findings outside the
+active queue. After scaffolding the change and before claiming or building it,
+run `python scripts/openspec_flow.py check-change <name> --provider
+<exact-session-provider>`. Every matching claimed row counts conservatively.
+One active delivery change is allowed per exact STATUS identity; global WIP
+stays visible and minting provider suffixes to evade the limit is a review
+violation. Existing oversized changes remain diagnostic legacy state. The
+12-task ceiling is a 2026-07-28 calibration to review on 2026-08-11.
 
 ## apply — implement the tasks
 
@@ -83,4 +99,5 @@ delta specs exist, assess sync state and offer to sync first (recommended). Then
 - [ ] Oriented via `openspec list`/`status --json`; used resolved paths, not assumed ones
 - [ ] No code written in explore mode; insights captured only with user consent
 - [ ] All `applyRequires` artifacts `done` before apply; tasks checked off as completed
+- [ ] Delivery admission checked; one intent/owner/branch/PR and no more than 12 total task checkboxes
 - [ ] Spec sync preserved unmentioned content and is idempotent; archive confirmed on incomplete work
