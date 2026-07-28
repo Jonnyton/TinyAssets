@@ -53,8 +53,11 @@ Its present implementation is not strong enough for TinyAssets:
 - it has no context-quality evaluation;
 - its fixed MCP product table will become stale;
 - its examples consume a large fraction of the skill without teaching
-  TinyAssets-specific execution;
-- its diagram contains encoding damage in the current checkout.
+  TinyAssets-specific execution.
+
+The box-drawing diagram is valid UTF-8 in the checkout. Garbled rendering seen
+during the initial audit was a Windows code-page/tool-display problem, not
+source-file damage, and is not a justification for the rewrite.
 
 The revised skill should be smaller, more procedural, and more tightly routed.
 Heavy implementation-precedent research should live in a narrow specialist
@@ -331,7 +334,11 @@ For TinyAssets:
 
 #### 2. Write a Task Context Manifest
 
-Replace the current "Brain Dump" with:
+Replace the current "Brain Dump" with a field contract. Reuse these fields in
+the task's existing coordination artifact first: `_PURPOSE.md`, an SDD task
+brief, a STATUS row plus linked plan, or another accepted handoff. Create a
+standalone manifest only when no existing artifact covers the task; do not
+introduce a fourth parallel source of task truth.
 
 ```markdown
 ## Task Context Manifest
@@ -462,8 +469,10 @@ Defaults:
 - permanent GitHub links use a full commit SHA and exact file/line anchors;
 - return verified partial findings on timeout.
 
-Store transient handoffs beneath the existing ignored
-`.superpowers/sdd/` workspace. Pass only the artifact path to the coding agent.
+Store transient handoffs beneath the existing ignored `output/` workspace,
+normally `output/precedent-scout/`. Pass only the artifact path to the coding
+agent. (`.superpowers/sdd/` is not ignored in this checkout and must not be
+used for new transient scout output.)
 Promote the artifact into tracked documentation only when it carries a durable
 cross-task decision.
 
@@ -621,7 +630,7 @@ constraint is worse than a larger sufficient one.
 
 ## Recommended skill structure
 
-Keep the rewritten `SKILL.md` near 150–190 lines:
+Keep the rewritten `SKILL.md` compact; 150–190 lines is guidance, not a gate:
 
 1. frontmatter;
 2. overview and governing rule;
@@ -648,6 +657,10 @@ always-loaded project context.
 
 Create a narrow specialist skill whose sole job is bounded, read-only search
 for high-quality external implementations and direct-to-coder source maps.
+It defines the scout role and return contract. `peer-agents` is one dispatch
+mechanism when an opposite-family subscription is useful; internal codebase
+explorers remain responsible for local repository localization, not external
+implementation precedent.
 
 Suggested description:
 
@@ -686,10 +699,14 @@ Clarify that a context-isolating scout:
 
 - is a single read-only research task, not Mode B parallel implementation;
 - receives a focused brief rather than the full plan/session;
-- writes the source map to the transient SDD workspace;
+- writes the source map to `output/precedent-scout/`;
 - returns only status, artifact path, stop reason, and concerns;
 - may receive one targeted follow-up request;
 - must return partial verified output when budget expires.
+
+The actual dispatch prompt/tool allowlist must enforce read/search/fetch-only
+authority, no shell, no secrets, no execution, and no writes outside the
+designated output artifact. Role prose alone is not a permission boundary.
 
 ### Update `external-research-implications`
 
@@ -701,6 +718,10 @@ Clarify the boundary:
 
 The heavyweight workflow may invoke the scout for adjacent implementations,
 but its durable implications/review responsibilities remain unchanged.
+A scout source map is task-scoped implementation evidence inside an already
+authorized lane and uses normal code review. If it would change PLAN/OpenSpec
+design truth or introduce a new capability direction, escalate it to
+`external-research-implications` and its opposite-provider research gate.
 
 ### Do not update `AGENTS.md` or `PLAN.md`
 
@@ -722,6 +743,9 @@ Claude independently:
 - issues `approve`, `adapt`, `defer`, or `reject`.
 
 No skill implementation should start before an `approve` or `adapt` verdict.
+Claude returned **ADAPT** in
+`docs/audits/2026-07-28-context-engineering-claude-review.md`; its six blocking
+corrections are incorporated into this handoff and implementation lane.
 
 ### Task 1: Establish baseline skill scenarios
 
@@ -761,7 +785,6 @@ Implement bounded search and the source-map contract.
 Initial defaults:
 
 - one scout;
-- target 6–12 search/read turns;
 - five-minute target and ten-minute absolute maximum where the harness supports
   it;
 - three repositories normally, five maximum;
@@ -771,9 +794,17 @@ Initial defaults:
 - partial verified output on timeout;
 - no exploration trace in coder context.
 
+Do not hard-code a turn limit in the first slice. Let the time/output budget and
+evidence-sufficiency stop condition dominate, then calibrate turns from scenario
+evidence.
+
 Do not implement persistent caching in the first slice. If later needed, key it
 by immutable repository/content identity, normalized query, and scout
 prompt/tool/model versions.
+
+No OpenSpec change is required for these process-skill edits. Harness-level
+automatic dispatch, persistent caching, or runtime context-selection primitives
+remain deferred and require a future OpenSpec change.
 
 ### Task 4: Wire discovery and task briefs
 
