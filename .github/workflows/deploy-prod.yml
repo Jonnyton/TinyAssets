@@ -49,7 +49,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: deploy-prod
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:
@@ -104,6 +104,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -278,6 +280,146 @@ jobs:
               output.write(f"prior_receipt_b64={prior_b64}\n")
           PY
 
+      - name: Preflight droplet disk before image pull
+        id: disk-preflight
+        run: |
+          # A full root volume can make both the forward deploy and the rollback
+          # fail while the live daemon is already down. Reclaim disposable state
+          # before touching TINYASSETS_IMAGE or pulling the new image.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              'sudo bash -s' <<'SH'
+          set -euo pipefail
+
+          threshold=85
+          fail_threshold=90
+
+          max_disk_pct() {
+            max=0
+            for path in / /var/lib/docker /data; do
+              [ -e "$path" ] || continue
+              pct="$(df -P "$path" | awk 'NR==2 {gsub("%", "", $5); print $5}')"
+              case "$pct" in
+                ''|*[!0-9]*) pct=0 ;;
+              esac
+              if [ "$pct" -gt "$max" ]; then
+                max="$pct"
+              fi
+            done
+            echo "$max"
+          }
+
+          echo "disk preflight before cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          before="$(max_disk_pct)"
+          if [ "$before" -ge "$threshold" ]; then
+            echo "::warning::disk usage ${before}% >= ${threshold}%; pruning disposable Docker/build/journal state before deploy"
+            docker system prune -af 2>&1 | tail -80 || true
+            docker builder prune -af 2>&1 | tail -80 || true
+            journalctl --vacuum-time=3d 2>&1 | tail -20 || true
+          else
+            echo "disk usage ${before}% < ${threshold}%; no pre-deploy prune needed"
+          fi
+
+          echo "disk preflight after cleanup:"
+          df -h / /var/lib/docker /data 2>&1 || true
+
+          after="$(max_disk_pct)"
+          if [ "$after" -ge "$fail_threshold" ]; then
+            echo "::error::disk usage still ${after}% >= ${fail_threshold}% after prune; refusing deploy before image pull/restart"
+            exit 1
+          fi
+          SH
+
+      # TRANSITIONAL retire-cheat-loop task 2.1 fence. Remove the helper and
+      # these orchestration steps after task 2.5's locked migration.
+      - name: Transitional task 2.1 stop-writer preflight
+        id: stop-writer
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+        run: |
+          set -euo pipefail
+          # retire-cheat-loop task 2.1: no host runtime write occurs before
+          # the disk guard and exact stop-writer image ancestry proof.
+          STOP_WRITER_SHA=35da9d4fc1a1fc51d3db56bf5d1627691f54d894
+          evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
+          mkdir -p "$evidence_dir"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/retire_cheat_loop_deploy_fence.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker pull '${NEW_IMAGE}' >/dev/null"
+          target_revision="$(
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo docker image inspect '${NEW_IMAGE}' --format '{{index .Config.Labels \"org.opencontainers.image.revision\"}}'"
+          )"
+          if [[ ! "$target_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::target image has no canonical source revision"
+            exit 1
+          fi
+          git fetch --no-tags --prune origin main
+          if ! git cat-file -e "${target_revision}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$target_revision"
+          fi
+          if ! git merge-base --is-ancestor "$STOP_WRITER_SHA" "$target_revision"; then
+            echo "::error::target image predates task 2.1 stop-writer floor"
+            exit 1
+          fi
+          echo "target_revision=${target_revision}" >> "$GITHUB_OUTPUT"
+
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py preflight --image-ref '${NEW_IMAGE}' --revision '${target_revision}'" \
+              > "$evidence_dir/preflight.json"
+          preflight_status=$?
+          set -e
+          python - "$evidence_dir/preflight.json" "$evidence_dir/receipt_snapshot_before.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          snapshot = evidence.get("receipt_snapshot")
+          with open(sys.argv[2], "w", encoding="utf-8") as output:
+              json.dump(snapshot, output, sort_keys=True, separators=(",", ":"))
+              output.write("\n")
+          safe_previous = ""
+          previous = evidence.get("previous_image_ref", "")
+          revision = evidence.get("previous_revision", "")
+          if previous and len(revision) == 40:
+              known = subprocess.run(
+                  ["git", "cat-file", "-e", f"{revision}^{{commit}}"],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode == 0
+              ancestor = known and subprocess.run(
+                  [
+                      "git",
+                      "merge-base",
+                      "--is-ancestor",
+                      "35da9d4fc1a1fc51d3db56bf5d1627691f54d894",
+                      revision,
+                  ],
+                  stdout=subprocess.DEVNULL,
+                  stderr=subprocess.DEVNULL,
+              ).returncode == 0
+              if ancestor:
+                  safe_previous = previous
+          with open(sys.argv[3], "a", encoding="utf-8") as output:
+              output.write(f"safe_previous_image={safe_previous}\n")
+              output.write(
+                  "cutover_started="
+                  + str(
+                      bool(evidence.get("cutover_started") or evidence.get("safe"))
+                  ).lower()
+                  + "\n"
+              )
+          PY
+          exit "$preflight_status"
       # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
       # All env mutations route through `deploy/install-tinyassets-env.sh`
       # which uses `install -m 640 -o root -g tinyassets` for an atomic
@@ -338,58 +480,6 @@ jobs:
                sudo install -m 0755 -o tinyassets -g tinyassets /tmp/tinyassets-vector-entrypoint.sh /opt/tinyassets/deploy/vector-entrypoint.sh; \
                sudo install -m 0644 -o root -g root /tmp/tinyassets-daemon.service /etc/systemd/system/tinyassets-daemon.service; \
                sudo systemctl daemon-reload"
-
-      - name: Preflight droplet disk before image pull
-        id: disk-preflight
-        run: |
-          # A full root volume can make both the forward deploy and the rollback
-          # fail while the live daemon is already down. Reclaim disposable state
-          # before touching TINYASSETS_IMAGE or pulling the new image.
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              'sudo bash -s' <<'SH'
-          set -euo pipefail
-
-          threshold=85
-          fail_threshold=90
-
-          max_disk_pct() {
-            max=0
-            for path in / /var/lib/docker /data; do
-              [ -e "$path" ] || continue
-              pct="$(df -P "$path" | awk 'NR==2 {gsub("%", "", $5); print $5}')"
-              case "$pct" in
-                ''|*[!0-9]*) pct=0 ;;
-              esac
-              if [ "$pct" -gt "$max" ]; then
-                max="$pct"
-              fi
-            done
-            echo "$max"
-          }
-
-          echo "disk preflight before cleanup:"
-          df -h / /var/lib/docker /data 2>&1 || true
-
-          before="$(max_disk_pct)"
-          if [ "$before" -ge "$threshold" ]; then
-            echo "::warning::disk usage ${before}% >= ${threshold}%; pruning disposable Docker/build/journal state before deploy"
-            docker system prune -af 2>&1 | tail -80 || true
-            docker builder prune -af 2>&1 | tail -80 || true
-            journalctl --vacuum-time=3d 2>&1 | tail -20 || true
-          else
-            echo "disk usage ${before}% < ${threshold}%; no pre-deploy prune needed"
-          fi
-
-          echo "disk preflight after cleanup:"
-          df -h / /var/lib/docker /data 2>&1 || true
-
-          after="$(max_disk_pct)"
-          if [ "$after" -ge "$fail_threshold" ]; then
-            echo "::error::disk usage still ${after}% >= ${fail_threshold}% after prune; refusing deploy before image pull/restart"
-            exit 1
-          fi
-          SH
 
       # Codex CLI rotates single-use OAuth refresh tokens in-place inside
       # the container. compose.yml sets CODEX_HOME=/data/.codex and
@@ -606,17 +696,13 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "printf '%s' '${NEW_IMAGE}' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_IMAGE"
-          # Cutover (2026-05-29): route file_bug investigation requests to the
-          # user-buildable patch-request loop instead of the legacy cheat branch.
-          # patch_request_loop_v5 (branch_def_id 0ca6e9c97f65) localizes via
-          # search_repo_files, reads existing files via read_repo_files, edits
-          # via the github_pull_request effector's edits_json diff format, and
-          # opens a real draft PR. Replaces fd5c66b1d87d, which produced only
-          # analysis packets and was failing every run. Idempotent set; reverting
-          # this block restores the prior handler on the next deploy.
+          # Transitional retire-cheat-loop task 2.1 cleanup: the new image no
+          # longer reads either product handler selector. Delete stale values so
+          # active configuration cannot advertise a successor. This alone is
+          # not the writer fence; old-image rollback is separately prohibited.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "printf '%s' '0ca6e9c97f65' | sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID"
+              "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID TINYASSETS_BUG_INVESTIGATION_GOAL_ID"
           # Enqueue go-live (2026-06-03): turn ON the in-node paced enqueue verb
           # so a user-built driver branch can append run-requests to its own
           # universe's dispatcher queue. The verb shipped dark in #1214 and was
@@ -756,6 +842,13 @@ jobs:
             echo "- API-key providers forced off when the Codex subscription bundle is synced."
             echo "- TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy: \`${HAS_GITHUB_PR_CAPABILITY}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          # retire-cheat-loop task 2.1: unmask the daemon only after the exact
+          # target ref is installed and the quiescent baseline still matches.
+          # Watchdog and autoheal racers remain fenced through proof.
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prepare-deploy --image-ref '${NEW_IMAGE}'" \
+              > "$RUNNER_TEMP/stop-writer-evidence/prepare-deploy.json"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
@@ -862,6 +955,32 @@ jobs:
               print(f"worker diagnostic: {name} exists={path.exists()} bytes={size}")
           PY
 
+      - name: Transitional task 2.1 prove exact fleet and unchanged receipts
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.stop-writer.outputs.target_revision }}
+        run: |
+          set -euo pipefail
+          # retire-cheat-loop task 2.1: require exactly daemon + four workers
+          # on the selected digest/revision, all old IDs stopped, no stray
+          # writer or queue risk, and the same read-only receipt snapshot.
+          evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prove --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}'" \
+              > "$evidence_dir/post-deploy.json"
+          python - "$evidence_dir/post-deploy.json" \
+              "$evidence_dir/receipt_snapshot_post_deploy.json" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          snapshot = evidence["observation"]["receipt_snapshot"]
+          with open(sys.argv[2], "w", encoding="utf-8") as output:
+              json.dump(snapshot, output, sort_keys=True, separators=(",", ":"))
+              output.write("\n")
+          PY
+
       - name: Post-deploy canary — canonical URL only
         id: canary
         run: |
@@ -910,6 +1029,31 @@ jobs:
             echo "Access gate confirmed: ${DIRECT_URL} → HTTP ${http_code} (expected 403/401)"
           fi
 
+      - name: Transitional task 2.1 post-canary receipt proof
+        env:
+          NEW_IMAGE: ${{ steps.tag.outputs.image_ref }}
+          TARGET_REVISION: ${{ steps.stop-writer.outputs.target_revision }}
+        run: |
+          set -euo pipefail
+          # retire-cheat-loop task 2.1: public canaries must not create a
+          # retired receipt or make a retained investigation row runnable.
+          evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py post-canary --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}'" \
+              > "$evidence_dir/post-canary.json"
+          python - "$evidence_dir/post-canary.json" \
+              "$evidence_dir/receipt_snapshot_post_canary.json" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          snapshot = evidence["observation"]["receipt_snapshot"]
+          with open(sys.argv[2], "w", encoding="utf-8") as output:
+              json.dump(snapshot, output, sort_keys=True, separators=(",", ":"))
+              output.write("\n")
+          PY
+
       - name: Mark forward path complete
         id: forward
         run: echo "forward_succeeded=true" >> "$GITHUB_OUTPUT"
@@ -918,10 +1062,10 @@ jobs:
         id: rollback
         if: always()
         env:
-          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
-          PREV_IMAGE: ${{ steps.prev.outputs.previous }}
+          PREV_IMAGE: ${{ steps.stop-writer.outputs.safe_previous_image }}
           TARGET_REPOSITORY: ${{ steps.tag.outputs.image }}
         run: |
           set +e
@@ -1077,11 +1221,97 @@ jobs:
           emit_rollback_outputs
           exit 0
 
+      - name: Transitional task 2.1 restore restart racers when safe
+        id: stop-writer-cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          # retire-cheat-loop task 2.1: independently inspect durable masks and
+          # host fence state even when the preflight step produced no outputs.
+          # Restore only after exact-five fleet, digest, revision, old-ID,
+          # queue, process, and receipt proof. Otherwise leave racers fenced.
+          STOP_WRITER_SHA=35da9d4fc1a1fc51d3db56bf5d1627691f54d894
+          evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
+          mkdir -p "$evidence_dir"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/retire_cheat_loop_deploy_fence.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py status" \
+              > "$evidence_dir/fence-status.json"
+          if python - "$evidence_dir/fence-status.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          status = json.load(open(sys.argv[1], encoding="utf-8"))
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write(
+                  "cutover_started="
+                  + str(bool(status.get("state_exists"))).lower()
+                  + "\n"
+              )
+          raise SystemExit(
+              0
+              if not status.get("state_exists") and not status.get("masked_units")
+              else 1
+          )
+          PY
+          then
+            echo "No active task 2.1 fence needs restoration."
+            exit 0
+          fi
+
+          set +e
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py observe" \
+              > "$evidence_dir/cleanup-observation.json"
+          observation_status=$?
+          set -e
+          if [ "$observation_status" -ne 0 ]; then
+            echo "::error::safe active fleet is unproved; leaving restart racers fenced"
+            exit 1
+          fi
+          readarray -t identity < <(
+            python - "$evidence_dir/cleanup-observation.json" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          containers = evidence.get("containers", {})
+          images = {row.get("image_ref") for row in containers.values()}
+          revisions = {row.get("revision") for row in containers.values()}
+          if len(containers) != 5 or len(images) != 1 or len(revisions) != 1:
+              raise SystemExit("active fleet identity is not exact")
+          print(next(iter(images)))
+          print(next(iter(revisions)))
+          PY
+          )
+          active_image="${identity[0]}"
+          active_revision="${identity[1]}"
+          if [[ ! "$active_revision" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::active fleet revision is not canonical; leaving restart racers fenced"
+            exit 1
+          fi
+          git fetch --no-tags --prune origin main
+          if ! git cat-file -e "${active_revision}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$active_revision"
+          fi
+          if ! git merge-base --is-ancestor "$STOP_WRITER_SHA" "$active_revision"; then
+            echo "::error::active fleet predates stop-writer floor; leaving restart racers fenced"
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py restore-if-safe --image-ref '${active_image}' --revision '${active_revision}'" \
+              > "$evidence_dir/cleanup.json"
+
       - name: Publish release-state receipt
         id: terminal
         if: always()
         env:
-          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
           FORWARD_CANARY_OUTCOME: ${{ steps.canary.outcome }}
@@ -1342,6 +1572,15 @@ jobs:
             fi
           fi
 
+      - name: Upload transitional task 2.1 deploy proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retire-cheat-loop-task-2-1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stop-writer-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
       - name: Open deploy-failed issue
         if: always() && failure()
         uses: actions/github-script@v7
@@ -1349,7 +1588,7 @@ jobs:
           NEW_TAG: ${{ steps.tag.outputs.tag }}
           ATTEMPTED_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
-          PRODUCTION_MUTATION_STARTED: ${{ steps.production_mutation.outputs.production_mutation_started }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           ROLLBACK_ATTEMPTED: ${{ steps.rollback.outputs.rollback_attempted }}
           ROLLBACK_RESULT: ${{ steps.rollback.outputs.rollback_result }}
@@ -1542,8 +1781,13 @@ jobs:
             echo "### Deploy result"
             echo ""
             echo "- **Target image:** \`${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}\`"
+            echo "- **Stop-writer target revision:** \`${{ steps.stop-writer.outputs.target_revision }}\`"
+            echo "- **Stop-writer cutover:** \`${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}\`"
+            echo "- **Safe rollback target:** \`${{ steps.stop-writer.outputs.safe_previous_image }}\`"
+            echo "- **Restart-racer cleanup:** \`${{ steps.stop-writer-cleanup.outcome }}\`"
+            echo "- **Durable proof artifact:** \`retire-cheat-loop-task-2-1-${{ github.run_id }}-${{ github.run_attempt }}\`"
             echo "- **Previous image:** \`${{ steps.prev.outputs.previous }}\`"
-            echo "- **Production mutation:** \`${{ steps.production_mutation.outputs.production_mutation_started }}\`"
+            echo "- **Production mutation:** \`${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' }}\`"
             echo "- **Image mutation:** \`${{ steps.deploy.outputs.image_mutation_started }}\`"
             echo "- **Deploy step:** \`${{ steps.deploy.outcome }}\`"
             echo "- **Canary step:** \`${{ steps.canary.outcome }}\`"
