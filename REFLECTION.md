@@ -600,7 +600,9 @@ fresh-host rollback edges found later.
 
 - **What surprised me:** the highest-impact runtime stop-writer is blocked by
   broad test ownership, while the old GitHub-state inventory migrator is
-  independently restackable because its tests live beside the script.
+  independently restackable because its tests live beside the script. The first
+  audit also reversed a cross-change dependency: the dark replacement authority
+  store/reconciler must precede legacy-row migration.
 - **Pattern worth capturing:** inventory durable platform state before deleting
   its producers; workflow source removal does not cancel queued runs, remove
   labels, or revoke existing auto-merge instructions.

@@ -1548,3 +1548,4 @@ Notes:
 - Memory refs: base 30c962c7; PRs #1812/#1815/#1818 landed; retire-cheat-loop OpenSpec
 - Review gate: exact residue scan, claim-check owner map, strict OpenSpec, independent Codex/Claude architecture review before implementation
 - Ship/abandon: publish the audit/foldback separately; implement only after an exact Files/Depends claim is clear
+- Update 2026-07-27: exact-head Codex review required an ordering correction: 2.1 stop-writer -> dark authority store/reconciler -> locked 2.5 migration -> authority activation/foldback; stale broad claims must be revalidated/reaped or carved
