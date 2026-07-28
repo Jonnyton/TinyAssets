@@ -184,6 +184,8 @@ test("Cloudflare credentials exist only on the locked per-PR version upload", ()
   assert.doesNotMatch(JSON.stringify(comment), /CLOUDFLARE_|secrets\./);
   assert.match(upload.run, /\bversions upload\b/);
   assert.match(upload.run, /--preview-alias "\$\{PREVIEW_ALIAS\}"/);
+  assert.match(upload.run, /--experimental-provision=false/);
+  assert.match(upload.run, /--experimental-auto-create=false/);
   assert.doesNotMatch(upload.run, /\bwrangler deploy\b|\bnpx\b|@latest/);
   assert.doesNotMatch(deployWorkflowText, /\bpull_request_target\b/);
   assert.doesNotMatch(deployWorkflowText, /\bcache\b/i);

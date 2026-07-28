@@ -129,7 +129,9 @@ reviewer's browser is allowed to reach.
 
 1. Land this bootstrap on `main` with no Cloudflare credential configured.
 2. Create a dedicated Cloudflare preview account and least-privilege Workers
-   Scripts token.
+   Scripts token; enable its `workers.dev` subdomain and create the fixed
+   `tiny-site-react-preview` Worker as a one-time host action. The workflow
+   deliberately disables provisioning and target auto-creation.
 3. Configure the `react-preview` GitHub environment for `main`, add the preview
    account ID/token, require review, and disable admin bypass where supported.
 4. Rebase PR #1812 onto the bootstrap merge so its unprivileged build can

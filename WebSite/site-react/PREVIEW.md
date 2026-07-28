@@ -79,7 +79,9 @@ The credentialed upload targets the GitHub environment `react-preview`. It must
 not receive credentials until the following isolated infrastructure exists:
 
 - a dedicated Cloudflare **preview account** with no production Workers, routes,
-  domains, data, or credentials;
+  domains, data, or credentials; enable its `workers.dev` subdomain and create
+  the fixed `tiny-site-react-preview` Worker as a one-time host action because
+  the workflow deliberately cannot provision or auto-create targets;
 - environment secret `CLOUDFLARE_PREVIEW_API_TOKEN`, containing a new token with
   only Workers Scripts write permission in that preview account;
 - environment variable `CLOUDFLARE_PREVIEW_ACCOUNT_ID`, containing that preview

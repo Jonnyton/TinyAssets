@@ -35,8 +35,10 @@
   Claude Opus 5 opposite-provider review; adapt and repeat on every code change.
 - [ ] 3.3 Sync the delta into `openspec/specs/public-website-surface/spec.md`,
   archive this change, push the narrow bootstrap PR, and land it on `main`.
-- [ ] 3.4 Host creates the dedicated Cloudflare preview account and protected
-  `react-preview` environment credentials; never reuse production credentials.
+- [ ] 3.4 Host creates the dedicated Cloudflare preview account, enables its
+  `workers.dev` subdomain, creates the fixed preview Worker, and configures the
+  protected `react-preview` environment credentials; never reuse production
+  credentials.
 - [ ] 3.5 Rebase PR #1812 onto the bootstrap merge and capture a real current-
   head hosted preview, blocked `/mcp` response, rendered browser conversation,
   and post-fix clean-use evidence before calling publication proven.

@@ -68,3 +68,4 @@ account.
 - **WHEN** an operator enables credentialed preview publication
 - **THEN** the protected environment is default-branch restricted and holds only a Workers Scripts write token plus account ID for a dedicated Cloudflare preview account
 - **AND** that account contains no production Workers, routes, domains, data, or credentials
+- **AND** the host has enabled the account's `workers.dev` subdomain and created the fixed preview Worker because workflow provisioning and target auto-creation remain disabled
