@@ -183,6 +183,11 @@ Current-main terminal-oracle integration on 2026-07-28:
   offline-validation round trip, and proved the malformed-page fixture needed
   a non-iterable value. The follow-up rejects anchor pagination state and pins
   each continuation seam, the live round trip, and typed non-iterable failure.
+- The exact #1836-based rereview found no remaining accepted forgery or
+  mutation authority, but 3/24 isolated mutations still survived: deleting
+  the receipt-chain digest link, weakening the pagination exact-key envelope,
+  and deleting terminal page-ordinal binding. Three focused regressions now
+  perturb only those seams on an otherwise-valid two-page receipt.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

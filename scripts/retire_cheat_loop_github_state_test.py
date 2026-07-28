@@ -947,6 +947,32 @@ class ReceiptTests(unittest.TestCase):
         valid_multi_page["pagination"]["page_receipts"][1]["item_count"] = 1
         mod._validate_complete_connections([valid_multi_page], repo=repo())
 
+        broken_chain = copy.deepcopy(valid_multi_page)
+        broken_chain["pagination"]["page_receipts"][0]["next_url_digest"] = (
+            mod.digest({"unrelated": "request"})
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [broken_chain],
+                repo=repo(),
+            )
+
+        extra_pagination_field = copy.deepcopy(valid_multi_page)
+        extra_pagination_field["pagination"]["unreviewed_authority"] = True
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [extra_pagination_field],
+                repo=repo(),
+            )
+
+        wrong_terminal_ordinal = copy.deepcopy(valid_multi_page)
+        wrong_terminal_ordinal["pagination"]["terminal"]["page_ordinal"] = 0
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [wrong_terminal_ordinal],
+                repo=repo(),
+            )
+
         full_second_terminal = copy.deepcopy(valid_multi_page)
         full_second_terminal["count"] = 200
         full_second_terminal["pagination"]["page_receipts"][1]["item_count"] = 100
