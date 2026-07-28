@@ -4,6 +4,7 @@ import {
   lstat,
   mkdir,
   open,
+  opendir,
   readdir,
   writeFile,
 } from "node:fs/promises";
@@ -11,8 +12,13 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const DEFAULT_LIMITS = Object.freeze({
+  maxDirectoryCount: 2_000,
+  maxEntryCount: 12_000,
+  maxDepth: 32,
   maxFileBytes: 25 * 1024 * 1024,
   maxFileCount: 10_000,
+  maxRelativePathBytes: 1_024,
+  maxRelativePathChars: 512,
   maxTotalBytes: 250 * 1024 * 1024,
 });
 
@@ -90,8 +96,13 @@ function assertPositiveInteger(value, name) {
 
 function normalizedLimits(overrides) {
   const limits = { ...DEFAULT_LIMITS, ...overrides };
+  assertPositiveInteger(limits.maxDirectoryCount, "maxDirectoryCount");
+  assertPositiveInteger(limits.maxEntryCount, "maxEntryCount");
+  assertPositiveInteger(limits.maxDepth, "maxDepth");
   assertPositiveInteger(limits.maxFileBytes, "maxFileBytes");
   assertPositiveInteger(limits.maxFileCount, "maxFileCount");
+  assertPositiveInteger(limits.maxRelativePathBytes, "maxRelativePathBytes");
+  assertPositiveInteger(limits.maxRelativePathChars, "maxRelativePathChars");
   assertPositiveInteger(limits.maxTotalBytes, "maxTotalBytes");
   return limits;
 }
@@ -191,16 +202,40 @@ async function inventory(source, limits) {
   const files = [];
   const directories = new Set();
   const canonicalPaths = new Set();
+  let entryCount = 0;
   let totalBytes = 0;
 
-  async function walk(absoluteDirectory, relativeDirectory) {
-    if (relativeDirectory) directories.add(relativeDirectory);
-    const entries = await readdir(absoluteDirectory, { withFileTypes: true });
-    for (const entry of entries) {
+  async function walk(absoluteDirectory, relativeDirectory, depth) {
+    const directory = await opendir(absoluteDirectory);
+    for await (const entry of directory) {
       assertSafeComponent(entry.name);
       const relativePath = relativeDirectory
         ? `${relativeDirectory}/${entry.name}`
         : entry.name;
+      const entryDepth = depth + 1;
+      if (entryDepth > limits.maxDepth) {
+        throw new Error(
+          `Artifact exceeds the maximum depth of ${limits.maxDepth}: ${relativePath}`,
+        );
+      }
+      const relativePathChars = [...relativePath].length;
+      if (relativePathChars > limits.maxRelativePathChars) {
+        throw new Error(
+          `Artifact relative path exceeds the character limit of ${limits.maxRelativePathChars}: ${relativePath}`,
+        );
+      }
+      const relativePathBytes = Buffer.byteLength(relativePath, "utf8");
+      if (relativePathBytes > limits.maxRelativePathBytes) {
+        throw new Error(
+          `Artifact relative path exceeds the UTF-8 byte limit of ${limits.maxRelativePathBytes}: ${relativePath}`,
+        );
+      }
+      entryCount += 1;
+      if (entryCount > limits.maxEntryCount) {
+        throw new Error(
+          `Artifact exceeds the total-entry limit of ${limits.maxEntryCount}`,
+        );
+      }
       const canonicalPath = relativePath.normalize("NFC").toLowerCase();
       if (canonicalPaths.has(canonicalPath)) {
         throw new Error(`Artifact contains a case- or Unicode-colliding path: ${relativePath}`);
@@ -213,7 +248,13 @@ async function inventory(source, limits) {
         throw new Error(`Artifact contains a symlink: ${relativePath}`);
       }
       if (metadata.isDirectory()) {
-        await walk(absolutePath, relativePath);
+        if (directories.size + 1 > limits.maxDirectoryCount) {
+          throw new Error(
+            `Artifact exceeds the directory-count limit of ${limits.maxDirectoryCount}`,
+          );
+        }
+        directories.add(relativePath);
+        await walk(absolutePath, relativePath, entryDepth);
         continue;
       }
       if (!metadata.isFile()) {
@@ -248,7 +289,7 @@ async function inventory(source, limits) {
     }
   }
 
-  await walk(source, "");
+  await walk(source, "", 0);
   files.sort((left, right) =>
     left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
   );

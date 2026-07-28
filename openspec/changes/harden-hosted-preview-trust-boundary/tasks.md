@@ -1,25 +1,30 @@
 ## 1. Specify And Pin The Boundary
 
 - [x] 1.1 Record the three-stage authority split, exact provenance contract,
-  static-artifact allowlist, per-PR version model, blocked-MCP rule, dedicated
-  preview-account requirement, bootstrap dependency, and repository-wide
+  static-artifact allowlist, never-reused per-run version model, blocked-MCP
+  rule, dedicated preview-account/deny-by-default Access requirement, truthful
+  Access-controlled retention, bootstrap dependency, and repository-wide
   secret-custody non-goal in proposal, design, and delta spec.
 - [x] 1.2 Add parsed workflow/config contract tests plus positive and hostile
-  validator fixtures that fail if build, intake, credential, comment, target,
-  tooling, or MCP authorities collapse.
+  validator fixtures that pin the current authority split and named regression
+  modes across build, intake, credential, comment, target, tooling, and MCP
+  boundaries.
+- [x] 1.3 Add an unfiltered, unprivileged preview-security workflow so every
+  pull request and `main` push produces a branch-protection-compatible contract
+  check even when the artifact-producing workflow is path-filtered.
 
 ## 2. Implement The Trusted Bootstrap
 
-- [x] 2.1 Make `preview-worker.yml` a read-only, no-secret, no-cache,
-  no-persisted-credential build/test workflow that uploads one short-lived,
-  attempt-specific static export.
+- [x] 2.1 Make `preview-worker.yml` a read-only, no-secret,
+  no-persisted/shared-cross-boundary-cache, no-persisted-credential build/test
+  workflow that uploads one short-lived, attempt-specific static export.
 - [x] 2.2 Add the secretless trusted intake, exact run/PR/workflow/artifact
   validator, bounded artifact sanitizer, deterministic manifest, and immutable
   sanitized transfer.
 - [x] 2.3 Add the fresh protected-environment job with exact trusted checkout,
   manifest revalidation, fixed Worker/configuration, lockfile-pinned
-  no-lifecycle-script Wrangler, current-head recheck, and undeployed per-PR
-  version alias.
+  no-lifecycle-script Wrangler, current-head recheck, and undeployed immutable
+  per-run version alias.
 - [x] 2.4 Add the separate pull-request-comment authority and trusted Worker
   `503`/no-store block for `/mcp` and `/mcp/*`.
 - [x] 2.5 Rewrite preview operator guidance so no fixed URL, live-data bridge,
@@ -36,7 +41,9 @@
 - [ ] 3.3 Sync the delta into `openspec/specs/public-website-surface/spec.md`,
   archive this change, push the narrow bootstrap PR, and land it on `main`.
 - [ ] 3.4 Host creates the dedicated Cloudflare preview account, enables its
-  `workers.dev` subdomain, creates the fixed preview Worker, and configures the
+  `workers.dev` subdomain, creates the fixed preview Worker, enables
+  deny-by-default Access for named/organization reviewers with no public bypass,
+  proves denied anonymous plus successful authorized access, and configures the
   protected `react-preview` environment credentials; never reuse production
   credentials.
 - [ ] 3.5 Rebase PR #1812 onto the bootstrap merge and capture a real current-

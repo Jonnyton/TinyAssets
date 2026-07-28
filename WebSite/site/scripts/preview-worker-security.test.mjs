@@ -12,8 +12,12 @@ const buildWorkflowText = read("../../../.github/workflows/preview-worker.yml");
 const deployWorkflowText = read(
   "../../../.github/workflows/preview-worker-deploy.yml",
 );
+const securityWorkflowText = read(
+  "../../../.github/workflows/preview-security.yml",
+);
 const buildWorkflow = parse(buildWorkflowText);
 const deployWorkflow = parse(deployWorkflowText);
+const securityWorkflow = parse(securityWorkflowText);
 const trustedWorkerConfig = read("../../site-react/wrangler.preview.toml");
 const trustedWorkerProgram = read("../../site-react/cf-worker/worker.js");
 const deployToolsPackage = JSON.parse(
@@ -48,10 +52,21 @@ function namedStep(job, name) {
 
 test("pull-request build has one unprivileged static-export job", () => {
   assert.deepEqual(Object.keys(buildWorkflow.on), ["pull_request"]);
+  assert.deepEqual(buildWorkflow.on.pull_request.paths, [
+    "WebSite/site-react/**",
+    "WebSite/shared/**",
+    "WebSite/site/scripts/preview-worker-security.test.mjs",
+    "WebSite/site/scripts/validate-preview-*.mjs",
+    "WebSite/site/package.json",
+    "WebSite/site/package-lock.json",
+    "WebSite/design-system/**",
+    ".github/workflows/preview-worker.yml",
+    ".github/workflows/preview-worker-deploy.yml",
+  ]);
   assert.deepEqual(buildWorkflow.permissions, { contents: "read" });
   assert.deepEqual(Object.keys(buildWorkflow.jobs), ["build"]);
   assert.equal(buildWorkflow.jobs.build.environment, undefined);
-  assert.doesNotMatch(buildWorkflowText, /\bsecrets\./);
+  assert.doesNotMatch(buildWorkflowText, /\bsecrets\s*(?:\.|\[)/);
   assert.doesNotMatch(buildWorkflowText, /\bpull-requests:\s*write\b/);
   assert.doesNotMatch(buildWorkflowText, /\bcache\b/i);
   assert.doesNotMatch(buildWorkflowText, /\bwrangler\b/i);
@@ -73,10 +88,31 @@ test("pull-request build has one unprivileged static-export job", () => {
   });
 });
 
+test("preview trust-boundary contract is an unfiltered required-check candidate", () => {
+  assert.deepEqual(Object.keys(securityWorkflow.on), ["pull_request", "push"]);
+  assert.equal(securityWorkflow.on.pull_request, null);
+  assert.deepEqual(securityWorkflow.on.push, { branches: ["main"] });
+  assert.deepEqual(securityWorkflow.permissions, { contents: "read" });
+  assert.deepEqual(Object.keys(securityWorkflow.jobs), ["contract"]);
+  const { contract } = securityWorkflow.jobs;
+  assert.equal(contract.environment, undefined);
+  assert.deepEqual(contract.permissions, undefined);
+  assert.doesNotMatch(
+    securityWorkflowText,
+    /\bsecrets\s*(?:\.|\[)|\b(?:issues|pull-requests|actions):\s*write\b|\bcache\b|\bwrangler\b/i,
+  );
+  const checkout = contract.steps.find((step) => step.uses === ACTIONS.checkout);
+  assert.deepEqual(checkout.with, { "persist-credentials": false });
+  const testStep = namedStep(contract, "Run preview trust-boundary contracts");
+  assert.equal(testStep["working-directory"], "WebSite/site");
+  assert.equal(testStep.run, "npm ci\nnpm test\n");
+});
+
 test("every external action is one exact reviewed commit", () => {
   const allSteps = [
     ...actionSteps(buildWorkflow),
     ...actionSteps(deployWorkflow),
+    ...actionSteps(securityWorkflow),
   ];
   assert.ok(allSteps.length > 0);
   for (const step of allSteps) {
@@ -166,10 +202,14 @@ test("Cloudflare credentials exist only on the locked per-PR version upload", ()
   const { intake, deploy, comment } = deployWorkflow.jobs;
   const upload = namedStep(deploy, "Upload trusted per-PR preview version");
   assert.deepEqual(
-    Object.keys(upload.env)
-      .filter((key) => key.startsWith("CLOUDFLARE_"))
-      .sort(),
-    ["CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"],
+    Object.keys(upload.env).sort(),
+    [
+      "CLOUDFLARE_ACCOUNT_ID",
+      "CLOUDFLARE_API_TOKEN",
+      "EXPECTED_HEAD_SHA",
+      "PREVIEW_ALIAS",
+      "PR_NUMBER",
+    ],
   );
   assert.equal(
     upload.env.CLOUDFLARE_API_TOKEN,
@@ -179,16 +219,94 @@ test("Cloudflare credentials exist only on the locked per-PR version upload", ()
     upload.env.CLOUDFLARE_ACCOUNT_ID,
     "${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}",
   );
-  assert.equal((deployWorkflowText.match(/CLOUDFLARE_PREVIEW_API_TOKEN/g) ?? []).length, 1);
-  assert.doesNotMatch(JSON.stringify(intake), /CLOUDFLARE_|secrets\./);
-  assert.doesNotMatch(JSON.stringify(comment), /CLOUDFLARE_|secrets\./);
-  assert.match(upload.run, /\bversions upload\b/);
-  assert.match(upload.run, /--preview-alias "\$\{PREVIEW_ALIAS\}"/);
-  assert.match(upload.run, /--experimental-provision=false/);
-  assert.match(upload.run, /--experimental-auto-create=false/);
-  assert.doesNotMatch(upload.run, /\bwrangler deploy\b|\bnpx\b|@latest/);
+  assert.deepEqual(
+    deployWorkflowText.match(
+      /\$\{\{[^}]*\bsecrets\s*(?:\.|\[)[^}]*\}\}/g,
+    ),
+    ["${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}"],
+  );
+  assert.doesNotMatch(
+    JSON.stringify(intake),
+    /CLOUDFLARE_|\bsecrets\s*(?:\.|\[)/,
+  );
+  assert.doesNotMatch(
+    JSON.stringify(comment),
+    /CLOUDFLARE_|\bsecrets\s*(?:\.|\[)/,
+  );
+  assert.equal(
+    upload.run,
+    `set -euo pipefail
+test -n "\${CLOUDFLARE_API_TOKEN}"
+test -n "\${CLOUDFLARE_ACCOUNT_ID}"
+tool="\${GITHUB_WORKSPACE}/trusted-source/WebSite/site-react/preview-deploy-tools/node_modules/.bin/wrangler"
+deployment="\${RUNNER_TEMP}/preview-deployment"
+"\${tool}" versions upload \\
+  --config "\${deployment}/wrangler.preview.toml" \\
+  --preview-alias "\${PREVIEW_ALIAS}" \\
+  --message "TinyAssets PR #\${PR_NUMBER} \${EXPECTED_HEAD_SHA}" \\
+  --experimental-provision=false \\
+  --experimental-auto-create=false 2>&1 \\
+  | tee "\${RUNNER_TEMP}/wrangler-output.log"
+`,
+  );
   assert.doesNotMatch(deployWorkflowText, /\bpull_request_target\b/);
   assert.doesNotMatch(deployWorkflowText, /\bcache\b/i);
+});
+
+test("immutable preview receipt binds source artifact and Cloudflare version", () => {
+  const { deploy, comment } = deployWorkflow.jobs;
+  assert.equal(
+    deploy.outputs.url,
+    "${{ steps.preview-url.outputs.version_url }}",
+  );
+  assert.equal(
+    deploy.outputs.alias_url,
+    "${{ steps.preview-url.outputs.alias_url }}",
+  );
+  assert.equal(
+    deploy.outputs.version_id,
+    "${{ steps.preview-url.outputs.version_id }}",
+  );
+
+  const receiptStep = namedStep(deploy, "Record immutable preview identity");
+  assert.deepEqual(receiptStep.env, {
+    PREVIEW_ALIAS: "${{ needs.intake.outputs.alias }}",
+  });
+  assert.equal(
+    receiptStep.run,
+    `set -euo pipefail
+receipt="\${RUNNER_TEMP}/preview-upload-receipt.json"
+node "\${GITHUB_WORKSPACE}/trusted-source/WebSite/site/scripts/validate-preview-upload.mjs" \\
+  "\${RUNNER_TEMP}/wrangler-output.log" \\
+  "\${PREVIEW_ALIAS}" > "\${receipt}"
+{
+  echo "alias_url=$(jq -r .aliasUrl "\${receipt}")"
+  echo "version_id=$(jq -r .versionId "\${receipt}")"
+  echo "version_url=$(jq -r .versionUrl "\${receipt}")"
+} >> "\${GITHUB_OUTPUT}"
+`,
+  );
+
+  const commentStep = namedStep(
+    comment,
+    "Recheck head and upsert preview comment",
+  );
+  assert.equal(
+    commentStep.env.INPUT_ARTIFACT_DIGEST,
+    "${{ needs.intake.outputs.input_artifact_digest }}",
+  );
+  assert.equal(
+    commentStep.env.VERSION_ID,
+    "${{ needs.deploy.outputs.version_id }}",
+  );
+  assert.equal(commentStep.env.RUN_ID, "${{ needs.intake.outputs.run_id }}");
+  assert.equal(
+    commentStep.env.RUN_ATTEMPT,
+    "${{ needs.intake.outputs.run_attempt }}",
+  );
+  assert.match(commentStep.run, /Artifact:/);
+  assert.match(commentStep.run, /Cloudflare version:/);
+  assert.match(commentStep.run, /Never-reused alias:/);
 });
 
 test("privileged toolchain and Worker target are fixed by trusted files", () => {

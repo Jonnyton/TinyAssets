@@ -55,6 +55,36 @@ test("copies a valid static export and emits a deterministic sorted manifest", a
   assert.deepEqual(second, first);
 });
 
+test("accepts a valid export exactly at every tree-shape limit", async (t) => {
+  const { source, destination } = await fixture(t);
+  const paths = [
+    "index.html",
+    "404.html",
+    "robots.txt",
+    "_next",
+    "_next/static",
+    "_next/static/chunks",
+    "_next/static/chunks/app.js",
+  ];
+  const longestPathBytes = Math.max(
+    ...paths.map((relativePath) => Buffer.byteLength(relativePath, "utf8")),
+  );
+  const longestPathChars = Math.max(
+    ...paths.map((relativePath) => [...relativePath].length),
+  );
+
+  const manifest = await validateAndCopyPreviewArtifact(source, destination, {
+    ...DEFAULT_LIMITS,
+    maxDirectoryCount: 3,
+    maxEntryCount: 7,
+    maxDepth: 4,
+    maxRelativePathBytes: longestPathBytes,
+    maxRelativePathChars: longestPathChars,
+  });
+
+  assert.equal(manifest.fileCount, 4);
+});
+
 for (const [label, relativePath] of [
   ["newline", "bad\nname.js"],
   ["control", "bad\tname.js"],
@@ -174,6 +204,65 @@ test("rejects excessive file count before copying", async (t) => {
       maxFileCount: 3,
     }),
     /file-count limit/i,
+  );
+});
+
+test("rejects excessive directory count before recursive descent", async (t) => {
+  const { source, destination } = await fixture(t);
+  await assert.rejects(
+    validateAndCopyPreviewArtifact(source, destination, {
+      ...DEFAULT_LIMITS,
+      maxDirectoryCount: 2,
+    }),
+    /directory-count limit/i,
+  );
+});
+
+test("rejects excessive total entry count before recursive descent", async (t) => {
+  const { source, destination } = await fixture(t);
+  await assert.rejects(
+    validateAndCopyPreviewArtifact(source, destination, {
+      ...DEFAULT_LIMITS,
+      maxEntryCount: 6,
+    }),
+    /total-entry limit/i,
+  );
+});
+
+test("rejects excessive directory depth before recursive descent", async (t) => {
+  const { source, destination } = await fixture(t);
+  await assert.rejects(
+    validateAndCopyPreviewArtifact(source, destination, {
+      ...DEFAULT_LIMITS,
+      maxDepth: 3,
+    }),
+    /maximum depth/i,
+  );
+});
+
+test("rejects a relative path over the UTF-8 byte limit", async (t) => {
+  const { source, destination } = await fixture(t);
+  const relativePath = "_next/static/chunks/\u00e9\u00e9.js";
+  await writeFile(path.join(source, ...relativePath.split("/")), "hostile");
+  await assert.rejects(
+    validateAndCopyPreviewArtifact(source, destination, {
+      ...DEFAULT_LIMITS,
+      maxRelativePathBytes: Buffer.byteLength(relativePath, "utf8") - 1,
+    }),
+    /UTF-8 byte limit/i,
+  );
+});
+
+test("rejects a relative path over the character limit", async (t) => {
+  const { source, destination } = await fixture(t);
+  const relativePath = "_next/static/chunks/long-name.js";
+  await writeFile(path.join(source, ...relativePath.split("/")), "hostile");
+  await assert.rejects(
+    validateAndCopyPreviewArtifact(source, destination, {
+      ...DEFAULT_LIMITS,
+      maxRelativePathChars: [...relativePath].length - 1,
+    }),
+    /character limit/i,
   );
 });
 

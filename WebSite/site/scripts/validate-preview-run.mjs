@@ -3,7 +3,9 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const EXPECTED_WORKFLOW_PATH = ".github/workflows/preview-worker.yml";
-export const MAX_ARTIFACT_BYTES = 300 * 1024 * 1024;
+export const MAX_ARTIFACT_BYTES = 25 * 1024 * 1024;
+export const PREVIEW_WORKER_NAME = "tiny-site-react-preview";
+const MAX_DNS_LABEL_LENGTH = 63;
 
 function reject(message) {
   throw new Error(`Preview run rejected: ${message}`);
@@ -189,6 +191,11 @@ export function validatePreviewRun(...args) {
   if (!/^[0-9a-f]{40}$/u.test(workflowRunHeadSha)) {
     reject("workflow run head sha must be a lowercase 40-character hex digest");
   }
+  if (workflowRunHeadSha !== headSha) {
+    reject(
+      "workflow run head sha must match the current pull request head sha",
+    );
+  }
   const associatedHeadRepository = requireObject(
     associatedHead.repo,
     "associated pull request head repository",
@@ -254,6 +261,11 @@ export function validatePreviewRun(...args) {
     reject("artifact head repository does not match the trusted repository");
   }
 
+  const alias = `p${prNumber.toString(36)}-r${runId.toString(36)}-a${runAttempt.toString(36)}`;
+  if (alias.length + PREVIEW_WORKER_NAME.length + 1 > MAX_DNS_LABEL_LENGTH) {
+    reject("derived preview alias and Worker name exceed the DNS label limit");
+  }
+
   return {
     runId,
     runAttempt,
@@ -262,7 +274,7 @@ export function validatePreviewRun(...args) {
     artifactId,
     artifactDigest,
     artifactSize,
-    alias: `pr-${prNumber}`,
+    alias,
   };
 }
 

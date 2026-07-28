@@ -3,7 +3,8 @@
 # workflow_run loads this definition from the default branch. The first job
 # validates and sanitizes the untrusted build artifact without an environment
 # or secret. A fresh protected-environment job receives only that normalized
-# static tree and uploads an undeployed Worker version under a numeric PR alias.
+# static tree and uploads an undeployed Worker version under an immutable
+# run-specific alias.
 name: preview-worker-deploy
 
 on:
@@ -38,6 +39,8 @@ jobs:
       head_sha: ${{ steps.receipt.outputs.head_sha }}
       input_artifact_digest: ${{ steps.receipt.outputs.artifact_digest }}
       pr_number: ${{ steps.receipt.outputs.pr_number }}
+      run_attempt: ${{ steps.receipt.outputs.run_attempt }}
+      run_id: ${{ steps.receipt.outputs.run_id }}
       sanitized_artifact_digest: ${{ steps.sanitized.outputs.artifact-digest }}
       sanitized_artifact_id: ${{ steps.sanitized.outputs.artifact-id }}
     steps:
@@ -87,6 +90,8 @@ jobs:
             echo "artifact_id=$(jq -r .artifactId "${metadata}/receipt.json")"
             echo "head_sha=$(jq -r .headSha "${metadata}/receipt.json")"
             echo "pr_number=$(jq -r .prNumber "${metadata}/receipt.json")"
+            echo "run_attempt=$(jq -r .runAttempt "${metadata}/receipt.json")"
+            echo "run_id=$(jq -r .runId "${metadata}/receipt.json")"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Download exact immutable build artifact
@@ -131,7 +136,9 @@ jobs:
     environment:
       name: react-preview
     outputs:
-      url: ${{ steps.upload.outputs.url }}
+      alias_url: ${{ steps.preview-url.outputs.alias_url }}
+      url: ${{ steps.preview-url.outputs.version_url }}
+      version_id: ${{ steps.preview-url.outputs.version_id }}
     steps:
       - name: Check out exact trusted deployment code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -195,7 +202,6 @@ jobs:
           test "$(jq -r .head.sha "${pr_json}")" = "${EXPECTED_HEAD_SHA}"
 
       - name: Upload trusted per-PR preview version
-        id: upload
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_PREVIEW_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_PREVIEW_API_TOKEN }}
@@ -205,38 +211,34 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
-            echo "::error::react-preview requires its dedicated account token and account ID."
-            exit 1
-          fi
+          test -n "${CLOUDFLARE_API_TOKEN}"
+          test -n "${CLOUDFLARE_ACCOUNT_ID}"
           tool="${GITHUB_WORKSPACE}/trusted-source/WebSite/site-react/preview-deploy-tools/node_modules/.bin/wrangler"
           deployment="${RUNNER_TEMP}/preview-deployment"
-          output="$("${tool}" versions upload \
+          "${tool}" versions upload \
             --config "${deployment}/wrangler.preview.toml" \
             --preview-alias "${PREVIEW_ALIAS}" \
             --message "TinyAssets PR #${PR_NUMBER} ${EXPECTED_HEAD_SHA}" \
             --experimental-provision=false \
-            --experimental-auto-create=false 2>&1)" || {
-              status=$?
-              printf '%s\n' "${output}"
-              echo "::error::wrangler version upload failed (exit ${status})."
-              exit "${status}"
-            }
-          printf '%s\n' "${output}"
-          url="$(printf '%s\n' "${output}" | grep -oE 'https://pr-[0-9]+-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev' | head -1)"
-          expected_url_pattern="^https://${PREVIEW_ALIAS}-tiny-site-react-preview\\.[a-z0-9-]+\\.workers\\.dev$"
-          if ! printf '%s\n' "${url}" | grep -qE "${expected_url_pattern}"; then
-            echo "::error::Wrangler did not report the expected isolated preview URL."
-            exit 1
-          fi
-          echo "url=${url}" >> "${GITHUB_OUTPUT}"
+            --experimental-auto-create=false 2>&1 \
+            | tee "${RUNNER_TEMP}/wrangler-output.log"
+
+      - name: Record immutable preview identity
+        id: preview-url
+        env:
+          PREVIEW_ALIAS: ${{ needs.intake.outputs.alias }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          receipt="${RUNNER_TEMP}/preview-upload-receipt.json"
+          node "${GITHUB_WORKSPACE}/trusted-source/WebSite/site/scripts/validate-preview-upload.mjs" \
+            "${RUNNER_TEMP}/wrangler-output.log" \
+            "${PREVIEW_ALIAS}" > "${receipt}"
           {
-            echo "### Isolated React PR preview"
-            echo "PR: #${PR_NUMBER}"
-            echo "Head: ${EXPECTED_HEAD_SHA}"
-            echo "Preview URL: ${url}"
-            echo "Live /mcp: blocked by the trusted Worker"
-          } >> "${GITHUB_STEP_SUMMARY}"
+            echo "alias_url=$(jq -r .aliasUrl "${receipt}")"
+            echo "version_id=$(jq -r .versionId "${receipt}")"
+            echo "version_url=$(jq -r .versionUrl "${receipt}")"
+          } >> "${GITHUB_OUTPUT}"
 
   comment:
     name: Comment isolated preview URL
@@ -251,14 +253,22 @@ jobs:
         env:
           EXPECTED_HEAD_SHA: ${{ needs.intake.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
+          INPUT_ARTIFACT_DIGEST: ${{ needs.intake.outputs.input_artifact_digest }}
+          PREVIEW_ALIAS_URL: ${{ needs.deploy.outputs.alias_url }}
           PREVIEW_URL: ${{ needs.deploy.outputs.url }}
           PR_NUMBER: ${{ needs.intake.outputs.pr_number }}
           REPOSITORY: ${{ github.repository }}
+          RUN_ATTEMPT: ${{ needs.intake.outputs.run_attempt }}
+          RUN_ID: ${{ needs.intake.outputs.run_id }}
+          VERSION_ID: ${{ needs.deploy.outputs.version_id }}
         shell: bash
         run: |
           set -euo pipefail
           test "${PREVIEW_URL}" != ""
-          printf '%s\n' "${PREVIEW_URL}" | grep -qE '^https://pr-[0-9]+-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev$'
+          printf '%s\n' "${PREVIEW_URL}" | grep -qE '^https://[0-9a-f]{8}-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev$'
+          printf '%s\n' "${PREVIEW_ALIAS_URL}" | grep -qE '^https://p[0-9a-z]+-r[0-9a-z]+-a[0-9a-z]+-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev$'
+          printf '%s\n' "${VERSION_ID}" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          printf '%s\n' "${INPUT_ARTIFACT_DIGEST}" | grep -qE '^sha256:[0-9a-f]{64}$'
           pr_json="${RUNNER_TEMP}/current-pr.json"
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_json}"
           test "$(jq -r .state "${pr_json}")" = "open"
@@ -271,8 +281,12 @@ jobs:
             echo "**Security warning - untrusted PR preview:** ${PREVIEW_URL}"
             echo
             echo "Head: \`${EXPECTED_HEAD_SHA}\`"
+            echo "Workflow run: \`${RUN_ID}\`, attempt \`${RUN_ATTEMPT}\`"
+            echo "Artifact: \`${INPUT_ARTIFACT_DIGEST}\`"
+            echo "Cloudflare version: \`${VERSION_ID}\`"
+            echo "Never-reused alias: ${PREVIEW_ALIAS_URL}"
             echo
-            echo "This URL is isolated to PR #${PR_NUMBER}. Its JavaScript is review input, not trusted product code. Live \`/mcp\` is blocked; the preview uses checked-in public evidence."
+            echo "This immutable URL is Access-restricted review evidence for PR #${PR_NUMBER}. Its JavaScript is untrusted. Live \`/mcp\` is blocked; the preview uses checked-in public evidence."
           } > "${body_file}"
 
           comment_id="$(gh api --paginate \

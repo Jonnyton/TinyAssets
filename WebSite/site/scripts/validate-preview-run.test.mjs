@@ -41,7 +41,7 @@ function validInputs() {
     event: "pull_request",
     workflow_id: 303,
     path: ".github/workflows/preview-worker.yml",
-    head_sha: MERGE_SHA,
+    head_sha: HEAD_SHA,
     repository: { id: repository.id, full_name: repository.full_name },
     head_repository: { id: repository.id, full_name: repository.full_name },
     pull_requests: [
@@ -70,7 +70,7 @@ function validInputs() {
         digest: DIGEST,
         workflow_run: {
           id: workflowRun.id,
-          head_sha: MERGE_SHA,
+          head_sha: HEAD_SHA,
           head_repository_id: repository.id,
         },
       },
@@ -102,7 +102,7 @@ test("returns a deterministic normalized receipt for one trusted run", () => {
     artifactId: 404,
     artifactDigest: DIGEST,
     artifactSize: 4096,
-    alias: "pr-42",
+    alias: "p16-r5m-a3",
   };
   assert.deepEqual(validatePreviewRun(inputs), expectedReceipt);
   assert.deepEqual(validatePreviewRun(inputs), validatePreviewRun(inputs));
@@ -156,10 +156,47 @@ test("CLI reads five JSON inputs and prints the normalized receipt", async () =>
       artifactId: 404,
       artifactDigest: DIGEST,
       artifactSize: 4096,
-      alias: "pr-42",
+      alias: "p16-r5m-a3",
     });
   } finally {
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("alias is DNS-safe, bounded, and unique to the run attempt", () => {
+  const first = validInputs();
+  const nextRun = validInputs();
+  nextRun.workflowRun.id = 203;
+  nextRun.artifactList.artifacts[0].workflow_run.id = 203;
+  const retry = validInputs();
+  retry.workflowRun.run_attempt = 4;
+  retry.expectedArtifactName = "react-preview-42-4";
+  retry.artifactList.artifacts[0].name = retry.expectedArtifactName;
+  const maximum = validInputs();
+  maximum.pullRequest.number = Number.MAX_SAFE_INTEGER;
+  maximum.workflowRun.pull_requests[0].number = Number.MAX_SAFE_INTEGER;
+  maximum.workflowRun.id = Number.MAX_SAFE_INTEGER;
+  maximum.workflowRun.run_attempt = Number.MAX_SAFE_INTEGER;
+  maximum.artifactList.artifacts[0].workflow_run.id = Number.MAX_SAFE_INTEGER;
+  maximum.expectedArtifactName = `react-preview-${Number.MAX_SAFE_INTEGER}-${Number.MAX_SAFE_INTEGER}`;
+  maximum.artifactList.artifacts[0].name = maximum.expectedArtifactName;
+
+  const aliases = [
+    validatePreviewRun(first).alias,
+    validatePreviewRun(nextRun).alias,
+    validatePreviewRun(retry).alias,
+    validatePreviewRun(maximum).alias,
+  ];
+  assert.deepEqual(aliases, [
+    "p16-r5m-a3",
+    "p16-r5n-a3",
+    "p16-r5m-a4",
+    "p2gosa7pa2gv-r2gosa7pa2gv-a2gosa7pa2gv",
+  ]);
+  assert.equal(new Set(aliases).size, aliases.length);
+  for (const alias of aliases) {
+    assert.match(alias, /^p[0-9a-z]+-r[0-9a-z]+-a[0-9a-z]+$/);
+    assert.ok(alias.length + 1 + "tiny-site-react-preview".length <= 63);
   }
 });
 
@@ -252,6 +289,12 @@ test("rejects absent, ambiguous, closed, stale, forked, or off-default PRs", asy
       workflowRun.head_sha = "not-a-sha";
     }, /workflow run head sha/i),
   );
+  await t.test("historical workflow-run head", () =>
+    reject(({ workflowRun, artifactList }) => {
+      workflowRun.head_sha = MERGE_SHA;
+      artifactList.artifacts[0].workflow_run.head_sha = MERGE_SHA;
+    }, /must match the current pull request head sha/i),
+  );
   await t.test("forked current head", () =>
     reject(({ pullRequest }) => {
       pullRequest.head.repo.id = 999;
@@ -313,6 +356,11 @@ test("rejects artifacts from the wrong run, head, or repository", async (t) => {
 });
 
 test("rejects non-positive, oversized, or malformed artifact metadata", async (t) => {
+  assert.equal(MAX_ARTIFACT_BYTES, 25 * 1024 * 1024);
+  const atLimit = validInputs();
+  atLimit.artifactList.artifacts[0].size_in_bytes = MAX_ARTIFACT_BYTES;
+  assert.equal(validatePreviewRun(atLimit).artifactSize, MAX_ARTIFACT_BYTES);
+
   await t.test("empty artifact", () =>
     reject(({ artifactList }) => {
       artifactList.artifacts[0].size_in_bytes = 0;

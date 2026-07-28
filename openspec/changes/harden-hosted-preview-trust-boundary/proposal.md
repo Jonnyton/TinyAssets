@@ -12,12 +12,15 @@ blocks safe retirement of the old privileged automation surface.
 - Add a trusted-default-branch `workflow_run` consumer with secretless
   provenance validation and static-artifact sanitization before any protected
   environment is entered.
-- Publish only an undeployed, per-PR Worker version alias from exact trusted
-  Worker/configuration/tooling, after rechecking the current pull-request head.
+- Publish only an undeployed Worker version under a never-reused run/attempt
+  alias from exact trusted Worker/configuration/tooling, record the
+  provider-generated immutable version URL, and recheck the current
+  pull-request head.
 - Block `/mcp` and `/mcp/*` in the trusted preview Worker so untrusted browser
   JavaScript cannot bridge to production data.
 - Require a dedicated Cloudflare preview account; production-account
-  credentials do not satisfy the boundary.
+  credentials do not satisfy the boundary, and require Cloudflare Access for
+  Access-controlled retained preview evidence.
 - Pin the boundary with hostile validator fixtures, parsed workflow contract
   tests, operator guidance, and independent exact-head review.
 
@@ -35,9 +38,9 @@ None.
 
 ## Impact
 
-This changes the two React preview workflows, trusted preview Worker and
+This changes the three React preview workflows, trusted preview Worker and
 Wrangler configuration, a small lockfile-pinned deployment toolchain, preview
-operator documentation, and website contract tests. The GitHub
+operator documentation, and per-run/attempt website contract tests. The GitHub
 `react-preview` environment must use a dedicated Cloudflare preview account
 before credentialed publication is enabled. Production deployment and
 `tinyassets.io/mcp` are not changed.
