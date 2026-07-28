@@ -526,9 +526,9 @@ removed `request_classification` policy or any automatic writer/checker route.
 ### Shipped prompt and snapshot residues
 
 `docs/souls/community-loop-core-team-v1.md` and the Ada, Elias, Mira, Noor,
-Soren, and Vera loop-role souls are active prompt assets and leave. Generated
-canonical/legacy website snapshots also retain the patch-loop area, automatic
-post-`file_bug` branch promise, and retired tags:
+Soren, and Vera loop-role souls were active prompt assets and are removed by
+PR #1818's source-only wave. Generated canonical/legacy website snapshot and
+live-source proof remains a separate task 5.3 gate:
 
 - `WebSite/site/src/lib/content/mcp-snapshot.json`
 - `WebSite/site/src/lib/content/repo-snapshot.json`

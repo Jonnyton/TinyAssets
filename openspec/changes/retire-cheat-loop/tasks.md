@@ -228,11 +228,11 @@
   souls from `docs/souls`; regenerate canonical and legacy MCP/repository
   snapshots so no retired branch, area, role, or automatic filing promise
   remains.
-  **Current coordination (2026-07-26):** stacked draft PR #1818 exclusively
-  owns the exact seven prompt-asset deletions and has independent Opus 5
-  approval; base draft #1812 MUST NOT duplicate them. The task remains open on
-  truthful live MCP snapshot regeneration and cleanup of synthetic retired-role
-  fixture names after broad `tests/` claims release.
+  **Current coordination (2026-07-27):** PR #1818 owns the exact seven
+  prompt-asset deletions and is being retargeted to `main` after #1812 and
+  #1815 landed. The task remains open on truthful live MCP snapshot
+  regeneration and cleanup of synthetic retired-role fixture names after broad
+  `tests/` claims release.
   **Checked-in snapshot cleanup proved 2026-07-26:** both MCP mirrors now omit
   goals `4ff5862cc26d` and `f10caea2e437`, their tags, retired promises, and
   inconsistent stats. The repository generator no longer carries forward

@@ -285,11 +285,12 @@ Memory retrieval should be conservative:
 The prompt should tell the daemon that retrieved memory is evidence, not
 authority. Soul, node contract, source truth, and tests still win.
 
-## Borrowed Role Context
+## Published Role Context
 
-Borrowing a core-team soul or wiki packet is not copying identity.
+Using a user-published soul or wiki packet as role context is not copying
+identity.
 
-If a community or house daemon runs a node under borrowed role context:
+If a community or house daemon runs a node under published role context:
 
 - executor identity remains the executor's own daemon identity;
 - borrowed soul/wiki/brain entries are cited as role context;
@@ -298,7 +299,8 @@ If a community or house daemon runs a node under borrowed role context:
   when the node contract allows it;
 - fixed model eligibility remains enforced by the node contract.
 
-This keeps the v1 loop team unique while allowing community capacity.
+This keeps executor and published-role identities distinct while allowing
+community capacity.
 
 ## Minimal Tool Surface
 
@@ -355,7 +357,7 @@ The first implementation adds:
   the internal replay harness.
 - Cross-daemon published memories with explicit visibility, attribution, and
   borrow contracts.
-- Role-daemon review rituals for the community loop core team.
+- Role-daemon review rituals for user-authored published role teams.
 
 ## Guardrails
 
