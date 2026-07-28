@@ -204,6 +204,11 @@ Current-main terminal-oracle integration on 2026-07-28:
   repository/OpenSpec gates passed, and no correctness, authority, or approval
   truth defect remained. The later coordination-only foldback records that
   verdict without changing the reviewed implementation or tests.
+- PR #1837 merged the terminal-oracle wave as `ce83a44f` on 2026-07-28.
+  Tasks 3.6/3.7 remain open; no GitHub workflow, label, or PR auto-merge state
+  was changed. The active runtime dependency is now task 2.1's current-main
+  deployment plus exhaustive old-writer, queued-investigation, database, and
+  rollback-fence proof.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
@@ -294,6 +299,22 @@ Fresh production topology evidence (2026-07-28 20:17 UTC):
   conversation, and timestamp here before checking task 2.1. If no post-fix
   organic user use exists yet, keep a freshness-stamped monitoring row in
   `STATUS.md` rather than claiming proven clean use.
+
+Deployment and rollback-fence update (2026-07-28 21:58 UTC):
+
+- Build run `30400438167` and deploy run `30400633747` successfully shipped
+  exact source revision `35da9d4fc1a1fc51d3db56bf5d1627691f54d894`
+  at immutable image
+  `ghcr.io/jonnyton/tinyassets-daemon@sha256:a9526b71030edcec0b4b112bf4c22f8dcefedc891ab6064d48050545a551d687`.
+- Same-image deploy run `30402657556` completed health, worker, canonical MCP,
+  exact-seven, Access-gate, and release-state steps. Its captured previous
+  configured image, previous running image, and attempted image are all the
+  filing-only digest above, so the durable release rollback target no longer
+  points at the pre-stop-writer image.
+- This closes deployment identity and the standard release rollback target,
+  not task 2.1. Exact container/process drain, pending/running
+  `bug_investigation` absence, stable before/after receipt-store snapshots,
+  rendered connector filing, and organic-use evidence remain required.
 
 Until this multi-wave change is synchronized and archived, the main
 `wiki-commons` and `community-patch-loop` specs still describe the retiring

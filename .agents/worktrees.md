@@ -1621,9 +1621,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-github-terminal-oracle-final
-- Lane state: exact semantic head `c95876fe` received Opus 5 APPROVE; publication pending
+- Lane state: PR #1837 merged as `ce83a44f`; terminal-oracle repository wave landed
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final
-- STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835/#1836 are the landed base
+- STATUS/Issue/PR: PR #1837 merged; no live GitHub mutation; privileged-loop runtime-proof claim continues
 - PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
 - Purpose: reject full terminal REST pages as ambiguous while preserving #1830's closed receipt envelope and all other fail-closed guards
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final\_PURPOSE.md
@@ -1640,3 +1640,19 @@ Notes:
 - Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
 - Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass
 - Update 2026-07-28: exact semantic head `c95876fe` received Opus 5 APPROVE; every named mutation died, all 45 concrete forgery probes were rejected, and no correctness or authority defect remained
+- Update 2026-07-28: PR #1837 merged as `ce83a44f`; tasks 3.6/3.7 remain open and the next lane is #1836 stop-writer production deploy/drain/fence proof
+
+## 2026-07-28 - task 2.1 production stop-writer proof
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-github-terminal-oracle-foldback
+- Lane state: #1836 image deployed and rollback target fenced safe; drain/database/rendered evidence pending
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-foldback
+- STATUS/Issue/PR: active privileged-loop retirement claim after PRs #1836/#1837
+- PLAN refs: user-buildable/remixable automation; generic wiki filing survives; no hidden Investigation writer
+- Purpose: deploy the filing-only runtime, drain every old writer/queued investigation, prove rollback cannot re-arm, and collect rendered plus organic evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-foldback\_PURPOSE.md
+- Memory refs: PR #1836 / `35da9d4f`; PR #1837 / `ce83a44f`; retire-cheat-loop task 2.1
+- Review gate: exact image/revision receipt, five-container inventory, restart-racer pause, old-ID drain, SQLite before/after snapshots, queue fence, rendered connector filing, organic-use watch
+- Ship/abandon: task 2.1 stays unchecked until all production writer and rollback-fence evidence is durable
+- Update 2026-07-28: build `30400438167` and deploy `30400633747` shipped revision `35da9d4f` at digest `a9526b71030e…`; same-image deploy `30402657556` succeeded with previous configured/running and attempted image all equal to that safe digest, fencing the release rollback target

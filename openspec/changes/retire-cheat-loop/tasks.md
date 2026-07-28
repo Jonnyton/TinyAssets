@@ -59,6 +59,15 @@
     attached to that store. External BYOC plugin/MCPB installations cannot
     access the controlled volume and are not falsely treated as centrally
     drainable production writers.
+  - Deployment evidence (2026-07-28): build run `30400438167` and deploy run
+    `30400633747` shipped revision `35da9d4fc1a1fc51d3db56bf5d1627691f54d894`
+    as `ghcr.io/jonnyton/tinyassets-daemon@sha256:a9526b71030edcec0b4b112bf4c22f8dcefedc891ab6064d48050545a551d687`.
+    Same-image deploy run `30402657556` then completed every health/canary and
+    release-receipt step with previous configured, previous running, and
+    attempted image all equal to that filing-only digest. The durable rollback
+    target can no longer select the pre-stop-writer image. Task 2.1 remains
+    open for exhaustive process/container drain, queue, receipt-database,
+    rendered connector, and organic-use evidence.
   - The production fence must also prove no pending/running
     `bug_investigation` queue item can append a late Investigation/Patch Packet,
     and that rollback cannot restore a pre-stop-writer image to traffic.
