@@ -705,13 +705,14 @@ def test_operation_lock_blocks_status_until_inflight_command_finishes(
 
     class FakeFcntl:
         LOCK_EX = 1
-        LOCK_UN = 2
+        LOCK_NB = 2
+        LOCK_UN = 4
 
         def __init__(self) -> None:
             self.mutex = threading.Lock()
 
         def flock(self, _descriptor: int, operation: int) -> None:
-            if operation == self.LOCK_EX:
+            if operation & self.LOCK_EX:
                 self.mutex.acquire()
             else:
                 self.mutex.release()
@@ -773,6 +774,193 @@ def test_operation_lock_fails_closed_without_flock_primitive(
     with pytest.raises(FenceError, match="lock primitive is unavailable"):
         with fence._operation_lock(tmp_path / "host-operation.lock"):
             pytest.fail("lock body must not execute")
+
+
+def test_operation_lock_timeout_is_bounded_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class BusyFcntl:
+        LOCK_EX = 1
+        LOCK_NB = 2
+        LOCK_UN = 4
+
+        @staticmethod
+        def flock(_descriptor: int, operation: int) -> None:
+            if operation & BusyFcntl.LOCK_EX:
+                raise BlockingIOError("busy")
+
+    monkeypatch.setattr(fence, "fcntl", BusyFcntl())
+    with pytest.raises(FenceError, match="lock timed out after 0s"):
+        with fence._operation_lock(
+            tmp_path / "host-operation.lock",
+            timeout_seconds=0,
+        ):
+            pytest.fail("timed-out lock body must not execute")
+
+
+def test_host_command_timeout_becomes_fence_error(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed: dict[str, Any] = {}
+
+    def timeout_run(args: Any, **kwargs: Any) -> Any:
+        observed.update(kwargs)
+        raise fence.subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr(fence.subprocess, "run", timeout_run)
+    with pytest.raises(FenceError, match="host command timed out after 45s"):
+        fence.Host().run(["docker", "ps"])
+    assert observed["timeout"] == fence.HOST_COMMAND_TIMEOUT_SECONDS
+
+
+def test_guarded_mutation_strips_separator_before_invoking_command(
+    tmp_path: Path,
+):
+    class GuardHost:
+        def __init__(self) -> None:
+            self.command: list[str] | None = None
+            self.timeout_seconds: int | None = None
+
+        def unit_present(self, _unit: str) -> bool:
+            return False
+
+        def volume_container_names(self) -> list[str]:
+            return []
+
+        def run(
+            self,
+            args: Any,
+            *,
+            timeout_seconds: int,
+        ) -> str:
+            self.command = list(args)
+            self.timeout_seconds = timeout_seconds
+            return ""
+
+    host = GuardHost()
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+            "--command-timeout",
+            "120",
+            "--",
+            "/bin/bash",
+            "-lc",
+            "systemctl restart tinyassets-daemon.service",
+        ]
+    )
+
+    evidence = fence._execute(args, host)
+
+    assert host.command == [
+        "timeout",
+        "--kill-after=2s",
+        "120s",
+        "/bin/bash",
+        "-lc",
+        "systemctl restart tinyassets-daemon.service",
+    ]
+    assert host.timeout_seconds == 125
+    assert evidence["mutation_completed"] is True
+
+
+def test_guard_command_can_check_without_running_a_mutation(tmp_path: Path):
+    class GuardOnlyHost:
+        def unit_present(self, _unit: str) -> bool:
+            return False
+
+        def volume_container_names(self) -> list[str]:
+            return []
+
+        def run(self, _args: Any, **_kwargs: Any) -> str:
+            pytest.fail("guard-only command must not invoke a mutation")
+
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+        ]
+    )
+
+    evidence = fence._execute(args, GuardOnlyHost())
+
+    assert evidence["mutation_completed"] is False
+
+
+def test_guard_command_rejects_empty_mutation_after_separator(tmp_path: Path):
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(tmp_path / "missing-state.json"),
+            "guard-host-mutation",
+            "--",
+        ]
+    )
+
+    with pytest.raises(FenceError, match="guarded host mutation command is invalid"):
+        fence._execute(args, object())
+
+
+@pytest.mark.parametrize(
+    ("unit", "enabled"),
+    (
+        (DAEMON_SERVICE, "masked"),
+        ("daemon-watchdog.timer", "disabled"),
+    ),
+)
+def test_guarded_mutation_rejects_missing_state_with_unit_residue(
+    tmp_path: Path,
+    unit: str,
+    enabled: str,
+):
+    host = LifecycleHost(tmp_path)
+    host.units[unit]["enabled"] = enabled
+
+    with pytest.raises(FenceError, match="stop-writer fence residue"):
+        fence.guard_host_mutation(
+            host,
+            state_path=tmp_path / "missing-state.json",
+        )
+
+
+def test_guarded_mutation_rejects_missing_state_with_restart_no_residue(
+    tmp_path: Path,
+):
+    host = LifecycleHost(tmp_path)
+    next(iter(host.containers.values()))["HostConfig"]["RestartPolicy"][
+        "Name"
+    ] = "no"
+
+    with pytest.raises(FenceError, match="restart=no"):
+        fence.guard_host_mutation(
+            host,
+            state_path=tmp_path / "missing-state.json",
+        )
+
+
+def test_guarded_mutation_rejects_nonterminal_canonical_state(tmp_path: Path):
+    state_path = tmp_path / "fence-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
+                "phase": "fencing_planned",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FenceError, match="fencing_planned"):
+        fence.guard_host_mutation(
+            LifecycleHost(tmp_path),
+            state_path=state_path,
+        )
 
 
 def test_preflight_fails_if_checked_stop_leaves_active_racer(
@@ -1104,6 +1292,50 @@ def test_corrupt_state_replacement_failure_keeps_canonical_blocker(
     archives = list(tmp_path.glob("fence-state.json.corrupt-*"))
     assert len(archives) == 1
     assert archives[0].read_text(encoding="utf-8") == "{"
+    assert all(
+        info["HostConfig"]["RestartPolicy"]["Name"] == "always"
+        for info in host.containers.values()
+    )
+    assert host.units[DAEMON_SERVICE]["enabled"] == "enabled"
+
+
+def test_missing_state_wal_failure_precedes_every_emergency_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "missing-state.json"
+    monkeypatch.setattr(
+        fence,
+        "_atomic_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected emergency WAL failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="injected emergency WAL failure"):
+        quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
+
+    assert not state_path.exists()
+    assert all(
+        info["HostConfig"]["RestartPolicy"]["Name"] == "always"
+        for info in host.containers.values()
+    )
+    assert host.units[DAEMON_SERVICE]["enabled"] == "enabled"
+    mutation_calls = [
+        call
+        for call in host.calls
+        if call[:2]
+        in {
+            ("docker", "update"),
+            ("docker", "stop"),
+            ("systemctl", "disable"),
+            ("systemctl", "stop"),
+            ("systemctl", "mask"),
+        }
+    ]
+    assert mutation_calls == []
 
 
 def test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced(

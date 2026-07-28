@@ -18,6 +18,8 @@ INSTALLER = REPO / "deploy" / "install-host-uptime-services.sh"
 BOOTSTRAP = REPO / "deploy" / "hetzner-bootstrap.sh"
 WORKFLOW = REPO / ".github" / "workflows" / "install-host-services.yml"
 RESTART_WORKFLOW = REPO / ".github" / "workflows" / "restart-daemon.yml"
+P0_WORKFLOW = REPO / ".github" / "workflows" / "p0-outage-triage.yml"
+DEPLOY_WORKFLOW = REPO / ".github" / "workflows" / "deploy-prod.yml"
 
 TIMERS = (
     "tinyassets-watchdog.timer",
@@ -1161,7 +1163,12 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "Resolved requested source ${REQUESTED_SOURCE_REF}" in workflow_text
     assert '[[ "${source_sha}" == "${REQUESTED_SOURCE_REF}" ]]' in workflow_text
     assert "install-host-uptime-services.sh" in workflow_text
-    assert workflow_text.count('"bash -se --') == 2
+    assert (
+        workflow_text.count(
+            "guard-host-mutation --command-timeout 300 -- /bin/bash -se --"
+        )
+        == 2
+    )
     assert workflow_text.count("<<'REMOTE'") == 1
     assert workflow_text.count("<<'BACKUP_REMOTE'") == 1
     assert 'remote_stage="$1"' in workflow_text
@@ -1177,7 +1184,12 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "install-host-uptime-services.sh" in restart_text
     assert "sha256sum" in restart_text
     assert "mktemp -d /tmp/tinyassets-host-uptime." in restart_text
-    assert restart_text.count('"bash -se --') == 1
+    assert (
+        restart_text.count(
+            "guard-host-mutation --command-timeout 300 -- /bin/bash -se --"
+        )
+        == 1
+    )
     assert restart_text.count("<<'REMOTE'") == 1
     assert 'remote_stage="$1"' in restart_text
     assert "/tmp/daemon-watchdog" not in restart_text
@@ -1220,13 +1232,106 @@ def test_host_mutators_refuse_nonterminal_stop_writer_fence(
     guard_name = "Refuse host mutation during stop-writer cutover"
     assert names.index(guard_name) < names.index(first_mutation)
     guard = steps[names.index(guard_name)]["run"]
+    assert "scp -i ~/.ssh/do_deploy" in guard
+    assert "scripts/retire_cheat_loop_deploy_fence.py" in guard
+    assert "guard-host-mutation" in guard
     assert "retire-cheat-loop-task-2-1-fence.json" in guard
-    assert "retire-cheat-loop task 2.1" in guard
-    assert '"restored"' in guard
-    assert "json.loads" in guard
-    assert "tinyassets-deploy-fence.lock" in guard
-    assert 'exec 9>"$lock"' in guard
-    assert guard.index("flock 9") < guard.index("state=")
+    assert "/run/tinyassets-host-mutation-guard" not in guard
+
+
+def test_host_mutator_fence_guards_share_exact_residue_contract():
+    guards = []
+    for path, job_name in (
+        (RESTART_WORKFLOW, "restart"),
+        (WORKFLOW, "install"),
+        (P0_WORKFLOW, "triage"),
+    ):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        step = next(
+            item
+            for item in workflow["jobs"][job_name]["steps"]
+            if item.get("name") == "Refuse host mutation during stop-writer cutover"
+        )
+        guards.append(step["run"])
+    assert guards[0] == guards[1] == guards[2]
+
+
+def test_writer_affecting_remote_mutations_run_inside_authoritative_host_lock():
+    expected_steps = {
+        RESTART_WORKFLOW: {
+            "Converge host uptime services": 1,
+            "Restart workflow daemon": 1,
+        },
+        WORKFLOW: {
+            "Ensure off-host backup configuration": 2,
+            "Install exact uptime bundle and token refresher": 1,
+        },
+    }
+    for path, names in expected_steps.items():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        job_name = "restart" if path == RESTART_WORKFLOW else "install"
+        steps = workflow["jobs"][job_name]["steps"]
+        for name, expected_count in names.items():
+            run = next(step["run"] for step in steps if step.get("name") == name)
+            assert run.count("guard-host-mutation") == expected_count, (path, name)
+            assert "--command-timeout" in run, (path, name)
+
+
+@pytest.mark.skipif(not _BASH, reason="bash is unavailable")
+def test_host_mutation_workflow_shell_blocks_parse():
+    selected = {
+        RESTART_WORKFLOW: (
+            "Refuse host mutation during stop-writer cutover",
+            "Converge host uptime services",
+            "Restart workflow daemon",
+        ),
+        WORKFLOW: (
+            "Refuse host mutation during stop-writer cutover",
+            "Ensure off-host backup configuration",
+            "Install exact uptime bundle and token refresher",
+        ),
+        P0_WORKFLOW: (
+            "Refuse host mutation during stop-writer cutover",
+            "Repair — ENV-UNREADABLE (chown + chmod)",
+            "Repair — OOM (compose restart; memory cap NOT auto-bumped)",
+            "Repair — disk full (docker prune + journalctl vacuum)",
+            "Repair — image pull failure (release-state rollback target)",
+            "Repair — watchdog hot-loop (stop + sleep 60 + start)",
+            "Repair — provider_exhaustion (stop worker + .pause)",
+            "Attempt compose restart",
+        ),
+    }
+    for path, names in selected.items():
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        job_name = next(iter(workflow["jobs"]))
+        steps = workflow["jobs"][job_name]["steps"]
+        for name in names:
+            run = next(step["run"] for step in steps if step.get("name") == name)
+            parsed = subprocess.run(
+                [_BASH, "-n"],
+                input=run.encode("utf-8"),
+                capture_output=True,
+                check=False,
+            )
+            assert parsed.returncode == 0, (
+                path,
+                name,
+                parsed.stderr.decode("utf-8", errors="replace"),
+            )
+
+
+def test_guard_release_cannot_race_a_new_deploy_preflight():
+    for path in (
+        DEPLOY_WORKFLOW,
+        RESTART_WORKFLOW,
+        WORKFLOW,
+        P0_WORKFLOW,
+    ):
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert workflow["concurrency"] == {
+            "group": "production-host-mutation",
+            "cancel-in-progress": False,
+        }
 
 
 def test_host_service_workflow_converges_backup_before_installing_timers():

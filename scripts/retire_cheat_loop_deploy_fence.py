@@ -52,6 +52,8 @@ DEFAULT_STATE_PATH = Path(
     "/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json"
 )
 DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
+HOST_COMMAND_TIMEOUT_SECONDS = 45
+LOCK_TIMEOUT_SECONDS = 60
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
 V2_RISK_STATUSES = frozenset({"pending", "running", "cancel_requested"})
@@ -399,13 +401,21 @@ class Host:
         *,
         check: bool = True,
         input_text: str | None = None,
+        timeout_seconds: int = HOST_COMMAND_TIMEOUT_SECONDS,
     ) -> str:
-        result = subprocess.run(
-            args,
-            input=input_text,
-            text=True,
-            capture_output=True,
-        )
+        try:
+            result = subprocess.run(
+                args,
+                input=input_text,
+                text=True,
+                capture_output=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise FenceError(
+                f"host command timed out after {timeout_seconds}s: "
+                f"{args[0]} {args[1] if len(args) > 1 else ''}"
+            ) from exc
         if check and result.returncode:
             detail = result.stderr.strip().splitlines()
             bounded = detail[-1][:240] if detail else f"exit {result.returncode}"
@@ -1191,6 +1201,47 @@ def fence_status(
     }
 
 
+def guard_host_mutation(host: Host, *, state_path: Path) -> dict[str, Any]:
+    """Reject host mutation when canonical state or fence residue is unsafe."""
+
+    if state_path.exists():
+        state = _load_state(state_path)
+        if state.get("phase") != "restored":
+            raise FenceError(
+                f"production cutover fence is {state.get('phase')!r}"
+            )
+        return {
+            "owner": TASK_OWNER,
+            "guard": "restored_state",
+            "safe": True,
+        }
+
+    residue: list[dict[str, str]] = []
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        if not host.unit_present(unit):
+            continue
+        state = _validated_unit_state(host, unit)
+        enabled = state["enabled"]
+        if enabled in {"masked", "masked-runtime"} or (
+            enabled == "disabled"
+            and (unit == DAEMON_SERVICE or unit.endswith(".timer"))
+        ):
+            residue.append(
+                {"kind": "unit", "name": unit, "value": enabled}
+            )
+    for name in host.volume_container_names():
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        policy = host.container_restart_policy(identity)
+        if policy == "no":
+            residue.append(
+                {"kind": "container", "name": name, "value": "restart=no"}
+            )
+    if residue:
+        raise FenceError(f"stop-writer fence residue is present: {residue}")
+    return {"owner": TASK_OWNER, "guard": "clean_absence", "safe": True}
+
+
 def _archive_corrupt_state(state_path: Path) -> Path | None:
     if not state_path.exists():
         return None
@@ -1282,18 +1333,34 @@ def quiesce_unsafe(
         elif name not in recorded_extras:
             recorded_extras[name] = {"inspection_error": True}
     state["extra_volume_consumers"] = recorded_extras
+    state["source_run_id"] = state.get("run_id")
+    state["run_id"] = run_id
     state["recovery_run_id"] = run_id
+    state["phase"] = "emergency_fencing_planned"
+    state["emergency_fence_progress"] = {
+        "restart_policy_proved": False,
+        "boot_activators_disabled": False,
+    }
+    archived_state = None
+    if not state_valid:
+        archived_state = _archive_corrupt_state(state_path)
+    state["archived_corrupt_state"] = (
+        str(archived_state) if archived_state else ""
+    )
+    _atomic_json(state_path, state)
+
     restart_policy_proof = _set_restart_no(host, current_inspections)
     state["restart_policy_proof"] = restart_policy_proof
+    state["emergency_fence_progress"]["restart_policy_proved"] = True
+    _atomic_json(state_path, state)
     present_racers = tuple(
         unit for unit in RESTART_RACER_UNITS if host.unit_present(unit)
     )
     if not host.unit_present(DAEMON_SERVICE):
         raise FenceError(f"required production unit is missing: {DAEMON_SERVICE}")
     _apply_boot_fence(host, present_racers)
-    archived_state = None
-    if not state_valid:
-        archived_state = _archive_corrupt_state(state_path)
+    state["emergency_fence_progress"]["boot_activators_disabled"] = True
+    state["phase"] = "emergency_fencing"
     _atomic_json(state_path, state)
 
     stopped_racers = _stop_and_mask_writer_units(
@@ -1473,18 +1540,36 @@ def _write_optional(path: str | None, payload: Mapping[str, Any]) -> None:
 
 
 @contextmanager
-def _operation_lock(path: Path) -> Iterable[None]:
+def _operation_lock(
+    path: Path,
+    *,
+    timeout_seconds: float = LOCK_TIMEOUT_SECONDS,
+) -> Iterable[None]:
     """Serialize every host-side fence observation and mutation."""
 
     if fcntl is None:
         raise FenceError("host operation lock primitive is unavailable")
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    acquired = False
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except BlockingIOError as exc:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise FenceError(
+                        f"host operation lock timed out after {timeout_seconds:g}s"
+                    ) from exc
+                time.sleep(min(0.1, remaining))
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        if acquired:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
 
 
@@ -1508,6 +1593,13 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--run-id", required=True)
     quiesce = subparsers.add_parser("quiesce-unsafe")
     quiesce.add_argument("--run-id", required=True)
+    guard = subparsers.add_parser("guard-host-mutation")
+    guard.add_argument(
+        "--command-timeout",
+        type=int,
+        default=HOST_COMMAND_TIMEOUT_SECONDS,
+    )
+    guard.add_argument("mutation_argv", nargs=argparse.REMAINDER)
     return parser
 
 
@@ -1559,6 +1651,34 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             run_id=args.run_id,
             state_path=args.state_path,
         )
+    if args.command == "guard-host-mutation":
+        mutation_argv = list(args.mutation_argv)
+        separator_present = mutation_argv[:1] == ["--"]
+        if separator_present:
+            mutation_argv.pop(0)
+        if (
+            (separator_present and not mutation_argv)
+            or args.command_timeout < 1
+            or args.command_timeout > 300
+        ):
+            raise FenceError("guarded host mutation command is invalid")
+        guard_evidence = guard_host_mutation(host, state_path=args.state_path)
+        if not mutation_argv:
+            return {**guard_evidence, "mutation_completed": False}
+        output = host.run(
+            [
+                "timeout",
+                "--kill-after=2s",
+                f"{args.command_timeout}s",
+                *mutation_argv,
+            ],
+            timeout_seconds=args.command_timeout + 5,
+        )
+        return {
+            **guard_evidence,
+            "mutation_completed": True,
+            "output_present": bool(output),
+        }
     return fence_status(
         host,
         run_id=args.run_id,

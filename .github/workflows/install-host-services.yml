@@ -61,26 +61,12 @@ jobs:
 
       - name: Refuse host mutation during stop-writer cutover
         run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/retire_cheat_loop_deploy_fence.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'FENCE_GUARD'
-          set -euo pipefail
-          lock=/run/lock/tinyassets-deploy-fence.lock
-          exec 9>"$lock"
-          flock 9
-          state=/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json
-          [ -e "$state" ] || exit 0
-          python3 - "$state" <<'PY'
-          import json
-          import sys
-          from pathlib import Path
-
-          value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-          if value.get("owner") != "retire-cheat-loop task 2.1":
-              raise SystemExit("unknown production cutover fence owner")
-          if value.get("phase") != "restored":
-              raise SystemExit(f"production cutover fence is {value.get('phase')!r}")
-          PY
-          FENCE_GUARD
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py --state-path /var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json guard-host-mutation"
 
       - name: Ensure off-host backup configuration
         env:
@@ -171,9 +157,10 @@ jobs:
             set +e
             if [[ "${rc}" -ne 0 && -n "${created_access_key}" ]]; then
               if [[ -n "${remote_stage}" ]]; then
+                rollback_command="rm -f /root/.config/rclone/rclone.conf; bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_DEST"
                 if ! ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                     "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                    "sudo rm -f /root/.config/rclone/rclone.conf; sudo bash $(printf '%q' "${remote_stage}/install-tinyassets-env.sh") delete BACKUP_DEST" \
+                    "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc $(printf '%q' "${rollback_command}")" \
                     >/dev/null 2>&1
                 then
                   echo "::error::Remote backup configuration rollback failed."
@@ -330,7 +317,7 @@ jobs:
 
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${destination}")" <<'BACKUP_REMOTE'
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${destination}")" <<'BACKUP_REMOTE'
           set -euo pipefail
           remote_stage="$1"
           destination="$2"
@@ -401,7 +388,7 @@ jobs:
 
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
           remote_stage="$1"
           source_sha="$2"

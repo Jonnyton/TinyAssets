@@ -1443,6 +1443,8 @@ def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
     assert "org.opencontainers.image.revision" in preflight
     assert "git merge-base --is-ancestor" in preflight
     assert "systemd-run --quiet --collect --wait --pipe" in preflight
+    assert "--property RuntimeMaxSec=300" in preflight
+    assert "--property TimeoutStartSec=300" in preflight
     assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in preflight
     assert "prove --image-ref" in proof
     assert "receipt_snapshot_post_deploy.json" in proof

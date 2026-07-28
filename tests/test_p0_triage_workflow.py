@@ -250,13 +250,28 @@ def test_triage_refuses_nonterminal_stop_writer_fence_before_repair():
     guard_name = "Refuse host mutation during stop-writer cutover"
     assert names.index(guard_name) < names.index("Capture pre-restart diag")
     guard = steps[names.index(guard_name)]["run"]
+    assert "scp -i ~/.ssh/do_deploy" in guard
+    assert "scripts/retire_cheat_loop_deploy_fence.py" in guard
+    assert "guard-host-mutation" in guard
     assert "retire-cheat-loop-task-2-1-fence.json" in guard
-    assert "retire-cheat-loop task 2.1" in guard
-    assert '"restored"' in guard
-    assert "json.loads" in guard
-    assert "tinyassets-deploy-fence.lock" in guard
-    assert 'exec 9>"$lock"' in guard
-    assert guard.index("flock 9") < guard.index("state=")
+    assert "/run/tinyassets-host-mutation-guard" not in guard
+
+
+def test_triage_repairs_run_inside_authoritative_host_lock():
+    expected = (
+        "Repair — ENV-UNREADABLE (chown + chmod)",
+        "Repair — OOM (compose restart; memory cap NOT auto-bumped)",
+        "Repair — disk full (docker prune + journalctl vacuum)",
+        "Repair — image pull failure (release-state rollback target)",
+        "Repair — watchdog hot-loop (stop + sleep 60 + start)",
+        "Repair — provider_exhaustion (stop worker + .pause)",
+        "Attempt compose restart",
+    )
+    steps = _steps(_load())
+    for name in expected:
+        run = next(step["run"] for step in steps if step.get("name") == name)
+        assert "guard-host-mutation" in run, name
+        assert "--command-timeout" in run, name
 
 
 def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
@@ -326,7 +341,7 @@ def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
     run = _step_by_id("repair_provider_exhaustion")["run"]
 
     remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
-    repair_command = "docker stop tinyassets-worker 2>&1 || true;"
+    repair_command = "docker stop tinyassets-worker 2>&1 || true"
     assert remote_target in run
     assert run.index(remote_target) < run.index(repair_command)
 

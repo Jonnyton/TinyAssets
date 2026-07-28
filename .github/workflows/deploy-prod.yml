@@ -374,7 +374,7 @@ jobs:
           fence_unit="tinyassets-deploy-fence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo systemd-run --quiet --collect --wait --pipe --unit '${fence_unit}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py preflight --image-ref '${NEW_IMAGE}' --revision '${target_revision}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+              "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit '${fence_unit}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py preflight --image-ref '${NEW_IMAGE}' --revision '${target_revision}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/preflight.json"
           preflight_status=$?
           set -e
