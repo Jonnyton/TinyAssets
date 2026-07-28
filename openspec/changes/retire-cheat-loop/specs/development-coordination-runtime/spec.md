@@ -149,6 +149,7 @@ workflow still disabled.
 - **WHEN** the migrator inventories an array-valued GitHub REST connection
 - **THEN** it follows every validated `rel="next"` URL and receipts each canonical request endpoint, its re-derived page-size bound, each response, and the first terminal response without `rel="next"`
 - **AND** missing, malformed, looping, cross-scope, or over-bound Link chains, plus a terminal page that fills the requested page-size bound, fail closed without claiming a server total
+- **AND** offline verification revalidates every stored request endpoint against the receipt-bound repository identity and exact page/query sequence
 
 #### Scenario: Offline verification is integrity-only
 

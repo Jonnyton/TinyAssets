@@ -836,7 +836,7 @@ class ReceiptTests(unittest.TestCase):
         )
         connection["total_count"] = 0
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([connection])
+            mod._validate_complete_connections([connection], repo=repo())
 
         terminal_full = complete_connection(
             kind="fixture",
@@ -846,7 +846,7 @@ class ReceiptTests(unittest.TestCase):
         )
         terminal_full["pagination"]["page_receipts"][0]["item_count"] = 100
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([terminal_full])
+            mod._validate_complete_connections([terminal_full], repo=repo())
 
         mismatched_request = complete_connection(
             kind="fixture",
@@ -861,7 +861,7 @@ class ReceiptTests(unittest.TestCase):
             {"method": "GET", "endpoint": endpoint}
         )
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([mismatched_request])
+            mod._validate_complete_connections([mismatched_request], repo=repo())
 
         stale_request_digest = complete_connection(
             kind="fixture",
@@ -875,7 +875,7 @@ class ReceiptTests(unittest.TestCase):
             "repos/Jonnyton/TinyAssets/fixture?per_page=30"
         )
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([stale_request_digest])
+            mod._validate_complete_connections([stale_request_digest], repo=repo())
 
         boolean_page_size = complete_connection(
             kind="fixture",
@@ -891,7 +891,7 @@ class ReceiptTests(unittest.TestCase):
             {"method": "GET", "endpoint": endpoint}
         )
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([boolean_page_size])
+            mod._validate_complete_connections([boolean_page_size], repo=repo())
 
         first_endpoint = "repos/Jonnyton/TinyAssets/fixture?per_page=100"
         second_endpoint = (
@@ -939,7 +939,39 @@ class ReceiptTests(unittest.TestCase):
             },
         }
         with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections([oversized_nonterminal])
+            mod._validate_complete_connections([oversized_nonterminal], repo=repo())
+
+        full_second_terminal = copy.deepcopy(oversized_nonterminal)
+        full_second_terminal["count"] = 200
+        full_second_terminal["pagination"]["page_receipts"][0]["item_count"] = 100
+        full_second_terminal["pagination"]["page_receipts"][1]["item_count"] = 100
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [full_second_terminal],
+                repo=repo(),
+            )
+
+        for unsafe_endpoint in (
+            "https://evil.example/fixture?per_page=100",
+            "repos/AnotherOwner/AnotherRepo/fixture?per_page=100",
+        ):
+            with self.subTest(unsafe_endpoint=unsafe_endpoint):
+                cross_scope = complete_connection(
+                    kind="fixture",
+                    label_name="",
+                    count=0,
+                    completion_basis="github_link_header_chain_v1",
+                )
+                page = cross_scope["pagination"]["page_receipts"][0]
+                page["request_endpoint"] = unsafe_endpoint
+                page["request_url_digest"] = mod.digest(
+                    {"method": "GET", "endpoint": unsafe_endpoint}
+                )
+                with self.assertRaises(mod.PlanError):
+                    mod._validate_complete_connections(
+                        [cross_scope],
+                        repo=repo(),
+                    )
 
         for completion_basis in (
             "reported_total_count",
@@ -957,7 +989,8 @@ class ReceiptTests(unittest.TestCase):
                             pages=0,
                             completion_basis=completion_basis,
                         )
-                    ]
+                    ],
+                    repo=repo(),
                 )
 
         inventory = label_inventory()
@@ -2091,7 +2124,7 @@ class ReadOnlyClientTests(unittest.TestCase):
             "repos/Jonnyton/TinyAssets/issues?per_page=100&per_page=100",
             "repos/Jonnyton/TinyAssets/issues?per_page=0",
             "repos/Jonnyton/TinyAssets/issues?per_page=101",
-            "repos/Jonnyton/TinyAssets/issues?per_page=" + chr(0xFF11) * 3,
+            "repos/Jonnyton/TinyAssets/issues?per_page=" + chr(0xFF11),
             "repos/Jonnyton/TinyAssets/issues?per_page=" + chr(0x00B2),
         )
         for endpoint in invalid:

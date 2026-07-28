@@ -203,7 +203,7 @@
   exposes only read-only `inventory`, offline `plan`, and offline `verify`; it
   includes no live mutator. Sixty-one combined current-main focused tests pin the closed receipt
   envelope, canonical request/page-size binding, bounded Link-chain terminal
-  oracle, exact bot/PR eligibility tuple, ambiguity preservation,
+  oracle, stored repository/page/query scope, exact bot/PR eligibility tuple, ambiguity preservation,
   inventory-only label posture, terminal receipt digest, unsafe/encrypted log
   rejection, and exact planned before/after tuples. Tasks 3.6/3.7 remain open
   because no workflow, label, PR auto-merge state, or other GitHub state was

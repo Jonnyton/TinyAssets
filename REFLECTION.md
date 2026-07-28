@@ -669,3 +669,7 @@ fresh-host rollback edges found later.
   opposite-provider review and compare against the exact remote head, then
   freeze that base in the brief so a concurrent landing cannot masquerade as a
   local regression.
+- **Review follow-up:** a correct ASCII regex was not enough when the claimed
+  Unicode regression only exercised an out-of-range value. Mutation-test the
+  exact semantic distinction, and scope-check newly stored provenance-shaped
+  fields against the receipt-bound repository.

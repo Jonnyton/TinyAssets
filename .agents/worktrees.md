@@ -1621,7 +1621,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-github-terminal-oracle-current
-- Lane state: approved follow-up restacked on landed PR #1835
+- Lane state: Opus ADAPT folded on landed PR #1835; final exact-head recheck pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-current
 - STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835 are the landed base
 - PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
@@ -1632,3 +1632,4 @@ Notes:
 - Ship/abandon: land only the complementary oracle hardening; tasks 3.6/3.7 remain unchecked and no GitHub state may change
 - Update 2026-07-28: exact-current Opus 5 mutation review returned APPROVE after every request/page-size, digest, and archive guard proved load-bearing
 - Update 2026-07-28: moved the approved commit into a clean current-main worktree after #1835 overlapped the receipt-schema files; preserved both hardening waves
+- Update 2026-07-28: exact-current Opus found a recovery-doc gap plus Unicode, multi-page-terminal, and stored-endpoint-scope proof gaps; all four adaptations are folded and 61/61 passes

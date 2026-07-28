@@ -58,6 +58,10 @@ terminal-proven paginated inventory, operation, and plan digest. Array-valued
 REST reads receipt each GitHub Link-header hop and the terminal absence of
 `rel="next"`; a terminal page that fills the requested page-size bound remains
 ambiguous, and observed counts are never copied into a fictitious server total.
+If an exact-multiple boundary produces that fail-closed result, keep the
+receipt rejected and rerun the read-only inventory with a different explicit
+`per_page` value in the 1-100 range. Review and test that request-bound change;
+never weaken the terminal guard or hand-edit/re-digest the ambiguous receipt.
 Each page retains its canonical request endpoint so offline validation can
 re-derive the bound and request digest instead of trusting a self-declared
 `page_size`. The apply key is derived from
