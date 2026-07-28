@@ -6,6 +6,51 @@
 
 Goals as first-class shared primitives that branches bind to and converge on: canonical branch marking, run-canonical with leaderboard refresh, user-built selector branches, and opt-in per-universe subscriptions.
 ## Requirements
+
+### Requirement: Public Goal read modes expose only public Goals
+Every canonical public `read_graph` Goal mode SHALL expose only Goals whose visibility is exactly `public`: empty-query `target=goals` listing, non-empty ranked `target=goals` search, and exact `target=goal` lookup by ID. The same boundary SHALL hold for every public or hidden-but-callable action classified as read-effect that resolves a caller-supplied `goal_id`, independent of tool name or dispatch table, and for every cross-Goal aggregation. Goal-bound record enumeration such as conformance-pack listing SHALL exclude records attached to non-public Goals rather than treating the absence of an existence probe as permission to return them. Every other or unrecognized visibility, including `private` and `deleted`, SHALL return no Goal ID or fields and no count or ranking contribution. Exact or Goal-derived lookup of a non-public Goal SHALL return the same non-disclosing result as a missing Goal. This gate-independent requirement SHALL NOT invent per-principal private-Goal authority; any future owner-scoped read capability SHALL modify this requirement and its identity/authority evidence before exposing a private Goal.
+
+#### Scenario: public Goal listing excludes every non-public visibility
+- **WHEN** public, private, deleted, and unrecognized-visibility Goals are eligible for empty-query `target=goals`
+- **THEN** only exactly `visibility=public` Goals enter rows or totals
+- **AND** no filter or actor context can expose the non-public IDs or fields
+
+#### Scenario: ranked Goal search excludes every non-public visibility
+- **WHEN** public, private, deleted, and unrecognized-visibility Goals match one non-empty `target=goals` query
+- **THEN** ranked results contain only exactly `visibility=public` Goals
+- **AND** ranking, author, tags, query text, or actor context cannot expose non-public IDs or fields
+
+#### Scenario: exact public Goal lookup is non-disclosing
+- **WHEN** canonical public `read_graph target=goal` requests the ID of a private, deleted, unrecognized-visibility, or missing Goal
+- **THEN** each case returns the same non-disclosing missing-result shape with no Goal ID or fields
+- **AND** exact lookup grants no private-Goal read authority
+
+#### Scenario: every Goal-derived read has no alternate oracle
+- **WHEN** an anonymous, non-owner, or owner actor invokes any read-effect action with a caller-supplied non-public `goal_id`
+- **THEN** the action returns the same non-disclosing missing-result shape as an absent Goal
+- **AND** no Goal name, ID, protocol, branch-derived result, count, rank, or field is returned
+
+#### Scenario: Goal-bound record enumeration excludes non-public Goals
+- **WHEN** a read-effect action enumerates records filtered by or attached to a Goal
+- **THEN** records attached to a non-public Goal are excluded before rows, totals, or ranks are produced
+- **AND** omitting a Goal existence probe does not weaken the visibility boundary
+- **AND** the boundary includes, without being limited to, Branch and reusable-node catalogs, gate claims/events/conformance packs, universe subscriptions and queue views, and structured Goal ledger records
+
+#### Scenario: legacy non-Goal references remain compatible
+- **WHEN** a subscription, queue task, or structured ledger record contains an empty reference or a legacy topic reference that resolves to no Goal record
+- **THEN** the read retains that record because it is not Goal-bound
+- **AND** a reference resolving to any known non-public Goal is excluded
+
+#### Scenario: universe ledger reads cannot alias the global ledger
+- **WHEN** a caller supplies a universe identifier whose resolved path is the global data root
+- **THEN** the universe ledger read is rejected before opening a ledger
+- **AND** no global Goal ID, name, summary, target, payload, or count is returned
+
+#### Scenario: cross-Goal aggregation excludes non-public contributions
+- **WHEN** a cross-Goal common-node read encounters branches bound to public and non-public Goals
+- **THEN** only unbound branches and branches bound to exactly public Goals contribute
+- **AND** no non-public Goal ID, node contribution, count, or rank is returned
+
 ### Requirement: Goals are first-class shared primitives on a single dispatch surface
 Goals SHALL be first-class shared objects that capture the intent a workflow serves, reachable through one `goals` tool that dispatches a fixed table of named actions (`propose`, `update`, `bind`, `list`, `get`, `search`, `leaderboard`, `common_nodes`, `archive_consultation`, `set_canonical`, `define_protocol`, `get_protocol`, `run_canonical`, `set_selector`). A proposed Goal SHALL be assigned a stable `goal_id`, recorded with its proposing author, and stored authoritatively in the SQLite `goals` table by the daemon store. When a git repository backs the universe, the catalog backend SHALL additionally mirror each Goal to `goals/<slug>.yaml` and commit it in a single commit; universes without a backing repository (SQLite-only) SHALL still create the Goal but skip the YAML mirror and commit. Ownership lives in the `tinyassets/api/market.py` goal handlers and the `tinyassets/daemon_server.py` / `tinyassets/catalog` store.
 

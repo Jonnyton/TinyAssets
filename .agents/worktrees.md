@@ -1549,3 +1549,17 @@ Notes:
 - Review gate: exact residue scan, claim-check owner map, strict OpenSpec, independent Codex/Claude architecture review before implementation
 - Ship/abandon: publish the audit/foldback separately; implement only after an exact Files/Depends claim is clear
 - Update 2026-07-27: exact-head Codex review required an ordering correction: 2.1 stop-writer -> dark authority store/reconciler -> locked 2.5 migration -> authority activation/foldback; stale broad claims must be revalidated/reaped or carved
+
+## 2026-07-27 - canonical public-read completeness
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/public-read-completeness-current
+- Lane state: slice 0A local runtime approved; deploy/sync/live connector proof pending
+- Worktree: C:\Users\Jonathan\Projects\wf-public-read-completeness-current
+- STATUS/Issue/PR: Implement canonical public-read completeness; no public PR before the privacy deployment gate
+- PLAN refs: canonical seven handles; Tier-1 chatbot-first surface; wiki discovery; shared goals; §14 load proof; Village deferred
+- Purpose: close every public private-Goal read oracle, then define visibility-safe full-scope pagination and completeness receipts without adding an MCP handle
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-public-read-completeness-current\_PURPOSE.md
+- Memory refs: PR #1812 blocker evidence; `docs/audits/2026-07-25-full-product-vision-completion-audit.md`
+- Review gate: spec Opus 5 round 18 APPROVE; runtime Opus 5 round 8b APPROVE after every blocking finding was folded
+- Ship/abandon: private deploy first, then sync/publish and rendered connector acceptance; never publish the live privacy gap ahead of deployment

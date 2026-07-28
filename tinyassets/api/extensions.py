@@ -262,6 +262,83 @@ def _dispatch_scope_error(tool: str, action: str) -> str | None:
     return None
 
 
+def _public_goal_read_rejection(action: str, goal_id: str) -> str | None:
+    """Fail closed when a read action names a Goal that is not public."""
+    goal_id = goal_id.strip()
+    if not goal_id:
+        return None
+    if action in _LEADERBOARD_ACTIONS:
+        # These handlers already apply the same exact-public check and retain
+        # their established ``goal=None`` / ``entries=[]`` response envelope.
+        return None
+
+    from tinyassets.auth.provider import action_scope_for
+    from tinyassets.daemon_server import get_goal
+
+    action_scope = action_scope_for("extensions", action)
+    if action_scope is None or action_scope.effect != "read":
+        return None
+
+    try:
+        goal = get_goal(_base_path(), goal_id=goal_id)
+    except KeyError:
+        goal = None
+    if goal is not None and goal.get("visibility") == "public":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"Goal '{goal_id}' not found.",
+    })
+
+
+def _public_goal_ids() -> set[str]:
+    """Return the complete exactly-public Goal ID set for record filtering."""
+    from tinyassets.daemon_server import public_goal_ids
+
+    return public_goal_ids(_base_path())
+
+
+def _filter_branch_goal_records(action: str, result: str) -> str:
+    """Remove non-public Goal attachments from public Branch reads."""
+    if action not in {"get_branch", "list_branches"}:
+        return result
+    try:
+        payload = json.loads(result)
+    except (json.JSONDecodeError, TypeError):
+        return result
+    if not isinstance(payload, dict) or payload.get("error"):
+        return result
+
+    public_ids = _public_goal_ids()
+    if action == "list_branches":
+        rows = payload.get("branches")
+        if not isinstance(rows, list):
+            return result
+        kept = [
+            row for row in rows
+            if isinstance(row, dict)
+            and (
+                not (row.get("goal_id") or "")
+                or row.get("goal_id") in public_ids
+            )
+        ]
+        payload["branches"] = kept
+        payload["count"] = len(kept)
+        return json.dumps(payload, default=str)
+
+    goal_id = str(payload.get("goal_id") or "")
+    if goal_id and goal_id not in public_ids:
+        payload.pop("goal_id", None)
+    claims = payload.get("gate_claims")
+    if isinstance(claims, list):
+        payload["gate_claims"] = [
+            claim for claim in claims
+            if isinstance(claim, dict)
+            and (claim.get("goal_id") or "") in public_ids
+        ]
+    return json.dumps(payload, default=str)
+
+
 def _extensions_impl(
     action: str,
     node_id: str = "",
@@ -402,6 +479,10 @@ def _extensions_impl(
     if scope_error is not None:
         return scope_error
 
+    goal_rejection = _public_goal_read_rejection(action, goal_id)
+    if goal_rejection is not None:
+        return goal_rejection
+
     if action == "register":
         return _ext_register(
             node_id, display_name, description, phase,
@@ -459,7 +540,8 @@ def _extensions_impl(
         branch_kwargs["node_ref"] = parsed_ref
     branch_handler = _BRANCH_ACTIONS.get(action)
     if branch_handler is not None:
-        return _dispatch_branch_action(action, branch_handler, branch_kwargs)
+        result = _dispatch_branch_action(action, branch_handler, branch_kwargs)
+        return _filter_branch_goal_records(action, result)
 
     # ── Phase 3: Graph Runner ──────────────────────────────────────────────
     run_kwargs: dict[str, Any] = {
