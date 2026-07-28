@@ -1584,6 +1584,7 @@ Notes:
 - Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex approved `b8d57e9f`, Claude Opus 5 required collector-contract coverage before ready
 - Update 2026-07-28: review fix adds collector round-trip, exact scalar schemas, and PlanError container typing; 53/53 pass with 60/60 strict OpenSpec
 - Update 2026-07-28: control_station's apparent task-2.1 conflict was three-dot squash ancestry; all five target blobs equal current main, independent carve-out recheck pending
+- Update 2026-07-28: independent recheck confirmed all five blobs/index/worktree clean; narrowed three broad claims to release task-2.1 files
 
 ## 2026-07-27 - canonical public-read completeness
 
