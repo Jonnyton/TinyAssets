@@ -75,7 +75,7 @@ credential. Credentialed publication MUST remain disabled until
 
 #### Scenario: Preview JavaScript requests a blocked service path
 
-- **WHEN** the isolated preview receives a path that canonically equals `/mcp` or a descendant, enters `/.well-known/oauth-*` or `/.well-known/mcp*`, or cannot be safely canonicalized after bounded escape decoding, slash normalization, dot-segment handling, and case folding
+- **WHEN** the isolated preview receives a path that canonically equals `/mcp` or a descendant, enters `/.well-known/oauth-*`, `/.well-known/openid-*`, or `/.well-known/mcp*`, or cannot be safely canonicalized after bounded escape decoding, slash normalization, dot-segment handling, trailing-dot or space stripping, and case folding
 - **THEN** the exact trusted Worker runs before asset lookup and returns a no-store `503`
 - **AND** a shadowing static `mcp` asset cannot bypass the Worker
 - **AND** it neither proxies nor embeds the production MCP origin

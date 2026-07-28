@@ -29,8 +29,8 @@
 - [x] 2.4 Add the separate pull-request-comment authority with exact source
   artifact ID plus protected-job manifest digest, and an unconditional Worker-
   first, canonical/fail-closed no-store `503` block for MCP-equivalent and
-  OAuth/MCP discovery paths before other canonical requests fall through to
-  static assets; reject literal-percent artifact paths that cannot be served.
+  OAuth/OIDC/MCP discovery paths before other canonical requests fall through
+  to static assets; reject literal-percent artifact paths that cannot be served.
 - [x] 2.5 Rewrite preview operator guidance so no fixed URL, live-data bridge,
   automatic Pages refresh, production token reuse, or source-unproved
   environment protection is promised.

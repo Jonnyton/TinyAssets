@@ -82,11 +82,12 @@ only the dedicated account ID and least-privilege Workers Scripts token.
 PR #1812 is rebased after the bootstrap merge. The first accepted publication
 binds the current head, exact source artifact ID, regenerated-manifest digest,
 Cloudflare version ID, immutable version URL, and never-reused alias. Live
-testing covers canonical and adversarial `/mcp`, `/.well-known/oauth-*`, and
-`/.well-known/mcp*` paths, a shadow asset, and ordinary assets on the base,
-alias, and version hosts. A rendered reviewer session and post-fix clean-use
-evidence complete acceptance; absent organic use remains a dated monitoring
-item rather than a success claim.
+testing covers canonical and adversarial `/mcp`, `/.well-known/oauth-*`,
+`/.well-known/openid-*`, and `/.well-known/mcp*` paths, empty-after-
+normalization segments, a shadow asset, and ordinary assets on the base, alias,
+and version hosts. A rendered reviewer session and post-fix clean-use evidence
+complete acceptance; absent organic use remains a dated monitoring item rather
+than a success claim.
 
 ### 7. Retention and revocation remain truthful
 

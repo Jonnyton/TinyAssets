@@ -19,7 +19,7 @@ blocks safe retirement of the old privileged automation surface.
   provider-generated immutable version URL, and recheck the current
   pull-request head.
 - Run the trusted preview Worker before every asset lookup; canonically block
-  every MCP-equivalent path and its OAuth/MCP discovery namespaces, reject
+  every MCP-equivalent path and its OAuth/OIDC/MCP discovery namespaces, reject
   artifact paths containing literal percent signs, and fail closed on
   uncanonicalizable paths so untrusted browser JavaScript cannot bridge to
   production data.

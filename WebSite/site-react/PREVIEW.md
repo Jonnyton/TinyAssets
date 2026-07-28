@@ -59,12 +59,13 @@ URL of the form:
 Treat everything rendered at that URL as untrusted review input. The trusted
 Worker runs before every asset lookup. It canonicalizes case, escapes, slash
 forms, and dot segments, returns no-store `503` for every MCP-equivalent path
-and the `/.well-known/oauth-*` and `/.well-known/mcp*` discovery namespaces,
-and fails closed when a path cannot be safely canonicalized; only other
-canonical paths fall through to static assets. Sanitized artifacts reject
-literal-percent path components so every accepted path is serveable under the
-same decoding policy. Preview JavaScript therefore cannot acquire a same-origin
-bridge to production data.
+and the `/.well-known/oauth-*`, `/.well-known/openid-*`, and
+`/.well-known/mcp*` discovery namespaces, and fails closed when a segment
+becomes empty after normalization or a path cannot otherwise be safely
+canonicalized. Only other canonical paths fall through to static assets.
+Sanitized artifacts reject literal-percent path components so every accepted
+path is serveable under the same decoding policy. Preview JavaScript therefore
+cannot acquire a same-origin bridge to production data.
 
 An independent `preview-security` workflow checks the trust-boundary contract
 on every pull request and `main` push. The publication path then has four
@@ -120,6 +121,12 @@ production account is not sufficiently isolated even when the workflow fixes
 the Worker name. Never copy or reuse the production token. Restrict the
 environment to `main`, require review, and disallow administrator bypass where
 the repository plan supports those controls.
+
+Before activation, a qualifying pull request may cause GitHub to materialize an
+empty, unprotected `react-preview` environment record. The upload still fails
+closed because both preview credential values must be non-empty. Activation
+must create or harden that environment record and accept Access proof before
+adding either credential.
 
 `workflow_run` uses the workflow definition already present on the default
 branch. The trusted workflow therefore must land through this narrow bootstrap

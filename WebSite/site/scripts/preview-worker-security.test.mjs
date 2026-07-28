@@ -441,6 +441,10 @@ test("trusted Worker rejects MCP and discovery paths before asset lookup", async
     ["/.well-known/mcp", "MCP well-known discovery"],
     ["/.well-known/mcp.json", "MCP well-known extension"],
     ["/.well-known/mcp/tools", "MCP well-known descendant"],
+    ["/.well-known/openid-configuration", "OpenID discovery"],
+    ["/.WELL-KNOWN/OPENID-CONFIGURATION", "uppercase OpenID discovery"],
+    ["/.../mcp", "all-dot segment"],
+    ["/.%20/mcp", "dot-space segment"],
     ["/asset%25name.png", "encoded literal percent"],
     ["/asset%2525name.png", "double-encoded literal percent"],
   ];

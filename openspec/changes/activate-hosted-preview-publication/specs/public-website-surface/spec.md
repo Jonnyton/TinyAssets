@@ -37,7 +37,7 @@ credentials or TinyAssets-provided compute.
 #### Scenario: The GitHub preview credential is enabled
 
 - **WHEN** the external isolation receipt has been accepted
-- **THEN** a default-branch-restricted, reviewed `react-preview` environment receives only the dedicated preview account ID and least-privilege Workers Scripts token
+- **THEN** the host creates or hardens a default-branch-restricted, reviewed `react-preview` environment and only then adds the dedicated preview account ID and least-privilege Workers Scripts token
 - **AND** administrator bypass is disabled where the repository plan supports it
 - **AND** no production account credential is copied or reused
 
@@ -49,7 +49,7 @@ credentials or TinyAssets-provided compute.
 
 #### Scenario: Live blocked-service routing is exercised
 
-- **WHEN** canonical, encoded, slash, backslash, case, dot-segment, trailing-dot or space, malformed, residual-percent, shadow-asset, `/mcp`, `/.well-known/oauth-*`, and `/.well-known/mcp*` requests are sent to the live preview
+- **WHEN** canonical, encoded, slash, backslash, case, dot-segment, trailing-dot or space, empty-after-normalization, malformed, residual-percent, shadow-asset, `/mcp`, `/.well-known/oauth-*`, `/.well-known/openid-*`, and `/.well-known/mcp*` requests are sent to the live preview
 - **THEN** each blocked or uncanonicalizable path returns a no-store `503` before asset lookup
 - **AND** unrelated canonical paths and an ordinary asset load through the static binding
 - **AND** the matrix is exercised on the base, alias, and version hostnames

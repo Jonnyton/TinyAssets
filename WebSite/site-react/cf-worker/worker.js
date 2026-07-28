@@ -36,7 +36,11 @@ function normalizePathname(pathname) {
       segments.pop();
       continue;
     }
-    segments.push(segment.toLowerCase().replace(/[. ]+$/u, ""));
+    const normalizedSegment = segment.toLowerCase().replace(/[. ]+$/u, "");
+    if (normalizedSegment === "") {
+      return null;
+    }
+    segments.push(normalizedSegment);
   }
   return `/${segments.join("/")}`;
 }
@@ -48,7 +52,8 @@ function isBlockedServicePath(pathname) {
     normalized === "/mcp" ||
     normalized.startsWith("/mcp/") ||
     normalized.startsWith("/.well-known/oauth-") ||
-    normalized.startsWith("/.well-known/mcp")
+    normalized.startsWith("/.well-known/mcp") ||
+    normalized.startsWith("/.well-known/openid-")
   );
 }
 

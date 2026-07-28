@@ -127,9 +127,10 @@ The trusted Wrangler configuration pins static-asset handling and runs the
 Worker before every lookup. The Worker repeatedly decodes escapes within a
 fixed bound, normalizes slash forms, dot segments, and case, returns a no-store
 `503` for every path canonically equivalent to `/mcp` or a descendant and for
-the `/.well-known/oauth-*` and `/.well-known/mcp*` discovery namespaces, and
-fails closed when safe canonicalization is impossible. Only another canonical
-path falls through to `ASSETS`; the Worker contains no production origin.
+the `/.well-known/oauth-*`, `/.well-known/openid-*`, and
+`/.well-known/mcp*` discovery namespaces. A segment that becomes empty after
+trailing dot/space normalization also fails closed. Only another canonical path
+falls through to `ASSETS`; the Worker contains no production origin.
 
 External activation is owned by the successor
 `activate-hosted-preview-publication` change. Access is the provider-edge
