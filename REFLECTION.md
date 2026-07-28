@@ -505,3 +505,19 @@ fresh-host rollback edges found later.
 - **What I would do differently:** inventory both runtime call sites and
   existing OpenSpec requirement ownership before drafting the first delta,
   then separate the core shared helper boundary from dependent surfaces.
+
+## 2026-07-27 - hosted preview trust boundary
+
+- **What surprised me:** moving a secret to `workflow_run` was necessary but
+  not sufficient. A safe preview also needed exact run/PR/artifact provenance,
+  normalization before the environment, a fresh credentialed job, serialized
+  per-PR version aliases, a blocked production data path, and a separate
+  Cloudflare account because Workers write permission is account-scoped.
+- **Pattern worth capturing:** treat CI artifacts as hostile transport, not
+  trusted build output. Authenticate identity before download, normalize bytes
+  outside the secret boundary, then revalidate the normalized receipt in a
+  fresh credentialed workspace.
+- **What I would do differently:** inspect the external provider's actual
+  permission granularity and GitHub trigger bootstrap semantics before drafting
+  the first workflow. That would have ruled out the production-account token,
+  singleton deployment, and in-branch-only listener immediately.
