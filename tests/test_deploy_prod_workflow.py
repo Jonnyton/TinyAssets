@@ -78,6 +78,25 @@ def test_workflow_dispatch_has_image_tag_input():
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
 
 
+def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
+    wf = _load()
+    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
+    assert "unsafe_fence_source_run_id" in inputs
+    recovery = wf["jobs"]["recover-unsafe"]
+    assert "workflow_dispatch" in str(recovery.get("if", ""))
+    step = _step_named({"jobs": {"deploy": recovery}}, "Recover canonical unsafe fence")
+    script = str(step.get("run", ""))
+    assert "recover-unsafe --source-run-id" in script
+    assert "[A-Za-z0-9._-]{1,128}" in script
+    assert step.get("env", {}).get("SOURCE_RUN_ID") == (
+        "${{ inputs.unsafe_fence_source_run_id }}"
+    )
+    assert "inputs.unsafe_fence_source_run_id" not in script
+    assert "inputs.unsafe_fence_source_run_id == ''" in str(
+        wf["jobs"]["deploy"].get("if", "")
+    )
+
+
 def test_deploy_resolves_image_to_digest_and_never_latest():
     text = _text()
     assert "image_ref=" in text

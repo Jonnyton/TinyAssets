@@ -54,6 +54,7 @@ DEFAULT_STATE_PATH = Path(
 DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
+UNIT_RESTORE_TIMEOUT_SECONDS = 120
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
 V2_RISK_STATUSES = frozenset({"pending", "running", "cancel_requested"})
@@ -521,14 +522,16 @@ class Host:
         }
 
     def unit_present(self, unit: str) -> bool:
+        state = self.unit_load_state(unit)
+        return state != "not-found"
+
+    def unit_load_state(self, unit: str) -> str:
         state = self.run(
             ["systemctl", "show", "--property", "LoadState", "--value", unit]
         )
-        if state == "not-found":
-            return False
-        if state not in {"loaded", "masked"}:
+        if state not in {"loaded", "masked", "not-found"}:
             raise FenceError(f"unit load state is not authoritative: {unit}={state!r}")
-        return True
+        return state
 
     def unit_active_state(self, unit: str) -> str:
         state = self.run(
@@ -685,6 +688,40 @@ def _wait_units_quiesced(
     raise FenceError(f"restart racer remains active after checked stop: {remaining}")
 
 
+def _wait_units_restored(
+    host: Host,
+    expected_states: Mapping[str, Mapping[str, str]],
+    *,
+    timeout_seconds: float = UNIT_RESTORE_TIMEOUT_SECONDS,
+    delay_seconds: float = 1.0,
+) -> dict[str, dict[str, str]]:
+    """Wait through transient systemd states, then require exact saved state."""
+
+    actual: dict[str, dict[str, str]] = {}
+    attempts = max(1, int(timeout_seconds / delay_seconds) + 1)
+    for attempt in range(attempts):
+        actual = {
+            unit: _validated_unit_state(host, unit)
+            for unit in expected_states
+        }
+        mismatches = {
+            unit: {
+                "expected": dict(expected_states[unit]),
+                "actual": actual[unit],
+            }
+            for unit in expected_states
+            if actual[unit] != expected_states[unit]
+        }
+        if not mismatches:
+            return actual
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    raise FenceError(
+        f"unit restoration proof failed after {timeout_seconds:g}s timeout: "
+        f"mismatches={mismatches}"
+    )
+
+
 def _set_restart_no(
     host: Host,
     consumers: Mapping[str, Mapping[str, Any]],
@@ -776,6 +813,8 @@ def _stray_writer_processes(
             server_like = _looks_like_writer_command(cmdline)
             controlled_path_env_keys: list[str] = []
             controlled_mount_namespace = False
+            same_host_mount_namespace = False
+            mount_namespace = ""
             if volume_dir is not None:
                 resolved_volume = volume_dir.resolve()
                 environ = (proc / "environ").read_bytes().split(b"\0")
@@ -798,7 +837,20 @@ def _stray_writer_processes(
                     encoding="utf-8",
                     errors="replace",
                 )
-                controlled_mount_namespace = str(resolved_volume) in mountinfo
+                try:
+                    mount_namespace = os.readlink(proc / "ns" / "mnt")
+                    own_mount_namespace = os.readlink("/proc/self/ns/mnt")
+                    same_host_mount_namespace = (
+                        mount_namespace == own_mount_namespace
+                    )
+                except OSError as exc:
+                    raise FenceError(
+                        f"process mount namespace unreadable: pid={pid}"
+                    ) from exc
+                controlled_mount_namespace = (
+                    str(resolved_volume) in mountinfo
+                    and not same_host_mount_namespace
+                )
             if (
                 receipt_fd
                 or server_like
@@ -815,6 +867,8 @@ def _stray_writer_processes(
                             set(controlled_path_env_keys)
                         ),
                         "controlled_mount_namespace": controlled_mount_namespace,
+                        "same_host_mount_namespace": same_host_mount_namespace,
+                        "mount_namespace": mount_namespace,
                     }
                 )
         except PermissionError as exc:
@@ -1120,6 +1174,8 @@ def prove(
             old_running.append({"container": name, "id": old_id})
     observation["old_container_ids_running"] = old_running
     if not safe_fleet_matches(observation, image_ref, revision, old_ids):
+        state["last_failed_observation"] = observation
+        _atomic_json(state_path, state)
         raise FenceError(
             "exactly five safe target containers were not independently proved"
         )
@@ -1147,13 +1203,29 @@ def post_canary(
     run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
-    evidence = prove(
-        host,
-        image_ref=image_ref,
-        revision=revision,
-        run_id=run_id,
-        state_path=state_path,
-    )
+    evidence: dict[str, Any] | None = None
+    last_error = ""
+    for attempt in range(10):
+        try:
+            evidence = prove(
+                host,
+                image_ref=image_ref,
+                revision=revision,
+                run_id=run_id,
+                state_path=state_path,
+            )
+            break
+        except FenceError as exc:
+            last_error = str(exc)
+            if attempt < 9:
+                time.sleep(2)
+    if evidence is None:
+        state = _load_state(state_path)
+        diagnostic = state.get("last_failed_observation", {})
+        raise FenceError(
+            "post-canary exact fleet proof did not converge: "
+            f"{last_error}; diagnostic={json.dumps(diagnostic, sort_keys=True)}"
+        )
     evidence["phase"] = "post_canary_proved"
     state = _load_state(state_path)
     state["phase"] = "post_canary_proved"
@@ -1167,7 +1239,10 @@ def _masked_units(host: Host) -> list[str]:
         unit
         for unit in units
         if host.unit_present(unit)
-        and host.unit_state(unit)["enabled"] in {"masked", "masked-runtime"}
+        and (
+            host.unit_state(unit)["enabled"] in {"masked", "masked-runtime"}
+            or host.unit_load_state(unit) == "masked"
+        )
     ]
 
 
@@ -1333,7 +1408,7 @@ def quiesce_unsafe(
         elif name not in recorded_extras:
             recorded_extras[name] = {"inspection_error": True}
     state["extra_volume_consumers"] = recorded_extras
-    state["source_run_id"] = state.get("run_id")
+    state["source_run_id"] = state.get("source_run_id") or state.get("run_id")
     state["run_id"] = run_id
     state["recovery_run_id"] = run_id
     state["phase"] = "emergency_fencing_planned"
@@ -1505,19 +1580,12 @@ def restore_if_safe(
         host.run(["systemctl", "start", DAEMON_SERVICE])
 
     expected_states = {**racer_state, DAEMON_SERVICE: daemon_state}
-    actual_states = {
-        unit: _validated_unit_state(host, unit) for unit in saved_units
-    }
-    mismatches = {
-        unit: {"expected": expected_states[unit], "actual": actual_states[unit]}
-        for unit in saved_units
-        if actual_states[unit] != expected_states[unit]
-    }
+    actual_states = _wait_units_restored(host, expected_states)
     masks_after = _masked_units(host)
-    if masks_after or mismatches:
+    if masks_after:
         raise FenceError(
             "unit restoration proof failed: "
-            f"masked={masks_after}, mismatches={mismatches}"
+            f"masked={masks_after}"
         )
     state["phase"] = "restored"
     _atomic_json(state_path, state)
@@ -1530,6 +1598,175 @@ def restore_if_safe(
         }
     )
     return evidence
+
+
+def _validate_unsafe_recovery_source(
+    host: Host,
+    *,
+    source_run_id: str,
+    state_path: Path,
+) -> tuple[dict[str, Any], str, str]:
+    """Validate an immutable unsafe-fence generation before any mutation."""
+
+    _require_run_id(source_run_id)
+    state = _load_state(state_path)
+    if state.get("phase") != "unsafe_fenced":
+        raise FenceError("canonical state is not an authoritatively unsafe fence")
+    if (state.get("source_run_id") or state.get("run_id")) != source_run_id:
+        raise FenceError("unsafe fence belongs to another source run")
+    required = (
+        "target_image_ref",
+        "target_revision",
+        "previous_image_ref",
+        "previous_revision",
+        "volume_mountpoint",
+        "receipt_host_path",
+        "receipt_snapshot",
+        "old_container_ids",
+        "restart_racer_state",
+        "daemon_service_state",
+        "present_restart_racer_units",
+        "extra_volume_consumers",
+    )
+    if any(key not in state for key in required):
+        raise FenceError("unsafe fence lacks complete inherited preflight state")
+    if state.get("extra_volume_consumers"):
+        raise FenceError("unsafe fence recorded extra production-volume consumers")
+    configured = _configured_image()
+    admitted = {
+        str(state["target_image_ref"]): str(state["target_revision"]),
+        str(state["previous_image_ref"]): str(state["previous_revision"]),
+    }
+    if configured not in admitted or not CANONICAL_IMAGE_RE.fullmatch(configured):
+        raise FenceError("configured image is not an admitted immutable identity")
+    revision = admitted[configured]
+    if not REVISION_RE.fullmatch(revision):
+        raise FenceError("configured image has no admitted source revision")
+    names = set(host.volume_container_names())
+    if names != set(EXPECTED_CONTAINERS):
+        raise FenceError("fenced volume does not contain exactly five writers")
+    inspections = _exact_inspections(host)
+    repository = configured.partition("@")[0]
+    for name, info in inspections.items():
+        if info.get("State", {}).get("Running"):
+            raise FenceError(f"fenced writer is still running: {name}")
+        identity = host.image_identity(str(info.get("Image", "")), repository)
+        if identity != (configured, revision):
+            raise FenceError("fenced fleet identity disagrees with configured image")
+        container_id = str(info.get("Id", ""))
+        if host.container_restart_policy(container_id) != "no":
+            raise FenceError("fenced writer restart policy is not no")
+    volume_dir = Path(str(state["volume_mountpoint"]))
+    if volume_dir.resolve() != host.volume_dir().resolve():
+        raise FenceError("fenced volume mountpoint changed")
+    if inventory_queue_risk(volume_dir):
+        raise FenceError("bug_investigation queue risk appeared while fenced")
+    receipt_path = Path(str(state["receipt_host_path"]))
+    if receipt_snapshot(receipt_path) != state["receipt_snapshot"]:
+        raise FenceError("receipt snapshot changed while fenced")
+    for old_id in state["old_container_ids"].values():
+        if _container_running_exact(host, str(old_id)):
+            raise FenceError("old writer container restarted while fenced")
+    if _stray_writer_processes(receipt_path, set(), volume_dir):
+        raise FenceError("stray writer process exists while fenced")
+    expected_units = (
+        *tuple(state["present_restart_racer_units"]),
+        DAEMON_SERVICE,
+    )
+    for unit in expected_units:
+        if not host.unit_present(unit):
+            raise FenceError(f"saved production unit is missing: {unit}")
+        unit_state = _validated_unit_state(host, unit)
+        load_state = host.unit_load_state(unit)
+        permitted_enabled = {"masked", "masked-runtime", "disabled"}
+        if unit.endswith(".service") and unit != DAEMON_SERVICE:
+            permitted_enabled.add("static")
+        if unit_state["enabled"] not in permitted_enabled:
+            raise FenceError(f"fenced unit can still boot-start: {unit}")
+        if load_state not in {"loaded", "masked"}:
+            raise FenceError(f"fenced unit load state is not authoritative: {unit}")
+        if unit_state["active"] not in {"inactive", "failed"}:
+            raise FenceError(f"fenced unit is not inactive: {unit}")
+    return state, configured, revision
+
+
+def recover_unsafe(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Recover one exact admitted fleet from a canonical emergency fence."""
+
+    _require_run_id(run_id)
+    state, image_ref, revision = _validate_unsafe_recovery_source(
+        host,
+        source_run_id=source_run_id,
+        state_path=state_path,
+    )
+    attempts = list(state.get("recovery_attempts") or [])
+    if run_id in attempts:
+        raise FenceError("recovery attempt identity was already used")
+    attempts.append(run_id)
+    state["source_run_id"] = source_run_id
+    state["run_id"] = run_id
+    state["recovery_run_id"] = run_id
+    state["recovery_attempts"] = attempts
+    state["phase"] = "recovery_planned"
+    _atomic_json(state_path, state)
+    try:
+        host.run(["systemctl", "unmask", "--runtime", DAEMON_SERVICE])
+        state["phase"] = "target_installed"
+        _atomic_json(state_path, state)
+        host.run(["systemctl", "start", DAEMON_SERVICE])
+        evidence: dict[str, Any] | None = None
+        last_error = ""
+        for attempt in range(30):
+            try:
+                evidence = prove(
+                    host,
+                    image_ref=image_ref,
+                    revision=revision,
+                    run_id=run_id,
+                    state_path=state_path,
+                )
+                break
+            except FenceError as exc:
+                last_error = str(exc)
+                if attempt < 29:
+                    time.sleep(2)
+        if evidence is None:
+            raise FenceError(f"exact fleet did not converge: {last_error}")
+        for name, policy in state.get("old_restart_policies", {}).items():
+            if policy not in {"always", "unless-stopped", "on-failure", "no"}:
+                raise FenceError(f"saved restart policy is invalid: {name}")
+            host.run(["docker", "update", f"--restart={policy}", name])
+        restored = restore_if_safe(
+            host,
+            image_ref=image_ref,
+            revision=revision,
+            run_id=run_id,
+            state_path=state_path,
+        )
+        restored.update(
+            {
+                "source_run_id": source_run_id,
+                "recovery_run_id": run_id,
+            }
+        )
+        return restored
+    except (FenceError, OSError) as recovery_error:
+        try:
+            quiesce_unsafe(host, run_id=run_id, state_path=state_path)
+        except (FenceError, OSError) as refence_error:
+            raise FenceError(
+                f"recovery failed: {recovery_error}; "
+                f"re-fence also failed: {refence_error}"
+            ) from recovery_error
+        raise FenceError(
+            f"recovery failed and was re-fenced: {recovery_error}"
+        ) from recovery_error
 
 
 def _write_optional(path: str | None, payload: Mapping[str, Any]) -> None:
@@ -1593,6 +1830,9 @@ def _parser() -> argparse.ArgumentParser:
     status.add_argument("--run-id", required=True)
     quiesce = subparsers.add_parser("quiesce-unsafe")
     quiesce.add_argument("--run-id", required=True)
+    recover = subparsers.add_parser("recover-unsafe")
+    recover.add_argument("--source-run-id", required=True)
+    recover.add_argument("--run-id", required=True)
     guard = subparsers.add_parser("guard-host-mutation")
     guard.add_argument(
         "--command-timeout",
@@ -1648,6 +1888,13 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
     if args.command == "quiesce-unsafe":
         return quiesce_unsafe(
             host,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "recover-unsafe":
+        return recover_unsafe(
+            host,
+            source_run_id=args.source_run_id,
             run_id=args.run_id,
             state_path=args.state_path,
         )

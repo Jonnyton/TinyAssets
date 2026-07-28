@@ -26,6 +26,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     prove,
     quiesce_unsafe,
     receipt_snapshot,
+    recover_unsafe,
     resolve_receipt_store,
     restore_if_safe,
     safe_fleet_matches,
@@ -383,6 +384,7 @@ class LifecycleHost:
         self.container_state_error = False
         self.container_state_override: str | None = None
         self.restart_policy_override: str | None = None
+        self.start_installs_target = False
 
     def _containers(
         self,
@@ -448,6 +450,9 @@ class LifecycleHost:
     def unit_present(self, unit: str) -> bool:
         return unit in self.units
 
+    def unit_load_state(self, unit: str) -> str:
+        return self.units[unit]["load"] if unit in self.units else "not-found"
+
     def unit_state(self, unit: str) -> dict[str, str]:
         state = self.units[unit]
         return {"active": state["active"], "enabled": state["enabled"]}
@@ -484,6 +489,7 @@ class LifecycleHost:
             elif action == "mask":
                 for unit in units:
                     self.units[unit]["enabled"] = "masked-runtime"
+                    self.units[unit]["load"] = "masked"
             elif action == "unmask" and self.unmask_error:
                 raise FenceError("systemctl unmask failed")
             elif action == "unmask" and not self.unmask_noop:
@@ -491,12 +497,27 @@ class LifecycleHost:
                     self.units[unit]["enabled"] = (
                         "static" if unit.endswith(".service") else "disabled"
                     )
+                    self.units[unit]["load"] = "loaded"
             elif action == "enable":
                 for unit in units:
                     self.units[unit]["enabled"] = "enabled"
             elif action == "start":
                 for unit in units:
                     self.units[unit]["active"] = "active"
+                if DAEMON_SERVICE in units and self.start_installs_target:
+                    configured = fence._configured_image()
+                    image = (
+                        "sha256:target"
+                        if configured == self.target_image_ref
+                        else "sha256:old"
+                    )
+                    self.containers = self._containers(
+                        "recovered",
+                        image,
+                        running=True,
+                    )
+                    for info in self.containers.values():
+                        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
             return ""
         if command[:2] == ("docker", "update"):
             identity = command[-1]
@@ -1091,6 +1112,7 @@ def test_restore_rejects_unmask_noop_or_failure(
     host = LifecycleHost(tmp_path)
     host.unmask_noop = failure == "noop"
     host.unmask_error = failure == "error"
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
     state_path = tmp_path / "fence-state.json"
     state_path.write_text(
         json.dumps(
@@ -1196,7 +1218,11 @@ def test_unsafe_cleanup_stops_all_writers_and_proves_old_ids(
                 "phase": "quiesced",
                 "receipt_host_path": str(tmp_path / "wiki_trigger_attempts.db"),
                 "old_container_ids": {
-                    name: info["Id"] for name, info in host.containers.items()
+                    name: f"pre-cutover-{index}"
+                    for index, name in enumerate(EXPECTED_CONTAINERS)
+                },
+                "old_restart_policies": {
+                    name: "always" for name in EXPECTED_CONTAINERS
                 },
             }
         ),
@@ -1392,10 +1418,281 @@ def test_process_scan_permission_error_is_uncertainty(
         )
 
 
+@pytest.mark.parametrize(
+    ("process_namespace", "expected_risk"),
+    (("mnt:[1]", False), ("mnt:[2]", True)),
+)
+def test_mountinfo_only_flags_foreign_not_same_host_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    process_namespace: str,
+    expected_risk: bool,
+):
+    proc = tmp_path / "proc" / "123"
+    (proc / "fd").mkdir(parents=True)
+    (proc / "ns").mkdir()
+    (proc / "cmdline").write_bytes(b"python\0idle")
+    (proc / "environ").write_bytes(b"")
+    (proc / "mountinfo").write_text(str(tmp_path), encoding="utf-8")
+    monkeypatch.setattr(fence.os, "getpid", lambda: 999)
+
+    def readlink(path: Any) -> str:
+        value = str(path)
+        if value.endswith("/exe") or value.endswith("\\exe"):
+            return "/usr/bin/python"
+        if value == "/proc/self/ns/mnt":
+            return "mnt:[1]"
+        return process_namespace
+
+    monkeypatch.setattr(fence.os, "readlink", readlink)
+    monkeypatch.setattr(fence.Path, "glob", lambda _self, _pattern: [proc])
+
+    risks = fence._stray_writer_processes(tmp_path / "receipt.db", set(), tmp_path)
+    assert bool(risks) is expected_risk
+    if risks:
+        assert risks[0]["same_host_mount_namespace"] is False
+        assert risks[0]["mount_namespace"] == "mnt:[2]"
+
+
+def test_post_canary_failure_includes_final_observation_diagnostic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
+                "phase": "safe_fleet",
+                "last_failed_observation": {
+                    "volume_container_names": ["tinyassets-daemon"]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FenceError("exact-five transient")
+        ),
+    )
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    with pytest.raises(FenceError, match="volume_container_names"):
+        post_canary(
+            object(),
+            image_ref="ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "b" * 64,
+            revision="b" * 40,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+
 def test_writer_command_classifier_covers_idle_cloud_worker():
     assert fence._looks_like_writer_command(
         "python -m tinyassets.cloud_worker --poll-seconds 5"
     )
+
+
+def _unsafe_recovery_state(host: LifecycleHost, state_path: Path) -> None:
+    _create_receipt_db(host.volume / "wiki_trigger_attempts.db")
+    snapshot = receipt_snapshot(host.volume / "wiki_trigger_attempts.db")
+    for info in host.containers.values():
+        info["State"] = {"Running": False, "Pid": 0}
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit]["enabled"] = "masked-runtime"
+        host.units[unit]["active"] = "inactive"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": "source-run-1",
+                "source_run_id": "source-run-1",
+                "phase": "unsafe_fenced",
+                "target_image_ref": host.target_image_ref,
+                "target_revision": host.target_revision,
+                "previous_image_ref": host.old_image_ref,
+                "previous_revision": host.old_revision,
+                "volume_mountpoint": str(host.volume),
+                "receipt_container_path": "/data/wiki_trigger_attempts.db",
+                "receipt_host_path": str(host.volume / "wiki_trigger_attempts.db"),
+                "receipt_snapshot": snapshot,
+                "preliminary_receipt_snapshot": snapshot,
+                "old_container_ids": {
+                    name: info["Id"] for name, info in host.containers.items()
+                },
+                "restart_racer_state": {
+                    unit: {
+                        "active": "active" if unit.endswith(".timer") else "inactive",
+                        "enabled": "enabled" if unit.endswith(".timer") else "static",
+                    }
+                    for unit in RESTART_RACER_UNITS
+                },
+                "daemon_service_state": {"active": "active", "enabled": "enabled"},
+                "present_restart_racer_units": list(RESTART_RACER_UNITS),
+                "extra_volume_consumers": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_recover_unsafe_refuses_wrong_source_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    with pytest.raises(FenceError, match="source run"):
+        recover_unsafe(
+            host,
+            source_run_id="wrong-run",
+            run_id="recovery-1",
+            state_path=state_path,
+        )
+    assert not any(call[:2] == ("systemctl", "unmask") for call in host.calls)
+
+
+def test_recover_unsafe_starts_only_recorded_configured_identity_and_restores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+
+    evidence = recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-1",
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "restored"
+    assert evidence["source_run_id"] == "source-run-1"
+    assert ("systemctl", "start", DAEMON_SERVICE) in host.calls
+    assert all(
+        info["Id"].startswith("recovered-") for info in host.containers.values()
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["source_run_id"] == "source-run-1"
+    assert state["recovery_attempts"] == ["recovery-1"]
+
+
+def test_recover_unsafe_refences_after_mutation_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    original_run = host.run
+
+    def fail_start(args: Any, **kwargs: Any) -> str:
+        if tuple(args) == ("systemctl", "start", DAEMON_SERVICE):
+            raise OSError("injected start I/O failure")
+        return original_run(args, **kwargs)
+
+    monkeypatch.setattr(host, "run", fail_start)
+    with pytest.raises(FenceError, match="re-fenced"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-1",
+            state_path=state_path,
+        )
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "unsafe_fenced"
+
+
+@pytest.mark.parametrize("fault", ["extra", "queue", "receipt"])
+def test_recover_unsafe_refuses_unproved_fenced_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    if fault == "extra":
+        host.containers["extra"] = host._containers("extra", "sha256:old", running=False)[
+            "tinyassets-daemon"
+        ]
+    elif fault == "queue":
+        (tmp_path / "branch_tasks.json").write_text(
+            json.dumps(
+                [
+                    {
+                        "branch_task_id": "x",
+                        "request_type": "bug_investigation",
+                        "status": "pending",
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+    else:
+        with sqlite3.connect(tmp_path / "wiki_trigger_attempts.db") as connection:
+            connection.execute(
+                "INSERT INTO wiki_trigger_attempts "
+                "(trigger_attempt_id,request_id,request_kind,request_page,status,attempted_at) "
+                "VALUES ('x','x','bug','x','queued','now')"
+            )
+
+    with pytest.raises(FenceError):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-1",
+            state_path=state_path,
+        )
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "unsafe_fenced"
+
+
+def test_restore_waits_for_activating_unit_then_exact_inactive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    states = iter(["activating", "inactive"])
+    host.units["daemon-watchdog.service"]["active"] = "activating"
+    original = host.unit_state
+
+    def settling(unit: str) -> dict[str, str]:
+        value = original(unit)
+        if unit == "daemon-watchdog.service":
+            value["active"] = next(states, "inactive")
+        return value
+
+    monkeypatch.setattr(host, "unit_state", settling)
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    actual = fence._wait_units_restored(
+        host,
+        {"daemon-watchdog.service": {"active": "inactive", "enabled": "static"}},
+        timeout_seconds=91,
+        delay_seconds=1,
+    )
+    assert actual["daemon-watchdog.service"]["active"] == "inactive"
+
+
+def test_restore_timeout_reports_last_transient_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    host.units["daemon-watchdog.service"]["active"] = "activating"
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    with pytest.raises(FenceError, match="activating"):
+        fence._wait_units_restored(
+            host,
+            {"daemon-watchdog.service": {"active": "inactive", "enabled": "static"}},
+            timeout_seconds=91,
+            delay_seconds=100,
+        )
 
 
 def test_parent_directory_fsync_is_attempted_on_posix(
