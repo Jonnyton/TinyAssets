@@ -674,7 +674,7 @@ Additional active compatibility/product residue has an exact disposition:
 | `tinyassets/effectors/validate_patch.py` | Preserve the explicit validation primitive while removing TinyAssets/"our loop" product-composition comments |
 | `tinyassets/api/prompts.py`, `tinyassets/universe_server.py` | Remove current community-loop promises/triage wording without broadening public tools |
 | `docs/ops/bot-identity-setup.md` | Rewrite current product-bot/community-loop and automatic-merge guidance around explicit user/maintainer workflow authority |
-| `docs/exec-plans/active/2026-04-25-file-bug-wiring.md`, current auto-ship specs/milestones, `pages/plans/` | Archive or rewrite current/discoverable guidance so it cannot be mistaken for a live supported product |
+| `docs/exec-plans/completed/2026-04-25-file-bug-wiring.md`, current auto-ship specs/milestones, `pages/plans/` | The wiring plan is now a retirement tombstone; archive or rewrite every other current/discoverable guide so none can be mistaken for a live supported product |
 | corresponding tests and plugin mirrors | Rewrite for generic behavior or delete with the retired surface |
 
 `CLAUDE.md` may continue documenting an explicit human/agent-selected

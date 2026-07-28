@@ -1,9 +1,9 @@
-"""Tests for the file_bug → enqueue_investigation_request forward-trigger seam.
+"""Historical helper tests plus the filing-only retirement contract.
 
-Task #34 (FRESH-A). Covers `_maybe_enqueue_investigation` directly. The
-integration with `_wiki_file_bug` is captured as a skipped test that flips
-to active once verifier-2 lands the one-line call site in
-`universe_server.py`. Spec: `docs/exec-plans/active/2026-04-25-file-bug-wiring.md`.
+The former forward-trigger plan is retired at
+``docs/exec-plans/completed/2026-04-25-file-bug-wiring.md``. Helper-level tests
+remain until the locked migration removes the compatibility module; integration
+tests below now prove ``file_bug`` does not invoke it.
 """
 
 from __future__ import annotations
