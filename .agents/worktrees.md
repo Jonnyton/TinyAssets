@@ -1608,9 +1608,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-deploy-proof-20260728
-- Lane state: draft PR #1839; repository candidate approved at `953f89db`; current-main integration, CI, and live deployment proof remain
+- Lane state: landed as PR #1839 / `0a8b092b`; live proof moved to `codex/retire-cheat-live-proof-20260728`
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728
-- STATUS/Issue/PR: draft PR #1839; task 2.1 operational continuation after merged PR #1836
+- STATUS/Issue/PR: PR #1839 merged; task 2.1 live proof continues separately
 - PLAN refs: user-buildable/remixable automation; no platform-owned cheat/community writer
 - Purpose: build and deploy the filing-only image while proving every controlled writer, queued write-back, restart racer, and rollback path is fenced
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728\_PURPOSE.md
@@ -1624,6 +1624,20 @@ Notes:
 - Update 2026-07-28: Claude Opus 5 APPROVED repository head `2dcc1139`
   with no blocking findings and asked that controller deletion become a
   checkable obligation; OpenSpec task 2.5a now owns that deletion.
+
+## 2026-07-28 - cheat-loop task 2.1 live cutover proof
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-live-proof-20260728
+- Lane state: claimed; immutable main build/deploy proof pending
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-live-proof-20260728
+- STATUS/Issue/PR: production continuation after PR #1839 / `0a8b092b`
+- PLAN refs: user-buildable/remixable automation; no privileged writer; complete-system uptime
+- Purpose: dispatch and prove the filing-only image while preserving fail-closed writer, queue, restart, rollback, and receipt invariants
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-live-proof-20260728\_PURPOSE.md
+- Memory refs: PR #1836 `35da9d4f`; PR #1839 `0a8b092b`; task 2.1
+- Review gate: durable deploy receipt, exact five-container inventory, old/stray/queued writer drain, rendered filing, unchanged receipt snapshot
+- Ship/abandon: task 2.1 stays open on any uncertainty; never force an unsafe rollback or traffic transition
 
 ## 2026-07-27 - canonical public-read completeness
 
