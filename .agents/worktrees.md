@@ -1539,9 +1539,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/audit-retire-cheat-runtime-next-20260727
-- Lane state: current-main residue and ownership audit in progress
+- Lane state: landed as PR #1829
 - Worktree: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727
-- STATUS/Issue/PR: audit PR #1829; existing migrator draft PR #1820 targets unmerged `codex/retire-loop-snapshots` and must close as superseded only after a clean main-based replacement opens
+- STATUS/Issue/PR: PR #1829 merged to main as `66006cf4`; existing migrator draft PR #1820 targets unmerged `codex/retire-loop-snapshots`
 - PLAN refs: user-buildable/remixable automation; generic primitives survive; no privileged platform composition
 - Purpose: map remaining runtime, workflow/live-state, snapshot/data, packaging, and validation residue to exact owners and choose the smallest collision-safe wave
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727\_PURPOSE.md
@@ -1549,3 +1549,18 @@ Notes:
 - Review gate: exact residue scan, claim-check owner map, strict OpenSpec, independent Codex/Claude architecture review before implementation
 - Ship/abandon: publish the audit/foldback separately; implement only after an exact Files/Depends claim is clear
 - Update 2026-07-27: exact-head Codex review required an ordering correction: 2.1 stop-writer -> dark authority store/reconciler -> locked 2.5 migration -> authority activation/foldback; stale broad claims must be revalidated/reaped or carved
+- Update 2026-07-27: exact head `0a4bd6f3` received Codex and Claude Opus 5 APPROVE and landed through PR #1829 as `66006cf4`
+
+## 2026-07-27 - restack cheat-loop GitHub-state inventory migrator
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/restack-retire-loop-github-state-20260727
+- Lane state: selective main-based squash in progress
+- Worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727
+- STATUS/Issue/PR: replacement for parked draft PR #1820; new main-based draft PR not yet opened
+- PLAN refs: user-buildable/remixable automation; retire only privileged GitHub residue; preserve generic effectors and explicit GitHub primitives
+- Purpose: import only the fail-closed inventory/planning/verifier payload and exact 3.6/3.7 spec delta; exclude old snapshot/site/coordination ancestry
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727\_PURPOSE.md
+- Memory refs: base 66006cf4; PR #1829 audit; source payload d40173a2; draft PR #1820
+- Review gate: 45 focused tests, py_compile, strict OpenSpec, no-live-mutator inspection, exact-head Codex and Claude Opus 5 review
+- Ship/abandon: keep tasks 3.6/3.7 unchecked; open against main, then close #1820 as superseded with replacement link; do not import or close sibling snapshot PR #1819
