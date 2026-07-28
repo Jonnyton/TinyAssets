@@ -53,13 +53,20 @@ def complete_connection(
         "completion_basis": completion_basis,
     }
     if completion_basis == "github_link_header_chain_v1":
+        request_endpoint = (
+            f"repos/Jonnyton/TinyAssets/{kind}?per_page=100"
+        )
         value["pagination"] = {
             "mode": "github_link_header_chain_v1",
+            "page_size": 100,
             "page_receipts": [
                 {
                     "ordinal": 0,
                     "request_id": "fixture-request-id",
-                    "request_url_digest": mod.digest({"fixture": kind, "page": 0}),
+                    "request_endpoint": request_endpoint,
+                    "request_url_digest": mod.digest(
+                        {"method": "GET", "endpoint": request_endpoint}
+                    ),
                     "response_body_digest": mod.digest(
                         {"fixture": kind, "count": count}
                     ),
@@ -534,6 +541,10 @@ class ReceiptTests(unittest.TestCase):
         changed["plan"]["source_revision"] = "evil"
         with self.assertRaises(mod.PlanError):
             mod.verify_receipt(changed)
+        changed = copy.deepcopy(value)
+        changed["execution"]["status"] = "applied"
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(changed)
         with self.assertRaises(mod.ApplyBlocked):
             mod.verify_apply_authority(
                 value,
@@ -806,6 +817,130 @@ class ReceiptTests(unittest.TestCase):
                 inventory=inventory,
             )
 
+    def test_label_apply_and_link_server_total_cannot_be_fabricated(self) -> None:
+        inventory = label_inventory()
+        inventory["apply_complete"] = True
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.LABEL_OPERATION,
+                repo=repo(),
+                source_revision="abc123",
+                inventory=inventory,
+            )
+
+        connection = complete_connection(
+            kind="fixture",
+            label_name="",
+            count=0,
+            completion_basis="github_link_header_chain_v1",
+        )
+        connection["total_count"] = 0
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([connection])
+
+        terminal_full = complete_connection(
+            kind="fixture",
+            label_name="",
+            count=100,
+            completion_basis="github_link_header_chain_v1",
+        )
+        terminal_full["pagination"]["page_receipts"][0]["item_count"] = 100
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([terminal_full])
+
+        mismatched_request = complete_connection(
+            kind="fixture",
+            label_name="",
+            count=0,
+            completion_basis="github_link_header_chain_v1",
+        )
+        endpoint = "repos/Jonnyton/TinyAssets/fixture?per_page=30"
+        page = mismatched_request["pagination"]["page_receipts"][0]
+        page["request_endpoint"] = endpoint
+        page["request_url_digest"] = mod.digest(
+            {"method": "GET", "endpoint": endpoint}
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([mismatched_request])
+
+        stale_request_digest = complete_connection(
+            kind="fixture",
+            label_name="",
+            count=0,
+            completion_basis="github_link_header_chain_v1",
+        )
+        stale_request_digest["pagination"]["page_size"] = 30
+        page = stale_request_digest["pagination"]["page_receipts"][0]
+        page["request_endpoint"] = (
+            "repos/Jonnyton/TinyAssets/fixture?per_page=30"
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([stale_request_digest])
+
+        boolean_page_size = complete_connection(
+            kind="fixture",
+            label_name="",
+            count=0,
+            completion_basis="github_link_header_chain_v1",
+        )
+        endpoint = "repos/Jonnyton/TinyAssets/fixture?per_page=1"
+        boolean_page_size["pagination"]["page_size"] = True
+        page = boolean_page_size["pagination"]["page_receipts"][0]
+        page["request_endpoint"] = endpoint
+        page["request_url_digest"] = mod.digest(
+            {"method": "GET", "endpoint": endpoint}
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([boolean_page_size])
+
+        first_endpoint = "repos/Jonnyton/TinyAssets/fixture?per_page=100"
+        second_endpoint = (
+            "https://api.github.com/repositories/42/fixture"
+            "?per_page=100&page=2"
+        )
+        oversized_nonterminal = {
+            "kind": "fixture",
+            "label_name": "",
+            "pages": 2,
+            "count": 101,
+            "total_count": None,
+            "complete": True,
+            "completion_basis": "github_link_header_chain_v1",
+            "pagination": {
+                "mode": "github_link_header_chain_v1",
+                "page_size": 100,
+                "page_receipts": [
+                    {
+                        "ordinal": 0,
+                        "request_id": "REQ_first",
+                        "request_endpoint": first_endpoint,
+                        "request_url_digest": mod.digest(
+                            {"method": "GET", "endpoint": first_endpoint}
+                        ),
+                        "response_body_digest": mod.digest({"page": 1}),
+                        "item_count": 101,
+                        "next_url_digest": mod.digest(
+                            {"method": "GET", "endpoint": second_endpoint}
+                        ),
+                    },
+                    {
+                        "ordinal": 1,
+                        "request_id": "REQ_second",
+                        "request_endpoint": second_endpoint,
+                        "request_url_digest": mod.digest(
+                            {"method": "GET", "endpoint": second_endpoint}
+                        ),
+                        "response_body_digest": mod.digest({"page": 2}),
+                        "item_count": 0,
+                        "next_url_digest": None,
+                    },
+                ],
+                "terminal": {"oracle": "rel_next_absent", "page_ordinal": 1},
+            },
+        }
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections([oversized_nonterminal])
+
         for completion_basis in (
             "reported_total_count",
             "graphql_total_count",
@@ -1050,6 +1185,21 @@ class ApplyTests(unittest.TestCase):
                 mutator=self.Writer(),
                 proof_refresher=self.fresh_proof(authority_proof()),
             )
+
+    def test_complete_plan_binds_exact_before_and_after_tuples(self) -> None:
+        value, _action = complete_auto_receipt()
+        for tuple_name in ("planned_before", "planned_after"):
+            inventory = copy.deepcopy(value["plan"]["inventory"])
+            inventory["planned_actions"][0][tuple_name]["head_ref_oid"] = "drifted"
+            with self.subTest(tuple_name=tuple_name), self.assertRaises(
+                mod.PlanError
+            ):
+                mod.build_receipt(
+                    operation=mod.AUTO_MERGE_OPERATION,
+                    repo=repo(),
+                    source_revision="abc123",
+                    inventory=inventory,
+                )
 
     def test_pre_read_drift_persists_hold_and_never_mutates(self) -> None:
         value, action = complete_auto_receipt()
@@ -1345,6 +1495,23 @@ class AttributionTests(unittest.TestCase):
         result = mod.classify_auto_merge(self.pr(), [evidence])
         self.assertEqual("attributed", result["classification"])
 
+    def test_attribution_requires_the_full_pull_request_eligibility_tuple(self) -> None:
+        cases = {
+            "closed": ("state", "CLOSED"),
+            "draft": ("is_draft", True),
+            "non_main": ("base_ref_name", "release"),
+            "fork_head": (
+                "head_repository",
+                {"id": "R_fork", "nameWithOwner": "someone/fork"},
+            ),
+        }
+        for name, (field, value) in cases.items():
+            pr = self.pr()
+            pr[field] = value
+            result = mod.classify_auto_merge(pr, [self.evidence()])
+            with self.subTest(name=name):
+                self.assertEqual("ambiguous_preserve", result["classification"])
+
     def test_complete_plan_cannot_target_human_preserved_enrollment(self) -> None:
         valid, _ = complete_auto_receipt()
         pr = self.pr("User", "jonnyton")
@@ -1593,6 +1760,34 @@ class AttributionTests(unittest.TestCase):
             repo_name="Jonnyton/TinyAssets",
         )
         self.assertFalse(confused_proof["log_pr_number_matches"])
+
+    def test_log_archive_rejects_unsafe_and_encrypted_members(self) -> None:
+        unsafe = io.BytesIO()
+        with zipfile.ZipFile(unsafe, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("../escape.txt", "not trusted")
+        with self.assertRaisesRegex(mod.PlanError, "unsafe entry"):
+            mod.inspect_enrollment_log_archive(
+                unsafe.getvalue(),
+                pull_request_number=7,
+                repo_name="Jonnyton/TinyAssets",
+            )
+
+        encrypted = bytearray(enrollment_log_zip())
+        for signature, flag_offset in (
+            (b"PK\x03\x04", 6),
+            (b"PK\x01\x02", 8),
+        ):
+            offset = encrypted.find(signature)
+            self.assertGreaterEqual(offset, 0)
+            start = offset + flag_offset
+            flags = int.from_bytes(encrypted[start : start + 2], "little") | 0x1
+            encrypted[start : start + 2] = flags.to_bytes(2, "little")
+        with self.assertRaisesRegex(mod.PlanError, "unsafe entry"):
+            mod.inspect_enrollment_log_archive(
+                bytes(encrypted),
+                pull_request_number=7,
+                repo_name="Jonnyton/TinyAssets",
+            )
 
     def test_attribution_collector_binds_run_job_step_log_and_blob(self) -> None:
         pr = self.pr()
@@ -1890,6 +2085,25 @@ class ReadOnlyClientTests(unittest.TestCase):
                 client.rest(endpoint)
         self.assertEqual([], calls)
 
+    def test_page_size_parser_rejects_missing_duplicate_bounds_and_non_ascii(self) -> None:
+        invalid = (
+            "repos/Jonnyton/TinyAssets/issues",
+            "repos/Jonnyton/TinyAssets/issues?per_page=100&per_page=100",
+            "repos/Jonnyton/TinyAssets/issues?per_page=0",
+            "repos/Jonnyton/TinyAssets/issues?per_page=101",
+            "repos/Jonnyton/TinyAssets/issues?per_page=" + chr(0xFF11) * 3,
+            "repos/Jonnyton/TinyAssets/issues?per_page=" + chr(0x00B2),
+        )
+        for endpoint in invalid:
+            with self.subTest(endpoint=endpoint), self.assertRaises(mod.PlanError):
+                mod._requested_page_size(endpoint)
+        self.assertEqual(
+            100,
+            mod._requested_page_size(
+                "repos/Jonnyton/TinyAssets/issues?per_page=100"
+            ),
+        )
+
     def test_graphql_accepts_only_exact_query_and_plain_owner_name(self) -> None:
         calls = []
 
@@ -1996,6 +2210,7 @@ class ReadOnlyClientTests(unittest.TestCase):
         )
         pagination = connection["pagination"]
         self.assertEqual("github_link_header_chain_v1", pagination["mode"])
+        self.assertEqual(100, pagination["page_size"])
         self.assertEqual(
             [0, 1],
             [page["ordinal"] for page in pagination["page_receipts"]],
@@ -2016,6 +2231,44 @@ class ReadOnlyClientTests(unittest.TestCase):
             {"oracle": "rel_next_absent", "page_ordinal": 1},
             pagination["terminal"],
         )
+
+    def test_link_pagination_rejects_full_page_without_next_link(self) -> None:
+        endpoint = "repos/Jonnyton/TinyAssets/issues?state=all&per_page=100"
+        response = included_json_response(
+            [{"id": index} for index in range(1, 101)],
+            request_id="REQ_full_terminal",
+        )
+
+        def runner(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout=response)
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        client.bind_repo_database_id(42)
+        with self.assertRaises(mod.PlanError):
+            client.rest_array_collection(endpoint)
+
+    def test_link_pagination_rejects_page_larger_than_requested_bound(self) -> None:
+        endpoint = "repos/Jonnyton/TinyAssets/issues?state=all&per_page=30"
+        next_url = (
+            "https://api.github.com/repositories/42/issues"
+            "?state=all&per_page=30&page=2"
+        )
+        responses = [
+            included_json_response(
+                [{"id": index} for index in range(1, 32)],
+                request_id="REQ_oversized",
+                link=f'<{next_url}>; rel="next"',
+            ),
+            included_json_response([], request_id="REQ_terminal"),
+        ]
+
+        def runner(args, **kwargs):
+            return subprocess.CompletedProcess(args, 0, stdout=responses.pop(0))
+
+        client = mod.ReadOnlyGitHub("Jonnyton/TinyAssets", runner=runner)
+        client.bind_repo_database_id(42)
+        with self.assertRaises(mod.PlanError):
+            client.rest_array_collection(endpoint)
 
     def test_link_pagination_rejects_untrusted_or_incomplete_chains(self) -> None:
         endpoint = (

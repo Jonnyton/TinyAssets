@@ -654,3 +654,18 @@ fresh-host rollback edges found later.
 - What I would do differently: map deployment identities and old-writer fencing
   at the same time as the repository change, so landing the image and proving
   operational retirement form one explicit sequence.
+
+## 2026-07-28 - terminal-page oracle follow-up
+
+- **What surprised me:** the safe restack landed concurrently while its older
+  source payload was under review; treating untracked files as the diff hid
+  that `main` already had a stronger closed receipt envelope. Opus caught both
+  the stale base and a separate full-terminal-page completeness bug.
+- **Pattern worth capturing:** absence of a pagination continuation is only a
+  terminal oracle when the final page is strictly smaller than the requested
+  bound, and both live collection and stored-receipt validation need
+  load-bearing tests for that invariant.
+- **What I would do differently:** fetch immediately before every
+  opposite-provider review and compare against the exact remote head, then
+  freeze that base in the brief so a concurrent landing cannot masquerade as a
+  local regression.
