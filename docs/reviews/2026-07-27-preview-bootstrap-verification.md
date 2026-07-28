@@ -4,7 +4,7 @@ Freshness: 2026-07-27 America/Los_Angeles, Windows 11 host,
 `origin/main`-based worktree `wf-preview-boundary-bootstrap-20260727`.
 Implementation anchor: `3587770c` (`fix(preview): bind immutable trusted
 publication`). Exact reviewed evidence head: `3913c84b`; tree:
-`4940caa7e1212b967c2d4f6b85ad4cf388a1721f`. The credentialed `workflow_run`
+`4940caa7eff9c629b51a9aa553edc014d7d542aa`. The credentialed `workflow_run`
 consumer cannot run until its trusted definition lands on the default branch.
 
 ## Source Verification
