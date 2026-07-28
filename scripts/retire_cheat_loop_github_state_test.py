@@ -782,6 +782,19 @@ class ReceiptTests(unittest.TestCase):
                         inventory=inventory,
                     )
 
+    def test_label_planned_actions_rejects_malformed_non_empty_arrays(self) -> None:
+        for invalid in ([1], ["x"], [None], [[]]):
+            with self.subTest(invalid=invalid):
+                inventory = label_inventory()
+                inventory["planned_actions"] = invalid
+                with self.assertRaises(mod.PlanError):
+                    mod.build_receipt(
+                        operation=mod.LABEL_OPERATION,
+                        repo=repo(),
+                        source_revision="abc123",
+                        inventory=inventory,
+                    )
+
     def test_incomplete_or_truncated_pagination_is_rejected(self) -> None:
         inventory = label_inventory()
         inventory["connections"][0]["complete"] = False

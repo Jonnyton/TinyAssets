@@ -454,12 +454,12 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
     planned_actions_value = inventory.get("planned_actions", [])
     if not isinstance(planned_actions_value, list):
         raise PlanError("retired-label planned_actions must be a JSON array")
-    planned_actions = _normalize_planned_actions(planned_actions_value)
-    if planned_actions:
+    if planned_actions_value:
         raise PlanError(
             "retired-label planned actions are not implemented; "
             "this increment is inventory-only"
         )
+    planned_actions: list[dict[str, Any]] = []
     apply_complete = inventory.get("apply_complete") is True
     if apply_complete:
         raise PlanError(
