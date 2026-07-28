@@ -1,32 +1,40 @@
-# Live-data preview of the React site as a Cloudflare WORKER (not Pages), so it
-# deploys with the EXISTING Workers-scoped CLOUDFLARE_API_TOKEN — no Pages
-# permission needed. Serves out/ via the ASSETS binding and proxies /mcp
-# same-origin → real live data (TinyBot etc.). Publishes to a *.workers.dev URL.
+# Untrusted half of the hosted React preview.
+#
+# Pull-request code controls package scripts and dependencies, so this workflow
+# has no deployment secret or write permission. It transfers only the static
+# export to preview-worker-deploy.yml, whose trusted default-branch copy owns
+# the credentialed deployment.
 name: preview-worker
 
 on:
-  workflow_dispatch:
   pull_request:
     paths:
       - 'WebSite/site-react/**'
+      - 'WebSite/shared/**'
+      - 'WebSite/site/scripts/canonical-mcp-contract.test.mjs'
+      - 'WebSite/site/scripts/preview-worker-security.test.mjs'
       - 'WebSite/design-system/**'
       - '.github/workflows/preview-worker.yml'
+      - '.github/workflows/preview-worker-deploy.yml'
 
 permissions:
   contents: read
-  pull-requests: write
 
 concurrency:
-  group: preview-worker-${{ github.ref }}
+  group: preview-worker-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  preview:
+  build:
+    name: Build untrusted static preview
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
 
@@ -36,7 +44,13 @@ jobs:
           npm ci
           npm run build
 
-      - name: Build site (root, same-origin /mcp)
+      - name: Test canonical MCP and preview-security contracts
+        working-directory: WebSite/site
+        run: |
+          npm ci
+          npm test
+
+      - name: Build static site (root, same-origin /mcp)
         working-directory: WebSite/site-react
         env:
           NEXT_PUBLIC_MCP_PATH: '/mcp'
@@ -45,55 +59,12 @@ jobs:
           npm run build
           rm -f out/CNAME
 
-      - name: Resolve Cloudflare account id
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          ACCOUNT_ID_SECRET: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: |
-          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
-            echo "::error::CLOUDFLARE_API_TOKEN secret is not set."
-            exit 1
-          fi
-          account_id="${ACCOUNT_ID_SECRET}"
-          if [ -z "${account_id}" ]; then
-            response="$(curl -s -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
-              "https://api.cloudflare.com/client/v4/zones?name=tinyassets.io")"
-            account_id="$(python3 -c 'import json,sys; d=json.load(sys.stdin); r=d.get("result") or []; print(((r[0].get("account") or {}).get("id") or "") if r else "")' <<< "${response}")"
-          fi
-          if [ -z "${account_id}" ]; then
-            echo "::error::Could not resolve Cloudflare account id."
-            exit 1
-          fi
-          echo "CLOUDFLARE_ACCOUNT_ID=${account_id}" >> "${GITHUB_ENV}"
-
-      - name: Deploy preview Worker
-        id: deploy
-        working-directory: WebSite/site-react
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          set +e
-          out="$(npx --yes wrangler@latest deploy --config wrangler.preview.toml 2>&1)"
-          status=$?
-          echo "${out}"
-          if [ "${status}" -ne 0 ]; then
-            echo "::error::wrangler deploy failed (exit ${status})."
-            exit "${status}"
-          fi
-          url="$(echo "${out}" | grep -oE 'https://[a-z0-9.-]+\.workers\.dev' | head -1)"
-          echo "url=${url}" >> "${GITHUB_OUTPUT}"
-          {
-            echo "### React site preview (Worker, live data)"
-            echo "Preview URL: ${url}"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Comment preview URL on PR
-        if: github.event_name == 'pull_request' && steps.deploy.outputs.url != ''
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PREVIEW_URL: ${{ steps.deploy.outputs.url }}
-        run: |
-          gh pr comment "${PR_NUMBER}" --body "🤖 **Live React preview (Worker):** ${PREVIEW_URL}
-
-          Serves the static export + proxies /mcp same-origin, so TinyBot and the live numbers show real data. Updates on every push to this PR. Not the live tinyassets.io."
+      - name: Upload static preview artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: react-preview-${{ github.event.pull_request.number }}-${{ github.run_attempt }}
+          path: WebSite/site-react/out/
+          if-no-files-found: error
+          include-hidden-files: false
+          overwrite: false
+          retention-days: 1

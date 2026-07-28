@@ -36,6 +36,20 @@ Format for future entries:
 
 ---
 
+## 2026-07-27 - create preview-boundary-bootstrap
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/preview-boundary-bootstrap-20260727
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-preview-boundary-bootstrap-20260727
+- STATUS/Issue/PR: retire-cheat-loop row; bootstrap PR pending
+- Purpose: land the trusted default-branch preview boundary before rebasing #1812.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-preview-boundary-bootstrap-20260727\_PURPOSE.md
+- Review gate: tests/builds + actionlint/zizmor + exact-head independent reviews + Claude Opus 5
+- Ship/abandon: narrow main PR; merge before #1812/#1815/#1818 restack
+
+---
+
 ## 2026-06-04 00:00 - create wiki-bug-sync-structured-first
 
 - Provider: codex-gpt5
