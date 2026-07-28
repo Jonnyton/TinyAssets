@@ -1424,6 +1424,7 @@ def test_stop_writer_workflow_invokes_transitional_helper_subcommands():
         " post-canary --image-ref ",
         " status",
         " observe",
+        " quiesce-unsafe",
         " restore-if-safe --image-ref ",
     ):
         assert command in text
@@ -1502,8 +1503,11 @@ def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
     restore_script = str(restore.get("run", ""))
     assert "retire-cheat-loop-deploy-fence.py status" in restore_script
     assert "retire-cheat-loop-deploy-fence.py observe" in restore_script
+    assert "retire-cheat-loop-deploy-fence.py quiesce-unsafe" in restore_script
     assert "git merge-base --is-ancestor" in restore_script
-    assert "leaving restart racers fenced" in restore_script
+    assert "cleanup_restored=true" in restore_script
+    assert "masked_units_after" in restore_script
+    assert "tinyassets-daemon.service" in restore_script
     assert restore_script.index("git merge-base --is-ancestor") < restore_script.index(
         "restore-if-safe --image-ref"
     )
@@ -1511,3 +1515,15 @@ def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
     assert (artifact.get("uses") or "").startswith("actions/upload-artifact@")
     assert "retire-cheat-loop-task-2-1" in str(artifact.get("with", {}).get("name", ""))
     assert "stop-writer-evidence" in str(artifact.get("with", {}).get("path", ""))
+
+
+def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
+    wf = _load()
+    terminal = _step_with_run_token(wf, "terminal_receipt_result=")
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
+    )
+    script = str(terminal.get("run", ""))
+    assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script
+    assert "export FORWARD_SUCCEEDED=false" in script

@@ -1226,6 +1226,7 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
+          echo "cleanup_restored=false" >> "$GITHUB_OUTPUT"
           # retire-cheat-loop task 2.1: independently inspect durable masks and
           # host fence state even when the preflight step produced no outputs.
           # Restore only after exact-five fleet, digest, revision, old-ID,
@@ -1236,10 +1237,32 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               scripts/retire_cheat_loop_deploy_fence.py \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          fence_unsafe_and_fail() {
+            reason="$1"
+            set +e
+            ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py quiesce-unsafe" \
+                > "$evidence_dir/unsafe-fence.json"
+            fence_status=$?
+            set -e
+            if [ "$fence_status" -ne 0 ]; then
+              echo "::error::${reason}; unsafe fleet could not be authoritatively fenced"
+            else
+              echo "::error::${reason}; unsafe fleet was stopped and restart-fenced"
+            fi
+            exit 1
+          }
+          set +e
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py status" \
               > "$evidence_dir/fence-status.json"
+          status_probe=$?
+          set -e
+          if [ "$status_probe" -ne 0 ]; then
+            fence_unsafe_and_fail "durable fence status is unreadable"
+          fi
           if python - "$evidence_dir/fence-status.json" "$GITHUB_OUTPUT" <<'PY'
           import json
           import sys
@@ -1270,11 +1293,11 @@ jobs:
           observation_status=$?
           set -e
           if [ "$observation_status" -ne 0 ]; then
-            echo "::error::safe active fleet is unproved; leaving restart racers fenced"
-            exit 1
+            fence_unsafe_and_fail "safe active fleet is unproved"
           fi
-          readarray -t identity < <(
-            python - "$evidence_dir/cleanup-observation.json" <<'PY'
+          set +e
+          python - "$evidence_dir/cleanup-observation.json" \
+              > "$evidence_dir/cleanup-identity.txt" <<'PY'
           import json
           import sys
 
@@ -1287,31 +1310,69 @@ jobs:
           print(next(iter(images)))
           print(next(iter(revisions)))
           PY
-          )
+          identity_status=$?
+          set -e
+          if [ "$identity_status" -ne 0 ]; then
+            fence_unsafe_and_fail "active fleet identity is not exact"
+          fi
+          readarray -t identity < "$evidence_dir/cleanup-identity.txt"
           active_image="${identity[0]}"
           active_revision="${identity[1]}"
           if [[ ! "$active_revision" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "::error::active fleet revision is not canonical; leaving restart racers fenced"
-            exit 1
+            fence_unsafe_and_fail "active fleet revision is not canonical"
           fi
-          git fetch --no-tags --prune origin main
+          if ! git fetch --no-tags --prune origin main; then
+            fence_unsafe_and_fail "active fleet ancestry history is unavailable"
+          fi
           if ! git cat-file -e "${active_revision}^{commit}" 2>/dev/null; then
-            git fetch --no-tags origin "$active_revision"
+            if ! git fetch --no-tags origin "$active_revision"; then
+              fence_unsafe_and_fail "active fleet revision cannot be verified"
+            fi
           fi
           if ! git merge-base --is-ancestor "$STOP_WRITER_SHA" "$active_revision"; then
-            echo "::error::active fleet predates stop-writer floor; leaving restart racers fenced"
-            exit 1
+            fence_unsafe_and_fail "active fleet predates stop-writer floor"
           fi
+          set +e
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
               "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py restore-if-safe --image-ref '${active_image}' --revision '${active_revision}'" \
               > "$evidence_dir/cleanup.json"
+          restore_status=$?
+          set -e
+          if [ "$restore_status" -ne 0 ]; then
+            fence_unsafe_and_fail "restart-racer restoration proof failed"
+          fi
+          set +e
+          python - "$evidence_dir/cleanup.json" "$GITHUB_OUTPUT" <<'PY'
+          import json
+          import sys
+
+          evidence = json.load(open(sys.argv[1], encoding="utf-8"))
+          daemon = evidence.get("restored_unit_states", {}).get(
+              "tinyassets-daemon.service", {}
+          )
+          if (
+              evidence.get("phase") != "restored"
+              or evidence.get("masked_units_after") != []
+              or daemon.get("active") != "active"
+              or daemon.get("enabled") != "enabled"
+          ):
+              raise SystemExit("stop-writer cleanup restoration is not exact")
+          with open(sys.argv[2], "a", encoding="utf-8") as output:
+              output.write("cleanup_restored=true\n")
+          PY
+          cleanup_proof_status=$?
+          set -e
+          if [ "$cleanup_proof_status" -ne 0 ]; then
+            fence_unsafe_and_fail "restored unit-state evidence is not exact"
+          fi
 
       - name: Publish release-state receipt
         id: terminal
         if: always()
         env:
           PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}
+          STOP_WRITER_CLEANUP_RESTORED: ${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
           FORWARD_CANARY_OUTCOME: ${{ steps.canary.outcome }}
@@ -1337,6 +1398,11 @@ jobs:
             exit 0
           fi
           echo "terminal_receipt_result=failed" >> "$GITHUB_OUTPUT"
+          if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]; then
+            echo "::error::stop-writer cleanup was not authoritatively restored"
+            export FORWARD_SUCCEEDED=false
+            export FORWARD_CANARY_OUTCOME=failure
+          fi
 
           terminal_observation="$(
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
