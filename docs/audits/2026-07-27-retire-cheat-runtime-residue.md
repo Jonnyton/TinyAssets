@@ -199,6 +199,11 @@ Current-main terminal-oracle integration on 2026-07-28:
   terminal next-link absence, exact page/terminal envelopes, connection
   unknown-field closure, and per-page ordinal identity. One final regression
   pass now isolates each receipt-shape invariant.
+- Final exact #1836-based Opus review approved semantic head `c95876fe`: every
+  named mutation died, all 45 concrete forgery probes were rejected, all
+  repository/OpenSpec gates passed, and no correctness, authority, or approval
+  truth defect remained. The later coordination-only foldback records that
+  verdict without changing the reviewed implementation or tests.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

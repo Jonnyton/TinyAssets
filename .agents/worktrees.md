@@ -1621,14 +1621,14 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-github-terminal-oracle-final
-- Lane state: three Opus ADAPT rounds folded on landed PR #1836; final exact-head recheck pending
+- Lane state: exact semantic head `c95876fe` received Opus 5 APPROVE; publication pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final
 - STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835/#1836 are the landed base
 - PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
 - Purpose: reject full terminal REST pages as ambiguous while preserving #1830's closed receipt envelope and all other fail-closed guards
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final\_PURPOSE.md
 - Memory refs: Opus 5 review rounds in the abandoned pre-#1830 worktree; PR #1830 / `52475559`
-- Review gate: 61 combined focused tests, Ruff, strict OpenSpec, stored-receipt mutation proof, pre-#1835 Opus approval; current-head reapproval pending
+- Review gate: passed — 61 focused tests, Ruff, all 60 strict OpenSpec validations, 45 forgery probes, bounded mutation battery, exact semantic-head Opus 5 APPROVE
 - Ship/abandon: land only the complementary oracle hardening; tasks 3.6/3.7 remain unchecked and no GitHub state may change
 - Update 2026-07-28: pre-#1835 exact-current Opus 5 mutation review returned APPROVE after every request/page-size, digest, and archive guard then under review proved load-bearing
 - Update 2026-07-28: moved the approved commit into a clean current-main worktree after #1835 overlapped the receipt-schema files; preserved both hardening waves
@@ -1639,3 +1639,4 @@ Notes:
 - Update 2026-07-28: exact #1836-based Opus review found no forgery or authority defect; three isolated regressions remain for chain digest, pagination key closure, and terminal ordinal before approval
 - Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
 - Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass
+- Update 2026-07-28: exact semantic head `c95876fe` received Opus 5 APPROVE; every named mutation died, all 45 concrete forgery probes were rejected, and no correctness or authority defect remained

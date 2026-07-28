@@ -209,6 +209,9 @@
   because no workflow, label, PR auto-merge state, or other GitHub state was
   changed. Pre-#1835 exact-current Claude Opus 5 review approved the initial terminal-oracle follow-up after
   independently mutation-testing every request/page-size and archive guard.
+  Exact #1836-based semantic head `c95876fe` then received Claude Opus 5
+  `APPROVE`: every named mutation died, 45 concrete forgery probes were
+  rejected, and no correctness or authority defect remained.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 
