@@ -1583,6 +1583,7 @@ Notes:
 - Update 2026-07-28: TDD proved three red bypasses, then 49/49 passed after exact label definition/association closure and rejecting label planned actions
 - Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex approved `b8d57e9f`, Claude Opus 5 required collector-contract coverage before ready
 - Update 2026-07-28: review fix adds collector round-trip, exact scalar schemas, and PlanError container typing; 53/53 pass with 60/60 strict OpenSpec
+- Update 2026-07-28: control_station's apparent task-2.1 conflict was three-dot squash ancestry; all five target blobs equal current main, independent carve-out recheck pending
 
 ## 2026-07-27 - canonical public-read completeness
 
