@@ -147,8 +147,8 @@ workflow still disabled.
 #### Scenario: Array pagination records its terminal oracle
 
 - **WHEN** the migrator inventories an array-valued GitHub REST connection
-- **THEN** it follows every validated `rel="next"` URL and receipts each page plus the first terminal response without `rel="next"`
-- **AND** missing, malformed, looping, cross-scope, or over-bound Link chains fail closed without claiming a server total
+- **THEN** it follows every validated `rel="next"` URL and receipts each canonical request endpoint, its re-derived page-size bound, each response, and the first terminal response without `rel="next"`
+- **AND** missing, malformed, looping, cross-scope, or over-bound Link chains, plus a terminal page that fills the requested page-size bound, fail closed without claiming a server total
 
 #### Scenario: Offline verification is integrity-only
 

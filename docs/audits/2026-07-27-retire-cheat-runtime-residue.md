@@ -99,6 +99,23 @@ Historical verification on the source payload:
 
 Merged selective-restack verification:
 
+Freshness update 2026-07-28: the current-main restack landed through PR #1830
+as `52475559`. Exact-current Opus 5 review found that an absent `rel="next"`
+after a full 100-row response was still an ambiguous truncation oracle, not
+completion proof. The follow-up binds the explicit page-size request into the
+receipt, rejects a full terminal page during both collection and stored-receipt
+validation, retains the canonical request endpoint so offline validation
+re-derives the request digest and bound, and raises the focused suite to 53
+tests while preserving #1830's closed receipt envelope. It still exposes no
+live mutator and does not complete tasks 3.6/3.7 or authorize any GitHub-state
+change. Claude Opus 5's exact-current narrow review returned `APPROVE` after
+mutation-testing the live/stored terminal guards, request/page-size binding,
+request-digest recomputation, oversized-page checks, and encrypted-log guard;
+deleting each guard added the intended focused-test failure.
+
+Selective-restack verification on
+`codex/restack-retire-loop-github-state-20260727`:
+
 - The initial payload at `fab12790` restored the three files byte-identically
   from `d40173a2`; `f7e9234b` then intentionally changes the script, test, and
   runbook to close re-digested receipt-schema bypasses.
@@ -137,6 +154,15 @@ Post-merge receipt-schema hardening on
   --check`, strict target OpenSpec, and all 60 strict OpenSpec validations pass.
 - The CLI remains exactly `inventory`, `plan`, and `verify`; no live mutator or
   auto-merge semantic changed, and tasks 3.6/3.7 remain unchecked.
+
+Current-main terminal-oracle integration on 2026-07-28:
+
+- The Opus-approved terminal-page follow-up was restacked after PR #1835
+  landed, preserving both the closed nested receipt schemas and request-bound
+  full-terminal-page rejection.
+- The combined focused suite passes 61/61; Ruff, strict target OpenSpec, and
+  all 60 strict OpenSpec validations pass.
+- The CLI still exposes no live mutator and tasks 3.6/3.7 remain unchecked.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

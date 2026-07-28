@@ -241,6 +241,11 @@ def _validate_complete_connections(
                     "Link-paginated array connections cannot invent a server total"
                 )
             pagination = connection.get("pagination")
+            page_size = (
+                pagination.get("page_size")
+                if isinstance(pagination, Mapping)
+                else None
+            )
             page_receipts = (
                 pagination.get("page_receipts")
                 if isinstance(pagination, Mapping)
@@ -253,8 +258,10 @@ def _validate_complete_connections(
             )
             if (
                 not isinstance(pagination, Mapping)
-                or set(pagination) != {"mode", "page_receipts", "terminal"}
+                or set(pagination)
+                != {"mode", "page_size", "page_receipts", "terminal"}
                 or pagination.get("mode") != "github_link_header_chain_v1"
+                or type(page_size) is not int
                 or not isinstance(page_receipts, list)
                 or len(page_receipts) != pages
                 or not isinstance(terminal, Mapping)
@@ -271,6 +278,7 @@ def _validate_complete_connections(
                     != {
                         "ordinal",
                         "request_id",
+                        "request_endpoint",
                         "request_url_digest",
                         "response_body_digest",
                         "item_count",
@@ -279,8 +287,11 @@ def _validate_complete_connections(
                     or page.get("ordinal") != ordinal
                     or not _is_integer(page.get("item_count"))
                     or page["item_count"] < 0
+                    or page["item_count"] > page_size
                     or not isinstance(page.get("request_id"), str)
                     or not page["request_id"]
+                    or not isinstance(page.get("request_endpoint"), str)
+                    or not page["request_endpoint"]
                     or not _is_sha256_digest(page.get("request_url_digest"))
                     or not _is_sha256_digest(page.get("response_body_digest"))
                     or (
@@ -293,7 +304,22 @@ def _validate_complete_connections(
                     )
                 ):
                     raise PlanError("Link pagination page receipt is malformed")
+                request_endpoint = page["request_endpoint"]
+                if _requested_page_size(request_endpoint) != page_size:
+                    raise PlanError(
+                        "Link pagination page size does not match its request"
+                    )
+                if page["request_url_digest"] != digest(
+                    {"method": "GET", "endpoint": request_endpoint}
+                ):
+                    raise PlanError(
+                        "Link pagination request digest does not match its endpoint"
+                    )
                 observed += int(page["item_count"])
+            if page_receipts[-1]["item_count"] >= page_size:
+                raise PlanError(
+                    "Link pagination terminal page is full and therefore ambiguous"
+                )
             if any(
                 page_receipts[ordinal]["next_url_digest"]
                 != page_receipts[ordinal + 1]["request_url_digest"]
@@ -1737,6 +1763,24 @@ def _is_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _requested_page_size(endpoint: str) -> int:
+    values = [
+        value
+        for key, value in parse_qsl(
+            urlsplit(endpoint).query, keep_blank_values=True
+        )
+        if key == "per_page"
+    ]
+    if len(values) != 1 or re.fullmatch(r"[0-9]+", values[0]) is None:
+        raise PlanError(
+            "GitHub array pagination requires one explicit ASCII per_page bound"
+        )
+    page_size = int(values[0])
+    if not 1 <= page_size <= 100:
+        raise PlanError("GitHub array pagination per_page is outside its bound")
+    return page_size
+
+
 def _is_sha256_hex(value: Any) -> bool:
     return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
 
@@ -2070,6 +2114,7 @@ class ReadOnlyGitHub:
         """Follow and receipt-bind one REST array's exact GitHub Link chain."""
 
         initial_endpoint = self._validate_repo_endpoint(endpoint)
+        page_size = _requested_page_size(initial_endpoint)
         if not _is_integer(max_pages) or max_pages <= 0:
             raise ValueError("max_pages must be a positive integer")
         current_endpoint = initial_endpoint
@@ -2089,6 +2134,8 @@ class ReadOnlyGitHub:
                 not isinstance(row, Mapping) for row in page
             ):
                 raise PlanError("paginated REST response page is not an object array")
+            if len(page) > page_size:
+                raise PlanError("paginated REST response exceeds its requested page size")
             for row in page:
                 if _is_integer(row.get("id")):
                     identity = ("id", int(row["id"]))
@@ -2111,6 +2158,7 @@ class ReadOnlyGitHub:
                 {
                     "ordinal": ordinal,
                     "request_id": request_id,
+                    "request_endpoint": current_endpoint,
                     "request_url_digest": digest(
                         {"method": "GET", "endpoint": current_endpoint}
                     ),
@@ -2124,6 +2172,10 @@ class ReadOnlyGitHub:
                 }
             )
             if next_url is None:
+                if len(page) >= page_size:
+                    raise PlanError(
+                        "GitHub pagination ended on a full page without a next link"
+                    )
                 break
             current_endpoint = self._validate_next_link(
                 initial_endpoint,
@@ -2141,6 +2193,7 @@ class ReadOnlyGitHub:
             "mutation_authority": False,
             "pagination": {
                 "mode": "github_link_header_chain_v1",
+                "page_size": page_size,
                 "page_receipts": page_receipts,
                 "terminal": {
                     "oracle": "rel_next_absent",

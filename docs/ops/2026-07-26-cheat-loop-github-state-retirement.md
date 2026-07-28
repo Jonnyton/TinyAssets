@@ -48,14 +48,19 @@ accepts only the reviewed query with exact plain repository variables. Every
 read pins `github.com` rather than inheriting an ambient CLI host. It can
 produce RFC 8785/JCS receipts. Offline `verify` checks schema, normalization,
 bindings, and digest integrity; it explicitly does not re-verify external
-GitHub provenance. There is deliberately no live GitHub mutator in this
-increment.
+GitHub provenance. Receipt digests are unkeyed integrity checks, not signatures
+or authenticators; editing a receipt and recomputing every digest does not
+create external provenance or mutation authority. There is deliberately no
+live GitHub mutator in this increment.
 
 Every live plan binds the repository node identity, source revision,
 terminal-proven paginated inventory, operation, and plan digest. Array-valued
 REST reads receipt each GitHub Link-header hop and the terminal absence of
-`rel="next"`; they never copy an observed count into a fictitious server
-total. The apply key is derived from
+`rel="next"`; a terminal page that fills the requested page-size bound remains
+ambiguous, and observed counts are never copied into a fictitious server total.
+Each page retains its canonical request endpoint so offline validation can
+re-derive the bound and request digest instead of trusting a self-declared
+`page_size`. The apply key is derived from
 that body. A dedicated SQLite journal uses WAL, `synchronous=FULL`,
 `busy_timeout`, and `BEGIN IMMEDIATE`. Immutable per-target intent is committed
 before an exact remote pre-read. Drift is held for replanning; the engine never
