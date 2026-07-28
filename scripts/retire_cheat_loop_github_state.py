@@ -198,6 +198,8 @@ def _validate_repo(repo: Mapping[str, Any]) -> dict[str, Any]:
 
 def _validate_complete_connections(
     connections: Sequence[Mapping[str, Any]],
+    *,
+    repo: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for connection in connections:
@@ -271,6 +273,7 @@ def _validate_complete_connections(
             ):
                 raise PlanError("Link pagination lacks exact terminal evidence")
             observed = 0
+            initial_endpoint = page_receipts[0].get("request_endpoint", "")
             for ordinal, page in enumerate(page_receipts):
                 if (
                     not isinstance(page, Mapping)
@@ -305,6 +308,12 @@ def _validate_complete_connections(
                 ):
                     raise PlanError("Link pagination page receipt is malformed")
                 request_endpoint = page["request_endpoint"]
+                _validate_stored_request_endpoint(
+                    request_endpoint,
+                    repo=repo,
+                    initial_endpoint=initial_endpoint,
+                    ordinal=ordinal,
+                )
                 if _requested_page_size(request_endpoint) != page_size:
                     raise PlanError(
                         "Link pagination page size does not match its request"
@@ -318,7 +327,8 @@ def _validate_complete_connections(
                 observed += int(page["item_count"])
             if page_receipts[-1]["item_count"] >= page_size:
                 raise PlanError(
-                    "Link pagination terminal page is full and therefore ambiguous"
+                    "Link pagination terminal page is full and therefore ambiguous; "
+                    "rerun read-only inventory with a different explicit per_page bound"
                 )
             if any(
                 page_receipts[ordinal]["next_url_digest"]
@@ -358,7 +368,11 @@ def _validate_complete_connections(
     )
 
 
-def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_label_inventory(
+    inventory: Mapping[str, Any],
+    *,
+    repo: Mapping[str, Any],
+) -> dict[str, Any]:
     definitions = _sorted_json_records(
         inventory.get("definitions", []),
         key=lambda row: (str(row.get("name", "")).casefold(), str(row.get("node_id", ""))),
@@ -448,7 +462,10 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
             raise PlanError(f"duplicate association {identity}")
         seen.add(identity)
 
-    connections = _validate_complete_connections(inventory.get("connections", []))
+    connections = _validate_complete_connections(
+        inventory.get("connections", []),
+        repo=repo,
+    )
     connection_keys = [
         (str(row.get("kind", "")), str(row.get("label_name", "")))
         for row in connections
@@ -744,7 +761,11 @@ def _validate_auto_merge_attribution_bindings(
                 raise PlanError("attribution evidence does not match its step")
 
 
-def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
+def _normalize_auto_merge_inventory(
+    inventory: Mapping[str, Any],
+    *,
+    repo: Mapping[str, Any],
+) -> dict[str, Any]:
     pull_requests = _sorted_json_records(
         inventory.get("pull_requests", []),
         key=lambda row: (str(row.get("node_id", "")), int(row.get("number", 0))),
@@ -765,7 +786,10 @@ def _normalize_auto_merge_inventory(inventory: Mapping[str, Any]) -> dict[str, A
         )
         if any(field not in pr for field in required):
             raise PlanError("auto-merge pull request lacks an exact tuple field")
-    connections = _validate_complete_connections(inventory.get("connections", []))
+    connections = _validate_complete_connections(
+        inventory.get("connections", []),
+        repo=repo,
+    )
     connection_keys = [
         (str(row.get("kind", "")), str(row.get("label_name", "")))
         for row in connections
@@ -1076,9 +1100,9 @@ def build_receipt(
         raise PlanError("source_revision is required")
     normalized_repo = _validate_repo(repo)
     normalized_inventory = (
-        _normalize_label_inventory(inventory)
+        _normalize_label_inventory(inventory, repo=normalized_repo)
         if operation == LABEL_OPERATION
-        else _normalize_auto_merge_inventory(inventory)
+        else _normalize_auto_merge_inventory(inventory, repo=normalized_repo)
     )
     if operation == AUTO_MERGE_OPERATION:
         _validate_auto_merge_repository_binding(normalized_inventory, normalized_repo)
@@ -1124,9 +1148,9 @@ def verify_receipt(receipt: Mapping[str, Any]) -> None:
     if plan.get("source_revision") != source_revision:
         raise PlanError("top-level source revision does not match the bound plan")
     normalized_inventory = (
-        _normalize_label_inventory(plan.get("inventory", {}))
+        _normalize_label_inventory(plan.get("inventory", {}), repo=repo)
         if operation == LABEL_OPERATION
-        else _normalize_auto_merge_inventory(plan.get("inventory", {}))
+        else _normalize_auto_merge_inventory(plan.get("inventory", {}), repo=repo)
     )
     if operation == AUTO_MERGE_OPERATION:
         _validate_auto_merge_repository_binding(normalized_inventory, repo)
@@ -1763,6 +1787,81 @@ def _is_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _validate_stored_request_endpoint(
+    endpoint: str,
+    *,
+    repo: Mapping[str, Any],
+    initial_endpoint: str,
+    ordinal: int,
+) -> None:
+    repo_name = repo.get("name_with_owner")
+    repo_database_id = repo.get("database_id")
+    if (
+        not isinstance(endpoint, str)
+        or not endpoint
+        or any(character.isspace() for character in endpoint)
+        or "\\" in endpoint
+        or not isinstance(repo_name, str)
+        or not repo_name
+        or not _is_integer(repo_database_id)
+        or repo_database_id <= 0
+    ):
+        raise PlanError("stored pagination request endpoint is outside repository scope")
+
+    parsed = urlsplit(endpoint)
+    if ordinal == 0:
+        root = f"repos/{repo_name}"
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.fragment
+            or endpoint.startswith(("-", "@", "/"))
+            or "%" in parsed.path
+            or (
+                parsed.path != root
+                and not parsed.path.startswith(root + "/")
+            )
+            or any(part in {"", ".", ".."} for part in parsed.path.split("/"))
+        ):
+            raise PlanError(
+                "stored pagination request endpoint is outside repository scope"
+            )
+        return
+
+    initial = urlsplit(initial_endpoint)
+    prefix = f"repos/{repo_name}/"
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "api.github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.fragment
+        or "%" in parsed.path
+        or not initial.path.startswith(prefix)
+    ):
+        raise PlanError("stored pagination request endpoint is outside repository scope")
+    suffix = initial.path[len(prefix) :]
+    if parsed.path != f"/repositories/{repo_database_id}/{suffix}":
+        raise PlanError("stored pagination request endpoint changed repository scope")
+    initial_pairs = sorted(parse_qsl(initial.query, keep_blank_values=True))
+    next_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+    if [value for key, value in next_pairs if key == "page"] != [
+        str(ordinal + 1)
+    ]:
+        raise PlanError("stored pagination request endpoint changed page sequence")
+    cursor_values = [value for key, value in next_pairs if key == "after"]
+    if len(cursor_values) > 1 or any(not value for value in cursor_values):
+        raise PlanError("stored pagination request endpoint has an invalid cursor")
+    scoped_next = sorted(
+        (key, value)
+        for key, value in next_pairs
+        if key not in {"after", "page"}
+    )
+    if scoped_next != initial_pairs:
+        raise PlanError("stored pagination request endpoint changed query scope")
+
+
 def _requested_page_size(endpoint: str) -> int:
     values = [
         value
@@ -2174,7 +2273,8 @@ class ReadOnlyGitHub:
             if next_url is None:
                 if len(page) >= page_size:
                     raise PlanError(
-                        "GitHub pagination ended on a full page without a next link"
+                        "GitHub pagination ended on a full page without a next link; "
+                        "rerun read-only inventory with a different explicit per_page bound"
                     )
                 break
             current_endpoint = self._validate_next_link(

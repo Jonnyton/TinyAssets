@@ -163,6 +163,12 @@ Current-main terminal-oracle integration on 2026-07-28:
 - The combined focused suite passes 61/61; Ruff, strict target OpenSpec, and
   all 60 strict OpenSpec validations pass.
 - The CLI still exposes no live mutator and tasks 3.6/3.7 remain unchecked.
+- Exact-current Opus review returned `ADAPT`: the fail-closed boundary lacked
+  an operator recovery note, the Unicode test did not distinguish `[0-9]`
+  from `\d`, a full second terminal page was unpinned, and stored request
+  endpoints were digest-bound but not repository-scope validated. All four
+  adaptations were folded before publication; the focused suite remains 61/61
+  with the semantic distinctions pinned as subtests.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
