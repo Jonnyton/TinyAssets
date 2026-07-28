@@ -72,7 +72,7 @@ scripts/retire_cheat_loop_github_state_test.py
 docs/ops/2026-07-26-cheat-loop-github-state-retirement.md
 openspec/changes/retire-cheat-loop/specs/development-coordination-runtime/spec.md
 openspec/changes/retire-cheat-loop/tasks.md
-docs/audits/2026-07-26-retire-cheat-loop.md
+docs/audits/2026-07-27-retire-cheat-runtime-residue.md
 STATUS.md
 REFLECTION.md
 .agents/worktrees.md (retire lane only)
@@ -97,6 +97,27 @@ Fresh verification on the existing payload:
 - `openspec validate retire-cheat-loop --strict`: pass.
 - The CLI has no live mutator; apply behavior remains dependency-injected.
 - Tasks 3.6/3.7 remain unchecked.
+
+Selective-restack verification on
+`codex/restack-retire-loop-github-state-20260727`:
+
+- The initial payload at `fab12790` restored the three files byte-identically
+  from `d40173a2`; `f7e9234b` then intentionally changes the script, test, and
+  runbook to close re-digested receipt-schema bypasses.
+- Only the reviewed final spec/task delta was applied; current-main STATUS,
+  worktree, snapshot, website, and prior receipt ancestry were not imported.
+- `python scripts/retire_cheat_loop_github_state_test.py`: 46/46 pass after
+  adding a receipt-schema regression.
+- `python -m py_compile` for the migrator and tests: pass.
+- Strict target and all-OpenSpec validation: 59/59 pass.
+- CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
+  3.6/3.7 remain unchecked and no live apply was invoked.
+- Offline verification rejects re-digested receipts with non-dry-run execution,
+  unknown top-level authority, connection authority, or unreviewed pagination
+  mode; connection/page/terminal envelopes are closed schemas.
+- Main-based draft PR #1830 now carries the replacement; draft PR #1820 was
+  closed as superseded with a link, while sibling snapshot PR #1819 remains
+  parked under the separate task-5.3 proof boundary.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

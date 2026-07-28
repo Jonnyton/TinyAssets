@@ -609,3 +609,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** query live workflow runs and durable
   auto-merge requests before proposing any workflow deletion, then separate the
   read-only inventory PR from the later receipt-backed mutation.
+
+## 2026-07-27 - GitHub-state migrator selective restack
+
+- **What surprised me:** the reviewed migrator lived on an 80-commit branch
+  whose three-dot diff touched 111 files; the useful payload itself was only
+  three new files and two narrow OpenSpec deltas. A digest-valid receipt could
+  still smuggle unnormalized authority fields until exact envelope
+  reconstruction was added.
+- **Pattern worth capturing:** use final-file hashes plus a current-main
+  semantic spec replay for stacked migrations; commit lists are provenance, not
+  permission to cherry-pick mixed coordination history.
+- **What I would do differently:** record the replacement PR and parked parent
+  PR disposition at the first stack split, so a safe restack never has to
+  reconstruct whether old drafts should be retargeted, closed, or preserved.
