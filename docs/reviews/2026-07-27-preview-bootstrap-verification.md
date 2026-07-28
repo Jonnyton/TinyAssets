@@ -17,7 +17,7 @@ consumer cannot run until its trusted definition lands on the default branch.
 | Trusted deployment toolchain | `cd WebSite/site-react/preview-deploy-tools; npm ci --ignore-scripts --no-audit --no-fund; npm exec --no -- wrangler --version; npm audit --omit=dev` | Wrangler `4.114.0`; 0 vulnerabilities |
 | Workflow syntax | pinned actionlint 1.7.7 over `preview-security.yml`, `preview-worker.yml`, and `preview-worker-deploy.yml` | passed |
 | Workflow security lint | `uvx zizmor==1.28.0` over all three workflows with authenticated GitHub metadata | no findings; one justified `workflow_run` dangerous-trigger suppression |
-| OpenSpec | strict validation of `harden-hosted-preview-trust-boundary` and its unsynced `activate-hosted-preview-publication` successor | both valid |
+| OpenSpec | strict validation of canonical `public-website-surface` plus unsynced `activate-hosted-preview-publication` successor after source archive | both valid; source archived at `openspec/changes/archive/2026-07-27-harden-hosted-preview-trust-boundary/` with 12/12 tasks checked |
 | Parsed target/authority scan | `preview-worker-security.test.mjs` over all three workflows and trusted Worker/config/tool lock | passed |
 | Deployed-tree receipt | fixed SHA-256 fixture over the exact pretty-JSON manifest bytes; byte, path, and ordering mutations | expected digest matched; every mutation changed it |
 | Worker routing matrix | dynamically imported trusted Worker with an ASSETS spy; 47 literal/case/slash/dot/encoded/double-encoded/malformed MCP, OAuth/OIDC/MCP-discovery, empty-segment, and residual-percent paths plus 4 benign paths | every blocked path returned no-store `503` with zero ASSETS calls; unrelated `.well-known` and ordinary paths delegated once |
@@ -101,3 +101,7 @@ remains required merge evidence.
   independently reproducing the 201-test totals, strict validation, routing
   counts, evidence anchor, and source/activation split. The source-only
   OpenSpec-generated archive/sync diff still requires final exact review.
+- `9c0fedd4` synced only the source requirement into canonical
+  `public-website-surface`, archived the source change with 12/12 tasks checked,
+  and left `activate-hosted-preview-publication` active and unsynced with all
+  host/live-evidence tasks open.
