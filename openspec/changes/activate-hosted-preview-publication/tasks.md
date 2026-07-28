@@ -1,6 +1,6 @@
 ## 1. Establish External Isolation
 
-- [ ] 1.1 Confirm the trusted source bootstrap merge SHA and exact-head approvals; keep preview publication credential-free until the remaining tasks pass.
+- [ ] 1.1 Confirm the trusted source bootstrap merge SHA and exact-head approvals; keep the GitHub preview environment credential-free until task 1.6 passes.
 - [ ] 1.2 Provision and inventory the dedicated preview-only Cloudflare account and fixed Worker, recording redacted proof that no production resource or credential is present.
 - [ ] 1.3 Configure named-reviewer or approved-organization Access for both the fixed `workers.dev` route and Preview URLs with no `Everyone`, `Bypass`, or public-path exception.
 - [ ] 1.4 With a host-held credential, upload one inert trusted bootstrap version under a unique alias without pull-request bytes or a GitHub credential.

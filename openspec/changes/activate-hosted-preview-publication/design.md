@@ -46,10 +46,12 @@ on the default-branch workflow definition.
 
 ### 2. The preview account is structurally separate
 
-The account contains only the fixed preview Worker and no production Workers,
-routes, custom domains, data stores, bindings, tokens, or credentials. A
-fixed Worker name inside the production account was rejected because Workers
-Scripts write permission is account-scoped.
+The account contains only the fixed preview Worker and no production Worker,
+route, custom domain, data store, binding, token, or credential. Before GitHub
+activation it may have one least-privilege, preview-only Workers Scripts
+credential held by the host solely for the inert bootstrap upload. A fixed
+Worker name inside the production account was rejected because Workers Scripts
+write permission is account-scoped.
 
 ### 3. Provider-edge Access is proven for both route families
 

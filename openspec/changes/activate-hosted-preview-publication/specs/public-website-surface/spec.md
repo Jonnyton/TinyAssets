@@ -18,6 +18,7 @@ credentials or TinyAssets-provided compute.
 
 - **WHEN** the host inventories the account before activation
 - **THEN** it contains the fixed preview Worker and no production Worker, route, custom domain, data store, binding, token, or credential
+- **AND** before GitHub activation, its only permitted write credential is one least-privilege preview-only Workers Scripts credential held by the host for the inert bootstrap upload
 - **AND** the account's `workers.dev` subdomain and Preview URLs are enabled only for isolated preview use
 
 #### Scenario: The host creates proofable preview hostnames
@@ -31,7 +32,7 @@ credentials or TinyAssets-provided compute.
 - **WHEN** the fixed base `workers.dev`, inert alias, and inert version hostnames exist
 - **THEN** anonymous requests are proven denied and an authorized named or organization reviewer is proven able to load each hostname
 - **AND** the policies contain no `Everyone`, `Bypass`, or public-path exception
-- **AND** an independent security reviewer accepts a redacted receipt before credential provisioning
+- **AND** an independent security reviewer accepts a redacted receipt before GitHub environment credential provisioning
 
 #### Scenario: The GitHub preview credential is enabled
 
