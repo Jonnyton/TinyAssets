@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: install-host-services
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:

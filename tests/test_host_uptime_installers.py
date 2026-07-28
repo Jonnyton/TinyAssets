@@ -1193,6 +1193,15 @@ def test_restart_workflow_serializes_production_host_mutations():
     }
 
 
+def test_host_service_installer_serializes_production_host_mutations():
+    workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+
+    assert workflow["concurrency"] == {
+        "group": "production-host-mutation",
+        "cancel-in-progress": False,
+    }
+
+
 def test_host_service_workflow_converges_backup_before_installing_timers():
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
