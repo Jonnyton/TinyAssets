@@ -139,8 +139,8 @@
   exact retired definitions plus every fully paginated labelled issue/PR (open
   and closed) into a digest-bound receipt. Array inventory must receipt the
   exact GitHub Link-header chain and terminal absence of `rel="next"`; never
-  synthesize a server total from the observed count. Apply only after task 4.2
-  and every
+  synthesize a server total from the observed count or certify a full terminal
+  page as complete. Apply only after task 4.2 and every
   other retired-label producer are disabled/removed and queued/in-progress
   runs are drained; record that quiescence. Strip retired labels from open
   items without closing or rewriting them; publish one idempotent
@@ -173,6 +173,16 @@
   enrollments; hold ambiguity for host review. Finish with a full open-PR
   rescan and require a complete receipt, disabled/drained workflow, and zero
   attributed or ambiguous open enrollments before deleting the workflow file.
+  **Repository increment (2026-07-28):** the current-main implementation
+  exposes only read-only `inventory`, offline `plan`, and offline `verify`; it
+  includes no live mutator. Fifty-three focused tests pin the closed receipt
+  envelope, canonical request/page-size binding, bounded Link-chain terminal
+  oracle, exact bot/PR eligibility tuple, ambiguity preservation,
+  inventory-only label posture, terminal receipt digest, unsafe/encrypted log
+  rejection, and exact planned before/after tuples. Tasks 3.6/3.7 remain open
+  because no workflow, label, PR auto-merge state, or other GitHub state was
+  changed. Exact-current Claude Opus 5 review approved the follow-up after
+  independently mutation-testing every request/page-size and archive guard.
 
 ## 4. Move Generic Observation To Uptime And Alarms
 

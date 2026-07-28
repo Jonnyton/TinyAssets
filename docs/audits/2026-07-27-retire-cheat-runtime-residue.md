@@ -98,6 +98,20 @@ Fresh verification on the existing payload:
 - The CLI has no live mutator; apply behavior remains dependency-injected.
 - Tasks 3.6/3.7 remain unchecked.
 
+Freshness update 2026-07-28: the current-main restack landed through PR #1830
+as `52475559`. Exact-current Opus 5 review found that an absent `rel="next"`
+after a full 100-row response was still an ambiguous truncation oracle, not
+completion proof. The follow-up binds the explicit page-size request into the
+receipt, rejects a full terminal page during both collection and stored-receipt
+validation, retains the canonical request endpoint so offline validation
+re-derives the request digest and bound, and raises the focused suite to 53
+tests while preserving #1830's closed receipt envelope. It still exposes no
+live mutator and does not complete tasks 3.6/3.7 or authorize any GitHub-state
+change. Claude Opus 5's exact-current narrow review returned `APPROVE` after
+mutation-testing the live/stored terminal guards, request/page-size binding,
+request-digest recomputation, oversized-page checks, and encrypted-log guard;
+deleting each guard added the intended focused-test failure.
+
 Selective-restack verification on
 `codex/restack-retire-loop-github-state-20260727`:
 

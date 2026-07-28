@@ -1579,3 +1579,18 @@ Notes:
 - Memory refs: PR #1812 blocker evidence; `docs/audits/2026-07-25-full-product-vision-completion-audit.md`
 - Review gate: spec Opus 5 round 18 APPROVE; runtime Opus 5 round 8b APPROVE after every blocking finding was folded
 - Ship/abandon: private deploy first, then sync/publish and rendered connector acceptance; never publish the live privacy gap ahead of deployment
+
+## 2026-07-28 - harden GitHub retirement terminal oracle
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-github-terminal-oracle
+- Lane state: current-main follow-up in progress
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle
+- STATUS/Issue/PR: same privileged-loop retirement claim; #1830 is the landed base
+- PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
+- Purpose: reject full terminal REST pages as ambiguous while preserving #1830's closed receipt envelope and all other fail-closed guards
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle\_PURPOSE.md
+- Memory refs: Opus 5 review rounds in the abandoned pre-#1830 worktree; PR #1830 / `52475559`
+- Review gate: 53 focused tests, Ruff, strict OpenSpec, stored-receipt mutation proof, exact-current Opus 5 approval
+- Ship/abandon: land only the complementary oracle hardening; tasks 3.6/3.7 remain unchecked and no GitHub state may change
+- Update 2026-07-28: exact-current Opus 5 mutation review returned APPROVE after every request/page-size, digest, and archive guard proved load-bearing

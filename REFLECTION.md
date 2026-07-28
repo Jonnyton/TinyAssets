@@ -623,3 +623,18 @@ fresh-host rollback edges found later.
 - **What I would do differently:** record the replacement PR and parked parent
   PR disposition at the first stack split, so a safe restack never has to
   reconstruct whether old drafts should be retargeted, closed, or preserved.
+
+## 2026-07-28 - terminal-page oracle follow-up
+
+- **What surprised me:** the safe restack landed concurrently while its older
+  source payload was under review; treating untracked files as the diff hid
+  that `main` already had a stronger closed receipt envelope. Opus caught both
+  the stale base and a separate full-terminal-page completeness bug.
+- **Pattern worth capturing:** absence of a pagination continuation is only a
+  terminal oracle when the final page is strictly smaller than the requested
+  bound, and both live collection and stored-receipt validation need
+  load-bearing tests for that invariant.
+- **What I would do differently:** fetch immediately before every
+  opposite-provider review and compare against the exact remote head, then
+  freeze that base in the brief so a concurrent landing cannot masquerade as a
+  local regression.
