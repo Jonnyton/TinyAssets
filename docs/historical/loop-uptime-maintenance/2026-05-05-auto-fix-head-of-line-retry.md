@@ -1,5 +1,6 @@
 ---
 incident_date: 2026-05-05
+record_status: historical-retired-system
 short_name: auto-fix-head-of-line-retry
 severity: p1
 time_to_recovery_minutes: 8

@@ -183,8 +183,9 @@ loop: `idea-refine` (design-approval gate) -> `planning-and-task-breakdown` ->
 `code-review-and-quality` (evidence-before-completion gate) ->
 `git-workflow-and-versioning` -> `shipping-and-launch`;
 `subagent-driven-development` runs it via fresh per-task subagents.
-`code-simplification` carries the write-the-least-code ladder. All skills mirror
-into `.claude/skills/` and `.codex/skills/`.
+`code-simplification` carries the write-the-least-code ladder. Project skills
+mirror into `.claude/skills/` for Claude Code; Codex and other project-visible
+agents read the canonical `.agents/skills/` tree directly.
 
 ### Spec-driven development — OpenSpec is the standard [all providers]
 

@@ -1498,3 +1498,21 @@ Notes:
 - Memory refs: PRs #1749/#1750; Actions runs #30188518485/#30188530692/#30188600783
 - Review gate: Claude Opus 5 APPROVE after two correction passes; no runtime/workflow changes
 - Ship/abandon: landed at `970c1d57`; no further release action
+
+## 2026-07-27 - restack privileged loop uptime-skill retirement
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/restack-retire-loop-uptime-final-20260727
+- Publish branch: codex/retire-loop-uptime-skill (PR #1815 force-with-lease target)
+- Lane state: task 6.2 replayed on corrected main; independent exact-head review pending
+- Build worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-final-20260727
+- STATUS/Issue/PR: draft PR #1815 against main after #1812 and #1827 landed
+- PLAN refs: user-buildable/remixable automations; generic uptime and alarms; no privileged platform loop
+- Purpose: delete the active loop-uptime escape-hatch skill and catalog routes while retaining incident records only as historical non-skill evidence
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-uptime-final-20260727\_PURPOSE.md
+- Memory refs: base 18abe542; prior payload head 50192892; prepared review heads b71f1b70/fae3842b
+- Review gate: skill sync/parity, active-surface scan, strict OpenSpec, independent exact-head review
+- Ship/abandon: force-with-lease PR #1815 only after exact-head approval; never reinterpret historical incidents as active instructions
+- Host checkout obligation: after #1815 lands, safely reconcile primary checkout `0bc841aa` to merged main so the exact discovery-only `.agents`/`.claude` deletions cease to be uncommitted; do not restore the retired route or overwrite unrelated dirty files
+- Update 2026-07-27: canonical skill/catalog and PLAN escape-path claim replayed; seven historical records moved out of active agent surfaces
+- Update 2026-07-27: pre-review head 328a98e6 passed idempotent skill sync, drift/skill gates, zero active/runtime route scans, 59/59 strict OpenSpec, and fresh-session host-catalog proof; `test_validate_skills.py` retains only the two known main-baseline `zoom-out` fixture failures

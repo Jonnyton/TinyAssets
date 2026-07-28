@@ -567,3 +567,17 @@ fresh-host rollback edges found later.
   permission granularity and GitHub trigger bootstrap semantics before drafting
   the first workflow. That would have ruled out the production-account token,
   singleton deployment, and in-branch-only listener immediately.
+
+## 2026-07-27 - privileged loop skill retirement
+
+- **What surprised me:** deleting the canonical and Claude skill trees was not
+  enough to retire the behavior on this host. An ignored Codex mirror and then
+  the intentionally stale primary checkout each kept advertising the same
+  escape-hatch skill to newly spawned agents.
+- **Pattern worth capturing:** retirement proof must follow every discovery
+  path, including ignored host-local catalogs. Compare hashes before deleting
+  residue, preserve unique evidence in tracked history, and use a genuinely
+  fresh agent session to prove the catalog changed.
+- **What I would do differently:** inventory all provider discovery roots
+  before checking the OpenSpec task. The tracked-tree scan was correct but too
+  narrow to prove that the active host had stopped teaching the old behavior.
