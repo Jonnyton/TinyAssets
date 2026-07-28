@@ -164,6 +164,22 @@ migration, then background-authority activation/foldback. Task 2.5 can also
 unlock 2.2/2.3 deletion, but it does not unlock the authority core that it
 depends on.
 
+Repository implementation evidence (2026-07-28):
+
+- Candidate `4c3855545fb1d5de7dd3559db075005c1378104e` removes the
+  `file_bug` receipt writer, enqueue, Investigation/Patch Packet append, and
+  retired trigger/investigation response fields from both runtime copies.
+- Ordinary filing and task 1.1's separately owned effort classification/route
+  remain; historical receipt readers, storage, data, and executor modules remain
+  available for the later locked migration.
+- TDD evidence is 7 expected RED failures followed by 136 passed and 1 skipped;
+  another 85 related wiki tests passed. Ruff, py_compile, diff-check, and
+  canonical/plugin parity passed.
+- This is repository evidence only. The base deployment is not yet proven to
+  run this candidate, and no claim is made that every older receipt-writing
+  API, worker, or plugin process is drained or fenced. Task 2.1 therefore
+  remains open.
+
 ## Fresh live GitHub evidence
 
 Read-only queries on 2026-07-27 PDT / 2026-07-28Z found:

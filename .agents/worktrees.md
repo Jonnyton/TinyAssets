@@ -1593,14 +1593,14 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-stop-writer-20260728
-- Lane state: claimed; TDD implementation starting
+- Lane state: repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review and PR pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728
-- STATUS/Issue/PR: active privileged-loop retirement claim; new PR after repository verification
+- STATUS/Issue/PR: active privileged-loop retirement claim; new PR after final repository verification
 - PLAN refs: user-buildable/remixable automation; generic wiki filing and explicit workflow primitives survive
 - Purpose: remove `file_bug` trigger receipt, enqueue, Investigation rendering, and response metadata while preserving ordinary filing
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728\_PURPOSE.md
 - Memory refs: main `328f2c64`; PRs #1829/#1830/#1835; retire-cheat-loop task 2.1
-- Review gate: TDD on three exact behavior files, source/plugin parity, strict OpenSpec, Codex and Claude Opus 5 exact-head review
+- Review gate: RED 7 failures; GREEN 136 passed/1 skipped plus 85 related passed; Ruff/py_compile/diff-check/parity passed; nested Codex exact-head APPROVE; fresh Codex + Claude Opus 5 exact-head review still required
 - Ship/abandon: repository merge is only the stop-writer image; task 2.1 stays unchecked until deployed and every old writer is drained/fenced
 
 ## 2026-07-27 - canonical public-read completeness

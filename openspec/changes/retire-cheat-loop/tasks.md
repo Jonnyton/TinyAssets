@@ -41,6 +41,17 @@
   is drained or fenced; uncertainty stops the cutover. This stop-writer task is
   complete once the filing-only deployment and writer-drain proof are recorded;
   task 2.5 exclusively owns the later reader/store deletion.
+  - Repository evidence (2026-07-28, not operational completion):
+    `4c3855545fb1d5de7dd3559db075005c1378104e` removes receipt creation,
+    enqueue, Investigation/Patch Packet rendering, and retired response
+    metadata from the canonical and packaged `file_bug` paths while preserving
+    ordinary filing, effort classification, and the historical receipt
+    reader/store. TDD recorded 7 expected RED failures, then 136 passed and
+    1 skipped; the two runtime copies have SHA-256
+    `5C0EDB681AA13BCF6DD93E8919E38408FF10257A36CF34DC2D3ED5B3B5325005`.
+    The checkbox stays open until this filing-only build is deployed and every
+    old receipt-writing API/worker/plugin instance is inventoried and
+    demonstrably drained or fenced.
 - [ ] 2.2 After task 2.5's locked migration and final rescan succeed, delete
   `tinyassets/bug_investigation.py` and remove its handler selection, payload
   mapping, dedicated request type, queue creation, formatting, and Patch Packet
