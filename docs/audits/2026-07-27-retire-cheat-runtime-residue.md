@@ -104,11 +104,15 @@ Selective-restack verification on
 - The three restored files are byte-identical to `d40173a2`.
 - Only the reviewed final spec/task delta was applied; current-main STATUS,
   worktree, snapshot, website, and prior receipt ancestry were not imported.
-- `python scripts/retire_cheat_loop_github_state_test.py`: 45/45 pass.
+- `python scripts/retire_cheat_loop_github_state_test.py`: 46/46 pass after
+  adding a receipt-schema regression.
 - `python -m py_compile` for the migrator and tests: pass.
 - Strict target and all-OpenSpec validation: 59/59 pass.
 - CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
   3.6/3.7 remain unchecked and no live apply was invoked.
+- Offline verification rejects re-digested receipts with non-dry-run execution,
+  unknown top-level authority, connection authority, or unreviewed pagination
+  mode; connection/page/terminal envelopes are closed schemas.
 - Main-based draft PR #1830 now carries the replacement; draft PR #1820 was
   closed as superseded with a link, while sibling snapshot PR #1819 remains
   parked under the separate task-5.3 proof boundary.

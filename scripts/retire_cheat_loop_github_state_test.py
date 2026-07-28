@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import copy
 import base64
 import contextlib
+import copy
 import hashlib
 import importlib.util
 import io
 import json
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 import zipfile
-
+from pathlib import Path
 
 MODULE_PATH = Path(__file__).with_name("retire_cheat_loop_github_state.py")
 SPEC = importlib.util.spec_from_file_location("retire_github_state", MODULE_PATH)
@@ -551,6 +550,49 @@ class ReceiptTests(unittest.TestCase):
         )
         with self.assertRaises(mod.PlanError):
             mod.verify_receipt(changed)
+
+    def test_receipt_envelope_and_nested_pagination_schema_are_closed(self) -> None:
+        def redigest(value: dict, *, plan_changed: bool = False) -> dict:
+            if plan_changed:
+                value["plan_digest"] = mod.digest(value["plan"])
+                value["apply_key"] = mod.derive_apply_key(
+                    value["operation"],
+                    value["repo"]["node_id"],
+                    value["plan_digest"],
+                )
+            value["receipt_digest"] = mod.digest(
+                mod._without(value, "receipt_digest")
+            )
+            return value
+
+        cases = []
+
+        changed = copy.deepcopy(receipt())
+        changed["execution"] = {"mode": "live_apply", "status": "complete"}
+        cases.append(("execution", redigest(changed)))
+
+        changed = copy.deepcopy(receipt())
+        changed["mutation_authority"] = True
+        cases.append(("top_level_authority", redigest(changed)))
+
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["connections"][0][
+            "mutation_authority"
+        ] = True
+        cases.append(("connection_authority", redigest(changed, plan_changed=True)))
+
+        changed = copy.deepcopy(receipt())
+        link_connection = next(
+            row
+            for row in changed["plan"]["inventory"]["connections"]
+            if row["completion_basis"] == "github_link_header_chain_v1"
+        )
+        link_connection["pagination"]["mode"] = "unreviewed"
+        cases.append(("pagination_mode", redigest(changed, plan_changed=True)))
+
+        for name, changed in cases:
+            with self.subTest(name=name), self.assertRaises(mod.PlanError):
+                mod.verify_receipt(changed)
 
     def test_incomplete_or_truncated_pagination_is_rejected(self) -> None:
         inventory = label_inventory()

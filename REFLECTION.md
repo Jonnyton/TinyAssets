@@ -614,7 +614,9 @@ fresh-host rollback edges found later.
 
 - **What surprised me:** the reviewed migrator lived on an 80-commit branch
   whose three-dot diff touched 111 files; the useful payload itself was only
-  three new files and two narrow OpenSpec deltas.
+  three new files and two narrow OpenSpec deltas. A digest-valid receipt could
+  still smuggle unnormalized authority fields until exact envelope
+  reconstruction was added.
 - **Pattern worth capturing:** use final-file hashes plus a current-main
   semantic spec replay for stacked migrations; commit lists are provenance, not
   permission to cherry-pick mixed coordination history.

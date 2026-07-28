@@ -13,26 +13,25 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
-import copy
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import subprocess
 import sys
 import tempfile
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
-from urllib.parse import parse_qsl, quote, urlsplit
 import uuid
 import zipfile
+from pathlib import Path
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence
+from urllib.parse import parse_qsl, quote, urlsplit
 
 import rfc8785
-
 
 SCHEMA = "tinyassets.github-state-retirement-receipt"
 SCHEMA_VERSION = 1
@@ -188,6 +187,15 @@ def _validate_complete_connections(
 ) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for connection in connections:
+        allowed_connection_fields = {
+            "kind",
+            "label_name",
+            "pages",
+            "count",
+            "total_count",
+            "complete",
+            "completion_basis",
+        }
         if connection.get("complete") is not True:
             raise PlanError("inventory contains an incomplete paginated connection")
         count = connection.get("count")
@@ -201,6 +209,19 @@ def _validate_complete_connections(
             raise PlanError("complete pagination requires one response page")
         completion_basis = connection.get("completion_basis")
         if completion_basis == "github_link_header_chain_v1":
+            allowed_connection_fields.update(
+                {"snapshot_consistency", "mutation_authority", "pagination"}
+            )
+            if (
+                "snapshot_consistency" in connection
+                and connection.get("snapshot_consistency") != "single_pass_live"
+            ):
+                raise PlanError("Link pagination snapshot consistency is unreviewed")
+            if (
+                "mutation_authority" in connection
+                and connection.get("mutation_authority") is not False
+            ):
+                raise PlanError("read-only pagination cannot carry mutation authority")
             if total is not None:
                 raise PlanError(
                     "Link-paginated array connections cannot invent a server total"
@@ -217,9 +238,13 @@ def _validate_complete_connections(
                 else None
             )
             if (
-                not isinstance(page_receipts, list)
+                not isinstance(pagination, Mapping)
+                or set(pagination) != {"mode", "page_receipts", "terminal"}
+                or pagination.get("mode") != "github_link_header_chain_v1"
+                or not isinstance(page_receipts, list)
                 or len(page_receipts) != pages
                 or not isinstance(terminal, Mapping)
+                or set(terminal) != {"oracle", "page_ordinal"}
                 or terminal.get("oracle") != "rel_next_absent"
                 or terminal.get("page_ordinal") != pages - 1
             ):
@@ -228,6 +253,15 @@ def _validate_complete_connections(
             for ordinal, page in enumerate(page_receipts):
                 if (
                     not isinstance(page, Mapping)
+                    or set(page)
+                    != {
+                        "ordinal",
+                        "request_id",
+                        "request_url_digest",
+                        "response_body_digest",
+                        "item_count",
+                        "next_url_digest",
+                    }
                     or page.get("ordinal") != ordinal
                     or not _is_integer(page.get("item_count"))
                     or page["item_count"] < 0
@@ -264,6 +298,12 @@ def _validate_complete_connections(
                 )
         else:
             raise PlanError("paginated connection lacks a recognized completion basis")
+        unknown_fields = set(connection) - allowed_connection_fields
+        if unknown_fields:
+            raise PlanError(
+                "paginated connection contains unreviewed fields: "
+                + ", ".join(sorted(str(field) for field in unknown_fields))
+            )
         if total is not None and count != total:
             raise PlanError(
                 f"paginated connection count mismatch: observed {count}, expected {total}"
@@ -977,11 +1017,14 @@ def verify_receipt(receipt: Mapping[str, Any]) -> None:
     if not isinstance(plan, Mapping) or digest(plan) != receipt.get("plan_digest"):
         raise PlanError("receipt plan digest mismatch")
     repo = _validate_repo(receipt.get("repo", {}))
+    source_revision = receipt.get("source_revision")
+    if not isinstance(source_revision, str) or not source_revision:
+        raise PlanError("receipt source revision is required")
     if plan.get("operation") != operation:
         raise PlanError("top-level operation does not match the bound plan")
     if plan.get("repo") != repo:
         raise PlanError("top-level repository does not match the bound plan")
-    if plan.get("source_revision") != receipt.get("source_revision"):
+    if plan.get("source_revision") != source_revision:
         raise PlanError("top-level source revision does not match the bound plan")
     normalized_inventory = (
         _normalize_label_inventory(plan.get("inventory", {}))
@@ -993,7 +1036,7 @@ def verify_receipt(receipt: Mapping[str, Any]) -> None:
     expected_plan = {
         "operation": operation,
         "repo": repo,
-        "source_revision": receipt.get("source_revision"),
+        "source_revision": source_revision,
         "inventory": normalized_inventory,
     }
     if canonical_bytes(plan) != canonical_bytes(expected_plan):
@@ -1003,6 +1046,20 @@ def verify_receipt(receipt: Mapping[str, Any]) -> None:
         raise PlanError("receipt apply key mismatch")
     if digest(_without(receipt, "receipt_digest")) != receipt.get("receipt_digest"):
         raise PlanError("terminal receipt digest mismatch")
+    expected_receipt = {
+        "schema": SCHEMA,
+        "schema_version": SCHEMA_VERSION,
+        "operation": operation,
+        "repo": repo,
+        "source_revision": source_revision,
+        "plan": expected_plan,
+        "plan_digest": digest(expected_plan),
+        "apply_key": expected_key,
+        "execution": {"mode": "dry_run", "status": "planned"},
+    }
+    expected_receipt["receipt_digest"] = digest(expected_receipt)
+    if canonical_bytes(receipt) != canonical_bytes(expected_receipt):
+        raise PlanError("receipt envelope is not the normalized dry-run schema")
 
 
 def atomically_write_json(path: Path, payload: Mapping[str, Any]) -> None:
@@ -1071,7 +1128,9 @@ class MigrationJournal:
                 CREATE TABLE IF NOT EXISTS migration_runs (
                     apply_key TEXT PRIMARY KEY,
                     schema_version INTEGER NOT NULL CHECK(schema_version = 1),
-                    operation TEXT NOT NULL CHECK(operation IN ('{LABEL_OPERATION}','{AUTO_MERGE_OPERATION}')),
+                    operation TEXT NOT NULL CHECK(operation IN (
+                        '{LABEL_OPERATION}','{AUTO_MERGE_OPERATION}'
+                    )),
                     repo_node_id TEXT NOT NULL,
                     plan_digest TEXT NOT NULL,
                     plan_json BLOB NOT NULL,
@@ -1197,7 +1256,10 @@ class MigrationJournal:
                 (receipt["apply_key"],),
             ).fetchone()
             if row is not None:
-                if row["plan_digest"] != receipt["plan_digest"] or bytes(row["plan_json"]) != plan_bytes:
+                if (
+                    row["plan_digest"] != receipt["plan_digest"]
+                    or bytes(row["plan_json"]) != plan_bytes
+                ):
                     raise JournalConflict("apply key already binds a different immutable plan")
                 return
             conn.execute(
@@ -1529,7 +1591,8 @@ def apply_actions(
                         "host_review",
                     )
                     raise ApplyBlocked(
-                        f"target {action['target_node_id']} lacks a prior mutation-authorizing intent"
+                        f"target {action['target_node_id']} lacks a prior "
+                        "mutation-authorizing intent"
                     )
                 journal.set_outcome(
                     apply_key,
@@ -2203,7 +2266,12 @@ def collect_label_inventory(client: ReadOnlyGitHub) -> tuple[dict[str, Any], dic
 AUTO_MERGE_QUERY = """
 query($owner:String!, $name:String!, $endCursor:String) {
   repository(owner:$owner, name:$name) {
-    pullRequests(states:OPEN, first:100, after:$endCursor, orderBy:{field:CREATED_AT,direction:ASC}) {
+    pullRequests(
+      states:OPEN,
+      first:100,
+      after:$endCursor,
+      orderBy:{field:CREATED_AT,direction:ASC}
+    ) {
       totalCount
       pageInfo { hasNextPage endCursor }
       nodes {

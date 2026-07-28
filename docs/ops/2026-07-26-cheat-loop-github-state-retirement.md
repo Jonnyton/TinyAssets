@@ -201,7 +201,9 @@ python scripts/retire_cheat_loop_github_state.py verify `
 Successful offline verification reports `integrity_valid=true` and
 `external_evidence_verified=false`. Attribution-bearing auto-merge receipts
 can only be produced by live `inventory --with-attribution`; offline `plan`
-rejects imported attribution evidence.
+rejects imported attribution evidence. Verification reconstructs the exact
+dry-run receipt envelope and rejects unknown top-level, connection, pagination,
+page, and terminal fields even when a caller recomputes every digest.
 
 Receipt JSON and journal errors exclude credentials, authorization headers, raw
 GraphQL bodies, and log output. Any 401, 403, 429, 5xx, secondary-rate-limit,
