@@ -33,7 +33,7 @@ None.
 ### Modified Capabilities
 
 - `public-website-surface`: define safe hosted-preview provenance,
-  sanitization, credential isolation, per-PR publication, and blocked-MCP
+  sanitization, credential isolation, per-run/attempt publication, and blocked-MCP
   behavior.
 
 ## Impact

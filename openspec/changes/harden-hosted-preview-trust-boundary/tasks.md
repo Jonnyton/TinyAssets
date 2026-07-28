@@ -1,6 +1,6 @@
 ## 1. Specify And Pin The Boundary
 
-- [x] 1.1 Record the three-stage authority split, exact provenance contract,
+- [x] 1.1 Record the four-authority split, exact provenance contract,
   static-artifact allowlist, never-reused per-run version model, blocked-MCP
   rule, dedicated preview-account/deny-by-default Access requirement, truthful
   Access-controlled retention, bootstrap dependency, and repository-wide

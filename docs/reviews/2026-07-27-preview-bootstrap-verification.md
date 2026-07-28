@@ -3,8 +3,9 @@
 Freshness: 2026-07-27 America/Los_Angeles, Windows 11 host,
 `origin/main`-based worktree `wf-preview-boundary-bootstrap-20260727`.
 Implementation anchor: `3587770c` (`fix(preview): bind immutable trusted
-publication`). The credentialed `workflow_run` consumer cannot run until its
-trusted definition lands on the default branch.
+publication`). Exact reviewed evidence head: `3913c84b`; tree:
+`4940caa7e1212b967c2d4f6b85ad4cf388a1721f`. The credentialed `workflow_run`
+consumer cannot run until its trusted definition lands on the default branch.
 
 ## Source Verification
 
@@ -21,7 +22,7 @@ trusted definition lands on the default branch.
 | Wrangler command parse/bundle | pinned Wrangler `versions upload ... --preview-alias p16-r5m-a3 --experimental-provision=false --experimental-auto-create=false --dry-run` | passed; assets binding recognized |
 | Wrangler receipt parser | `validate-preview-upload.test.mjs` against the exact 4.114.0 labels/URL shapes plus hostile duplicates, controls, hosts, aliases, and subdomains | passed |
 | GitHub head-shape audit | `gh api` for current run `30316290900` and prior PR #1812 runs | current `head_sha`, associated head, and PR head agree at `287049e1`; historical run heads remain old while associated heads drift current |
-| Whitespace/status | `git diff --check`; `docview.py stat STATUS.md` | clean; STATUS remains exactly 60 lines |
+| Exact diff/status | `git diff --check 3587770c..3913c84b`; `git status --porcelain`; `docview.py stat STATUS.md` | exact commit diff clean; worktree clean when evidence was captured; STATUS exactly 60 lines |
 
 The representative React export contained 111 files, 54 directories,
 165 total entries, 2,861,047 uncompressed bytes, maximum depth 6, and a longest
