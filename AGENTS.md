@@ -215,6 +215,33 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   system is shaped this way); `openspec/specs/` owns behavioral requirements
   (what each capability does). Specs complement PLAN.md, never replace it.
 
+#### OpenSpec delivery flow v1 (review 2026-08-11)
+
+- **Delta-first, never vision conversion.** A delivery change has one intent
+  expressible in one sentence, one owner, one branch, one PR, explicit
+  acceptance/verification, and at most 12 total task checkboxes. Full-product
+  vision belongs in PLAN/design/audits; reference it instead of bulk-converting
+  it into active changes. Park incidental findings in the idea feed unless
+  required by the current acceptance contract.
+- **One delivery change per exact session identity.** After scaffolding a
+  change, and before claiming or building it, run `python
+  scripts/openspec_flow.py check-change <name> --provider
+  <session-specific-provider>`. The exact `claimed:<provider>` value owns the
+  slot. Every matching claimed row counts conservatively, every result reports
+  global WIP, and minting a new provider suffix to evade the limit is a review
+  violation. A P0/security exception must name the exception and the WIP it
+  displaces.
+- **Finish before starting.** At dispatch/triage time, run `python
+  scripts/openspec_flow.py audit`. Prefer complete-but-unarchived, then the
+  smallest unblocked in-flight change, then the smallest P0/uptime
+  dependency-removal slice, before admitting new work. This is on-demand flow
+  control, not another mandatory session-start gate.
+- **Legacy debt is diagnostic.** Existing oversized changes are grandfathered
+  for visibility, not blessed. Do not mechanically fan them into child changes;
+  select a concrete delivery slice when capacity is free. The 12-task ceiling
+  is a dated 2026-07-28 calibration; review it on 2026-08-11 against cycle time
+  and current model capability.
+
 ### Multi-Session Steering
 
 - The user may steer multiple live sessions across different providers at once.
