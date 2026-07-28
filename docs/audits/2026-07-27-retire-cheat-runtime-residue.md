@@ -125,9 +125,13 @@ Post-merge receipt-schema hardening on
 - Three new regressions first failed because re-digested label receipts
   accepted unknown definition fields, unknown association fields, and
   non-empty label `planned_actions`.
-- Commit `d95cef1d` closes both peer-record schemas and rejects every non-empty
-  label action list while label apply remains unimplemented.
-- The complete focused suite passes 49/49; Ruff, `py_compile`, `git diff
+- Commit `d95cef1d` closed both peer-record key spaces and rejected every
+  non-empty label action list while label apply remains unimplemented. Claude
+  Opus 5 then required a collector-contract regression before approval.
+- Commit `55a932b0` binds the live collector through build and verify, closes
+  peer-record scalar types and values, and converts malformed label action
+  containers into fail-closed `PlanError` results.
+- The complete focused suite passes 53/53; Ruff, `py_compile`, `git diff
   --check`, strict target OpenSpec, and all 60 strict OpenSpec validations pass.
 - The CLI remains exactly `inventory`, `plan`, and `verify`; no live mutator or
   auto-merge semantic changed, and tasks 3.6/3.7 remain unchecked.

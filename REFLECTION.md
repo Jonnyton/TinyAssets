@@ -635,3 +635,7 @@ fresh-host rollback edges found later.
 - **What I would do differently:** enumerate allowed keys for every nested
   external record during the first receipt-schema review, rather than closing
   the envelope and pagination layers before their item records.
+- **Review follow-up:** a handwritten allow-list still needed an executable
+  collector-through-verifier contract. Exact keys without exact value types
+  also left nested authority-shaped data admissible even though no consumer
+  could use it.
