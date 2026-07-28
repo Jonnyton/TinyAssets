@@ -1,10 +1,11 @@
 <!--
-  /commons — Tiny's public brain. "Field Notes" rebuild, 2026-06-09.
+  /commons — Tiny's discoverable published commons. "Field Notes" rebuild,
+  2026-06-09.
 
   Canonical replacement for /wiki (which stays as a redirect alias later;
-  not touched here). Four beats: everything-I-know-is-public hero → live
+  not touched here). Four beats: published-commons hero → live discovery
   browse of the commons grouped by kind, with copyable chatbot prompts per
-  row → the canonical glossary → close-out to /graph and /loop.
+  row → the canonical glossary → close-out to /graph and /patterns.
 
   Honesty rails: no baked number is ever presented as live. The browse
   section fetches on mount; until the read lands it says it's reading, and
@@ -54,7 +55,7 @@
   type Kind = 'patch' | 'plans' | 'concepts' | 'notes' | 'drafts' | 'other';
 
   // Classify a page path into a kind. Patch requests + bugs share a kind:
-  // both are "something needs to change" in the loop. Everything that isn't
+  // both are ordinary records that something needs to change. Everything that isn't
   // a bug/plan/concept/note/draft lands in "other" so nothing is dropped.
   function kindOf(path: string, isDraft: boolean): Kind {
     if (isDraft) return 'drafts';
@@ -147,35 +148,34 @@
     { term: 'universe', def: 'A tailored memory container for one body of work — its canon, its scope, its history. Universes don’t cross-bleed. Public universes appear in this commons; private ones never do.' },
     { term: 'soul', def: 'A premise file that gives a daemon its identity and judgement — what it’s for, what it values, what it’s allowed to decide. Swap the soul and you get a different being on the same engine.' },
     { term: 'daemon', def: 'The agent that runs a workflow — summoned, bound to a universe, driven by a soul. “Tiny” is one souled daemon; you can fork the pattern to summon your own.' },
-    { term: 'patch request', def: 'The universal ask for a change — a bug, a missing feature, a rough edge. Filed through a chatbot, it enters the loop: investigation, evidence gates, a real GitHub pull request, a human key, a deploy.' },
-    { term: 'the loop', def: 'The self-maintenance cycle: friction in chat becomes a patch request, runs through investigation and gates, becomes a real pull request, ships only with a human key, then gets watched live. I rebuild myself with my own product.' },
+    { term: 'patch request', def: 'An ordinary filing for a change — a bug, a missing feature, or a rough edge. Filing records the request; it does not silently launch work or choose who performs it.' },
+    { term: 'loop', def: 'A recurring workflow designed by a user from ordinary goals, graph steps, checks, and effects. Loops are copyable and remixable; the platform does not reserve one privileged task route.' },
     { term: 'commons', def: 'This public record — goals, workflows, run notes, patch requests, how-tos — written by chatbots and humans working through me, readable by anyone, forkable by anyone. Private universes never appear here.' }
   ];
 </script>
 
 <svelte:head>
-  <title>Commons — everything Tiny knows, in public</title>
+  <title>Commons — Tiny's discoverable published knowledge</title>
   <meta
     name="description"
-    content="Tiny’s public brain: goals, workflow designs, run notes, patch requests, and how-tos — written by chatbots and humans working through TinyAssets, readable here or through your own chatbot. Private universes never appear. The canonical TinyAssets glossary lives here too."
+    content="A discovery-scoped view of published TinyAssets knowledge, with the server omission note shown beside live counts. It is not a complete inventory."
   />
 </svelte:head>
 
 <!-- 1 · Hero ──────────────────────────────────────────────────────────── -->
 <section class="cover" aria-labelledby="cover-title">
   <div class="container">
-    <p class="eyebrow">field notes · the open brain</p>
-    <h1 id="cover-title" class="cover__title">Everything I know<br />is <em>public</em>.</h1>
+    <p class="eyebrow">field notes · the published commons</p>
+    <h1 id="cover-title" class="cover__title">Published knowledge<br />is <em>discoverable</em>.</h1>
     <p class="voice cover__lede">
       My commons holds the goals people set, the
       <Term def="A workflow: a graph of steps with typed state and checks, designed in plain language through your chatbot.">workflow</Term>
       designs they build, the run notes I leave behind, the
-      <Term def="The universal ask for a change — a bug, a feature, a rough edge — filed through a chatbot and run through the loop.">patch requests</Term>
+      <Term def="An ordinary change filing — a bug, a feature, or a rough edge — recorded through a chatbot without silently launching work.">patch requests</Term>
       that change me, and the how-tos that explain it all — written by
-      chatbots and humans working through me. Anyone can read it here, or
-      through their own chatbot. The one thing you'll never find:
-      <em>private universes never appear here.</em> Those live on their
-      keepers' machines, not in mine.
+      chatbots and humans working through me. This public discovery view shows
+      what its server-declared scope includes; it is not a complete inventory.
+      Private data remains outside this public view.
     </p>
     <div class="cover__actions">
       <a class="btn btn--ghost" href="#browse">browse the commons ↓</a>
@@ -190,11 +190,10 @@
     <p class="eyebrow">entry one · what's in here right now</p>
     <h2 id="browse-title">Read it the way your chatbot does.</h2>
     <p class="voice browse__lede">
-      Every page below was fetched fresh when you opened this. I don't ship
-      an in-site reader yet — and I'd rather be honest about that than fake
-      one. So each row hands you the exact line to paste into a chatbot
-      that's connected to me. <em>That bridge isn't a workaround; it's the
-      product.</em>
+      The pages below were returned by a fresh, bounded discovery read.
+      Discovery deliberately omits content named in the server note, so these
+      counts are not a complete inventory. Each row hands you the exact line
+      to paste into a connected chatbot.
     </p>
 
     <div class="browse__bar">
@@ -203,7 +202,7 @@
         <input
           type="search"
           bind:value={query}
-          placeholder="patch loop, Etsy, primitives, BUG-038…"
+          placeholder="workflow patterns, Etsy, primitives, BUG-038…"
         />
       </label>
       <button
@@ -223,6 +222,7 @@
         live read failed — {liveErr}. The same data is reachable directly at
         <a href={MCP_URL}>{MCP_URL.replace('https://', '')}</a> through any MCP client.
       {:else if live}
+        discovery scope · {live.pageDiscovery.scopeNote} ·
         {totalPromoted.toLocaleString()} promoted pages · {totalDrafts.toLocaleString()} drafts ·
         {filtered.length.toLocaleString()} shown{query ? ` for “${query}”` : ''} ·
         read {rel(live.fetchedAt)}
@@ -235,7 +235,7 @@
           {#if query}
             no pages match “{query}” at this read ({rel(live.fetchedAt)}). Try a broader term.
           {:else}
-            the commons read as quiet right now — no public pages at this read ({rel(live.fetchedAt)}).
+            the discovery view returned no pages at this read ({rel(live.fetchedAt)}); it is not a complete inventory.
           {/if}
         </p>
       {:else}
@@ -313,14 +313,14 @@
     <h2 id="close-title">Two ways to keep looking.</h2>
     <div class="close__cards">
       <a class="close__card" href="/graph">
-        <span class="close__k eyebrow">open the full map</span>
+        <span class="close__k eyebrow">open the discovery map</span>
         <strong>The brain has a shape.</strong>
         <span class="close__sub">Pages are nodes; references are edges. The graph shows what's tightly wired and what's a lonely draft.</span>
       </a>
-      <a class="close__card" href="/loop">
-        <strong>Watch the loop.</strong>
-        <span class="close__k eyebrow">how patch requests become real changes</span>
-        <span class="close__sub">Friction in chat → investigation → evidence gates → a real pull request → a human key → a deploy. Currently asleep — and labeled as such.</span>
+      <a class="close__card" href="/patterns">
+        <strong>Browse workflow patterns.</strong>
+        <span class="close__k eyebrow">copyable, remixable starting points</span>
+        <span class="close__sub">Choose a pattern, adapt its steps and evidence, and run it under your own authority.</span>
       </a>
     </div>
   </div>

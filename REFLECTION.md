@@ -506,6 +506,52 @@ fresh-host rollback edges found later.
   existing OpenSpec requirement ownership before drafting the first delta,
   then separate the core shared helper boundary from dependent surfaces.
 
+## 2026-07-27 - public retirement boundary
+
+- **What surprised me:** canonical MCP handles were not a public-data
+  boundary. Visibility-filtered universe discovery was safe, while adjacent
+  Goal, run, exact-page, and operator-status reads exposed private or
+  operational state.
+- **Pattern worth capturing:** public callers need an allowlisted descriptor
+  layer, server-enforced visibility, explicit completeness metadata, and
+  provenance-bound follow-up reads. Discovery with an omission note is useful
+  but must never be relabeled as a complete snapshot.
+- **What I would do differently:** threat-model every public projection before
+  migrating names, then lead with negative tests for credentials, exact cap
+  fills, truncation, SDK absence, and local-origin leakage. That would have
+  prevented a naming cleanup from appearing safer than the underlying data.
+- **Follow-up:** response validation must cover every rendered representation,
+  not only the parsed view; checked-in `visibility=public` also needs an
+  independent publication record when a historical generator could have
+  defaulted it.
+- **Follow-up:** retirement must remove derived identifiers and draft metadata,
+  not only primary rows; URL credential checks must inspect bounded recursive
+  decodings so encoded separators cannot hide parameters.
+- **Follow-up:** a historical anonymous response is not durable publication
+  proof. Checked-in wiki, draft, universe, edge, and tag rows fail closed unless
+  independent audience-safe provenance authorizes them.
+- **Follow-up:** completeness and public audience are orthogonal. `scope=all`
+  cannot authorize publication, and failure UI/error channels need the same
+  fail-closed review as successful data.
+- **Follow-up:** security validation must model parser equivalence, not only
+  canonical spelling. Feed nested URL values to WHATWG parsing so whitespace,
+  control prefixes, and backslash authority forms cannot bypass userinfo checks.
+- **Follow-up:** URL parsing context is itself security-sensitive. Parse
+  absolute candidates without a base first, and never turn a malformed
+  credential-looking authority into an affirmative safe result.
+- **Follow-up:** a scoped response can be valid with nothing omitted. Preserve
+  the bounded scope, convert server prose to trusted status labels, and keep
+  successful-empty distinct from unavailable without implying completeness.
+- **Follow-up:** parser normalization includes removable characters inside a
+  URL, and credential-bearing authority syntax is not confined to common web
+  schemes. Fail closed generically; never use a finite scheme allowlist.
+- **Follow-up:** a successful parse is not affirmative safety when a parser
+  treats authority-like text as an opaque path. Apply the conservative
+  credential syntax check before accepting parser output.
+- **Follow-up:** credential-name blacklists are structurally incomplete. When
+  the canonical public endpoint needs no URL parameters, the smallest safe
+  contract is a bare HTTPS URL with no query or fragment channel at all.
+
 ## 2026-07-27 - hosted preview trust boundary
 
 - **What surprised me:** moving a secret to `workflow_run` was necessary but

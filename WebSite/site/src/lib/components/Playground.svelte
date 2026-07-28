@@ -1,7 +1,7 @@
 <!--
   Playground — live MCP console, embedded in /connect.
   Type a tool call, watch the JSON-RPC envelope go out, see the response,
-  the loop's voice, and the stage pulse. Same surface a chatbot uses.
+  and inspect the same public discovery surface a chatbot uses.
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
@@ -10,16 +10,10 @@
     callTool,
     parseInput,
     summarize,
-    harvestVoiceQuotes,
-    listRecentRuns,
-    type CallResult,
-    type LoopVoiceQuote,
-    type RecentRun
+    type CallResult
   } from '$lib/mcp/playground';
-  import { relativeStamp } from '$lib/live/project';
 
   type DisclosureMode = 'pretty' | 'json' | 'wire';
-  type StageId = 'intake' | 'investigation' | 'gate' | 'coding' | 'release' | 'observe';
 
   type HistoryEntry = {
     id: number; canonical: string; tool: string; args: Record<string, unknown>;
@@ -30,45 +24,18 @@
   type Chip = { label: string; sub: string; canonical: string; color: string };
 
   const CHIPS: Chip[] = [
-    { label: 'List the wiki',     sub: 'wiki action=list',                                                                        canonical: 'wiki action=list', color: 'var(--ember-500)' },
-    { label: 'Latest loop run',   sub: 'extensions action=list_runs limit=1',                                                     canonical: 'extensions action=list_runs limit=1', color: 'var(--violet-400)' },
-    { label: 'Active universes',  sub: 'universe action=list',                                                                    canonical: 'universe action=list', color: 'var(--signal-live)' },
-    { label: 'Open goals',        sub: 'goals action=list',                                                                       canonical: 'goals action=list', color: 'var(--ember-300)' },
-    { label: 'Read a bug page',   sub: 'wiki action=read page=pages/bugs/bug-052',                                                canonical: 'wiki action=read page=pages/bugs/bug-052-wiki-bug-list-contains-duplicate-stale-bug-pages', color: 'var(--ember-500)' }
+    { label: 'Browse discovery pages', sub: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', canonical: 'read_page changed_since=1970-01-01T00:00:00Z max_results=100', color: 'var(--ember-500)' },
+    { label: 'Public universes', sub: 'read_graph target=graphs limit=100', canonical: 'read_graph target=graphs limit=100', color: 'var(--signal-live)' }
   ];
 
-  const STAGES: Array<{ id: StageId; label: string }> = [
-    { id: 'intake', label: 'Intake' }, { id: 'investigation', label: 'Invest' },
-    { id: 'gate', label: 'Gate' },     { id: 'coding', label: 'Coding' },
-    { id: 'release', label: 'Release' }, { id: 'observe', label: 'Watch' }
-  ];
-
-  let inputValue = $state('wiki action=list');
+  let inputValue = $state('read_graph target=graphs limit=100');
   let inputError = $state<string | null>(null);
   let busy = $state(false);
   let mode = $state<DisclosureMode>('pretty');
   let history = $state<HistoryEntry[]>([]);
   let nextHistoryId = 1;
-  let voiceQuotes = $state<LoopVoiceQuote[]>([]);
-  let voiceLoading = $state(false);
-  let recentRuns = $state<RecentRun[]>([]);
-  let runsLoading = $state(false);
 
   const current = $derived<HistoryEntry | null>(history[0] ?? null);
-
-  const stagePulse = $derived.by(() => {
-    const map: Record<StageId, number> = { intake: 0, investigation: 0, gate: 0, coding: 0, release: 0, observe: 0 };
-    for (const run of recentRuns) {
-      const s = (run.status ?? '').toLowerCase();
-      if (s.includes('complete') || s.includes('success')) map.observe += 1;
-      else if (s.includes('fail') || s.includes('error') || s.includes('block')) map.gate += 1;
-      else if (s.includes('coding') || s.includes('writer')) map.coding += 1;
-      else if (s.includes('release') || s.includes('ship')) map.release += 1;
-      else if (s.includes('investig')) map.investigation += 1;
-      else map.intake += 1;
-    }
-    return map;
-  });
 
   function nowStamp(): string {
     return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -99,17 +66,13 @@
     } catch (err: any) {
       const elapsedMs = Math.round(performance.now() - t0);
       const trace = err?.trace ?? null;
-      history = [{ ...placeholder, status: 'error', elapsedMs, error: err?.message ?? String(err), trace, initTrace: null, parsed: trace?.response?.body ?? null, raw: null, summary: null }, ...history.slice(1)];
+      history = [{ ...placeholder, status: 'error', elapsedMs, error: err?.message ?? String(err), trace, initTrace: null, parsed: null, raw: null, summary: null }, ...history.slice(1)];
     } finally {
       busy = false;
     }
   }
 
   function onKeydown(e: KeyboardEvent) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void run(); } }
-  async function refreshVoice() { voiceLoading = true; try { const h = await harvestVoiceQuotes(6); voiceQuotes = h.quotes; } finally { voiceLoading = false; } }
-  async function refreshRuns() { runsLoading = true; try { recentRuns = await listRecentRuns(10); } finally { runsLoading = false; } }
-  function injectQuoteCall(q: LoopVoiceQuote) { inputValue = q.nodeId ? `extensions action=get_node_output run_id=${q.runId} node_id=${q.nodeId}` : `extensions action=get_run run_id=${q.runId}`; void run(); }
-  function injectRunCall(r: RecentRun) { inputValue = `extensions action=get_run run_id=${r.run_id}`; void run(); }
   function selectChip(c: Chip) { inputValue = c.canonical; void run(); }
   function setMode(m: DisclosureMode) { mode = m; }
   function jsonPretty(v: unknown): string { if (v == null) return 'null'; try { return JSON.stringify(v, null, 2); } catch { return String(v); } }
@@ -117,11 +80,6 @@
 
   onMount(() => {
     void run();
-    void refreshVoice();
-    void refreshRuns();
-    const vt = window.setInterval(() => void refreshVoice(), 60000);
-    const rt = window.setInterval(() => void refreshRuns(), 60000);
-    return () => { window.clearInterval(vt); window.clearInterval(rt); };
   });
 </script>
 
@@ -139,13 +97,13 @@
     <form class="repl" onsubmit={(e) => { e.preventDefault(); void run(); }}>
       <div class="repl__row">
         <span class="repl__prompt" aria-hidden="true">›</span>
-        <input class="repl__input" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="wiki action=list" bind:value={inputValue} onkeydown={onKeydown} aria-label="MCP tool call" disabled={busy} />
+        <input class="repl__input" type="text" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="read_graph target=graphs limit=100" bind:value={inputValue} onkeydown={onKeydown} aria-label="MCP tool call" disabled={busy} />
         <button class="repl__run" type="submit" disabled={busy} aria-busy={busy}>{busy ? 'Calling…' : 'Run'}</button>
       </div>
       {#if inputError}
         <p class="repl__error">{inputError}</p>
       {:else}
-        <p class="repl__hint">Format: <code>tool action=verb key=value …</code>. Press Enter to send.</p>
+        <p class="repl__hint">Format: <code>tool target=value key=value …</code>. Press Enter to send.</p>
       {/if}
     </form>
 
@@ -162,28 +120,18 @@
 
 <section class="board">
   <div class="board__grid">
-    <aside class="voice" aria-label="Loop voice — verbatim quotes from recent runs">
+    <aside class="voice" aria-label="User-buildable workflow design">
       <header class="voice__head">
-        <RitualLabel color="var(--violet-400)">· my own voice ·</RitualLabel>
-        <button class="voice__refresh" type="button" onclick={refreshVoice} disabled={voiceLoading}>{voiceLoading ? 'Listening…' : 'Refresh'}</button>
+        <RitualLabel color="var(--violet-400)">· user-buildable ·</RitualLabel>
       </header>
       <p class="voice__lede">
-        Verbatim quotes from my recent runs — what I said about my own work in
-        <code>reason_for_downgrade</code>, gate verdicts, evolution notes,
-        lab logs. Click to replay the call that produced one.
+        Each universe is user-buildable. Define the stages, tools, and review
+        gates that fit the work instead of inheriting a fixed pipeline.
       </p>
-      {#if voiceQuotes.length === 0 && !voiceLoading}
-        <p class="voice__empty">No verbatim quotes visible in the last few runs. I'm quiet right now — try a chip above, or pick a run on the right.</p>
-      {/if}
-      <ul class="voice__list">
-        {#each voiceQuotes as q}
-          <li>
-            <button type="button" class="quote" onclick={() => injectQuoteCall(q)}>
-              <blockquote>{q.text}</blockquote>
-              <small>— {q.branch}{q.nodeId ? ` · ${q.nodeId}` : ''} · <code>{q.field}</code>{#if q.at} · {relativeStamp(q.at)}{/if}</small>
-            </button>
-          </li>
-        {/each}
+      <ul class="guide__list">
+        <li>Start with the shape of your own project.</li>
+        <li>Give the daemon tools without scripting every decision.</li>
+        <li>Keep human review where the work needs judgment.</li>
       </ul>
     </aside>
 
@@ -209,7 +157,7 @@
 
       <div class="terminal__body">
         {#if !current}
-          <div class="terminal__empty"><p>The terminal is loaded with <code>wiki action=list</code> and will fire automatically.</p></div>
+          <div class="terminal__empty"><p>The terminal is loaded with <code>read_graph target=graphs limit=100</code> and will fire automatically.</p></div>
         {:else if current.status === 'pending'}
           <div class="terminal__pending">
             <span class="dot"></span>
@@ -270,41 +218,18 @@
       {/if}
     </article>
 
-    <aside class="pulse" aria-label="Loop stage activity and recent runs">
+    <aside class="pulse" aria-label="Remixable universe discovery">
       <header class="pulse__head">
-        <RitualLabel color="var(--signal-live)">· stage pulse ·</RitualLabel>
-        <button class="pulse__refresh" type="button" onclick={refreshRuns} disabled={runsLoading}>{runsLoading ? '…' : 'Refresh'}</button>
+        <RitualLabel color="var(--signal-live)">· remixable ·</RitualLabel>
       </header>
-      <p class="pulse__lede">Six stages of the loop. Each dot lights when a recent run touched that stage. Quiet stages stay dim — that's normal. I only fire on real filings.</p>
-      <ul class="pulse__rail">
-        {#each STAGES as stage}
-          {@const count = stagePulse[stage.id]}
-          <li>
-            <span class="pulse__dot" class:pulse__dot--lit={count > 0}></span>
-            <span class="pulse__name">{stage.label}</span>
-            <span class="pulse__count">{count > 0 ? `${count} hit${count === 1 ? '' : 's'}` : 'quiet'}</span>
-          </li>
-        {/each}
-      </ul>
-
-      <header class="pulse__head pulse__head--secondary">
-        <RitualLabel>· walk a run ·</RitualLabel>
-        <span>{recentRuns.length} visible</span>
-      </header>
-      <p class="pulse__lede">Click any run to load <code>extensions action=get_run</code> into the terminal. Runs persist forever, even when I'm quiet.</p>
-      {#if recentRuns.length === 0 && !runsLoading}
-        <p class="pulse__empty">No recent runs visible. Try the "Latest loop run" chip — it lists the most recent.</p>
-      {/if}
-      <ul class="pulse__runs">
-        {#each recentRuns.slice(0, 8) as r}
-          <li>
-            <button type="button" onclick={() => injectRunCall(r)}>
-              <strong>{r.run_id.slice(0, 14)}</strong>
-              <span class="pulse__run-meta">{r.status}{r.branch_def_id ? ` · ${r.branch_def_id.slice(0, 16)}` : ''}</span>
-              <small>{relativeStamp(r.finished_at ?? r.started_at)}</small>
-            </button>
-          </li>
-        {/each}
+      <p class="pulse__lede">
+        Public graph discovery shows which universes are available to explore.
+        Open one as a pattern, then remix its structure for a different domain.
+      </p>
+      <ul class="guide__list">
+        <li>Discover public universe metadata.</li>
+        <li>Study the workflow shape and its declared purpose.</li>
+        <li>Remix the useful pattern without copying private state.</li>
       </ul>
     </aside>
   </div>
@@ -434,32 +359,9 @@
     min-height: 200px;
   }
   .voice__head, .pulse__head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 8px; }
-  .voice__refresh, .pulse__refresh {
-    background: transparent; border: 1px solid var(--border-1); border-radius: 5px;
-    color: var(--fg-2); cursor: pointer;
-    font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.1em;
-    padding: 4px 8px; text-transform: uppercase;
-  }
-  .voice__refresh:hover:not(:disabled), .pulse__refresh:hover:not(:disabled) { border-color: var(--border-2); color: var(--fg-1); }
-  .voice__refresh:disabled, .pulse__refresh:disabled { opacity: 0.5; cursor: wait; }
   .voice__lede, .pulse__lede { color: var(--fg-3); font-size: 12px; line-height: 1.55; margin: 0 0 12px; }
-  .voice__lede code, .pulse__lede code { background: rgba(255,255,255,0.04); border: 1px solid var(--border-1); padding: 0 4px; border-radius: 3px; color: var(--violet-200); font-family: var(--font-mono); font-size: 10.5px; }
-  .voice__empty, .pulse__empty { color: var(--fg-3); font-size: 12px; font-style: italic; line-height: 1.55; }
-  .voice__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; max-height: 540px; overflow-y: auto; }
-  .quote {
-    background: var(--bg-inset); border: 1px solid var(--border-1); border-left: 2px solid var(--violet-400);
-    border-radius: 6px; color: inherit; cursor: pointer; display: grid; gap: 6px;
-    padding: 10px 12px; text-align: left; width: 100%;
-    transition: border-color var(--dur-fast) var(--ease-standard);
-  }
-  .quote:hover { border-color: var(--border-2); border-left-color: var(--violet-200); }
-  .quote blockquote {
-    color: var(--fg-1);
-    font-family: var(--font-display); font-size: 14px; font-style: italic; line-height: 1.45;
-    margin: 0; text-wrap: pretty;
-  }
-  .quote small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; line-height: 1.4; text-transform: none; letter-spacing: 0; }
-  .quote small code { background: transparent; border: 0; padding: 0; color: var(--violet-400); font-size: 10px; }
+  .guide__list { color: var(--fg-2); display: grid; font-size: 12px; gap: 8px; line-height: 1.5; margin: 0; padding-left: 18px; }
+  .guide__list li::marker { color: var(--signal-live); }
 
   /* ── Terminal ─────────────────────────────────────────────────────── */
   .terminal {
@@ -561,33 +463,5 @@
     overflow: hidden; padding: 0; text-overflow: ellipsis; white-space: nowrap;
   }
   .terminal__history small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; }
-
-  /* ── Pulse ────────────────────────────────────────────────────────── */
-  .pulse__head--secondary { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border-1); }
-  .pulse__head span { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; }
-  .pulse__rail { list-style: none; margin: 0 0 4px; padding: 0; display: grid; gap: 6px; }
-  .pulse__rail li {
-    align-items: center; background: var(--bg-inset);
-    border: 1px solid var(--border-1); border-radius: 6px;
-    display: grid; gap: 10px; grid-template-columns: 14px 1fr auto;
-    padding: 8px 10px;
-  }
-  .pulse__dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--fg-4); box-shadow: 0 0 0 2px rgba(255,255,255,0.03);
-  }
-  .pulse__dot--lit { background: var(--signal-live); box-shadow: 0 0 10px rgba(109,211,166,0.6); }
-  .pulse__name { color: var(--fg-1); font-family: var(--font-mono); font-size: 12px; }
-  .pulse__count { color: var(--fg-3); font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase; }
-  .pulse__runs { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-height: 360px; overflow-y: auto; }
-  .pulse__runs button {
-    background: var(--bg-inset); border: 1px solid var(--border-1); border-radius: 6px;
-    color: inherit; cursor: pointer; display: grid; gap: 3px;
-    padding: 9px 11px; text-align: left; width: 100%;
-  }
-  .pulse__runs button:hover { border-color: var(--border-2); background: rgba(255,255,255,0.04); }
-  .pulse__runs strong { color: var(--fg-1); font-family: var(--font-mono); font-size: 11.5px; }
-  .pulse__run-meta { color: var(--fg-2); font-family: var(--font-mono); font-size: 10.5px; }
-  .pulse__runs small { color: var(--fg-3); font-family: var(--font-mono); font-size: 10px; }
 
 </style>

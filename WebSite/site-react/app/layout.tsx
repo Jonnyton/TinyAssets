@@ -12,7 +12,7 @@ export const metadata: Metadata = {
   metadataBase: new URL("https://tinyassets.io"),
   title: "TinyAssets — meet Tiny, the engine that turns chat into finished work",
   description:
-    "TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the acting intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and a loop that patches the engine itself.",
+    "TinyAssets is the open-source platform you connect to your chatbot over MCP. Tiny is the acting intelligence inside it: name a goal and he runs real multi-step work, with evidence-gated outcomes and workflows users can author, publish, copy, and remix.",
   openGraph: {
     siteName: "TinyAssets",
     type: "website",
@@ -26,7 +26,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "TinyAssets — the engine that shows its work",
     description:
-      "Live, verifiable state on every page: the same MCP endpoint you paste into your chatbot renders this site's numbers.",
+      "Provenance-labelled public discovery and dated snapshots: live signals say exactly what they measure.",
     images: ["/og-image.png"],
   },
 };

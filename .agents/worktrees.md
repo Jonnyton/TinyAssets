@@ -1458,15 +1458,32 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-loop-current-20260726
-- Lane state: claimed; target reconciled in draft PR #1810; implementation gates remain
+- Lane state: target merged as PR #1810; implementation gates remain in the safe-waves lane
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current
-- STATUS/Issue/PR: host-directed retirement; draft PR #1810
+- STATUS/Issue/PR: host-directed retirement; merged PR #1810
 - PLAN refs: user-authored/remixable automations; generic Goal/graph/wiki/effect/evaluation primitives; complete-system uptime
 - Purpose: remove privileged platform-owned auto-triage/auto-ship/repair/routing and patch-loop product branding while preserving generic primitives users can compose, copy, and remix
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-current\_PURPOSE.md
-- Memory refs: host directive 2026-07-26; semantic target SHA 8ef99451; current-main reconciliation reviewed at 75e21fba; current origin/main 46cbb08c
+- Memory refs: host directive 2026-07-26; semantic target 8ef99451; current-main reconciliation 3fabd2e1; merge 0d50a2d4
 - Review gate: exact Claude Opus 5 APPROVE plus independent architecture/spec/live-migration APPROVEs
-- Ship/abandon: draft target PR #1810 first, then collision-free runtime deletion; no reinterpretation of queued privileged rows as generic user automations
+- Ship/abandon: target landed; collision-free runtime deletion remains separately gated; no reinterpretation of queued privileged rows as generic user automations
+
+## 2026-07-26 - retire cheat-loop collision-safe waves
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-loop-safe-waves
+- Lane state: claimed; current-main site/announcement/helper wave approved at `c84cb833`
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves
+- STATUS/Issue/PR: open draft implementation PR #1812 against `main`
+- PLAN refs: user-authored/remixable automations; public website surface; complete-system uptime
+- Purpose: remove retired product presentation and callers from production React, rollback Svelte, and deployment guidance without touching runtime/queue or external GitHub state
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-loop-safe-waves\_PURPOSE.md
+- Memory refs: target merge 0d50a2d4; safe-wave commits 5e8e5e39/594a9287/255e83cf; current-main exact approval c84cb833
+- Review gate: current-main Opus 5 APPROVE plus three pre-merge exact APPROVEs over byte-identical implementation; rendered connector and post-fix clean-use remain later acceptance gates
+- Ship/abandon: keep PR #1812 draft and gate any merge on task 3.5's final announcement-run drain; do not deploy or authorize runtime/external-state retirement
+- Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
+- Update 2026-07-26: parent #1810 folded in; React/Svelte builds, 58/58 strict OpenSpec, active-source scans, and exact current-main reviews pass at `c84cb833`
+- Update 2026-07-27: current-main exact head `c5a13216` has final Codex/Opus 5 APPROVE, 59/59 strict OpenSpec, green 282-test Linux CI, and pre-credential preview receipt `30327788528`; #1812 is ready for promotion before #1815/#1818 restack.
 
 ## 2026-07-26 - close release-reconcile production drift watch
 

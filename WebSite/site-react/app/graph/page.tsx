@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import GraphClient from "./_components/GraphClient";
 
 export const metadata: Metadata = {
-  title: "Graph — the living map of Tiny's brain",
+  title: "Graph — Tiny's published knowledge map",
   description:
-    "A live force-directed map of Tiny's public brain — every wiki page is a dot clustered around its category, goals and universes are their own constellations, and the bright lines are real page-to-page references. Pan, zoom, hover to focus, click through to read.",
+    "A force-directed map of a dated snapshot or a clearly labelled discovery-scoped refresh. Live discovery is not a complete public-page inventory.",
   alternates: {
     canonical: "/graph",
   },

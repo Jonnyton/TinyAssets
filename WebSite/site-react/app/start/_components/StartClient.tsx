@@ -14,13 +14,13 @@ const GH_ISSUES = "https://github.com/Jonnyton/TinyAssets/issues";
 const GH_CONTRIBUTING = "https://github.com/Jonnyton/TinyAssets/blob/main/CONTRIBUTING.md";
 
 // ── Six persona starter prompts — each copyable, each works today
-// via the universe / goals / wiki tools. ──
+// through public discovery or user-authorized composition tools. ──
 type Prompt = { persona: string; flavor: string; text: string };
 const PROMPTS: Prompt[] = [
   {
     persona: "The researcher",
     flavor: "orient first",
-    text: "Inspect my TinyAssets universe and show me what goals exist.",
+    text: "Browse the public commons for research workflows I can inspect, copy, and remix.",
   },
   {
     persona: "The maker",
@@ -136,8 +136,8 @@ export default function StartClient() {
                     <span className="pulse__sub ev">deployed {fmtRel(vitals.deployedAt)}{vitals.gitSha ? <>&nbsp;· {vitals.gitSha}</> : null}</span>
                   )}
                   <span className="pulse__row pulse__row--quiet">
-                    <span className={`dot ${vitals.loopAwake ? "live" : "idle"}`} aria-hidden="true"></span>
-                    <span className="pulse__k">{vitals.loopAwake ? "loop awake" : "loop asleep"}</span>
+                    <span className={`dot ${vitals.workflowActive ? "live" : "idle"}`} aria-hidden="true"></span>
+                    <span className="pulse__k">{vitals.workflowActive ? "workflow activity visible" : "no recent workflow activity"}</span>
                   </span>
                   <span className="pulse__stamp ev">
                     read {fmtRel(vitals.fetchedAt)}
@@ -260,8 +260,8 @@ export default function StartClient() {
           <h2 id="prompts-title">Bring a first sentence.</h2>
           <p className="prompts__lede voice">
             — connected and not sure what to ask? Here are six openers, one per
-            kind of visitor. Each works today through my universe, goals, and
-            commons tools. Swap the bracketed bits for your own.
+            kind of visitor. Each uses public discovery or asks you to compose
+            user-owned work. Swap the bracketed bits for your own.
           </p>
 
           <ul className="prompts">
@@ -284,9 +284,9 @@ export default function StartClient() {
             ))}
           </ul>
           <p className="prompts__foot">
-            Wondering what a &ldquo;goal&rdquo; or the &ldquo;commons&rdquo; is? Open the live
-            {" "}<a href="/goals">goals board</a> — it reads the real list straight from
-            the engine.
+            Wondering what a &ldquo;goal&rdquo; or the &ldquo;commons&rdquo; is? The
+            {" "}<a href="/goals">goals board</a> shows explicitly public examples
+            from a dated checked-in snapshot.
           </p>
         </div>
       </section>
@@ -305,7 +305,7 @@ export default function StartClient() {
             <article className="oss__card">
               <h3 className="oss__h">Clone the repo</h3>
               <p className="oss__p">
-                Read the engine, the loop, and every workflow definition. It&apos;s all
+                Read the engine and every public workflow definition. It&apos;s all
                 public.
               </p>
               <pre className="oss__pre"><code>git clone {GH_REPO}.git</code></pre>
@@ -331,13 +331,13 @@ export default function StartClient() {
           <nav className="close__cards">
             <a className="close__card" href="/goals">
               <span className="close__k eyebrow">the goals board</span>
-              <strong>See what&apos;s already running →</strong>
-              <span className="close__sub">live public goals, each with its outcome ladder.</span>
+              <strong>Browse published goal examples →</strong>
+              <span className="close__sub">A dated public snapshot, with outcome ladders where evidence is included.</span>
             </a>
             <a className="close__card" href="/loop">
-              <span className="close__k eyebrow">the patch loop</span>
-              <strong>Watch how it maintains itself →</strong>
-              <span className="close__sub">friction becomes a patch request, a real PR, a release.</span>
+              <span className="close__k eyebrow">workflow activity</span>
+              <strong>See public workflow graphs →</strong>
+              <span className="close__sub">Public graph activity, labelled with its MCP provenance.</span>
             </a>
           </nav>
         </div>

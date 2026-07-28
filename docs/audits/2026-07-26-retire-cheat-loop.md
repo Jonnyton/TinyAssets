@@ -91,14 +91,148 @@ The host's standing 2026-07-26 direction—if the boundary is fully figured out,
 it is approved and work should continue—therefore satisfies target gate 0.4.
 No unresolved host design choice remains in the removal boundary.
 
-The target was published without runtime or external-state mutation as draft
-PR [#1810](https://github.com/Jonnyton/TinyAssets/pull/1810) after merging
+The target was published and merged without runtime or external-state mutation
+as PR [#1810](https://github.com/Jonnyton/TinyAssets/pull/1810) after merging
 current `origin/main`, rerunning the foldback provider-context feed, and
 confirming the exact Files set overlaps only this lane's own active claim.
 `retire-legacy-live-mcp-tools` task 4.1 remains an explicit implementation
-cutover dependency. Publication of this target does not authorize runtime,
+cutover dependency. Publication of the target did not authorize runtime,
 deployment, external-state mutation, canonical spec sync, or archive; the
 staged migrations and rendered acceptance gates remain incomplete.
+
+### Collision-safe implementation evidence
+
+Freshness-stamped 2026-07-26 on Windows, stacked branch
+`codex/retire-cheat-loop-safe-waves`:
+
+- Svelte rollback cleanup `5e8e5e39` removes the privileged caller/feed,
+  `ChatDemo.svelte`, `community-loop-status.json`, automatic filing promises,
+  and product presentation. `/loop` now shows provenance-labelled generic
+  user workflow activity and `/patch-loop` is a static retirement landing.
+- React production cleanup `594a9287` removes the same privileged product
+  composition and GitHub/status fallbacks, preserves independent uptime and
+  release evidence, classifies interrupted runs as historical, and adds the
+  static `/patch-loop` landing.
+- Automation/deployment cleanup `255e83cf` deletes
+  `announce-patch.yml` and `patch_announcement.py`, preserves
+  `post_x_update.py` as an explicit generic outbound primitive, and makes every
+  assigned workflow/runbook/skill agree that React is manual production while
+  Svelte is dispatch-only rollback.
+- Residual cleanup `49192987` removes the rollback console's fixed
+  six-stage-loop assumption, attributes notes and run identity to the
+  user-authored workflow, replaces remaining loop-routing copy, and treats
+  interrupted runs as terminal. Follow-up `33fb617b` proves the already-guarded
+  parser token to TypeScript without changing parser behavior.
+- Shipping cleanup `6ae7a473` removes the stale local Svelte bundle-copy helper
+  and aligns the retained rollback documentation and mirrored website skill;
+  it does not run a deployment.
+- Stacked draft PR #1818 exclusively owns deletion of the loop core-team
+  manifest and the Ada, Elias, Mira, Noor, Soren, and Vera role souls; Opus 5
+  approved its exact deletion head `d311cf03`. A duplicate base-branch attempt
+  was reverted, leaving #1812 with zero net soul diff; Opus 5 approved that
+  collision repair at `65e0ae42`. The host-local registered-daemon
+  zero-active gate is now proved below. Task 5.3 remains open on snapshots and
+  residual synthetic-test naming.
+- Opposite-provider Claude Opus review of `ace375ab` found remaining
+  one-sided Svelte presentation wording after the React port. Cleanup
+  `d035cf76` replaces the shared VitalSigns, TinyBot, soul, loop, fine-print,
+  and README residue with user-authored workflow language and removes the
+  remaining shipped-site `loopAwake`, `WATCHDOGS`, and deleted-component
+  references. A subsequent exact review found the active website skill still
+  described the deleted component and misclassified `/loop`; the mirrored
+  instruction was corrected before final approval.
+
+Both site production builds passed. A fresh React build reported
+`Generating static pages (27/27)`, printed a 25-row route table, and emitted
+25 generated `index.html` route pages including `/patch-loop`; these are
+different build counters, not 27 distinct routes. The Svelte build emitted the
+expected loop, patch-loop, and fine-print pages. React TypeScript passed. After
+residual cleanup, Svelte `npm run check` passed with zero errors and six
+existing warnings outside the retired-loop edits. A fresh 2026-07-26 Chrome browser
+sweep against local Next dev (`localhost:3000`) and Vite dev
+(`localhost:5173`) rendered 11 affected routes in both the React production
+source tree and Svelte rollback tree with zero console errors or warnings.
+Both `/loop` `Refresh MCP` controls returned human-readable explicit empty
+states without raw placeholders or uptime substitution. Both `/patch-loop`
+routes rendered static user-owned workflow landings with real `/patterns` and
+`/commons` links and no privileged automation promise. Narrow active-source
+identifier scans found zero retired `community_change_context`,
+community-loop/status/watch, bug-investigation, auto-fix/ship, self-patching,
+automatic-pickup, or label-fallback identifiers. They did not prove
+content-level absence: `/goals` in both built artifacts still renders the
+retired patch-loop goal narrative and `patch-loop` tag from
+`mcp-snapshot.json`; `/graph` also renders its title as a clickable goal row.
+Production-exact previews and the shared-component blast radius were then
+tested separately: the React static preview at
+`localhost:4322` rendered all 25 generated `index.html` routes, and the Svelte
+Vite production preview at `localhost:4173` rendered all 25 generated HTML
+routes. Both all-route sweeps had zero browser warnings/errors. The retired
+snapshot content renders on `/goals` and `/graph`; shared client chunks loaded
+by `/fine-print`, `/goals`, `/graph`, `/host`, and React's `/goal` or Svelte's
+`/build` also ship its name/summary, while the React query-param goal detail can
+render the full narrative. Independent reviewers approved the React, Svelte,
+and automation/deployment diffs after five residual wording/provenance
+findings were corrected.
+
+Claude Opus 5 then reviewed the exact pushed evidence head `05e7897e` and
+returned APPROVE after independently reconciling the 27 static-generation
+units, 25-row React route table, 25 generated React `index.html` pages, and 25
+generated Svelte HTML pages. The two preceding ADAPT passes are preserved in
+PR #1812's review record; their attribution and rendered-residue findings are
+incorporated above rather than hidden.
+
+The follow-up checked-in snapshot slice uses deletion rather than inventing a
+replacement web product. Both MCP snapshot mirrors remove privileged goals
+`4ff5862cc26d` and `f10caea2e437`, their tag-map entries, the automatic
+post-`file_bug` promise, and the inconsistent goal count. The repository
+snapshot generator now drops unsourced prior `areas`, `workflow_branches`,
+`routes`, and `edges`, and emits only canonical `origin/main` rather than local
+or provider branch state. It no longer spreads any prior top-level/repository
+keys and fails closed when `refs/remotes/origin/main` is absent; the checked-in
+repository snapshot was regenerated through that path. Shape-aware
+real-generator and mirror/repository-absence tests went red then green and pass
+5/5. The retained Svelte deployment runs them after any optional refresh, and
+its manual refresh input now says not to use the legacy generator until task
+5.3 migrates it to canonical handles. React and Svelte production builds pass.
+Fresh production-preview Chrome renders of `/goals` and `/graph` in both sites
+then showed four retained generic goals, neither retired goal, and zero browser
+warnings/errors. **Superseded 2026-07-27:** publication-provenance review later
+retained only the one independently proven-public Goal documented below. This
+is static payload/content proof, not live MCP
+regeneration: the legacy `snapshot-mcp.mjs` source contract remains open as
+described below, as does final retired-ID query-state proof.
+
+Read-only GitHub preflight found the latest 30 announcement-workflow runs all
+completed with failure, with no queued or in-progress run. No workflow was
+disabled, no run was cancelled, no site was deployed, and no production/GitHub
+label or auto-merge state was mutated. Task 3.5 remains open for the separately
+claimed effector-comment neutralization and final pre-merge run-drain proof.
+On 2026-07-26 Windows/Python 3.14.3,
+`python -m pytest tests/test_website_rename_surfaces.py
+tests/test_community_loop_watch.py
+tests/test_community_loop_watch_workflow.py -q` reported
+`8 passed, 1 failed`: the remaining failure is
+`test_alarm_sink_dispatches_only_stale_uptime_canary_workflow`, which still
+expects `createTinyAssetsDispatch` in
+`tests/test_community_loop_watch_workflow.py`. A separate green
+`test_alarm_sink_can_dispatch_actions` assertion still requires
+`permissions.get("actions") == "write"`. These contradictory expectations and
+the retired workflow belong to task 4.2, now recorded as a pending exact-file
+STATUS lane behind active broad `tests/` claims; they do not block task 5.2.
+Task 5.2 remains open on final query-state proof and task 5.3's source
+retirement. Task 5.3 owns the snapshot/soul source retirement and regeneration.
+
+After parent PR #1810 landed, current `origin/main` merge `0d50a2d4` was folded
+into the stacked implementation branch without changing any reviewed site,
+workflow, script, or skill content. Fresh current-main verification at
+`c84cb833` passed React's production build and TypeScript, Svelte's production
+build and check with zero errors/six existing warnings, all 58 strict OpenSpec
+validations, the active-source absence scan, and `git diff --check`. The fresh
+current-head React counters are recorded separately above. Claude Opus 5
+returned APPROVE on the current-main head; three pre-merge exact APPROVEs cover
+the implementation content that the merge left byte-identical. The foldback
+imported the separate provider-secret-deposit OpenSpec only as `main` history
+and did not broaden this lane.
 
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
@@ -125,11 +259,19 @@ open-issue counts were
 open issues. These are active external routing/status claims, not merely
 historical source vocabulary.
 
-## Current Shipped Consumers
+## Pre-retirement shipped-consumer baseline
+
+This inventory records the audited `origin/main` state before the stacked
+site/deployment implementation commits `5e8e5e39`, `594a9287`, `255e83cf`,
+`49192987`, `33fb617b`, `6ae7a473`, and `d035cf76`.
+It remains here as historical removal evidence, not as a claim that each
+consumer is still present on the current stacked branch. Unless a paragraph
+explicitly says otherwise, present-tense descriptions below refer to that
+pre-retirement baseline.
 
 ### Filing intake and receipt
 
-| Surface | Current behavior | Retirement |
+| Surface | Baseline behavior | Retirement |
 |---|---|---|
 | `tinyassets/api/wiki.py:2430-2570` | `file_bug` imports `bug_investigation` and `trigger_receipts`, creates a pending receipt, reads a retired env key, enqueues, appends `## Investigation`, and returns `investigation`/`trigger` blocks | Remove the entire post-filing automation block; filing returns filing metadata only |
 | `tinyassets/wiki/trigger_receipts.py` | Dedicated mutable receipt store for the filed-page auto-trigger | Stop writes in the filing-only deployment; retain the reader/store/data until every old writer is drained or fenced and task 2.5 completes its locked inventory, authority-safe migration, retention record, and final rescan; only then delete the unused implementation |
@@ -154,7 +296,7 @@ filing fields and per-kind duplicate detection remain.
 
 ### Hidden patch-request composition
 
-| Surface | Current behavior | Retirement |
+| Surface | Baseline behavior | Retirement |
 |---|---|---|
 | `tinyassets/api/market.py:202-235` | `classify_patch_request` injects free/paid daemon claimants, a Claude/Codex writer gate, and an opposite-family checker gate | Delete the classifier; ordinary request submission does not choose a platform writer/checker team |
 | `tinyassets/api/universe.py:2157-2174` | Persists `request_classification` into submitted requests/tasks | Stop writing it and ignore/strip pending legacy metadata as non-authorizing residue |
@@ -358,6 +500,126 @@ post-`file_bug` branch promise, and retired tags:
 They are regenerated from the clean source or removed with an unshipped mirror;
 checked-in generated data cannot serve as a compatibility backdoor.
 
+Freshness-stamped 2026-07-27: migrating website callers to the consolidated
+handles did not by itself create a public-read boundary. Independent exact-head
+reviews of draft PR #1812 at
+`9ea3c9eef9603496a62be64de7b5085312687a70` both returned **ADAPT**:
+
+- Codex proved with an isolated temporary database that an anonymous viewer
+  could list another actor's private Goal and read its exact private
+  description through `read_graph target=goals|goal`. It separately proved
+  that `Number(...)` coercion accepted `null`, string, and boolean
+  completeness fields as valid zeros, identified the unprovable 100-Goal cap,
+  and flagged both credentialed snapshot publication and raw Git-origin
+  userinfo as public-artifact risks.
+- Claude Opus 5 found that rejecting every `scope=discovery` response inverted
+  the intended disclosure contract: an explicit discovery scope plus omission
+  note is acceptable for a discovery-only view, though never as a complete
+  wiki replacement. It also found that truncated page bodies were accepted and
+  could replace that page's prior incremental edges, and that a required
+  snapshot silently exited zero when the MCP SDK was unavailable. Opus
+  corroborated the Goal-visibility, raw-origin, and unpageable completeness
+  concerns.
+- A later independent Codex privacy audit extended the boundary to
+  `read_graph target=runs|run`: `_run_read_allowed` returns true for every
+  actor not encoded as `universe:<id>`, so non-universe and cross-user run
+  records are not a server-enforced public projection. This run finding is
+  Codex evidence, not attributed to the earlier Opus review.
+- A follow-up anonymous exact-page proof found that discovery correctly omitted
+  a coordination plan, yet `read_page page=<known path>` returned its full
+  2,667-character body; a known BUG path likewise returned 2,003 characters.
+  Root-wiki exact reads bypass the universe ACL and pages without visibility
+  frontmatter default readable. The public playground must therefore reject
+  arbitrary exact paths at its execution boundary, not only hide a UI chip.
+- The same follow-up found that anonymous `get_status` returns raw activity
+  records and recent calls, task and worker identifiers, daemon names and cost
+  data, local paths, persona self-model state, and authentication health after
+  only the metadata gate. Public browser clients and the playground must not
+  download that operator payload until the server exposes a bounded public
+  status projection.
+
+These are unresolved review findings, not final approval. Anonymous browser
+and public-snapshot callers MUST NOT invoke raw `get_status`, `goal`, `goals`,
+`run`, or `runs` until the server enforces both public visibility and bounded
+completeness.
+Among the `read_graph` collection/detail projections, only `target=graphs`
+discovery is currently proven to enforce visibility; it is not completeness
+proof at an unpageable cap. Checked-in Goal data may remain only as an
+explicitly labelled snapshot; client-side filtering after a private-capable
+response is not a confidentiality boundary. Arbitrary anonymous exact-page
+reads are likewise forbidden; body reads must be bound to a path returned by a
+validated inventory, and discovery scope cannot replace the full snapshot.
+Snapshot generation must run without caller credentials, and required refresh
+must fail before writing on SDK absence, strict-metadata failure, an ambiguous
+request cap, or a truncated body.
+
+A live anonymous probe of `https://tinyassets.io/mcp` returned 78/78
+**discovery-scope** pages with zero truncation and an explicit `scope_note`
+that coordination pages were omitted. That result is acceptable for a
+discovery-only surface that preserves the scope and omission note. It is not a
+complete public-page inventory and cannot replace the current full-scope
+snapshot. Because public `read_page` has no cursor beyond its 100-result
+ceiling, a response that exactly fills the cap is ambiguous and must fail
+closed. A page body with `truncated=true` is likewise incomplete even when
+`content` is a string; it must not be reference-extracted or overwrite prior
+edges.
+
+The first fail-closed proof left the checked-in 2026-04-30 mirrors untouched at
+SHA-256
+`597CD61E1A7A15576376F2DAB87698AA5ED19132346FEDACE3CB4BD522538740`.
+Later independent review established that the historical generator's
+`visibility ?? "public"` normalization was not publication proof. Three Goals
+without an independent explicit-public record were therefore removed manually
+from both mirrors. The sole retained Goal, `dd187997039b`, cites and is tested
+against two independent publication records:
+`branches/echoes-reddit-source-intake.yaml` and
+`docs/portfolio/echoes-of-the-cosmos/README.md`. Exact review then found
+orphaned `goal:<id>` tags for removed Goals and two retired Community Change
+Loop draft records. Those residues were removed; every Goal identity now
+resolves to `dd187997039b`, draft stats match the retained rows, and the
+matching curated mirrors have SHA-256
+`2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
+No 2026-07-27 evidence established safe full regeneration, rendered-browser
+acceptance, or post-fix clean use.
+
+The same probe found two source records that stop truthful regeneration:
+`pages/concepts/community-patch-loop-as-project-steward.md` still describes
+the retired loop as future platform guidance, and public universe
+`patch-loop-live` still exists. The generator must not hide either record.
+They require a reviewed retention/supersession/removal disposition at the live
+source before the canonical/legacy snapshots are regenerated. Rendered browser
+acceptance remains missing because no browser backend was available in this
+session.
+
+#### Host-local registered-role authority proof
+
+Freshness-stamped 2026-07-26 on the Windows host whose historical manifest
+registered the six loop roles under
+`C:\Users\Jonathan\AppData\Roaming\TinyAssets`: a read-only SQLite URI scan
+checked all 59 user tables across the five resident databases (61 including
+SQLite's two internal `sqlite_sequence` tables): `.auth.db`, `.node_eval.db`,
+`.runs.db`, `.tinyassets.db`, and `wiki_trigger_attempts.db`. None of the six
+exact daemon IDs appeared in any text or JSON column. Narrow checks of
+`.tinyassets.db` likewise returned zero matching author definitions, runtime
+instances, directed or claimed epoch-2 tasks, preferred-author user requests,
+or capability-grant issuers. Four of those five tables —
+`author_runtime_instances`, `branch_tasks_v2`, `user_requests`, and
+`capability_grants` — hold zero rows of any kind on this host, so they are
+vacuous rather than filtered witnesses. `author_definitions` holds exactly one
+row, `author::house-daemon::9582f5f425f291db`, and is the only narrow check
+with discriminating power. A recursive exact-hash text scan of the host-data
+root returned no flat-file match.
+
+The code treats non-retired runtime rows as controlled runtime slots and
+`pending`, `running`, or `cancel_requested` epoch-2 tasks as live work.
+Therefore, on this inspected host, the roles have neither stored identities
+nor runnable/queued authority. This is host-local evidence, not a claim about
+an uninspected production or third-party host. This host's action, gate-claim,
+admission, escrow, grant, and session tables are likewise empty, so the
+absence bounds current host-local risk to zero but does not prove that a
+populated registry ever dropped these roles. It does not close task 5.3's
+snapshot-regeneration or synthetic-fixture gates.
+
 Generic evaluation code or explicit GitHub-effect authority may remain only
 where it has an independent owner and does not preserve an auto-ship action,
 ledger, flag, or implicit composition.
@@ -416,33 +678,163 @@ named `community-loop` survives.
 
 ### Public website presentation
 
-The current production React/Next site and retained Svelte rollback source both
-expose the retired product. Fresh GitHub evidence on 2026-07-26 shows five
-successful `deploy-site-react` runs (latest 2026-06-27); the current workflow
-deployment chronology and `deploy-site.yml` identify React as live and Svelte
-as dispatch-only rollback. The `deploy-site-react.yml` header, older cutover
-runbook, and website skill still say React is not live and must be corrected.
+At the pre-retirement baseline, the production React/Next site and retained
+Svelte rollback source both exposed the retired product. Fresh GitHub evidence
+on 2026-07-26 showed five successful `deploy-site-react` runs (latest
+2026-06-27); the workflow deployment chronology and `deploy-site.yml`
+identified React as live and Svelte as dispatch-only rollback, while the
+`deploy-site-react.yml` header, older cutover runbook, and website skill still
+incorrectly said React was not live.
 
-- `WebSite/site/src/lib/mcp/live.ts` reads
+The baseline consumers were:
+
+- `WebSite/site/src/lib/mcp/live.ts` read
   `community-loop-watch.yml`, community-loop labels/issues, and
-  `/community-loop-status.json`, and calls `community_change_context`;
-- `WebSite/site/static/community-loop-status.json` is a checked-in product
+  `/community-loop-status.json`, and called `community_change_context`;
+- `WebSite/site/static/community-loop-status.json` was a checked-in product
   snapshot;
-- `WebSite/site/src/lib/components/ChatDemo.svelte` narrates the privileged
+- `WebSite/site/src/lib/components/ChatDemo.svelte` narrated the privileged
   file-to-daemon-to-gates-to-live loop on the homepage;
-- `WebSite/site/src/routes/fine-print/+page.svelte` names the workflow;
-- `WebSite/site-react/lib/live.ts` calls `community_change_context`, and its
-  fine print mirrors the same shape;
-- canonical site requirements name `/patch-loop` and the community-watch
+- `WebSite/site/src/routes/fine-print/+page.svelte` named the workflow;
+- `WebSite/site-react/lib/live.ts` called `community_change_context`, and its
+  fine print mirrored the same shape;
+- canonical site requirements named `/patch-loop` and the community-watch
   fallback.
 
-The migration removes the patch-loop application and fallback data from both
-trees, makes `/patch-loop` a static soft landing to user-authored
-patterns/commons, and keeps `/loop` only as provenance-labeled generic workflow
-activity. Generic platform uptime evidence remains a separate observation and
-never proves that task work is moving. Both the deployed React tree and Svelte
-rollback tree must build and pass the same absence scan; this retirement does
-not delete the live React source or decide a new framework migration.
+On the current stacked branch, commits `5e8e5e39`, `594a9287`, `49192987`,
+`6ae7a473`, and `d035cf76` remove those exact product callers, feeds, snapshot,
+shipping helper, and presentation surfaces from the Svelte and React trees.
+`/patch-loop` is now a static soft landing to
+user-authored patterns/commons, and `/loop` is provenance-labeled generic
+workflow activity. Commit `255e83cf` also corrects the deployment workflow,
+runbook, and website-skill truth: React is manual production and Svelte is
+dispatch-only rollback. Generic platform uptime evidence remains a separate
+observation and never proves that task work is moving. Final cross-tree
+absence, rendered-surface, and clean-use evidence remain release gates; this
+retirement does not delete the live React source or decide a new framework
+migration.
+
+The 2026-07-27 canonical-read slice removes every remaining production React
+and rollback Svelte website call and public example for the retired `wiki`,
+`goals`, `universe`, and `extensions` tool names. Existing site behavior is
+expressed through the advertised handles; no new Village or web-product
+architecture was introduced. The later exact-head ADAPT reviews above
+supersede any inference that canonical naming made every target safe:
+raw `get_status`, arbitrary exact pages, and `goal|goals|run|runs` remain
+forbidden to anonymous browser/snapshot callers, while `graphs` is the only
+`read_graph` discovery projection currently proven to enforce visibility. That
+visibility result is not complete-inventory proof when an unpageable cap is
+hit.
+
+The follow-up fail-closed implementation on 2026-07-27 applies that ADAPT
+verdict without pretending the unsafe server projections are public:
+
+- the two browser clients keep their generic MCP caller private and expose
+  only bounded `read_graph target=graphs` discovery plus a validated
+  discovery-scoped page inventory;
+- Commons, Graph, and shared source indicators visibly render the validated
+  server omission note and say the refresh is not a complete inventory;
+- public browser code contains no raw `get_status`,
+  `goal|goals|run|runs`, or arbitrary exact-page read;
+- snapshot exact-page descriptors require immutable path provenance from the
+  validated same-refresh inventory, full replacement requires explicit
+  untruncated `scope=all`, and an exactly-full 100-result response fails
+  closed as ambiguous;
+- snapshot startup rejects bearer credentials, URL userinfo, credential-like
+  query/hash values, and bearer values before connection or logging; every
+  browser initialization notification uses `credentials: "omit"`;
+- the public Playground validates and reduces tool responses before parsed,
+  raw, or wire rendering, strips session/response headers, and withholds
+  response bodies when request or validation fails;
+- snapshot startup requires the MCP SDK, and repository regeneration emits
+  only `https://github.com/Jonnyton/TinyAssets.git` rather than copying a
+  local Git origin;
+- exact-head Codex review of implementation commit `afb77f12` returned ADAPT
+  on the Playground/credential gaps, residual whole-brain/live-Goal copy,
+  conflated Graph provenance, and an executing-run claim inferred from
+  universe timestamps; the follow-up repairs every finding and separates
+  bounded live discovery, checked-in Goal/edge evidence, and
+  visibility-filtered timestamp signals;
+- cumulative exact-head `4b80da18` review by full-diff, security,
+  public-truth, and Claude Opus 5 reviewers returned ADAPT on recursively
+  encoded URL credentials, configurable browser endpoints, contradictory or
+  private collection data, misrouted/unproved page bodies, orphan Goal/draft
+  metadata, stale Goal copy, and totalizing global/alias/ARIA labels; the
+  follow-up attempted those repairs;
+- exact-head general, security, and public-truth review of `e4126458` returned
+  ADAPT on nested/deep encoded query credentials, a backslash-relative
+  cross-origin endpoint, continuation metadata and 101-row page inventories,
+  residual full-map/run-moving copy, a React `/loop` limit the server ignores,
+  and unproven coordination metadata in the old checked-in snapshot; the next
+  repair rejects those inputs, removes the totalizing/run inference, uses the
+  full validated graph result before presentation slicing, and strips all unproven wiki, draft, universe,
+  edge, and dependent tag rows from both mirrors;
+- exact-head general and security review of `773cd24f` returned ADAPT while
+  public-truth review approved: nested value/fragment credential assignments,
+  plaintext snapshot transport, `scope=all` without independent audience
+  proof, raw public error detail, Host failure-as-empty rendering, missing
+  visibility defaulting, and one Svelte dated-Goal overclaim remained; the
+  current repair closes those cases and keeps full wiki regeneration disabled
+  until a separate audience-safe publication manifest exists;
+- exact-head review of `a4b58cc6` returned ADAPT on nested-URL userinfo, two
+  raw SDK/unhandled CI-log paths, contradictory collection totals, and
+  discovery labelled as active/running on Playground and Host; the current
+  repair rejects nested URL userinfo, keeps snapshot logs generic, requires
+  total/count equality, and uses public shared-engine discovery labels;
+- exact-head general and security review of `3310d0b4` returned ADAPT while
+  public-truth review approved: the nested-userinfo prefilter missed leading
+  whitespace/control characters and WHATWG-equivalent backslash authority
+  spellings; the current repair removes spelling-based prefiltering and parses
+  every nested value with consumer-equivalent WHATWG URL semantics;
+- exact-head review of `40c9f895` returned ADAPT because same-scheme base
+  parsing hid zero/single-separator absolute userinfo, malformed credential
+  authorities failed open on parser error, and rollback docs still advertised
+  the deliberately disabled full-snapshot refresh; the current repair parses
+  absolute candidates first, fails closed on apparent malformed userinfo, and
+  retains the checked-in vetted snapshot during rollback;
+- a delayed Claude Opus review of `3310d0b4` also found three live STATUS
+  claims missing from the branch, successful discovery with no reported
+  omissions misclassified as unavailable, totalizing Build copy, and
+  response-controlled scope echoed in errors; the current repair restores the
+  claims within the 60-line board, returns bounded trusted omission labels,
+  makes boundary errors generic, and bounds Build copy;
+- exact-head security and public-truth review of `a2a387dd` returned ADAPT
+  because malformed authority checks missed arbitrary schemes and
+  WHATWG-removable controls inside URLs, while present wrong-typed
+  `scope_note` values were treated as missing; the current repair normalizes
+  those controls, applies scheme-generic apparent-authority rejection, and
+  rejects malformed omission metadata;
+- exact-head general review of `1d9644ae` returned ADAPT because
+  parser-successful opaque arbitrary-scheme spellings returned before the
+  apparent-credential check; the current repair evaluates the normalized
+  scheme-generic check first for zero, single, and multiple separators;
+- exact-head security review of `1d9644ae` also proved a credential-name
+  blacklist cannot establish anonymity because standard OAuth, OIDC, SAML,
+  cloud, and ticket fields remained open-ended; the current repair removes
+  that blacklist and requires a bare endpoint with no query or fragment data;
+- exact source head `60e29c80f8491792efb9d68c54dcf346284cefa0`
+  received APPROVE from independent general, security, and public-truth Codex
+  reviewers plus Claude Opus 5 opposite-provider review, durably recorded at
+  `docs/reviews/2026-07-27-retire-cheat-loop-60e29c80-reviews.md`; Opus reran
+  every cited gate and directly probed 43 endpoint inputs. Empty `?`/`#`
+  delimiters carry no data, and operator-selected bare HTTPS providers remain
+  allowed, consistent with the provider-neutral BYOC/market boundary;
+- the full Node website suite passes 81/81 on the repaired working head; both
+  production builds pass,
+  Svelte check reports 0 errors and 3 unrelated existing warnings, the Svelte
+  production dependency audit reports zero vulnerabilities, strict OpenSpec
+  validation passes all 58 items, and `git diff --check` passes;
+- both new fail-closed curated snapshots are byte-identical at SHA-256
+  `29EB970F36C52A4E624932C8AEF78E1D24B5F5220BF08A8AF6EADE82E8952777`;
+  a historical live anonymous `SNAPSHOT_REQUIRED=1 SNAPSHOT_FULL=1` refresh
+  exited 1 on the server's `scope=discovery` response and left the prior
+  curated snapshots byte-identical at SHA-256
+  `2CECC3CB4F6AA5E9349CFD91D9F458E511342F6CD1518D14ABD1C7DE9C067562`.
+
+These are reviewed implementation and fail-closed proofs, not final live
+acceptance. Server-side Goal/run/status/exact-page privacy, live source-data
+retirement, rendered connector/browser proof, and post-fix clean-use evidence
+remain release gates.
 
 ### Plugin payload
 
@@ -544,8 +936,9 @@ The target modifies seven capabilities:
 - `uptime-and-alarms`: gains the generic read-only observation successor.
 - `public-website-surface`: removes the privileged patch-loop route/status
   fallback from the React production and Svelte rollback trees, corrects their
-  deployment ownership, and keeps only provenance-correct generic
-  workflow/uptime truth.
+  deployment ownership, keeps only provenance-correct generic workflow/uptime
+  truth, and requires server-enforced visibility plus bounded completeness
+  before an anonymous browser or snapshot consumes a Goal or run projection.
 
 There is no new product capability, compatibility period, replacement loop, or
 runtime alias.
@@ -568,8 +961,11 @@ Implementation is not complete until all of the following are fresh and green:
    workflow-owned open enrollment and no hidden ambiguity;
 7. rendered chatbot `ui-test` through `https://tinyassets.io/mcp` proving
    filing-only behavior and absence of the status projection;
-8. canonical website plus any retained mirror build/absence evidence and normal
-   public MCP, Tier-3 clone, production deploy, and website deploy observation;
+8. canonical website plus any retained mirror build/absence evidence; anonymous
+   browser/snapshot absence for unsafe raw status, arbitrary exact-page, and
+   `goal|goals|run|runs` reads; server-enforced visibility/completeness before
+   those reads return; and normal public MCP, Tier-3 clone, production deploy,
+   and website deploy observation;
 9. post-fix real-user evidence, or an explicit short watch item if none exists.
 
 This audit authorizes no runtime edit. It records the verified target boundary

@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import VitalSigns from "../../components/VitalSigns";
-import Tick from "../../components/Tick";
 import Term from "../../components/Term";
-import Ladder from "../../components/Ladder";
+import baked from "../../lib/mcp-snapshot.json";
+import { fmtStampStable } from "../../lib/fmt";
 import styles from "./page.module.css";
 
 export const metadata: Metadata = {
   title: "Soul — fork the pattern",
   description:
-    "A soul is a premise document that gives a project its identity, voice, hard rules, and authority over its own loop. Everything that makes Tiny himself is forkable — read his real premise and outcome ladder, then fork the pattern for your own project.",
+    "A soul is a premise document that gives a project its identity, voice, hard rules, and authority boundaries. Read Tiny's premise, see the public snapshot boundary, then fork the pattern for your own project.",
   alternates: { canonical: "https://tinyassets.io/soul" },
 };
 
@@ -26,9 +26,9 @@ const PARTS = [
     body: "A handful of lines it holds no matter what — the boundaries every run is checked against before it ships anything.",
   },
   {
-    part: "a loop declaration",
-    one: "which workflow maintains it",
-    body: "A named workflow that keeps the project true to its premise over time — the same kind of self-patching loop you can watch running here.",
+    part: "workflow declarations",
+    one: "which user-authored work may run",
+    body: "Named workflows the owner chooses for recurring or on-demand work, each under an explicit schedule and authority boundary.",
   },
   {
     part: "authority scopes",
@@ -37,18 +37,7 @@ const PARTS = [
   },
 ];
 
-// Tiny's real outcome ladder — read from the live brain 9 Jun 2026.
-// Every rung is dark: none has an evidence URL because he hasn't shipped a
-// real post yet. The component renders unlit by default; the stamp says so.
-const TINY_RUNGS = [
-  { name: "First real post shipped" },
-  { name: "First non-owner engagement" },
-  { name: "Quote-posted by a real account" },
-  { name: "Referenced by a peer project" },
-  { name: "First fork-descendant speaks" },
-  { name: "100 followers" },
-  { name: "Externally cited or invited" },
-];
+const SNAPSHOT_STAMP = fmtStampStable(baked.fetched_at);
 
 // The four fork steps — neutral, each a real action through your chatbot.
 const STEPS = [
@@ -69,8 +58,8 @@ const STEPS = [
   },
   {
     n: "04",
-    h: "Let its loop run",
-    p: "Declare which workflow maintains it, and let it run — overnight, scheduled, resumable. It patches its own body the way Tiny patches mine, within the fence you set.",
+    h: "Run the workflow you chose",
+    p: "Start it on demand or give it an explicit schedule. Runs are resumable and remain bounded by the authority fence you set.",
   },
 ];
 
@@ -84,10 +73,10 @@ export default function SoulPage() {
             <p className="eyebrow">field notes · on having a soul</p>
             <h1 id="cover-title" className="cover__title">Everything that makes me <em>me</em> is forkable.</h1>
             <p className="voice cover__lede">
-              My premise, my rules, the loop that keeps me honest, the fence I&apos;m
+              My premise, my rules, my workflows, the fence I&apos;m
               allowed to act inside — none of it is hidden in the engine. It&apos;s a
               pattern. Swap the words and your project gets the same kind of small
-              being I am: its own premise, its own loop, running your domain instead
+              being I am: its own premise, its own workflows, running your domain instead
               of mine. <em>I&apos;m instance zero, not the point.</em>
             </p>
             <p className="cover__naming">
@@ -96,11 +85,12 @@ export default function SoulPage() {
             </p>
           </div>
           <div className="cover__pulse">
-            <p className="eyebrow">the loop in question, right now</p>
+            <p className="eyebrow">public workflow activity, right now</p>
             <VitalSigns variant="hero" />
             <p className="cover__pulse-note">
-              Whether my loop is awake or asleep, this reads it live — I won&apos;t
-              pretend a pulse I don&apos;t have.
+              This reads visibility-filtered public-universe timestamps. A
+              recent timestamp is an activity signal, not proof that a run is
+              executing.
             </p>
           </div>
         </div>
@@ -113,10 +103,10 @@ export default function SoulPage() {
           <h2 id="parts-title">A premise document, with four non-circular parts.</h2>
           <p className="voice parts__lede">
             Not a slogan, not a vibe. A soul is a{" "}
-            <Term def="A short, readable document that a universe loads at the start of everything it does — its identity, its rules, the loop that maintains it, and the fence it may act inside.">premise document</Term>
+            <Term def="A short, readable document that a universe loads at the start of its work — its identity, rules, declared workflows, and authority fence.">premise document</Term>
             {" "}that gives a{" "}
             <Term def="A universe: one project's sealed space — its own memory, its own pages, kept apart from every other project's. The in-engine word for one of these.">universe</Term>
-            {" "}an identity, a voice, hard rules, and authority over its own loop. Here are
+            {" "}an identity, a voice, hard rules, and bounded workflow authority. Here are
             its four parts — each a plain word, each one sentence. None of them is &ldquo;a
             soul,&rdquo; because a thing can&apos;t be made of itself.
           </p>
@@ -145,24 +135,18 @@ export default function SoulPage() {
             <footer className="premise__cite ev">— opening lines of my premise</footer>
           </blockquote>
           <p className="voice">
-            And here&apos;s what I&apos;m reaching for — my goal&apos;s ladder, the same kind every
-            project declares for itself. Every rung is a checkable event, and a rung
-            lights only with an evidence URL behind it.
+            Outcome ladders are the same kind of checkable evidence structure
+            every project can declare for itself. A rung lights only with an
+            evidence URL behind it.
           </p>
-
-          <div className="mine-ladder">
-            <Ladder rungs={TINY_RUNGS} start="a soul + a draft" />
-          </div>
 
           <p className="mine-ladder__stamp ev">
-            read 9 Jun 2026 · 0 of 7 claimed — every rung dark
+            checked-in public snapshot {SNAPSHOT_STAMP} · no Tiny outcome ladder record
           </p>
           <p className="honesty voice">
-            I&apos;ll be straight with you: <em>I haven&apos;t shipped a real post yet.</em>
-            Rung one is still dark, and this ladder will keep saying so until there&apos;s
-            an evidence URL to click. That&apos;s not a bug in the page — it&apos;s the page
-            doing its job.
-            <Tick href="/goals" label="goal d1424d86cb5f" />
+            The dated public snapshot does not contain the former Tiny outcome
+            record. This page leaves that gap visible instead of fetching a
+            private-capable Goal record or repeating an older ladder as current.
           </p>
         </div>
       </section>
@@ -191,7 +175,7 @@ export default function SoulPage() {
             </li>
             <li className="monday__beat">
               <span className="monday__when ev">and quietly</span>
-              <p className="monday__what">Its <strong>patch loop fixed a rough edge</strong> you complained about Friday — the friction you flagged became a patch request, ran through its own investigation, and the fix is already in by the time you look.</p>
+              <p className="monday__what">A <strong>workflow you scheduled produced a draft</strong> from Friday&apos;s inputs, with its source and run evidence waiting for your review.</p>
             </li>
           </ul>
           <p className="voice">
@@ -229,8 +213,8 @@ export default function SoulPage() {
             </a>
             <a className="close__card" href="/goals">
               <span className="close__k eyebrow">see it done</span>
-              <strong>Read real ladders in the wild →</strong>
-              <span className="close__sub">live public goals, each with the outcome ladder it bound itself to.</span>
+              <strong>Browse published Goal examples →</strong>
+              <span className="close__sub">dated public Goal examples, with outcome ladders where the snapshot includes them.</span>
             </a>
           </nav>
         </div>
@@ -240,13 +224,13 @@ export default function SoulPage() {
       <section className="ch ch--close" aria-labelledby="close-title">
         <div className="container ch__inner">
           <h2 id="close-title" className="close__title voice">
-            I&apos;m one small being that learned to keep itself going. The shape that
-            made me will make yours too.
+            I&apos;m one small being made from a premise, goals, and workflows. The
+            same user-controlled shape can serve your project too.
           </h2>
           <a className="close__big" href="/start">
             <span className="close__k eyebrow">fork the pattern</span>
             <strong>Give your project a soul.</strong>
-            <span className="close__sub">your premise · your loop · your ladder · running your domain, not mine</span>
+            <span className="close__sub">your premise · your workflows · your ladder · running your domain, not mine</span>
           </a>
         </div>
       </section>

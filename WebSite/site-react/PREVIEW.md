@@ -1,8 +1,9 @@
 # Previewing & approving the React site
 
-Four ways to see changes before they go live. **The live site (tinyassets.io)
-is unaffected by all of these** until the host runs the gated cutover
-(`docs/runbooks/2026-06-24-site-react-cutover.md`).
+This is the current production source for `tinyassets.io`. These preview paths
+do not change the live site; a host publishes the approved React build by
+manually running `deploy-site-react.yml` with `confirm: deploy`. See
+`docs/runbooks/2026-06-24-site-react-cutover.md`.
 
 ## 1. Local hot-reload (fastest, like the old `vite dev`)
 
@@ -161,7 +162,13 @@ rather than a privileged TinyAssets loop.
    repository checks remain independent merge gates. Until then, use local
    preview; the GitHub Pages snapshot is a manual fallback and may be stale.
 3. You review the isolated URL as untrusted input; request tweaks or approve.
-4. On approval → merge to `main`. **Merging does not auto-publish** — the React
-   site only goes live when the host runs the cutover (`deploy-site-react.yml`,
-   `confirm: deploy`). Until cutover, `main` just holds the approved React source
-   while tinyassets.io stays on Svelte.
+4. Mirror the intended user-visible behavior into the retained Svelte rollback
+   tree and verify its focused build.
+5. On approval, merge to `main`. **Merging does not auto-publish.**
+6. The host manually runs `deploy-site-react.yml` with `confirm: deploy`, then
+   completes the public canary and rendered-browser checks in
+   `WebSite/DEPLOY.md`.
+
+React is always edited and built first for production changes. Svelte parity is
+rollback readiness; `deploy-site.yml` remains dispatch-only and is not an
+alternate production pipeline.

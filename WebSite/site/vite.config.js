@@ -1,11 +1,19 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
+const websiteRoot = decodeURIComponent(new URL('../', import.meta.url).pathname)
+  .replace(/^\/([A-Za-z]:\/)/, '$1');
+
 export default defineConfig({
   plugins: [sveltekit()],
   server: {
     port: 5173,
     strictPort: false,
+    fs: {
+      // Browser modules share the canonical MCP read contract with the React
+      // production tree one directory up from this Vite root.
+      allow: [websiteRoot]
+    },
     hmr: {
       // Show syntax/runtime errors as a browser overlay so Jonathan sees
       // failures without checking the terminal.

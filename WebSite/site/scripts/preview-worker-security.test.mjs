@@ -71,6 +71,7 @@ test("pull-request build has one unprivileged static-export job", () => {
   assert.deepEqual(buildWorkflow.on.pull_request.paths, [
     "WebSite/site-react/**",
     "WebSite/shared/**",
+    "WebSite/site/scripts/canonical-mcp-contract.test.mjs",
     "WebSite/site/scripts/preview-worker-security.test.mjs",
     "WebSite/site/scripts/validate-preview-*.mjs",
     "WebSite/site/package.json",

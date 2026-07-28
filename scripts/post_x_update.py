@@ -1,4 +1,4 @@
-"""Post a composed patch announcement to X.
+"""Post an explicit outbound text payload to X.
 
 Dry-run is the default. Set SOCIAL_POST_DRY_RUN=false and provide either:
 
@@ -90,8 +90,17 @@ def post_to_x(text: str) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--input",
+        type=Path,
+        required=True,
+        help="JSON outbound payload containing post_text or text.",
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path for the dry-run or delivery result.",
+    )
     parser.add_argument(
         "--dry-run",
         choices=["true", "false"],

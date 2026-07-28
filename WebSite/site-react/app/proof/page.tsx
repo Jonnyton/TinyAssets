@@ -4,7 +4,7 @@ import { Moved } from "../_components/Moved";
 export const metadata: Metadata = {
   title: "Fine print — Tiny",
   description:
-    "The evidence — deploy receipts, run records, and the legal links — now lives in the Fine print, Tiny's ops room.",
+    "Public readings, source limits, explicitly unavailable operator fields, and legal links now live in Tiny's Fine print.",
   alternates: { canonical: "https://tinyassets.io/fine-print" },
 };
 
@@ -15,8 +15,8 @@ export default function ProofPage() {
       eyebrow="this page moved"
       line={
         <>
-          The evidence now lives in the <em>Fine print</em> — deploy receipts,
-          run records, and the legal links, all in Tiny's ops room.
+          Public readings now live in the <em>Fine print</em> — with source
+          limits, unavailable operator fields, and legal links labelled plainly.
         </>
       }
       cta="Open the Fine print →"

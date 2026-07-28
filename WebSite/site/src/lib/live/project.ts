@@ -53,6 +53,10 @@ export type RepoSnapshot = {
 export type ProjectPulse = {
   mcp: Snapshot;
   repo: RepoSnapshot;
+  pageDiscovery: {
+    scope: 'discovery';
+    scopeNote: string;
+  } | null;
   knowledgeCount: number;
   branchCount: number;
   routeCount: number;
@@ -114,7 +118,7 @@ export const LENS_DEFINITIONS: Record<LensKey, LensDefinition> = {
   goals: {
     eyebrow: 'Goal lens',
     title: 'Goals first; branches compete underneath.',
-    question: 'Goals answers: what public work targets exist, and which ones can be remixed or routed into the loop?',
+    question: 'Goals answers: what public work targets exist, and which user-authored workflows can pursue them?',
     watches: 'Public goals, related commons, repo branches',
     proof: 'The goal board is connector data first; related wiki records and branch signals are derived from current MCP/GitHub state.',
     primaryHref: '/goals',
@@ -140,16 +144,20 @@ export const LENS_DEFINITIONS: Record<LensKey, LensDefinition> = {
   },
   alliance: {
     eyebrow: 'Community intake',
-    title: 'Intent enters the same live loop.',
+    title: 'Intent can start a user-authored workflow.',
     question: 'Alliance answers: where does a feature request, bug, or partnership enter public work?',
     watches: 'Commons intake, goals, GitHub channels',
-    proof: 'Every written channel routes back into the same public loop: wiki, goal, branch, or repo thread.',
+    proof: 'Each written channel creates an ordinary record that a user can connect to a chosen workflow: wiki, goal, branch, or repo thread.',
     primaryHref: '/alliance',
     primaryLabel: 'Choose an intake path'
   }
 };
 
-export function createPulse(mcp: Snapshot = initialMcpSnapshot, repo: RepoSnapshot = initialRepoSnapshot): ProjectPulse {
+export function createPulse(
+  mcp: Snapshot = initialMcpSnapshot,
+  repo: RepoSnapshot = initialRepoSnapshot,
+  pageDiscovery: ProjectPulse['pageDiscovery'] = null
+): ProjectPulse {
   const knowledgeCount =
     mcp.wiki.bugs.length +
     mcp.wiki.concepts.length +
@@ -161,6 +169,7 @@ export function createPulse(mcp: Snapshot = initialMcpSnapshot, repo: RepoSnapsh
   return {
     mcp,
     repo,
+    pageDiscovery,
     knowledgeCount,
     branchCount: repo.branches.length + repo.workflow_branches.length,
     routeCount: repo.routes.length,
@@ -170,9 +179,14 @@ export function createPulse(mcp: Snapshot = initialMcpSnapshot, repo: RepoSnapsh
   };
 }
 
-export async function refreshMcpSnapshot(current: Snapshot = initialMcpSnapshot): Promise<Snapshot> {
+export async function refreshMcpSnapshot(
+  current: Snapshot = initialMcpSnapshot
+): Promise<{ snapshot: Snapshot; pageDiscovery: NonNullable<ProjectPulse['pageDiscovery']> }> {
   const live = await fetchLive();
-  return liveToSnapshotShape(live, current);
+  return {
+    snapshot: liveToSnapshotShape(live, current),
+    pageDiscovery: live.pageDiscovery
+  };
 }
 
 export async function refreshRepoSnapshot(current: RepoSnapshot = initialRepoSnapshot): Promise<RepoSnapshot> {

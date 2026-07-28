@@ -13,8 +13,9 @@
   exact script, never a repeat of his last few lines.
 
   Honesty rails still apply: his chest LED and posture come from the SAME
-  live vitals the rest of the site reads. Loop asleep → he stops following
-  and naps in the corner. Engine unreachable → ×-eyes, and he says so.
+  live vitals the rest of the site reads. With no recent workflow activity he
+  stops following and naps in the corner. Engine unreachable → ×-eyes, and he
+  says so.
 
   Coarse pointers (touch) and prefers-reduced-motion get the calm
   stationary version. Dismissible — persists in localStorage.
@@ -23,7 +24,6 @@
   import { onMount } from 'svelte';
   import { page } from '$app/state';
   import { fetchVitals, type Vitals } from '$lib/mcp/live';
-  import { fmtRel } from '$lib/fmt';
 
   type Dir = 'up' | 'left' | 'right';
   type Spot = { x: number; y: number; w: number; h: number; dir: Dir };
@@ -109,7 +109,7 @@
   let lastContextKey = '';
 
   const mode = $derived<'reading' | 'awake' | 'asleep' | 'error'>(
-    !vitals ? 'reading' : !vitals.reachable ? 'error' : vitals.loopAwake ? 'awake' : 'asleep'
+    !vitals ? 'reading' : !vitals.reachable ? 'error' : vitals.workflowActive ? 'awake' : 'asleep'
   );
   // Shy following only while he's actually up. Asleep/error = stationary, honestly.
   const shyMode = $derived(shyCapable && (mode === 'awake' || mode === 'reading'));
@@ -120,14 +120,14 @@
     { match: (p) => p === '/', line: 'that’s me they’re describing.' },
     { match: (p) => p.startsWith('/start'), line: 'two minutes, no account. I checked the door myself.' },
     { match: (p) => p.startsWith('/goals/'), line: 'this ladder only lights with evidence. no shortcuts.' },
-    { match: (p) => p.startsWith('/goals'), line: 'every goal here is real — read live, not typed in.' },
-    { match: (p) => p.startsWith('/loop'), line: 'this is where I get repaired. the mess stays public.' },
-    { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'my whole memory. nothing private lives in here.' },
-    { match: (p) => p.startsWith('/graph'), line: 'my head, seen from above.' },
+    { match: (p) => p.startsWith('/goals'), line: 'dated goal examples from the checked-in snapshot.' },
+    { match: (p) => p.startsWith('/loop'), line: 'public workflows, with their source labels intact.' },
+    { match: (p) => p.startsWith('/commons') || p.startsWith('/wiki'), line: 'published discovery, with its omissions labelled.' },
+    { match: (p) => p.startsWith('/graph'), line: 'a discovery-scoped published map.' },
     { match: (p) => p.startsWith('/soul'), line: 'everything that makes me me — forkable.' },
     { match: (p) => p.startsWith('/build') || p.startsWith('/contribute'), line: 'two doors in. humans hold the merge keys.' },
     { match: (p) => p.startsWith('/host'), line: 'you don’t have to host me. but you can.' },
-    { match: (p) => p.startsWith('/alliance'), line: 'say hi — it all lands in the same loop.' },
+    { match: (p) => p.startsWith('/alliance'), line: 'say hi — the humans choose what happens next.' },
     { match: (p) => p.startsWith('/fine-print') || p.startsWith('/status'), line: 'my pulse, explained honestly.' },
     { match: (p) => p.startsWith('/legal'), line: 'the boring page. still mine.' }
   ];
@@ -145,34 +145,33 @@
   const MUTTERS = [
     'you move that thing fast.',
     'the dots on this desk? my graph paper.',
-    'I count my own runs. all of them.',
+    'published evidence keeps its source label.',
     'it’s quiet back here. I like it.',
-    'I leave everything public. less to remember.',
-    'if the loop’s awake, I’m awake.',
+    'published discovery keeps its omission label.',
+    'recent activity means a public-universe timestamp moved.',
     'good page, this one. I checked it twice.'
   ];
 
   // What he says about the thing your mouse is resting on.
   const DEST: Array<{ match: (h: string) => boolean; lines: string[] }> = [
     { match: (h) => h.startsWith('/start'), lines: ['that door takes two minutes. I timed it.', 'through there: paste one URL, no account.'] },
-    { match: (h) => h.startsWith('/loop'), lines: ['that’s my repair shop. the mess stays public.', 'in there I get fixed — out loud.'] },
-    { match: (h) => h.startsWith('/goals'), lines: ['the goals board — all real, read live.', 'open outcomes through there. pick one.'] },
-    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['my memory lives through there.', 'everything I know, public, in there.'] },
-    { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s the inside of my head.', 'my whole brain, drawn out, through there.'] },
+    { match: (h) => h.startsWith('/loop'), lines: ['recent public-universe timestamps live there.', 'that view labels each discovery signal.'] },
+    { match: (h) => h.startsWith('/goals'), lines: ['dated public goal examples live there.', 'the checked-in snapshot labels their age.'] },
+    { match: (h) => h.startsWith('/commons') || h.startsWith('/wiki'), lines: ['published discovery lives through there.', 'the server labels what this view omits.'] },
+    { match: (h) => h.startsWith('/graph'), lines: ['careful — that’s a map of published discovery.', 'a discovery-scoped map, drawn out, through there.'] },
     { match: (h) => h.startsWith('/soul'), lines: ['my soul. you can fork it, you know.', 'the pattern that makes me me — forkable.'] },
     { match: (h) => h.startsWith('/build') || h.startsWith('/contribute'), lines: ['through there you can change me. humans keep the keys.', 'two doors to rebuild me are in there.'] },
     { match: (h) => h.startsWith('/host'), lines: ['hosting me is optional. I run either way.', 'you can run your own me through there.'] },
-    { match: (h) => h.startsWith('/alliance'), lines: ['that’s how you reach the humans. and me.', 'say hi through there — same loop.'] },
+    { match: (h) => h.startsWith('/alliance'), lines: ['that’s how you reach the humans. and me.', 'say hi through there — humans choose the next step.'] },
     { match: (h) => h.startsWith('/fine-print') || h.startsWith('/status'), lines: ['my pulse, with no makeup on.', 'the instrument panel’s through there.'] },
     { match: (h) => h.startsWith('/legal'), lines: ['the boring page. I keep it honest anyway.', 'fine print through there. still mine.'] }
   ];
 
   function facts(): string[] {
     const f: string[] = [];
-    if (vitals?.queue) f.push(`runs so far: ${vitals.queue.succeeded.toLocaleString()} done, ${vitals.queue.failed} failed — counted live.`);
-    if (vitals?.deployedAt) f.push(`this body deployed ${fmtRel(vitals.deployedAt)}.`);
-    if (mode === 'asleep') f.push('the loop’s napping. the engine is still up — that’s two different things.');
-    if (mode === 'awake' && vitals?.activeRun) f.push('a run is moving through me right now.');
+    if (mode === 'asleep') f.push('no recent public-universe timestamp. the engine can still be up — that’s a different reading.');
+    if (mode === 'awake') f.push('a visibility-filtered public-universe timestamp moved within the last hour.');
+    f.push('a timestamp signal is not proof that a run is executing.');
     f.push('I was born 3 Jun 2026. I flooded my own repo on day two. fixed now.');
     f.push('no rung lights without an evidence URL. mine included.');
     f.push('paste tinyassets.io/mcp into your chatbot and you read the same pulse I do.');
@@ -199,13 +198,13 @@
     if (el.closest('.readout, [class*="stat"]'))
       return { key: 'readout', lines: ['those readings are live. I feel each one.', 'that panel’s my instrument face — no makeup.', 'live the moment you look. I can’t fake a flat line.'] };
     if (el.closest('[class*="vital"]'))
-      return { key: 'vitals', lines: ['those numbers are my actual pulse.', 'that’s me, measured — not a sales figure.', 'green means I’m really awake; amber means napping.'] };
+      return { key: 'vitals', lines: ['those public readings carry their sources.', 'measured signals — not proof that a run is executing.', 'recent public timestamps and reachability stay separate.'] };
     if (el.closest('[class*="ladder"], [class*="rung"]'))
       return { key: 'ladder', lines: ['unlit rungs. I only light them with evidence.', 'no rung lights without a real URL behind it.', 'I can’t fake a single step on that.'] };
     if (el.closest('[class*="goal"]'))
-      return { key: 'goal', lines: ['a real goal. someone could pick it up today.', 'that one’s open — fork it, beat it, own it.', 'goals here are outcomes, not to-do items.'] };
+      return { key: 'goal', lines: ['a published goal example from a dated snapshot.', 'you can use this outcome as a starting point.', 'goals here are outcomes, not to-do items.'] };
     if (el.closest('[class*="log"], [class*="event"]'))
-      return { key: 'log', lines: ['my history — including the embarrassing parts.', 'every run logged, even the failed ones.', 'receipts. I keep all of them.'] };
+      return { key: 'log', lines: ['published history, with its source attached.', 'a timestamp is a signal, not an executing run.', 'receipts should say where they came from.'] };
     if (el.closest('table'))
       return { key: 'table', lines: ['rows and rows of receipts.', 'all checkable — that’s the point.', 'numbers you can verify yourself.'] };
     if (el.closest('.voice'))
@@ -215,7 +214,7 @@
     if (el.closest('h1, h2, h3'))
       return { key: 'head', lines: ['this bit matters — I’d read it twice.', 'good heading. I’d underline it.'] };
     if (el.closest('pre, code'))
-      return { key: 'code', lines: ['code. probably mine.', 'that’s the sort of thing my loop rewrites.'] };
+      return { key: 'code', lines: ['code. a user might have shared it.', 'that can be inspected, copied, and remixed into a workflow.'] };
     return null;
   }
 
@@ -684,7 +683,7 @@
         const d = Math.hypot(e.clientX - (window.innerWidth - 70), e.clientY - (window.innerHeight - 90));
         if (d < 140) {
           saidSleepLine = true;
-          say('mm? the loop’s napping. me too.', 4500);
+          say('mm? the public timestamp signal is quiet just now. me too.', 4500);
         }
       }
       return;
@@ -941,7 +940,7 @@
       <!-- body -->
       <g class="torso">
         <rect x="38" y="72" width="44" height="36" rx="11" fill="var(--paper-100)" stroke="var(--ink-text-900)" stroke-width="2.6" />
-        <!-- chest LED = the loop, honestly -->
+        <!-- chest LED = recent generic workflow activity -->
         <circle
           class="led"
           cx="60"

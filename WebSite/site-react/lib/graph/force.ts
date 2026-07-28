@@ -1,7 +1,7 @@
 /**
  * force.ts — the Obsidian-style force layout for /graph.
  *
- * Every wiki page is its own dot (1,200+ of them), clustered around its
+ * Each page present in the selected snapshot is its own dot, clustered around its
  * category hub the way Obsidian notes cluster around tags. Two kinds of
  * links, drawn differently and disclosed honestly in the page legend:
  *

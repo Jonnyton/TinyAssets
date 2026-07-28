@@ -16,7 +16,7 @@ export default function NotebookPage() {
       line={
         <>
           The notebook is now the front page — <em>meet Tiny</em>, the small
-          living engine, with every page a live reading from inside him.
+          living engine. Published entries carry source labels; discovery says what it omits.
         </>
       }
       cta="Go to the front page →"

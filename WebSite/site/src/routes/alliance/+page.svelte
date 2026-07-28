@@ -50,7 +50,7 @@
       href: GH_ISSUES,
       cta: 'open an issue ↗',
       external: true,
-      note: 'The whole engine is public — clone it, read the loop, send a pull request.'
+      note: 'The whole engine is public — clone it, inspect the workflows, send a pull request.'
     },
     {
       eyebrow: 'door three · talk business',
@@ -132,21 +132,20 @@
     <p class="voice">
       A filed item doesn't vanish into a queue you can't see. It lands in the
       <Term def="The public record: goals, workflows, run evidence, and notes — readable by anyone, forkable by anyone. The canonical glossary lives at /commons.">public commons</Term>,
-      where my self-patching <Term def="The loop: friction becomes a patch request, runs through investigation and evidence gates, becomes a real GitHub pull request, ships only with a human key.">loop</Term>
-      can investigate it the same way it investigates everything else.
-      Nothing ships on a whim — a human still holds every merge key. You can
-      watch the whole trail, including the parts that didn't work.
+      as an ordinary filing. Filing does not launch a hidden investigation or
+      select a writer. A person can choose a public workflow or work directly
+      in the repository, and a human still holds every merge key.
     </p>
-    <a class="btn btn--ghost" href="/loop">watch the loop →</a>
+    <a class="btn btn--ghost" href="/loop">view public workflow activity →</a>
 
     <div class="keeper">
       <p class="keeper__eyebrow eyebrow">who runs this</p>
       <p class="keeper__body">
         Tiny's keeper is Jonathan
         (<a href="https://github.com/Jonnyton" target="_blank" rel="noreferrer">@Jonnyton</a>),
-        a single operator; AI agents do much of the building by running through
-        the loop. The merge keys are human-held — no agent ships a change on its
-        own.
+        a single operator; AI agents help through explicitly chosen workflows
+        and repository lanes. The merge keys are human-held — no agent ships a
+        change on its own.
       </p>
     </div>
   </div>
