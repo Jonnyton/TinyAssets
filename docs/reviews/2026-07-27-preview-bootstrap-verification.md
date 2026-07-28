@@ -83,5 +83,10 @@ remains required merge evidence.
   activation successor with inert host-created alias/version ordering; restored
   host coordination; blocked OAuth/MCP discovery namespaces; literal-percent
   rejection; pinned static-asset routing; and corrected head-recheck wording.
+- An exact-head Codex lifecycle review of `70152f3f` caught one successor-only
+  contradiction: the account inventory forbade all credentials while the inert
+  upload required a host-held credential. `81912aa0` now forbids production
+  credentials while permitting exactly one least-privilege preview-only
+  host-held bootstrap credential outside GitHub until Access proof is accepted.
 - Exact-head Codex and Opus rereviews remain required after this evidence commit
   and the source-only OpenSpec-generated archive/sync diff.
