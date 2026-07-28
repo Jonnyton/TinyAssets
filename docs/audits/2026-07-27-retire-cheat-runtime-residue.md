@@ -176,6 +176,13 @@ Current-main terminal-oracle integration on 2026-07-28:
   approval sentences lacked their pre-#1835 scope. The follow-up adds exact
   negative/positive regressions, restores typed failure ordering, and scopes
   the historical approval claims.
+- The next rereview found a real stored-receipt head-of-chain gap: a
+  re-digested one-page inventory could anchor at arbitrary `page`/`after`
+  query state. It also decomposed continuation scope into independently
+  surviving origin/page/cursor/query mutations, found no live collection to
+  offline-validation round trip, and proved the malformed-page fixture needed
+  a non-iterable value. The follow-up rejects anchor pagination state and pins
+  each continuation seam, the live round trip, and typed non-iterable failure.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

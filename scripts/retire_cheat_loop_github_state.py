@@ -1830,6 +1830,11 @@ def _validate_stored_request_endpoint(
             raise PlanError(
                 "stored pagination request endpoint is outside repository scope"
             )
+        anchor_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if any(key in {"page", "after"} for key, _value in anchor_pairs):
+            raise PlanError(
+                "stored pagination initial request is not the first page"
+            )
         return
 
     initial = urlsplit(initial_endpoint)
