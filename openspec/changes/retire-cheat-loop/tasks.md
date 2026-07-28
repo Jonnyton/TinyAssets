@@ -438,8 +438,10 @@
   routes, preserve incident records only as clearly historical non-skill
   evidence if needed, rewrite website-editing guidance around generic
   provenance-labelled workflow activity, separate uptime evidence, and current
-  React-production/Svelte-rollback truth, run the skill sync, and prove
-  `.agents`/`.claude` contain no privileged loop instruction.
+  React-production/Svelte-rollback truth, run the skill sync, prove
+  `.agents`/`.claude` contain no privileged loop instruction, and remove any
+  stale ignored `.codex/skills` copy from an active host so fresh catalog
+  discovery cannot resurrect the retired route.
 - [ ] 6.3 Run focused wiki, dispatcher/executor/migration, extension/auth,
   filing-route, community-context, auto-merge-state, status, uptime,
   deploy-workflow, reset, and plugin tests plus ruff, plugin probe/build,

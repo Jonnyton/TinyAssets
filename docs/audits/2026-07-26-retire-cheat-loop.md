@@ -60,6 +60,21 @@ gh run list --repo Jonnyton/TinyAssets --workflow deploy-site-react.yml --limit 
 openspec validate retire-cheat-loop --strict
 ```
 
+Host-local skill discovery was rechecked on 2026-07-27 in
+`C:\Users\Jonathan\Projects\TinyAssets`. The ignored
+`.codex/skills/loop-uptime-maintenance/SKILL.md` matched the retired canonical
+skill exactly (`SHA-256 A29D3A793F49BE9DB6DB4CC4EB5A10E05F86BE50D444808E20CABE53FD61464C`)
+and was therefore stale mirror residue, not a divergent user customization.
+The exact ignored skill package was removed, its two routes were deleted from
+`.codex/skills/using-agent-skills/SKILL.md`, and the resulting checks reported
+`Test-Path .codex/skills/loop-uptime-maintenance = False` and zero router
+matches. No broad `.codex` cleanup was performed; the six incident records
+remain recoverable as tracked historical evidence and from git history.
+A newly spawned verifier after the exact cleanup confirmed that its injected
+Available skills catalog no longer listed `loop-uptime-maintenance`, all three
+host skill directories (`.agents`, `.claude`, and `.codex`) were absent, and
+all three `using-agent-skills` routers had zero matching routes.
+
 The last command passed on 2026-07-26 after all proposal artifacts were
 complete. These searches are diagnostic inventory, not proof of implementation;
 the runtime is still unchanged in this target-only lane.

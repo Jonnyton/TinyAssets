@@ -5,7 +5,7 @@
 > Current architecture is governed by `PLAN.md` and OpenSpec.
 
 Date: 2026-05-04
-Status: living document — Cowork and Codex co-edit as shared understanding evolves
+Status: retired historical snapshot; no longer co-edited or authoritative
 Owner: Cowork + Codex jointly
 Cross-references:
 - `outputs/wave-2-prep.md` (the operating model summary that preceded this design note)
@@ -159,8 +159,9 @@ The success criterion: when the cheat count hits zero per day for a sustained pe
 
 PRs that existed before the new working model — #248, #249, #251, #252, #253, #227 — stay under the double-key cadence rather than retroactively re-routing through user-sim chatbots. Pre-new-model direct actions are not undone; they continue under existing dual-review discipline. New patches under the new model start with the chatbot-routing-first default unless a cheat justification applies.
 
-## Living document
+## Historical disposition
 
-This file is co-edited. Either Cowork or Codex can update sections as understanding evolves. Big changes should reference activity.log entries explaining the why. Small clarifications can land directly. Trust each other's edits — coordination is the point.
-
-When the document has stabilized for a few cycles without major edits, promote relevant sections to `docs/specs/` (the operating-model spec, the cheat-discipline spec, etc.) so they become canonical references rather than living notes.
+This file is preserved only as evidence of the retired operating model. It is
+not an active collaboration surface. Current decisions belong in `PLAN.md`,
+current behavioral requirements in OpenSpec, and live coordination in
+`STATUS.md`.

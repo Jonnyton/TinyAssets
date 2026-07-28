@@ -261,7 +261,10 @@ retired, not left as an emergency backdoor. Its incident records may remain
 only as clearly historical evidence outside an active skill package. Website
 editing guidance is rewritten around generic provenance-labelled workflow
 activity and separately sourced uptime evidence. Canonical `.agents/skills`
-changes are mirrored into `.claude/skills` with the normal sync gate.
+changes are mirrored into `.claude/skills` with the normal sync gate. Codex
+reads the canonical `.agents/skills` tree directly; an ignored
+`.codex/skills` copy is not a maintained mirror and must not retain or route
+into the retired skill on an active host.
 
 The push/deploy-triggered `announce-patch.yml` effect and repository-wide
 `auto-enroll-merge.yml` standing merge instruction are deleted. Auto-enrollment
