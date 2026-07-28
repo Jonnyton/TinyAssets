@@ -1523,13 +1523,28 @@ Notes:
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/restack-retire-loop-souls-final-20260727
 - Publish branch: codex/retire-loop-souls (PR #1818 force-with-lease target)
-- Lane state: source-only deletion replayed on main; exact-head review pending
+- Lane state: landed as PR #1818
 - Worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-souls-final-20260727
-- STATUS/Issue/PR: draft PR #1818 to be retargeted from the landed #1815 branch to main
+- STATUS/Issue/PR: PR #1818 merged to main as `30c962c7`
 - PLAN refs: user-buildable/remixable automations; generic soul/daemon machinery; no platform-owned loop-team defaults
 - Purpose: delete the seven shipped loop-team soul documents without filtering user-authored workflows or claiming live snapshot/data retirement
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-souls-final-20260727\_PURPOSE.md
 - Memory refs: base d024e479; prior PR head a6376bfe; source deletion d311cf03 replayed as 29486b98
 - Review gate: exact absence/reference scans, daemon-registry tests, strict OpenSpec, Codex and Claude Opus 5 exact-head review
-- Ship/abandon: keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination, live-source disposition, stored-role, and synthetic-fixture proof are complete
+- Ship/abandon: landed at `30c962c7`; keep OpenSpec task 5.3 open until canonical snapshot provenance/pagination, live-source disposition, stored-role, and synthetic-fixture proof are complete
 - Remaining proof: source deletion is not production deregistration or generated-snapshot evidence
+- Update 2026-07-27: exact head 6cc51c01 received Codex and Claude Opus 5 APPROVE and landed through PR #1818 as `30c962c7`
+
+## 2026-07-27 - audit next privileged-loop retirement wave
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/audit-retire-cheat-runtime-next-20260727
+- Lane state: current-main residue and ownership audit in progress
+- Worktree: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727
+- STATUS/Issue/PR: coordination foldback after #1818; implementation PR not yet chosen
+- PLAN refs: user-buildable/remixable automation; generic primitives survive; no privileged platform composition
+- Purpose: map remaining runtime, workflow/live-state, snapshot/data, packaging, and validation residue to exact owners and choose the smallest collision-safe wave
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727\_PURPOSE.md
+- Memory refs: base 30c962c7; PRs #1812/#1815/#1818 landed; retire-cheat-loop OpenSpec
+- Review gate: exact residue scan, claim-check owner map, strict OpenSpec, independent Codex/Claude architecture review before implementation
+- Ship/abandon: publish the audit/foldback separately; implement only after an exact Files/Depends claim is clear

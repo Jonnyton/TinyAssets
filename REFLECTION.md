@@ -595,3 +595,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** name the PR “source-only” from its first
   commit so reviewers do not have to infer that live deregistration remains a
   separate gate.
+
+## 2026-07-27 - privileged loop runtime residue audit
+
+- **What surprised me:** the highest-impact runtime stop-writer is blocked by
+  broad test ownership, while the old GitHub-state inventory migrator is
+  independently restackable because its tests live beside the script.
+- **Pattern worth capturing:** inventory durable platform state before deleting
+  its producers; workflow source removal does not cancel queued runs, remove
+  labels, or revoke existing auto-merge instructions.
+- **What I would do differently:** query live workflow runs and durable
+  auto-merge requests before proposing any workflow deletion, then separate the
+  read-only inventory PR from the later receipt-backed mutation.
