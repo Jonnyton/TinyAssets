@@ -1506,6 +1506,10 @@ def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
     assert "retire-cheat-loop-deploy-fence.py status" in restore_script
     assert "retire-cheat-loop-deploy-fence.py observe" in restore_script
     assert "retire-cheat-loop-deploy-fence.py quiesce-unsafe" in restore_script
+    assert "cleanup_mutation_started=true" in restore_script
+    assert restore_script.index("cleanup_mutation_started=true") < restore_script.index(
+        "retire-cheat-loop-deploy-fence.py quiesce-unsafe"
+    )
     assert "git merge-base --is-ancestor" in restore_script
     assert "cleanup_restored=true" in restore_script
     assert "masked_units_after" in restore_script
@@ -1525,6 +1529,13 @@ def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
     assert (
         terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
         == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
+    )
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_MUTATION_STARTED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}"
+    )
+    assert "steps.stop-writer-cleanup.outputs.cleanup_mutation_started" in str(
+        terminal.get("env", {}).get("PRODUCTION_MUTATION_STARTED", "")
     )
     script = str(terminal.get("run", ""))
     assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script

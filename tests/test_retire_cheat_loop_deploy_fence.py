@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -552,6 +555,12 @@ def _patch_lifecycle_runtime(
     monkeypatch.setattr(fence, "_stray_writer_processes", lambda *_args: [])
     monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
 
+    @contextmanager
+    def test_lock(_path: Path):
+        yield
+
+    monkeypatch.setattr(fence, "_operation_lock", test_lock)
+
 
 def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     tmp_path: Path,
@@ -573,13 +582,13 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     assert preflight_result["phase"] == "preflight_proved"
 
     configured_ref[0] = host.target_image_ref
-    host.install_target_fleet()
     assert prepare_deploy(
         host,
         image_ref=host.target_image_ref,
         run_id=RUN_ID,
         state_path=state_path,
     )["phase"] == "target_installed"
+    host.install_target_fleet()
     assert prove(
         host,
         image_ref=host.target_image_ref,
@@ -641,8 +650,10 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
 def test_new_run_preflight_failure_ignores_stale_restored_generation(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
     host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
     state_path = tmp_path / "fence-state.json"
     state_path.write_text(
         json.dumps(
@@ -682,6 +693,86 @@ def test_new_run_preflight_failure_ignores_stale_restored_generation(
     )
     assert status["current_run_matches"] is False
     assert status["current_run_cutover_started"] is False
+
+
+def test_operation_lock_blocks_status_until_inflight_command_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    status_executed = threading.Event()
+
+    class FakeFcntl:
+        LOCK_EX = 1
+        LOCK_UN = 2
+
+        def __init__(self) -> None:
+            self.mutex = threading.Lock()
+
+        def flock(self, _descriptor: int, operation: int) -> None:
+            if operation == self.LOCK_EX:
+                self.mutex.acquire()
+            else:
+                self.mutex.release()
+
+    def execute(args: Any, _host: Any) -> dict[str, Any]:
+        if args.command == "observe" and args.image_ref == "first":
+            first_started.set()
+            assert release_first.wait(timeout=2)
+        else:
+            status_executed.set()
+        return {"command": args.command}
+
+    monkeypatch.setattr(fence, "fcntl", FakeFcntl())
+    monkeypatch.setattr(fence, "_execute", execute)
+    lock_path = tmp_path / "host-operation.lock"
+    first = threading.Thread(
+        target=fence.main,
+        args=(
+            [
+                "--lock-path",
+                str(lock_path),
+                "observe",
+                "--image-ref",
+                "first",
+            ],
+        ),
+    )
+    second = threading.Thread(
+        target=fence.main,
+        args=(
+            [
+                "--lock-path",
+                str(lock_path),
+                "status",
+                "--run-id",
+                RUN_ID,
+            ],
+        ),
+    )
+
+    first.start()
+    assert first_started.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    assert not status_executed.is_set()
+    release_first.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+    assert status_executed.is_set()
+    assert not first.is_alive()
+    assert not second.is_alive()
+
+
+def test_operation_lock_fails_closed_without_flock_primitive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(fence, "fcntl", None)
+    with pytest.raises(FenceError, match="lock primitive is unavailable"):
+        with fence._operation_lock(tmp_path / "host-operation.lock"):
+            pytest.fail("lock body must not execute")
 
 
 def test_preflight_fails_if_checked_stop_leaves_active_racer(
@@ -740,7 +831,7 @@ def test_preflight_records_and_fences_stopped_extra_volume_consumer(
     )
 
 
-def test_preflight_publishes_state_only_after_reboot_durable_fence(
+def test_preflight_wal_is_canonical_before_first_host_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -753,16 +844,12 @@ def test_preflight_publishes_state_only_after_reboot_durable_fence(
         first_publication = not publications
         publications.append(str(payload["phase"]))
         if first_publication:
+            assert payload["phase"] == "fencing_planned"
             assert all(
-                info["HostConfig"]["RestartPolicy"]["Name"] == "no"
+                info["HostConfig"]["RestartPolicy"]["Name"] == "always"
                 for info in host.containers.values()
             )
-            assert host.units[DAEMON_SERVICE]["enabled"] == "disabled"
-            assert all(
-                host.units[unit]["enabled"] == "disabled"
-                for unit in RESTART_RACER_UNITS
-                if unit.endswith(".timer")
-            )
+            assert host.units[DAEMON_SERVICE]["enabled"] == "enabled"
         real_atomic_json(path, payload)
 
     monkeypatch.setattr(fence, "_atomic_json", assert_durable_before_publish)
@@ -774,7 +861,11 @@ def test_preflight_publishes_state_only_after_reboot_durable_fence(
         state_path=tmp_path / "fence-state.json",
     )
 
-    assert publications[0] == "fencing"
+    assert publications[:3] == [
+        "fencing_planned",
+        "fencing_planned",
+        "fencing",
+    ]
 
 
 def test_preflight_refuses_unproved_restart_policy(
@@ -794,7 +885,13 @@ def test_preflight_refuses_unproved_restart_policy(
             run_id=RUN_ID,
             state_path=state_path,
         )
-    assert not state_path.exists()
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["run_id"] == RUN_ID
+    assert state["phase"] == "fencing_planned"
+    assert state["fence_progress"] == {
+        "boot_activators_disabled": False,
+        "restart_policy_proved": False,
+    }
 
 
 @pytest.mark.parametrize("failure", ["noop", "error"])
@@ -982,6 +1079,31 @@ def test_unsafe_cleanup_still_fences_when_durable_state_is_unreadable(
     archived = Path(evidence["archived_corrupt_state"])
     assert archived.is_file()
     assert archived.read_text(encoding="utf-8") == "{"
+
+
+def test_corrupt_state_replacement_failure_keeps_canonical_blocker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+    state_path.write_text("{", encoding="utf-8")
+    monkeypatch.setattr(
+        fence,
+        "_atomic_json",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected atomic replacement failure")
+        ),
+    )
+
+    with pytest.raises(OSError, match="injected atomic replacement failure"):
+        quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
+
+    assert state_path.read_text(encoding="utf-8") == "{"
+    archives = list(tmp_path.glob("fence-state.json.corrupt-*"))
+    assert len(archives) == 1
+    assert archives[0].read_text(encoding="utf-8") == "{"
 
 
 def test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced(

@@ -1228,6 +1228,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "cleanup_restored=false" >> "$GITHUB_OUTPUT"
+          echo "cleanup_mutation_started=false" >> "$GITHUB_OUTPUT"
           # retire-cheat-loop task 2.1: independently inspect durable masks and
           # host fence state even when the preflight step produced no outputs.
           # Restore only after exact-five fleet, digest, revision, old-ID,
@@ -1240,6 +1241,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
           fence_unsafe_and_fail() {
             reason="$1"
+            echo "cleanup_mutation_started=true" >> "$GITHUB_OUTPUT"
             set +e
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
@@ -1374,8 +1376,9 @@ jobs:
         id: terminal
         if: always()
         env:
-          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' || steps.stop-writer-cleanup.outputs.cleanup_mutation_started == 'true' }}
           STOP_WRITER_CLEANUP_RESTORED: ${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}
+          STOP_WRITER_CLEANUP_MUTATION_STARTED: ${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
           FORWARD_CANARY_OUTCOME: ${{ steps.canary.outcome }}
@@ -1520,6 +1523,9 @@ jobs:
               "image_mutation_started": marker(
                   os.environ.get("IMAGE_MUTATION_STARTED", "")
               ),
+              "cleanup_mutation_started": marker(
+                  os.environ.get("STOP_WRITER_CLEANUP_MUTATION_STARTED", "")
+              ),
               "forward_deploy_status": (
                   "succeeded"
                   if os.environ.get("FORWARD_SUCCEEDED") == "true"
@@ -1657,7 +1663,8 @@ jobs:
           NEW_TAG: ${{ steps.tag.outputs.tag }}
           ATTEMPTED_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           PREV_IMAGE: ${{ steps.prev.outputs.previous }}
-          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}
+          PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' || steps.stop-writer-cleanup.outputs.cleanup_mutation_started == 'true' }}
+          CLEANUP_MUTATION_STARTED: ${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           ROLLBACK_ATTEMPTED: ${{ steps.rollback.outputs.rollback_attempted }}
           ROLLBACK_RESULT: ${{ steps.rollback.outputs.rollback_result }}
@@ -1694,6 +1701,7 @@ jobs:
               }
             }
             const productionMarker = process.env.PRODUCTION_MUTATION_STARTED || "";
+            const cleanupMutationMarker = process.env.CLEANUP_MUTATION_STARTED || "";
             const imageMarker = process.env.IMAGE_MUTATION_STARTED || "";
             const rollbackAttemptedMarker = process.env.ROLLBACK_ATTEMPTED || "";
             const productionStarted = productionMarker === "true";
@@ -1833,6 +1841,7 @@ jobs:
                 `- Attempted: \`${process.env.NEW_TAG}\``,
                 `- Attempted immutable ref: \`${process.env.ATTEMPTED_IMAGE_REF}\``,
                 `- Rollback tuple: \`${process.env.ROLLBACK_ATTEMPTED}/${process.env.ROLLBACK_RESULT}/${process.env.ROLLBACK_CANARY_STATUS}/${process.env.ROLLBACK_REASON}\``,
+                `- Emergency cleanup mutation: \`${cleanupMutationMarker}\``,
                 `- Run: ${runUrl}`,
                 ``,
                 rollbackSentence,
@@ -1852,11 +1861,12 @@ jobs:
             echo "- **Target image:** \`${{ steps.tag.outputs.image }}:${{ steps.tag.outputs.tag }}\`"
             echo "- **Stop-writer target revision:** \`${{ steps.stop-writer.outputs.target_revision }}\`"
             echo "- **Stop-writer cutover:** \`${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' }}\`"
+            echo "- **Emergency cleanup mutation:** \`${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}\`"
             echo "- **Safe rollback target:** \`${{ steps.stop-writer.outputs.safe_previous_image }}\`"
             echo "- **Restart-racer cleanup:** \`${{ steps.stop-writer-cleanup.outcome }}\`"
             echo "- **Durable proof artifact:** \`retire-cheat-loop-task-2-1-${{ github.run_id }}-${{ github.run_attempt }}\`"
             echo "- **Previous image:** \`${{ steps.prev.outputs.previous }}\`"
-            echo "- **Production mutation:** \`${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' }}\`"
+            echo "- **Production mutation:** \`${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cleanup_mutation_started == 'true' }}\`"
             echo "- **Image mutation:** \`${{ steps.deploy.outputs.image_mutation_started }}\`"
             echo "- **Deploy step:** \`${{ steps.deploy.outcome }}\`"
             echo "- **Canary step:** \`${{ steps.canary.outcome }}\`"

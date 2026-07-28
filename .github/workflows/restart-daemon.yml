@@ -63,6 +63,9 @@ jobs:
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'FENCE_GUARD'
           set -euo pipefail
+          lock=/run/lock/tinyassets-deploy-fence.lock
+          exec 9>"$lock"
+          flock 9
           state=/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json
           [ -e "$state" ] || exit 0
           python3 - "$state" <<'PY'

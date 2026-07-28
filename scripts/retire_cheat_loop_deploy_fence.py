@@ -14,14 +14,21 @@ import json
 import os
 import posixpath
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import quote
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - production helper runs on Linux.
+    fcntl = None
 
 EXPECTED_CONTAINERS = (
     "tinyassets-daemon",
@@ -44,6 +51,7 @@ DEFAULT_RECEIPT_PATH = "/data/wiki_trigger_attempts.db"
 DEFAULT_STATE_PATH = Path(
     "/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json"
 )
+DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
 V2_RISK_STATUSES = frozenset({"pending", "running", "cancel_requested"})
@@ -936,7 +944,7 @@ def preflight(
         "schema_version": 1,
         "owner": TASK_OWNER,
         "run_id": run_id,
-        "phase": "fencing",
+        "phase": "fencing_planned",
         "target_image_ref": image_ref,
         "target_revision": target_revision,
         "previous_image_ref": old_image_ref,
@@ -956,16 +964,23 @@ def preflight(
         "preliminary_receipt_snapshot": preliminary_snapshot,
         "present_restart_racer_units": present_racers,
         "extra_volume_consumers": extra_consumers,
+        "fence_progress": {
+            "restart_policy_proved": False,
+            "boot_activators_disabled": False,
+        },
     }
 
-    # Crash invariant: publish canonical state only after every current
-    # production-volume consumer is restart=no and all boot activators are
-    # persistently disabled. If the host reboots after this point, no old
-    # writer can return; runner cancellation cannot kill the transient
-    # systemd unit that completes the remaining stop/mask/proof sequence.
+    # Write-ahead invariant: canonical current-run state is durable before the
+    # first mutation. Every later failure is therefore visible to guards and
+    # cleanup. The host operation lock keeps cleanup behind this full command.
+    _atomic_json(state_path, state)
     consumers = {**inspections, **extra_inspections}
     state["restart_policy_proof"] = _set_restart_no(host, consumers)
+    state["fence_progress"]["restart_policy_proved"] = True
+    _atomic_json(state_path, state)
     _apply_boot_fence(host, present_racers)
+    state["fence_progress"]["boot_activators_disabled"] = True
+    state["phase"] = "fencing"
     _atomic_json(state_path, state)
 
     stopped_racers = _stop_and_mask_writer_units(
@@ -1182,7 +1197,11 @@ def _archive_corrupt_state(state_path: Path) -> Path | None:
     archive = state_path.with_name(
         f"{state_path.name}.corrupt-{time.time_ns()}"
     )
-    os.replace(state_path, archive)
+    shutil.copyfile(state_path, archive)
+    os.chmod(archive, 0o600)
+    with archive.open("r+b") as handle:
+        handle.flush()
+        os.fsync(handle.fileno())
     _fsync_parent(state_path)
     return archive
 
@@ -1453,9 +1472,26 @@ def _write_optional(path: str | None, payload: Mapping[str, Any]) -> None:
         destination.write_bytes(_json_bytes(payload) + b"\n")
 
 
+@contextmanager
+def _operation_lock(path: Path) -> Iterable[None]:
+    """Serialize every host-side fence observation and mutation."""
+
+    if fcntl is None:
+        raise FenceError("host operation lock primitive is unavailable")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--state-path", type=Path, default=DEFAULT_STATE_PATH)
+    parser.add_argument("--lock-path", type=Path, default=DEFAULT_LOCK_PATH)
     parser.add_argument("--evidence")
     subparsers = parser.add_subparsers(dest="command", required=True)
     for name in ("preflight", "prove", "post-canary", "restore-if-safe"):
@@ -1475,63 +1511,67 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
+    if args.command == "preflight":
+        return preflight(
+            host,
+            image_ref=args.image_ref,
+            target_revision=args.revision,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "prepare-deploy":
+        return prepare_deploy(
+            host,
+            image_ref=args.image_ref,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "prove":
+        return prove(
+            host,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "post-canary":
+        return post_canary(
+            host,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "restore-if-safe":
+        return restore_if_safe(
+            host,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "observe":
+        return observe_fleet(host, expected_image_ref=args.image_ref)
+    if args.command == "quiesce-unsafe":
+        return quiesce_unsafe(
+            host,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    return fence_status(
+        host,
+        run_id=args.run_id,
+        state_path=args.state_path,
+    )
+
+
 def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
     args = _parser().parse_args(argv)
     host = host or Host()
     try:
-        if args.command == "preflight":
-            result = preflight(
-                host,
-                image_ref=args.image_ref,
-                target_revision=args.revision,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        elif args.command == "prepare-deploy":
-            result = prepare_deploy(
-                host,
-                image_ref=args.image_ref,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        elif args.command == "prove":
-            result = prove(
-                host,
-                image_ref=args.image_ref,
-                revision=args.revision,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        elif args.command == "post-canary":
-            result = post_canary(
-                host,
-                image_ref=args.image_ref,
-                revision=args.revision,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        elif args.command == "restore-if-safe":
-            result = restore_if_safe(
-                host,
-                image_ref=args.image_ref,
-                revision=args.revision,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        elif args.command == "observe":
-            result = observe_fleet(host, expected_image_ref=args.image_ref)
-        elif args.command == "quiesce-unsafe":
-            result = quiesce_unsafe(
-                host,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
-        else:
-            result = fence_status(
-                host,
-                run_id=args.run_id,
-                state_path=args.state_path,
-            )
+        with _operation_lock(args.lock_path):
+            result = _execute(args, host)
         _write_optional(args.evidence, result)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0

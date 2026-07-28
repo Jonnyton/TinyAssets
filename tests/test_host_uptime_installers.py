@@ -1224,6 +1224,9 @@ def test_host_mutators_refuse_nonterminal_stop_writer_fence(
     assert "retire-cheat-loop task 2.1" in guard
     assert '"restored"' in guard
     assert "json.loads" in guard
+    assert "tinyassets-deploy-fence.lock" in guard
+    assert 'exec 9>"$lock"' in guard
+    assert guard.index("flock 9") < guard.index("state=")
 
 
 def test_host_service_workflow_converges_backup_before_installing_timers():

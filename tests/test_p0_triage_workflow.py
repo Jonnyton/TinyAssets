@@ -254,6 +254,9 @@ def test_triage_refuses_nonterminal_stop_writer_fence_before_repair():
     assert "retire-cheat-loop task 2.1" in guard
     assert '"restored"' in guard
     assert "json.loads" in guard
+    assert "tinyassets-deploy-fence.lock" in guard
+    assert 'exec 9>"$lock"' in guard
+    assert guard.index("flock 9") < guard.index("state=")
 
 
 def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
