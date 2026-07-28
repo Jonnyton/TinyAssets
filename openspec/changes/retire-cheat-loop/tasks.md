@@ -181,7 +181,7 @@
   inventory-only label posture, terminal receipt digest, unsafe/encrypted log
   rejection, and exact planned before/after tuples. Tasks 3.6/3.7 remain open
   because no workflow, label, PR auto-merge state, or other GitHub state was
-  changed. Exact-current Claude Opus 5 review approved the terminal-oracle follow-up after
+  changed. Pre-#1835 exact-current Claude Opus 5 review approved the initial terminal-oracle follow-up after
   independently mutation-testing every request/page-size and archive guard.
 
 ## 4. Move Generic Observation To Uptime And Alarms

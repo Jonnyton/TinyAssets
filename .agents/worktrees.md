@@ -1618,3 +1618,4 @@ Notes:
 - Update 2026-07-28: exact-current Opus 5 mutation review returned APPROVE after every request/page-size, digest, and archive guard proved load-bearing
 - Update 2026-07-28: moved the approved commit into a clean current-main worktree after #1835 overlapped the receipt-schema files; preserved both hardening waves
 - Update 2026-07-28: exact-current Opus found a recovery-doc gap plus Unicode, multi-page-terminal, and stored-endpoint-scope proof gaps; all four adaptations are folded and 61/61 passes
+- Update 2026-07-28: Opus rereview found two surviving test mutations plus a malformed-page traceback and stale approval wording; exact continuation, positive multi-page, and typed-failure regressions are folded
