@@ -12,7 +12,7 @@
 - [ ] 2.1 After task 1.6 passes, create or harden the possibly pre-existing empty `react-preview` GitHub environment as main-restricted and reviewed, add the dedicated account ID and least-privilege token, and disable administrator bypass where supported.
 - [ ] 2.2 Rebase PR #1812 onto the bootstrap merge and publish one current-head preview.
 - [ ] 2.3 Verify the exact artifact ID, regenerated-manifest digest, full head SHA, run/attempt, version ID, immutable version URL, and never-reused alias receipt.
-- [ ] 2.4 Exercise the live base/alias/version routing matrix for canonical and adversarial `/mcp`, `/.well-known/oauth-*`, `/.well-known/openid-*`, `/.well-known/mcp*`, empty-after-normalization, malformed/residual-percent, and shadow-asset paths plus unrelated well-known and ordinary assets.
+- [ ] 2.4 Exercise the live base/alias/version routing matrix for canonical and adversarial `/mcp` (including `/mcp/..`), `/.well-known/oauth-*`, `/.well-known/openid-*`, `/.well-known/mcp*`, empty-after-normalization, malformed/residual-percent, and shadow-asset paths plus unrelated well-known and ordinary assets.
 - [ ] 2.5 Capture a real browser-rendered reviewer session and post-fix clean-use evidence, or leave an explicit dated monitoring item when no organic use is visible.
 
 ## 3. Operational Acceptance

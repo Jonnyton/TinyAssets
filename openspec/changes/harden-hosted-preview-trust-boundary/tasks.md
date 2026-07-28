@@ -40,7 +40,7 @@
 - [x] 3.1 Run the full website tests/builds, strict OpenSpec validation,
   actionlint, zizmor, dependency audit, and exact-target scan; record
   freshness-stamped evidence.
-- [ ] 3.2 Obtain independent exact-head general/security review and a fresh
+- [x] 3.2 Obtain independent exact-head general/security review and a fresh
   Claude Opus 5 opposite-provider review; adapt and repeat on every code change.
 - [x] 3.3 Create the strict-valid `activate-hosted-preview-publication`
   successor plus a durable STATUS host-action for the dedicated account, inert
@@ -48,5 +48,6 @@
   rendered review, and post-fix evidence; do not sync/archive that successor
   until its external facts are true.
 - [ ] 3.4 Sync the source-only delta into
-  `openspec/specs/public-website-surface/spec.md`, archive this change, push the
-  narrow bootstrap PR, and land it on `main`.
+  `openspec/specs/public-website-surface/spec.md`, archive this change, and
+  verify the generated canonical-spec/archive diff. PR publication and landing
+  remain on the durable STATUS lane.

@@ -97,5 +97,7 @@ remains required merge evidence.
   `/.well-known/openid-*` joins the blocked discovery surface, fixtures pin both,
   and operator/successor guidance says to create or harden the possibly
   pre-existing empty environment only after Access proof.
-- Exact-head Codex and Opus rereviews remain required after this evidence commit
-  and the source-only OpenSpec-generated archive/sync diff.
+- Three exact-head Codex lanes and Claude Opus 5 approved `e16f7bf0` after
+  independently reproducing the 201-test totals, strict validation, routing
+  counts, evidence anchor, and source/activation split. The source-only
+  OpenSpec-generated archive/sync diff still requires final exact review.
