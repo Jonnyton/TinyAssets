@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   chmod,
   link,
@@ -17,8 +18,16 @@ import {
   validateAndCopyPreviewArtifact,
 } from "./validate-preview-artifact.mjs";
 
+function manifestReceiptDigest(manifest) {
+  return createHash("sha256")
+    .update(`${JSON.stringify(manifest, null, 2)}\n`)
+    .digest("hex");
+}
+
 async function fixture(t) {
-  const temporary = await mkdtemp(path.join(tmpdir(), "tinyassets-preview-artifact-"));
+  const temporary = await mkdtemp(
+    path.join(tmpdir(), "tinyassets-preview-artifact-"),
+  );
   t.after(async () => {
     const { rm } = await import("node:fs/promises");
     await rm(temporary, { recursive: true, force: true });
@@ -26,10 +35,21 @@ async function fixture(t) {
 
   const source = path.join(temporary, "artifact");
   const destination = path.join(temporary, "validated");
-  await mkdir(path.join(source, "_next", "static", "chunks"), { recursive: true });
-  await writeFile(path.join(source, "index.html"), "<!doctype html><title>TinyAssets</title>\n");
-  await writeFile(path.join(source, "404.html"), "<!doctype html><title>Not found</title>\n");
-  await writeFile(path.join(source, "_next", "static", "chunks", "app.js"), "console.log('static');\n");
+  await mkdir(path.join(source, "_next", "static", "chunks"), {
+    recursive: true,
+  });
+  await writeFile(
+    path.join(source, "index.html"),
+    "<!doctype html><title>TinyAssets</title>\n",
+  );
+  await writeFile(
+    path.join(source, "404.html"),
+    "<!doctype html><title>Not found</title>\n",
+  );
+  await writeFile(
+    path.join(source, "_next", "static", "chunks", "app.js"),
+    "console.log('static');\n",
+  );
   await writeFile(path.join(source, "robots.txt"), "User-agent: *\nAllow: /\n");
   return { temporary, source, destination };
 }
@@ -48,11 +68,49 @@ test("copies a valid static export and emits a deterministic sorted manifest", a
     first.files.reduce((sum, entry) => sum + entry.size, 0),
   );
   assert.match(first.files[0].sha256, /^[a-f0-9]{64}$/);
-  assert.equal(await readFile(path.join(destination, "index.html"), "utf8"), "<!doctype html><title>TinyAssets</title>\n");
+  assert.equal(
+    await readFile(path.join(destination, "index.html"), "utf8"),
+    "<!doctype html><title>TinyAssets</title>\n",
+  );
 
-  const secondDestination = path.join(path.dirname(destination), "validated-again");
-  const second = await validateAndCopyPreviewArtifact(source, secondDestination);
+  const secondDestination = path.join(
+    path.dirname(destination),
+    "validated-again",
+  );
+  const second = await validateAndCopyPreviewArtifact(
+    source,
+    secondDestination,
+  );
   assert.deepEqual(second, first);
+});
+
+test("binds the workflow receipt digest to manifest bytes, paths, and order", async (t) => {
+  const { source, destination } = await fixture(t);
+  const manifest = await validateAndCopyPreviewArtifact(source, destination);
+  const digest = manifestReceiptDigest(manifest);
+
+  assert.equal(
+    digest,
+    "22d2d9833f9bbd23e662537637892cbfbcca19914d4edf78734782c9e42af749",
+  );
+
+  await writeFile(
+    path.join(source, "index.html"),
+    "<!doctype html><title>TinyAssetz</title>\n",
+  );
+  const mutatedFileManifest = await validateAndCopyPreviewArtifact(
+    source,
+    path.join(path.dirname(destination), "validated-mutated-file"),
+  );
+  assert.notEqual(manifestReceiptDigest(mutatedFileManifest), digest);
+
+  const mutatedPathManifest = structuredClone(manifest);
+  mutatedPathManifest.files[0].path = "404-renamed.html";
+  assert.notEqual(manifestReceiptDigest(mutatedPathManifest), digest);
+
+  const reorderedManifest = structuredClone(manifest);
+  reorderedManifest.files.reverse();
+  assert.notEqual(manifestReceiptDigest(reorderedManifest), digest);
 });
 
 test("accepts a valid export exactly at every tree-shape limit", async (t) => {
@@ -281,7 +339,10 @@ for (const missing of ["index.html", "404.html", "_next/static"]) {
   test(`rejects an artifact missing ${missing}`, async (t) => {
     const { source, destination } = await fixture(t);
     const { rm } = await import("node:fs/promises");
-    await rm(path.join(source, ...missing.split("/")), { recursive: true, force: true });
+    await rm(path.join(source, ...missing.split("/")), {
+      recursive: true,
+      force: true,
+    });
     await assert.rejects(
       validateAndCopyPreviewArtifact(source, destination),
       (error) => error.message.toLowerCase().includes(missing.toLowerCase()),
@@ -297,5 +358,8 @@ test("requires a clean destination and keeps it untouched on validation failure"
     validateAndCopyPreviewArtifact(source, destination),
     /destination.*empty/i,
   );
-  assert.equal(await readFile(path.join(destination, "existing.txt"), "utf8"), "keep");
+  assert.equal(
+    await readFile(path.join(destination, "existing.txt"), "utf8"),
+    "keep",
+  );
 });

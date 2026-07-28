@@ -37,11 +37,10 @@ jobs:
     outputs:
       alias: ${{ steps.receipt.outputs.alias }}
       head_sha: ${{ steps.receipt.outputs.head_sha }}
-      input_artifact_digest: ${{ steps.receipt.outputs.artifact_digest }}
+      input_artifact_id: ${{ steps.receipt.outputs.artifact_id }}
       pr_number: ${{ steps.receipt.outputs.pr_number }}
       run_attempt: ${{ steps.receipt.outputs.run_attempt }}
       run_id: ${{ steps.receipt.outputs.run_id }}
-      sanitized_artifact_digest: ${{ steps.sanitized.outputs.artifact-digest }}
       sanitized_artifact_id: ${{ steps.sanitized.outputs.artifact-id }}
     steps:
       - name: Check out exact trusted intake code
@@ -86,7 +85,6 @@ jobs:
 
           {
             echo "alias=$(jq -r .alias "${metadata}/receipt.json")"
-            echo "artifact_digest=$(jq -r .artifactDigest "${metadata}/receipt.json")"
             echo "artifact_id=$(jq -r .artifactId "${metadata}/receipt.json")"
             echo "head_sha=$(jq -r .headSha "${metadata}/receipt.json")"
             echo "pr_number=$(jq -r .prNumber "${metadata}/receipt.json")"
@@ -137,6 +135,7 @@ jobs:
       name: react-preview
     outputs:
       alias_url: ${{ steps.preview-url.outputs.alias_url }}
+      manifest_digest: ${{ steps.manifest.outputs.manifest_digest }}
       url: ${{ steps.preview-url.outputs.version_url }}
       version_id: ${{ steps.preview-url.outputs.version_id }}
     steps:
@@ -158,16 +157,20 @@ jobs:
           path: ${{ runner.temp }}/preview-sanitized
 
       - name: Revalidate manifest and stage trusted Worker
+        id: manifest
         shell: bash
         run: |
           set -euo pipefail
           deployment="${RUNNER_TEMP}/preview-deployment"
+          manifest="${RUNNER_TEMP}/preview-sanitized/manifest.json"
+          revalidated="${RUNNER_TEMP}/manifest.revalidated.json"
           node trusted-source/WebSite/site/scripts/validate-preview-artifact.mjs \
             "${RUNNER_TEMP}/preview-sanitized/out" \
-            "${deployment}/out" > "${RUNNER_TEMP}/manifest.revalidated.json"
-          cmp \
-            "${RUNNER_TEMP}/preview-sanitized/manifest.json" \
-            "${RUNNER_TEMP}/manifest.revalidated.json"
+            "${deployment}/out" > "${revalidated}"
+          cmp "${manifest}" "${revalidated}"
+          manifest_digest="sha256:$(sha256sum "${revalidated}" | cut -d ' ' -f 1)"
+          printf '%s\n' "${manifest_digest}" | grep -qE '^sha256:[0-9a-f]{64}$'
+          echo "manifest_digest=${manifest_digest}" >> "${GITHUB_OUTPUT}"
           mkdir -p "${deployment}/cf-worker"
           cp trusted-source/WebSite/site-react/cf-worker/worker.js \
             "${deployment}/cf-worker/worker.js"
@@ -253,7 +256,8 @@ jobs:
         env:
           EXPECTED_HEAD_SHA: ${{ needs.intake.outputs.head_sha }}
           GH_TOKEN: ${{ github.token }}
-          INPUT_ARTIFACT_DIGEST: ${{ needs.intake.outputs.input_artifact_digest }}
+          INPUT_ARTIFACT_ID: ${{ needs.intake.outputs.input_artifact_id }}
+          MANIFEST_DIGEST: ${{ needs.deploy.outputs.manifest_digest }}
           PREVIEW_ALIAS_URL: ${{ needs.deploy.outputs.alias_url }}
           PREVIEW_URL: ${{ needs.deploy.outputs.url }}
           PR_NUMBER: ${{ needs.intake.outputs.pr_number }}
@@ -268,7 +272,8 @@ jobs:
           printf '%s\n' "${PREVIEW_URL}" | grep -qE '^https://[0-9a-f]{8}-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev$'
           printf '%s\n' "${PREVIEW_ALIAS_URL}" | grep -qE '^https://p[0-9a-z]+-r[0-9a-z]+-a[0-9a-z]+-tiny-site-react-preview\.[a-z0-9-]+\.workers\.dev$'
           printf '%s\n' "${VERSION_ID}" | grep -qE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-          printf '%s\n' "${INPUT_ARTIFACT_DIGEST}" | grep -qE '^sha256:[0-9a-f]{64}$'
+          printf '%s\n' "${INPUT_ARTIFACT_ID}" | grep -qE '^[1-9][0-9]*$'
+          printf '%s\n' "${MANIFEST_DIGEST}" | grep -qE '^sha256:[0-9a-f]{64}$'
           pr_json="${RUNNER_TEMP}/current-pr.json"
           gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}" > "${pr_json}"
           test "$(jq -r .state "${pr_json}")" = "open"
@@ -282,7 +287,8 @@ jobs:
             echo
             echo "Head: \`${EXPECTED_HEAD_SHA}\`"
             echo "Workflow run: \`${RUN_ID}\`, attempt \`${RUN_ATTEMPT}\`"
-            echo "Artifact: \`${INPUT_ARTIFACT_DIGEST}\`"
+            echo "Input artifact ID: \`${INPUT_ARTIFACT_ID}\`"
+            echo "Sanitized deployed-tree manifest SHA-256: \`${MANIFEST_DIGEST}\`"
             echo "Cloudflare version: \`${VERSION_ID}\`"
             echo "Never-reused alias: ${PREVIEW_ALIAS_URL}"
             echo

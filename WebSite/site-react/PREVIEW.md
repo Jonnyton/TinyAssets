@@ -57,9 +57,11 @@ URL of the form:
 `https://p<pr-base36>-r<run-base36>-a<attempt-base36>-tiny-site-react-preview.<preview-account-subdomain>.workers.dev`
 
 Treat everything rendered at that URL as untrusted review input. The trusted
-Worker deliberately returns `503` for `/mcp` and `/mcp/*`; preview JavaScript
-can use only checked-in public evidence and cannot acquire a same-origin bridge
-to production data.
+Worker runs before every asset lookup. It canonicalizes case, escapes, slash
+forms, and dot segments, returns no-store `503` for every MCP-equivalent path,
+and fails closed when a path cannot be safely canonicalized; only non-MCP paths
+fall through to static assets. Preview JavaScript therefore cannot acquire a
+same-origin bridge to production data.
 
 An independent `preview-security` workflow checks the trust-boundary contract
 on every pull request and `main` push. The publication path then has four
@@ -69,18 +71,24 @@ isolated authorities:
    with a read-only repository token/permission, no deployment secrets, and no
    persisted checkout credential. It uploads only the static `out/` tree.
 2. The trusted default-branch `preview-worker-deploy.yml` validates the exact
-   workflow, repository, open pull request, current head, and immutable artifact
-   identity without loading an environment or secret. It copies only bounded
-   regular static files into a clean tree and records a deterministic manifest.
-3. A fresh protected-environment job revalidates that manifest, supplies the
-   Worker program and configuration from its exact trusted commit, installs
-   lockfile-pinned deployment tooling without lifecycle scripts, rechecks the
-   current pull-request head, and uploads an undeployed Worker version under a
-   never-reused alias derived from the PR, run, and attempt IDs. A trusted
-   parser rejects ambiguous or malformed Wrangler receipts.
+   workflow, repository, open pull request, current head, and exact artifact ID
+   plus bounded metadata without loading an environment or secret. It copies
+   only bounded regular static files into a clean tree, records a deterministic
+   manifest, and transfers both without claiming an independently verified
+   archive digest.
+3. A fresh protected-environment job regenerates the manifest from its
+   independently revalidated tree, requires a byte-identical match, then hashes
+   those regenerated manifest bytes for the published provenance receipt. It
+   supplies the Worker program and configuration from its exact trusted commit,
+   installs lockfile-pinned deployment tooling without lifecycle scripts,
+   rechecks the current pull-request head, and uploads an undeployed Worker
+   version under a never-reused alias derived from the PR, run, and attempt IDs.
+   A trusted parser rejects ambiguous or malformed Wrangler receipts.
 4. A separate least-privilege job rechecks the head before posting the
    provider-generated immutable version URL, alias URL, full SHA, run/attempt,
-   artifact digest, and Cloudflare version ID.
+   exact source artifact ID, verified sanitized-manifest SHA-256, and Cloudflare
+   version ID. An API-reported artifact digest is not treated as verified byte
+   provenance.
 
 The credentialed upload targets the GitHub environment `react-preview`. It must
 not receive credentials until the following isolated infrastructure exists:
@@ -89,11 +97,11 @@ not receive credentials until the following isolated infrastructure exists:
   domains, data, or credentials; enable its `workers.dev` subdomain and create
   the fixed `tiny-site-react-preview` Worker as a one-time host action because
   the workflow deliberately cannot provision or auto-create targets;
-- enable Cloudflare Access specifically for this Worker's Preview URLs and
-  allow only named reviewers or the approved organization; do not configure
-  `Everyone`, `Bypass`, or public-path exceptions. Preview URLs are otherwise
-  public, and arbitrary pull-request JavaScript is not an acceptable public
-  hosting surface;
+- enable Cloudflare Access for this Worker's base `workers.dev` hostname and
+  its alias/version Preview URL hostnames, and allow only named reviewers or
+  the approved organization; do not configure `Everyone`, `Bypass`, or
+  public-path exceptions. These URLs are otherwise public, and arbitrary
+  pull-request JavaScript is not an acceptable public hosting surface;
 - environment secret `CLOUDFLARE_PREVIEW_API_TOKEN`, containing a new token with
   only Workers Scripts write permission in that preview account;
 - environment variable `CLOUDFLARE_PREVIEW_ACCOUNT_ID`, containing that preview
@@ -119,21 +127,24 @@ PR close/merge and one-day GitHub artifact expiry do **not** delete Cloudflare
 versions or their version URLs. Cloudflare ages out only alias mappings after
 the 1,000 most recently deployed aliases; underlying version URLs remain
 Access-controlled retained evidence. Before enabling the GitHub credential,
-prove an unauthenticated request is denied and an authorized reviewer can load
-the preview. For incident response, remove the GitHub environment secret and
-disable Preview URLs or delete the dedicated Worker/account. If policy later
-requires shorter retention, build it as an ordinary user-owned/remixable
-maintenance workflow rather than a privileged TinyAssets loop.
+prove unauthenticated denial and authorized-reviewer loading separately on the
+fixed Worker's base `workers.dev` hostname, one real run/attempt alias hostname,
+and its provider-generated version hostname. For incident response, remove the
+GitHub environment secret and disable Preview URLs or delete the dedicated
+Worker/account. If policy later requires shorter retention, build it as an
+ordinary user-owned/remixable maintenance workflow rather than a privileged
+TinyAssets loop.
 
 ## The hosted approval loop (after activation)
 
 1. A change lands on a branch / PR (made by you or by an agent).
 2. When the hosted flow is activated, the trusted
    `preview-worker-deploy.yml` posts an isolated preview URL and exact head SHA
-   only after the unprivileged build succeeds and every repository-enforced
-   check passes, provided the separately proven Access/environment controls
-   remain active. Until then, use local preview; the GitHub Pages snapshot is a
-   manual fallback and may be stale.
+   only after that unprivileged preview build succeeds and the trusted
+   provenance, sanitization, upload, and current-head checks complete, provided
+   the separately proven Access/environment controls remain active. Other
+   repository checks remain independent merge gates. Until then, use local
+   preview; the GitHub Pages snapshot is a manual fallback and may be stale.
 3. You review the isolated URL as untrusted input; request tweaks or approve.
 4. On approval → merge to `main`. **Merging does not auto-publish** — the React
    site only goes live when the host runs the cutover (`deploy-site-react.yml`,

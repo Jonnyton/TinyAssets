@@ -122,7 +122,9 @@ function assertSafeComponent(component) {
     /[\u0000-\u001f\u007f]/u.test(component) ||
     /%(?:2e|2f|5c)/iu.test(component);
   if (unsafe) {
-    throw new Error(`Unsafe artifact path component: ${JSON.stringify(component)}`);
+    throw new Error(
+      `Unsafe artifact path component: ${JSON.stringify(component)}`,
+    );
   }
   if (FORBIDDEN_BASENAMES.has(lower)) {
     throw new Error(`Forbidden artifact entry: ${component}`);
@@ -163,7 +165,9 @@ function assertSeparateTrees(source, destination) {
       destinationToSource !== ".." &&
       !path.isAbsolute(destinationToSource))
   ) {
-    throw new Error("Artifact source and destination must be separate, non-nested trees");
+    throw new Error(
+      "Artifact source and destination must be separate, non-nested trees",
+    );
   }
 }
 
@@ -178,7 +182,9 @@ async function assertDirectory(pathname, label) {
     throw error;
   }
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error(`${label} must be a real directory, not a symlink or non-directory`);
+    throw new Error(
+      `${label} must be a real directory, not a symlink or non-directory`,
+    );
   }
 }
 
@@ -191,7 +197,9 @@ async function assertCleanDestination(destination) {
     throw error;
   }
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
-    throw new Error("Preview artifact destination must be an empty, real directory");
+    throw new Error(
+      "Preview artifact destination must be an empty, real directory",
+    );
   }
   if ((await readdir(destination)).length !== 0) {
     throw new Error("Preview artifact destination must be empty");
@@ -238,7 +246,9 @@ async function inventory(source, limits) {
       }
       const canonicalPath = relativePath.normalize("NFC").toLowerCase();
       if (canonicalPaths.has(canonicalPath)) {
-        throw new Error(`Artifact contains a case- or Unicode-colliding path: ${relativePath}`);
+        throw new Error(
+          `Artifact contains a case- or Unicode-colliding path: ${relativePath}`,
+        );
       }
       canonicalPaths.add(canonicalPath);
 
@@ -258,24 +268,36 @@ async function inventory(source, limits) {
         continue;
       }
       if (!metadata.isFile()) {
-        throw new Error(`Artifact contains a non-regular entry: ${relativePath}`);
+        throw new Error(
+          `Artifact contains a non-regular entry: ${relativePath}`,
+        );
       }
       if (metadata.nlink !== 1) {
-        throw new Error(`Artifact contains a hard-linked file: ${relativePath}`);
+        throw new Error(
+          `Artifact contains a hard-linked file: ${relativePath}`,
+        );
       }
       assertAllowedFile(relativePath);
       if ((metadata.mode & 0o111) !== 0) {
-        throw new Error(`Artifact contains an executable file: ${relativePath}`);
+        throw new Error(
+          `Artifact contains an executable file: ${relativePath}`,
+        );
       }
       if (metadata.size > limits.maxFileBytes) {
-        throw new Error(`Artifact file exceeds the per-file size limit: ${relativePath}`);
+        throw new Error(
+          `Artifact file exceeds the per-file size limit: ${relativePath}`,
+        );
       }
       if (files.length + 1 > limits.maxFileCount) {
-        throw new Error(`Artifact exceeds the file-count limit of ${limits.maxFileCount}`);
+        throw new Error(
+          `Artifact exceeds the file-count limit of ${limits.maxFileCount}`,
+        );
       }
       totalBytes += metadata.size;
       if (totalBytes > limits.maxTotalBytes) {
-        throw new Error(`Artifact exceeds the total-size limit of ${limits.maxTotalBytes} bytes`);
+        throw new Error(
+          `Artifact exceeds the total-size limit of ${limits.maxTotalBytes} bytes`,
+        );
       }
       files.push({
         absolutePath,
@@ -291,17 +313,25 @@ async function inventory(source, limits) {
 
   await walk(source, "", 0);
   files.sort((left, right) =>
-    left.relativePath < right.relativePath ? -1 : left.relativePath > right.relativePath ? 1 : 0,
+    left.relativePath < right.relativePath
+      ? -1
+      : left.relativePath > right.relativePath
+        ? 1
+        : 0,
   );
 
   const filePaths = new Set(files.map((entry) => entry.relativePath));
   for (const requiredFile of ["index.html", "404.html"]) {
     if (!filePaths.has(requiredFile)) {
-      throw new Error(`Preview artifact is missing required root file ${requiredFile}`);
+      throw new Error(
+        `Preview artifact is missing required root file ${requiredFile}`,
+      );
     }
   }
   if (!directories.has("_next/static")) {
-    throw new Error("Preview artifact is missing required directory _next/static");
+    throw new Error(
+      "Preview artifact is missing required directory _next/static",
+    );
   }
 
   return { files, totalBytes };
@@ -322,7 +352,9 @@ async function readUnchangedRegularFile(entry) {
       before.nlink !== 1 ||
       before.mtimeMs !== entry.mtimeMs
     ) {
-      throw new Error(`Artifact file changed during validation: ${entry.relativePath}`);
+      throw new Error(
+        `Artifact file changed during validation: ${entry.relativePath}`,
+      );
     }
     const contents = await handle.readFile();
     const after = await handle.stat();
@@ -331,7 +363,9 @@ async function readUnchangedRegularFile(entry) {
       after.mtimeMs !== before.mtimeMs ||
       contents.byteLength !== entry.size
     ) {
-      throw new Error(`Artifact file changed while copying: ${entry.relativePath}`);
+      throw new Error(
+        `Artifact file changed while copying: ${entry.relativePath}`,
+      );
     }
     return contents;
   } catch (error) {
@@ -350,7 +384,9 @@ export async function validateAndCopyPreviewArtifact(
   limitOverrides = {},
 ) {
   if (!sourceArgument || !destinationArgument) {
-    throw new Error("Usage: validate-preview-artifact.mjs <artifact-root> <clean-destination>");
+    throw new Error(
+      "Usage: validate-preview-artifact.mjs <artifact-root> <clean-destination>",
+    );
   }
 
   const source = path.resolve(sourceArgument);
@@ -386,7 +422,10 @@ export async function validateAndCopyPreviewArtifact(
 
 async function main() {
   try {
-    const manifest = await validateAndCopyPreviewArtifact(process.argv[2], process.argv[3]);
+    const manifest = await validateAndCopyPreviewArtifact(
+      process.argv[2],
+      process.argv[3],
+    );
     process.stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
   } catch (error) {
     process.stderr.write(`Preview artifact rejected: ${error.message}\n`);
@@ -394,6 +433,9 @@ async function main() {
   }
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (
+  process.argv[1] &&
+  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
+) {
   await main();
 }

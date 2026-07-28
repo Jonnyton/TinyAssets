@@ -10,16 +10,20 @@ blocks safe retirement of the old privileged automation surface.
 - Make the pull-request workflow an unprivileged build/test producer with
   read-only repository access, no persisted checkout credential, and no secret.
 - Add a trusted-default-branch `workflow_run` consumer with secretless
-  provenance validation and static-artifact sanitization before any protected
-  environment is entered.
+  provenance validation by exact artifact ID and static-artifact sanitization
+  before any protected environment is entered; the protected job regenerates
+  and matches the manifest before hashing those actual bytes for publication,
+  and never treats an API-reported artifact digest as verified bytes.
 - Publish only an undeployed Worker version under a never-reused run/attempt
   alias from exact trusted Worker/configuration/tooling, record the
   provider-generated immutable version URL, and recheck the current
   pull-request head.
-- Block `/mcp` and `/mcp/*` in the trusted preview Worker so untrusted browser
-  JavaScript cannot bridge to production data.
+- Run the trusted preview Worker before every asset lookup; canonically block
+  every MCP-equivalent path and fail closed on uncanonicalizable paths so
+  untrusted browser JavaScript cannot bridge to production data.
 - Require a dedicated Cloudflare preview account; production-account
-  credentials do not satisfy the boundary, and require Cloudflare Access for
+  credentials do not satisfy the boundary, and require Cloudflare Access over
+  the fixed Worker's base `workers.dev` plus alias and version hostnames for
   Access-controlled retained preview evidence.
 - Pin the boundary with hostile validator fixtures, parsed workflow contract
   tests, operator guidance, and independent exact-head review.

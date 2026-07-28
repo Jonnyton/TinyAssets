@@ -13,6 +13,6 @@ directory = "./out"
 binding = "ASSETS"
 # Serve out/404.html for unmatched paths so the SPA fallback (deep-linked goals) works.
 not_found_handling = "404-page"
-# Pull-request assets can contain an `mcp` path. Force the trusted Worker to
-# intercept both the exact connector route and descendants before asset lookup.
-run_worker_first = ["/mcp", "/mcp/*"]
+# Pull-request assets can contain shadowing or normalization-edge paths. Run the
+# trusted Worker unconditionally, block MCP there, then fall through to ASSETS.
+run_worker_first = true

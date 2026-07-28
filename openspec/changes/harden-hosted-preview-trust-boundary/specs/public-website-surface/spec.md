@@ -9,12 +9,14 @@ separate exact-trusted-default-branch workflow SHALL perform secretless
 provenance validation and artifact sanitization before a fresh protected-
 environment job receives any Cloudflare credential. The credentialed job MUST
 consume only the normalized static tree and matching deterministic manifest,
-MUST NOT execute artifact content, and SHALL use fixed trusted Worker code,
-Worker name, Wrangler configuration, exact action revisions, lockfile-pinned
-Wrangler, and a credential belonging to a dedicated preview-only Cloudflare
-account. Each published alias MUST be never-reused and derived from one
-workflow run/attempt, and every aliased or versioned preview URL MUST be
-protected by deny-by-default Cloudflare Access.
+MUST independently regenerate and byte-compare that manifest before computing
+the published SHA-256 from the regenerated manifest bytes, MUST NOT execute
+artifact content, and SHALL use fixed trusted Worker code, Worker name,
+Wrangler configuration, exact action revisions, lockfile-pinned Wrangler, and
+a credential belonging to a dedicated preview-only Cloudflare account. Each
+published alias MUST be never-reused and derived from one workflow run/attempt,
+and the fixed Worker's base `workers.dev` URL plus every aliased or versioned
+preview URL MUST be protected by deny-by-default Cloudflare Access.
 
 #### Scenario: Pull-request code builds a preview candidate
 
@@ -31,8 +33,9 @@ protected by deny-by-default Cloudflare Access.
 #### Scenario: A successful same-repository build enters trusted intake
 
 - **WHEN** the trusted-default-branch workflow observes a successful pull-request build
-- **THEN** its secretless intake verifies the exact workflow ID/path, repository, one open default-branch pull request, current same-repository head, run attempt, and one immutable archive no larger than 25 MiB before retrieval
+- **THEN** its secretless intake verifies the exact workflow ID/path, repository, one open default-branch pull request, current same-repository head, run attempt, and one non-expired artifact ID with reported size no larger than 25 MiB before retrieval
 - **AND** it downloads only that artifact ID from that workflow run
+- **AND** it does not present the artifact API's reported digest as independently verified byte provenance
 - **AND** platform extraction remains in the secretless time-bounded job before repository entry/directory/depth/path/expanded-byte limits apply
 
 #### Scenario: Intake receives a hostile or malformed artifact
@@ -47,7 +50,8 @@ protected by deny-by-default Cloudflare Access.
 
 - **WHEN** every candidate entry satisfies the bounded static-file contract
 - **THEN** intake copies only regular bytes into a clean tree without execution and emits a sorted SHA-256 manifest
-- **AND** the fresh credentialed job independently revalidates the tree and requires an identical manifest before staging trusted deployment code
+- **AND** intake does not claim that an API-reported artifact digest independently verifies the copied bytes
+- **AND** the fresh credentialed job independently revalidates the tree, regenerates the manifest, requires a byte-identical match, then computes the published SHA-256 from those regenerated manifest bytes before staging trusted deployment code
 
 #### Scenario: A sanitized current preview is published
 
@@ -55,7 +59,7 @@ protected by deny-by-default Cloudflare Access.
 - **THEN** the protected job installs the exact lockfile-pinned toolchain without lifecycle scripts and uploads an undeployed Worker version under a DNS-bounded base-36 alias derived from PR number, run ID, and attempt
 - **AND** it does not deploy that version to shared traffic, create a production route or domain, or use a production-account credential
 - **AND** trusted code rejects missing, duplicated, malformed, control-bearing, cross-worker, or cross-subdomain upload receipts before exporting any provider identity
-- **AND** a separate least-privilege job rechecks the head before posting the provider-generated immutable version URL, never-reused alias URL, full head SHA, run/attempt, input artifact digest, and Cloudflare version ID
+- **AND** a separate least-privilege job rechecks the head before posting the provider-generated immutable version URL, never-reused alias URL, full head SHA, run/attempt, exact source artifact ID, verified sanitized-manifest SHA-256, and Cloudflare version ID
 - **AND** a later platform run cannot reuse the run/attempt alias, and the provider-generated version URL remains byte-immutable
 
 #### Scenario: A pull-request head is stale at the pre-upload recheck
@@ -70,11 +74,13 @@ protected by deny-by-default Cloudflare Access.
 - **THEN** any resulting upload uses a never-reused alias and immutable version URL, so it cannot repoint earlier evidence
 - **AND** the independent comment job rechecks the current head and does not advertise the raced upload as current
 
-#### Scenario: Preview JavaScript requests MCP
+#### Scenario: Preview JavaScript requests an MCP-equivalent path
 
-- **WHEN** the isolated preview receives `/mcp` or any `/mcp/*` request
-- **THEN** the exact trusted Worker returns a no-store `503`
+- **WHEN** the isolated preview receives a path that canonically equals `/mcp` or a descendant after bounded escape decoding, slash normalization, dot-segment handling, and case folding, or receives a path that cannot be safely canonicalized
+- **THEN** the exact trusted Worker runs before asset lookup and returns a no-store `503`
+- **AND** a shadowing static `mcp` asset cannot bypass the Worker
 - **AND** it neither proxies nor embeds the production MCP origin
+- **AND** canonical non-MCP requests fall through to the static asset binding
 
 #### Scenario: A fork build completes
 
@@ -88,8 +94,8 @@ protected by deny-by-default Cloudflare Access.
 - **THEN** the protected environment is default-branch restricted and holds only a Workers Scripts write token plus account ID for a dedicated Cloudflare preview account
 - **AND** that account contains no production Workers, routes, domains, data, or credentials
 - **AND** the host has enabled the account's `workers.dev` subdomain and created the fixed preview Worker because workflow provisioning and target auto-creation remain disabled
-- **AND** Cloudflare Access allows only named reviewers or the approved organization, with no `Everyone`, `Bypass`, or public-path exception
-- **AND** an unauthenticated request is proven denied while an authorized reviewer is proven able to load the preview before the GitHub credential is enabled
+- **AND** Cloudflare Access covers the fixed Worker's base `workers.dev` hostname plus its alias and version hostnames and allows only named reviewers or the approved organization, with no `Everyone`, `Bypass`, or public-path exception
+- **AND** an unauthenticated request is proven denied while an authorized reviewer is proven able to load each of the base, one real alias, and its version hostname before the GitHub credential is enabled
 
 #### Scenario: A pull request closes or an alias ages out
 

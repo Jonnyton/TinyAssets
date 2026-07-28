@@ -17,9 +17,11 @@ larger cheat-loop retirement PR.
 
 - Keep pull-request installation, testing, and build fully unprivileged.
 - Authenticate one same-repository, open, current pull request and its exact
-  successful build artifact without loading a deployment secret.
+  successful build artifact ID without loading a deployment secret.
 - Convert the untrusted archive into a bounded, normalized static tree and bind
-  both trusted jobs to one deterministic manifest.
+  both trusted jobs to one deterministic manifest; after independent
+  revalidation, hash the protected job's regenerated matching manifest for the
+  published provenance receipt.
 - Limit credential use to an exact trusted toolchain and configuration that
   uploads one undeployed per-run preview version.
 - Prevent preview JavaScript from reaching production `/mcp`.
@@ -62,8 +64,9 @@ residue could reach the deployment credential.
 The intake validator compares the triggering run against the repository's
 expected workflow ID/path, repository IDs/names, one open default-branch pull
 request, same-repository current head, run attempt, and one non-expired bounded
-artifact with a SHA-256 digest. The workflow then downloads that exact artifact
-ID from that exact run.
+artifact ID. The workflow then downloads that exact artifact ID from that exact
+run. The artifact API's reported digest is metadata, not independent proof of
+the downloaded bytes, and is not presented as verified provenance.
 
 Names alone were rejected because retries and ambiguous artifacts can collide.
 Current GitHub evidence shows the triggering `pull_request` workflow run's
@@ -78,8 +81,10 @@ unsafe/colliding paths, files with executable mode bits, package/deployment
 controls, archive-extension files, unexpected extensions, missing static-export
 roots, and count/size excesses.
 It copies accepted bytes without executing them and emits a sorted SHA-256
-manifest. The upload job independently revalidates the copied tree and requires
-an identical manifest.
+manifest. The upload job independently revalidates the copied tree, regenerates
+the manifest, requires a byte-identical match, then computes the published
+SHA-256 digest from its regenerated manifest bytes. Intake does not publish or
+claim a separately verified content digest.
 
 Trusting `upload-artifact` filtering alone was rejected because the protected
 job must enforce its own allowlist and bounds.
@@ -95,8 +100,8 @@ so an upload that races a later pull-request push cannot mutate the bytes
 behind an earlier review URL. The comment writer independently rechecks the
 current head and therefore does not present the raced build as current. It
 records the provider-generated immutable version URL plus never-reused alias
-URL, full head SHA, run/attempt, input artifact digest, and Cloudflare version
-ID.
+URL, full head SHA, run/attempt, exact source artifact ID, verified sanitized-
+manifest SHA-256, and Cloudflare version ID.
 Wrangler's stdout is treated as untrusted provider output: a dependency-free
 trusted parser rejects ambiguous, malformed, control-bearing, cross-worker, or
 cross-subdomain receipts before any value reaches a job output or pull-request
@@ -117,25 +122,31 @@ checkouts were rejected because they expand the credentialed code surface.
 
 ### 6. Block production MCP and isolate the Cloudflare account
 
-The trusted Wrangler configuration intercepts `/mcp` and `/mcp/*` before static
-asset lookup. The trusted Worker returns a no-store `503` and contains no
-production origin. The environment token must belong to a dedicated Cloudflare
-preview account containing no production Workers, routes, domains, data, or
-credentials. The host must enable Cloudflare Access specifically for Preview
-URLs and allow only named reviewers or the approved organization, with no
-`Everyone`, `Bypass`, or public exception, because provider preview URLs are
+The trusted Wrangler configuration runs the Worker before every static-asset
+lookup. The Worker repeatedly decodes escapes within a fixed bound, normalizes
+slash forms, dot segments, and case, returns a no-store `503` for every path
+canonically equivalent to `/mcp` or a descendant, and fails closed when safe
+canonicalization is impossible. Only a canonical non-MCP path falls through to
+`ASSETS`; the Worker contains no production origin. The environment token must
+belong to a dedicated Cloudflare preview account containing no production
+Workers, routes, domains, data, or credentials. The host must enable Cloudflare
+Access specifically for Preview URLs and the fixed Worker's base `workers.dev`
+hostname, and allow only named reviewers or the approved organization, with no
+`Everyone`, `Bypass`, or public exception, because those provider URLs are
 public without that control.
 
-Access is the provider-edge authority for this fixed Worker, which has no
-custom domain, production route, or alternate public origin. The Worker does
-not perform a header-presence imitation of JWT validation. If a future change
-adds any alternate route around Access, that change must first add
-cryptographic issuer/audience/JWK validation and fail closed; merely checking
-for `Cf-Access-Jwt-Assertion` is insufficient.
+Access is the provider-edge authority for this fixed Worker. Its base
+`workers.dev` hostname is an explicit public origin alongside alias and version
+hostnames; all three hostname classes require deny-by-default Access. There is
+no custom domain or production route. The Worker does not perform a header-
+presence imitation of JWT validation. If a future change adds any route around
+Access, that change must first add cryptographic issuer/audience/JWK validation
+and fail closed; merely checking for `Cf-Access-Jwt-Assertion` is insufficient.
 This source-only bootstrap explicitly accepts provider-edge Access as the sole
 HTTP authorization authority and therefore blocks activation until live
-anonymous-deny and authorized-load proofs exist. Repository tests cannot prove
-that external policy.
+anonymous-deny and authorized-load proofs exist for the fixed Worker's base
+`workers.dev` hostname, one real alias hostname, and its version hostname.
+Repository tests cannot prove that external policy.
 
 A fixed Worker name inside the production account is insufficient because
 Workers Scripts write permission is account-scoped. A same-origin production
@@ -172,15 +183,17 @@ reviewer's browser is allowed to reach.
    Scripts token; enable its `workers.dev` subdomain and create the fixed
    `tiny-site-react-preview` Worker as a one-time host action. The workflow
    deliberately disables provisioning and target auto-creation. Enable
-   Cloudflare Access for Preview URLs, allow only named reviewers or the
-   approved organization, and prove unauthenticated deny plus authorized load.
+   Cloudflare Access for its base `workers.dev`, alias, and version hostnames,
+   allow only named reviewers or the approved organization, and prove
+   unauthenticated deny plus authorized load on each hostname class.
 3. Configure the `react-preview` GitHub environment for `main`, add the preview
    account ID/token, require review, and disable admin bypass where supported.
 4. Rebase PR #1812 onto the bootstrap merge so its unprivileged build can
    trigger the trusted default-branch consumer.
 5. Record the first real per-run immutable version URL and never-reused alias
-   URL, blocked `/mcp` response, rendered browser review, and later post-fix use
-   evidence.
+   URL, base/alias/version Access proofs, exact source artifact ID, verified
+   sanitized-manifest SHA-256, blocked `/mcp` response, rendered browser review,
+   and later post-fix use evidence.
 6. Roll back by removing the environment credential or reverting the trusted
    consumer; for incident response disable Preview URLs or delete the dedicated
    Worker/account. The unprivileged build remains safe and production is
