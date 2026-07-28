@@ -2309,6 +2309,11 @@ def _action_queue_list(
     except Exception as exc:  # noqa: BLE001
         queue = []
         v1_error = str(exc)
+    non_public_goal_ids = _non_public_goal_ids()
+    queue = [
+        task for task in queue
+        if not task.goal_id or task.goal_id not in non_public_goal_ids
+    ]
 
     cfg = load_dispatcher_config(udir)
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -3112,6 +3117,31 @@ def _action_treasury_status(
 _OVERVIEW_CACHE: dict[str, tuple[float, str, str]] = {}
 _OVERVIEW_TTL_SECONDS = 1.0
 
+
+def _non_public_goal_ids() -> set[str]:
+    """Batch-resolve every known non-public Goal ID."""
+    from tinyassets.daemon_server import non_public_goal_ids
+
+    return non_public_goal_ids(_base_path())
+
+
+def _public_subscription_refs(
+    goal_refs: list[str],
+    *,
+    non_public_goal_ids: set[str] | None = None,
+) -> list[str]:
+    """Hide known non-public Goals while retaining legacy pool topic names."""
+    blocked = (
+        _non_public_goal_ids()
+        if non_public_goal_ids is None
+        else non_public_goal_ids
+    )
+    # Goal-pool subscriptions predate Shared Goals and may be topic slugs such
+    # as ``maintenance`` rather than Goal record IDs. Unknown refs remain
+    # visible; only known non-public Goal records are filtered.
+    return [goal_ref for goal_ref in goal_refs if goal_ref not in blocked]
+
+
 # Per-caller reasonable limits (R14 response-size). Overridable via `limit`.
 _OVERVIEW_DEFAULT_LIMITS = {
     "queue_top": 20,
@@ -3662,7 +3692,7 @@ def _action_daemon_overview(
             repo_root_path,
         )
         from tinyassets.subscriptions import list_subscriptions
-        goals = list_subscriptions(udir)
+        goals = _public_subscription_refs(list_subscriptions(udir))
         counts: dict[str, int] = {g: 0 for g in goals}
         try:
             repo_root = repo_root_path(udir)
@@ -3762,23 +3792,9 @@ def _action_daemon_overview(
             "count_total": 0, "count_unsettled": 0, "recent": [],
         }
 
-    # Gates — best-effort; counts only (full gates data is expensive).
-    try:
-        from tinyassets.daemon_server import list_gate_claims
-        claims = list_gate_claims(_base_path()) or []
-        # Filter to claims whose branch lives in this universe — for v1
-        # we report all claims and let the caller filter; universe-
-        # scoping needs the branch-to-universe mapping which isn't
-        # always populated.
-        response["gates"] = {
-            "ladder_count_on_bound_goal": 0,
-            "claims_on_this_universe": 0,
-            "total_claims": len(claims),
-            "recent_claims": (claims or [])[: limits["gates_recent"]],
-        }
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("daemon_overview: gates read failed: %s", exc)
-        response["gates"] = {"total_claims": 0, "recent_claims": []}
+    # Unscoped gate-claim enumeration is unsupported; scoped claims remain
+    # available through the gates surface.
+    response["gates"] = {"total_claims": 0, "recent_claims": []}
 
     # Activity tail (raw file, not a parse).
     response["activity_tail"] = _tail_file_lines(
@@ -4087,7 +4103,7 @@ def _action_list_subscriptions(
         return json.dumps({"error": f"Universe '{uid}' not found."})
 
     try:
-        goals = _list(udir)
+        goals = _public_subscription_refs(_list(udir))
     except Exception as exc:  # noqa: BLE001
         return json.dumps({"error": f"list_subscriptions failed: {exc}"})
 
@@ -5473,13 +5489,43 @@ def _action_get_recent_events(
 def _action_get_ledger(universe_id: str = "", limit: int = 50, **_kwargs: Any) -> str:
     uid = _request_universe(universe_id)
     udir = _universe_dir(uid)
+    if udir == _base_path().resolve():
+        return json.dumps({
+            "universe_id": uid,
+            "error": "Invalid universe_id.",
+        })
 
     ledger_path = udir / "ledger.json"
     data = _read_json(ledger_path)
     if not data or not isinstance(data, list):
         return json.dumps({"universe_id": uid, "entries": [], "note": "No ledger entries yet."})
 
-    entries = list(reversed(data))[:limit]
+    non_public_goal_ids = _non_public_goal_ids()
+
+    def visible_goal_record(entry: Any) -> bool:
+        if not isinstance(entry, dict):
+            return True
+        payload = entry.get("payload")
+        goal_ref = (
+            str(payload.get("goal_id") or "")
+            if isinstance(payload, dict)
+            else ""
+        )
+        if not goal_ref and entry.get("action") in {
+            "subscribe_goal",
+            "unsubscribe_goal",
+        }:
+            goal_ref = str(entry.get("target") or "")
+        return (
+            not goal_ref
+            or goal_ref not in non_public_goal_ids
+        )
+
+    visible_entries = [
+        entry for entry in data
+        if visible_goal_record(entry)
+    ]
+    entries = list(reversed(visible_entries))[:limit]
     return json.dumps({"universe_id": uid, "entries": entries, "count": len(entries)})
 
 

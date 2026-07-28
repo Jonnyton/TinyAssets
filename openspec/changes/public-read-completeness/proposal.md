@@ -48,9 +48,10 @@ must distinguish “no more results” from “the server stopped returning them
     public partition as `goal-public-commons`; ranked search and the internal
     `production_only` approximation remain outside the exact-count contract,
     but gate-independent slice 0A immediately applies the same exact-public
-    allowlist to empty-query listing, ranked search, and exact `target=goal`
-    lookup so canonical public reads cannot return non-public Goal fields while
-    pagination gates remain unresolved.
+    allowlist to every read-effect action resolving caller-supplied `goal_id`,
+    Goal-bound record enumeration, and cross-Goal aggregation so no public read
+    route can return or count non-public Goal fields while pagination gates
+    remain unresolved.
 - Define one self-auditing read receipt vocabulary for both enumerations:
   applied filters/scope, snapshot revision, capture/expiry time, returned
   count, current-withdrawal `withheld_count`, `total_matches`,

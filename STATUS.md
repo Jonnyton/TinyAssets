@@ -6,7 +6,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
 - [filed:2026-07-25 verified:2026-07-26] retire-legacy must lockstep-migrate `require_action_scope` and merge its two live-MCP metadata headers with reconcile-external-connector-manifests before either syncs.
 - **[P0 filed:2026-07-22 verified:2026-07-25]** Newborn contact has no BYOC/market authority path; never use maintainer quota. Host 2026-07-25: no authority until BYOC + friendly onboarding reply; fix lane in flight. See #1582.
-- **[P0 filed:2026-07-27 verified:2026-07-27]** Anonymous Goal list/search/exact reads can expose non-public Goals; public-read 0A must close all three before retirement.
+- **[P0 filed:2026-07-27 verified:2026-07-27]** Live anonymous Goal reads expose non-public data; local 0A is approved, deploy pending; write oracles remain authority-lane work.
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.

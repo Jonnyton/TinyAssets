@@ -52,6 +52,24 @@ def _resolve_caller_viewer() -> str:
         return ""
 
 
+def _public_goal_read_rejection(goal_id: str) -> str | None:
+    """Return a non-disclosing rejection unless the Goal is public."""
+    from tinyassets.daemon_server import get_goal
+
+    try:
+        goal = get_goal(_base_universe_dir(), goal_id=goal_id)
+    except KeyError:
+        goal = None
+    if goal is not None and goal.get("visibility") == "public":
+        return None
+    return json.dumps({
+        "status": "rejected",
+        "error": f"Goal '{goal_id}' not found.",
+        "goal": None,
+        "entries": [],
+    })
+
+
 def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
     """Return the ranked leaderboard for a Goal.
 
@@ -69,6 +87,9 @@ def _action_quality_leaderboard(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
+    rejection = _public_goal_read_rejection(goal_id)
+    if rejection is not None:
+        return rejection
     viewer = _resolve_caller_viewer()
 
     try:
@@ -103,6 +124,9 @@ def _action_recommended_parent_for_fork(kwargs: dict[str, Any]) -> str:
             "failure_class": "missing_goal_id",
             "actionable_by": "chatbot",
         })
+    rejection = _public_goal_read_rejection(goal_id)
+    if rejection is not None:
+        return rejection
     viewer = _resolve_caller_viewer()
 
     try:

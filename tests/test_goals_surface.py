@@ -110,7 +110,9 @@ def test_list_can_filter_to_production_goals(p5_env):
 
     assert result["count"] == 1
     assert result["production_only"] is True
-    assert result["excluded_count"] == 4
+    # Private Goals are removed by the storage predicate and therefore do not
+    # contribute to public counts.
+    assert result["excluded_count"] == 3
     assert [g["name"] for g in result["goals"]] == ["Real workflow goal"]
     assert "production" in result["text"].lower()
 
@@ -617,7 +619,7 @@ def test_patch_branch_set_goal_and_unset_goal(p5_env):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_soft_delete_hides_from_list_but_get_still_works(p5_env):
+def test_soft_delete_is_non_disclosing_on_public_list_and_get(p5_env):
     us, _ = p5_env
     gid = _call(us, "goals", "propose", name="Doomed")["goal"]["goal_id"]
     _call(us, "goals", "update", goal_id=gid, visibility="deleted")
@@ -626,9 +628,11 @@ def test_soft_delete_hides_from_list_but_get_still_works(p5_env):
     lst = _call(us, "goals", "list")
     assert all(g["goal_id"] != gid for g in lst["goals"])
 
-    # get still resolves with is_deleted flag
+    # Public exact read uses the same non-disclosing shape as a missing Goal.
     got = _call(us, "goals", "get", goal_id=gid)
-    assert got["is_deleted"] is True
+    missing = _call(us, "goals", "get", goal_id="missing-goal-id")
+    assert got.keys() == missing.keys()
+    assert got["status"] == missing["status"] == "rejected"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
