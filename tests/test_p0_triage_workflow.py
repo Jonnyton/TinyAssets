@@ -9,7 +9,7 @@ Covers:
   (f) Re-probe uses canonical CANARY_URL
   (g) Green path closes issue
   (h) Red path adds needs-human label (not closes)
-  (i) Concurrency group is issue-scoped (prevents concurrent restarts)
+  (i) Production host mutations share one repository-wide concurrency group
 """
 
 from __future__ import annotations
@@ -228,16 +228,13 @@ def test_red_path_does_not_close_issue():
 
 
 # ---------------------------------------------------------------------------
-# (i) Concurrency group is issue-scoped
+# (i) Production host mutation concurrency
 # ---------------------------------------------------------------------------
 
-def test_concurrency_group_is_issue_scoped():
+def test_concurrency_group_serializes_production_host_mutations():
     wf = _load()
     concurrency = wf.get("concurrency", {})
-    group = str(concurrency.get("group", ""))
-    assert "issue" in group.lower() or "number" in group.lower(), (
-        "concurrency group must be scoped per issue to prevent concurrent restarts"
-    )
+    assert concurrency.get("group") == "production-host-mutation"
 
 
 def test_concurrency_not_cancel_in_progress():
@@ -245,6 +242,36 @@ def test_concurrency_not_cancel_in_progress():
     wf = _load()
     concurrency = wf.get("concurrency", {})
     assert concurrency.get("cancel-in-progress") is False
+
+
+def test_triage_refuses_nonterminal_stop_writer_fence_before_repair():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    guard_name = "Refuse host mutation during stop-writer cutover"
+    assert names.index(guard_name) < names.index("Capture pre-restart diag")
+    guard = steps[names.index(guard_name)]["run"]
+    assert "scp -i ~/.ssh/do_deploy" in guard
+    assert "scripts/retire_cheat_loop_deploy_fence.py" in guard
+    assert "guard-host-mutation" in guard
+    assert "retire-cheat-loop-task-2-1-fence.json" in guard
+    assert "/run/tinyassets-host-mutation-guard" not in guard
+
+
+def test_triage_repairs_run_inside_authoritative_host_lock():
+    expected = (
+        "Repair — ENV-UNREADABLE (chown + chmod)",
+        "Repair — OOM (compose restart; memory cap NOT auto-bumped)",
+        "Repair — disk full (docker prune + journalctl vacuum)",
+        "Repair — image pull failure (release-state rollback target)",
+        "Repair — watchdog hot-loop (stop + sleep 60 + start)",
+        "Repair — provider_exhaustion (stop worker + .pause)",
+        "Attempt compose restart",
+    )
+    steps = _steps(_load())
+    for name in expected:
+        run = next(step["run"] for step in steps if step.get("name") == name)
+        assert "guard-host-mutation" in run, name
+        assert "--command-timeout" in run, name
 
 
 def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
@@ -314,7 +341,7 @@ def test_provider_exhaustion_repair_keeps_its_ssh_remote_target():
     run = _step_by_id("repair_provider_exhaustion")["run"]
 
     remote_target = '"${DO_SSH_USER}@${DO_DROPLET_HOST}"'
-    repair_command = "docker stop tinyassets-worker 2>&1 || true;"
+    repair_command = "docker stop tinyassets-worker 2>&1 || true"
     assert remote_target in run
     assert run.index(remote_target) < run.index(repair_command)
 

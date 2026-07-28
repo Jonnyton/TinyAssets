@@ -631,6 +631,10 @@ def test_terminal_receipt_keys_to_production_marker():
 
     expected_ref = f"steps.{scrub_step['id']}.outputs.production_mutation_started"
     assert expected_ref in str(step_env.get("PRODUCTION_MUTATION_STARTED", ""))
+    assert (
+        "steps.stop-writer-cleanup.outputs.cutover_started"
+        in str(step_env.get("PRODUCTION_MUTATION_STARTED", ""))
+    )
     assert "PRODUCTION_MUTATION_STARTED" in run_script
     assert "not_applicable" in run_script
     assert "failed" in run_script
@@ -1338,3 +1342,215 @@ def test_capability_delete_warning_explains_revocation():
         "operators can confirm capability was actually cleared from "
         "/etc/tinyassets/env, not just absent from GH Actions"
     )
+
+
+# ---------------------------------------------------------------------------
+# retire-cheat-loop task 2.1 — transitional production stop-writer fence
+# ---------------------------------------------------------------------------
+
+
+def _stop_writer_step(wf: dict, name: str) -> dict:
+    step = _step_named(wf, name)
+    assert "retire-cheat-loop task 2.1" in str(step.get("run", "")), (
+        f"{name!r} must be explicitly transitional so task 2.5 can remove "
+        "the product-specific receipt/queue guard"
+    )
+    return step
+
+
+def test_stop_writer_preflight_runs_before_image_mutation():
+    wf = _load()
+    steps = _steps(wf)
+    preflight = _stop_writer_step(wf, "Transitional task 2.1 stop-writer preflight")
+    deploy = next(step for step in steps if step.get("id") == "deploy")
+    production_mutation = next(
+        step for step in steps if step.get("id") == "production_mutation"
+    )
+    disk = _step_named(wf, "Preflight droplet disk before image pull")
+
+    assert (
+        steps.index(disk)
+        < steps.index(preflight)
+        < steps.index(production_mutation)
+        < steps.index(deploy)
+    )
+    assert str(preflight.get("id")) == "stop-writer"
+    assert str(preflight.get("env", {}).get("NEW_IMAGE", "")).endswith(
+        "steps.tag.outputs.image_ref }}"
+    )
+
+
+def test_deploy_shares_production_host_mutation_concurrency_group():
+    wf = _load()
+    assert wf.get("concurrency") == {
+        "group": "production-host-mutation",
+        "cancel-in-progress": False,
+    }
+
+
+def test_stop_writer_ancestry_gate_has_complete_git_history():
+    wf = _load()
+    checkout = next(
+        step
+        for step in _steps(wf)
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    )
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+
+
+def test_disk_preflight_precedes_every_remote_image_pull():
+    wf = _load()
+    steps = _steps(wf)
+    disk_index = steps.index(_step_named(wf, "Preflight droplet disk before image pull"))
+    pull_indexes = []
+    for index, step in enumerate(steps):
+        for line in str(step.get("run", "")).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            if "docker pull" in stripped:
+                pull_indexes.append(index)
+    assert pull_indexes
+    assert all(disk_index < index for index in pull_indexes)
+
+
+def test_stop_writer_workflow_invokes_transitional_helper_subcommands():
+    text = _text()
+    assert "scripts/retire_cheat_loop_deploy_fence.py" in text
+    for command in (
+        " preflight --image-ref ",
+        " prepare-deploy --image-ref ",
+        " prove --image-ref ",
+        " post-canary --image-ref ",
+        " status",
+        " observe",
+        " quiesce-unsafe",
+        " restore-if-safe --image-ref ",
+    ):
+        assert command in text
+
+
+def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
+    wf = _load()
+    preflight = _stop_writer_step(
+        wf, "Transitional task 2.1 stop-writer preflight"
+    ).get("run", "")
+    proof = _stop_writer_step(
+        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
+    ).get("run", "")
+
+    assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in preflight
+    assert "org.opencontainers.image.revision" in preflight
+    assert "git merge-base --is-ancestor" in preflight
+    assert "systemd-run --quiet --collect --wait --pipe" in preflight
+    assert "--property RuntimeMaxSec=300" in preflight
+    assert "--property TimeoutStartSec=300" in preflight
+    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in preflight
+    assert "prove --image-ref" in proof
+    assert "receipt_snapshot_post_deploy.json" in proof
+
+
+def test_stop_writer_blocks_unsafe_rollback_image():
+    wf = _load()
+    preflight = _stop_writer_step(
+        wf, "Transitional task 2.1 stop-writer preflight"
+    )
+    rollback = _step_named(wf, "Rollback on failure")
+
+    assert "safe_previous_image" in str(preflight.get("run", ""))
+    assert (
+        rollback.get("env", {}).get("PREV_IMAGE")
+        == "${{ steps.stop-writer.outputs.safe_previous_image }}"
+    )
+    assert "steps.prev.outputs.previous" not in str(
+        rollback.get("env", {}).get("PREV_IMAGE", "")
+    )
+
+
+def test_stop_writer_compares_post_deploy_and_post_canary_snapshots():
+    wf = _load()
+    steps = _steps(wf)
+    deploy_proof = _stop_writer_step(
+        wf, "Transitional task 2.1 prove exact fleet and unchanged receipts"
+    )
+    canary = _step_named(wf, "Post-deploy canary — canonical URL only")
+    post_canary = _stop_writer_step(
+        wf, "Transitional task 2.1 post-canary receipt proof"
+    )
+    forward = _step_named(wf, "Mark forward path complete")
+    rollback = _step_named(wf, "Rollback on failure")
+
+    assert (
+        steps.index(deploy_proof)
+        < steps.index(canary)
+        < steps.index(post_canary)
+        < steps.index(forward)
+        < steps.index(rollback)
+    )
+    preflight = _stop_writer_step(
+        wf, "Transitional task 2.1 stop-writer preflight"
+    )
+    assert "receipt_snapshot_before.json" in str(preflight.get("run", ""))
+    assert "receipt_snapshot_post_deploy.json" in str(deploy_proof.get("run", ""))
+    assert "receipt_snapshot_post_canary.json" in str(post_canary.get("run", ""))
+    assert "post-canary --image-ref" in str(post_canary.get("run", ""))
+
+
+def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
+    wf = _load()
+    restore = _stop_writer_step(
+        wf, "Transitional task 2.1 restore restart racers when safe"
+    )
+    artifact = _step_named(wf, "Upload transitional task 2.1 deploy proof")
+
+    assert str(restore.get("if", "")).strip() == "always()"
+    restore_script = str(restore.get("run", ""))
+    assert "retire-cheat-loop-deploy-fence.py status" in restore_script
+    assert "retire-cheat-loop-deploy-fence.py observe" in restore_script
+    assert "retire-cheat-loop-deploy-fence.py quiesce-unsafe" in restore_script
+    assert "cleanup_mutation_started=true" in restore_script
+    assert restore_script.index("cleanup_mutation_started=true") < restore_script.index(
+        "retire-cheat-loop-deploy-fence.py quiesce-unsafe"
+    )
+    assert "git merge-base --is-ancestor" in restore_script
+    assert "cleanup_restored=true" in restore_script
+    assert "masked_units_after" in restore_script
+    assert "tinyassets-daemon.service" in restore_script
+    assert restore_script.index("git merge-base --is-ancestor") < restore_script.index(
+        "restore-if-safe --image-ref"
+    )
+    assert str(artifact.get("if", "")).strip() == "always()"
+    assert (artifact.get("uses") or "").startswith("actions/upload-artifact@")
+    assert "retire-cheat-loop-task-2-1" in str(artifact.get("with", {}).get("name", ""))
+    assert "stop-writer-evidence" in str(artifact.get("with", {}).get("path", ""))
+
+
+def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
+    wf = _load()
+    terminal = _step_with_run_token(wf, "terminal_receipt_result=")
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_RESTORED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}"
+    )
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_MUTATION_STARTED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}"
+    )
+    assert "steps.stop-writer-cleanup.outputs.cleanup_mutation_started" in str(
+        terminal.get("env", {}).get("PRODUCTION_MUTATION_STARTED", "")
+    )
+    script = str(terminal.get("run", ""))
+    assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script
+    assert "export FORWARD_SUCCEEDED=false" in script
+
+
+def test_cleanup_derives_cutover_only_from_current_run_generation():
+    wf = _load()
+    cleanup = _step_named(
+        wf,
+        "Transitional task 2.1 restore restart racers when safe",
+    )
+    script = str(cleanup.get("run", ""))
+    assert "current_run_cutover_started" in script
+    assert "str(bool(status.get(\"state_exists\")))" not in script
+    assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script

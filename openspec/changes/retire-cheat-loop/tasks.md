@@ -59,6 +59,25 @@
     attached to that store. External BYOC plugin/MCPB installations cannot
     access the controlled volume and are not falsely treated as centrally
     drainable production writers.
+  - Deploy-fence candidate evidence (2026-07-28, still not operational
+    completion): `953f89db50da503012294112b816b5046ef10256`
+    adds a transitional, fail-closed production cutover controller. It
+    records normal and emergency intent before mutation; binds state to the
+    current run; inventories the v1/v2 queue and read-only receipt snapshot;
+    fences one daemon, four workers, extra volume consumers, restart policies,
+    boot activators, stray attached processes, old images, and rollback; and
+    serializes every known host mutation through bounded GitHub and host-local
+    locks. The exact candidate passed 201 focused tests, Ruff, py_compile,
+    four-workflow YAML parsing, extracted shell syntax checks, diff checks,
+    strict OpenSpec validation, and independent workflow, security, and
+    simplification APPROVE reviews. Claude Opus 5 also issued an exact-head
+    repository-candidate APPROVE at `2dcc1139` with no blocking findings.
+    `actionlint` was unavailable locally and remains a CI gate. The controller
+    is explicitly transitional and must be deleted under task 2.5a; this
+    checkbox stays open until the candidate lands,
+    the filing-only image is deployed, the durable live receipt proves every
+    old writer/queued write-back/rollback path fenced, and rendered filing
+    leaves the receipt snapshot unchanged.
   - The production fence must also prove no pending/running
     `bug_investigation` queue item can append a late Investigation/Patch Packet,
     and that rollback cannot restore a pre-stop-writer image to traffic.
@@ -108,6 +127,12 @@
   implementation, while tasks 2.2-2.3 delete the executor and module in the
   final runtime deployment. Persisted evidence follows the recorded retention
   policy and is never deleted merely because its runtime consumer was removed.
+- [ ] 2.5a After task 2.5's locked migration and final rescan succeed, delete
+  `scripts/retire_cheat_loop_deploy_fence.py`, its product-specific deploy,
+  restart, host-install, and P0 orchestration, its tests, and every persistent
+  task-2.1 fence artifact or host helper. Restore the surviving workflows to
+  generic host-mutation safety without retaining a disabled flag, alias,
+  compatibility shim, or platform-owned retirement automation.
 - [ ] 2.6 Remove `classify_patch_request`, its hard-coded free/paid claimant,
   Claude/Codex writer, opposite-family checker, meaning, and persisted
   `request_classification` policy from `tinyassets/api/market.py`,

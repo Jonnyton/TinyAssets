@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: restart-daemon
+  group: production-host-mutation
   cancel-in-progress: false
 
 env:
@@ -58,6 +58,15 @@ jobs:
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+      - name: Refuse host mutation during stop-writer cutover
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              scripts/retire_cheat_loop_deploy_fence.py \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py --state-path /var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json guard-host-mutation"
+
       - name: Converge host uptime services
         if: inputs.install_watchdog == true
         run: |
@@ -94,7 +103,7 @@ jobs:
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:${remote_stage}/"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 300 -- /bin/bash -se -- $(printf '%q' "${remote_stage}") $(printf '%q' "${source_sha}") $(printf '%q' "$(basename "${bundle}")") $(printf '%q' "$(basename "${checksum}")")" <<'REMOTE'
           set -euo pipefail
           remote_stage="$1"
           source_sha="$2"
@@ -113,7 +122,7 @@ jobs:
         run: |
           echo "Restart reason: ${{ inputs.reason }}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -e; sudo systemctl reset-failed tinyassets-daemon.service || true; sudo systemctl restart tinyassets-daemon.service"
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py guard-host-mutation --command-timeout 120 -- /bin/bash -lc 'systemctl reset-failed tinyassets-daemon.service || true; systemctl restart tinyassets-daemon.service'"
 
       - name: Wait for public canary
         run: |
