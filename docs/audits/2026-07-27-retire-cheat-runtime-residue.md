@@ -108,7 +108,9 @@ Merged selective-restack verification:
 - `python scripts/retire_cheat_loop_github_state_test.py`: 46/46 pass after
   adding a receipt-schema regression.
 - `python -m py_compile` for the migrator and tests: pass.
-- Strict target and all-OpenSpec validation: 60/60 pass.
+- Strict target and all-OpenSpec validation: 60/60 pass. The source restack
+  note said 59/59; exact tree comparison proved the merged and reviewed trees
+  identical, and a fresh count corrected that historical figure to 60/60.
 - CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
   3.6/3.7 remain unchecked and no live apply was invoked.
 - Offline verification rejects re-digested receipts with non-dry-run execution,

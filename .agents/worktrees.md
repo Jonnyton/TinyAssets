@@ -1571,7 +1571,7 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/post1830-retire-next-20260728
-- Lane state: implementation complete at `d95cef1d`; exact-head review pending
+- Lane state: Claude Opus 5 ADAPT; collector/schema review fix in flight
 - Worktree: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728
 - STATUS/Issue/PR: retirement row L21; draft PR #1835
 - PLAN refs: user-buildable/remixable automation; no privileged platform composition
@@ -1581,7 +1581,7 @@ Notes:
 - Review gate: TDD, full focused suite, strict OpenSpec, independent Codex and Claude Opus 5 exact-head review
 - Ship/abandon: no live GitHub mutation; tasks 3.6/3.7 stay unchecked; task 2.1 waits for exact L23/L33/L37/L48 carve-outs
 - Update 2026-07-28: TDD proved three red bypasses, then 49/49 passed after exact label definition/association closure and rejecting label planned actions
-- Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex and Claude Opus 5 reviews pending
+- Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex approved `b8d57e9f`, Claude Opus 5 required collector-contract coverage before ready
 
 ## 2026-07-27 - canonical public-read completeness
 
