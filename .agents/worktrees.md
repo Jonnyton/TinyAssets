@@ -1571,20 +1571,22 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/post1830-retire-next-20260728
-- Lane state: Opus ADAPT fixed at `55a932b0`; exact-head re-review pending
+- Lane state: Opus APPROVE adapted through `cf48df9e`; final exact-head review pending
 - Worktree: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728
-- STATUS/Issue/PR: retirement row L21; draft PR #1835
+- STATUS/Issue/PR: active privileged-loop retirement claim; draft PR #1835
 - PLAN refs: user-buildable/remixable automation; no privileged platform composition
 - Purpose: reject inert peer-record/schema extensions while the no-live-mutator boundary remains dark
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728\_PURPOSE.md
 - Memory refs: main `52475559`; PRs #1829/#1830; retire-cheat-loop OpenSpec
 - Review gate: TDD, full focused suite, strict OpenSpec, independent Codex and Claude Opus 5 exact-head review
-- Ship/abandon: no live GitHub mutation; tasks 3.6/3.7 stay unchecked; task 2.1 waits for exact L23/L33/L37/L48 carve-outs
+- Ship/abandon: no live GitHub mutation; tasks 3.6/3.7 stay unchecked; task 2.1 source/mirror/tests are clear after exact public-read/personification/outbound claim narrowing and landed control_station cleanup
 - Update 2026-07-28: TDD proved three red bypasses, then 49/49 passed after exact label definition/association closure and rejecting label planned actions
 - Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex approved `b8d57e9f`, Claude Opus 5 required collector-contract coverage before ready
 - Update 2026-07-28: review fix adds collector round-trip, exact scalar schemas, and PlanError container typing; 53/53 pass with 60/60 strict OpenSpec
 - Update 2026-07-28: control_station's apparent task-2.1 conflict was three-dot squash ancestry; all five target blobs equal current main, independent carve-out recheck pending
 - Update 2026-07-28: independent recheck confirmed all five blobs/index/worktree clean; narrowed three broad claims to release task-2.1 files
+- Update 2026-07-28: Opus approved the collector/schema adaptation and requested only a non-blocking malformed-action error-contract cleanup before merge
+- Update 2026-07-28: `cf48df9e` converts malformed non-empty label action arrays from raw traceback to PlanError; 54/54 pass
 
 ## 2026-07-27 - canonical public-read completeness
 

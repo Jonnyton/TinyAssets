@@ -639,3 +639,6 @@ fresh-host rollback edges found later.
   collector-through-verifier contract. Exact keys without exact value types
   also left nested authority-shaped data admissible even though no consumer
   could use it.
+- **Final follow-up:** reject an unimplemented non-empty action list before
+  parsing its members; validation order is part of a stable fail-closed error
+  contract, even when both orders deny mutation.

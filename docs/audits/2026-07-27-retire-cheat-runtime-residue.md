@@ -131,7 +131,10 @@ Post-merge receipt-schema hardening on
 - Commit `55a932b0` binds the live collector through build and verify, closes
   peer-record scalar types and values, and converts malformed label action
   containers into fail-closed `PlanError` results.
-- The complete focused suite passes 53/53; Ruff, `py_compile`, `git diff
+- Opus approved the adaptation and found one non-blocking error-contract gap;
+  commit `cf48df9e` rejects every non-empty label action array before item
+  normalization, so malformed members return `PlanError` instead of traceback.
+- The complete focused suite passes 54/54; Ruff, `py_compile`, `git diff
   --check`, strict target OpenSpec, and all 60 strict OpenSpec validations pass.
 - The CLI remains exactly `inventory`, `plan`, and `verify`; no live mutator or
   auto-merge semantic changed, and tasks 3.6/3.7 remain unchecked.
