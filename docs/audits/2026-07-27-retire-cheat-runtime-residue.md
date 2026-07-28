@@ -98,6 +98,18 @@ Fresh verification on the existing payload:
 - The CLI has no live mutator; apply behavior remains dependency-injected.
 - Tasks 3.6/3.7 remain unchecked.
 
+Selective-restack verification on
+`codex/restack-retire-loop-github-state-20260727`:
+
+- The three restored files are byte-identical to `d40173a2`.
+- Only the reviewed final spec/task delta was applied; current-main STATUS,
+  worktree, snapshot, website, and prior receipt ancestry were not imported.
+- `python scripts/retire_cheat_loop_github_state_test.py`: 45/45 pass.
+- `python -m py_compile` for the migrator and tests: pass.
+- Strict target and all-OpenSpec validation: 59/59 pass.
+- CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
+  3.6/3.7 remain unchecked and no live apply was invoked.
+
 ## Highest-impact blocked runtime wave: task 2.1
 
 Exact intended write-set after claims release:

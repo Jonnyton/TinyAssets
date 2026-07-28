@@ -85,9 +85,36 @@ number, node id, exact head SHA, state, base/head repositories, draft flag, and
 full `autoMergeRequest` tuple (enabled actor/time, merge method, commit
 headline/body, and author email) plus attribution evidence into that receipt.
 Attribution SHALL require the exact same-repository, non-draft, `main`-target
-eligibility tuple, `app/github-actions` actor, and historical repository/Actions
-evidence at `enabledAt` tying the enrollment to this workflow; current-source
-uniqueness alone is insufficient.
+eligibility tuple, exact raw GraphQL actor tuple
+`Bot/github-actions/MDM6Qm90NDE4OTgyODI=`, and historical repository/Actions
+evidence at `enabledAt` tying the enrollment to this workflow. That evidence
+SHALL include the reviewed default-branch workflow blob, exact run/job/step
+window, and bounded run-log proof of the PR, repository, enrollment command,
+and successful enrollment line; current-source uniqueness alone is
+insufficient. A PR head that advanced after enrollment SHALL remain separately
+bound in the current migration tuple and SHALL NOT erase otherwise exact
+historical enrollment evidence. If any otherwise eligible candidate run's log
+cannot be read or verified, the receipt SHALL bind a typed uncertainty to that
+captured run and preserve the enrollment as ambiguous; a failed read SHALL
+never be treated as evidence that the competing candidate was absent.
+
+The inventory reader SHALL expose structured repository reads rather than
+caller-supplied GitHub CLI arguments. REST reads SHALL explicitly select GET;
+the GraphQL reader SHALL accept only the reviewed query and exact plain
+repository variables. Every read SHALL pin the public `github.com` host rather
+than inherit an ambient CLI host. Array-valued REST connections SHALL follow
+the exact GitHub `Link` header chain, validate every next URL remains on the
+same API origin/repository/endpoint/query scope, and bind per-page request,
+response, count, next-request chain, and terminal `rel="next"`-absence evidence
+into the receipt. Observed counts SHALL NOT be copied into a fictitious server
+total.
+
+Offline receipt verification SHALL verify schema, normalization, bindings, and
+digest integrity only; it SHALL report that external GitHub evidence was not
+re-verified. The offline plan importer SHALL NOT mint attributed auto-merge
+evidence. Attribution-bearing receipts SHALL originate from the live read-only
+collector, and any future mutation authority SHALL freshly re-fetch and compare
+the exact external source/run/job/step/log evidence.
 
 Before each disable, apply SHALL atomically persist the per-PR intent and
 planned tuple, then re-read that tuple. GitHub's disable mutation has no
@@ -110,6 +137,24 @@ workflow still disabled.
 - **WHEN** the migrator runs in dry-run mode
 - **THEN** it emits the deterministic workflow-quiescence and open-enrollment plan plus receipt digest with no repository mutation
 - **AND** it distinguishes attributed, explicit, and ambiguous enrollment
+
+#### Scenario: Read-only inventory cannot smuggle mutation arguments
+
+- **WHEN** the migrator reads repository REST or GraphQL state
+- **THEN** it constructs only explicit GET REST requests or the one reviewed GraphQL query with exact plain repository variables
+- **AND** compact field flags, file-backed query values, cross-repository endpoints, and arbitrary argument vectors are unavailable
+
+#### Scenario: Array pagination records its terminal oracle
+
+- **WHEN** the migrator inventories an array-valued GitHub REST connection
+- **THEN** it follows every validated `rel="next"` URL and receipts each page plus the first terminal response without `rel="next"`
+- **AND** missing, malformed, looping, cross-scope, or over-bound Link chains fail closed without claiming a server total
+
+#### Scenario: Offline verification is integrity-only
+
+- **WHEN** a stored retirement receipt is verified without live GitHub reads
+- **THEN** the result reports valid internal integrity and external evidence not re-verified
+- **AND** an offline imported auto-merge inventory cannot mint attributed evidence
 
 #### Scenario: Workflow is quiesced before enrollment mutation
 
