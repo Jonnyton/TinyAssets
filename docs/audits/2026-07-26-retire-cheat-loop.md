@@ -74,6 +74,12 @@ A newly spawned verifier after the exact cleanup confirmed that its injected
 Available skills catalog no longer listed `loop-uptime-maintenance`, all three
 host skill directories (`.agents`, `.claude`, and `.codex`) were absent, and
 all three `using-agent-skills` routers had zero matching routes.
+For evidence-boundary clarity, the `.agents` and `.claude` host absence in
+that fresh-session check came from exact uncommitted deletions and router edits
+on the deliberately divergent primary checkout at local commit `0bc841aa`.
+Those edits were used only to exercise live host discovery; they are not
+evidence that the tracked retirement landed. The tracked source proof is the
+reviewed #1815 worktree diff against base `18abe542`.
 
 The last command passed on 2026-07-26 after all proposal artifacts were
 complete. These searches are diagnostic inventory, not proof of implementation;
