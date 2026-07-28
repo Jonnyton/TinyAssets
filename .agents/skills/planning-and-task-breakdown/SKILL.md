@@ -72,6 +72,8 @@ title.
 **Files:** Create/Modify (exact paths + line ranges) / Test
 **Interfaces:** Consumes (signatures from earlier tasks) · Produces (exact
   names/types later tasks rely on — the implementer sees only their own task)
+**Precedent research:** required | optional | skip
+**Research question:** <exact implementation decision; omit when skipped>
 - [ ] Step 1: write failing test (actual test code)
 - [ ] Step 2: run it, expect FAIL with <reason>
 - [ ] Step 3: minimal implementation (actual code)
@@ -80,6 +82,13 @@ title.
 **Acceptance:** specific, testable conditions
 **Verification:** exact commands + expected output
 ```
+
+Choose the precedent field after checking requirements, edit targets, tests,
+and a likely internal precedent. `required` means dispatch
+`implementation-precedent-scout` before coding; `optional` lets the implementer
+dispatch only after naming unresolved implementation uncertainty; `skip` covers
+mechanical or canonical-pattern work. The field does not authorize strategic
+design research or expand the task.
 
 ### No placeholders
 

@@ -15,6 +15,21 @@ The output is not a generic summary. The job is to understand the outside work,
 map it against TinyAssets, decide what matters for our users, and leave behind a
 reusable plan or artifact that future sessions can act on.
 
+## Boundary with implementation precedent
+
+Use this skill when a named outside source or a research finding may change
+TinyAssets strategy, PLAN/OpenSpec design truth, capability direction, or
+cross-task architecture. Use `implementation-precedent-scout` instead for a
+bounded search for external code examples that informs one implementation
+decision inside an already-authorized lane.
+
+A scout source map is task-scoped implementation evidence covered by normal
+code review; it does not require its own opposite-provider research review. If
+the scout would broaden scope or change accepted design, stop implementation
+and promote the finding into this workflow and its cross-provider gate. This
+skill may invoke the scout for adjacent implementations, but remains
+responsible for durable implications, authority changes, and review.
+
 ## Trigger Examples
 
 - "Study this repo and tell us what it means for TinyAssets."
