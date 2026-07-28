@@ -1593,9 +1593,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-stop-writer-20260728
-- Lane state: draft PR #1836; repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review pending
+- Lane state: PR #1836 merged as `35da9d4f`; repository stop-writer landed, runtime deploy/drain/fence proof pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728
-- STATUS/Issue/PR: draft PR #1836; active privileged-loop retirement claim
+- STATUS/Issue/PR: PR #1836 merged; active privileged-loop runtime-proof claim
 - PLAN refs: user-buildable/remixable automation; generic wiki filing and explicit workflow primitives survive
 - Purpose: remove `file_bug` trigger receipt, enqueue, Investigation rendering, and response metadata while preserving ordinary filing
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728\_PURPOSE.md
@@ -1608,9 +1608,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-deploy-proof-20260728
-- Lane state: repository candidate approved at `953f89db`; PR/CI and live deployment proof remain
+- Lane state: draft PR #1839; repository candidate approved at `953f89db`; current-main integration, CI, and live deployment proof remain
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728
-- STATUS/Issue/PR: task 2.1 operational continuation after merged PR #1836
+- STATUS/Issue/PR: draft PR #1839; task 2.1 operational continuation after merged PR #1836
 - PLAN refs: user-buildable/remixable automation; no platform-owned cheat/community writer
 - Purpose: build and deploy the filing-only image while proving every controlled writer, queued write-back, restart racer, and rollback path is fenced
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728\_PURPOSE.md
@@ -1638,3 +1638,27 @@ Notes:
 - Memory refs: PR #1812 blocker evidence; `docs/audits/2026-07-25-full-product-vision-completion-audit.md`
 - Review gate: spec Opus 5 round 18 APPROVE; runtime Opus 5 round 8b APPROVE after every blocking finding was folded
 - Ship/abandon: private deploy first, then sync/publish and rendered connector acceptance; never publish the live privacy gap ahead of deployment
+
+## 2026-07-28 - harden GitHub retirement terminal oracle
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-github-terminal-oracle-final
+- Lane state: exact semantic head `c95876fe` received Opus 5 APPROVE; publication pending
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final
+- STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835/#1836 are the landed base
+- PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
+- Purpose: reject full terminal REST pages as ambiguous while preserving #1830's closed receipt envelope and all other fail-closed guards
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final\_PURPOSE.md
+- Memory refs: Opus 5 review rounds in the abandoned pre-#1830 worktree; PR #1830 / `52475559`
+- Review gate: passed — 61 focused tests, Ruff, all 60 strict OpenSpec validations, 45 forgery probes, bounded mutation battery, exact semantic-head Opus 5 APPROVE
+- Ship/abandon: land only the complementary oracle hardening; tasks 3.6/3.7 remain unchecked and no GitHub state may change
+- Update 2026-07-28: pre-#1835 exact-current Opus 5 mutation review returned APPROVE after every request/page-size, digest, and archive guard then under review proved load-bearing
+- Update 2026-07-28: moved the approved commit into a clean current-main worktree after #1835 overlapped the receipt-schema files; preserved both hardening waves
+- Update 2026-07-28: exact-current Opus found a recovery-doc gap plus Unicode, multi-page-terminal, and stored-endpoint-scope proof gaps; all four adaptations are folded and 61/61 passes
+- Update 2026-07-28: Opus rereview found two surviving test mutations plus a malformed-page traceback and stale approval wording; exact continuation, positive multi-page, and typed-failure regressions are folded
+- Update 2026-07-28: next Opus pass found the stored anchor admitted `page`/`after`, continuation subguards and live round-trip were underpinned, and `None` was the needed malformed-page discriminator; adaptations in progress before #1836 restack
+- Update 2026-07-28: all four implementation commits restacked on #1836; task 2.1 repository work is landed and its deploy/drain/fence proof remains the next runtime dependency
+- Update 2026-07-28: exact #1836-based Opus review found no forgery or authority defect; three isolated regressions remain for chain digest, pagination key closure, and terminal ordinal before approval
+- Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
+- Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass
+- Update 2026-07-28: exact semantic head `c95876fe` received Opus 5 APPROVE; every named mutation died, all 45 concrete forgery probes were rejected, and no correctness or authority defect remained
