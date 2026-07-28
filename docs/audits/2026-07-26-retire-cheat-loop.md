@@ -250,6 +250,17 @@ skill sync was idempotent, the cross-provider drift guard passed, active
 `.agents` and `.claude` scans found no retired skill/escape-hatch instruction,
 and all 58 strict OpenSpec validations passed.
 
+Freshness-stamped 2026-07-27 restack evidence: the task-6.2 payload was replayed
+onto approved parent `287049e1` using only its two substantive commits. The
+skill synchronizer was idempotent, `scripts/validate_skills.py` passed,
+cross-provider drift was clean, active-surface scans found only explicit
+retirement/negative-authority prose and historical-path references, the change
+validated strictly, all 58 OpenSpec items validated, `git diff --check` passed,
+and STATUS remained exactly 60 lines. `tests/test_validate_skills.py` remains
+2 passed / 2 failed both before and after this wave because it hard-codes the
+already-absent `zoom-out` skill; that unrelated stale-test repair is outside
+this claimed file set and is not counted as task-6.2 evidence.
+
 An engine-level read-only `buildUpdatedSpec` dry-run on 2026-07-26 parsed and
 built all six surviving canonical deltas. The public-website result reported
 `renamed=1, modified=2`, contained the renamed requirement, and replaced the
