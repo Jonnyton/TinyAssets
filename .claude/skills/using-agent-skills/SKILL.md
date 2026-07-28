@@ -28,6 +28,7 @@ Task arrives
     |
     |-- Unfamiliar area / need a bigger map? --------> improve-codebase-architecture
     |-- Outside repo, paper, project implications? --> external-research-implications
+    |-- Need external implementation examples? -----> implementation-precedent-scout
     |-- Vague idea / design not approved yet? -------> idea-refine
     |-- Domain terms drifting / concept integrity? --> domain-model
     |-- New feature / change with no spec? ----------> spec-driven-development
@@ -102,6 +103,7 @@ code-review-and-quality`.
 |-------|-------|------------------|
 | Orient | improve-codebase-architecture | Map an area, then audit module boundaries and coupling |
 | Orient | external-research-implications | Turn outside repos/papers into TinyAssets implications |
+| Orient | implementation-precedent-scout | Isolate bounded external implementation search and return a compact source map |
 | Orient | peer-agents | Dispatch work to the Claude or Codex CLI on that subscription's budget |
 | Define | idea-refine | Refine an idea into an approved design before building |
 | Define | domain-model | Stress-test concepts/invariants and harden terminology |

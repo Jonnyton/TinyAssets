@@ -71,6 +71,17 @@ task brief, report file (named after the brief), reviewer inputs (brief + report
 + package). Never pre-judge findings for a reviewer ("at most Minor", "don't
 flag X") — let it raise and adjudicate.
 
+**Context-isolating precedent scouts.** A task-scoped
+`implementation-precedent-scout` is one read-only research dispatch, not a Mode
+B implementation worker. Give it the exact implementation question and local
+constraints, not the plan/session. Enforce read/search/fetch-only tools and the
+scout skill's no-shell/no-secret boundary in the actual dispatch. It writes raw
+output under ignored `output/precedent-scout/`; the coordinator validates or
+format-repairs exactly one JSON source map before returning only status,
+artifact path, stop reason, and concerns. Accept verified partial output when
+the budget expires; allow at most one targeted follow-up for a named evidence
+gap.
+
 **Durable progress.** Conversation memory doesn't survive compaction; re-running
 completed tasks is the most expensive failure observed. Keep a ledger
 (`$(git rev-parse --show-toplevel)/.superpowers/sdd/progress.md`): at start, tasks marked
