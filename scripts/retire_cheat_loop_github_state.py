@@ -335,6 +335,19 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
         extra = sorted(set(names) - RETIRED_LABEL_SET)
         raise PlanError(f"retired definition mismatch; missing={missing}, extra={extra}")
     for definition in definitions:
+        unknown_fields = set(definition) - {
+            "node_id",
+            "database_id",
+            "name",
+            "color",
+            "description",
+            "url",
+        }
+        if unknown_fields:
+            raise PlanError(
+                "label definition contains unreviewed fields: "
+                + ", ".join(sorted(str(field) for field in unknown_fields))
+            )
         for field in ("node_id", "name", "color"):
             if definition.get(field) in (None, ""):
                 raise PlanError(f"label definition is missing {field}")
@@ -348,6 +361,20 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
     )
     seen: set[tuple[str, str]] = set()
     for row in associations:
+        unknown_fields = set(row) - {
+            "label_node_id",
+            "label_name",
+            "item_node_id",
+            "number",
+            "kind",
+            "state",
+            "url",
+        }
+        if unknown_fields:
+            raise PlanError(
+                "label association contains unreviewed fields: "
+                + ", ".join(sorted(str(field) for field in unknown_fields))
+            )
         label_name = row.get("label_name")
         if label_name not in RETIRED_LABEL_SET:
             raise PlanError(f"association contains non-retired label {label_name!r}")
@@ -389,6 +416,11 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
                 f"association connection count does not match captured rows for {name}"
             )
     planned_actions = _normalize_planned_actions(inventory.get("planned_actions", []))
+    if planned_actions:
+        raise PlanError(
+            "retired-label planned actions are not implemented; "
+            "this increment is inventory-only"
+        )
     apply_complete = inventory.get("apply_complete") is True
     if apply_complete:
         raise PlanError(

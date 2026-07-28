@@ -126,6 +126,17 @@ def receipt() -> dict:
     )
 
 
+def redigest_receipt(value: dict) -> dict:
+    value["plan_digest"] = mod.digest(value["plan"])
+    value["apply_key"] = mod.derive_apply_key(
+        value["operation"],
+        value["repo"]["node_id"],
+        value["plan_digest"],
+    )
+    value["receipt_digest"] = mod.digest(mod._without(value, "receipt_digest"))
+    return value
+
+
 def auto_pr(
     actor_type="Bot",
     login=mod.GITHUB_ACTIONS_BOT_LOGIN,
@@ -593,6 +604,35 @@ class ReceiptTests(unittest.TestCase):
         for name, changed in cases:
             with self.subTest(name=name), self.assertRaises(mod.PlanError):
                 mod.verify_receipt(changed)
+
+    def test_label_definition_schema_rejects_unknown_fields(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["definitions"][0]["mutation_authority"] = True
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
+
+    def test_label_association_schema_rejects_unknown_fields(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["associations"][0]["mutation_authority"] = True
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
+
+    def test_label_inventory_receipt_rejects_non_empty_planned_actions(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["planned_actions"] = [
+            {
+                "ordinal": 0,
+                "kind": "delete_label",
+                "target_node_id": "L_1",
+                "planned_before": {"name": mod.RETIRED_LABELS[0]},
+                "planned_after": {},
+            }
+        ]
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
 
     def test_incomplete_or_truncated_pagination_is_rejected(self) -> None:
         inventory = label_inventory()
