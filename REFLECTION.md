@@ -642,3 +642,15 @@ fresh-host rollback edges found later.
 - **Final follow-up:** reject an unimplemented non-empty action list before
   parsing its members; validation order is part of a stable fail-closed error
   contract, even when both orders deny mutation.
+
+## 2026-07-28 — Retire the writer before migrating its history
+
+- What surprised me: the smallest safe retirement slice is not deleting every
+  related module; it is first making the public filing path incapable of
+  creating any more privileged-loop state.
+- Pattern worth keeping: preserve historical readers and receipts long enough
+  to inventory and reconcile them, while tests prove both that the writer is
+  unreachable and that ordinary filing still works.
+- What I would do differently: map deployment identities and old-writer fencing
+  at the same time as the repository change, so landing the image and proving
+  operational retirement form one explicit sequence.

@@ -1571,9 +1571,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/post1830-retire-next-20260728
-- Lane state: Opus APPROVE adapted through `cf48df9e`; final exact-head review pending
+- Lane state: landed as PR #1835 / main `328f2c64`
 - Worktree: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728
-- STATUS/Issue/PR: active privileged-loop retirement claim; draft PR #1835
+- STATUS/Issue/PR: PR #1835 merged; retirement claim continues as task 2.1
 - PLAN refs: user-buildable/remixable automation; no privileged platform composition
 - Purpose: reject inert peer-record/schema extensions while the no-live-mutator boundary remains dark
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728\_PURPOSE.md
@@ -1587,6 +1587,21 @@ Notes:
 - Update 2026-07-28: independent recheck confirmed all five blobs/index/worktree clean; narrowed three broad claims to release task-2.1 files
 - Update 2026-07-28: Opus approved the collector/schema adaptation and requested only a non-blocking malformed-action error-contract cleanup before merge
 - Update 2026-07-28: `cf48df9e` converts malformed non-empty label action arrays from raw traceback to PlanError; 54/54 pass
+- Update 2026-07-28: exact head `7ecc82b1` received Codex and Claude Opus 5 APPROVE; PR #1835 merged as `328f2c64`
+
+## 2026-07-28 - cheat-loop task 2.1 filing-only stop-writer
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-stop-writer-20260728
+- Lane state: draft PR #1836; repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review pending
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728
+- STATUS/Issue/PR: draft PR #1836; active privileged-loop retirement claim
+- PLAN refs: user-buildable/remixable automation; generic wiki filing and explicit workflow primitives survive
+- Purpose: remove `file_bug` trigger receipt, enqueue, Investigation rendering, and response metadata while preserving ordinary filing
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728\_PURPOSE.md
+- Memory refs: main `328f2c64`; PRs #1829/#1830/#1835; retire-cheat-loop task 2.1
+- Review gate: RED 7 failures; GREEN 136 passed/1 skipped plus 85 related passed; Ruff/py_compile/diff-check/parity passed; nested Codex exact-head APPROVE; fresh Codex + Claude Opus 5 exact-head review still required
+- Ship/abandon: repository merge is only the stop-writer image; task 2.1 stays unchecked until deployed and every old writer is drained/fenced
 
 ## 2026-07-27 - canonical public-read completeness
 

@@ -29,7 +29,6 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.api.helpers import (
-    _default_universe,
     _find_all_pages,
     _read_text,
     _scoped_wiki_root,
@@ -2271,9 +2270,8 @@ def _wiki_file_bug(
     """File a bug, feature request, design proposal, or patch request.
 
     ``kind`` defaults to "bug"; set to "feature", "design", or
-    "patch_request" for non-bug filings. All kinds use the same request
-    pipeline — navigator vets before dev implements (design-participation
-    rule).
+    "patch_request" for non-bug filings. All kinds use the same typed-filing
+    path.
 
     Bypasses the draft-gate — filings land in pages/ immediately
     for host triage. ID is server-assigned via _next_bug_id. Atomic
@@ -2429,138 +2427,6 @@ def _wiki_file_bug(
     _append_wiki_log(
         f"file_bug | {rel_path} | {bug_id} {title} [{severity}] kind={effective_kind}"
     )
-    # FEAT-004: per-request-id traceable trigger receipt. Created BEFORE the
-    # enqueue so a crash in the trigger helper still leaves a durable record
-    # showing a trigger was expected. Backward-compatible: the existing
-    # ``investigation`` block in the response is preserved verbatim, and the
-    # new ``trigger`` block is additive.
-    investigation: dict[str, Any] = {"status": "skipped"}
-    trigger_block: dict[str, Any] | None = None
-    _receipt = None
-    try:
-        from tinyassets import bug_investigation
-        from tinyassets.wiki import trigger_receipts as _tr
-
-        frontmatter = {
-            "bug_id": bug_id,
-            "title": title,
-            "type": effective_kind,
-            "kind": effective_kind,
-            "effort_class": effort_classification["effort_class"],
-            "effort_attention": effort_classification["attention"],
-            "effort_dispatch_lane": effort_dispatch_route["lane"],
-            "effort_classification": effort_classification,
-            "effort_dispatch_route": effort_dispatch_route,
-            "component": component,
-            "severity": severity,
-            "status": "open",
-            "observed": observed,
-            "expected": expected,
-            "repro": repro,
-            "workaround": workaround,
-        }
-        target_universe_id = universe_id.strip() or _default_universe()
-        universe_path = _universe_dir(target_universe_id)
-        # Pre-write trigger receipt (status=pending). Read canonical branch_def_id
-        # from env so the receipt records what we *expected* to invoke even if the
-        # enqueue helper rejects.
-        import os as _os
-        canonical_branch_def_id = _os.environ.get(
-            "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "",
-        ).strip() or None
-        try:
-            _receipt = _tr.create_pending(
-                request_id=bug_id,
-                request_kind=effective_kind,
-                request_page=rel_path,
-                branch_def_id=canonical_branch_def_id,
-            )
-        except Exception as _rcpt_exc:  # noqa: BLE001 - filing must survive receipt-store outage.
-            _logger_wiki.warning(
-                "file_bug trigger_receipt create failed for %s: %s", bug_id, _rcpt_exc,
-            )
-            _receipt = None
-
-        try:
-            request_id = bug_investigation._maybe_enqueue_investigation(
-                bug_id=bug_id,
-                frontmatter=frontmatter,
-                base_path=universe_path,
-                universe_id=target_universe_id,
-            )
-        except Exception as _enq_exc:
-            # Trigger helper raised. Update receipt then re-raise into the outer
-            # except so the existing investigation = {"status": "error"} branch
-            # behavior is preserved.
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_failed(_receipt, error=_enq_exc)
-                    trigger_block = _receipt.to_response()
-                except Exception:  # noqa: BLE001 - last-resort, don't break filing.
-                    pass
-            raise
-
-        if request_id:
-            investigation_section = bug_investigation.format_investigation_comment(
-                request_id=request_id,
-                status="queued",
-            )
-            with open(target, "a", encoding="utf-8") as fh:
-                fh.write(investigation_section)
-            investigation = {
-                "status": "queued",
-                "dispatcher_request_id": request_id,
-            }
-            # Default response shape is compact — callers needing the
-            # full BranchTask mirror pass verbose=True. Cuts the typical
-            # file_bug response from ~3.7 KB to ~600 bytes (no 23-field
-            # BranchTask dump that mirrors inputs.request_text). The
-            # trigger_attempt_id + dispatcher_request_id below are already
-            # enough for chatbots/canaries to join request -> run; the full
-            # mirror is operator-only and can be fetched on-demand via
-            # ``universe action=queue_list`` with the branch_task_id.
-            if verbose:
-                try:
-                    from tinyassets.branch_tasks import read_queue
-
-                    task = next(
-                        (
-                            t for t in read_queue(universe_path)
-                            if t.branch_task_id == request_id
-                        ),
-                        None,
-                    )
-                    if task is not None:
-                        investigation["branch_task"] = task.to_dict()
-                except Exception as _queue_exc:  # noqa: BLE001
-                    _logger_wiki.warning(
-                        "file_bug investigation task read failed for %s: %s",
-                        bug_id,
-                        _queue_exc,
-                    )
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_queued(
-                        _receipt, dispatcher_request_id=request_id,
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            # Skipped because no canonical branch configured (env var empty
-            # or filing without bug_id). Record on the receipt for audit.
-            if _receipt is not None:
-                try:
-                    _receipt = _tr.mark_skipped(
-                        _receipt, reason="no_canonical_branch",
-                    )
-                except Exception:  # noqa: BLE001
-                    pass
-
-        if _receipt is not None:
-            trigger_block = _receipt.to_response()
-    except Exception as exc:  # noqa: BLE001 - bug filing itself must survive trigger failure.
-        _logger_wiki.warning("file_bug investigation trigger failed for %s: %s", bug_id, exc)
-        investigation = {"status": "error", "error": str(exc)}
 
     response_body: dict[str, Any] = {
         "path": rel_path,
@@ -2571,9 +2437,7 @@ def _wiki_file_bug(
         "component": component,
         "effort_classification": effort_classification,
         "effort_dispatch_route": effort_dispatch_route,
-        "investigation": investigation,
-        "note": "Filing sent to navigator triage pipeline. "
-                f'Use `read_page category="{category_dir}"` to view.',
+        "note": f'Filing created. Use `read_page category="{category_dir}"` to view.',
     }
     if dropped_kwargs:
         response_body["warning"] = (
@@ -2582,11 +2446,6 @@ def _wiki_file_bug(
             + ". Use repro, observed, expected, and workaround for the filing body; "
               "content is only for wiki write/patch actions."
         )
-    if trigger_block is not None:
-        # FEAT-004: surface the structured trigger receipt so callers (canaries
-        # / chatbots / operators) have a per-request-id join key without log
-        # scraping. ``investigation`` is preserved above for backward compat.
-        response_body["trigger"] = trigger_block
     return json.dumps(response_body)
 
 

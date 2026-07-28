@@ -1142,15 +1142,16 @@ def test_wiki_file_bug_rejects_unknown_direct_kwarg(wiki_env):
     assert not list((wiki_env / "pages" / "bugs").glob("bug-*.md"))
 
 
-def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
+def test_wiki_file_bug_is_filing_only_with_retired_environment_set(
     wiki_env, tmp_path, monkeypatch,
 ):
-    universe_dir = tmp_path / "default-universe"
-    universe_dir.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("UNIVERSE_SERVER_DEFAULT_UNIVERSE", "default-universe")
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID",
         "bug-investigation-branch",
+    )
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_GOAL_ID",
+        "bug-investigation-goal",
     )
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
 
@@ -1166,13 +1167,16 @@ def test_wiki_file_bug_queued_investigation_returns_branch_task_lease_shape(
         )
     )
 
-    task = res["investigation"]["branch_task"]
-    assert task["branch_task_id"] == res["investigation"]["dispatcher_request_id"]
-    assert task["status"] == "pending"
-    assert task["worker_owner_id"] == ""
-    assert task["lease_expires_at"] == ""
-    assert task["heartbeat_at"] == ""
-    assert task["last_progress_at"] == ""
+    assert res["status"] == "filed"
+    assert "investigation" not in res
+    assert "trigger" not in res
+    assert "branch_task" not in json.dumps(res)
+    assert "dispatcher_request_id" not in json.dumps(res)
+    assert "run_id" not in json.dumps(res)
+    assert not (tmp_path / "wiki_trigger_attempts.db").exists()
+    page = (wiki_env / res["path"]).read_text(encoding="utf-8")
+    assert "## Investigation" not in page
+    assert "## Patch Packet" not in page
 
 
 def test_wiki_file_bug_dedup_returns_similar_found(wiki_env):
