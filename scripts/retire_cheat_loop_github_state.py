@@ -273,7 +273,7 @@ def _validate_complete_connections(
             ):
                 raise PlanError("Link pagination lacks exact terminal evidence")
             observed = 0
-            initial_endpoint = page_receipts[0].get("request_endpoint", "")
+            initial_endpoint: str | None = None
             for ordinal, page in enumerate(page_receipts):
                 if (
                     not isinstance(page, Mapping)
@@ -308,6 +308,10 @@ def _validate_complete_connections(
                 ):
                     raise PlanError("Link pagination page receipt is malformed")
                 request_endpoint = page["request_endpoint"]
+                if ordinal == 0:
+                    initial_endpoint = request_endpoint
+                if initial_endpoint is None:
+                    raise PlanError("Link pagination initial request is missing")
                 _validate_stored_request_endpoint(
                     request_endpoint,
                     repo=repo,

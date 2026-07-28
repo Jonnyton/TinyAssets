@@ -941,13 +941,46 @@ class ReceiptTests(unittest.TestCase):
         with self.assertRaises(mod.PlanError):
             mod._validate_complete_connections([oversized_nonterminal], repo=repo())
 
-        full_second_terminal = copy.deepcopy(oversized_nonterminal)
+        valid_multi_page = copy.deepcopy(oversized_nonterminal)
+        valid_multi_page["count"] = 101
+        valid_multi_page["pagination"]["page_receipts"][0]["item_count"] = 100
+        valid_multi_page["pagination"]["page_receipts"][1]["item_count"] = 1
+        mod._validate_complete_connections([valid_multi_page], repo=repo())
+
+        full_second_terminal = copy.deepcopy(valid_multi_page)
         full_second_terminal["count"] = 200
-        full_second_terminal["pagination"]["page_receipts"][0]["item_count"] = 100
         full_second_terminal["pagination"]["page_receipts"][1]["item_count"] = 100
         with self.assertRaises(mod.PlanError):
             mod._validate_complete_connections(
                 [full_second_terminal],
+                repo=repo(),
+            )
+
+        hostile_continuation = copy.deepcopy(valid_multi_page)
+        hostile_endpoint = (
+            "https://api.github.com/repositories/99/fixture"
+            "?per_page=100&page=2"
+        )
+        first_page = hostile_continuation["pagination"]["page_receipts"][0]
+        second_page = hostile_continuation["pagination"]["page_receipts"][1]
+        first_page["next_url_digest"] = mod.digest(
+            {"method": "GET", "endpoint": hostile_endpoint}
+        )
+        second_page["request_endpoint"] = hostile_endpoint
+        second_page["request_url_digest"] = mod.digest(
+            {"method": "GET", "endpoint": hostile_endpoint}
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [hostile_continuation],
+                repo=repo(),
+            )
+
+        malformed_page = copy.deepcopy(valid_multi_page)
+        malformed_page["pagination"]["page_receipts"][0] = "not-a-page"
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [malformed_page],
                 repo=repo(),
             )
 

@@ -108,7 +108,7 @@ validation, retains the canonical request endpoint so offline validation
 re-derives the request digest and bound, and raises the focused suite to 53
 tests while preserving #1830's closed receipt envelope. It still exposes no
 live mutator and does not complete tasks 3.6/3.7 or authorize any GitHub-state
-change. Claude Opus 5's exact-current narrow review returned `APPROVE` after
+change. Claude Opus 5's pre-#1835 exact-current narrow review returned `APPROVE` after
 mutation-testing the live/stored terminal guards, request/page-size binding,
 request-digest recomputation, oversized-page checks, and encrypted-log guard;
 deleting each guard added the intended focused-test failure.
@@ -169,6 +169,13 @@ Current-main terminal-oracle integration on 2026-07-28:
   endpoints were digest-bound but not repository-scope validated. All four
   adaptations were folded before publication; the focused suite remains 61/61
   with the semantic distinctions pinned as subtests.
+- The first adaptation rereview still killed only 10/12 targeted mutations:
+  continuation scope was unpinned, and no positive multi-page receipt
+  distinguished terminal `[-1]` from `[0]`. It also found malformed page
+  records could traceback before typed rejection and that two historical
+  approval sentences lacked their pre-#1835 scope. The follow-up adds exact
+  negative/positive regressions, restores typed failure ordering, and scopes
+  the historical approval claims.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
