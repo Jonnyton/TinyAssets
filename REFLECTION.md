@@ -623,3 +623,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** record the replacement PR and parked parent
   PR disposition at the first stack split, so a safe restack never has to
   reconstruct whether old drafts should be retargeted, closed, or preserved.
+
+## 2026-07-28 - retired-label receipt peer-schema closure
+
+- **What surprised me:** exact receipt-envelope reconstruction still left
+  authority-shaped data admissible inside label definition and association
+  records because those peer records were normalized by copying every key.
+- **Pattern worth capturing:** a digest-bound receipt is only as closed as its
+  deepest record schema; every inventory-only operation should also reject
+  action records it cannot yet execute.
+- **What I would do differently:** enumerate allowed keys for every nested
+  external record during the first receipt-schema review, rather than closing
+  the envelope and pagination layers before their item records.

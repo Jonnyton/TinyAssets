@@ -203,7 +203,10 @@ Successful offline verification reports `integrity_valid=true` and
 can only be produced by live `inventory --with-attribution`; offline `plan`
 rejects imported attribution evidence. Verification reconstructs the exact
 dry-run receipt envelope and rejects unknown top-level, connection, pagination,
-page, and terminal fields even when a caller recomputes every digest.
+page, and terminal fields even when a caller recomputes every digest. The
+retired-label inventory also closes definition and association record schemas,
+and rejects every non-empty label `planned_actions` list while label apply is
+unimplemented.
 
 Receipt JSON and journal errors exclude credentials, authorization headers, raw
 GraphQL bodies, and log output. Any 401, 403, 429, 5xx, secondary-rate-limit,

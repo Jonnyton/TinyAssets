@@ -56,15 +56,15 @@ These source waves do not prove runtime/data/live-state retirement.
 | 5.2-5.3 | Source assets are clean; live page/universe, publication provenance/pagination, stored-role, and synthetic fixture proof remain | Live/source review and released test ownership |
 | 6.1, 6.3-6.7 | Plugin rebuild, final suites/scans, rendered connector proof, organic-use evidence, exact spec foldback/delete/archive remain | All source/data/live migrations first |
 
-## Next safe repository wave: inventory-only GitHub-state migrator
+## Landed inventory wave and post-merge hardening
 
-Existing branch `codex/retire-loop-github-state` and draft PR #1820 contain the
-reviewed shape, but #1820 targets the unmerged `codex/retire-loop-snapshots`
-branch. Replay only its migrator-specific payload onto current main; do not
-import its old snapshot parent or stale STATUS stack. Once the clean main-based
-replacement PR opens, close #1820 as superseded with a link to that replacement.
+PR #1830 selectively restacked the inventory-only GitHub-state migrator onto
+current main and merged as `52475559`. Draft PR #1820 is closed as superseded;
+sibling snapshot PR #1819 remains parked under the separate task-5.3 proof
+boundary. The historical source branch targeted the unmerged snapshot branch,
+so its commit list below remains provenance only and is not replay authority.
 
-Exact intended write-set:
+The merged wave used this exact write-set:
 
 ```text
 scripts/retire_cheat_loop_github_state.py
@@ -91,15 +91,14 @@ three final new files from `d40173a2`, apply only the final spec/task delta, and
 derive current coordination from current main. Do not cherry-pick the list or
 import any commit's STATUS/worktree state.
 
-Fresh verification on the existing payload:
+Historical verification on the source payload:
 
 - `python scripts/retire_cheat_loop_github_state_test.py`: 45/45 pass.
 - `openspec validate retire-cheat-loop --strict`: pass.
 - The CLI has no live mutator; apply behavior remains dependency-injected.
 - Tasks 3.6/3.7 remain unchecked.
 
-Selective-restack verification on
-`codex/restack-retire-loop-github-state-20260727`:
+Merged selective-restack verification:
 
 - The initial payload at `fab12790` restored the three files byte-identically
   from `d40173a2`; `f7e9234b` then intentionally changes the script, test, and
@@ -109,15 +108,27 @@ Selective-restack verification on
 - `python scripts/retire_cheat_loop_github_state_test.py`: 46/46 pass after
   adding a receipt-schema regression.
 - `python -m py_compile` for the migrator and tests: pass.
-- Strict target and all-OpenSpec validation: 59/59 pass.
+- Strict target and all-OpenSpec validation: 60/60 pass.
 - CLI subcommands remain exactly `inventory`, `plan`, and `verify`; tasks
   3.6/3.7 remain unchecked and no live apply was invoked.
 - Offline verification rejects re-digested receipts with non-dry-run execution,
   unknown top-level authority, connection authority, or unreviewed pagination
   mode; connection/page/terminal envelopes are closed schemas.
-- Main-based draft PR #1830 now carries the replacement; draft PR #1820 was
-  closed as superseded with a link, while sibling snapshot PR #1819 remains
-  parked under the separate task-5.3 proof boundary.
+- Exact head `d5b31a3f` received independent Codex security/spec and Claude
+  Opus 5 approval before PR #1830 merged as `52475559`.
+
+Post-merge receipt-schema hardening on
+`codex/post1830-retire-next-20260728`:
+
+- Three new regressions first failed because re-digested label receipts
+  accepted unknown definition fields, unknown association fields, and
+  non-empty label `planned_actions`.
+- Commit `d95cef1d` closes both peer-record schemas and rejects every non-empty
+  label action list while label apply remains unimplemented.
+- The complete focused suite passes 49/49; Ruff, `py_compile`, `git diff
+  --check`, strict target OpenSpec, and all 60 strict OpenSpec validations pass.
+- The CLI remains exactly `inventory`, `plan`, and `verify`; no live mutator or
+  auto-merge semantic changed, and tasks 3.6/3.7 remain unchecked.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
