@@ -193,6 +193,12 @@ Current-main terminal-oracle integration on 2026-07-28:
   final unpinned checks: observed-count reconciliation, repository database-id
   type discipline, and the terminal-oracle literal. Direct regressions now
   perturb only those fields on the same valid two-page receipt.
+- The bounded rereview killed all 34 requested mutations and rejected 11
+  concrete forgeries. Its deeper sweep found six correct but unpinned guards:
+  receipt-count/page-count agreement, anchor scheme/encoding/dot scope,
+  terminal next-link absence, exact page/terminal envelopes, connection
+  unknown-field closure, and per-page ordinal identity. One final regression
+  pass now isolates each receipt-shape invariant.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

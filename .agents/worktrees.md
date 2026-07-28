@@ -1638,3 +1638,4 @@ Notes:
 - Update 2026-07-28: all four implementation commits restacked on #1836; task 2.1 repository work is landed and its deploy/drain/fence proof remains the next runtime dependency
 - Update 2026-07-28: exact #1836-based Opus review found no forgery or authority defect; three isolated regressions remain for chain digest, pagination key closure, and terminal ordinal before approval
 - Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
+- Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass

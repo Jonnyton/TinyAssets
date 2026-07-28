@@ -999,6 +999,89 @@ class ReceiptTests(unittest.TestCase):
                 repo=repo(),
             )
 
+        truncated_receipt_chain = copy.deepcopy(valid_multi_page)
+        truncated_receipt_chain["count"] = 1
+        truncated_receipt_chain["pagination"]["page_receipts"] = [
+            truncated_receipt_chain["pagination"]["page_receipts"][0]
+        ]
+        truncated_receipt_chain["pagination"]["page_receipts"][0][
+            "item_count"
+        ] = 1
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [truncated_receipt_chain],
+                repo=repo(),
+            )
+
+        for unsafe_anchor in (
+            "mailto:repos/Jonnyton/TinyAssets/fixture?per_page=100",
+            "repos/Jonnyton/TinyAssets/%2e%2e/fixture?per_page=100",
+            "repos/Jonnyton/TinyAssets/../fixture?per_page=100",
+        ):
+            with self.subTest(unsafe_anchor=unsafe_anchor):
+                unsafe_anchor_receipt = complete_connection(
+                    kind="fixture",
+                    label_name="",
+                    count=0,
+                    completion_basis="github_link_header_chain_v1",
+                )
+                page = unsafe_anchor_receipt["pagination"]["page_receipts"][0]
+                page["request_endpoint"] = unsafe_anchor
+                page["request_url_digest"] = mod.digest(
+                    {"method": "GET", "endpoint": unsafe_anchor}
+                )
+                with self.assertRaises(mod.PlanError):
+                    mod._validate_complete_connections(
+                        [unsafe_anchor_receipt],
+                        repo=repo(),
+                    )
+
+        terminal_with_successor = copy.deepcopy(valid_multi_page)
+        terminal_with_successor["pagination"]["page_receipts"][-1][
+            "next_url_digest"
+        ] = mod.digest({"unexpected": "successor"})
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [terminal_with_successor],
+                repo=repo(),
+            )
+
+        extra_page_field = copy.deepcopy(valid_multi_page)
+        extra_page_field["pagination"]["page_receipts"][0][
+            "unreviewed_authority"
+        ] = True
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [extra_page_field],
+                repo=repo(),
+            )
+
+        extra_terminal_field = copy.deepcopy(valid_multi_page)
+        extra_terminal_field["pagination"]["terminal"][
+            "unreviewed_authority"
+        ] = True
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [extra_terminal_field],
+                repo=repo(),
+            )
+
+        extra_connection_field = copy.deepcopy(valid_multi_page)
+        extra_connection_field["unreviewed_authority"] = True
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [extra_connection_field],
+                repo=repo(),
+            )
+
+        wrong_page_ordinal = copy.deepcopy(valid_multi_page)
+        wrong_page_ordinal["pagination"]["page_receipts"][1]["ordinal"] = 99
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [wrong_page_ordinal],
+                repo=repo(),
+            )
+
         full_second_terminal = copy.deepcopy(valid_multi_page)
         full_second_terminal["count"] = 200
         full_second_terminal["pagination"]["page_receipts"][1]["item_count"] = 100
