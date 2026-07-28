@@ -244,6 +244,18 @@ def test_concurrency_not_cancel_in_progress():
     assert concurrency.get("cancel-in-progress") is False
 
 
+def test_triage_refuses_nonterminal_stop_writer_fence_before_repair():
+    steps = _steps(_load())
+    names = [step.get("name") for step in steps]
+    guard_name = "Refuse host mutation during stop-writer cutover"
+    assert names.index(guard_name) < names.index("Capture pre-restart diag")
+    guard = steps[names.index(guard_name)]["run"]
+    assert "retire-cheat-loop-task-2-1-fence.json" in guard
+    assert "retire-cheat-loop task 2.1" in guard
+    assert '"restored"' in guard
+    assert "json.loads" in guard
+
+
 def test_provider_exhaustion_page_uses_existing_pushover_cli_contract():
     step = next(
         item for item in _steps(_load())

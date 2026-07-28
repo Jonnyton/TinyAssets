@@ -1202,6 +1202,30 @@ def test_host_service_installer_serializes_production_host_mutations():
     }
 
 
+@pytest.mark.parametrize(
+    ("path", "job_name", "first_mutation"),
+    (
+        (RESTART_WORKFLOW, "restart", "Converge host uptime services"),
+        (WORKFLOW, "install", "Ensure off-host backup configuration"),
+    ),
+)
+def test_host_mutators_refuse_nonterminal_stop_writer_fence(
+    path: Path,
+    job_name: str,
+    first_mutation: str,
+):
+    workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+    steps = workflow["jobs"][job_name]["steps"]
+    names = [step.get("name") for step in steps]
+    guard_name = "Refuse host mutation during stop-writer cutover"
+    assert names.index(guard_name) < names.index(first_mutation)
+    guard = steps[names.index(guard_name)]["run"]
+    assert "retire-cheat-loop-task-2-1-fence.json" in guard
+    assert "retire-cheat-loop task 2.1" in guard
+    assert '"restored"' in guard
+    assert "json.loads" in guard
+
+
 def test_host_service_workflow_converges_backup_before_installing_timers():
     workflow_text = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
