@@ -956,28 +956,38 @@ class ReceiptTests(unittest.TestCase):
                 repo=repo(),
             )
 
-        hostile_continuation = copy.deepcopy(valid_multi_page)
-        hostile_endpoint = (
+        hostile_continuations = (
             "https://api.github.com/repositories/99/fixture"
-            "?per_page=100&page=2"
+            "?per_page=100&page=2",
+            "https://evil.example/repositories/42/fixture"
+            "?per_page=100&page=2",
+            "https://api.github.com/repositories/42/fixture"
+            "?per_page=100&page=3",
+            "https://api.github.com/repositories/42/fixture"
+            "?per_page=100&state=open&page=2",
+            "https://api.github.com/repositories/42/fixture"
+            "?per_page=100&after=a&after=b&page=2",
         )
-        first_page = hostile_continuation["pagination"]["page_receipts"][0]
-        second_page = hostile_continuation["pagination"]["page_receipts"][1]
-        first_page["next_url_digest"] = mod.digest(
-            {"method": "GET", "endpoint": hostile_endpoint}
-        )
-        second_page["request_endpoint"] = hostile_endpoint
-        second_page["request_url_digest"] = mod.digest(
-            {"method": "GET", "endpoint": hostile_endpoint}
-        )
-        with self.assertRaises(mod.PlanError):
-            mod._validate_complete_connections(
-                [hostile_continuation],
-                repo=repo(),
-            )
+        for hostile_endpoint in hostile_continuations:
+            with self.subTest(hostile_endpoint=hostile_endpoint):
+                hostile_continuation = copy.deepcopy(valid_multi_page)
+                first_page = hostile_continuation["pagination"]["page_receipts"][0]
+                second_page = hostile_continuation["pagination"]["page_receipts"][1]
+                first_page["next_url_digest"] = mod.digest(
+                    {"method": "GET", "endpoint": hostile_endpoint}
+                )
+                second_page["request_endpoint"] = hostile_endpoint
+                second_page["request_url_digest"] = mod.digest(
+                    {"method": "GET", "endpoint": hostile_endpoint}
+                )
+                with self.assertRaises(mod.PlanError):
+                    mod._validate_complete_connections(
+                        [hostile_continuation],
+                        repo=repo(),
+                    )
 
         malformed_page = copy.deepcopy(valid_multi_page)
-        malformed_page["pagination"]["page_receipts"][0] = "not-a-page"
+        malformed_page["pagination"]["page_receipts"][0] = None
         with self.assertRaises(mod.PlanError):
             mod._validate_complete_connections(
                 [malformed_page],
@@ -987,6 +997,9 @@ class ReceiptTests(unittest.TestCase):
         for unsafe_endpoint in (
             "https://evil.example/fixture?per_page=100",
             "repos/AnotherOwner/AnotherRepo/fixture?per_page=100",
+            "repos/Jonnyton/TinyAssets/fixture?per_page=100&page=999",
+            "repos/Jonnyton/TinyAssets/fixture?per_page=100&after=cursor",
+            "repos/Jonnyton/TinyAssets/fixture?per_page=100&page=2&page=9",
         ):
             with self.subTest(unsafe_endpoint=unsafe_endpoint):
                 cross_scope = complete_connection(
@@ -2297,6 +2310,7 @@ class ReadOnlyClientTests(unittest.TestCase):
             {"oracle": "rel_next_absent", "page_ordinal": 1},
             pagination["terminal"],
         )
+        mod._validate_complete_connections([connection], repo=repo())
 
     def test_link_pagination_rejects_full_page_without_next_link(self) -> None:
         endpoint = "repos/Jonnyton/TinyAssets/issues?state=all&per_page=100"
