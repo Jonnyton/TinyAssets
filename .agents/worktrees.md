@@ -1593,9 +1593,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-stop-writer-20260728
-- Lane state: draft PR #1836; repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review pending
+- Lane state: PR #1836 merged as `35da9d4f`; repository stop-writer landed, runtime deploy/drain/fence proof pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728
-- STATUS/Issue/PR: draft PR #1836; active privileged-loop retirement claim
+- STATUS/Issue/PR: PR #1836 merged; active privileged-loop runtime-proof claim
 - PLAN refs: user-buildable/remixable automation; generic wiki filing and explicit workflow primitives survive
 - Purpose: remove `file_bug` trigger receipt, enqueue, Investigation rendering, and response metadata while preserving ordinary filing
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728\_PURPOSE.md
@@ -1620,13 +1620,13 @@ Notes:
 ## 2026-07-28 - harden GitHub retirement terminal oracle
 
 - Provider: codex-gpt5-desktop-full-product
-- Branch: codex/retire-github-terminal-oracle-current
-- Lane state: Opus ADAPT folded on landed PR #1835; final exact-head recheck pending
-- Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-current
-- STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835 are the landed base
+- Branch: codex/retire-github-terminal-oracle-final
+- Lane state: three Opus ADAPT rounds folded on landed PR #1836; final exact-head recheck pending
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final
+- STATUS/Issue/PR: same privileged-loop retirement claim; #1830/#1835/#1836 are the landed base
 - PLAN refs: ordinary user-buildable uptime primitives; no hidden repair/mutation authority; Village deferred
 - Purpose: reject full terminal REST pages as ambiguous while preserving #1830's closed receipt envelope and all other fail-closed guards
-- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-current\_PURPOSE.md
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-github-terminal-oracle-final\_PURPOSE.md
 - Memory refs: Opus 5 review rounds in the abandoned pre-#1830 worktree; PR #1830 / `52475559`
 - Review gate: 61 combined focused tests, Ruff, strict OpenSpec, stored-receipt mutation proof, pre-#1835 Opus approval; current-head reapproval pending
 - Ship/abandon: land only the complementary oracle hardening; tasks 3.6/3.7 remain unchecked and no GitHub state may change
@@ -1635,3 +1635,4 @@ Notes:
 - Update 2026-07-28: exact-current Opus found a recovery-doc gap plus Unicode, multi-page-terminal, and stored-endpoint-scope proof gaps; all four adaptations are folded and 61/61 passes
 - Update 2026-07-28: Opus rereview found two surviving test mutations plus a malformed-page traceback and stale approval wording; exact continuation, positive multi-page, and typed-failure regressions are folded
 - Update 2026-07-28: next Opus pass found the stored anchor admitted `page`/`after`, continuation subguards and live round-trip were underpinned, and `None` was the needed malformed-page discriminator; adaptations in progress before #1836 restack
+- Update 2026-07-28: all four implementation commits restacked on #1836; task 2.1 repository work is landed and its deploy/drain/fence proof remains the next runtime dependency
