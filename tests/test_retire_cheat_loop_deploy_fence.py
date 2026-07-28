@@ -28,6 +28,8 @@ from scripts.retire_cheat_loop_deploy_fence import (
     safe_fleet_matches,
 )
 
+RUN_ID = "test-run-1"
+
 
 def _create_receipt_db(path: Path) -> None:
     with sqlite3.connect(path) as connection:
@@ -377,6 +379,7 @@ class LifecycleHost:
         self.unmask_error = False
         self.container_state_error = False
         self.container_state_override: str | None = None
+        self.restart_policy_override: str | None = None
 
     def _containers(
         self,
@@ -430,6 +433,14 @@ class LifecycleHost:
             for name in names
             if self.containers[name]["State"]["Running"]
         }
+
+    def container_restart_policy(self, identity: str) -> str:
+        if self.restart_policy_override is not None:
+            return self.restart_policy_override
+        for info in self.containers.values():
+            if identity == info["Id"]:
+                return str(info["HostConfig"]["RestartPolicy"]["Name"])
+        raise FenceError("container restart policy unavailable")
 
     def unit_present(self, unit: str) -> bool:
         return unit in self.units
@@ -485,8 +496,13 @@ class LifecycleHost:
                     self.units[unit]["active"] = "active"
             return ""
         if command[:2] == ("docker", "update"):
-            name = command[-1]
-            self.containers[name]["HostConfig"]["RestartPolicy"]["Name"] = "no"
+            identity = command[-1]
+            for name, info in self.containers.items():
+                if identity in {name, info["Id"]}:
+                    info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+                    break
+            else:
+                raise FenceError("docker update failed")
             return ""
         if command[:2] == ("docker", "stop"):
             for identity in command[2:]:
@@ -540,6 +556,7 @@ def _patch_lifecycle_runtime(
 def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ):
     host = LifecycleHost(tmp_path)
     configured_ref = [host.old_image_ref]
@@ -550,6 +567,7 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
         host,
         image_ref=host.target_image_ref,
         target_revision=host.target_revision,
+        run_id=RUN_ID,
         state_path=state_path,
     )
     assert preflight_result["phase"] == "preflight_proved"
@@ -559,27 +577,31 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     assert prepare_deploy(
         host,
         image_ref=host.target_image_ref,
+        run_id=RUN_ID,
         state_path=state_path,
     )["phase"] == "target_installed"
     assert prove(
         host,
         image_ref=host.target_image_ref,
         revision=host.target_revision,
+        run_id=RUN_ID,
         state_path=state_path,
     )["phase"] == "safe_fleet"
     assert post_canary(
         host,
         image_ref=host.target_image_ref,
         revision=host.target_revision,
+        run_id=RUN_ID,
         state_path=state_path,
     )["phase"] == "post_canary_proved"
-    assert fence_status(host, state_path=state_path)["state_phase"] == (
+    assert fence_status(host, run_id=RUN_ID, state_path=state_path)["state_phase"] == (
         "post_canary_proved"
     )
     restored = restore_if_safe(
         host,
         image_ref=host.target_image_ref,
         revision=host.target_revision,
+        run_id=RUN_ID,
         state_path=state_path,
     )
     assert restored["phase"] == "restored"
@@ -596,6 +618,70 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
         "active": "active",
         "enabled": "enabled",
     }
+    second_run = fence.main(
+        [
+            "--state-path",
+            str(state_path),
+            "preflight",
+            "--image-ref",
+            "not-an-immutable-digest",
+            "--revision",
+            host.target_revision,
+            "--run-id",
+            "test-run-2",
+        ],
+        host=host,
+    )
+    second_failure = json.loads(capsys.readouterr().out)
+    assert second_run == 2
+    assert second_failure["stale_state_ignored"] is True
+    assert not second_failure.get("cutover_started", False)
+
+
+def test_new_run_preflight_failure_ignores_stale_restored_generation(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "fence-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": "prior-run-1",
+                "phase": "restored",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    return_code = fence.main(
+        [
+            "--state-path",
+            str(state_path),
+            "preflight",
+            "--image-ref",
+            "not-an-immutable-digest",
+            "--revision",
+            host.target_revision,
+            "--run-id",
+            "current-run-2",
+        ],
+        host=host,
+    )
+
+    failure = json.loads(capsys.readouterr().out)
+    assert return_code == 2
+    assert failure["stale_state_ignored"] is True
+    assert not failure.get("cutover_started", False)
+    status = fence_status(
+        host,
+        run_id="current-run-2",
+        state_path=state_path,
+    )
+    assert status["current_run_matches"] is False
+    assert status["current_run_cutover_started"] is False
 
 
 def test_preflight_fails_if_checked_stop_leaves_active_racer(
@@ -613,6 +699,7 @@ def test_preflight_fails_if_checked_stop_leaves_active_racer(
             host,
             image_ref=host.target_image_ref,
             target_revision=host.target_revision,
+            run_id=RUN_ID,
             state_path=tmp_path / "fence-state.json",
         )
 
@@ -636,6 +723,7 @@ def test_preflight_records_and_fences_stopped_extra_volume_consumer(
             host,
             image_ref=host.target_image_ref,
             target_revision=host.target_revision,
+            run_id=RUN_ID,
             state_path=state_path,
         )
 
@@ -650,6 +738,63 @@ def test_preflight_records_and_fences_stopped_extra_volume_consumer(
         host.containers["forgotten-writer"]["HostConfig"]["RestartPolicy"]["Name"]
         == "no"
     )
+
+
+def test_preflight_publishes_state_only_after_reboot_durable_fence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    real_atomic_json = fence._atomic_json
+    publications: list[str] = []
+
+    def assert_durable_before_publish(path: Path, payload: dict[str, Any]) -> None:
+        first_publication = not publications
+        publications.append(str(payload["phase"]))
+        if first_publication:
+            assert all(
+                info["HostConfig"]["RestartPolicy"]["Name"] == "no"
+                for info in host.containers.values()
+            )
+            assert host.units[DAEMON_SERVICE]["enabled"] == "disabled"
+            assert all(
+                host.units[unit]["enabled"] == "disabled"
+                for unit in RESTART_RACER_UNITS
+                if unit.endswith(".timer")
+            )
+        real_atomic_json(path, payload)
+
+    monkeypatch.setattr(fence, "_atomic_json", assert_durable_before_publish)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=tmp_path / "fence-state.json",
+    )
+
+    assert publications[0] == "fencing"
+
+
+def test_preflight_refuses_unproved_restart_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    host.restart_policy_override = "always"
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+
+    with pytest.raises(FenceError, match="restart fence did not persist"):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+    assert not state_path.exists()
 
 
 @pytest.mark.parametrize("failure", ["noop", "error"])
@@ -667,6 +812,7 @@ def test_restore_rejects_unmask_noop_or_failure(
             {
                 "schema_version": 1,
                 "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
                 "phase": "safe_fleet",
                 "old_container_ids": {},
                 "restart_racer_state": {
@@ -690,6 +836,7 @@ def test_restore_rejects_unmask_noop_or_failure(
             host,
             image_ref=host.target_image_ref,
             revision=host.target_revision,
+            run_id=RUN_ID,
             state_path=state_path,
         )
     assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
@@ -722,6 +869,7 @@ def test_prove_rejects_image_identity_not_recorded_in_fence_state(
             {
                 "schema_version": 1,
                 "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
                 "phase": "target_installed",
                 "target_image_ref": host.target_image_ref,
                 "target_revision": host.target_revision,
@@ -743,6 +891,7 @@ def test_prove_rejects_image_identity_not_recorded_in_fence_state(
             host,
             image_ref=arbitrary_image,
             revision="c" * 40,
+            run_id=RUN_ID,
             state_path=state_path,
         )
 
@@ -769,7 +918,7 @@ def test_unsafe_cleanup_stops_all_writers_and_proves_old_ids(
         encoding="utf-8",
     )
 
-    evidence = quiesce_unsafe(host, state_path=state_path)
+    evidence = quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
 
     assert evidence["phase"] == "unsafe_fenced"
     assert evidence["old_container_ids_running"] == []
@@ -803,7 +952,7 @@ def test_unsafe_cleanup_fences_newly_attached_volume_consumer(
         encoding="utf-8",
     )
 
-    evidence = quiesce_unsafe(host, state_path=state_path)
+    evidence = quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
 
     assert evidence["writers_fenced"] is True
     assert host.containers["late-volume-writer"]["State"]["Running"] is False
@@ -820,14 +969,73 @@ def test_unsafe_cleanup_still_fences_when_durable_state_is_unreadable(
     state_path = tmp_path / "fence-state.json"
     state_path.write_text("{", encoding="utf-8")
 
-    evidence = quiesce_unsafe(host, state_path=state_path)
+    evidence = quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
 
     assert evidence["writers_fenced"] is True
     assert evidence["source_state_error"]
     assert not any(
         info["State"]["Running"] for info in host.containers.values()
     )
-    assert Path(evidence["durable_state_path"]).is_file()
+    assert Path(evidence["durable_state_path"]) == state_path
+    canonical = json.loads(state_path.read_text(encoding="utf-8"))
+    assert canonical["phase"] == "unsafe_fenced"
+    archived = Path(evidence["archived_corrupt_state"])
+    assert archived.is_file()
+    assert archived.read_text(encoding="utf-8") == "{"
+
+
+def test_unsafe_cleanup_without_receipt_resolution_never_claims_fenced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    del host.containers["tinyassets-worker"]
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "missing-state.json"
+
+    with pytest.raises(FenceError, match="could not prove"):
+        quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "unsafe_fence_unproved"
+    assert state["receipt_resolution_error"]
+    assert not any(
+        info["State"]["Running"] for info in host.containers.values()
+    )
+
+
+def test_process_scan_permission_error_is_uncertainty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    proc_root = tmp_path / "proc"
+    proc = proc_root / "123"
+    (proc / "fd").mkdir(parents=True)
+    (proc / "cmdline").write_bytes(b"python\0worker")
+    (proc / "environ").write_bytes(b"")
+    (proc / "mountinfo").write_text("", encoding="utf-8")
+    monkeypatch.setattr(fence.os, "getpid", lambda: 999)
+    monkeypatch.setattr(fence.os, "readlink", lambda _path: "/usr/bin/python")
+    original_read_bytes = Path.read_bytes
+
+    def deny_environ(path: Path) -> bytes:
+        if path.name == "environ":
+            raise PermissionError("denied")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", deny_environ)
+    monkeypatch.setattr(
+        fence.Path,
+        "glob",
+        lambda _self, _pattern: [proc],
+    )
+
+    with pytest.raises(FenceError, match="process scan permission denied"):
+        fence._stray_writer_processes(
+            tmp_path / "receipt.db",
+            set(),
+            tmp_path,
+        )
 
 
 def test_writer_command_classifier_covers_idle_cloud_worker():

@@ -1442,6 +1442,8 @@ def test_stop_writer_deploy_proves_exact_safe_image_and_drains_old_ids():
     assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in preflight
     assert "org.opencontainers.image.revision" in preflight
     assert "git merge-base --is-ancestor" in preflight
+    assert "systemd-run --quiet --collect --wait --pipe" in preflight
+    assert "--run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in preflight
     assert "prove --image-ref" in proof
     assert "receipt_snapshot_post_deploy.json" in proof
 
@@ -1527,3 +1529,15 @@ def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
     script = str(terminal.get("run", ""))
     assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script
     assert "export FORWARD_SUCCEEDED=false" in script
+
+
+def test_cleanup_derives_cutover_only_from_current_run_generation():
+    wf = _load()
+    cleanup = _step_named(
+        wf,
+        "Transitional task 2.1 restore restart racers when safe",
+    )
+    script = str(cleanup.get("run", ""))
+    assert "current_run_cutover_started" in script
+    assert "str(bool(status.get(\"state_exists\")))" not in script
+    assert "status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" in script

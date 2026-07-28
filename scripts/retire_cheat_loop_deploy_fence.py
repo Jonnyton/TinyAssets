@@ -53,6 +53,7 @@ CANONICAL_IMAGE_RE = re.compile(
     r"@sha256:[0-9a-f]{64}$"
 )
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 WRITER_PROCESS_MARKERS = (
     "tinyassets.universe_server",
     "tinyassets.daemon_server",
@@ -479,6 +480,22 @@ class Host:
                     continue
         return pids
 
+    def container_restart_policy(self, identity: str) -> str:
+        policy = self.run(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{.HostConfig.RestartPolicy.Name}}",
+                identity,
+            ]
+        )
+        if policy not in {"no", "always", "unless-stopped", "on-failure"}:
+            raise FenceError(
+                f"container restart policy is not authoritative: {identity}"
+            )
+        return policy
+
     def unit_state(self, unit: str) -> dict[str, str]:
         return {
             "active": self.run(["systemctl", "is-active", unit], check=False),
@@ -566,6 +583,17 @@ def _load_state(path: Path) -> dict[str, Any]:
     return state
 
 
+def _require_run_id(run_id: str) -> None:
+    if not RUN_ID_RE.fullmatch(run_id):
+        raise FenceError("deploy fence run identity is invalid")
+
+
+def _require_state_run(state: Mapping[str, Any], run_id: str) -> None:
+    _require_run_id(run_id)
+    if state.get("run_id") != run_id:
+        raise FenceError("durable stop-writer fence belongs to another deploy run")
+
+
 def _exact_inspections(host: Host) -> dict[str, dict[str, Any]]:
     return {name: host.container_info(name) for name in EXPECTED_CONTAINERS}
 
@@ -639,16 +667,44 @@ def _wait_units_quiesced(
     raise FenceError(f"restart racer remains active after checked stop: {remaining}")
 
 
-def _stop_and_mask_writer_units(host: Host) -> tuple[str, ...]:
+def _set_restart_no(
+    host: Host,
+    consumers: Mapping[str, Mapping[str, Any]],
+) -> dict[str, str]:
+    proved: dict[str, str] = {}
+    for name, info in consumers.items():
+        identity = str(info.get("Id", ""))
+        if not identity:
+            raise FenceError(f"container identity is unavailable: {name}")
+        host.run(["docker", "update", "--restart=no", identity])
+        policy = host.container_restart_policy(identity)
+        if policy != "no":
+            raise FenceError(
+                f"container restart fence did not persist: {name}={policy}"
+            )
+        proved[name] = policy
+    return proved
+
+
+def _apply_boot_fence(host: Host, present_racers: Sequence[str]) -> None:
+    for unit in present_racers:
+        if unit.endswith(".timer"):
+            host.run(["systemctl", "disable", "--now", unit])
+    host.run(["systemctl", "disable", DAEMON_SERVICE])
+
+
+def _stop_and_mask_writer_units(
+    host: Host,
+    *,
+    boot_fence_applied: bool = False,
+) -> tuple[str, ...]:
     present_racers = tuple(
         unit for unit in RESTART_RACER_UNITS if host.unit_present(unit)
     )
     if not host.unit_present(DAEMON_SERVICE):
         raise FenceError(f"required production unit is missing: {DAEMON_SERVICE}")
-    for unit in present_racers:
-        if unit.endswith(".timer"):
-            host.run(["systemctl", "disable", "--now", unit])
-    host.run(["systemctl", "disable", DAEMON_SERVICE])
+    if not boot_fence_applied:
+        _apply_boot_fence(host, present_racers)
     for unit in (*present_racers, DAEMON_SERVICE):
         host.run(["systemctl", "stop", unit])
     if present_racers:
@@ -690,6 +746,10 @@ def _stray_writer_processes(
             for descriptor in (proc / "fd").iterdir():
                 try:
                     target = Path(os.path.realpath(descriptor)).resolve()
+                except PermissionError as exc:
+                    raise FenceError(
+                        f"process scan permission denied: pid={pid}"
+                    ) from exc
                 except OSError:
                     continue
                 if target in receipt_related:
@@ -739,7 +799,9 @@ def _stray_writer_processes(
                         "controlled_mount_namespace": controlled_mount_namespace,
                     }
                 )
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
+        except PermissionError as exc:
+            raise FenceError(f"process scan permission denied: pid={pid}") from exc
+        except (FileNotFoundError, ProcessLookupError):
             continue
     return risks[:100]
 
@@ -810,8 +872,14 @@ def preflight(
     *,
     image_ref: str,
     target_revision: str,
+    run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
+    _require_run_id(run_id)
+    if state_path.is_file():
+        existing = _load_state(state_path)
+        if existing.get("phase") != "restored" or _masked_units(host):
+            raise FenceError("an earlier stop-writer fence requires reconciliation")
     if not CANONICAL_IMAGE_RE.fullmatch(image_ref):
         raise FenceError("target image is not an immutable digest")
     if not REVISION_RE.fullmatch(target_revision):
@@ -867,7 +935,8 @@ def preflight(
     state: dict[str, Any] = {
         "schema_version": 1,
         "owner": TASK_OWNER,
-        "phase": "planned",
+        "run_id": run_id,
+        "phase": "fencing",
         "target_image_ref": image_ref,
         "target_revision": target_revision,
         "previous_image_ref": old_image_ref,
@@ -888,14 +957,21 @@ def preflight(
         "present_restart_racer_units": present_racers,
         "extra_volume_consumers": extra_consumers,
     }
+
+    # Crash invariant: publish canonical state only after every current
+    # production-volume consumer is restart=no and all boot activators are
+    # persistently disabled. If the host reboots after this point, no old
+    # writer can return; runner cancellation cannot kill the transient
+    # systemd unit that completes the remaining stop/mask/proof sequence.
+    consumers = {**inspections, **extra_inspections}
+    state["restart_policy_proof"] = _set_restart_no(host, consumers)
+    _apply_boot_fence(host, present_racers)
     _atomic_json(state_path, state)
 
-    # Reboot-stable fence: disable timer activation persistently and make the
-    # old containers restart=no before stopping the daemon unit. Runtime masks
-    # additionally reject direct starts during the cutover.
-    for name in (*EXPECTED_CONTAINERS, *extra_names):
-        host.run(["docker", "update", "--restart=no", name])
-    stopped_racers = _stop_and_mask_writer_units(host)
+    stopped_racers = _stop_and_mask_writer_units(
+        host,
+        boot_fence_applied=True,
+    )
     if stopped_racers != present_racers:
         raise FenceError("restart racer inventory changed during quiescence")
     host.run(
@@ -958,9 +1034,11 @@ def prepare_deploy(
     host: Host,
     *,
     image_ref: str,
+    run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
     state = _load_state(state_path)
+    _require_state_run(state, run_id)
     if state.get("phase") != "preflight_proved":
         raise FenceError("stop-writer preflight is not proved")
     if image_ref != state.get("target_image_ref") or _configured_image() != image_ref:
@@ -985,9 +1063,11 @@ def prove(
     *,
     image_ref: str,
     revision: str,
+    run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
     state = _load_state(state_path)
+    _require_state_run(state, run_id)
     if state.get("phase") not in {
         "target_installed",
         "safe_fleet",
@@ -1039,12 +1119,14 @@ def post_canary(
     *,
     image_ref: str,
     revision: str,
+    run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
     evidence = prove(
         host,
         image_ref=image_ref,
         revision=revision,
+        run_id=run_id,
         state_path=state_path,
     )
     evidence["phase"] = "post_canary_proved"
@@ -1064,7 +1146,13 @@ def _masked_units(host: Host) -> list[str]:
     ]
 
 
-def fence_status(host: Host, *, state_path: Path) -> dict[str, Any]:
+def fence_status(
+    host: Host,
+    *,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    _require_run_id(run_id)
     state: dict[str, Any] | None = None
     state_error = ""
     if state_path.is_file():
@@ -1076,30 +1164,84 @@ def fence_status(host: Host, *, state_path: Path) -> dict[str, Any]:
         "owner": TASK_OWNER,
         "state_exists": state_path.is_file(),
         "state_phase": state.get("phase") if state else None,
+        "state_run_id": state.get("run_id") if state else None,
+        "current_run_matches": bool(state and state.get("run_id") == run_id),
+        "current_run_cutover_started": bool(
+            state
+            and state.get("run_id") == run_id
+            and state.get("phase") not in {"restored"}
+        ),
         "state_error": state_error,
         "masked_units": _masked_units(host),
     }
 
 
-def quiesce_unsafe(host: Host, *, state_path: Path) -> dict[str, Any]:
+def _archive_corrupt_state(state_path: Path) -> Path | None:
+    if not state_path.exists():
+        return None
+    archive = state_path.with_name(
+        f"{state_path.name}.corrupt-{time.time_ns()}"
+    )
+    os.replace(state_path, archive)
+    _fsync_parent(state_path)
+    return archive
+
+
+def quiesce_unsafe(
+    host: Host,
+    *,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
     """Idempotently stop every controlled writer while leaving the fence closed."""
 
+    _require_run_id(run_id)
     state_error = ""
-    recovery_path = state_path
+    state_valid = True
     try:
         state = _load_state(state_path)
     except FenceError as exc:
         state_error = str(exc)
+        state_valid = False
         state = {
             "schema_version": 1,
             "owner": TASK_OWNER,
-            "phase": "emergency_fence_planned",
+            "run_id": run_id,
+            "phase": "emergency_fencing",
             "old_container_ids": {},
             "extra_volume_consumers": {},
         }
-        recovery_path = state_path.with_name(f"{state_path.name}.recovery")
-    recorded_extras = dict(state.get("extra_volume_consumers", {}))
+
+    volume_dir = host.volume_dir()
     current_volume_names = set(host.volume_container_names())
+    current_inspections = {
+        name: host.container_info(name) for name in sorted(current_volume_names)
+    }
+    receipt_resolution_error = ""
+    receipt: ReceiptStore | None = None
+    if state.get("receipt_host_path") and state.get("volume_mountpoint"):
+        receipt = ReceiptStore(
+            container_path=str(state.get("receipt_container_path", "")),
+            host_path=Path(str(state["receipt_host_path"])),
+        )
+        volume_dir = Path(str(state["volume_mountpoint"]))
+    else:
+        try:
+            expected_inspections = {
+                name: current_inspections[name] for name in EXPECTED_CONTAINERS
+            }
+            receipt = resolve_receipt_store(expected_inspections, volume_dir)
+            state["receipt_container_path"] = receipt.container_path
+            state["receipt_host_path"] = str(receipt.host_path)
+            state["volume_mountpoint"] = str(volume_dir)
+        except (FenceError, KeyError) as exc:
+            receipt_resolution_error = (
+                str(exc)
+                if isinstance(exc, FenceError)
+                else "expected writer is unavailable for receipt resolution"
+            )
+
+    recorded_extras = dict(state.get("extra_volume_consumers", {}))
     extra_names = tuple(
         sorted(
             (current_volume_names - set(EXPECTED_CONTAINERS))
@@ -1107,10 +1249,8 @@ def quiesce_unsafe(host: Host, *, state_path: Path) -> dict[str, Any]:
         )
     )
     for name in extra_names:
-        if name in recorded_extras:
-            continue
-        try:
-            info = host.container_info(name)
+        info = current_inspections.get(name)
+        if info is not None:
             recorded_extras[name] = {
                 "id": str(info.get("Id", "")),
                 "running": bool(info.get("State", {}).get("Running")),
@@ -1120,16 +1260,30 @@ def quiesce_unsafe(host: Host, *, state_path: Path) -> dict[str, Any]:
                     .get("Name", "")
                 ),
             }
-        except FenceError:
+        elif name not in recorded_extras:
             recorded_extras[name] = {"inspection_error": True}
     state["extra_volume_consumers"] = recorded_extras
-    _atomic_json(recovery_path, state)
-    controlled_names = tuple(
-        sorted(set(EXPECTED_CONTAINERS) | set(extra_names))
+    state["recovery_run_id"] = run_id
+    restart_policy_proof = _set_restart_no(host, current_inspections)
+    state["restart_policy_proof"] = restart_policy_proof
+    present_racers = tuple(
+        unit for unit in RESTART_RACER_UNITS if host.unit_present(unit)
     )
-    for name in controlled_names:
-        host.run(["docker", "update", "--restart=no", name], check=False)
-    present_racers = _stop_and_mask_writer_units(host)
+    if not host.unit_present(DAEMON_SERVICE):
+        raise FenceError(f"required production unit is missing: {DAEMON_SERVICE}")
+    _apply_boot_fence(host, present_racers)
+    archived_state = None
+    if not state_valid:
+        archived_state = _archive_corrupt_state(state_path)
+    _atomic_json(state_path, state)
+
+    stopped_racers = _stop_and_mask_writer_units(
+        host,
+        boot_fence_applied=True,
+    )
+    if stopped_racers != present_racers:
+        raise FenceError("restart racer inventory changed during emergency fence")
+    controlled_names = tuple(sorted(current_volume_names | set(recorded_extras)))
     host.run(["docker", "stop", *controlled_names], check=False)
 
     names_still_running = [
@@ -1141,20 +1295,32 @@ def quiesce_unsafe(host: Host, *, state_path: Path) -> dict[str, Any]:
         if _container_running_exact(host, old_id)
     ]
     process_risk: list[dict[str, Any]] = []
-    receipt_path = state.get("receipt_host_path")
-    if receipt_path:
-        volume_mountpoint = state.get("volume_mountpoint")
-        process_risk = _stray_writer_processes(
-            Path(str(receipt_path)),
-            set(),
-            Path(str(volume_mountpoint)) if volume_mountpoint else None,
-        )
-    if names_still_running or old_running or process_risk:
+    process_error = ""
+    if receipt is not None:
+        try:
+            process_risk = _stray_writer_processes(
+                receipt.host_path,
+                set(),
+                volume_dir,
+            )
+        except FenceError as exc:
+            process_error = str(exc)
+    if (
+        names_still_running
+        or old_running
+        or process_risk
+        or receipt_resolution_error
+        or process_error
+    ):
+        state["phase"] = "unsafe_fence_unproved"
+        state["receipt_resolution_error"] = receipt_resolution_error
+        state["process_scan_error"] = process_error
+        _atomic_json(state_path, state)
         raise FenceError(
             "unsafe writer cleanup could not prove all controlled writers stopped"
         )
     state["phase"] = "unsafe_fenced"
-    _atomic_json(recovery_path, state)
+    _atomic_json(state_path, state)
     return {
         "schema_version": 1,
         "owner": TASK_OWNER,
@@ -1165,9 +1331,11 @@ def quiesce_unsafe(host: Host, *, state_path: Path) -> dict[str, Any]:
         "named_containers_running": names_still_running,
         "old_container_ids_running": old_running,
         "stray_writer_processes": process_risk,
+        "restart_policy_proof": restart_policy_proof,
         "masked_units": _masked_units(host),
         "source_state_error": state_error,
-        "durable_state_path": str(recovery_path),
+        "archived_corrupt_state": str(archived_state) if archived_state else "",
+        "durable_state_path": str(state_path),
     }
 
 
@@ -1204,8 +1372,10 @@ def restore_if_safe(
     *,
     image_ref: str,
     revision: str,
+    run_id: str,
     state_path: Path,
 ) -> dict[str, Any]:
+    _require_run_id(run_id)
     masked_before = _masked_units(host)
     if not state_path.is_file():
         if masked_before:
@@ -1220,10 +1390,12 @@ def restore_if_safe(
             "masked_units": [],
         }
     state = _load_state(state_path)
+    _require_state_run(state, run_id)
     evidence = prove(
         host,
         image_ref=image_ref,
         revision=revision,
+        run_id=run_id,
         state_path=state_path,
     )
     racer_state = state.get("restart_racer_state", {})
@@ -1290,12 +1462,16 @@ def _parser() -> argparse.ArgumentParser:
         command = subparsers.add_parser(name)
         command.add_argument("--image-ref", required=True)
         command.add_argument("--revision", required=True)
+        command.add_argument("--run-id", required=True)
     prepare = subparsers.add_parser("prepare-deploy")
     prepare.add_argument("--image-ref", required=True)
+    prepare.add_argument("--run-id", required=True)
     observe = subparsers.add_parser("observe")
     observe.add_argument("--image-ref")
-    subparsers.add_parser("status")
-    subparsers.add_parser("quiesce-unsafe")
+    status = subparsers.add_parser("status")
+    status.add_argument("--run-id", required=True)
+    quiesce = subparsers.add_parser("quiesce-unsafe")
+    quiesce.add_argument("--run-id", required=True)
     return parser
 
 
@@ -1308,12 +1484,14 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
                 host,
                 image_ref=args.image_ref,
                 target_revision=args.revision,
+                run_id=args.run_id,
                 state_path=args.state_path,
             )
         elif args.command == "prepare-deploy":
             result = prepare_deploy(
                 host,
                 image_ref=args.image_ref,
+                run_id=args.run_id,
                 state_path=args.state_path,
             )
         elif args.command == "prove":
@@ -1321,6 +1499,7 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
                 host,
                 image_ref=args.image_ref,
                 revision=args.revision,
+                run_id=args.run_id,
                 state_path=args.state_path,
             )
         elif args.command == "post-canary":
@@ -1328,6 +1507,7 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
                 host,
                 image_ref=args.image_ref,
                 revision=args.revision,
+                run_id=args.run_id,
                 state_path=args.state_path,
             )
         elif args.command == "restore-if-safe":
@@ -1335,14 +1515,23 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
                 host,
                 image_ref=args.image_ref,
                 revision=args.revision,
+                run_id=args.run_id,
                 state_path=args.state_path,
             )
         elif args.command == "observe":
             result = observe_fleet(host, expected_image_ref=args.image_ref)
         elif args.command == "quiesce-unsafe":
-            result = quiesce_unsafe(host, state_path=args.state_path)
+            result = quiesce_unsafe(
+                host,
+                run_id=args.run_id,
+                state_path=args.state_path,
+            )
         else:
-            result = fence_status(host, state_path=args.state_path)
+            result = fence_status(
+                host,
+                run_id=args.run_id,
+                state_path=args.state_path,
+            )
         _write_optional(args.evidence, result)
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
         return 0
@@ -1356,24 +1545,25 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
         if args.state_path.is_file():
             try:
                 state = _load_state(args.state_path)
-                failure.update(
-                    {
-                        "phase": state.get("phase"),
-                        "cutover_started": state.get("phase")
-                        in {
-                            "planned",
-                            "quiesced",
-                            "preflight_proved",
-                            "target_installed",
-                            "safe_fleet",
-                            "post_canary_proved",
-                            "restored",
-                        },
-                        "previous_image_ref": state.get("previous_image_ref", ""),
-                        "previous_revision": state.get("previous_revision", ""),
-                        "old_container_ids": state.get("old_container_ids", {}),
-                    }
-                )
+                command_run_id = getattr(args, "run_id", "")
+                if state.get("run_id") == command_run_id:
+                    failure.update(
+                        {
+                            "phase": state.get("phase"),
+                            "cutover_started": state.get("phase") != "restored",
+                            "previous_image_ref": state.get(
+                                "previous_image_ref", ""
+                            ),
+                            "previous_revision": state.get(
+                                "previous_revision", ""
+                            ),
+                            "old_container_ids": state.get(
+                                "old_container_ids", {}
+                            ),
+                        }
+                    )
+                else:
+                    failure["stale_state_ignored"] = True
             except FenceError:
                 failure["state_error"] = "durable fence state unreadable"
         _write_optional(args.evidence, failure)

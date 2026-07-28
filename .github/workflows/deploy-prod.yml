@@ -371,9 +371,10 @@ jobs:
           echo "target_revision=${target_revision}" >> "$GITHUB_OUTPUT"
 
           set +e
+          fence_unit="tinyassets-deploy-fence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py preflight --image-ref '${NEW_IMAGE}' --revision '${target_revision}'" \
+              "sudo systemd-run --quiet --collect --wait --pipe --unit '${fence_unit}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py preflight --image-ref '${NEW_IMAGE}' --revision '${target_revision}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/preflight.json"
           preflight_status=$?
           set -e
@@ -847,7 +848,7 @@ jobs:
           # Watchdog and autoheal racers remain fenced through proof.
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prepare-deploy --image-ref '${NEW_IMAGE}'" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prepare-deploy --image-ref '${NEW_IMAGE}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$RUNNER_TEMP/stop-writer-evidence/prepare-deploy.json"
           # Pull + restart via the systemd unit (which runs docker
           # compose down + up with the new env).
@@ -967,7 +968,7 @@ jobs:
           evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prove --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}'" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py prove --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/post-deploy.json"
           python - "$evidence_dir/post-deploy.json" \
               "$evidence_dir/receipt_snapshot_post_deploy.json" <<'PY'
@@ -1040,7 +1041,7 @@ jobs:
           evidence_dir="$RUNNER_TEMP/stop-writer-evidence"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py post-canary --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}'" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py post-canary --image-ref '${NEW_IMAGE}' --revision '${TARGET_REVISION}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/post-canary.json"
           python - "$evidence_dir/post-canary.json" \
               "$evidence_dir/receipt_snapshot_post_canary.json" <<'PY'
@@ -1242,7 +1243,7 @@ jobs:
             set +e
             ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py quiesce-unsafe" \
+                "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py quiesce-unsafe --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
                 > "$evidence_dir/unsafe-fence.json"
             fence_status=$?
             set -e
@@ -1256,7 +1257,7 @@ jobs:
           set +e
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py status" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py status --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/fence-status.json"
           status_probe=$?
           set -e
@@ -1271,13 +1272,15 @@ jobs:
           with open(sys.argv[2], "a", encoding="utf-8") as output:
               output.write(
                   "cutover_started="
-                  + str(bool(status.get("state_exists"))).lower()
+                  + str(bool(status.get("current_run_cutover_started"))).lower()
                   + "\n"
               )
+          needs_fence = bool(status.get("masked_units")) or (
+              status.get("state_exists")
+              and status.get("state_phase") != "restored"
+          )
           raise SystemExit(
-              0
-              if not status.get("state_exists") and not status.get("masked_units")
-              else 1
+              1 if needs_fence else 0
           )
           PY
           then
@@ -1335,7 +1338,7 @@ jobs:
           set +e
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py restore-if-safe --image-ref '${active_image}' --revision '${active_revision}'" \
+              "sudo python3 /tmp/retire-cheat-loop-deploy-fence.py restore-if-safe --image-ref '${active_image}' --revision '${active_revision}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
               > "$evidence_dir/cleanup.json"
           restore_status=$?
           set -e
