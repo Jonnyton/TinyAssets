@@ -148,6 +148,7 @@ for (const [label, relativePath] of [
   ["control", "bad\tname.js"],
   ["leading dot", ".hidden.js"],
   ["traversal-like", "safe..evil.js"],
+  ["literal percent", "100%.js"],
 ]) {
   test(`rejects ${label} path components`, async (t) => {
     const { source, destination } = await fixture(t);

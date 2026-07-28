@@ -11,6 +11,8 @@ preview_urls = true
 [assets]
 directory = "./out"
 binding = "ASSETS"
+# Pin Cloudflare's path-to-file mapping rather than inheriting a future default.
+html_handling = "auto-trailing-slash"
 # Serve out/404.html for unmatched paths so the SPA fallback (deep-linked goals) works.
 not_found_handling = "404-page"
 # Pull-request assets can contain shadowing or normalization-edge paths. Run the

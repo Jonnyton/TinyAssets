@@ -58,10 +58,13 @@ URL of the form:
 
 Treat everything rendered at that URL as untrusted review input. The trusted
 Worker runs before every asset lookup. It canonicalizes case, escapes, slash
-forms, and dot segments, returns no-store `503` for every MCP-equivalent path,
-and fails closed when a path cannot be safely canonicalized; only non-MCP paths
-fall through to static assets. Preview JavaScript therefore cannot acquire a
-same-origin bridge to production data.
+forms, and dot segments, returns no-store `503` for every MCP-equivalent path
+and the `/.well-known/oauth-*` and `/.well-known/mcp*` discovery namespaces,
+and fails closed when a path cannot be safely canonicalized; only other
+canonical paths fall through to static assets. Sanitized artifacts reject
+literal-percent path components so every accepted path is serveable under the
+same decoding policy. Preview JavaScript therefore cannot acquire a same-origin
+bridge to production data.
 
 An independent `preview-security` workflow checks the trust-boundary contract
 on every pull request and `main` push. The publication path then has four
@@ -102,8 +105,13 @@ not receive credentials until the following isolated infrastructure exists:
   the approved organization; do not configure `Everyone`, `Bypass`, or
   public-path exceptions. These URLs are otherwise public, and arbitrary
   pull-request JavaScript is not an acceptable public hosting surface;
+- with a host-held preview-account credential, upload one inert trusted
+  bootstrap version under a unique alias without pull-request bytes or a
+  GitHub credential, then prove anonymous denial and authorized-reviewer
+  loading on the real base, bootstrap alias, and version hostnames;
 - environment secret `CLOUDFLARE_PREVIEW_API_TOKEN`, containing a new token with
-  only Workers Scripts write permission in that preview account;
+  only Workers Scripts write permission in that preview account, configured
+  only after the Access proof is independently accepted;
 - environment variable `CLOUDFLARE_PREVIEW_ACCOUNT_ID`, containing that preview
   account's ID.
 
@@ -117,8 +125,8 @@ the repository plan supports those controls.
 branch. The trusted workflow therefore must land through this narrow bootstrap
 before it can publish previews for a later pull request. Fork pull requests may
 build and test without secrets, but they never enter credentialed publication.
-Same-repository pull requests are publishable only when their current head still
-matches the validated build.
+Same-repository pull requests are rechecked immediately before credential use
+to confirm their current head still matches the validated build.
 
 Each successfully published eligible build uses a never-reused alias and a
 provider-generated immutable version URL, so a stale upload cannot change the
@@ -128,12 +136,12 @@ versions or their version URLs. Cloudflare ages out only alias mappings after
 the 1,000 most recently deployed aliases; underlying version URLs remain
 Access-controlled retained evidence. Before enabling the GitHub credential,
 prove unauthenticated denial and authorized-reviewer loading separately on the
-fixed Worker's base `workers.dev` hostname, one real run/attempt alias hostname,
-and its provider-generated version hostname. For incident response, remove the
-GitHub environment secret and disable Preview URLs or delete the dedicated
-Worker/account. If policy later requires shorter retention, build it as an
-ordinary user-owned/remixable maintenance workflow rather than a privileged
-TinyAssets loop.
+fixed Worker's base `workers.dev` hostname, one inert host-created bootstrap
+alias hostname, and its provider-generated version hostname. For incident
+response, remove the GitHub environment secret and disable Preview URLs or
+delete the dedicated Worker/account. If policy later requires shorter
+retention, build it as an ordinary user-owned/remixable maintenance workflow
+rather than a privileged TinyAssets loop.
 
 ## The hosted approval loop (after activation)
 

@@ -28,31 +28,25 @@
   script Wrangler, current-head recheck, and undeployed never-reused per-run alias.
 - [x] 2.4 Add the separate pull-request-comment authority with exact source
   artifact ID plus protected-job manifest digest, and an unconditional Worker-
-  first, canonical/fail-closed no-store `503` block for MCP-equivalent paths
-  before non-MCP requests fall through to static assets.
+  first, canonical/fail-closed no-store `503` block for MCP-equivalent and
+  OAuth/MCP discovery paths before other canonical requests fall through to
+  static assets; reject literal-percent artifact paths that cannot be served.
 - [x] 2.5 Rewrite preview operator guidance so no fixed URL, live-data bridge,
   automatic Pages refresh, production token reuse, or source-unproved
   environment protection is promised.
 
-## 3. Verify, Publish, And Activate
+## 3. Verify And Publish The Source Bootstrap
 
 - [x] 3.1 Run the full website tests/builds, strict OpenSpec validation,
   actionlint, zizmor, dependency audit, and exact-target scan; record
   freshness-stamped evidence.
 - [ ] 3.2 Obtain independent exact-head general/security review and a fresh
   Claude Opus 5 opposite-provider review; adapt and repeat on every code change.
-- [ ] 3.3 Sync the delta into `openspec/specs/public-website-surface/spec.md`,
-  archive this change, push the narrow bootstrap PR, and land it on `main`.
-- [ ] 3.4 Host creates the dedicated Cloudflare preview account, enables its
-  `workers.dev` subdomain, creates the fixed preview Worker, enables
-  deny-by-default Access for named/organization reviewers with no public bypass,
-  proves denied anonymous plus successful authorized access on the fixed
-  Worker's base `workers.dev`, real alias, and version hostnames, and configures
-  the protected `react-preview` environment credentials; never reuse production
-  credentials.
-- [ ] 3.5 Rebase PR #1812 onto the bootstrap merge and capture a real current-
-  head hosted preview; exact artifact-ID/manifest receipt; rendered browser
-  conversation; and live base/alias/version path-matrix proof that canonical,
-  encoded, slash/case/dot-segment, malformed, and shadow-asset MCP paths fail
-  closed while an ordinary asset loads, plus post-fix clean-use evidence,
-  before calling publication proven.
+- [x] 3.3 Create the strict-valid `activate-hosted-preview-publication`
+  successor plus a durable STATUS host-action for the dedicated account, inert
+  bootstrap alias/version, Access proof, GitHub environment, first live preview,
+  rendered review, and post-fix evidence; do not sync/archive that successor
+  until its external facts are true.
+- [ ] 3.4 Sync the source-only delta into
+  `openspec/specs/public-website-surface/spec.md`, archive this change, push the
+  narrow bootstrap PR, and land it on `main`.

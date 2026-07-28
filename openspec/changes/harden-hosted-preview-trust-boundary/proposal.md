@@ -19,12 +19,13 @@ blocks safe retirement of the old privileged automation surface.
   provider-generated immutable version URL, and recheck the current
   pull-request head.
 - Run the trusted preview Worker before every asset lookup; canonically block
-  every MCP-equivalent path and fail closed on uncanonicalizable paths so
-  untrusted browser JavaScript cannot bridge to production data.
-- Require a dedicated Cloudflare preview account; production-account
-  credentials do not satisfy the boundary, and require Cloudflare Access over
-  the fixed Worker's base `workers.dev` plus alias and version hostnames for
-  Access-controlled retained preview evidence.
+  every MCP-equivalent path and its OAuth/MCP discovery namespaces, reject
+  artifact paths containing literal percent signs, and fail closed on
+  uncanonicalizable paths so untrusted browser JavaScript cannot bridge to
+  production data.
+- Keep credentialed publication disabled until the separate
+  `activate-hosted-preview-publication` change proves a dedicated Cloudflare
+  preview account, base/alias/version Access, and restricted GitHub environment.
 - Pin the boundary with hostile validator fixtures, parsed workflow contract
   tests, operator guidance, and independent exact-head review.
 
@@ -44,7 +45,7 @@ None.
 
 This changes the three React preview workflows, trusted preview Worker and
 Wrangler configuration, a small lockfile-pinned deployment toolchain, preview
-operator documentation, and per-run/attempt website contract tests. The GitHub
-`react-preview` environment must use a dedicated Cloudflare preview account
-before credentialed publication is enabled. Production deployment and
-`tinyassets.io/mcp` are not changed.
+operator documentation, and per-run/attempt website contract tests. It lands
+with no preview credential and creates no usable hosted preview; external
+activation remains in `activate-hosted-preview-publication`. Production
+deployment and `tinyassets.io/mcp` are not changed.

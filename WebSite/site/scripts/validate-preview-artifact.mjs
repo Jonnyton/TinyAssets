@@ -119,8 +119,9 @@ function assertSafeComponent(component) {
     component.includes("/") ||
     component.includes("\\") ||
     component.includes(":") ||
+    component.includes("%") ||
     /[\u0000-\u001f\u007f]/u.test(component) ||
-    /%(?:2e|2f|5c)/iu.test(component);
+    /[\u0080-\u009f]/u.test(component);
   if (unsafe) {
     throw new Error(
       `Unsafe artifact path component: ${JSON.stringify(component)}`,

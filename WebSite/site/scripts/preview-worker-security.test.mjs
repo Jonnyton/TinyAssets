@@ -381,10 +381,12 @@ test("privileged toolchain and Worker target are fixed by trusted files", () => 
     /^\s*(?:routes?|custom_domains?)\s*=/m,
   );
   assert.match(trustedWorkerConfig, /^directory = "\.\/out"$/m);
+  assert.match(trustedWorkerConfig, /^html_handling = "auto-trailing-slash"$/m);
+  assert.match(trustedWorkerConfig, /^not_found_handling = "404-page"$/m);
   assert.match(trustedWorkerConfig, /^run_worker_first = true$/m);
 });
 
-test("trusted Worker rejects ambiguous MCP paths before asset lookup", async (t) => {
+test("trusted Worker rejects MCP and discovery paths before asset lookup", async (t) => {
   const blockedPaths = [
     ["/mcp", "exact"],
     ["/mcp/", "trailing slash"],
@@ -415,6 +417,32 @@ test("trusted Worker rejects ambiguous MCP paths before asset lookup", async (t)
     ["/mcp%", "trailing malformed percent"],
     ["/mcp%2", "truncated percent escape"],
     ["/mcp%zz", "non-hex percent escape"],
+    [
+      "/.well-known/oauth-protected-resource/mcp",
+      "protected-resource discovery",
+    ],
+    [
+      "/.WELL-KNOWN/OAUTH-PROTECTED-RESOURCE/MCP",
+      "uppercase protected-resource discovery",
+    ],
+    ["/%2ewell-known/oauth-protected-resource/mcp", "encoded well-known dot"],
+    ["/.well-known/oauth%2dprotected-resource/mcp", "encoded discovery hyphen"],
+    [
+      "/.well-known/oauth-protected-resource/%6dcp",
+      "encoded protected-resource discovery",
+    ],
+    ["/.well-known/%256dcp", "double-encoded MCP discovery namespace"],
+    ["/x/../.well-known/oauth-protected-resource/mcp", "dot-segment discovery"],
+    ["/.well-known%5coauth-protected-resource%5cmcp", "backslash discovery"],
+    [
+      "/.well-known/oauth-authorization-server",
+      "authorization-server discovery",
+    ],
+    ["/.well-known/mcp", "MCP well-known discovery"],
+    ["/.well-known/mcp.json", "MCP well-known extension"],
+    ["/.well-known/mcp/tools", "MCP well-known descendant"],
+    ["/asset%25name.png", "encoded literal percent"],
+    ["/asset%2525name.png", "double-encoded literal percent"],
   ];
 
   for (const [pathname, label] of blockedPaths) {
@@ -428,7 +456,12 @@ test("trusted Worker rejects ambiguous MCP paths before asset lookup", async (t)
 });
 
 test("trusted Worker delegates benign paths to assets exactly once", async (t) => {
-  for (const pathname of ["/", "/_next/static/app.js"]) {
+  for (const pathname of [
+    "/",
+    "/_next/static/app.js",
+    "/mcp-guide.html",
+    "/.well-known/openai-apps-challenge",
+  ]) {
     await t.test(pathname, async () => {
       const { assetRequests, request, response } =
         await invokeTrustedWorker(pathname);
@@ -444,6 +477,6 @@ test("trusted Worker contains no production MCP or credential bridge", () => {
   assert.doesNotMatch(trustedWorkerProgram, /tinyassets\.io\/mcp/);
   assert.doesNotMatch(
     trustedWorkerProgram,
-    /\b(?:authorization|cookie|set-cookie|www-authenticate)\b/i,
+    /\brequest\s*\.\s*headers\b|\bheaders\s*\.\s*get\s*\(|["']authorization["']|\b(?:cookie|set-cookie|www-authenticate)\b/i,
   );
 });

@@ -42,7 +42,7 @@ Format for future entries:
 - Branch: codex/preview-boundary-bootstrap-20260727
 - Lane state: Active lane
 - Worktree: C:\Users\Jonathan\Projects\wf-preview-boundary-bootstrap-20260727
-- STATUS/Issue/PR: retire-cheat-loop row; bootstrap PR pending
+- STATUS/Issue/PR: STATUS.md `Bootstrap hosted-preview trust boundary` row; bootstrap PR pending
 - Purpose: land the trusted default-branch preview boundary before rebasing #1812.
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-preview-boundary-bootstrap-20260727\_PURPOSE.md
 - Review gate: tests/builds + actionlint/zizmor + exact-head independent reviews + Claude Opus 5

@@ -24,7 +24,8 @@ larger cheat-loop retirement PR.
   published provenance receipt.
 - Limit credential use to an exact trusted toolchain and configuration that
   uploads one undeployed per-run preview version.
-- Prevent preview JavaScript from reaching production `/mcp`.
+- Prevent preview JavaScript from acquiring a same-origin bridge to production
+  `/mcp`.
 - Make the required external Cloudflare/GitHub custody boundary explicit.
 
 **Non-Goals:**
@@ -77,9 +78,9 @@ current PR head, and artifact run head to agree. Historical reruns fail closed.
 ### 3. Normalize static bytes before entering the environment
 
 The intake validator rejects symbolic and hard links, non-regular entries,
-unsafe/colliding paths, files with executable mode bits, package/deployment
-controls, archive-extension files, unexpected extensions, missing static-export
-roots, and count/size excesses.
+unsafe/colliding paths (including literal percent signs), files with executable
+mode bits, package/deployment controls, archive-extension files, unexpected
+extensions, missing static-export roots, and count/size excesses.
 It copies accepted bytes without executing them and emits a sorted SHA-256
 manifest. The upload job independently revalidates the copied tree, regenerates
 the manifest, requires a byte-identical match, then computes the published
@@ -120,33 +121,30 @@ program, name, and configuration come only from that trusted checkout.
 Dynamic `npx ...@latest`, pull-request configuration, and mutable branch
 checkouts were rejected because they expand the credentialed code surface.
 
-### 6. Block production MCP and isolate the Cloudflare account
+### 6. Block production MCP surfaces and hand off external activation
 
-The trusted Wrangler configuration runs the Worker before every static-asset
-lookup. The Worker repeatedly decodes escapes within a fixed bound, normalizes
-slash forms, dot segments, and case, returns a no-store `503` for every path
-canonically equivalent to `/mcp` or a descendant, and fails closed when safe
-canonicalization is impossible. Only a canonical non-MCP path falls through to
-`ASSETS`; the Worker contains no production origin. The environment token must
-belong to a dedicated Cloudflare preview account containing no production
-Workers, routes, domains, data, or credentials. The host must enable Cloudflare
-Access specifically for Preview URLs and the fixed Worker's base `workers.dev`
-hostname, and allow only named reviewers or the approved organization, with no
-`Everyone`, `Bypass`, or public exception, because those provider URLs are
-public without that control.
+The trusted Wrangler configuration pins static-asset handling and runs the
+Worker before every lookup. The Worker repeatedly decodes escapes within a
+fixed bound, normalizes slash forms, dot segments, and case, returns a no-store
+`503` for every path canonically equivalent to `/mcp` or a descendant and for
+the `/.well-known/oauth-*` and `/.well-known/mcp*` discovery namespaces, and
+fails closed when safe canonicalization is impossible. Only another canonical
+path falls through to `ASSETS`; the Worker contains no production origin.
 
-Access is the provider-edge authority for this fixed Worker. Its base
+External activation is owned by the successor
+`activate-hosted-preview-publication` change. Access is the provider-edge
+authority for this fixed Worker. Its base
 `workers.dev` hostname is an explicit public origin alongside alias and version
 hostnames; all three hostname classes require deny-by-default Access. There is
 no custom domain or production route. The Worker does not perform a header-
 presence imitation of JWT validation. If a future change adds any route around
 Access, that change must first add cryptographic issuer/audience/JWK validation
 and fail closed; merely checking for `Cf-Access-Jwt-Assertion` is insufficient.
-This source-only bootstrap explicitly accepts provider-edge Access as the sole
-HTTP authorization authority and therefore blocks activation until live
-anonymous-deny and authorized-load proofs exist for the fixed Worker's base
-`workers.dev` hostname, one real alias hostname, and its version hostname.
-Repository tests cannot prove that external policy.
+This source-only bootstrap explicitly blocks credentialed publication until the
+successor records live anonymous-deny and authorized-load proofs for the fixed
+Worker's base `workers.dev` hostname, one inert host-created alias hostname, and
+its version hostname. Repository tests cannot prove that external policy, and
+this change does not claim it is provisioned.
 
 A fixed Worker name inside the production account is insufficient because
 Workers Scripts write permission is account-scoped. A same-origin production
@@ -156,8 +154,8 @@ reviewer's browser is allowed to reach.
 ## Risks / Trade-offs
 
 - **[External protection cannot be proved by repository source]** → Keep the
-  task incomplete until the dedicated account, protected environment, live run,
-  and rendered URL evidence are recorded.
+  successor change and STATUS host-action incomplete until the dedicated
+  account, protected environment, live run, and rendered URL evidence exist.
 - **[Same-repository contributors remain repository-secret trusted]** → This
   workflow references no repository secret; record the broader custody problem
   as a separate P0 rather than overclaiming total repository isolation.
@@ -178,31 +176,19 @@ reviewer's browser is allowed to reach.
 
 ## Migration Plan
 
-1. Land this bootstrap on `main` with no Cloudflare credential configured.
-2. Create a dedicated Cloudflare preview account and least-privilege Workers
-   Scripts token; enable its `workers.dev` subdomain and create the fixed
-   `tiny-site-react-preview` Worker as a one-time host action. The workflow
-   deliberately disables provisioning and target auto-creation. Enable
-   Cloudflare Access for its base `workers.dev`, alias, and version hostnames,
-   allow only named reviewers or the approved organization, and prove
-   unauthenticated deny plus authorized load on each hostname class.
-3. Configure the `react-preview` GitHub environment for `main`, add the preview
-   account ID/token, require review, and disable admin bypass where supported.
-4. Rebase PR #1812 onto the bootstrap merge so its unprivileged build can
-   trigger the trusted default-branch consumer.
-5. Record the first real per-run immutable version URL and never-reused alias
-   URL, base/alias/version Access proofs, exact source artifact ID, verified
-   sanitized-manifest SHA-256, blocked `/mcp` response, rendered browser review,
-   and later post-fix use evidence.
-6. Roll back by removing the environment credential or reverting the trusted
-   consumer; for incident response disable Preview URLs or delete the dedicated
-   Worker/account. The unprivileged build remains safe and production is
-   untouched.
+1. Land this source bootstrap on `main` with no Cloudflare credential
+   configured.
+2. Leave `activate-hosted-preview-publication` and its STATUS host-action open.
+   That successor owns the dedicated account, inert host-created alias/version,
+   Access proof, GitHub environment credential, first real PR preview, rendered
+   review, post-fix evidence, and revocation procedure.
+3. Roll back this source bootstrap by reverting the trusted consumer. The
+   unprivileged build remains safe and production is untouched.
 
 ## Open Questions
 
 - Whether the repository plan supports mandatory environment reviewers and
-  disabling administrator bypass. Lack of those controls blocks credential
-  provisioning, not the source-only bootstrap.
+  disabling administrator bypass. The successor change owns that decision;
+  lack of an equivalent control blocks activation, not this source bootstrap.
 - Whether version-retention measurements justify a later user-buildable cleanup
   automation. No privileged TinyAssets cleanup loop is introduced here.

@@ -41,12 +41,14 @@ function normalizePathname(pathname) {
   return `/${segments.join("/")}`;
 }
 
-function isMcpEquivalentPath(pathname) {
+function isBlockedServicePath(pathname) {
   const normalized = normalizePathname(pathname);
   return (
     normalized === null ||
     normalized === "/mcp" ||
-    normalized.startsWith("/mcp/")
+    normalized.startsWith("/mcp/") ||
+    normalized.startsWith("/.well-known/oauth-") ||
+    normalized.startsWith("/.well-known/mcp")
   );
 }
 
@@ -54,7 +56,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (isMcpEquivalentPath(url.pathname)) {
+    if (isBlockedServicePath(url.pathname)) {
       return new Response(BLOCKED_MCP_RESPONSE, {
         status: 503,
         headers: {

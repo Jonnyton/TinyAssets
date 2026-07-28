@@ -1,22 +1,21 @@
 ## ADDED Requirements
 
-### Requirement: Hosted Preview Publication Preserves The Untrusted-Build Boundary
+### Requirement: Hosted Preview Source Pipeline Preserves The Untrusted-Build Boundary
 
-The hosted React preview SHALL execute pull-request-controlled install, test,
-and build commands only in an unprivileged workflow with read-only repository
-permission, no persisted checkout credential, and no deployment secret. A
-separate exact-trusted-default-branch workflow SHALL perform secretless
-provenance validation and artifact sanitization before a fresh protected-
-environment job receives any Cloudflare credential. The credentialed job MUST
-consume only the normalized static tree and matching deterministic manifest,
-MUST independently regenerate and byte-compare that manifest before computing
-the published SHA-256 from the regenerated manifest bytes, MUST NOT execute
-artifact content, and SHALL use fixed trusted Worker code, Worker name,
-Wrangler configuration, exact action revisions, lockfile-pinned Wrangler, and
-a credential belonging to a dedicated preview-only Cloudflare account. Each
-published alias MUST be never-reused and derived from one workflow run/attempt,
-and the fixed Worker's base `workers.dev` URL plus every aliased or versioned
-preview URL MUST be protected by deny-by-default Cloudflare Access.
+The hosted React preview source pipeline SHALL execute pull-request-controlled
+install, test, and build commands only in an unprivileged workflow with
+read-only repository permission, no persisted checkout credential, and no
+deployment secret. A separate exact-trusted-default-branch workflow SHALL
+perform secretless provenance validation and artifact sanitization before a
+fresh protected-environment job can receive any Cloudflare credential. When
+separately activated, the credentialed job MUST consume only the normalized
+static tree and matching deterministic manifest, MUST independently regenerate
+and byte-compare that manifest before computing the published SHA-256 from the
+regenerated manifest bytes, MUST NOT execute artifact content, and SHALL use
+fixed trusted Worker code, Worker name, Wrangler configuration, exact action
+revisions, lockfile-pinned Wrangler, and a dedicated preview-only account
+credential. Credentialed publication MUST remain disabled until
+`activate-hosted-preview-publication` records accepted external isolation proof.
 
 #### Scenario: Pull-request code builds a preview candidate
 
@@ -40,7 +39,7 @@ preview URL MUST be protected by deny-by-default Cloudflare Access.
 
 #### Scenario: Intake receives a hostile or malformed artifact
 
-- **WHEN** the artifact contains a symbolic link, hard link, special entry, unsafe or colliding path, file with executable mode bits, package/deployment control, archive-extension file, unexpected extension, missing static-export root, or file/directory/entry/depth/path/expanded-size excess
+- **WHEN** the artifact contains a symbolic link, hard link, special entry, unsafe or colliding path, literal percent in a path component, file with executable mode bits, package/deployment control, archive-extension file, unexpected extension, missing static-export root, or file/directory/entry/depth/path/expanded-size excess
 - **THEN** intake rejects it before any protected environment or Cloudflare credential is loaded
 - **AND** it does not execute or copy the rejected entry
 - **AND** the exact limits are 10,000 files, 2,000 directories, 12,000 total entries, depth 32, 512 Unicode characters and 1,024 UTF-8 bytes per relative path, 25 MiB per file, and 250 MiB expanded total
@@ -55,7 +54,7 @@ preview URL MUST be protected by deny-by-default Cloudflare Access.
 
 #### Scenario: A sanitized current preview is published
 
-- **WHEN** the pull request remains open at the exact validated same-repository head
+- **WHEN** a separately accepted activation receipt exists and the pull request remains open at the exact validated same-repository head
 - **THEN** the protected job installs the exact lockfile-pinned toolchain without lifecycle scripts and uploads an undeployed Worker version under a DNS-bounded base-36 alias derived from PR number, run ID, and attempt
 - **AND** it does not deploy that version to shared traffic, create a production route or domain, or use a production-account credential
 - **AND** trusted code rejects missing, duplicated, malformed, control-bearing, cross-worker, or cross-subdomain upload receipts before exporting any provider identity
@@ -74,13 +73,13 @@ preview URL MUST be protected by deny-by-default Cloudflare Access.
 - **THEN** any resulting upload uses a never-reused alias and immutable version URL, so it cannot repoint earlier evidence
 - **AND** the independent comment job rechecks the current head and does not advertise the raced upload as current
 
-#### Scenario: Preview JavaScript requests an MCP-equivalent path
+#### Scenario: Preview JavaScript requests a blocked service path
 
-- **WHEN** the isolated preview receives a path that canonically equals `/mcp` or a descendant after bounded escape decoding, slash normalization, dot-segment handling, and case folding, or receives a path that cannot be safely canonicalized
+- **WHEN** the isolated preview receives a path that canonically equals `/mcp` or a descendant, enters `/.well-known/oauth-*` or `/.well-known/mcp*`, or cannot be safely canonicalized after bounded escape decoding, slash normalization, dot-segment handling, and case folding
 - **THEN** the exact trusted Worker runs before asset lookup and returns a no-store `503`
 - **AND** a shadowing static `mcp` asset cannot bypass the Worker
 - **AND** it neither proxies nor embeds the production MCP origin
-- **AND** canonical non-MCP requests fall through to the static asset binding
+- **AND** other canonical requests fall through to the static asset binding
 
 #### Scenario: A fork build completes
 
@@ -88,18 +87,9 @@ preview URL MUST be protected by deny-by-default Cloudflare Access.
 - **THEN** build and test evidence may complete without secrets
 - **AND** no credentialed public preview publication runs
 
-#### Scenario: Preview infrastructure is provisioned
+#### Scenario: The source bootstrap lands before external activation
 
-- **WHEN** an operator enables credentialed preview publication
-- **THEN** the protected environment is default-branch restricted and holds only a Workers Scripts write token plus account ID for a dedicated Cloudflare preview account
-- **AND** that account contains no production Workers, routes, domains, data, or credentials
-- **AND** the host has enabled the account's `workers.dev` subdomain and created the fixed preview Worker because workflow provisioning and target auto-creation remain disabled
-- **AND** Cloudflare Access covers the fixed Worker's base `workers.dev` hostname plus its alias and version hostnames and allows only named reviewers or the approved organization, with no `Everyone`, `Bypass`, or public-path exception
-- **AND** an unauthenticated request is proven denied while an authorized reviewer is proven able to load each of the base, one real alias, and its version hostname before the GitHub credential is enabled
-
-#### Scenario: A pull request closes or an alias ages out
-
-- **WHEN** the pull request closes, its GitHub artifact expires, or its alias mapping leaves Cloudflare's rolling 1,000-newest-alias set
-- **THEN** the system SHALL NOT claim that the Worker version or generated version URL was deleted or expired
-- **AND** the retained version URL remains protected by the deny-by-default Access policy
-- **AND** during an incident, an operator SHALL stop future publication by removing the GitHub credential and revoke retained evidence by disabling Preview URLs or deleting the dedicated Worker/account
+- **WHEN** this source bootstrap is merged without an accepted `activate-hosted-preview-publication` receipt
+- **THEN** the GitHub preview environment holds no publication credential
+- **AND** no credentialed hosted preview is accepted as active or proven
+- **AND** the successor change and STATUS host-action remain open
