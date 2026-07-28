@@ -1483,6 +1483,7 @@ Notes:
 - Ship/abandon: keep PR #1812 draft and gate any merge on task 3.5's final announcement-run drain; do not deploy or authorize runtime/external-state retirement
 - Update 2026-07-26: draft PR #1812 published and green; announcement/helper deletion committed; exact Opus 5 + three independent reviewers APPROVE `9e08a28c`; tasks 3.5/5.2/5.3 and rendered/clean-use gates remain open
 - Update 2026-07-26: parent #1810 folded in; React/Svelte builds, 58/58 strict OpenSpec, active-source scans, and exact current-main reviews pass at `c84cb833`
+- Update 2026-07-27: current-main exact head `c5a13216` has final Codex/Opus 5 APPROVE, 59/59 strict OpenSpec, green 282-test Linux CI, and pre-credential preview receipt `30327788528`; #1812 is ready for promotion before #1815/#1818 restack.
 
 ## 2026-07-26 - close release-reconcile production drift watch
 
