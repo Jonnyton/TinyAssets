@@ -181,14 +181,10 @@ class TestGracefulFailure:
 # ── Integration: _wiki_file_bug call site ─────────────────────────────────────
 
 
-def test_wiki_file_bug_invokes_maybe_enqueue_investigation(tmp_path, monkeypatch):
-    """The post-write trigger queues investigation without breaking filing.
-
-    1. _wiki_file_bug succeeds (returns status=filed) regardless of helper outcome.
-    2. _maybe_enqueue_investigation is called once with bug_id + frontmatter +
-       base_path of the universe.
-    3. A queued request appends the Investigation section to the bug page.
-    """
+def test_wiki_file_bug_never_invokes_retired_investigation_helpers(
+    tmp_path, monkeypatch,
+):
+    """Filing remains ordinary even while the retired module is retained."""
     from tinyassets.api import wiki as wiki_api
 
     wiki_root = tmp_path / "wiki"
@@ -200,81 +196,107 @@ def test_wiki_file_bug_invokes_maybe_enqueue_investigation(tmp_path, monkeypatch
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc"
     )
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "goal-canonical-abc"
+    )
     monkeypatch.delenv("TINYASSETS_REQUEST_TYPE_PRIORITIES", raising=False)
 
     with patch(
         "tinyassets.bug_investigation._maybe_enqueue_investigation",
-        return_value="fake-request-id",
-    ) as helper:
+        side_effect=AssertionError("file_bug must not enqueue"),
+    ) as enqueue, patch(
+        "tinyassets.bug_investigation.format_investigation_comment",
+        side_effect=AssertionError("file_bug must not format an investigation"),
+    ) as formatter, patch(
+        "tinyassets.branch_tasks.read_queue",
+        side_effect=AssertionError("file_bug must not read task state"),
+    ) as queue_reader:
         result_json = wiki_api._wiki_file_bug(
             component="engine",
             severity="minor",
             title="example bug",
             observed="boom",
+            verbose=True,
         )
 
     import json as _json
     result = _json.loads(result_json)
     assert result["status"] == "filed"
-    assert result["investigation"] == {
-        "status": "queued",
-        "dispatcher_request_id": "fake-request-id",
-    }
-    assert result["trigger"]["status"] == "queued"
-    assert result["trigger"]["dispatcher_request_id"] == "fake-request-id"
-    assert result["trigger"]["branch_def_id"] == "branch-canonical-abc"
-    assert helper.call_count == 1
-    bug_id = result["bug_id"]
-    call_kwargs = helper.call_args.kwargs or {}
-    call_args = helper.call_args.args or ()
-    # accept either kwarg or positional first arg
-    assert (call_kwargs.get("bug_id") == bug_id) or (
-        call_args and call_args[0] == bug_id
-    )
-    assert call_kwargs["frontmatter"]["effort_class"] == "standard"
-    assert (
-        call_kwargs["frontmatter"]["effort_dispatch_route"]["lane"]
-        == "standard-triage"
-    )
-    assert "## Investigation" in (wiki_root / result["path"]).read_text(
-        encoding="utf-8"
-    )
+    assert "investigation" not in result
+    assert "trigger" not in result
+    page = (wiki_root / result["path"]).read_text(encoding="utf-8")
+    assert "## Investigation" not in page
+    assert "## Patch Packet" not in page
+    enqueue.assert_not_called()
+    formatter.assert_not_called()
+    queue_reader.assert_not_called()
+    assert not (data_root / "wiki_trigger_attempts.db").exists()
 
 
-def test_wiki_file_bug_returns_failed_trigger_receipt_on_enqueue_error(
+def test_wiki_file_bug_preserves_historical_receipt_without_writing(
     tmp_path, monkeypatch,
 ):
-    """A trigger helper failure must be visible in the file_bug response."""
+    """The stop-writer leaves pre-existing task-2.5 evidence byte-for-byte."""
     from tinyassets.api import wiki as wiki_api
+    from tinyassets.wiki import trigger_receipts
 
     wiki_root = tmp_path / "wiki"
     data_root = tmp_path / "data"
+    receipt_db = data_root / "wiki_trigger_attempts.db"
     wiki_api._ensure_wiki_scaffold(wiki_root)
+    data_root.mkdir(parents=True, exist_ok=True)
     monkeypatch.setenv("TINYASSETS_WIKI_PATH", str(wiki_root))
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(data_root))
+    monkeypatch.setenv("TINYASSETS_TRIGGER_RECEIPTS_DB", str(receipt_db))
     monkeypatch.setenv(
         "TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID", "branch-canonical-abc",
     )
+    monkeypatch.setenv(
+        "TINYASSETS_BUG_INVESTIGATION_GOAL_ID", "goal-canonical-abc",
+    )
+
+    historical = trigger_receipts.create_pending(
+        request_id="BUG-HISTORICAL",
+        request_kind="bug",
+        request_page="pages/bugs/bug-historical.md",
+        branch_def_id="branch-canonical-abc",
+    )
+    before_bytes = receipt_db.read_bytes()
 
     with patch(
+        "tinyassets.wiki.trigger_receipts.create_pending",
+        side_effect=AssertionError("file_bug must not create a receipt"),
+    ) as create_pending, patch(
+        "tinyassets.wiki.trigger_receipts.mark_queued",
+        side_effect=AssertionError("file_bug must not update a receipt"),
+    ) as mark_queued, patch(
+        "tinyassets.wiki.trigger_receipts.mark_failed",
+        side_effect=AssertionError("file_bug must not update a receipt"),
+    ) as mark_failed, patch(
+        "tinyassets.wiki.trigger_receipts.mark_skipped",
+        side_effect=AssertionError("file_bug must not update a receipt"),
+    ) as mark_skipped, patch(
         "tinyassets.bug_investigation._maybe_enqueue_investigation",
-        side_effect=RuntimeError("dispatcher rejected"),
+        side_effect=AssertionError("file_bug must not enqueue"),
     ):
         result_json = wiki_api._wiki_file_bug(
             component="engine",
             severity="minor",
-            title="enqueue error bug",
+            title="new ordinary filing",
             observed="boom",
         )
 
     import json as _json
     result = _json.loads(result_json)
     assert result["status"] == "filed"
-    assert result["investigation"]["status"] == "error"
-    assert "dispatcher rejected" in result["investigation"]["error"]
-    assert result["trigger"]["status"] == "failed"
-    assert result["trigger"]["branch_def_id"] == "branch-canonical-abc"
-    assert result["trigger"]["error"] == {
-        "class": "RuntimeError",
-        "message": "dispatcher rejected",
-    }
+    assert "investigation" not in result
+    assert "trigger" not in result
+    create_pending.assert_not_called()
+    mark_queued.assert_not_called()
+    mark_failed.assert_not_called()
+    mark_skipped.assert_not_called()
+    assert receipt_db.read_bytes() == before_bytes
+    assert (
+        trigger_receipts.get_receipt(historical.trigger_attempt_id).to_row()
+        == historical.to_row()
+    )
