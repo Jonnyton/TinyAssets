@@ -51,7 +51,12 @@
     `5C0EDB681AA13BCF6DD93E8919E38408FF10257A36CF34DC2D3ED5B3B5325005`.
     The checkbox stays open until this filing-only build is deployed and every
     old receipt-writing API/worker/plugin instance is inventoried and
-    demonstrably drained or fenced.
+    demonstrably drained or fenced. The production boundary is every process
+    capable of writing the controlled production receipt store: the daemon,
+    four in-process-code-capable workers, and any stray host/plugin server
+    attached to that store. External BYOC plugin/MCPB installations cannot
+    access the controlled volume and are not falsely treated as centrally
+    drainable production writers.
 - [ ] 2.2 After task 2.5's locked migration and final rescan succeed, delete
   `tinyassets/bug_investigation.py` and remove its handler selection, payload
   mapping, dedicated request type, queue creation, formatting, and Patch Packet
