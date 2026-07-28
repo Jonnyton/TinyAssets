@@ -207,6 +207,7 @@ test("trusted workflow-run graph keeps artifact intake outside the environment",
     intakeDownload.with["run-id"],
     "${{ github.event.workflow_run.id }}",
   );
+  assert.equal(intakeDownload.with["merge-multiple"], true);
   const deployDownload = deploy.steps.find(
     (step) => step.uses === ACTIONS.download,
   );
@@ -214,6 +215,7 @@ test("trusted workflow-run graph keeps artifact intake outside the environment",
     deployDownload.with["artifact-ids"],
     "${{ needs.intake.outputs.sanitized_artifact_id }}",
   );
+  assert.equal(deployDownload.with["merge-multiple"], true);
 
   const intakeValidation = namedStep(
     intake,
