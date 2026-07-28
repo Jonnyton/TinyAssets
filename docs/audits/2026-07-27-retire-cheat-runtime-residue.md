@@ -72,7 +72,7 @@ scripts/retire_cheat_loop_github_state_test.py
 docs/ops/2026-07-26-cheat-loop-github-state-retirement.md
 openspec/changes/retire-cheat-loop/specs/development-coordination-runtime/spec.md
 openspec/changes/retire-cheat-loop/tasks.md
-docs/audits/2026-07-26-retire-cheat-loop.md
+docs/audits/2026-07-27-retire-cheat-runtime-residue.md
 STATUS.md
 REFLECTION.md
 .agents/worktrees.md (retire lane only)
@@ -101,7 +101,9 @@ Fresh verification on the existing payload:
 Selective-restack verification on
 `codex/restack-retire-loop-github-state-20260727`:
 
-- The three restored files are byte-identical to `d40173a2`.
+- The initial payload at `fab12790` restored the three files byte-identically
+  from `d40173a2`; `f7e9234b` then intentionally changes the script, test, and
+  runbook to close re-digested receipt-schema bypasses.
 - Only the reviewed final spec/task delta was applied; current-main STATUS,
   worktree, snapshot, website, and prior receipt ancestry were not imported.
 - `python scripts/retire_cheat_loop_github_state_test.py`: 46/46 pass after
