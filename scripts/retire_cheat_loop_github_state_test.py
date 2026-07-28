@@ -76,9 +76,11 @@ def label_inventory() -> dict:
     definitions = [
         {
             "node_id": f"L_{index}",
+            "database_id": index,
             "name": name,
             "color": f"{index:06x}",
             "description": "café" if index == 1 else None,
+            "url": f"https://api.example.invalid/labels/{index}",
         }
         for index, name in enumerate(reversed(mod.RETIRED_LABELS), 1)
     ]
@@ -124,6 +126,17 @@ def receipt() -> dict:
         source_revision="abc123",
         inventory=label_inventory(),
     )
+
+
+def redigest_receipt(value: dict) -> dict:
+    value["plan_digest"] = mod.digest(value["plan"])
+    value["apply_key"] = mod.derive_apply_key(
+        value["operation"],
+        value["repo"]["node_id"],
+        value["plan_digest"],
+    )
+    value["receipt_digest"] = mod.digest(mod._without(value, "receipt_digest"))
+    return value
 
 
 def auto_pr(
@@ -593,6 +606,194 @@ class ReceiptTests(unittest.TestCase):
         for name, changed in cases:
             with self.subTest(name=name), self.assertRaises(mod.PlanError):
                 mod.verify_receipt(changed)
+
+    def test_label_definition_schema_rejects_unknown_fields(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["definitions"][0]["mutation_authority"] = True
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
+
+    def test_label_association_schema_rejects_unknown_fields(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["associations"][0]["mutation_authority"] = True
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
+
+    def test_label_inventory_receipt_rejects_non_empty_planned_actions(self) -> None:
+        changed = copy.deepcopy(receipt())
+        changed["plan"]["inventory"]["planned_actions"] = [
+            {
+                "ordinal": 0,
+                "kind": "delete_label",
+                "target_node_id": "L_1",
+                "planned_before": {"name": mod.RETIRED_LABELS[0]},
+                "planned_after": {},
+            }
+        ]
+
+        with self.assertRaises(mod.PlanError):
+            mod.verify_receipt(redigest_receipt(changed))
+
+    def test_collected_label_records_round_trip_through_shared_exact_schemas(
+        self,
+    ) -> None:
+        class FakeLabelClient:
+            repo = "Jonnyton/TinyAssets"
+
+            def bind_repo_database_id(self, database_id):
+                self.database_id = database_id
+
+            def rest(self, endpoint):
+                self.repo_endpoint = endpoint
+                return {
+                    "node_id": "R_repo",
+                    "id": 42,
+                    "full_name": "Jonnyton/TinyAssets",
+                    "default_branch": "main",
+                }
+
+            def rest_array_collection(self, endpoint):
+                if endpoint.endswith("/labels?per_page=100"):
+                    rows = [
+                        {
+                            "node_id": f"L_{index}",
+                            "id": index,
+                            "name": name,
+                            "color": f"{index:06x}",
+                            "description": None,
+                            "url": f"https://api.example.invalid/labels/{index}",
+                        }
+                        for index, name in enumerate(mod.RETIRED_LABELS, 1)
+                    ]
+                    return rows, complete_connection(
+                        kind="label_definitions",
+                        label_name="",
+                        count=len(rows),
+                        completion_basis="github_link_header_chain_v1",
+                    )
+                label_name = next(
+                    name
+                    for name in mod.RETIRED_LABELS
+                    if f"labels={mod.quote(name, safe='')}" in endpoint
+                )
+                rows = (
+                    [
+                        {
+                            "node_id": "I_1",
+                            "number": 1,
+                            "state": "open",
+                            "html_url": "https://example.invalid/issues/1",
+                        }
+                    ]
+                    if label_name == mod.RETIRED_LABELS[0]
+                    else []
+                )
+                return rows, complete_connection(
+                    kind="retired_label_associations",
+                    label_name=label_name,
+                    count=len(rows),
+                    completion_basis="github_link_header_chain_v1",
+                )
+
+        repo_value, inventory = mod.collect_label_inventory(FakeLabelClient())
+        value = mod.build_receipt(
+            operation=mod.LABEL_OPERATION,
+            repo=repo_value,
+            source_revision="abc123",
+            inventory=inventory,
+        )
+        mod.verify_receipt(value)
+
+        injected = copy.deepcopy(inventory)
+        injected["definitions"][0]["collector_only_field"] = True
+        with self.assertRaises(mod.PlanError):
+            mod.build_receipt(
+                operation=mod.LABEL_OPERATION,
+                repo=repo_value,
+                source_revision="abc123",
+                inventory=injected,
+            )
+
+        self.assertEqual(
+            set(inventory["definitions"][0]),
+            set(mod.LABEL_DEFINITION_FIELDS),
+        )
+        self.assertEqual(
+            set(inventory["associations"][0]),
+            set(mod.LABEL_ASSOCIATION_FIELDS),
+        )
+
+    def test_label_definition_values_use_closed_collector_types(self) -> None:
+        invalid_values = {
+            "node_id": ({}, [], 1, True, ""),
+            "database_id": ({}, [], "1", 1.0, True, None, 0, -1),
+            "name": ({}, [], 1, True, ""),
+            "color": ({}, [], 1, True, "", "#123456", "zzzzzz"),
+            "description": ({}, [], 1, True),
+            "url": ({}, [], 1, True, ""),
+        }
+        for field, values in invalid_values.items():
+            for invalid in values:
+                with self.subTest(field=field, invalid=invalid):
+                    inventory = label_inventory()
+                    inventory["definitions"][0][field] = invalid
+                    with self.assertRaises(mod.PlanError):
+                        mod.build_receipt(
+                            operation=mod.LABEL_OPERATION,
+                            repo=repo(),
+                            source_revision="abc123",
+                            inventory=inventory,
+                        )
+
+    def test_label_association_values_use_closed_collector_types(self) -> None:
+        invalid_values = {
+            "label_node_id": ({}, [], 1, True, ""),
+            "item_node_id": ({}, [], 1, True, ""),
+            "kind": ({}, [], 1, True, None, "bug"),
+            "state": ({}, [], 1, True, None, "merged"),
+            "number": ({}, [], "1", 1.0, True, None, 0, -1),
+            "url": ({}, [], 1, True, ""),
+        }
+        for field, values in invalid_values.items():
+            for invalid in values:
+                with self.subTest(field=field, invalid=invalid):
+                    inventory = label_inventory()
+                    inventory["associations"][0][field] = invalid
+                    with self.assertRaises(mod.PlanError):
+                        mod.build_receipt(
+                            operation=mod.LABEL_OPERATION,
+                            repo=repo(),
+                            source_revision="abc123",
+                            inventory=inventory,
+                        )
+
+    def test_label_planned_actions_requires_a_json_array(self) -> None:
+        for invalid in ("x", {"ordinal": 0}, 1, None):
+            with self.subTest(invalid=invalid):
+                inventory = label_inventory()
+                inventory["planned_actions"] = invalid
+                with self.assertRaises(mod.PlanError):
+                    mod.build_receipt(
+                        operation=mod.LABEL_OPERATION,
+                        repo=repo(),
+                        source_revision="abc123",
+                        inventory=inventory,
+                    )
+
+    def test_label_planned_actions_rejects_malformed_non_empty_arrays(self) -> None:
+        for invalid in ([1], ["x"], [None], [[]]):
+            with self.subTest(invalid=invalid):
+                inventory = label_inventory()
+                inventory["planned_actions"] = invalid
+                with self.assertRaises(mod.PlanError):
+                    mod.build_receipt(
+                        operation=mod.LABEL_OPERATION,
+                        repo=repo(),
+                        source_revision="abc123",
+                        inventory=inventory,
+                    )
 
     def test_incomplete_or_truncated_pagination_is_rejected(self) -> None:
         inventory = label_inventory()

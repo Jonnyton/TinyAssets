@@ -1555,16 +1555,38 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/restack-retire-loop-github-state-20260727
-- Lane state: selective main-based squash in progress
+- Lane state: landed as PR #1830
 - Worktree: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727
-- STATUS/Issue/PR: main-based draft PR #1830; old draft PR #1820 closed as superseded with replacement link
+- STATUS/Issue/PR: PR #1830 merged to main as `52475559`; old draft PR #1820 closed as superseded with replacement link
 - PLAN refs: user-buildable/remixable automation; retire only privileged GitHub residue; preserve generic effectors and explicit GitHub primitives
 - Purpose: import only the fail-closed inventory/planning/verifier payload and exact 3.6/3.7 spec delta; exclude old snapshot/site/coordination ancestry
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-restack-retire-loop-github-state-20260727\_PURPOSE.md
 - Memory refs: base 66006cf4; PR #1829 audit; source payload d40173a2; draft PR #1820
-- Review gate: 45 focused tests, py_compile, strict OpenSpec, no-live-mutator inspection, exact-head Codex and Claude Opus 5 review
+- Review gate: 46 focused tests, py_compile, strict OpenSpec, no-live-mutator inspection, exact-head Codex and Claude Opus 5 review
 - Ship/abandon: keep tasks 3.6/3.7 unchecked; open against main, then close #1820 as superseded with replacement link; do not import or close sibling snapshot PR #1819
 - Update 2026-07-27: PR #1830 opened against main at `fab12790`; #1820 closed as superseded; #1819 remains parked for the separate snapshot/task-5.3 lane
+- Update 2026-07-28: exact head `d5b31a3f` received Codex security/spec and Claude Opus 5 APPROVE; PR #1830 merged as `52475559`
+
+## 2026-07-28 - post-1830 cheat-loop retirement hardening
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/post1830-retire-next-20260728
+- Lane state: Opus APPROVE adapted through `cf48df9e`; final exact-head review pending
+- Worktree: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728
+- STATUS/Issue/PR: active privileged-loop retirement claim; draft PR #1835
+- PLAN refs: user-buildable/remixable automation; no privileged platform composition
+- Purpose: reject inert peer-record/schema extensions while the no-live-mutator boundary remains dark
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-post1830-retire-next-20260728\_PURPOSE.md
+- Memory refs: main `52475559`; PRs #1829/#1830; retire-cheat-loop OpenSpec
+- Review gate: TDD, full focused suite, strict OpenSpec, independent Codex and Claude Opus 5 exact-head review
+- Ship/abandon: no live GitHub mutation; tasks 3.6/3.7 stay unchecked; task 2.1 source/mirror/tests are clear after exact public-read/personification/outbound claim narrowing and landed control_station cleanup
+- Update 2026-07-28: TDD proved three red bypasses, then 49/49 passed after exact label definition/association closure and rejecting label planned actions
+- Update 2026-07-28: pushed current-main branch and opened draft PR #1835; exact-head Codex approved `b8d57e9f`, Claude Opus 5 required collector-contract coverage before ready
+- Update 2026-07-28: review fix adds collector round-trip, exact scalar schemas, and PlanError container typing; 53/53 pass with 60/60 strict OpenSpec
+- Update 2026-07-28: control_station's apparent task-2.1 conflict was three-dot squash ancestry; all five target blobs equal current main, independent carve-out recheck pending
+- Update 2026-07-28: independent recheck confirmed all five blobs/index/worktree clean; narrowed three broad claims to release task-2.1 files
+- Update 2026-07-28: Opus approved the collector/schema adaptation and requested only a non-blocking malformed-action error-contract cleanup before merge
+- Update 2026-07-28: `cf48df9e` converts malformed non-empty label action arrays from raw traceback to PlanError; 54/54 pass
 
 ## 2026-07-27 - canonical public-read completeness
 

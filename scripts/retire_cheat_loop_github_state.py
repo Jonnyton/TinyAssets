@@ -38,6 +38,20 @@ SCHEMA_VERSION = 1
 LABEL_OPERATION = "retired_labels_v1"
 AUTO_MERGE_OPERATION = "auto_merge_v1"
 OPERATIONS = frozenset({LABEL_OPERATION, AUTO_MERGE_OPERATION})
+LABEL_DEFINITION_FIELDS = frozenset(
+    {"node_id", "database_id", "name", "color", "description", "url"}
+)
+LABEL_ASSOCIATION_FIELDS = frozenset(
+    {
+        "label_node_id",
+        "label_name",
+        "item_node_id",
+        "number",
+        "kind",
+        "state",
+        "url",
+    }
+)
 APPLY_DOMAIN = "tinyassets/github-state-retirement/apply/v1"
 AUTO_ENROLL_WORKFLOW_ID = 317815472
 GITHUB_ACTIONS_BOT_NODE_ID = "MDM6Qm90NDE4OTgyODI="
@@ -335,9 +349,35 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
         extra = sorted(set(names) - RETIRED_LABEL_SET)
         raise PlanError(f"retired definition mismatch; missing={missing}, extra={extra}")
     for definition in definitions:
-        for field in ("node_id", "name", "color"):
-            if definition.get(field) in (None, ""):
-                raise PlanError(f"label definition is missing {field}")
+        actual_fields = set(definition)
+        if actual_fields != LABEL_DEFINITION_FIELDS:
+            raise PlanError(
+                "label definition fields are not the exact collector schema; "
+                f"missing={sorted(LABEL_DEFINITION_FIELDS - actual_fields)}, "
+                f"unknown={sorted(actual_fields - LABEL_DEFINITION_FIELDS)}"
+            )
+        if not isinstance(definition["node_id"], str) or not definition["node_id"]:
+            raise PlanError("label definition node_id must be a non-empty string")
+        if (
+            not _is_integer(definition["database_id"])
+            or definition["database_id"] < 1
+        ):
+            raise PlanError("label definition database_id must be a positive integer")
+        if not isinstance(definition["name"], str) or not definition["name"]:
+            raise PlanError("label definition name must be a non-empty string")
+        if (
+            not isinstance(definition["color"], str)
+            or re.fullmatch(r"[0-9a-fA-F]{6}", definition["color"]) is None
+        ):
+            raise PlanError("label definition color must be six hexadecimal characters")
+        if definition["description"] is not None and not isinstance(
+            definition["description"], str
+        ):
+            raise PlanError("label definition description must be a string or null")
+        if definition["url"] is not None and (
+            not isinstance(definition["url"], str) or not definition["url"]
+        ):
+            raise PlanError("label definition url must be a non-empty string or null")
 
     associations = _sorted_json_records(
         inventory.get("associations", []),
@@ -348,13 +388,36 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
     )
     seen: set[tuple[str, str]] = set()
     for row in associations:
+        actual_fields = set(row)
+        if actual_fields != LABEL_ASSOCIATION_FIELDS:
+            raise PlanError(
+                "label association fields are not the exact collector schema; "
+                f"missing={sorted(LABEL_ASSOCIATION_FIELDS - actual_fields)}, "
+                f"unknown={sorted(actual_fields - LABEL_ASSOCIATION_FIELDS)}"
+            )
         label_name = row.get("label_name")
-        if label_name not in RETIRED_LABEL_SET:
+        if not isinstance(label_name, str) or label_name not in RETIRED_LABEL_SET:
             raise PlanError(f"association contains non-retired label {label_name!r}")
-        required = ("label_node_id", "item_node_id", "number", "kind", "state")
-        if any(row.get(field) in (None, "") for field in required):
-            raise PlanError("association is missing an exact target field")
-        identity = (str(row["item_node_id"]), str(label_name))
+        for field in ("label_node_id", "item_node_id"):
+            if not isinstance(row[field], str) or not row[field]:
+                raise PlanError(f"association {field} must be a non-empty string")
+        if not _is_integer(row["number"]) or row["number"] < 1:
+            raise PlanError("association number must be a positive integer")
+        if not isinstance(row["kind"], str) or row["kind"] not in {
+            "issue",
+            "pull_request",
+        }:
+            raise PlanError("association kind must be issue or pull_request")
+        if not isinstance(row["state"], str) or row["state"] not in {
+            "open",
+            "closed",
+        }:
+            raise PlanError("association state must be open or closed")
+        if row["url"] is not None and (
+            not isinstance(row["url"], str) or not row["url"]
+        ):
+            raise PlanError("association url must be a non-empty string or null")
+        identity = (row["item_node_id"], label_name)
         if identity in seen:
             raise PlanError(f"duplicate association {identity}")
         seen.add(identity)
@@ -388,7 +451,15 @@ def _normalize_label_inventory(inventory: Mapping[str, Any]) -> dict[str, Any]:
             raise PlanError(
                 f"association connection count does not match captured rows for {name}"
             )
-    planned_actions = _normalize_planned_actions(inventory.get("planned_actions", []))
+    planned_actions_value = inventory.get("planned_actions", [])
+    if not isinstance(planned_actions_value, list):
+        raise PlanError("retired-label planned_actions must be a JSON array")
+    if planned_actions_value:
+        raise PlanError(
+            "retired-label planned actions are not implemented; "
+            "this increment is inventory-only"
+        )
+    planned_actions: list[dict[str, Any]] = []
     apply_complete = inventory.get("apply_complete") is True
     if apply_complete:
         raise PlanError(
