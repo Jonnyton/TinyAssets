@@ -105,3 +105,7 @@ remains required merge evidence.
   `public-website-surface`, archived the source change with 12/12 tasks checked,
   and left `activate-hosted-preview-publication` active and unsynced with all
   host/live-evidence tasks open.
+- Three exact-head Codex lanes and Claude Opus 5 approved the generated
+  archive/sync at `c2e5e4a0`: the canonical addition is byte-identical to the
+  archived delta body, no source boundary file changed after approval, and
+  activation remains active, unsynced, and 0/15.
