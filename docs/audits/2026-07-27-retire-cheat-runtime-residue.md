@@ -183,6 +183,21 @@ Repository implementation evidence (2026-07-28):
   run this candidate, and no claim is made that every older receipt-writing
   API, worker, or plugin process is drained or fenced. Task 2.1 therefore
   remains open.
+- Deploy-fence candidate
+  `953f89db50da503012294112b816b5046ef10256` is repository evidence only:
+  it adds one transitional stdlib state-machine helper and routes deploy,
+  restart, host-install, and P0 recovery mutations through the same bounded
+  host lock and residue-aware guard. Normal and emergency write-ahead state
+  precede host mutation; command/lock/transient runtimes are bounded; stale
+  generations do not change current-run terminal truth; cleanup records its
+  own emergency mutation; and rollback remains restricted to a
+  post-stop-writer ancestor. The exact candidate passed 201 focused tests,
+  Ruff, py_compile, YAML and extracted-shell parsing, diff checks, strict
+  OpenSpec validation, and independent workflow/security/simplification
+  APPROVEs. `actionlint` was unavailable locally and remains a CI gate. The
+  helper is deliberately retained only through task 2.5, which must delete it.
+  No build, deploy, live receipt, or rendered filing proof existed when this
+  entry was written, so task 2.1 remains open.
 
 Fresh production topology evidence (2026-07-28 20:17 UTC):
 

@@ -59,6 +59,23 @@
     attached to that store. External BYOC plugin/MCPB installations cannot
     access the controlled volume and are not falsely treated as centrally
     drainable production writers.
+  - Deploy-fence candidate evidence (2026-07-28, still not operational
+    completion): `953f89db50da503012294112b816b5046ef10256`
+    adds a transitional, fail-closed production cutover controller. It
+    records normal and emergency intent before mutation; binds state to the
+    current run; inventories the v1/v2 queue and read-only receipt snapshot;
+    fences one daemon, four workers, extra volume consumers, restart policies,
+    boot activators, stray attached processes, old images, and rollback; and
+    serializes every known host mutation through bounded GitHub and host-local
+    locks. The exact candidate passed 201 focused tests, Ruff, py_compile,
+    four-workflow YAML parsing, extracted shell syntax checks, diff checks,
+    strict OpenSpec validation, and independent workflow, security, and
+    simplification APPROVE reviews. `actionlint` was unavailable locally and
+    remains a CI gate. The controller is explicitly transitional and must be
+    deleted after task 2.5; this checkbox stays open until the candidate lands,
+    the filing-only image is deployed, the durable live receipt proves every
+    old writer/queued write-back/rollback path fenced, and rendered filing
+    leaves the receipt snapshot unchanged.
   - The production fence must also prove no pending/running
     `bug_investigation` queue item can append a late Investigation/Patch Packet,
     and that rollback cannot restore a pre-stop-writer image to traffic.

@@ -654,3 +654,17 @@ fresh-host rollback edges found later.
 - What I would do differently: map deployment identities and old-writer fencing
   at the same time as the repository change, so landing the image and proving
   operational retirement form one explicit sequence.
+
+## 2026-07-28 — Stop-writer production fence
+
+- What surprised me: GitHub workflow concurrency was not sufficient once a
+  canceled runner could leave a host-side command alive. The actual remote
+  mutation needed the same bounded host lock as its fresh state/residue check.
+- Pattern worth keeping: destructive cutovers need write-ahead intent before
+  every normal and emergency mutation, run-scoped terminal truth, bounded
+  recovery locks, and an executable two-run regression so stale success cannot
+  authorize or misclassify a later failure.
+- What I would do differently: model missing/corrupt state, power loss, runner
+  cancellation, and rollback as first-class lifecycle transitions before
+  writing the first workflow step. That would have avoided several correction
+  rounds and produced the centralized guarded-command seam earlier.
