@@ -194,8 +194,10 @@ Repository implementation evidence (2026-07-28):
   post-stop-writer ancestor. The exact candidate passed 201 focused tests,
   Ruff, py_compile, YAML and extracted-shell parsing, diff checks, strict
   OpenSpec validation, and independent workflow/security/simplification
-  APPROVEs. `actionlint` was unavailable locally and remains a CI gate. The
-  helper is deliberately retained only through task 2.5, which must delete it.
+  APPROVEs. Claude Opus 5 also issued an exact-head repository-candidate
+  APPROVE at `2dcc1139` with no blocking findings. `actionlint` was unavailable
+  locally and remains a CI gate. The helper is deliberately retained only
+  through task 2.5 and is then deleted by the explicit task 2.5a.
   No build, deploy, live receipt, or rendered filing proof existed when this
   entry was written, so task 2.1 remains open.
 

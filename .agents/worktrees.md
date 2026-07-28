@@ -1615,12 +1615,15 @@ Notes:
 - Purpose: build and deploy the filing-only image while proving every controlled writer, queued write-back, restart racer, and rollback path is fenced
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728\_PURPOSE.md
 - Memory refs: merge `35da9d4f`; retire-cheat-loop task 2.1; runtime residue audit production topology section
-- Review gate: 201 focused tests plus Ruff/compile/YAML/bash/diff/OpenSpec green; workflow, security, and simplification exact-head APPROVEs; actionlint/CI, Claude Opus 5, live deploy receipt, and rendered connector proof remain
+- Review gate: 201 focused tests plus Ruff/compile/YAML/bash/diff/OpenSpec green; workflow, security, simplification, and Claude Opus 5 exact-head APPROVEs; actionlint/CI, live deploy receipt, and rendered connector proof remain
 - Ship/abandon: do not dispatch build/deploy until preflight evidence exists; task 2.1 remains unchecked on any uncertainty
 - Update 2026-07-28: `953f89db` closes write-ahead, crash/cancellation,
   bounded-lock, residue, guarded-mutation, rollback, and terminal-truth gaps.
   The 1,735-line controller is explicitly transitional and must be deleted
   after task 2.5; no production action has run from this branch yet.
+- Update 2026-07-28: Claude Opus 5 APPROVED repository head `2dcc1139`
+  with no blocking findings and asked that controller deletion become a
+  checkable obligation; OpenSpec task 2.5a now owns that deletion.
 
 ## 2026-07-27 - canonical public-read completeness
 
