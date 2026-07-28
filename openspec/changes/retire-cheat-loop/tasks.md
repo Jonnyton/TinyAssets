@@ -78,6 +78,21 @@
     the filing-only image is deployed, the durable live receipt proves every
     old writer/queued write-back/rollback path fenced, and rendered filing
     leaves the receipt snapshot unchanged.
+  - First live cutover evidence (2026-07-28, failed closed): production run
+    `30407316207` deployed immutable image
+    `ghcr.io/jonnyton/tinyassets-daemon@sha256:025187ccf7c459d7f99283cd1366a3a7abf2031105cbae591170f7e42af463e1`
+    at revision `0a8b092b06be730af9724d85ed33a643be5f4ea9`;
+    preflight, initial exact-five proof, unchanged receipt snapshot, canonical
+    canaries, exact-seven surface, and the direct-URL access gate passed.
+    Post-canary exact-five proof then failed without a diagnostic observation,
+    rollback restored the prior post-stop-writer image, and restart-activator
+    restoration observed two watchdog services transiently `activating`.
+    Conservative cleanup therefore emergency-fenced all five containers,
+    persisted `phase=unsafe_fenced`, and left the canonical MCP surface at
+    HTTP 502. Recovery requires a tested, provenance-bound exit from that
+    durable state plus bounded exact-fleet and unit-state convergence; task
+    2.1 remains open until recovery, a clean immutable rerun, rendered filing,
+    and unchanged receipt proof complete.
   - The production fence must also prove no pending/running
     `bug_investigation` queue item can append a late Investigation/Patch Packet,
     and that rollback cannot restore a pre-stop-writer image to traffic.

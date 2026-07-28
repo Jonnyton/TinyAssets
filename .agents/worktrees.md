@@ -1629,7 +1629,8 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-live-proof-20260728
-- Lane state: claimed; immutable main build/deploy proof pending
+- Lane state: P0 recovery in progress; run 30407316207 emergency-fenced all
+  five containers after post-canary proof/restoration failures
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-live-proof-20260728
 - STATUS/Issue/PR: production continuation after PR #1839 / `0a8b092b`
 - PLAN refs: user-buildable/remixable automation; no privileged writer; complete-system uptime
@@ -1638,6 +1639,10 @@ Notes:
 - Memory refs: PR #1836 `35da9d4f`; PR #1839 `0a8b092b`; task 2.1
 - Review gate: durable deploy receipt, exact five-container inventory, old/stray/queued writer drain, rendered filing, unchanged receipt snapshot
 - Ship/abandon: task 2.1 stays open on any uncertainty; never force an unsafe rollback or traffic transition
+- Update 2026-07-28: canonical `/mcp` is HTTP 502 while the durable fence is
+  `unsafe_fenced`. Recovery must land as a tested, provenance-bound transition
+  from source run `30407316207-1`; issue #1840 and
+  `docs/audits/2026-07-28-retire-cheat-live-cutover-failure.md` own evidence.
 
 ## 2026-07-27 - canonical public-read completeness
 
