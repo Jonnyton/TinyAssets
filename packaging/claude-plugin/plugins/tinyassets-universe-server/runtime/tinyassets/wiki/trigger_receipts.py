@@ -1,33 +1,11 @@
-"""Trigger receipt / outbox primitive for wiki-filed bug investigations
-(FEAT-004).
+"""Historical receipt store for the retired wiki investigation trigger.
 
-Per-request-id traceable record of what happened when a wiki page filing
-attempted to auto-trigger the canonical investigation branch. Closes the
-silent-enqueue-failure gap discovered after PR #176 wired the in-process
-trigger call-site: the page write could succeed and the response could
-look healthy while the trigger silently failed to enqueue, leaving an
-opaque "filing succeeded, no run exists" state.
-
-Storage: a tiny sqlite table at $TINYASSETS_DATA_DIR/wiki_trigger_attempts.db.
-One row per filed-page trigger attempt. Append-only via this module's
-helpers — the write is in the same logical commit as the page metadata
-write so an enqueue failure cannot erase the fact that a trigger was
-expected.
-
-Status lifecycle:
-
-    pending  -> queued (dispatcher returned a request_id)
-    pending  -> failed (dispatcher raised; error_class/error_message recorded)
-    pending  -> skipped (no canonical branch configured; recorded for audit)
-
-Surface: the file_bug response payload includes a ``trigger`` block
-containing the receipt fields. Operators and canaries can also query
-the table directly via ``recent_attempts(limit)`` and
-``orphan_attempts(stale_minutes)`` for periodic health checks.
-
-Backward compatibility: the existing ``investigation`` block in the
-file_bug response is preserved verbatim. The new ``trigger`` block is
-additive.
+The public ``file_bug`` path no longer creates or returns these receipts.
+Readers and persisted rows remain temporarily available for collision-safe
+inventory and migration under ``retire-cheat-loop`` task 2.5. No new runtime
+caller should use the mutation helpers below; they remain only until the locked
+retirement migration proves all older writers drained and all retained evidence
+accounted for.
 """
 
 from __future__ import annotations

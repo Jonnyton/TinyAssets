@@ -47,7 +47,9 @@
     metadata from the canonical and packaged `file_bug` paths while preserving
     ordinary filing, effort classification, and the historical receipt
     reader/store. TDD recorded 7 expected RED failures, then 136 passed and
-    1 skipped; the two runtime copies have SHA-256
+    1 skipped from
+    `python -m pytest -q tests/test_api_wiki.py tests/test_bug_investigation_wiring.py tests/test_file_bug_compact_response.py tests/test_wiki_file_bug.py tests/test_wiki_file_bug_dedup.py tests/test_wiki_trigger_receipts.py tests/test_daemon_wiki.py`;
+    the two runtime copies have SHA-256
     `5C0EDB681AA13BCF6DD93E8919E38408FF10257A36CF34DC2D3ED5B3B5325005`.
     The checkbox stays open until this filing-only build is deployed and every
     old receipt-writing API/worker/plugin instance is inventoried and
@@ -57,6 +59,14 @@
     attached to that store. External BYOC plugin/MCPB installations cannot
     access the controlled volume and are not falsely treated as centrally
     drainable production writers.
+  - The production fence must also prove no pending/running
+    `bug_investigation` queue item can append a late Investigation/Patch Packet,
+    and that rollback cannot restore a pre-stop-writer image to traffic.
+    Removing `TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID` alone is insufficient:
+    older images create a receipt before resolving that handler. The exact
+    image/traffic drain is the authority boundary. The now-inert `verbose` and
+    `universe_id` compatibility inputs remain accepted in this slice; their
+    final public-contract disposition belongs to task 1.1/retirement cleanup.
 - [ ] 2.2 After task 2.5's locked migration and final rescan succeed, delete
   `tinyassets/bug_investigation.py` and remove its handler selection, payload
   mapping, dedicated request type, queue creation, formatting, and Patch Packet

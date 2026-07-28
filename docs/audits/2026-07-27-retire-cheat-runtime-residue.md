@@ -172,8 +172,12 @@ Repository implementation evidence (2026-07-28):
 - Ordinary filing and task 1.1's separately owned effort classification/route
   remain; historical receipt readers, storage, data, and executor modules remain
   available for the later locked migration.
-- TDD evidence is 7 expected RED failures followed by 136 passed and 1 skipped;
-  another 85 related wiki tests passed. Ruff, py_compile, diff-check, and
+- TDD evidence is 7 expected RED failures followed by 136 passed and 1 skipped
+  from `python -m pytest -q tests/test_api_wiki.py
+  tests/test_bug_investigation_wiring.py tests/test_file_bug_compact_response.py
+  tests/test_wiki_file_bug.py tests/test_wiki_file_bug_dedup.py
+  tests/test_wiki_trigger_receipts.py tests/test_daemon_wiki.py`; another
+  85 related wiki tests passed. Ruff, py_compile, diff-check, and
   canonical/plugin parity passed.
 - This is repository evidence only. The base deployment is not yet proven to
   run this candidate, and no claim is made that every older receipt-writing
@@ -210,11 +214,25 @@ Fresh production topology evidence (2026-07-28 20:17 UTC):
   and a deterministic logical row digest. After a rendered connector filing,
   require the same snapshot, no Investigation/Patch Packet content or retired
   response keys, and no queued task containing the new filing ID.
+- Inventory the existing queue before cutover and block completion while any
+  pending/running `bug_investigation` item could execute its retained daemon
+  write-back. A late Patch Packet is a retired writer even when the receipt
+  database does not change.
+- Prove rollback fencing as well as forward deployment. The deploy workflow
+  still writes `TINYASSETS_BUG_INVESTIGATION_BRANCH_DEF_ID`, but merely
+  removing that key would not stop an old image: it creates a receipt before
+  handler resolution. No pre-stop-writer image may regain production traffic.
 - Record the deploy run, release-state receipt, exact five-container inventory,
   old-ID drain, stray-process scan, before/after receipt snapshots, rendered
   conversation, and timestamp here before checking task 2.1. If no post-fix
   organic user use exists yet, keep a freshness-stamped monitoring row in
   `STATUS.md` rather than claiming proven clean use.
+
+Until this multi-wave change is synchronized and archived, the main
+`wiki-commons` and `community-patch-loop` specs still describe the retiring
+behavior. Their REMOVED deltas in this change are the current retirement
+authority; the temporary as-built spec drift must not be mistaken for permission
+to restore the writer.
 
 ## Fresh live GitHub evidence
 
