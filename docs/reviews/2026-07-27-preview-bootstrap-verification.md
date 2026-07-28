@@ -12,6 +12,7 @@ consumer cannot run until its trusted definition lands on the default branch.
 | Check | Command | Result |
 |---|---|---|
 | Preview contract + hostile validators | `cd WebSite/site; npm ci; npm test` | 201 total; 197 passed, 0 failed, 4 Windows capability skips |
+| Linux zero-skip merge gate | GitHub `preview-security` run `30325900272`, Ubuntu 24.04, PR #1823 head `6e96cff0` | 201 passed, 0 failed, 0 skipped; run succeeded |
 | Design system build | `cd WebSite/design-system; npm ci; npm run build` | passed; 123 tokens and 6 component schemas generated |
 | React static export | `cd WebSite/site-react; npm ci; npm run build` | passed; 26 static routes |
 | Trusted deployment toolchain | `cd WebSite/site-react/preview-deploy-tools; npm ci --ignore-scripts --no-audit --no-fund; npm exec --no -- wrangler --version; npm audit --omit=dev` | Wrangler `4.114.0`; 0 vulnerabilities |
@@ -37,8 +38,9 @@ The four skipped validator fixtures require filesystem capabilities Windows did
 not expose to the test process: a newline-bearing filename, a control-character
 filename, POSIX-executable mode bits, and symlink creation. Hard-link creation
 worked and its rejection fixture passed on this Windows run. The four skipped
-rejection paths were not runtime-exercised on Windows; Linux CI with zero skips
-remains required merge evidence.
+rejection paths were not runtime-exercised on Windows. Linux
+`preview-security` run `30325900272` exercised the full suite with 201 passes
+and zero skips, satisfying the platform-specific merge gate.
 
 ## Findings Kept Open
 
