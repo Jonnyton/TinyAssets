@@ -1593,9 +1593,9 @@ Notes:
 
 - Provider: codex-gpt5-desktop-full-product
 - Branch: codex/retire-cheat-stop-writer-20260728
-- Lane state: repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review and PR pending
+- Lane state: draft PR #1836; repository implementation and nested exact-head review approved at `4c385554`; final dual-provider review pending
 - Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728
-- STATUS/Issue/PR: active privileged-loop retirement claim; new PR after final repository verification
+- STATUS/Issue/PR: draft PR #1836; active privileged-loop retirement claim
 - PLAN refs: user-buildable/remixable automation; generic wiki filing and explicit workflow primitives survive
 - Purpose: remove `file_bug` trigger receipt, enqueue, Investigation rendering, and response metadata while preserving ordinary filing
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-stop-writer-20260728\_PURPOSE.md
