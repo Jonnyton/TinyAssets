@@ -188,6 +188,11 @@ Current-main terminal-oracle integration on 2026-07-28:
   the receipt-chain digest link, weakening the pagination exact-key envelope,
   and deleting terminal page-ordinal binding. Three focused regressions now
   perturb only those seams on an otherwise-valid two-page receipt.
+- The targeted rereview killed the complete requested 21-mutation battery and
+  the three new isolated guards. Its expanded 33-mutation sweep found three
+  final unpinned checks: observed-count reconciliation, repository database-id
+  type discipline, and the terminal-oracle literal. Direct regressions now
+  perturb only those fields on the same valid two-page receipt.
 
 ## Highest-impact blocked runtime wave: task 2.1
 

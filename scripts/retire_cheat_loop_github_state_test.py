@@ -973,6 +973,32 @@ class ReceiptTests(unittest.TestCase):
                 repo=repo(),
             )
 
+        mismatched_observed_count = copy.deepcopy(valid_multi_page)
+        mismatched_observed_count["count"] = 200
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [mismatched_observed_count],
+                repo=repo(),
+            )
+
+        non_integer_database_identity = repo()
+        non_integer_database_identity["database_id"] = "42"
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [valid_multi_page],
+                repo=non_integer_database_identity,
+            )
+
+        unreviewed_terminal_oracle = copy.deepcopy(valid_multi_page)
+        unreviewed_terminal_oracle["pagination"]["terminal"]["oracle"] = (
+            "operator_asserted_complete"
+        )
+        with self.assertRaises(mod.PlanError):
+            mod._validate_complete_connections(
+                [unreviewed_terminal_oracle],
+                repo=repo(),
+            )
+
         full_second_terminal = copy.deepcopy(valid_multi_page)
         full_second_terminal["count"] = 200
         full_second_terminal["pagination"]["page_receipts"][1]["item_count"] = 100
