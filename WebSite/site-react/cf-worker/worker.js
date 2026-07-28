@@ -1,39 +1,77 @@
-// Cloudflare Worker for the live-data preview of the React site.
+// Trusted entrypoint for untrusted pull-request preview assets.
 //
-// Serves the static export (out/) via the ASSETS binding and proxies /mcp
-// same-origin to the live MCP gateway — so the preview shows REAL live data
-// (TinyBot/vital signs/goals/graph) with no CORS. Deploys with the existing
-// Workers-scoped CLOUDFLARE_API_TOKEN (no Pages permission needed), to a
-// *.workers.dev URL. Separate from the production MCP worker.
+// Preview JavaScript must not acquire a same-origin bridge to the production
+// MCP service. The public server still has unresolved privacy defects, and a
+// reviewer opening a PR preview must not grant that PR a privileged data path.
+// Wrangler's trusted config forces this handler to run before every asset
+// lookup, avoiding selective-route normalization differences.
 
-const UPSTREAM = "https://tinyassets.io/mcp";
+const BLOCKED_MCP_RESPONSE = JSON.stringify({
+  error: "live_mcp_unavailable_in_untrusted_preview",
+  message: "This pull-request preview uses checked-in public evidence only.",
+});
+
+function normalizePathname(pathname) {
+  let decoded = pathname;
+  for (let depth = 0; depth < 4 && decoded.includes("%"); depth += 1) {
+    try {
+      decoded = decodeURIComponent(decoded);
+    } catch {
+      return null;
+    }
+  }
+  if (decoded.includes("%")) {
+    return null;
+  }
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(decoded)) {
+    return null;
+  }
+
+  const segments = [];
+  for (const segment of decoded.replaceAll("\\", "/").split("/")) {
+    if (segment === "" || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      segments.pop();
+      continue;
+    }
+    const normalizedSegment = segment.toLowerCase().replace(/[. ]+$/u, "");
+    if (normalizedSegment === "") {
+      return null;
+    }
+    segments.push(normalizedSegment);
+  }
+  return `/${segments.join("/")}`;
+}
+
+function isBlockedServicePath(pathname) {
+  const normalized = normalizePathname(pathname);
+  return (
+    normalized === null ||
+    normalized === "/mcp" ||
+    normalized.startsWith("/mcp/") ||
+    normalized.startsWith("/.well-known/oauth-") ||
+    normalized.startsWith("/.well-known/mcp") ||
+    normalized.startsWith("/.well-known/openid-")
+  );
+}
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
-    if (url.pathname === "/mcp") {
-      const headers = new Headers(request.headers);
-      headers.delete("host");
-      headers.delete("origin");
-      headers.delete("referer");
-      const upstream = await fetch(UPSTREAM + url.search, {
-        method: request.method,
-        headers,
-        body:
-          request.method === "GET" || request.method === "HEAD"
-            ? undefined
-            : request.body,
-        redirect: "manual",
-      });
-      return new Response(upstream.body, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: new Headers(upstream.headers),
+    if (isBlockedServicePath(url.pathname)) {
+      return new Response(BLOCKED_MCP_RESPONSE, {
+        status: 503,
+        headers: {
+          "cache-control": "no-store",
+          "content-type": "application/json; charset=utf-8",
+          "x-content-type-options": "nosniff",
+        },
       });
     }
 
-    // Everything else → static assets from out/.
     return env.ASSETS.fetch(request);
   },
 };

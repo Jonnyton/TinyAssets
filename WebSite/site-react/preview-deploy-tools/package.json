@@ -1,0 +1,12 @@
+{
+  "name": "tinyassets-preview-deploy-tools",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Trusted, lockfile-pinned tooling for the credentialed preview upload job.",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "wrangler": "4.114.0"
+  }
+}
