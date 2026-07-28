@@ -34,6 +34,18 @@ Format for future entries:
 - Ship/abandon: <PR URL, merge SHA, or abandon reason>
 ```
 
+## 2026-07-27 - create harden-preview-trust-boundary
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/harden-preview-trust-boundary-20260727
+- Lane state: Active lane
+- Worktree: C:\Users\Jonathan\Projects\wf-harden-preview-trust-boundary-20260727
+- STATUS/Issue/PR: retire-cheat-loop row; draft PR #1812
+- Purpose: split untrusted PR build/test from credentialed Cloudflare preview deployment before #1812 can merge.
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-harden-preview-trust-boundary-20260727\_PURPOSE.md
+- Review gate: TDD + strict OpenSpec/site checks + fresh exact-head general/security/truth and Claude Opus 5 approval
+- Ship/abandon: replace #1812 head only after exact approval; then restack #1815/#1818
+
 ---
 
 ## 2026-06-04 00:00 - create wiki-bug-sync-structured-first

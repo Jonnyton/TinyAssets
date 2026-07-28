@@ -166,6 +166,40 @@ workflow activity with explicit live/snapshot provenance. Platform uptime
 evidence comes from the generic uptime observer/alarm contract and MUST NOT be
 used as proof that a privileged task loop is moving.
 
+### 7a. Treat preview output as untrusted data across three workflow stages
+
+The React preview build executes pull-request-controlled package scripts and
+therefore cannot share a job, runner workspace, cache write, checkout
+credential, or executable deployment input with Cloudflare credentials. The
+ordinary `pull_request` workflow builds and tests with read-only permissions,
+disables persisted checkout credentials, and uploads only the static `out/`
+tree.
+
+A distinct `workflow_run` deployment workflow is loaded from an exact trusted
+default-branch commit after a successful same-repository build. Its secretless
+intake job verifies the expected workflow ID/path, repository, one open
+default-branch pull request, current same-repository head, run attempt, and one
+bounded immutable artifact. It rejects links, hard links, special entries,
+unsafe paths, executable or control/config/archive files, unexpected file
+types, and size/count excesses while copying allowed regular static files into
+a clean tree with a deterministic digest manifest.
+
+A fresh protected-environment job revalidates that tree and manifest, supplies
+the Worker entrypoint/name/configuration from the exact trusted commit, installs
+the exact lockfile-pinned Wrangler without dependency lifecycle scripts,
+rechecks the pull-request head, and uploads an undeployed Worker version under
+the fixed `pr-<number>` alias. It does not deploy or route the version to shared
+traffic. The trusted Worker blocks `/mcp` and `/mcp/*`, so untrusted preview
+JavaScript cannot bridge to production data.
+
+The environment credential belongs to a dedicated Cloudflare preview account
+containing no production routes, domains, Workers, data, or credentials.
+Workers write permission is account-scoped, so a production-account token does
+not satisfy this isolation boundary even if the workflow fixes the Worker name.
+The `workflow_run` definition must first land on the default branch through a
+narrow bootstrap change. Forks may receive unprivileged build/test evidence but
+never enter credentialed publication.
+
 ### 8. Quarantine retired queued work before workers can claim it
 
 Removing the direct executor is insufficient because the generic dispatcher

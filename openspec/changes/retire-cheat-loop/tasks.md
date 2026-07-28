@@ -427,6 +427,17 @@
   skill prose that reverse their deployment ownership; prove platform uptime
   evidence is separately labeled and never presented as privileged task-loop
   activity.
+- [ ] 5.5 Land the narrow preview-boundary bootstrap on the default branch,
+  then rebase this change onto it. The bootstrap separates unprivileged
+  pull-request build from secretless exact-provenance intake/sanitization and a
+  fresh protected-environment version upload; rejects stale, foreign,
+  ambiguous, linked, executable, control, or oversized inputs; blocks `/mcp`;
+  uses exact trusted sources/actions plus a lockfile-pinned no-scripts toolchain;
+  and publishes only an undeployed per-PR alias from a dedicated Cloudflare
+  preview account. Contract tests and operator guidance MUST pin that boundary.
+  Do not check this task until the bootstrap has landed, this branch has been
+  rebased, a current-head preview has rendered through the live workflow, and
+  post-fix use evidence is recorded.
 
 ## 6. Rebuild Packaging And Verify
 

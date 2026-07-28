@@ -281,3 +281,55 @@ observation; it MUST NOT be used as evidence that user task work is moving.
 - **WHEN** website source, static assets, fine print, tests, and build output for the React production tree and Svelte rollback tree are scanned
 - **THEN** no shipped community-loop status artifact, patch-loop application, `community_change_context` caller, homepage privileged-loop narrative, workflow/label fallback, or privileged-loop promise remains
 - **AND** neither deploy nor rollback can resurrect the retired product
+
+### Requirement: Hosted Preview Deployment Preserves The Untrusted-Build Boundary
+
+The hosted React preview SHALL execute pull-request-controlled install, test,
+and build commands only in an unprivileged workflow with read-only repository
+permissions and no persisted checkout credential or deployment secret. A
+separate exact-trusted-default-branch workflow SHALL perform secretless
+provenance validation and artifact sanitization before a fresh
+protected-environment job receives any Cloudflare credential. That job SHALL
+consume only the normalized static export as untrusted data, MUST NOT execute
+artifact content, and SHALL use a fixed trusted Worker entrypoint, Worker name,
+Wrangler configuration, exact action revisions, lockfile-pinned Wrangler, and
+a credential belonging to a dedicated preview-only Cloudflare account.
+Credentialed preview publication SHALL be limited to same-repository pull
+requests whose open current head still matches the validated build.
+
+#### Scenario: Pull-request code builds a hosted preview
+
+- **WHEN** a pull request changes site source, dependencies, package scripts, or the unprivileged build workflow
+- **THEN** those changes execute without Cloudflare secrets, a write-capable token, persisted checkout credentials, or a shared credentialed runner workspace
+- **AND** the build publishes only one short-lived, attempt-specific static export for the trusted workflow to treat as untrusted data
+
+#### Scenario: A successful same-repository preview build enters trusted intake
+
+- **WHEN** the trusted-default-branch deployment workflow observes a successful same-repository preview build
+- **THEN** its secretless intake verifies the exact workflow ID/path, repository, pull request, current head, run attempt, and one immutable bounded artifact before retrieval
+- **AND** it rejects links, hard links, special entries, unsafe or colliding paths, executable/control/config/archive/unexpected files, and count/size excesses while copying allowed regular static files into a clean tree with a deterministic manifest
+
+#### Scenario: A sanitized current preview is published
+
+- **WHEN** a fresh protected-environment job receives a sanitized tree whose manifest still validates and whose pull-request head is still current
+- **THEN** it supplies trusted Worker code/configuration, installs the exact lockfile-pinned tool without lifecycle scripts, and uploads an undeployed version under the fixed `pr-<number>` alias
+- **AND** it does not deploy the version to shared traffic, route production domains, or use a production-account credential
+- **AND** the trusted Worker returns a no-store `503` for `/mcp` and `/mcp/*`
+
+#### Scenario: A pull-request head changes before credential use
+
+- **WHEN** the open pull request no longer has the exact same-repository head validated by secretless intake
+- **THEN** the protected job fails before reading or using the Cloudflare credential
+- **AND** no stale preview URL is posted as current review evidence
+
+#### Scenario: A fork build completes
+
+- **WHEN** a preview build originates from a fork
+- **THEN** build and test evidence may complete without secrets
+- **AND** no credentialed public preview deployment runs
+
+#### Scenario: Preview infrastructure is provisioned
+
+- **WHEN** an operator enables credentialed preview publication
+- **THEN** the protected environment is default-branch restricted and holds only a Workers Scripts write token plus account ID for a dedicated Cloudflare preview account
+- **AND** that account contains no production Workers, routes, domains, data, or credentials
