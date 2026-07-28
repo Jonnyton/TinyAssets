@@ -1541,7 +1541,7 @@ Notes:
 - Branch: codex/audit-retire-cheat-runtime-next-20260727
 - Lane state: current-main residue and ownership audit in progress
 - Worktree: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727
-- STATUS/Issue/PR: coordination foldback after #1818; implementation PR not yet chosen
+- STATUS/Issue/PR: audit PR #1829; existing migrator draft PR #1820 targets unmerged `codex/retire-loop-snapshots` and must close as superseded only after a clean main-based replacement opens
 - PLAN refs: user-buildable/remixable automation; generic primitives survive; no privileged platform composition
 - Purpose: map remaining runtime, workflow/live-state, snapshot/data, packaging, and validation residue to exact owners and choose the smallest collision-safe wave
 - _PURPOSE.md: C:\Users\Jonathan\Projects\wf-audit-retire-cheat-runtime-next-20260727\_PURPOSE.md

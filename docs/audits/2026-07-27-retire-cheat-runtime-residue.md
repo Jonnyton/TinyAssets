@@ -49,7 +49,7 @@ These source waves do not prove runtime/data/live-state retirement.
 | 2.6 | Hard-coded patch-request claimant/writer/checker classification persists in market/universe/work-target paths and plugin/tests | Active market/universe/test owners; preserve generic pickup incentives, directed-daemon authority, and user-owned soul dispatch |
 | 2.8 | Hidden `community_change_context` action/wrapper/action-map and plugin/tests remain after site callers were removed | `retire-legacy-live-mcp-tools` 4.1/4.4 plus active control-station/universe owners |
 | 3.1-3.4 | Auto-ship validator, PR opener, ledger, actions, aliases, health/status/config/reset knowledge, tests, and production data remain | `api/status.py` owned by L37; effectors owned by L49; broad tests owned; operator retention proof required |
-| 3.5 | Announcement files are absent and `post_x_update.py` is generic; three retired loop-era docstring references remain in `validate_patch.py` | File owned by L49; final immediate-pre-merge run drain remains |
+| 3.5 | Announcement files are absent and `post_x_update.py` is generic; three retired loop-era docstring references remain in canonical and plugin-mirror `validate_patch.py` | Canonical file owned by L49; plugin rebuild is task 6.1; final immediate-pre-merge run drain remains |
 | 3.6-3.7 | Retired labels and workflow-owned auto-merge instructions remain live | Inventory-only migrator is safe; apply requires fresh exhaustive receipts, producer quiescence, attribution, and host review for ambiguity |
 | 4.1-4.3 | Community-named watcher/workflow still carries self-heal input, actions/issues write authority, self-dispatch, and retired label | Exact workflow tests overlap L37/L49; disable/cancel/drain live workflow before merge/apply |
 | 4.4 | Nine-heading canonical removal manifest remains | All generic guarantees must first move to surviving owners |
@@ -58,9 +58,11 @@ These source waves do not prove runtime/data/live-state retirement.
 
 ## Next safe repository wave: inventory-only GitHub-state migrator
 
-Existing branch `codex/retire-loop-github-state` contains the reviewed shape.
-Replay only its migrator-specific payload onto current main; do not import its
-old snapshot parent or stale STATUS stack.
+Existing branch `codex/retire-loop-github-state` and draft PR #1820 contain the
+reviewed shape, but #1820 targets the unmerged `codex/retire-loop-snapshots`
+branch. Replay only its migrator-specific payload onto current main; do not
+import its old snapshot parent or stale STATUS stack. Once the clean main-based
+replacement PR opens, close #1820 as superseded with a link to that replacement.
 
 Exact intended write-set:
 
@@ -164,7 +166,9 @@ workflow-dispatch self-heal may become the successor.
 
 1. Land this audit/foldback and release the completed #1818 source paths.
 2. Restack the inventory-only GitHub-state migrator as the next repository
-   wave; keep live apply inaccessible and tasks 3.6/3.7 unchecked.
+   wave; keep live apply inaccessible and tasks 3.6/3.7 unchecked. Draft PR
+   #1820 targets an unmerged snapshot base: leave it parked until the
+   main-based replacement opens, then close #1820 as superseded and link it.
 3. Revalidate L37/L49; if active, obtain exact task-2.1 test carve-outs, and if
    stale, use the documented reap-and-reclaim path.
 4. Implement/deploy task 2.1 and prove all old receipt writers drained or
