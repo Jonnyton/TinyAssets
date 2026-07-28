@@ -47,7 +47,7 @@
   bootstrap alias/version, Access proof, GitHub environment, first live preview,
   rendered review, and post-fix evidence; do not sync/archive that successor
   until its external facts are true.
-- [ ] 3.4 Sync the source-only delta into
+- [x] 3.4 Sync the source-only delta into
   `openspec/specs/public-website-surface/spec.md`, archive this change, and
   verify the generated canonical-spec/archive diff. PR publication and landing
   remain on the durable STATUS lane.
