@@ -62,7 +62,7 @@ jobs:
       - name: Refuse host mutation during stop-writer cutover
         run: |
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'REMOTE'
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" 'sudo bash -s' <<'FENCE_GUARD'
           set -euo pipefail
           state=/var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json
           [ -e "$state" ] || exit 0
@@ -77,7 +77,7 @@ jobs:
           if value.get("phase") != "restored":
               raise SystemExit(f"production cutover fence is {value.get('phase')!r}")
           PY
-          REMOTE
+          FENCE_GUARD
 
       - name: Ensure off-host backup configuration
         env:
