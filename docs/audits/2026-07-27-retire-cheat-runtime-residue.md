@@ -99,6 +99,23 @@ Historical verification on the source payload:
 
 Merged selective-restack verification:
 
+Freshness update 2026-07-28: the current-main restack landed through PR #1830
+as `52475559`. Exact-current Opus 5 review found that an absent `rel="next"`
+after a full 100-row response was still an ambiguous truncation oracle, not
+completion proof. The follow-up binds the explicit page-size request into the
+receipt, rejects a full terminal page during both collection and stored-receipt
+validation, retains the canonical request endpoint so offline validation
+re-derives the request digest and bound, and raises the focused suite to 53
+tests while preserving #1830's closed receipt envelope. It still exposes no
+live mutator and does not complete tasks 3.6/3.7 or authorize any GitHub-state
+change. Claude Opus 5's pre-#1835 exact-current narrow review returned `APPROVE` after
+mutation-testing the live/stored terminal guards, request/page-size binding,
+request-digest recomputation, oversized-page checks, and encrypted-log guard;
+deleting each guard added the intended focused-test failure.
+
+Selective-restack verification on
+`codex/restack-retire-loop-github-state-20260727`:
+
 - The initial payload at `fab12790` restored the three files byte-identically
   from `d40173a2`; `f7e9234b` then intentionally changes the script, test, and
   runbook to close re-digested receipt-schema bypasses.
@@ -137,6 +154,56 @@ Post-merge receipt-schema hardening on
   --check`, strict target OpenSpec, and all 60 strict OpenSpec validations pass.
 - The CLI remains exactly `inventory`, `plan`, and `verify`; no live mutator or
   auto-merge semantic changed, and tasks 3.6/3.7 remain unchecked.
+
+Current-main terminal-oracle integration on 2026-07-28:
+
+- The Opus-approved terminal-page follow-up was restacked after PR #1835
+  landed, preserving both the closed nested receipt schemas and request-bound
+  full-terminal-page rejection.
+- The combined focused suite passes 61/61; Ruff, strict target OpenSpec, and
+  all 60 strict OpenSpec validations pass.
+- The CLI still exposes no live mutator and tasks 3.6/3.7 remain unchecked.
+- Exact-current Opus review returned `ADAPT`: the fail-closed boundary lacked
+  an operator recovery note, the Unicode test did not distinguish `[0-9]`
+  from `\d`, a full second terminal page was unpinned, and stored request
+  endpoints were digest-bound but not repository-scope validated. All four
+  adaptations were folded before publication; the focused suite remains 61/61
+  with the semantic distinctions pinned as subtests.
+- The first adaptation rereview still killed only 10/12 targeted mutations:
+  continuation scope was unpinned, and no positive multi-page receipt
+  distinguished terminal `[-1]` from `[0]`. It also found malformed page
+  records could traceback before typed rejection and that two historical
+  approval sentences lacked their pre-#1835 scope. The follow-up adds exact
+  negative/positive regressions, restores typed failure ordering, and scopes
+  the historical approval claims.
+- The next rereview found a real stored-receipt head-of-chain gap: a
+  re-digested one-page inventory could anchor at arbitrary `page`/`after`
+  query state. It also decomposed continuation scope into independently
+  surviving origin/page/cursor/query mutations, found no live collection to
+  offline-validation round trip, and proved the malformed-page fixture needed
+  a non-iterable value. The follow-up rejects anchor pagination state and pins
+  each continuation seam, the live round trip, and typed non-iterable failure.
+- The exact #1836-based rereview found no remaining accepted forgery or
+  mutation authority, but 3/24 isolated mutations still survived: deleting
+  the receipt-chain digest link, weakening the pagination exact-key envelope,
+  and deleting terminal page-ordinal binding. Three focused regressions now
+  perturb only those seams on an otherwise-valid two-page receipt.
+- The targeted rereview killed the complete requested 21-mutation battery and
+  the three new isolated guards. Its expanded 33-mutation sweep found three
+  final unpinned checks: observed-count reconciliation, repository database-id
+  type discipline, and the terminal-oracle literal. Direct regressions now
+  perturb only those fields on the same valid two-page receipt.
+- The bounded rereview killed all 34 requested mutations and rejected 11
+  concrete forgeries. Its deeper sweep found six correct but unpinned guards:
+  receipt-count/page-count agreement, anchor scheme/encoding/dot scope,
+  terminal next-link absence, exact page/terminal envelopes, connection
+  unknown-field closure, and per-page ordinal identity. One final regression
+  pass now isolates each receipt-shape invariant.
+- Final exact #1836-based Opus review approved semantic head `c95876fe`: every
+  named mutation died, all 45 concrete forgery probes were rejected, all
+  repository/OpenSpec gates passed, and no correctness, authority, or approval
+  truth defect remained. The later coordination-only foldback records that
+  verdict without changing the reviewed implementation or tests.
 
 ## Highest-impact blocked runtime wave: task 2.1
 
