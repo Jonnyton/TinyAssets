@@ -1602,6 +1602,21 @@ Notes:
 - Memory refs: main `328f2c64`; PRs #1829/#1830/#1835; retire-cheat-loop task 2.1
 - Review gate: RED 7 failures; GREEN 136 passed/1 skipped plus 85 related passed; Ruff/py_compile/diff-check/parity passed; nested Codex exact-head APPROVE; fresh Codex + Claude Opus 5 exact-head review still required
 - Ship/abandon: repository merge is only the stop-writer image; task 2.1 stays unchecked until deployed and every old writer is drained/fenced
+- Update 2026-07-28: exact head `e8755f08` received Codex and Claude Opus 5 APPROVE; PR #1836 merged as `35da9d4f`. Repository lane closed; production still ran old writer image at the last audit.
+
+## 2026-07-28 - cheat-loop task 2.1 production deployment proof
+
+- Provider: codex-gpt5-desktop-full-product
+- Branch: codex/retire-cheat-deploy-proof-20260728
+- Lane state: claimed; deterministic deploy/fence workflow hardening starting
+- Worktree: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728
+- STATUS/Issue/PR: task 2.1 operational continuation after merged PR #1836
+- PLAN refs: user-buildable/remixable automation; no platform-owned cheat/community writer
+- Purpose: build and deploy the filing-only image while proving every controlled writer, queued write-back, restart racer, and rollback path is fenced
+- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-retire-cheat-deploy-proof-20260728\_PURPOSE.md
+- Memory refs: merge `35da9d4f`; retire-cheat-loop task 2.1; runtime residue audit production topology section
+- Review gate: workflow TDD, actionlint/zizmor where available, exact-head Codex + Claude Opus 5 review, live deploy receipt, rendered connector proof
+- Ship/abandon: do not dispatch build/deploy until preflight evidence exists; task 2.1 remains unchecked on any uncertainty
 
 ## 2026-07-27 - canonical public-read completeness
 
