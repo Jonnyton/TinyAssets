@@ -55,6 +55,11 @@ candidate hints from the canonical checker. A worker reruns that checker and
 commits the first still-valid claim before broad audit. The recheck keeps the
 snapshot race-safe while avoiding an unbounded startup scan.
 
+Codex drain workers are launched at `medium` reasoning effort even when the
+host's interactive Codex default is `high`. The drain's narrow preselected
+slice, tests, independent review, CI, and finite budgets provide the quality
+boundary while keeping admission latency proportional to the task.
+
 Direct health commands:
 
 ```powershell

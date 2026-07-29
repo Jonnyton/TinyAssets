@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -345,6 +346,34 @@ def test_begin_attempt_marks_idle_controller_running() -> None:
     assert attempt == 2
     assert state["attempts"] == 2
     assert state["status"] == "running"
+
+
+def test_codex_drain_dispatch_uses_balanced_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    args = SimpleNamespace(
+        provider="codex",
+        repo=tmp_path,
+        worker_timeout=5400,
+        model=None,
+    )
+
+    assert hasattr(drain, "build_dispatch_command")
+    command = drain.build_dispatch_command(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=tmp_path / "result.md",
+    )
+
+    assert command[command.index("--effort") + 1] == "medium"
+
+    args.provider = "claude"
+    claude_command = drain.build_dispatch_command(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=tmp_path / "result.md",
+    )
+    assert "--effort" not in claude_command
 
 
 def test_apply_merged_requires_controller_verification() -> None:

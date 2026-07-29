@@ -17,6 +17,8 @@ state misleadingly passive.
 - Snapshot a bounded ordered set of canonical candidates immediately before
   dispatch and require the worker to claim the first still-valid lane before a
   broad audit or backlog scan.
+- Run Codex drain workers at balanced `medium` reasoning effort instead of
+  inheriting the host's frontier-session `high` setting.
 - Preserve fail-safe behavior for genuinely live claims and host-only work.
 
 ## Capabilities

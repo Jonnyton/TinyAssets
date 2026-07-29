@@ -74,6 +74,15 @@ over feeding the complete backlog because the live recovery worker spent more
 than 14 minutes scanning without creating a claim, worktree, or result despite
 six canonical claimable rows.
 
+### Use balanced reasoning for disposable Codex workers
+
+The host Codex configuration uses `high` reasoning for interactive frontier
+sessions. A drain worker has a narrower contract, a preselected lane, mandatory
+tests/review, and a fresh replacement on every slice. The supervisor therefore
+passes `--effort medium` to Codex peer workers. This preserves substantive
+reasoning while avoiding an unbounded high-effort admission phase. Claude
+workers retain their provider-native model setting.
+
 ### Treat closed-session release as coordination repair
 
 The host's statement that no other sessions are open is direct authority to

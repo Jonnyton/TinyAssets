@@ -9,6 +9,7 @@
 - [x] 2.2 Implement claim-check JSON inspection, bounded semantic rejection, and the strengthened drain-worker brief.
 - [x] 2.3 Reproduce slow startup with six claimable rows and add a bounded, ordered pre-dispatch candidate snapshot.
 - [x] 2.4 Require fresh revalidation and a durable claim before broad backlog audit.
+- [x] 2.5 Pin disposable Codex drain workers to balanced medium reasoning effort.
 
 ## 3. Governance And Proof
 

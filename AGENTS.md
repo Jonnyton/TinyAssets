@@ -269,6 +269,10 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   set from `claim_check.py --json`. The worker reruns the checker and must
   commit the first still-valid claim before a broad audit or backlog scan.
   Snapshot hints never override current collision, liveness, or host gates.
+- Disposable Codex drain workers use balanced `medium` reasoning effort. Their
+  safety/quality boundary is the preselected single slice plus tests,
+  independent review, CI, and finite budgets; they do not inherit a host
+  interactive session's higher deliberation setting.
 - `NO_CANDIDATE` requires proved exhaustion, not a glance at the CLAIMABLE
   heading. Before idle, a drain worker must resume its own claim, select
   claimable finish-first work, reap policy-qualified stale claims,

@@ -14,6 +14,9 @@ Immediately before dispatch, the supervisor SHALL provide a bounded ordered
 snapshot of exact-identity-owned, claimable, and policy-qualified stale rows.
 The worker MUST revalidate that snapshot and durably claim the first still-valid
 row before beginning a broad backlog audit.
+Codex drain dispatches SHALL use a balanced reasoning effort suitable for the
+preselected single-slice contract rather than inherit a higher interactive
+session effort setting.
 
 #### Scenario: Claimable work exists
 
@@ -22,6 +25,13 @@ row before beginning a broad backlog audit.
 - **AND** the worker revalidates and durably claims the first still-admissible
   row before a broad audit
 - **AND** a later `NO_CANDIDATE` is rejected while any claimable row remains
+
+#### Scenario: Codex worker is dispatched
+
+- **WHEN** the supervisor launches a disposable Codex drain worker
+- **THEN** the peer command carries balanced `medium` reasoning effort
+- **AND** tests, independent review, CI, and finite worker budgets remain the
+  quality boundary
 
 #### Scenario: Policy-qualified stale claim exists
 

@@ -99,3 +99,16 @@ worker runs the bounded claim-phase context feed before committing a hint.
 Evidence: 78 supervisor/watchdog tests passed on 2026-07-28 Windows 11; strict
 OpenSpec validation and Ruff also passed. Live claim-speed proof remains the
 last installation gate.
+
+The reviewed high-effort worker then received five concrete hints but remained
+claim-free for more than five minutes. The launcher had inherited
+`model_reasoning_effort = "high"` from the interactive Codex configuration.
+Drain dispatch now explicitly uses `medium`; the narrow slice still retains
+test, review, CI, merge-verification, and failure-budget gates.
+
+Claude's opposite-provider review returned **APPROVE** after tracing the
+argument through `openspec_drain_supervisor.py` and `peer_agent.py` to the
+effective Codex CLI override. It confirmed that Claude dispatch is unchanged
+and that structural quality gates make medium appropriate for the preselected
+single-slice contract. A negative regression assertion now pins that Claude
+commands omit `--effort`.

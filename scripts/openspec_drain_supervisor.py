@@ -43,6 +43,7 @@ STOP_POLL_SECONDS = 5.0
 MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
+DRAIN_CODEX_EFFORT = "medium"
 
 
 @dataclass(frozen=True)
@@ -683,12 +684,12 @@ def _log(run_dir: Path, message: str) -> None:
         handle.write(line + "\n")
 
 
-def _dispatch(
+def build_dispatch_command(
     *,
     args: argparse.Namespace,
     prompt_path: Path,
     result_path: Path,
-) -> subprocess.CompletedProcess[str]:
+) -> list[str]:
     command = [
         sys.executable,
         str(PEER_AGENT),
@@ -705,6 +706,22 @@ def _dispatch(
     ]
     if args.model:
         command.extend(["--model", args.model])
+    if args.provider == "codex":
+        command.extend(["--effort", DRAIN_CODEX_EFFORT])
+    return command
+
+
+def _dispatch(
+    *,
+    args: argparse.Namespace,
+    prompt_path: Path,
+    result_path: Path,
+) -> subprocess.CompletedProcess[str]:
+    command = build_dispatch_command(
+        args=args,
+        prompt_path=prompt_path,
+        result_path=result_path,
+    )
     process = subprocess.Popen(
         command,
         cwd=args.repo,
