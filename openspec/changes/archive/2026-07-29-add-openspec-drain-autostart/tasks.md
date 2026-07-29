@@ -16,4 +16,4 @@
 ## 4. Verification And Landing
 
 - [x] 4.1 Pass focused tests, Ruff, PowerShell syntax checks, strict OpenSpec validation, skill/drift checks, and an isolated no-dispatch watchdog smoke.
-- [ ] 4.2 Sync/archive the change, retire its STATUS row, land one PR, install the task, and verify the tray attaches to the existing live drain without a second worker.
+- [x] 4.2 Sync/archive the change, retire its STATUS row, land one PR, install the task, and verify the tray attaches to the existing live drain without a second worker.
