@@ -1,6 +1,6 @@
 # Main-Account Cloud OpenSpec Drain
 
-**Status:** proposed for host approval  
+**Status:** approved for OpenSpec activation work
 **Date:** 2026-07-29  
 **Owner:** Jonathan's main TinyAssets universe
 
