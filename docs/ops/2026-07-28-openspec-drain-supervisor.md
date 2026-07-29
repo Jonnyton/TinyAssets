@@ -50,6 +50,11 @@ stale, or exact-drain-owned count rejects the result and consumes a bounded
 failure strike. Two ignored rejections therefore become visibly down instead
 of burning subscription in an endless false-idle loop.
 
+Immediately before dispatch, the controller also injects at most five ordered
+candidate hints from the canonical checker. A worker reruns that checker and
+commits the first still-valid claim before broad audit. The recheck keeps the
+snapshot race-safe while avoiding an unbounded startup scan.
+
 Direct health commands:
 
 ```powershell

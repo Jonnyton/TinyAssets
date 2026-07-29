@@ -10,13 +10,18 @@ claim, select claimable finish-first work, reap policy-qualified stale claims,
 freshness-check blocker labels, and consider safe cross-cutting promotion in
 that order before reporting no candidate. Live foreign claims, host-owned
 actions, unresolved decisions, and overlapping write sets MUST remain excluded.
+Immediately before dispatch, the supervisor SHALL provide a bounded ordered
+snapshot of exact-identity-owned, claimable, and policy-qualified stale rows.
+The worker MUST revalidate that snapshot and durably claim the first still-valid
+row before beginning a broad backlog audit.
 
 #### Scenario: Claimable work exists
 
-- **WHEN** a worker returns `NO_CANDIDATE`
-- **AND** `claim_check.py --json` reports one or more claimable rows
-- **THEN** the supervisor rejects the result as semantically invalid
-- **AND** it dispatches a fresh worker subject to the finite failure budget
+- **WHEN** the pre-dispatch claim check reports one or more claimable rows
+- **THEN** the supervisor injects their ordered labels and bounded file scope
+- **AND** the worker revalidates and durably claims the first still-admissible
+  row before a broad audit
+- **AND** a later `NO_CANDIDATE` is rejected while any claimable row remains
 
 #### Scenario: Policy-qualified stale claim exists
 

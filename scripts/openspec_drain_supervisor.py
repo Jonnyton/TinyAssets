@@ -42,6 +42,7 @@ TRANSIENT_PATTERNS = (
 STOP_POLL_SECONDS = 5.0
 MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
+MAX_CANDIDATE_HINTS = 5
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,19 @@ class CandidatePressure:
     claimable: int
     stale: int
     owned: int
+
+
+@dataclass(frozen=True)
+class CandidateHint:
+    classification: str
+    task_label: str
+    files: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CandidateSnapshot:
+    pressure: CandidatePressure
+    hints: tuple[CandidateHint, ...]
 
 
 def parse_result(text: str) -> DrainResult:
@@ -84,13 +98,32 @@ def parse_result(text: str) -> DrainResult:
     return DrainResult(status=status, target=target, pr=pr)
 
 
-def inspect_candidate_pressure(
+def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
+    task_label = row.get("task_label")
+    files = row.get("files", [])
+    if not isinstance(task_label, str) or not task_label.strip():
+        raise TypeError("candidate task_label must be a non-empty string")
+    if not isinstance(files, list) or not all(
+        isinstance(path, str) for path in files
+    ):
+        raise TypeError("candidate files must be a string list")
+    return CandidateHint(
+        classification=classification,
+        task_label=" ".join(task_label.split())[:240],
+        files=tuple(" ".join(path.split())[:160] for path in files[:4]),
+    )
+
+
+def inspect_candidate_snapshot(
     *,
     repo: Path,
     provider: str,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> CandidatePressure:
-    """Read canonical claim pressure without mutating coordination state."""
+    max_hints: int = MAX_CANDIDATE_HINTS,
+) -> CandidateSnapshot:
+    """Read ordered canonical candidates without mutating coordination state."""
+    if max_hints < 0:
+        raise ValueError("max_hints cannot be negative")
     command = [
         sys.executable,
         str(repo / "scripts" / "claim_check.py"),
@@ -112,15 +145,41 @@ def inspect_candidate_pressure(
         claimable = int(counts["claimable"])
         stale = int(counts["stale"])
         in_flight = payload.get("in_flight", [])
-        if not isinstance(in_flight, list):
-            raise TypeError("in_flight must be a list")
+        claimable_rows = payload.get("claimable", [])
+        stale_rows = payload.get("stale", [])
+        if not all(
+            isinstance(rows, list)
+            for rows in (in_flight, claimable_rows, stale_rows)
+        ):
+            raise TypeError("candidate collections must be lists")
+        if not all(
+            isinstance(row, dict)
+            for rows in (in_flight, claimable_rows, stale_rows)
+            for row in rows
+        ):
+            raise TypeError("candidate rows must be objects")
+        unwrapped_stale_rows = []
+        for entry in stale_rows:
+            row = entry.get("row")
+            if not isinstance(row, dict):
+                raise TypeError("stale candidate row must be an object")
+            unwrapped_stale_rows.append(row)
         owned = sum(
             1
             for row in in_flight
-            if isinstance(row, dict) and row.get("claimer") == provider
+            if row.get("claimer") == provider
         )
         if claimable < 0 or stale < 0:
             raise ValueError("candidate counts cannot be negative")
+        ordered_rows = [
+            *((row, "OWNED") for row in in_flight if row.get("claimer") == provider),
+            *((row, "CLAIMABLE") for row in claimable_rows),
+            *((row, "STALE") for row in unwrapped_stale_rows),
+        ]
+        hints = tuple(
+            _candidate_hint(row, classification)
+            for row, classification in ordered_rows[:max_hints]
+        )
     except (
         KeyError,
         OSError,
@@ -130,7 +189,29 @@ def inspect_candidate_pressure(
         subprocess.SubprocessError,
     ) as exc:
         raise RuntimeError(f"claim pressure inspection failed: {exc}") from exc
-    return CandidatePressure(claimable=claimable, stale=stale, owned=owned)
+    return CandidateSnapshot(
+        pressure=CandidatePressure(
+            claimable=claimable,
+            stale=stale,
+            owned=owned,
+        ),
+        hints=hints,
+    )
+
+
+def inspect_candidate_pressure(
+    *,
+    repo: Path,
+    provider: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> CandidatePressure:
+    """Read canonical claim pressure without mutating coordination state."""
+    return inspect_candidate_snapshot(
+        repo=repo,
+        provider=provider,
+        runner=runner,
+        max_hints=0,
+    ).pressure
 
 
 def no_candidate_rejection(
@@ -159,7 +240,12 @@ def begin_attempt(state: dict[str, Any]) -> int:
     return int(state["attempts"])
 
 
-def build_worker_prompt(state: dict[str, Any], *, objective: str) -> str:
+def build_worker_prompt(
+    state: dict[str, Any],
+    *,
+    objective: str,
+    candidate_hints: tuple[CandidateHint, ...] = (),
+) -> str:
     """Return the fixed governance brief for one disposable drain worker."""
     identity = state["identity"]
     resume = state.get("resume_target")
@@ -174,6 +260,15 @@ def build_worker_prompt(state: dict[str, Any], *, objective: str) -> str:
         )
     )
     blocked_text = ", ".join(blocked) if blocked else "(none)"
+    candidate_text = (
+        "\n".join(
+            f"- [{hint.classification}] {hint.task_label}"
+            + (f" | files: {', '.join(hint.files)}" if hint.files else "")
+            for hint in candidate_hints
+        )
+        if candidate_hints
+        else "- (no controller hint; run the canonical claim check directly)"
+    )
     return f"""You are one disposable TinyAssets OpenSpec drain worker.
 
 Run identity: `{identity}`
@@ -181,6 +276,9 @@ Objective: {objective}
 Recent blocked targets to avoid unless their blocker visibly cleared: {blocked_text}
 
 {resume_text}
+
+Controller candidate snapshot (ordered, taken immediately before dispatch):
+{candidate_text}
 
 Authority and safety:
 - You are write-capable and are not reliably OS-sandboxed on this Windows host.
@@ -196,8 +294,17 @@ Authority and safety:
   own existing claim before admitting another.
 
 Delivery contract:
-1. Run `python scripts/openspec_flow.py audit` and inspect STATUS/PLAN/dependencies.
-2. Prove candidate exhaustion in this exact order before `NO_CANDIDATE`:
+1. Before any broad audit or backlog scan, run exact `claim_check.py --json`
+   with `{identity}`, then run `provider_context_feed.py --provider {identity}
+   --phase claim --limit 10`. Resume an owned row first. Otherwise revalidate
+   the controller snapshot in listed order and claim the first row that remains
+   CLAIMABLE, or reap the first row that remains policy-qualified STALE.
+   Immediately edit STATUS with the exact identity and commit that claim in the
+   clean lane. Do not spend a broad research pass before you commit that claim.
+2. Only after the durable claim, run `python scripts/openspec_flow.py audit`
+   and the scoped STATUS/PLAN/dependency and provider-context checks needed for
+   that lane.
+3. Prove candidate exhaustion in this exact order before `NO_CANDIDATE`:
    a. resume this drain identity's existing claim;
    b. select a claimable finish-first STATUS row;
    c. reap and claim the first policy-qualified stale claim under AGENTS.md;
@@ -209,16 +316,16 @@ Delivery contract:
    counts are both zero, no in-flight row is claimed by this drain identity,
    and no safe promotion exists. Never steal a live claim or invent work merely
    to stay busy.
-3. Own one concrete acceptance contract and at most one PR.
-4. For a grandfathered oversized change, deliver one recovery slice containing
+4. Own one concrete acceptance contract and at most one PR.
+5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
    Work inside the existing change; do not mechanically fan out child changes.
-5. Implement test-first, obtain required independent review, push the PR, and
+6. Implement test-first, obtain required independent review, push the PR, and
    wait for required CI/auto-merge.
-6. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
+7. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
    retire the STATUS row. If merge succeeded but foldback remains, report
    PARTIAL so the next fresh worker resumes it.
-7. Preserve blockers honestly. Do not broaden into full-platform conversion.
+8. Preserve blockers honestly. Do not broaden into full-platform conversion.
 
 Your last non-empty line must replace every placeholder in exactly this form.
 Do not print any other DRAIN_RESULT line:
@@ -727,8 +834,33 @@ def _run(args: argparse.Namespace) -> int:
             attempt = begin_attempt(state)
             prompt_path = prompts_dir / f"{attempt:03d}.md"
             result_path = results_dir / f"{attempt:03d}.md"
+            try:
+                snapshot = inspect_candidate_snapshot(
+                    repo=args.repo,
+                    provider=state["identity"],
+                )
+                candidate_hints = snapshot.hints
+                pressure = snapshot.pressure
+                _log(
+                    run_dir,
+                    "candidates "
+                    f"attempt={attempt} claimable={pressure.claimable} "
+                    f"stale={pressure.stale} owned={pressure.owned} "
+                    f"hints={len(candidate_hints)}",
+                )
+            except RuntimeError as exc:
+                candidate_hints = ()
+                _log(
+                    run_dir,
+                    f"candidate snapshot unavailable attempt={attempt}: {exc}",
+                )
             prompt_path.write_text(
-                build_worker_prompt(state, objective=args.objective) + "\n",
+                build_worker_prompt(
+                    state,
+                    objective=args.objective,
+                    candidate_hints=candidate_hints,
+                )
+                + "\n",
                 encoding="utf-8",
             )
             atomic_write_json(state_path, state)

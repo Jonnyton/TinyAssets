@@ -56,6 +56,10 @@ and has a regression test for the idle-to-active transition.
 6. An in-flight row owned by the exact drain identity also rejects
    `NO_CANDIDATE`; the worker must resume it rather than waiting 24 hours for its
    own abandoned claim to become stale.
+7. A live replacement worker remained artifact-free for more than 14 minutes
+   despite six claimable rows. The controller now injects at most five ordered
+   own/claimable/stale hints, and the worker must revalidate and commit the first
+   still-valid claim before broad audit.
 
 ## Verification target
 
@@ -81,3 +85,17 @@ The follow-up approved both final adaptations:
 
 No installation blocker remained. Runtime selection proof is still required
 before foldback.
+
+The later candidate-preselection review initially returned **BLOCK**: canonical
+stale entries wrap their STATUS row under `row`, while the first parser treated
+them as flat. That path was fail-safe but dropped every hint. The parser now
+unwraps the canonical shape, and its regression constructs the payload through
+the real `claim_check.build_payload` producer rather than a hand-written fake.
+
+Claude's narrow re-review returned **APPROVE**. It independently round-tripped a
+real producer payload, reproduced the regression failure, confirmed the
+OWNED-to-CLAIMABLE-to-STALE order and five-hint bound, and verified that the
+worker runs the bounded claim-phase context feed before committing a hint.
+Evidence: 78 supervisor/watchdog tests passed on 2026-07-28 Windows 11; strict
+OpenSpec validation and Ruff also passed. Live claim-speed proof remains the
+last installation gate.

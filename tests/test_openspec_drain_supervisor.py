@@ -17,6 +17,17 @@ assert SPEC.loader is not None
 sys.modules[SPEC.name] = drain
 SPEC.loader.exec_module(drain)
 
+CLAIM_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "claim_check.py"
+CLAIM_SPEC = importlib.util.spec_from_file_location(
+    "claim_check_contract",
+    CLAIM_SCRIPT,
+)
+assert CLAIM_SPEC is not None
+claim_check = importlib.util.module_from_spec(CLAIM_SPEC)
+assert CLAIM_SPEC.loader is not None
+sys.modules[CLAIM_SPEC.name] = claim_check
+CLAIM_SPEC.loader.exec_module(claim_check)
+
 
 def _state(**overrides: object) -> dict[str, object]:
     state: dict[str, object] = {
@@ -109,6 +120,155 @@ def test_worker_prompt_requires_proven_exhaustion_before_no_candidate() -> None:
     normalized = " ".join(prompt.split())
     assert "claimable` and `stale` counts are both zero" in normalized
     assert "NO_CANDIDATE" in prompt
+
+
+def test_worker_prompt_claims_preselected_candidate_before_broad_audit() -> None:
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+        candidate_hints=(
+            drain.CandidateHint(
+                classification="CLAIMABLE",
+                task_label="main-red round 2",
+                files=("tests/test_universe_server_framing.py",),
+            ),
+        ),
+    )
+
+    assert "[CLAIMABLE] main-red round 2" in prompt
+    assert "Before any broad audit or backlog scan" in prompt
+    assert "--phase claim --limit 10" in " ".join(prompt.split())
+    assert "commit that claim" in prompt
+    assert prompt.index("commit that claim") < prompt.index(
+        "openspec_flow.py audit"
+    )
+
+
+def test_candidate_snapshot_preserves_order_and_bounds_hints(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        claimable = [
+            {
+                "task_label": f"candidate-{index}",
+                "files": [f"file-{index}.py"],
+                "claimer": None,
+            }
+            for index in range(7)
+        ]
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 7,
+                        "blocked": 0,
+                        "in_flight": 1,
+                        "host_owned": 0,
+                        "stale": 1,
+                    },
+                    "claimable": claimable,
+                    "stale": [
+                        {
+                            "row": {
+                                "task_label": "stale-last",
+                                "files": ["stale.py"],
+                                "claimer": "old-session",
+                            },
+                            "reason": "no activity in 24h",
+                            "suggested_reap_status": (
+                                "reaped:drain-test:no-activity-24h"
+                            ),
+                        }
+                    ],
+                    "in_flight": [
+                        {
+                            "task_label": "resume-first",
+                            "files": ["resume.py"],
+                            "claimer": "drain-test",
+                        }
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    assert hasattr(drain, "inspect_candidate_snapshot")
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+        max_hints=5,
+    )
+
+    assert snapshot.pressure == drain.CandidatePressure(
+        claimable=7,
+        stale=1,
+        owned=1,
+    )
+    assert [hint.task_label for hint in snapshot.hints] == [
+        "resume-first",
+        "candidate-0",
+        "candidate-1",
+        "candidate-2",
+        "candidate-3",
+    ]
+    assert snapshot.hints[0].classification == "OWNED"
+
+
+def test_candidate_snapshot_unwraps_canonical_stale_rows(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    claimable_row = claim_check.Row(
+        raw_task="**claimable-first**",
+        files=["claimable.py"],
+        depends_raw="-",
+        status="pending",
+        line_no=1,
+    )
+    stale_row = claim_check.Row(
+        raw_task="**stale-second**",
+        files=["stale.py"],
+        depends_raw="-",
+        status="claimed:closed-session",
+        line_no=2,
+    )
+    payload = claim_check.build_payload(
+        provider="drain-test",
+        claimable=[claimable_row],
+        blocked=[],
+        in_flight=[],
+        host_owned=[],
+        stale=[(stale_row, "no activity in 24h")],
+        show_reap=True,
+    )
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+
+    assert [
+        (hint.classification, hint.task_label) for hint in snapshot.hints
+    ] == [
+        ("CLAIMABLE", "claimable-first"),
+        ("STALE", "stale-second"),
+    ]
 
 
 def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:

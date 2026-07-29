@@ -265,6 +265,10 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   diagnostic at 90 seconds. On timeout they may proceed only from a clean
   current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
   provider-context gates remain mandatory.
+- Before dispatch, the controller snapshots a bounded STATUS-ordered candidate
+  set from `claim_check.py --json`. The worker reruns the checker and must
+  commit the first still-valid claim before a broad audit or backlog scan.
+  Snapshot hints never override current collision, liveness, or host gates.
 - `NO_CANDIDATE` requires proved exhaustion, not a glance at the CLAIMABLE
   heading. Before idle, a drain worker must resume its own claim, select
   claimable finish-first work, reap policy-qualified stale claims,

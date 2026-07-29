@@ -59,6 +59,21 @@ The brief will require this order before idle:
 
 Live claims and host-owned rows remain unavailable.
 
+### Preselect from canonical coordination state
+
+Immediately before each dispatch, the controller will read the same
+`claim_check.py --json` payload and inject at most five ordered hints: an exact
+drain-owned row first, then claimable rows in STATUS order, then
+policy-qualified stale rows. The worker must rerun the checker, claim the first
+hint that remains valid, and commit that claim before any broad OpenSpec audit
+or backlog scan.
+
+The snapshot is advisory until revalidated, so it cannot override a claim that
+became live between dispatch and worker startup. Bounded injection was chosen
+over feeding the complete backlog because the live recovery worker spent more
+than 14 minutes scanning without creating a claim, worktree, or result despite
+six canonical claimable rows.
+
 ### Treat closed-session release as coordination repair
 
 The host's statement that no other sessions are open is direct authority to
@@ -67,6 +82,9 @@ branches, OpenSpec artifacts, and histories remain intact; only exclusive
 ownership is released.
 
 ## Risks / Trade-offs
+
+- **A candidate can change after snapshot** — The worker reruns the canonical
+  checker and claims only a hint that remains admissible.
 
 - **A stale claim could belong to slow uncommitted work** → The existing
   24-hour/no-heartbeat policy remains the autonomous threshold; same-day claims

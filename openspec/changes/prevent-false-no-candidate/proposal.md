@@ -14,6 +14,9 @@ state misleadingly passive.
 - Add a controller-side gate that rejects `NO_CANDIDATE` whenever
   `claim_check.py` still exposes a claimable row, stale-claim candidate, or row
   owned by the exact drain identity.
+- Snapshot a bounded ordered set of canonical candidates immediately before
+  dispatch and require the worker to claim the first still-valid lane before a
+  broad audit or backlog scan.
 - Preserve fail-safe behavior for genuinely live claims and host-only work.
 
 ## Capabilities
