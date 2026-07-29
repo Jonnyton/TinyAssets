@@ -224,8 +224,22 @@ Never use `--recover-stale-lock` merely because a live controller appears slow.
 Recovery checks the PID stored in the lock through the Windows process API and
 refuses to replace it while that controller is alive.
 
+If the immediately preceding attempt is recorded as `INVALID_RESULT`, resume
+re-parses that exact result artifact before checking the failure budget. When
+an upgraded parser now accepts the marker and it matches the preserved
+admission, the controller removes only the parser's failure strike and applies
+the ordinary result transition. An artifact that remains invalid or reports a
+different admitted target leaves the failure budget unchanged.
+Pre-change result records may lack an attempt number. The controller may infer
+the current counter only from a persisted terminal `failure-budget` state,
+where no later attempt can have started; all non-terminal legacy states fail
+closed instead of guessing.
+
 ## Terminal results
 
+- A mechanically admitted prompt names its exact canonical result target. The
+  marker uses that slug, not the human STATUS label. The parser defensively
+  canonicalizes a literal human label through the same bounded slug rule.
 - `MERGED`: PR is merged and foldback is complete; controller verifies GitHub
   and counts one slice.
 - `PARTIAL`: PR is merged but spec sync/archive or STATUS foldback remains; the
@@ -242,9 +256,10 @@ failures receive at most three consecutive free idle retries; later repeats
 consume failure strikes. Missing, echoed, multiple, or non-final result markers
 are failures. An outer worker timeout terminates the launcher process tree.
 
-When resuming after `failure-budget`, raise `--max-failures` above the persisted
-failure count after correcting the underlying problem; otherwise the resumed
-controller correctly exits before dispatch.
+When resuming after an unrecoverable `failure-budget`, raise `--max-failures`
+above the persisted failure count only after correcting and inspecting the
+underlying problem; otherwise the resumed controller correctly exits before
+dispatch.
 
 ## End-of-day proof
 

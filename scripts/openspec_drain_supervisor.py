@@ -20,12 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PEER_AGENT = REPO_ROOT / "scripts" / "peer_agent.py"
 STATUSES = {"MERGED", "PARTIAL", "BLOCKED", "NO_CANDIDATE", "FAILED"}
 RESULT_PREFIX = "DRAIN_RESULT:"
-RESULT_RE = re.compile(
-    r"^DRAIN_RESULT: "
-    r"(MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED) "
-    r"([A-Za-z0-9][A-Za-z0-9._-]*|-) "
-    r"(https://github\.com/[^/\s]+/[^/\s]+/pull/[0-9]+|-)$"
-)
+RESULT_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,239}$")
 PR_RE = re.compile(
     r"^https://github\.com/"
     r"(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)/pull/(?P<number>[0-9]+)$"
@@ -94,12 +89,21 @@ def parse_result(text: str) -> DrainResult:
     marker = markers[0]
     if any(character in marker for character in "<>|"):
         raise ValueError("placeholder or pipe syntax is not a literal result")
-    match = RESULT_RE.fullmatch(marker)
-    if not match:
+    payload = marker[len(RESULT_PREFIX) :].strip()
+    status, separator, remainder = payload.partition(" ")
+    target_text, target_separator, pr = remainder.rpartition(" ")
+    if not separator or not target_separator or not target_text or not pr:
         raise ValueError("malformed drain result marker")
-    status, target, pr = match.groups()
     if status not in STATUSES:
         raise ValueError(f"unknown drain result status: {status}")
+    if pr != "-" and not PR_RE.fullmatch(pr):
+        raise ValueError("malformed drain result PR")
+    if target_text == "-":
+        target = "-"
+    elif RESULT_TARGET_RE.fullmatch(target_text):
+        target = _slugify(target_text)
+    else:
+        raise ValueError("malformed drain result target")
     if status in {"MERGED", "PARTIAL"} and (
         target == "-" or not PR_RE.fullmatch(pr)
     ):
@@ -597,11 +601,13 @@ def build_worker_prompt(
         )
         resume_text = f"""The controller already admitted and claimed your lane:
 - Target: `{admission.task_label}`
+- Canonical result target: `{admission.target}`
 - Worktree: `{admission.worktree}`
 - Branch: `{admission.branch}`
 
 You are already inside that prepared worktree. Do not create another worktree.
 Do not select a different lane. Verify the exact claim, then build this target.
+Your terminal marker MUST use `{admission.target}`, never the human task label.
 {foldback_text}"""
     else:
         resume_text = (
@@ -649,6 +655,14 @@ Do not select a different lane. Verify the exact claim, then build this target.
    first row that remains policy-qualified STALE. Immediately edit STATUS with
    the exact identity and commit that claim in the clean lane. Do not spend a
    broad research pass before you commit that claim."""
+    )
+    result_statuses = (
+        "<MERGED|PARTIAL|BLOCKED|FAILED>"
+        if admission is not None
+        else "<MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED>"
+    )
+    result_target = (
+        admission.target if admission is not None else "<target-or-dash>"
     )
     return f"""You are one disposable TinyAssets OpenSpec drain worker.
 
@@ -703,7 +717,7 @@ Delivery contract:
 
 Your last non-empty line must replace every placeholder in exactly this form.
 Do not print any other DRAIN_RESULT line:
-DRAIN_RESULT: <MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED> <target-or-dash> <PR-url-or-dash>"""
+DRAIN_RESULT: {result_statuses} {result_target} <PR-url-or-dash>"""
 
 
 def verify_merged(
@@ -830,6 +844,78 @@ def apply_result(
     else:
         state["consecutive_failures"] += 1
         state["status"] = "failed"
+
+
+def _recorded_invalid_result_attempt(state: dict[str, Any]) -> int | None:
+    last_result = state.get("last_result")
+    if (
+        not isinstance(last_result, dict)
+        or last_result.get("status") != "INVALID_RESULT"
+    ):
+        return None
+    attempt_value = last_result.get("attempt")
+    if attempt_value is None:
+        if state.get("status") != "failure-budget":
+            return None
+        attempt_value = state.get("attempts")
+    try:
+        attempt = int(attempt_value)
+    except (TypeError, ValueError):
+        return None
+    return attempt if attempt >= 1 else None
+
+
+def recover_invalid_result(
+    state: dict[str, Any],
+    *,
+    results_dir: Path,
+    repo: Path,
+    merge_verifier: Callable[..., bool] = verify_merged,
+) -> bool:
+    """Replay the exact newly valid artifact through ordinary result handling."""
+    admission_data = state.get("admission")
+    attempt = _recorded_invalid_result_attempt(state)
+    if attempt is None or not isinstance(admission_data, dict):
+        return False
+    try:
+        started_at = str(state["started_at"])
+        admission = Admission(
+            target=str(admission_data["target"]),
+            task_label=str(admission_data["task_label"]),
+            worktree=Path(admission_data["worktree"]),
+            branch=str(admission_data["branch"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+    result_path = results_dir / f"{attempt:03d}.md"
+    try:
+        result = parse_result(
+            result_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, ValueError):
+        return False
+    if admission_result_rejection(result, admission):
+        return False
+
+    verified = (
+        merge_verifier(
+            result.pr,
+            repo=repo,
+            started_at=started_at,
+        )
+        if result.status in {"MERGED", "PARTIAL"}
+        else False
+    )
+    state["consecutive_failures"] = max(
+        0,
+        int(state.get("consecutive_failures", 0)) - 1,
+    )
+    apply_result(state, result, merge_verified=verified)
+    if result.status == "BLOCKED" or (
+        result.status == "MERGED" and verified
+    ):
+        state["admission"] = None
+    return True
 
 
 def classify_peer_failure(returncode: int, text: str) -> str:
@@ -1185,6 +1271,7 @@ def _run(args: argparse.Namespace) -> int:
                 return 2
             stop_file.unlink()
 
+        recovered_result = False
         if state_path.exists():
             if not args.resume:
                 print(
@@ -1204,12 +1291,25 @@ def _run(args: argparse.Namespace) -> int:
             state["deadline_at"] = (now + timedelta(hours=args.hours)).isoformat(
                 timespec="seconds"
             )
-            state["status"] = "resuming"
+            recovery_attempt = _recorded_invalid_result_attempt(state)
+            recovered_result = recover_invalid_result(
+                state,
+                results_dir=results_dir,
+                repo=args.repo,
+            )
+            if recovered_result:
+                _log(
+                    run_dir,
+                    "replayed newly valid result "
+                    f"attempt={recovery_attempt} "
+                    f"status={state['last_result']['status']}",
+                )
         else:
             state = _new_state(args)
 
         deadline_monotonic = time.monotonic() + args.hours * 3600
-        state["status"] = "running"
+        if not recovered_result:
+            state["status"] = "running"
         atomic_write_json(state_path, state)
 
         while True:
@@ -1386,6 +1486,7 @@ def _run(args: argparse.Namespace) -> int:
                 state["consecutive_failures"] += 1
                 state["last_result"] = {
                     "status": "INVALID_RESULT",
+                    "attempt": attempt,
                     "error": str(exc),
                 }
                 state["status"] = "invalid-result"
