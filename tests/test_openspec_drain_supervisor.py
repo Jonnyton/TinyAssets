@@ -1426,6 +1426,7 @@ def test_run_recovers_unconsumed_result_before_replacement_dispatch(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"assigned-target"}),
         ),
     )
     dispatched_prompts: list[str] = []
