@@ -15,4 +15,4 @@
 ## 4. Verification And Foldback
 
 - [x] 4.1 Run a no-dispatch dry run plus focused tests, Ruff, strict OpenSpec validation, diff checks, and an exact-diff independent review.
-- [x] 4.2 Sync the delta, archive the change, retire its STATUS row, and land one PR.
+- [x] 4.2 Sync the delta, archive the change, retire its STATUS row, and land the reviewed implementation plus auto-merge-raced foldback.
