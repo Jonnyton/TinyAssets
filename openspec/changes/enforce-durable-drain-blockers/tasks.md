@@ -8,7 +8,7 @@
 - [x] 2.1 Add failing result-path tests proving claimable, missing, and refresh-failed targets reject `BLOCKED`, while an exact current-main blocked target is accepted; minimally implement fail-closed validation that retains admission and consumes the existing finite failure budget.
   - **Depends:** 1.1.
   - **Verify:** red/green tests assert state, admission, recent blockers, and diagnostics.
-- [ ] 2.2 Add failing prompt and dispatch tests for durable-blocker instructions and recent-blocked hint exhaustion; minimally suppress only the no-hint write dispatch caused by recent-block filtering while preserving owned, alternative-candidate, and true-exhaustion paths.
+- [x] 2.2 Add failing prompt and dispatch tests for durable-blocker instructions and recent-blocked hint exhaustion; minimally suppress only the no-hint write dispatch caused by recent-block filtering while preserving owned, alternative-candidate, and true-exhaustion paths.
   - **Depends:** 2.1.
   - **Verify:** red/green tests prove zero peer dispatch during cooldown and unchanged dispatch for every preserved path.
 

@@ -113,6 +113,8 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     assert "not reliably OS-sandboxed" in prompt
     assert "shell `git` and `gh`" in normalized
     assert "`BLOCKED` is reserved" in normalized
+    assert "must first land a sanitized STATUS dependency or blocker" in normalized
+    assert "current `origin/main` classifies the exact target as blocked" in normalized
     assert "staging, committing, pushing, or creating the PR fails" in normalized
     assert "return `FAILED`" in normalized
     assert prompt.rstrip().endswith(
@@ -974,6 +976,84 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
         ("OWNED", "first target"),
         ("CLAIMABLE", "second target"),
     ]
+
+
+@pytest.mark.parametrize(
+    (
+        "pressure",
+        "candidate_hints",
+        "recent_blocked",
+        "has_admission",
+        "expected",
+    ),
+    [
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            ["first-target"],
+            False,
+            True,
+        ),
+        (
+            drain.CandidatePressure(0, 1, 0),
+            (),
+            ["first-target"],
+            False,
+            True,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (drain.CandidateHint("CLAIMABLE", "second target", ()),),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            ["first-target"],
+            True,
+            False,
+        ),
+        (
+            drain.CandidatePressure(0, 0, 1),
+            (),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(0, 0, 0),
+            (),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            [],
+            False,
+            False,
+        ),
+    ],
+)
+def test_recent_blocker_cooldown_only_suppresses_filtered_rediscovery(
+    pressure: drain.CandidatePressure,
+    candidate_hints: tuple[drain.CandidateHint, ...],
+    recent_blocked: list[str],
+    has_admission: bool,
+    expected: bool,
+) -> None:
+    assert (
+        drain.should_cooldown_without_worker(
+            pressure=pressure,
+            candidate_hints=candidate_hints,
+            recent_blocked=recent_blocked,
+            has_admission=has_admission,
+        )
+        is expected
+    )
 
 
 def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
@@ -2277,6 +2357,75 @@ def test_run_dispatches_inside_mechanically_admitted_lane(
     assert state["admission"] is None
     assert state["recent_blocked"] == ["target"]
     assert state["status"] == "blocked"
+
+
+def test_run_cools_down_without_dispatch_when_recent_blockers_consume_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        classification="CLAIMABLE",
+        task_label="blocked target",
+        files=("x.py",),
+        line_no=1,
+        status="pending",
+    )
+    initial_state = _state(
+        provider="codex",
+        model=None,
+        attempts=0,
+        last_consumed_attempt=0,
+        consecutive_transients=0,
+        consecutive_partial_target=None,
+        consecutive_partials=0,
+        admission=None,
+        recent_blocked=["blocked-target"],
+    )
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
+            hints=(hint,),
+        ),
+    )
+    monkeypatch.setattr(
+        drain,
+        "_dispatch",
+        lambda **_kwargs: pytest.fail(
+            "filtered recent blocker must not launch a no-hint worker"
+        ),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--once",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["status"] == "blocked-cooldown"
+    assert state["last_result"] == {
+        "status": "BLOCKED_COOLDOWN",
+        "attempt": 1,
+        "claimable": 1,
+        "stale": 0,
+    }
+    assert not list((run_dir / "prompts").glob("*.md"))
 
 
 def test_run_rejects_blocked_when_current_main_refresh_fails(

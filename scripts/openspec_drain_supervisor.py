@@ -465,6 +465,23 @@ def filter_recently_blocked_hints(
     )
 
 
+def should_cooldown_without_worker(
+    *,
+    pressure: CandidatePressure,
+    candidate_hints: tuple[CandidateHint, ...],
+    recent_blocked: list[str],
+    has_admission: bool,
+) -> bool:
+    """Avoid a no-hint worker when only run-local blocker filtering hid work."""
+    return (
+        not has_admission
+        and bool(recent_blocked)
+        and not candidate_hints
+        and pressure.owned == 0
+        and (pressure.claimable > 0 or pressure.stale > 0)
+    )
+
+
 def has_alternative_candidate(
     snapshot: CandidateSnapshot,
     *,
@@ -812,7 +829,10 @@ Delivery contract:
    retire the STATUS row. If merge succeeded but foldback remains, report
    PARTIAL so the next fresh worker resumes it.
 8. Preserve blockers honestly. `BLOCKED` is reserved for a durable task, host,
-   dependency, review, or policy gate. If verified local work exists but
+   dependency, review, or policy gate. Before returning `BLOCKED`, you must
+   first land a sanitized STATUS dependency or blocker through normal review
+   and confirm current `origin/main` classifies the exact target as blocked.
+   Result-file prose alone is invalid. If verified local work exists but
    staging, committing, pushing, or creating the PR fails, preserve the
    worktree and return `FAILED`; the next fresh worker will resume the same
    admission within the finite failure budget. Do not broaden into full-platform
@@ -1654,6 +1674,33 @@ def _run(args: argparse.Namespace) -> int:
                 )
                 if args.once:
                     break
+                continue
+            if should_cooldown_without_worker(
+                pressure=pressure,
+                candidate_hints=candidate_hints,
+                recent_blocked=state.get("recent_blocked", []),
+                has_admission=admission is not None,
+            ):
+                state["last_result"] = {
+                    "status": "BLOCKED_COOLDOWN",
+                    "attempt": attempt,
+                    "claimable": pressure.claimable,
+                    "stale": pressure.stale,
+                }
+                state["status"] = "blocked-cooldown"
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"cooldown attempt={attempt} filtered recent blockers "
+                    f"claimable={pressure.claimable} stale={pressure.stale}",
+                )
+                if args.once:
+                    break
+                wait_interruptibly(
+                    stop_file=stop_file,
+                    seconds=args.idle_minutes * 60,
+                    deadline_monotonic=deadline_monotonic,
+                )
                 continue
             if (
                 admission is None
