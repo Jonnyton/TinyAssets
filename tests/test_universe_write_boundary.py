@@ -116,11 +116,12 @@ def _authenticate_anonymous() -> None:
     auth_middleware(None)
 
 
-def _create_universe_as(founder: str, uid: str, text: str = "A founder seed.") -> dict:
+def _create_universe_as(
+    founder: str, _legacy_uid: str, text: str = "A founder seed."
+) -> dict:
     _authenticate(founder, _FOUNDER_SCOPES)
     return json.loads(us._universe_impl(
         action="create_universe",
-        universe_id=uid,
         text=text,
     ))
 
@@ -365,7 +366,7 @@ class TestPrivateCanonRelay:
         # page write is a shared-commons write — never a universe brain.
         from tinyassets.universe_server import write_page
 
-        _create_universe_as("erin", "u-anon-guard-erin")
+        created = _create_universe_as("erin", "u-anon-guard-erin")
         _authenticate_anonymous()
         write_page(
             category="lore",
@@ -374,7 +375,11 @@ class TestPrivateCanonRelay:
             dry_run=False,
         )
         erin_hits = list(
-            (universe_base / "u-anon-guard-erin" / "wiki").rglob("stray-note.md")
+            (
+                universe_base
+                / created["universe_id"]
+                / "wiki"
+            ).rglob("stray-note.md")
         )
         assert not erin_hits, f"anonymous write leaked into a founder universe: {erin_hits}"
 
