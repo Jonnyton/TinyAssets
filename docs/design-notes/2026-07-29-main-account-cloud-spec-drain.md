@@ -28,8 +28,8 @@ the user's durable workflow.
 3. **Compose a private, user-authored Branch loop in Jonathan's main universe.**
    The universe owns the definition, trigger, checkpoints, receipts, and
    health; ordinary cloud execution runs bounded slices using Jonathan's bound
-   provider and GitHub authority. The tray may execute the same Branch as an
-   optional fallback. **Recommended.**
+   provider and GitHub authority. The tray is only a pre-cutover bridge and is
+   stopped before cloud acceptance. **Approved.**
 
 ## Recommended Direction
 
@@ -54,9 +54,31 @@ primitives. Its GitHub write authority is destination-scoped to the TinyAssets
 repository. Its model authority is explicitly Jonathan-owned. No ambient
 maintainer credential or market seller may substitute.
 
-The local supervisor remains a temporary bootstrap and optional recovery
-executor. It must read current `origin/main` when selecting work, but its tray
-state is not the canonical health of the cloud loop.
+The local supervisor remains only until cloud cutover. Cutover is
+single-active: stop the tray drain, activate the cloud Branch, prove the cloud
+lease/receipts and phone-only controls, then leave the tray drain disabled.
+Rollback may stop cloud and temporarily restore the tray, but the two do not
+drain concurrently. The tray's state is never canonical health for the cloud
+loop.
+
+## Phone-Only Ownership
+
+After cutover, Jonathan manages the drain as an ordinary user through the live
+TinyAssets connector from a phone chatbot. Without any computer online, he can:
+
+- inspect the current claim, last useful progress, receipts, authority source,
+  retry state, budgets, and blocking reason;
+- pause, resume, and stop future slices without interrupting an already
+  committed external effect;
+- describe a change to the drain, inspect the complete versioned definition and
+  diff, dry-test it, publish a new immutable Branch version, and bind or roll
+  back the active loop version;
+- repair a failed loop by editing its ordinary user-owned composition rather
+  than asking an operator to patch a privileged service.
+
+These operations use the canonical chatbot handles and normal owner
+authorization. No desktop UI, local filesystem, CLI, host login, or maintainer
+intervention may be required.
 
 ## Key Assumptions to Validate
 
@@ -68,6 +90,9 @@ state is not the canonical health of the cloud loop.
   grant, and resume after worker restart.
 - **Must be true:** background execution carries the real user/universe/Branch
   authority instead of a synthetic privileged actor.
+- **Must be true:** the live connector exposes the complete inspect,
+  pause/resume, author/test/publish, rebind, and rollback path to a phone
+  chatbot without a desktop-only credential or filesystem step.
 - **Should be true:** the current scheduler can express reliable continuation;
   if cron missed-tick behavior is insufficient, standing-Goal/event
   re-enqueueing supplies the smallest generic catch-up contract.
@@ -84,6 +109,8 @@ not by a mocked architecture claim.
 - one active slice at a time;
 - Jonathan-owned provider authority only;
 - manual start plus persisted cloud continuation;
+- single-active cutover with the tray drain stopped before cloud acceptance;
+- phone-chatbot inspection, control, repair, and versioned evolution;
 - current-main claim admission, bounded execution, PR/CI/review, and terminal
   receipts;
 - visible health: last useful progress, current claim, next retry, blocking
@@ -95,7 +122,8 @@ not by a mocked architecture claim.
 
 - no market-compute fallback in the MVP;
 - no new top-level MCP verb or privileged patch-loop service;
-- no parallel multi-lane drain until single-lane concurrency proof passes;
+- no tray/cloud concurrent drain and no parallel multi-lane drain until a
+  separately designed concurrency proof passes;
 - no bypass of GitHub review, CI, branch protection, or OpenSpec archive gates;
 - no raw provider-secret deposit through chat;
 - no claim that a green local tray proves cloud-loop health;
@@ -104,14 +132,32 @@ not by a mocked architecture claim.
 
 ## Acceptance
 
-The MVP is accepted only when a rendered chatbot conversation creates or
-inspects the loop through the live connector, production evidence shows a
-24-hour PC-off run with useful progress and restart recovery, every execution
-receipt names the user-owned authority source, and no post-fix trace shows
-maintainer quota, market compute, duplicate claims, or a privileged bypass.
+The MVP is accepted only when Jonathan's computer remains off for the entire
+proof and rendered phone-chatbot conversations through the live connector:
 
-## Open Question for Host Approval
+1. inspect, pause, and resume the cloud loop;
+2. edit its ordinary user-owned definition, inspect the exact diff, dry-test
+   it, publish a new immutable version, activate it, and roll back;
+3. observe at least 24 hours of useful cloud progress plus cloud-worker restart
+   recovery.
 
-Approve direction 3 as the target, with the Windows tray retained only as a
-temporary bootstrap and optional executor while the cloud/BYOC prerequisites
-land.
+Every execution receipt must name Jonathan's user-owned authority source. The
+tray drain must be stopped for the proof, and no trace may show maintainer
+quota, market compute, duplicate claims, desktop/CLI dependence, or a
+privileged bypass.
+
+## Host Approval
+
+Approved 2026-07-29 with two binding clarifications:
+
+- the tray runs only until the cloud version is ready and never concurrently
+  with the accepted cloud drain;
+- “done” means Jonathan can manage, repair, and evolve the cloud drain through
+  a phone chatbot while his computer is entirely off.
+
+## Temporary Bridge Limitation
+
+The local watchdog CLI's `restart` command writes a marker that a fully stopped
+watchdog cannot consume; the tray restart action relaunches the consumer first.
+This remains a temporary bridge limitation, not behavior inherited by the cloud
+loop.
