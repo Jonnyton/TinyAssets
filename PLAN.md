@@ -383,6 +383,11 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *Error loudly when the remaining provider can't produce acceptable work.* Fake success is worse than failure. (Hard Rule #8.)
+- *User-owned compute precedes market compute.* A user MUST be able to bind and
+  use their own compute/provider authority before TinyAssets offers that user
+  market-supplied compute. Market compute is an optional later extension or
+  fallback, never the prerequisite path, and maintainer quota is never an
+  implicit substitute for either.
 - *Fallback chain correctness is a first-class invariant.* Every provider named in a fallback chain must be either registered AND reachable at startup, or explicitly excluded with a logged reason. Phantom chain entries are a bug. A chain that reads `[claude-code, codex, gemini-free, ...]` but whose first entry's CLI binary is absent silently degrades the whole chain; operators reading config see one chain, the runtime iterates a different one. Register-and-probe at startup; emit structured evidence of the effective chain via `get_status`; refuse to advertise unreachable providers. (Corroborated by BUG-025 + 2026-04-21 prod-LLM-binding incident + 2026-04-23 revert-loop P0.)
 - *Required files must be probed at startup and fail loud if missing.* When code declares a required on-disk artifact (ASP rule files, schema definitions, seeded fixtures, vendored configs), startup must probe for it and refuse to start if absent — not log a WARNING and continue with an empty fallback. Silent substrate-degradation from missing artifacts produces runs that report success while behaving as no-ops; that violates Hard Rule #8 at an earlier lifecycle phase. (Corroborated by BUG-026: `data/world_rules.lp` absent silently reduced the ASP constraint engine to a no-op.)
 
