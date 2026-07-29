@@ -12,7 +12,8 @@ state misleadingly passive.
 - Require a drain worker to reap policy-qualified stale claims and revalidate
   stale blockers before it may report no candidate.
 - Add a controller-side gate that rejects `NO_CANDIDATE` whenever
-  `claim_check.py` still exposes a claimable or stale-claim candidate.
+  `claim_check.py` still exposes a claimable row, stale-claim candidate, or row
+  owned by the exact drain identity.
 - Preserve fail-safe behavior for genuinely live claims and host-only work.
 
 ## Capabilities

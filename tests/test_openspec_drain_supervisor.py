@@ -127,7 +127,11 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
                         "in_flight": 1,
                         "host_owned": 4,
                         "stale": 2,
-                    }
+                    },
+                    "in_flight": [
+                        {"claimer": "drain-test"},
+                        {"claimer": "other-provider"},
+                    ],
                 }
             ),
             stderr="",
@@ -142,24 +146,31 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
 
     assert pressure.claimable == 3
     assert pressure.stale == 2
+    assert pressure.owned == 1
 
 
 @pytest.mark.parametrize(
-    ("claimable", "stale", "expected"),
+    ("claimable", "stale", "owned", "expected"),
     [
-        (1, 0, "claimable=1 stale=0"),
-        (0, 2, "claimable=0 stale=2"),
-        (0, 0, None),
+        (1, 0, 0, "claimable=1 stale=0 owned=0"),
+        (0, 2, 0, "claimable=0 stale=2 owned=0"),
+        (0, 0, 1, "claimable=0 stale=0 owned=1"),
+        (0, 0, 0, None),
     ],
 )
 def test_no_candidate_rejection_requires_zero_pressure(
     claimable: int,
     stale: int,
+    owned: int,
     expected: str | None,
 ) -> None:
     assert hasattr(drain, "CandidatePressure")
     assert hasattr(drain, "no_candidate_rejection")
-    pressure = drain.CandidatePressure(claimable=claimable, stale=stale)
+    pressure = drain.CandidatePressure(
+        claimable=claimable,
+        stale=stale,
+        owned=owned,
+    )
     result = drain.DrainResult("NO_CANDIDATE", "-", "-")
 
     assert drain.no_candidate_rejection(result, pressure) == expected

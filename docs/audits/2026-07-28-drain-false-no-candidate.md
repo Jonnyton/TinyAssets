@@ -53,6 +53,9 @@ and has a regression test for the idle-to-active transition.
    autonomous logic retains the existing 24-hour/no-heartbeat stale threshold.
 5. Every new worker attempt persists `running` before dispatch so the tray
    reflects active work rather than the previous attempt's terminal state.
+6. An in-flight row owned by the exact drain identity also rejects
+   `NO_CANDIDATE`; the worker must resume it rather than waiting 24 hours for its
+   own abandoned claim to become stale.
 
 ## Verification target
 

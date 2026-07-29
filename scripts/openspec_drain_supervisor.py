@@ -55,6 +55,7 @@ class DrainResult:
 class CandidatePressure:
     claimable: int
     stale: int
+    owned: int
 
 
 def parse_result(text: str) -> DrainResult:
@@ -110,6 +111,14 @@ def inspect_candidate_pressure(
         counts = payload["counts"]
         claimable = int(counts["claimable"])
         stale = int(counts["stale"])
+        in_flight = payload.get("in_flight", [])
+        if not isinstance(in_flight, list):
+            raise TypeError("in_flight must be a list")
+        owned = sum(
+            1
+            for row in in_flight
+            if isinstance(row, dict) and row.get("claimer") == provider
+        )
         if claimable < 0 or stale < 0:
             raise ValueError("candidate counts cannot be negative")
     except (
@@ -121,7 +130,7 @@ def inspect_candidate_pressure(
         subprocess.SubprocessError,
     ) as exc:
         raise RuntimeError(f"claim pressure inspection failed: {exc}") from exc
-    return CandidatePressure(claimable=claimable, stale=stale)
+    return CandidatePressure(claimable=claimable, stale=stale, owned=owned)
 
 
 def no_candidate_rejection(
@@ -131,9 +140,16 @@ def no_candidate_rejection(
     """Explain why NO_CANDIDATE is not credible under current claim state."""
     if result.status != "NO_CANDIDATE":
         return None
-    if pressure.claimable == 0 and pressure.stale == 0:
+    if (
+        pressure.claimable == 0
+        and pressure.stale == 0
+        and pressure.owned == 0
+    ):
         return None
-    return f"claimable={pressure.claimable} stale={pressure.stale}"
+    return (
+        f"claimable={pressure.claimable} stale={pressure.stale} "
+        f"owned={pressure.owned}"
+    )
 
 
 def begin_attempt(state: dict[str, Any]) -> int:
@@ -190,8 +206,9 @@ Delivery contract:
    e. promote one safe non-overlapping cross-cutting recovery task under
       AGENTS.md "Staying unblocked".
    `NO_CANDIDATE` is permitted only when claim_check JSON `claimable` and `stale`
-   counts are both zero and no safe promotion exists. Never steal a live claim
-   or invent work merely to stay busy.
+   counts are both zero, no in-flight row is claimed by this drain identity,
+   and no safe promotion exists. Never steal a live claim or invent work merely
+   to stay busy.
 3. Own one concrete acceptance contract and at most one PR.
 4. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.

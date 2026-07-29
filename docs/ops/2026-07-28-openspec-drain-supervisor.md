@@ -45,10 +45,10 @@ computer session; fatal/failure-budget outcomes remain down.
 Yellow `idle` is valid only after proved exhaustion. A worker must process
 claimable rows, policy-qualified stale claims, current blocker evidence, and
 safe cross-cutting recovery in that order. After a `NO_CANDIDATE` marker, the
-controller independently runs `claim_check.py --json`; any nonzero claimable or
-stale count rejects the result and consumes a bounded failure strike. Two
-ignored rejections therefore become visibly down instead of burning subscription
-in an endless false-idle loop.
+controller independently runs `claim_check.py --json`; any nonzero claimable,
+stale, or exact-drain-owned count rejects the result and consumes a bounded
+failure strike. Two ignored rejections therefore become visibly down instead
+of burning subscription in an endless false-idle loop.
 
 Direct health commands:
 

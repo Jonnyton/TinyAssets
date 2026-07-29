@@ -35,9 +35,10 @@ unbounded utilization lock.
 ### Use `claim_check.py --json` as the controller gate
 
 The supervisor will invoke the existing read-only JSON interface after a worker
-returns `NO_CANDIDATE`. A nonzero `claimable` or `stale` count makes the result
-semantically invalid, consumes a bounded failure strike, and triggers a fresh
-worker unless the failure budget is exhausted.
+returns `NO_CANDIDATE`. A nonzero `claimable` or `stale` count, or an in-flight
+row whose claimer equals the exact drain identity, makes the result semantically
+invalid, consumes a bounded failure strike, and triggers a fresh worker unless
+the failure budget is exhausted.
 
 This keeps claim classification in one implementation rather than duplicating
 STATUS parsing inside the supervisor. Merely strengthening the prompt was
