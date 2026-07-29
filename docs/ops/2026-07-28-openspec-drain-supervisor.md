@@ -50,10 +50,15 @@ stale, or exact-drain-owned count rejects the result and consumes a bounded
 failure strike. Two ignored rejections therefore become visibly down instead
 of burning subscription in an endless false-idle loop.
 
-Immediately before dispatch, the controller also injects at most five ordered
-candidate hints from the canonical checker. A worker reruns that checker and
-commits the first still-valid claim before broad audit. The recheck keeps the
-snapshot race-safe while avoiding an unbounded startup scan.
+Immediately before dispatch, the controller fetches origin and injects at most
+five ordered candidate hints classified from the exact
+`origin/main:STATUS.md` through
+`claim_check.py --status-ref origin/main --json`. It does not move the live
+detached checkout and does not fall back to that checkout's stale STATUS when
+fetch/ref inspection fails. Admission then fetches again, creates a worktree
+from current main, writes the local claim, and rechecks that worktree so the
+owned claim is visible. This second check closes the merge race while avoiding
+an unbounded startup scan.
 
 Codex drain workers are launched at `medium` reasoning effort even when the
 host's interactive Codex default is `high`. The drain's narrow preselected

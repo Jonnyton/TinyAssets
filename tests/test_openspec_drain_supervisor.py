@@ -327,6 +327,60 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
     assert pressure.owned == 1
 
 
+def test_current_main_snapshot_fetches_before_ref_classification(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "controller"
+    repo.mkdir()
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if any("claim_check.py" in part for part in command):
+            assert kwargs["encoding"] == "utf-8"
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "counts": {
+                            "claimable": 0,
+                            "blocked": 0,
+                            "in_flight": 0,
+                            "host_owned": 0,
+                            "stale": 0,
+                        },
+                        "claimable": [],
+                        "stale": [],
+                        "in_flight": [],
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    snapshot = drain.inspect_current_main_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+
+    assert snapshot.pressure == drain.CandidatePressure(0, 0, 0)
+    assert commands[0] == [
+        "git",
+        "-C",
+        str(repo),
+        "fetch",
+        "--prune",
+        "origin",
+    ]
+    assert "--status-ref" in commands[1]
+    assert commands[1][commands[1].index("--status-ref") + 1] == "origin/main"
+
+
 @pytest.mark.parametrize(
     ("claimable", "stale", "owned", "expected"),
     [
@@ -596,6 +650,11 @@ def test_mechanical_admission_claims_candidate_in_prepared_worktree(
     assert (admission.worktree / "_PURPOSE.md").exists()
     assert any("worktree" in command and "add" in command for command in commands)
     assert sum("commit" in command for command in commands) == 1
+    claim_commands = [
+        command for command in commands if any("claim_check.py" in part for part in command)
+    ]
+    assert claim_commands
+    assert all("--status-ref" not in command for command in claim_commands)
 
 
 def test_admitted_prompt_forbids_reselection_and_duplicate_worktree(
@@ -1117,6 +1176,14 @@ def test_run_recovers_unconsumed_result_before_replacement_dispatch(
         encoding="utf-8",
     )
     monkeypatch.setattr(drain, "verify_merged", lambda *_a, **_kw: True)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
     dispatched_prompts: list[str] = []
 
     def fake_dispatch(
@@ -1357,6 +1424,7 @@ def test_resume_requires_admission_and_an_exact_invalid_attempt(
 
 def test_run_replays_invalid_result_before_failure_budget(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1387,6 +1455,14 @@ def test_run_replays_invalid_result_before_failure_budget(
         "DRAIN_RESULT: BLOCKED main-red round 2 -\n",
         encoding="utf-8",
     )
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
 
     exit_code = drain.main(
         [
@@ -1416,6 +1492,7 @@ def test_run_replays_invalid_result_before_failure_budget(
 
 def test_recovery_log_names_recorded_attempt_not_latest_counter(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -1440,6 +1517,14 @@ def test_recovery_log_names_recorded_attempt_not_latest_counter(
     (results_dir / "005.md").write_text(
         "DRAIN_RESULT: BLOCKED main-red round 2 -\n",
         encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
     )
 
     exit_code = drain.main(
@@ -1480,6 +1565,14 @@ def test_invalid_result_records_its_exact_attempt(
         return subprocess.CompletedProcess([], 0, stdout="", stderr="")
 
     monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
 
     exit_code = drain.main(
         [
@@ -1812,10 +1905,21 @@ def test_terminal_exit_code_distinguishes_clean_and_failed_stops(
     assert drain.exit_code_for_status(status) == expected
 
 
-def test_dry_run_writes_state_and_prompt_without_dispatch(tmp_path: Path) -> None:
+def test_dry_run_writes_state_and_prompt_without_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
     run_dir = tmp_path / "run"
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
 
     exit_code = drain.main(
         [
@@ -1840,9 +1944,20 @@ def test_dry_run_writes_state_and_prompt_without_dispatch(tmp_path: Path) -> Non
     assert not list((run_dir / "results").glob("*.md"))
 
 
-def test_default_run_directory_is_relative_to_repo(tmp_path: Path) -> None:
+def test_default_run_directory_is_relative_to_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
 
     exit_code = drain.main(
         [
@@ -1895,6 +2010,14 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
 
     monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
     monkeypatch.setattr(drain, "verify_merged", lambda _url, **_kwargs: True)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0),
+            hints=(),
+        ),
+    )
 
     exit_code = drain.main(
         [
@@ -1941,7 +2064,7 @@ def test_run_dispatches_inside_mechanically_admitted_lane(
     )
     monkeypatch.setattr(
         drain,
-        "inspect_candidate_snapshot",
+        "inspect_current_main_snapshot",
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
             hints=(hint,),
@@ -1989,3 +2112,48 @@ def test_run_dispatches_inside_mechanically_admitted_lane(
     assert state["admission"] is None
     assert state["recent_blocked"] == ["target"]
     assert state["status"] == "blocked"
+
+
+def test_run_does_not_dispatch_when_current_main_snapshot_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("origin fetch failed")
+        ),
+    )
+    monkeypatch.setattr(
+        drain,
+        "_dispatch",
+        lambda **_kwargs: pytest.fail(
+            "worker must not dispatch without current-main snapshot"
+        ),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--once",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["status"] == "candidate-snapshot-failed"
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"]["status"] == "CANDIDATE_SNAPSHOT_FAILED"

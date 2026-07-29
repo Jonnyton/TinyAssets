@@ -702,3 +702,17 @@ fresh-host rollback edges found later.
   probe before the first unattended shift. Unit coverage for `--add-dir`
   missed Codex's protected Git-metadata rule; the real probe exposed that
   `danger-full-access` was required on this already-unsandboxed Windows host.
+
+## 2026-07-29 - current-main drain selection
+
+- **What surprised me:** admission was correctly fresh while the earlier
+  selector was stale, so the safety check itself became a bounded retry loop;
+  the first real end-to-end probe also exposed UTF-8 output being decoded as
+  Windows cp1252 even though every mocked JSON test was green.
+- **Pattern worth capturing:** a long-lived controller may pin its executable
+  code, but every mutable coordination decision must bind all derived reads
+  (rows and stale-history evidence) to one freshly fetched ref and refuse to
+  dispatch when that snapshot is unavailable.
+- **What I would do differently:** run the exact live subprocess boundary
+  immediately after the first red unit test, including non-ASCII STATUS data,
+  rather than waiting until the focused suite is complete.
