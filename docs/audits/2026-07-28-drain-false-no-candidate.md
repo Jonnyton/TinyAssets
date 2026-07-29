@@ -64,3 +64,20 @@ valid JSON pressure, that nonzero claimable/stale counts reject idle, and that
 zero/zero remains a clean bounded idle. Final runtime proof must show the
 installed drain selecting one of the newly claimable lanes without a duplicate
 worker.
+
+## Opposite-provider review
+
+Claude Fable 5 returned **APPROVE** after two passes. It independently
+reproduced `CandidatePressure(claimable=6, stale=0)` against the real repository,
+confirmed that a nonzero `claim_check.py` exit cannot hide valid JSON, and
+verified the bounded two-strike failure path.
+
+The follow-up approved both final adaptations:
+
+- exact drain-owned in-flight rows now reject `NO_CANDIDATE`, including rows
+  whose Status cell carries an `ACTIVE` suffix;
+- `begin_attempt` persists `running` before dispatch, so the tray cannot retain
+  the preceding attempt's `idle` state while a worker is active.
+
+No installation blocker remained. Runtime selection proof is still required
+before foldback.
