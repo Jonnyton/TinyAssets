@@ -14,5 +14,5 @@
 
 - [x] 3.1 Add failing supervisor-brief coverage distinguishing durable `BLOCKED` results from retryable delivery `FAILED` results.
 - [x] 3.2 Update the worker brief and operator runbook with the shell Git/GitHub route and delivery-failure recovery contract.
-- [ ] 3.3 Run focused tests, Ruff, strict OpenSpec validation, and an independent opposite-provider review.
+- [x] 3.3 Run focused tests, Ruff, strict OpenSpec validation, and an independent opposite-provider review.
 - [ ] 3.4 Reinstall the scheduled task, confirm consoleless startup/health, and record the first post-fix drain evidence.
