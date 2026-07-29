@@ -18,8 +18,9 @@
 ## 3. Verify, Review, And Deploy Safely
 
 - [ ] 3.1 Run the focused supervisor/watchdog suites, Ruff, strict OpenSpec validation, and a controlled run-directory simulation; obtain opposite-provider exact-head review and resolve every blocking finding.
-  - **Depends:** 2.2.
+  - **Depends:** 2.3.
   - **Verify:** fresh commands and review artifact identify the exact commit.
+  - **Blocked 2026-07-29:** draft PR #1880 has 152 tests, Ruff, strict validation, and controlled dry-run green. Claude CLI and Claude.ai (Opus and Sonnet) both report the account-wide monthly spend limit; merge remains disabled until exact-head opposite-provider review is available.
 - [ ] 3.2 After merge and only after the live controller's active attempt is terminal, deploy the exact merged commit, restart once, verify green health plus durable/invalid blocker probes, sync/archive the change, retire its STATUS row, and record the significant-task reflection.
   - **Depends:** 3.1 and merged PR.
   - **Verify:** deployed commit, watchdog status, run artifacts, canonical spec, and git history agree.
