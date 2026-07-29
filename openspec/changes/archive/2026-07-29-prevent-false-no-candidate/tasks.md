@@ -17,8 +17,8 @@
 ## 3. Governance And Proof
 
 - [x] 3.1 Update AGENTS.md, the drain runbook, and a durable root-cause audit with the false-idle prevention rule.
-- [ ] 3.2 Obtain opposite-provider review and pass focused tests, Ruff, strict OpenSpec validation, and a live no-false-idle recovery proof.
+- [x] 3.2 Obtain opposite-provider review and pass focused tests, Ruff, strict OpenSpec validation, and a live no-false-idle recovery proof.
 
 ## 4. Foldback
 
-- [ ] 4.1 Sync/archive the change, retire its STATUS row, land the PR, update the controller to merged main, and verify the drain claims real work.
+- [x] 4.1 Sync/archive the change, retire its STATUS row, land the PR, update the controller to merged main, and verify the drain claims real work.

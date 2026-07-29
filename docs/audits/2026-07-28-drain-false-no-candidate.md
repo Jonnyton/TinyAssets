@@ -134,3 +134,25 @@ and foldback instruction. Its remaining cleanup-timeout and OWNED-filter
 observations were also closed: cleanup is best-effort and cannot mask the
 original bounded failure, while exact-identity-owned hints are never suppressed
 by the recent-block filter.
+
+## Live recovery proof
+
+Freshness: 2026-07-28 22:28-22:29 PDT, Windows 11, installed sign-in task,
+controller at merged main `9926458f3bc14c3e891377b950de00e475e4f334`.
+
+- Attempt 5 logged six claimable rows and five bounded hints at `22:28:50`.
+- At `22:29:02`, before worker dispatch, the controller admitted
+  `main-red-round-2` in 12 seconds.
+- It created
+  `C:\Users\Jonathan\Projects\wf-drain-20260728-211331-296e2c-main-red-round-2`
+  on `drain/20260728-211331-296e2c/main-red-round-2`.
+- Commit `bb4fe8f9` records
+  `claimed:drain-20260728-211331-296e2c ACTIVE 2026-07-28` on the exact STATUS
+  row.
+- The only drain supervisor then launched one Codex peer with that worktree as
+  cwd and `model_reasoning_effort=medium`.
+- Watchdog health remained `running` with message `supervisor is live`; no
+  duplicate supervisor or worker existed.
+
+This is the required stronger proof: real work was durably claimed before the
+paid coding turn, not merely a green process indicator.
