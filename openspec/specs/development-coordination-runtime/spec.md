@@ -309,7 +309,10 @@ a time, gives that worker at most one delivery slice and one PR, and starts
 another worker only after interpreting the prior worker's terminal result. The
 supervisor MUST NOT maintain a provider utilization floor or run drain workers
 in parallel in v1. One run SHALL use one fixed provider/model and one exact
-claim identity across every replacement worker.
+claim identity across every replacement worker. An admitted worker's brief
+SHALL identify the exact canonical target token required in its result, and the
+supervisor SHALL canonicalize an otherwise literal human-label target through
+the same bounded slug rule used for admission.
 
 #### Scenario: A slice merges successfully
 
@@ -345,6 +348,14 @@ claim identity across every replacement worker.
   interval before another selection attempt
 - **AND** it does not create or claim work itself
 
+#### Scenario: Human task label is returned
+
+- **WHEN** an admitted worker returns exactly one otherwise valid literal
+  marker using `main-red round 2` for target `main-red-round-2`
+- **THEN** the supervisor canonicalizes the reported target to
+  `main-red-round-2`
+- **AND** admission validation accepts the matching identity
+
 #### Scenario: Worker result is malformed
 
 - **WHEN** a worker exits without exactly one literal terminal result marker as
@@ -371,7 +382,10 @@ The drain supervisor SHALL require finite runtime, merged-slice, worker-timeout,
 and consecutive-failure budgets; SHALL persist compact atomic state and worker
 artifacts in an untracked run directory; SHALL reject a concurrent live
 controller lock; and SHALL honor a stop request between workers. It MUST expose
-run, single-pass, status, and stop operations.
+run, single-pass, status, and stop operations. On resume, it SHALL replay the
+recorded attempt artifact when a parser improvement makes the immediately
+preceding `INVALID_RESULT` valid, undoing only that parser failure strike and
+applying ordinary result and admission validation.
 
 #### Scenario: Workday budget expires
 
@@ -413,6 +427,20 @@ run, single-pass, status, and stop operations.
   interval
 - **THEN** the supervisor terminates the launcher process tree
 - **AND** it records the attempt as a budgeted worker failure
+
+#### Scenario: Parser improvement recovers the last result
+
+- **WHEN** a resumed run ended with `INVALID_RESULT` and its recorded attempt
+  artifact now parses and matches the preserved admission
+- **THEN** the supervisor removes exactly the parser failure strike
+- **AND** it applies the recovered result before considering another dispatch
+
+#### Scenario: Last result remains invalid
+
+- **WHEN** the recorded artifact remains invalid or fails preserved admission
+  validation
+- **THEN** the supervisor retains the failure budget and terminal state
+- **AND** it dispatches no replacement under that recovery path
 
 ### Requirement: Drain Workers Preserve Delivery Governance
 
