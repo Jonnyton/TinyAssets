@@ -6,6 +6,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P0 filed:2026-07-28 verified:2026-07-28]** Public `/mcp` forwards an internal Cloudflare Access authorization cookie; credential exposure.
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
 - **[P0 filed:2026-07-22 verified:2026-07-29]** Newborn contact lacks user-owned compute authority; BYOC MUST land before market compute, and maintainer quota is never implicit. See #1582.
+- **[P2 filed:2026-07-29 verified:2026-07-29]** CLI restart writes only a marker; after watchdog stop, only the tray restart path relaunches a consumer.
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.
