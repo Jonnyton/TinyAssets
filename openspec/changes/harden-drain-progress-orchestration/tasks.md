@@ -15,5 +15,5 @@
 
 ## 4. Verification And Rollout
 
-- [ ] 4.1 Update the operator runbook and pass focused tests, lint, OpenSpec validation, and opposite-provider review.
+- [x] 4.1 Update the operator runbook and pass focused tests, lint, OpenSpec validation, and opposite-provider review.
 - [ ] 4.2 Sync/archive the change, land through a PR, restart the scheduled drain, and prove the existing result is recovered before the next dispatch.
