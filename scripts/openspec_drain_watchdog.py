@@ -34,6 +34,8 @@ FAILURE_STATUSES = {
     "transient-failure",
 }
 WAITING_STATUSES = {
+    "admission-failed",
+    "admission-missing",
     "blocked",
     "idle",
     "partial",

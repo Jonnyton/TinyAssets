@@ -125,6 +125,8 @@ def test_clean_terminal_run_allows_fresh_bounded_run(tmp_path: Path) -> None:
         ("running", True, "recovering", "running"),
         ("blocked", True, "attach", "waiting"),
         ("idle", True, "attach", "waiting"),
+        ("admission-failed", True, "attach", "waiting"),
+        ("admission-missing", True, "attach", "waiting"),
         ("running", False, "recovering", "waiting"),
         ("failure-budget", False, "down", "down"),
         ("running", False, "attach", "down"),

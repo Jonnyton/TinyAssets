@@ -824,6 +824,11 @@ def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
         recent_blocked=["first-target"],
         current_target="first-target",
     )
+    assert not drain.has_alternative_candidate(
+        snapshot,
+        recent_blocked=[],
+        current_target="-",
+    )
 
 
 def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
@@ -1023,6 +1028,40 @@ def test_resume_refuses_unrecorded_result_for_different_admission(
     )
     assert state["last_result"] is None
     assert "last_consumed_attempt" not in state
+
+
+def test_resume_recovers_current_result_after_an_earlier_failed_attempt(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "003.md").write_text(
+        "DRAIN_RESULT: BLOCKED assigned-target -\n",
+        encoding="utf-8",
+    )
+    state = _state(
+        attempts=3,
+        last_consumed_attempt=1,
+        last_result={
+            "status": "INVALID_RESULT",
+            "attempt": 2,
+            "error": "malformed",
+        },
+        admission={
+            "target": "assigned-target",
+            "task_label": "assigned target",
+            "worktree": str(tmp_path),
+            "branch": "drain/run/assigned-target",
+        },
+    )
+
+    assert drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+    )
+    assert state["last_consumed_attempt"] == 3
+    assert state["status"] == "blocked"
 
 
 def test_run_recovers_unconsumed_result_before_replacement_dispatch(

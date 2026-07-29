@@ -447,6 +447,8 @@ def has_alternative_candidate(
     current_target: str,
 ) -> bool:
     """Return whether a different eligible candidate remains after a block."""
+    if current_target == "-":
+        return False
     return any(
         hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
         and _slugify(hint.task_label) != current_target
@@ -973,7 +975,7 @@ def _unconsumed_result_attempt(state: dict[str, Any]) -> int | None:
             consumed = int(consumed_value)
         except (TypeError, ValueError):
             return None
-    return attempt if attempt == consumed + 1 else None
+    return attempt if attempt > consumed else None
 
 
 def recover_unconsumed_result(
@@ -1388,6 +1390,8 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
         if process.poll() is None:
             process.kill()
     else:
+        # The production drain is Windows-only. A future POSIX deployment
+        # needs process-group creation and group termination before enablement.
         process.kill()
 
 
