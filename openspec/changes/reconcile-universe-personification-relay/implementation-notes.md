@@ -17,19 +17,24 @@ corrected an earlier draft that over-blocked 6.1/6.2 and over-claimed 6.8.
 
 | Task | Kind | Disposition | Blocker / evidence |
 |---|---|---|---|
-| 6.1 define anti-collision write boundary | definition | **ADVANCED — host-gated residual** | Endpoint/redirect/exemption named below (both `write_page` servers; redirect=`converse`; founder-learning exempt). The one piece needing host input is *whether to enforce a commons person-dossier predicate and its exact shape* (open PR #1583, audit-only, "DO NOT MERGE without host review", recommends a `host-decision`). |
+| 6.1 define anti-collision write boundary | definition | **DISCHARGED** | Host 2026-07-25 selected explicit canonical `write_page scope=commons|universe`; commons stays authenticated-writable; universe redirects to `converse`; no prose classifier; governed founder learning remains exempt (design D5). |
 | 6.2 reconcile tier binding w/ `universe-visibility` | definition | **DISCHARGED — contract recorded** | Spec-level reconciliation (§"6.2 reconciliation contract" below). `universe-visibility` defines unauthenticated-reader semantics *at spec level* (its delta spec: existence/metadata/content as three separately-granted capabilities, per-universe + per-page, fail-closed); the tier↔visibility contract is agreed against that. Implementation (6.6) stays blocked on that change's machinery. |
 | 6.3 define connector tool-selection metric | definition | **ADVANCED — filing pending** | Definition shape below. `live-mcp-connector-surface` has no tool-selection-accuracy requirement (spec grep). Turning it into a requirement is a separate change (out of this Files boundary + would be an aspiration in as-built truth). |
 | 6.4 whole-mind personification on speaking surfaces | impl | **PARTIALLY LANDED** | `converse` first-person surface + direct-control neutrality proven (evidence below). Outbound speaking surfaces do not exist yet, so the contract cannot be fully discharged. |
 | 6.5 authorization-before-voice generalization | impl | **BLOCKED — after 6.2** | General pre-assembly interlocutor filtering needs a non-founder path; none exists. The narrow floor (founder-only, fail-closed `converse`) is already landed + tested. |
 | 6.6 authenticated interlocutor tier binding | impl | **BLOCKED — after 6.2 impl** | No `identity_tier`/T0/T1/T2 machinery in `tinyassets/*.py` (grep returns only a stale comment in `cloud_worker.py`); needs `universe-visibility` machinery, which is 0/10. |
-| 6.7 implement scoped anti-collision boundary | impl | **BLOCKED — after 6.1 host decision** | Gated on the host enforce/predicate decision (#1583). |
+| 6.7 implement scoped anti-collision boundary | impl | **IMPLEMENTED IN THIS SLICE** | Canonical `write_page` validates `scope=commons|universe`, fails closed on contradictions/unknowns, preserves omission and auth behavior, and leaves governed learning unchanged; covered by focused routing/public-surface tests. |
 | 6.8 forkable first-party persona custody | impl | **CORE LANDED — custody residual unbuilt (NOT checked)** | Identity-source core proven: `tests/test_persona.py::test_resolve_persona_identity_never_comes_from_soul` + `persona.py:94-125` + as-built spec requirement "Persona identity is sourced from the learned self-model, never the operational soul". The *forkable custody* mechanism (founder tuning of the self-model voice) is not separately proven, so the task stays unchecked. |
 | 6.9 one identity across speaking surfaces | impl | **BLOCKED — after 6.2/6.6** | Cross-surface/interlocutor modulation needs the multi-surface + tier paths that do not exist. The single-surface identity-not-replaced invariant is the same landed core as 6.8. |
 | 6.10 Tiny as platform personification | impl | **BLOCKED — unbuilt/design-gated** | No `Tiny`/platform-universe personification code exists; this is a substantial feature that intersects platform-universe architecture and needs its own design gate. |
 | 6.11 sync-specs + archive | impl | **BLOCKED — MUST NOT RUN** | Gated on 6.3–6.10. Running it now writes unbuilt aspirations into `openspec/specs/` — the exact failure this change exists to prevent. |
 
-Net: **1 discharged (6.2), 2 advanced-definition (6.1 host-gated residual, 6.3 filing pending),
+**Current correction (2026-07-29):** the task ledger is authoritative over the stale rows below:
+6.3, 6.6, and 6.8 are landed; 6.9's interlocutor half is landed; and this slice completes
+6.1/6.7. Tasks 6.4, 6.5, 6.9-cross-surface, 6.10, and 6.11 remain blocked on surfaces/design
+gates this slice does not open.
+
+Historical rollup before those landings: **1 discharged (6.2), 2 advanced-definition (6.1 host-gated residual, 6.3 filing pending),
 1 partial (6.4), 1 core-landed-not-checked (6.8), 6 blocked** on the open host decision
 (#1583 → 6.7), the unbuilt `universe-visibility` *machinery* (→ 6.5/6.6/6.9), unbuilt
 platform-universe personification (→ 6.10), or the above gates (→ 6.11). Forcing the blocked
@@ -37,6 +42,15 @@ implementation tasks would rebuild the wrong shape and reintroduce the
 `stale-backlog-rows-misdirect` failure mode this change was created to close.
 
 ## 6.1 — anti-collision write-boundary endpoint inventory
+
+**Superseded by the 2026-07-25 host decision and design D5.** The implemented predicate is the
+exact canonical `write_page` target enum (`scope=commons|universe`), never prose shape.
+`scope=commons` keeps authenticated shared-commons writes available and rejects a simultaneous
+`universe_id`; `scope=universe` returns the existing `relay_to_universe` envelope naming
+`converse`; unknown values fail closed; omission preserves compatibility. Current main has one
+advertised remote endpoint (`/mcp`); the retired directory and hidden legacy-wiki surfaces named
+in the historical inventory below are not implementation targets. The in-process governed
+learning path remains exempt.
 
 The delta requirement ("The anti-collision boundary is stated honestly …") mandates that any
 write restriction "SHALL name its exact endpoint, its predicate, and its redirect destination

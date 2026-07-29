@@ -804,6 +804,7 @@ def write_page(
     reporter_context: str = "",
     dry_run: bool = True,
     universe_id: str = "",
+    scope: str = "",
 ) -> str:
     """Write or patch a commons page, file an issue, or relay private canon.
 
@@ -815,6 +816,8 @@ def write_page(
 
     Args:
         universe_id: Optional target universe page substrate.
+        scope: Optional explicit target: commons or universe. Omit to preserve
+            legacy target resolution.
         page: Wiki page slug or path for page writes.
         category: Wiki category for full page writes.
         filename: Wiki filename for full page writes.
@@ -862,6 +865,7 @@ def write_page(
             tags,
             reporter_context,
             universe_id,
+            scope,
         ))
         and force_new is False
         and is_exact_wiki_canary_arguments({
@@ -877,6 +881,18 @@ def write_page(
             return rejection
     if is_canary_write:
         return _write_reserved_wiki_canary(content)
+    if scope not in {"", "commons", "universe"}:
+        return json.dumps({
+            "error": "scope must be one of: commons, universe",
+        })
+    if scope == "commons" and universe_id.strip():
+        return json.dumps({
+            "error": "scope=commons cannot be combined with universe_id",
+        })
+    if scope == "universe" and normalized_kind:
+        return json.dumps({
+            "error": "scope=universe cannot be combined with kind",
+        })
     if normalized_kind:
         # Issue filings (bug/patch_request/feature/design) are shared-commons
         # coordination, not private canon — they stay on the global commons.
@@ -905,13 +921,17 @@ def write_page(
     # authenticated founder's home. Only a write with NO universe target
     # (anonymous/dev) is a shared COMMONS write, which the relay may still do;
     # issue filings (kind=) above always stay on the commons.
-    target_universe = universe_id.strip()
-    if not target_universe:
+    target_universe = "" if scope == "commons" else universe_id.strip()
+    if scope != "commons" and not target_universe:
         from tinyassets.api.helpers import _request_universe
         from tinyassets.api.permissions import is_authenticated_request
 
         if is_authenticated_request():
             target_universe = _request_universe("")
+    if scope == "universe" and not target_universe:
+        return json.dumps({
+            "error": "scope=universe requires universe_id or a founder home",
+        })
     if target_universe:
         import json as _json
 
