@@ -51,6 +51,12 @@ class DrainResult:
     pr: str
 
 
+@dataclass(frozen=True)
+class CandidatePressure:
+    claimable: int
+    stale: int
+
+
 def parse_result(text: str) -> DrainResult:
     """Parse exactly one literal terminal marker on the final non-empty line."""
     if "[peer_agent] ERROR" in text:
@@ -75,6 +81,59 @@ def parse_result(text: str) -> DrainResult:
     if status == "NO_CANDIDATE" and (target != "-" or pr != "-"):
         raise ValueError("NO_CANDIDATE requires dash placeholders")
     return DrainResult(status=status, target=target, pr=pr)
+
+
+def inspect_candidate_pressure(
+    *,
+    repo: Path,
+    provider: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> CandidatePressure:
+    """Read canonical claim pressure without mutating coordination state."""
+    command = [
+        sys.executable,
+        str(repo / "scripts" / "claim_check.py"),
+        "--provider",
+        provider,
+        "--json",
+    ]
+    try:
+        completed = runner(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=60,
+        )
+        payload = json.loads(completed.stdout)
+        counts = payload["counts"]
+        claimable = int(counts["claimable"])
+        stale = int(counts["stale"])
+        if claimable < 0 or stale < 0:
+            raise ValueError("candidate counts cannot be negative")
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise RuntimeError(f"claim pressure inspection failed: {exc}") from exc
+    return CandidatePressure(claimable=claimable, stale=stale)
+
+
+def no_candidate_rejection(
+    result: DrainResult,
+    pressure: CandidatePressure,
+) -> str | None:
+    """Explain why NO_CANDIDATE is not credible under current claim state."""
+    if result.status != "NO_CANDIDATE":
+        return None
+    if pressure.claimable == 0 and pressure.stale == 0:
+        return None
+    return f"claimable={pressure.claimable} stale={pressure.stale}"
 
 
 def build_worker_prompt(state: dict[str, Any], *, objective: str) -> str:
@@ -115,8 +174,17 @@ Authority and safety:
 
 Delivery contract:
 1. Run `python scripts/openspec_flow.py audit` and inspect STATUS/PLAN/dependencies.
-2. Select the first safe finish-first candidate. Never steal a live claim or
-   invent work to stay busy. A stale claim may be reaped only under AGENTS.md.
+2. Prove candidate exhaustion in this exact order before `NO_CANDIDATE`:
+   a. resume this drain identity's existing claim;
+   b. select a claimable finish-first STATUS row;
+   c. reap and claim the first policy-qualified stale claim under AGENTS.md;
+   d. freshness-check blocker/dependency labels against current main, PRs, and
+      worktrees, removing only labels disproved by current evidence;
+   e. promote one safe non-overlapping cross-cutting recovery task under
+      AGENTS.md "Staying unblocked".
+   `NO_CANDIDATE` is permitted only when claim_check JSON `claimable` and `stale`
+   counts are both zero and no safe promotion exists. Never steal a live claim
+   or invent work merely to stay busy.
 3. Own one concrete acceptance contract and at most one PR.
 4. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
@@ -693,6 +761,32 @@ def _run(args: argparse.Namespace) -> int:
                 if args.once:
                     break
                 continue
+
+            if result.status == "NO_CANDIDATE":
+                try:
+                    pressure = inspect_candidate_pressure(
+                        repo=args.repo,
+                        provider=state["identity"],
+                    )
+                    rejection = no_candidate_rejection(result, pressure)
+                except RuntimeError as exc:
+                    rejection = str(exc)
+                if rejection:
+                    state["consecutive_transients"] = 0
+                    state["consecutive_failures"] += 1
+                    state["last_result"] = {
+                        "status": "INVALID_NO_CANDIDATE",
+                        "error": rejection,
+                    }
+                    state["status"] = "invalid-result"
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"reject attempt={attempt} NO_CANDIDATE {rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
 
             verified = (
                 verify_merged(

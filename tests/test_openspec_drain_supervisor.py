@@ -92,6 +92,79 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     )
 
 
+def test_worker_prompt_requires_proven_exhaustion_before_no_candidate() -> None:
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+    )
+
+    ordered_steps = [
+        "claimable finish-first",
+        "policy-qualified stale",
+        "freshness-check",
+        "cross-cutting",
+    ]
+    positions = [prompt.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
+    normalized = " ".join(prompt.split())
+    assert "claimable` and `stale` counts are both zero" in normalized
+    assert "NO_CANDIDATE" in prompt
+
+
+def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 3,
+                        "blocked": 2,
+                        "in_flight": 1,
+                        "host_owned": 4,
+                        "stale": 2,
+                    }
+                }
+            ),
+            stderr="",
+        )
+
+    assert hasattr(drain, "inspect_candidate_pressure")
+    pressure = drain.inspect_candidate_pressure(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+
+    assert pressure.claimable == 3
+    assert pressure.stale == 2
+
+
+@pytest.mark.parametrize(
+    ("claimable", "stale", "expected"),
+    [
+        (1, 0, "claimable=1 stale=0"),
+        (0, 2, "claimable=0 stale=2"),
+        (0, 0, None),
+    ],
+)
+def test_no_candidate_rejection_requires_zero_pressure(
+    claimable: int,
+    stale: int,
+    expected: str | None,
+) -> None:
+    assert hasattr(drain, "CandidatePressure")
+    assert hasattr(drain, "no_candidate_rejection")
+    pressure = drain.CandidatePressure(claimable=claimable, stale=stale)
+    result = drain.DrainResult("NO_CANDIDATE", "-", "-")
+
+    assert drain.no_candidate_rejection(result, pressure) == expected
+
+
 def test_apply_merged_requires_controller_verification() -> None:
     state = _state(consecutive_failures=1)
     result = drain.DrainResult(

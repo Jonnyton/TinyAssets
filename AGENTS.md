@@ -265,6 +265,15 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   diagnostic at 90 seconds. On timeout they may proceed only from a clean
   current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
   provider-context gates remain mandatory.
+- `NO_CANDIDATE` requires proved exhaustion, not a glance at the CLAIMABLE
+  heading. Before idle, a drain worker must resume its own claim, select
+  claimable finish-first work, reap policy-qualified stale claims,
+  freshness-check blocker labels, then consider one safe cross-cutting
+  promotion under "Staying unblocked." The controller re-runs
+  `claim_check.py --json` and rejects `NO_CANDIDATE` while either `claimable` or
+  `stale` is nonzero. Explicit host confirmation that named sessions are closed
+  releases their claims immediately; autonomous same-day liveness is never
+  guessed.
 - Write-capable peer CLIs are not reliably OS-sandboxed on the Windows host.
   The safety boundary is clean worktree + exact claim + one PR + review/CI +
   finite time/slice/failure budgets + controller-side GitHub merge verification.
