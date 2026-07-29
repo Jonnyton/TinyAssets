@@ -136,6 +136,13 @@ def no_candidate_rejection(
     return f"claimable={pressure.claimable} stale={pressure.stale}"
 
 
+def begin_attempt(state: dict[str, Any]) -> int:
+    """Persist honest active status before dispatching the next worker."""
+    state["attempts"] += 1
+    state["status"] = "running"
+    return int(state["attempts"])
+
+
 def build_worker_prompt(state: dict[str, Any], *, objective: str) -> str:
     """Return the fixed governance brief for one disposable drain worker."""
     identity = state["identity"]
@@ -700,8 +707,7 @@ def _run(args: argparse.Namespace) -> int:
                 state["status"] = "stop-requested"
                 break
 
-            state["attempts"] += 1
-            attempt = state["attempts"]
+            attempt = begin_attempt(state)
             prompt_path = prompts_dir / f"{attempt:03d}.md"
             result_path = results_dir / f"{attempt:03d}.md"
             prompt_path.write_text(

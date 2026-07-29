@@ -35,6 +35,11 @@ The host then confirmed that the 11 claim owners were closed sessions. Changing
 only those statuses back to `pending` changed the same checker from 0 to 6
 claimable lanes. No task, branch, worktree, or OpenSpec artifact was deleted.
 
+During the next scheduled attempt, the controller dispatched worker 2 but left
+`state.status` at the prior `idle` value. The worker was active while the tray
+remained yellow. The same lane now marks every attempt `running` before dispatch
+and has a regression test for the idle-to-active transition.
+
 ## Corrective controls
 
 1. Every worker brief carries a mandatory exhaustion order: own claim,
@@ -46,6 +51,8 @@ claimable lanes. No task, branch, worktree, or OpenSpec artifact was deleted.
    finite failure strike.
 4. Explicit host confirmation may release same-day closed-session claims;
    autonomous logic retains the existing 24-hour/no-heartbeat stale threshold.
+5. Every new worker attempt persists `running` before dispatch so the tray
+   reflects active work rather than the previous attempt's terminal state.
 
 ## Verification target
 

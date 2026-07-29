@@ -165,6 +165,17 @@ def test_no_candidate_rejection_requires_zero_pressure(
     assert drain.no_candidate_rejection(result, pressure) == expected
 
 
+def test_begin_attempt_marks_idle_controller_running() -> None:
+    state = _state(attempts=1, status="idle")
+
+    assert hasattr(drain, "begin_attempt")
+    attempt = drain.begin_attempt(state)
+
+    assert attempt == 2
+    assert state["attempts"] == 2
+    assert state["status"] == "running"
+
+
 def test_apply_merged_requires_controller_verification() -> None:
     state = _state(consecutive_failures=1)
     result = drain.DrainResult(
