@@ -112,3 +112,25 @@ effective Codex CLI override. It confirmed that Claude dispatch is unchanged
 and that structural quality gates make medium appropriate for the preselected
 single-slice contract. A negative regression assertion now pins that Claude
 commands omit `--effort`.
+
+The reviewed medium worker still remained claim-free beyond five minutes. The
+remaining bottleneck was not candidate discovery but paying a reasoning worker
+to perform deterministic admission. The controller now performs the bounded
+claim feed, current-main worktree creation, `_PURPOSE.md`, exact claim commit,
+and persisted cwd assignment before dispatch. Unit and run-loop tests prove the
+claim is durable before the worker starts, replacement dispatch uses the
+prepared cwd, and pre-existing branches are not deleted.
+
+The first mechanical-admission review returned **BLOCK** on two unattended
+lifecycle gaps: `BLOCKED` retained admission and could re-dispatch forever, and
+timeout/I/O exceptions could escape the failure budget. The corrected loop
+releases and bounded-skips blocked admissions, normalizes admission exceptions,
+rejects mismatched result targets, tightens the exact stale-reap transition,
+and requires current-main restacking for `PARTIAL` foldback.
+
+Claude's mechanical-admission re-review returned **APPROVE** after verifying the
+blocked-release path, bounded errors, stale two-commit audit, result matching,
+and foldback instruction. Its remaining cleanup-timeout and OWNED-filter
+observations were also closed: cleanup is best-effort and cannot mask the
+original bounded failure, while exact-identity-owned hints are never suppressed
+by the recent-block filter.

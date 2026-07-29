@@ -10,6 +10,9 @@
 - [x] 2.3 Reproduce slow startup with six claimable rows and add a bounded, ordered pre-dispatch candidate snapshot.
 - [x] 2.4 Require fresh revalidation and a durable claim before broad backlog audit.
 - [x] 2.5 Pin disposable Codex drain workers to balanced medium reasoning effort.
+- [x] 2.6 Move deterministic worktree creation and exact claim commit into controller admission.
+- [x] 2.7 Persist admission for replacement workers and refuse branch/worktree collisions.
+- [x] 2.8 Release BLOCKED admissions, bound admission exceptions, validate result targets, and guard foldback restacking.
 
 ## 3. Governance And Proof
 

@@ -19,6 +19,8 @@ state misleadingly passive.
   broad audit or backlog scan.
 - Run Codex drain workers at balanced `medium` reasoning effort instead of
   inheriting the host's frontier-session `high` setting.
+- Mechanically create the first admissible lane, `_PURPOSE.md`, and exact
+  STATUS claim commit before spending a coding-worker turn.
 - Preserve fail-safe behavior for genuinely live claims and host-only work.
 
 ## Capabilities

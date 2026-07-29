@@ -65,12 +65,22 @@ class CandidateHint:
     classification: str
     task_label: str
     files: tuple[str, ...]
+    line_no: int = 0
+    status: str = ""
 
 
 @dataclass(frozen=True)
 class CandidateSnapshot:
     pressure: CandidatePressure
     hints: tuple[CandidateHint, ...]
+
+
+@dataclass(frozen=True)
+class Admission:
+    target: str
+    task_label: str
+    worktree: Path
+    branch: str
 
 
 def parse_result(text: str) -> DrainResult:
@@ -112,7 +122,328 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
         classification=classification,
         task_label=" ".join(task_label.split())[:240],
         files=tuple(" ".join(path.split())[:160] for path in files[:4]),
+        line_no=int(row.get("line_no", 0)),
+        status=str(row.get("status", "")),
     )
+
+
+def _slugify(value: str, *, limit: int = 48) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return (slug or "candidate")[:limit].rstrip("-")
+
+
+def _admission_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+    timeout: int = 120,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        completed = runner(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"admission command timed out after {timeout}s: {' '.join(command)}"
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"admission command could not run: {' '.join(command)}: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            f"admission command failed ({completed.returncode}): "
+            f"{' '.join(command)}: {detail}"
+        )
+    return completed
+
+
+def _best_effort_admission_cleanup(
+    command: list[str],
+    *,
+    cwd: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+    timeout: int,
+) -> None:
+    try:
+        runner(
+            command,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _set_status_claim(
+    status_path: Path,
+    *,
+    hint: CandidateHint,
+    status: str,
+    expected_status: str | None = None,
+) -> None:
+    lines = status_path.read_text(encoding="utf-8").splitlines()
+    if hint.line_no <= 0 or hint.line_no > len(lines):
+        raise RuntimeError(f"candidate line is outside STATUS.md: {hint.line_no}")
+    index = hint.line_no - 1
+    cells = lines[index].split("|")
+    if len(cells) < 6:
+        raise RuntimeError(f"candidate line is not a four-cell table row: {hint.line_no}")
+    current = cells[4].strip()
+    expected = expected_status or hint.status
+    if current != expected:
+        raise RuntimeError(
+            f"candidate status changed before admission: {current!r} != {expected!r}"
+        )
+    cells[4] = f" {status} "
+    lines[index] = "|".join(cells)
+    status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def admit_candidate(
+    *,
+    repo: Path,
+    identity: str,
+    hint: CandidateHint,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    today: str | None = None,
+) -> Admission:
+    """Mechanically prepare and claim one canonical candidate before dispatch."""
+    if hint.classification not in {"CLAIMABLE", "STALE"}:
+        raise RuntimeError(f"candidate cannot be mechanically admitted: {hint.classification}")
+    if hint.line_no <= 0 or not hint.status:
+        raise RuntimeError("candidate lacks canonical line/status metadata")
+    date = today or datetime.now().astimezone().date().isoformat()
+    run_slug = _slugify(identity.removeprefix("drain-"), limit=32)
+    target = _slugify(hint.task_label)
+    worktree = repo.parent / f"wf-drain-{run_slug}-{target[:32]}"
+    branch = f"drain/{run_slug}/{target}"
+
+    clean = _admission_command(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        cwd=repo,
+        runner=runner,
+        timeout=30,
+    )
+    if clean.stdout.strip():
+        raise RuntimeError("controller checkout is dirty; refusing admission")
+    _admission_command(
+        ["git", "-C", str(repo), "fetch", "--prune", "origin"],
+        cwd=repo,
+        runner=runner,
+    )
+    if worktree.exists():
+        raise RuntimeError(f"admission worktree already exists: {worktree}")
+    try:
+        branch_check = runner(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{branch}",
+            ],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"cannot inspect admission branch: {exc}") from exc
+    if branch_check.returncode == 0:
+        raise RuntimeError(f"admission branch already exists: {branch}")
+    if branch_check.returncode != 1:
+        raise RuntimeError(
+            f"cannot inspect admission branch ({branch_check.returncode}): "
+            f"{branch_check.stderr.strip()}"
+        )
+    try:
+        _admission_command(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                str(worktree),
+                "origin/main",
+            ],
+            cwd=repo,
+            runner=runner,
+        )
+        _admission_command(
+            [
+                sys.executable,
+                str(worktree / "scripts" / "provider_context_feed.py"),
+                "--provider",
+                identity,
+                "--phase",
+                "claim",
+                "--limit",
+                "10",
+            ],
+            cwd=worktree,
+            runner=runner,
+        )
+        fresh_snapshot = inspect_candidate_snapshot(
+            repo=worktree,
+            provider=identity,
+            runner=runner,
+        )
+        fresh_hint = next(
+            (
+                candidate
+                for candidate in fresh_snapshot.hints
+                if candidate.classification == hint.classification
+                and candidate.task_label == hint.task_label
+                and candidate.status == hint.status
+            ),
+            None,
+        )
+        if fresh_hint is None:
+            raise RuntimeError(
+                f"candidate is no longer admissible on current main: {hint.task_label}"
+            )
+        hint = fresh_hint
+        (worktree / "_PURPOSE.md").write_text(
+            "\n".join(
+                [
+                    "# Purpose",
+                    "",
+                    f"- Drain identity: `{identity}`",
+                    f"- Assigned target: `{hint.task_label}`",
+                    f"- Branch: `{branch}`",
+                    f"- Worktree: `{worktree}`",
+                    "- Review gate: independent review + required CI",
+                    "- Publish route: one PR, then OpenSpec sync/archive foldback",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        status_path = worktree / "STATUS.md"
+        if hint.classification == "STALE":
+            reaped_status = f"reaped:{identity}:no-activity-24h"
+            _set_status_claim(
+                status_path,
+                hint=hint,
+                status=reaped_status,
+            )
+            _admission_command(
+                ["git", "-C", str(worktree), "add", "STATUS.md"],
+                cwd=worktree,
+                runner=runner,
+                timeout=30,
+            )
+            _admission_command(
+                [
+                    "git",
+                    "-C",
+                    str(worktree),
+                    "commit",
+                    "-m",
+                    f"coord: reap stale {target} claim",
+                ],
+                cwd=worktree,
+                runner=runner,
+            )
+        _set_status_claim(
+            status_path,
+            hint=hint,
+            status=f"claimed:{identity} ACTIVE {date}",
+            expected_status=(
+                reaped_status if hint.classification == "STALE" else None
+            ),
+        )
+        _admission_command(
+            ["git", "-C", str(worktree), "add", "STATUS.md"],
+            cwd=worktree,
+            runner=runner,
+            timeout=30,
+        )
+        _admission_command(
+            [
+                "git",
+                "-C",
+                str(worktree),
+                "commit",
+                "-m",
+                f"coord: claim {target} for drain",
+            ],
+            cwd=worktree,
+            runner=runner,
+        )
+    except Exception as exc:
+        if worktree.exists():
+            _best_effort_admission_cleanup(
+                [
+                    "git",
+                    "-C",
+                    str(repo),
+                    "worktree",
+                    "remove",
+                    "--force",
+                    str(worktree),
+                ],
+                cwd=repo,
+                runner=runner,
+                timeout=60,
+            )
+        _best_effort_admission_cleanup(
+            ["git", "-C", str(repo), "branch", "-D", branch],
+            cwd=repo,
+            runner=runner,
+            timeout=30,
+        )
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"admission failed: {exc}") from exc
+    return Admission(
+        target=target,
+        task_label=hint.task_label,
+        worktree=worktree,
+        branch=branch,
+    )
+
+
+def filter_recently_blocked_hints(
+    hints: tuple[CandidateHint, ...],
+    *,
+    recent_blocked: list[str],
+) -> tuple[CandidateHint, ...]:
+    blocked = set(recent_blocked)
+    return tuple(
+        hint
+        for hint in hints
+        if hint.classification == "OWNED"
+        or _slugify(hint.task_label) not in blocked
+    )
+
+
+def admission_result_rejection(
+    result: DrainResult,
+    admission: Admission,
+) -> str | None:
+    if result.status == "NO_CANDIDATE":
+        return f"admitted={admission.target}"
+    if result.target != admission.target:
+        return f"assigned={admission.target} reported={result.target}"
+    return None
 
 
 def inspect_candidate_snapshot(
@@ -246,20 +577,44 @@ def build_worker_prompt(
     *,
     objective: str,
     candidate_hints: tuple[CandidateHint, ...] = (),
+    admission: Admission | None = None,
 ) -> str:
     """Return the fixed governance brief for one disposable drain worker."""
     identity = state["identity"]
     resume = state.get("resume_target")
     blocked = state.get("recent_blocked", [])
-    resume_text = (
-        f"STATUS may contain `{identity}` on `{resume}`. You MUST resume and "
-        "finish/fold back that target before selecting any different work."
-        if resume
-        else (
-            f"Before selection, search STATUS for an existing `{identity}` claim. "
-            "If one exists, you MUST resume it first."
+    if admission is not None:
+        partial_resume = (
+            isinstance(state.get("last_result"), dict)
+            and state["last_result"].get("status") == "PARTIAL"
         )
-    )
+        foldback_text = (
+            "\nThe implementation PR is already merged. Before foldback, fetch "
+            "origin/main and restack this branch onto current main with a clean "
+            "tree. Do not publish until the diff excludes the merged implementation."
+            if partial_resume
+            else ""
+        )
+        resume_text = f"""The controller already admitted and claimed your lane:
+- Target: `{admission.task_label}`
+- Worktree: `{admission.worktree}`
+- Branch: `{admission.branch}`
+
+You are already inside that prepared worktree. Do not create another worktree.
+Do not select a different lane. Verify the exact claim, then build this target.
+{foldback_text}"""
+    else:
+        resume_text = (
+            (
+                f"STATUS may contain `{identity}` on `{resume}`. You MUST resume and "
+                "finish/fold back that target before selecting any different work."
+            )
+            if resume
+            else (
+                f"Before selection, search STATUS for an existing `{identity}` claim. "
+                "If one exists, you MUST resume it first."
+            )
+        )
     blocked_text = ", ".join(blocked) if blocked else "(none)"
     candidate_text = (
         "\n".join(
@@ -269,6 +624,31 @@ def build_worker_prompt(
         )
         if candidate_hints
         else "- (no controller hint; run the canonical claim check directly)"
+    )
+    worktree_rule = (
+        "- Work only in the controller-prepared worktree above. Do not create or "
+        "switch to another lane."
+        if admission is not None
+        else (
+            "- Never edit the dirty/stale primary checkout. Fetch current origin/main "
+            "and create one clean purpose-named sibling worktree plus `_PURPOSE.md` "
+            "before edits."
+        )
+    )
+    startup_contract = (
+        f"""1. Verify STATUS in this prepared worktree contains the exact
+   `claimed:{identity}` admission for `{admission.task_label}`. Run
+   `provider_context_feed.py --provider {identity} --phase build --limit 10`.
+   Do not perform candidate selection and do not create another lane."""
+        if admission is not None
+        else f"""1. Before any broad audit or backlog scan, run exact
+   `claim_check.py --json` with `{identity}`, then run
+   `provider_context_feed.py --provider {identity} --phase claim --limit 10`.
+   Resume an owned row first. Otherwise revalidate the controller snapshot in
+   listed order and claim the first row that remains CLAIMABLE, or reap the
+   first row that remains policy-qualified STALE. Immediately edit STATUS with
+   the exact identity and commit that claim in the clean lane. Do not spend a
+   broad research pass before you commit that claim."""
     )
     return f"""You are one disposable TinyAssets OpenSpec drain worker.
 
@@ -285,8 +665,7 @@ Authority and safety:
 - You are write-capable and are not reliably OS-sandboxed on this Windows host.
   Safety comes from the clean worktree, exact claims, one-PR scope, review, CI,
   finite timeout, and preserved artifacts.
-- Never edit the dirty/stale primary checkout. Fetch current origin/main and
-  create one clean purpose-named sibling worktree plus `_PURPOSE.md` before edits.
+{worktree_rule}
 - Follow AGENTS.md and the provider lifecycle gates. Cap the global
   `worktree_status.py` diagnostic at 90 seconds; if it times out, record that and
   continue only from the clean current-main worktree. Exact `claim_check.py`,
@@ -295,13 +674,7 @@ Authority and safety:
   own existing claim before admitting another.
 
 Delivery contract:
-1. Before any broad audit or backlog scan, run exact `claim_check.py --json`
-   with `{identity}`, then run `provider_context_feed.py --provider {identity}
-   --phase claim --limit 10`. Resume an owned row first. Otherwise revalidate
-   the controller snapshot in listed order and claim the first row that remains
-   CLAIMABLE, or reap the first row that remains policy-qualified STALE.
-   Immediately edit STATUS with the exact identity and commit that claim in the
-   clean lane. Do not spend a broad research pass before you commit that claim.
+{startup_contract}
 2. Only after the durable claim, run `python scripts/openspec_flow.py audit`
    and the scoped STATUS/PLAN/dependency and provider-context checks needed for
    that lane.
@@ -672,6 +1045,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "attempts": 0,
         "last_result": None,
         "resume_target": None,
+        "admission": None,
         "recent_blocked": [],
         "status": "starting",
     }
@@ -689,14 +1063,16 @@ def build_dispatch_command(
     args: argparse.Namespace,
     prompt_path: Path,
     result_path: Path,
+    worker_cwd: Path | None = None,
 ) -> list[str]:
+    cwd = worker_cwd or args.repo
     command = [
         sys.executable,
         str(PEER_AGENT),
         args.provider,
         "--write",
         "--cwd",
-        str(args.repo),
+        str(cwd),
         "--timeout",
         str(args.worker_timeout),
         "--prompt-file",
@@ -716,15 +1092,17 @@ def _dispatch(
     args: argparse.Namespace,
     prompt_path: Path,
     result_path: Path,
+    worker_cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     command = build_dispatch_command(
         args=args,
         prompt_path=prompt_path,
         result_path=result_path,
+        worker_cwd=worker_cwd,
     )
     process = subprocess.Popen(
         command,
-        cwd=args.repo,
+        cwd=worker_cwd or args.repo,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -818,6 +1196,7 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_transients", 0)
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
+            state.setdefault("admission", None)
             if state["provider"] != args.provider or state.get("model") != args.model:
                 print("resume provider/model must match persisted state", file=sys.stderr)
                 return 2
@@ -855,8 +1234,16 @@ def _run(args: argparse.Namespace) -> int:
                 snapshot = inspect_candidate_snapshot(
                     repo=args.repo,
                     provider=state["identity"],
+                    max_hints=(
+                        MAX_CANDIDATE_HINTS
+                        + len(state.get("recent_blocked", []))
+                    ),
                 )
                 candidate_hints = snapshot.hints
+                candidate_hints = filter_recently_blocked_hints(
+                    candidate_hints,
+                    recent_blocked=state.get("recent_blocked", []),
+                )[:MAX_CANDIDATE_HINTS]
                 pressure = snapshot.pressure
                 _log(
                     run_dir,
@@ -871,11 +1258,79 @@ def _run(args: argparse.Namespace) -> int:
                     run_dir,
                     f"candidate snapshot unavailable attempt={attempt}: {exc}",
                 )
+            admission_data = state.get("admission")
+            admission = (
+                Admission(
+                    target=str(admission_data["target"]),
+                    task_label=str(admission_data["task_label"]),
+                    worktree=Path(admission_data["worktree"]),
+                    branch=str(admission_data["branch"]),
+                )
+                if isinstance(admission_data, dict)
+                else None
+            )
+            if admission is not None and not admission.worktree.is_dir():
+                state["consecutive_failures"] += 1
+                state["status"] = "admission-missing"
+                state["last_result"] = {
+                    "status": "ADMISSION_MISSING",
+                    "target": admission.target,
+                    "worktree": str(admission.worktree),
+                }
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"admission missing attempt={attempt} path={admission.worktree}",
+                )
+                if args.once:
+                    break
+                continue
+            if (
+                admission is None
+                and not args.dry_run
+                and candidate_hints
+                and candidate_hints[0].classification in {"CLAIMABLE", "STALE"}
+            ):
+                try:
+                    admission = admit_candidate(
+                        repo=args.repo,
+                        identity=state["identity"],
+                        hint=candidate_hints[0],
+                    )
+                except RuntimeError as exc:
+                    state["consecutive_failures"] += 1
+                    state["status"] = "admission-failed"
+                    state["last_result"] = {
+                        "status": "ADMISSION_FAILED",
+                        "error": str(exc),
+                    }
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"admission failed attempt={attempt}: {exc}",
+                    )
+                    if args.once:
+                        break
+                    continue
+                state["admission"] = {
+                    "target": admission.target,
+                    "task_label": admission.task_label,
+                    "worktree": str(admission.worktree),
+                    "branch": admission.branch,
+                }
+                state["resume_target"] = admission.target
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"admitted attempt={attempt} target={admission.target} "
+                    f"worktree={admission.worktree}",
+                )
             prompt_path.write_text(
                 build_worker_prompt(
                     state,
                     objective=args.objective,
                     candidate_hints=candidate_hints,
+                    admission=admission,
                 )
                 + "\n",
                 encoding="utf-8",
@@ -891,6 +1346,11 @@ def _run(args: argparse.Namespace) -> int:
                 args=args,
                 prompt_path=prompt_path,
                 result_path=result_path,
+                **(
+                    {"worker_cwd": admission.worktree}
+                    if admission is not None
+                    else {}
+                ),
             )
             text = (
                 result_path.read_text(encoding="utf-8", errors="replace")
@@ -934,6 +1394,28 @@ def _run(args: argparse.Namespace) -> int:
                     break
                 continue
 
+            if admission is not None:
+                admission_rejection = admission_result_rejection(
+                    result,
+                    admission,
+                )
+                if admission_rejection:
+                    state["consecutive_transients"] = 0
+                    state["consecutive_failures"] += 1
+                    state["last_result"] = {
+                        "status": "INVALID_ADMISSION_RESULT",
+                        "error": admission_rejection,
+                    }
+                    state["status"] = "invalid-result"
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"reject attempt={attempt} result {admission_rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
+
             if result.status == "NO_CANDIDATE":
                 try:
                     pressure = inspect_candidate_pressure(
@@ -970,6 +1452,10 @@ def _run(args: argparse.Namespace) -> int:
                 else False
             )
             apply_result(state, result, merge_verified=verified)
+            if result.status == "BLOCKED" or (
+                result.status == "MERGED" and verified
+            ):
+                state["admission"] = None
             atomic_write_json(state_path, state)
             _log(
                 run_dir,

@@ -64,9 +64,9 @@ Live claims and host-owned rows remain unavailable.
 Immediately before each dispatch, the controller will read the same
 `claim_check.py --json` payload and inject at most five ordered hints: an exact
 drain-owned row first, then claimable rows in STATUS order, then
-policy-qualified stale rows. The worker must rerun the checker, claim the first
-hint that remains valid, and commit that claim before any broad OpenSpec audit
-or backlog scan.
+policy-qualified stale rows. Controller admission reruns the checker on current
+main, claims the first hint that remains valid, and commits that claim before
+dispatch. The worker verifies the prepared claim before broad OpenSpec audit.
 
 The snapshot is advisory until revalidated, so it cannot override a claim that
 became live between dispatch and worker startup. Bounded injection was chosen
@@ -83,6 +83,35 @@ passes `--effort medium` to Codex peer workers. This preserves substantive
 reasoning while avoiding an unbounded high-effort admission phase. Claude
 workers retain their provider-native model setting.
 
+### Separate admission from paid implementation reasoning
+
+Both high- and medium-effort workers remained claim-free for more than five
+minutes after receiving a concrete ordered candidate list. Candidate selection
+and lane setup are deterministic coordination operations, so the controller
+will perform them before dispatch:
+
+1. fetch current `origin/main`;
+2. create one deterministic clean sibling worktree and branch;
+3. run the bounded claim-phase context feed and canonical checker there;
+4. reject the admission if the candidate is no longer admissible;
+5. write `_PURPOSE.md`;
+6. commit the exact STATUS claim with the drain identity and heartbeat;
+7. launch the worker with that worktree as its cwd.
+
+A policy-qualified stale row gets a separate reaping commit before the claim
+commit. The worker may verify but not repeat admission or choose another lane.
+The admission record is persisted in supervisor state and reused by replacement
+workers. Existing branches/worktrees are never overwritten or deleted; a
+collision makes admission visibly fail within the normal failure budget.
+
+A `BLOCKED` result releases the active admission and records its target in the
+bounded recent-block list, so the next snapshot skips it and admits a different
+candidate. The preserved worktree remains visible for later recovery. A
+`PARTIAL` result retains admission but requires current-main restacking before
+foldback publication. Worker results must name the assigned target; admission
+timeouts and file/process errors become bounded `admission-failed` state rather
+than escaping the controller.
+
 ### Treat closed-session release as coordination repair
 
 The host's statement that no other sessions are open is direct authority to
@@ -94,6 +123,9 @@ ownership is released.
 
 - **A candidate can change after snapshot** — The worker reruns the canonical
   checker and claims only a hint that remains admissible.
+- **A crash can strand a prepared lane** — The deterministic admission path
+  persists the lane before dispatch, refuses pre-existing paths/branches, and
+  replacement workers reuse the persisted worktree.
 
 - **A stale claim could belong to slow uncommitted work** → The existing
   24-hour/no-heartbeat policy remains the autonomous threshold; same-day claims
