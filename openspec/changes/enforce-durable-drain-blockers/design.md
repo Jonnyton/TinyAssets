@@ -76,6 +76,12 @@ admission, the supervisor records `blocked-cooldown`, waits the configured idle
 interval, and refreshes again. It does not launch a write-capable no-hint
 worker.
 
+Before filtering, the supervisor intersects `recent_blocked` with the fresh
+snapshot's complete blocked-target set. A target becomes eligible immediately
+when shared coordination truth no longer classifies it as blocked. The
+watchdog maps live cooldown and invalid-blocker retry states to waiting, while
+an ended invalid-blocker diagnostic remains a failure.
+
 This rule does not apply when:
 
 - an owned/prepared admission exists;

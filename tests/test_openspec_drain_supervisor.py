@@ -49,6 +49,14 @@ def _state(**overrides: object) -> dict[str, object]:
     return state
 
 
+def _snapshot_with_blocked(*targets: str) -> drain.CandidateSnapshot:
+    return drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(0, 0, 0),
+        hints=(),
+        blocked_targets=frozenset(targets),
+    )
+
+
 def test_parse_result_accepts_one_literal_final_marker() -> None:
     result = drain.parse_result(
         "Implemented and verified.\n"
@@ -978,6 +986,13 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
     ]
 
 
+def test_recent_blockers_are_retained_only_while_current_main_blocks_them() -> None:
+    assert drain.reconcile_recent_blocked(
+        ["still-blocked", "cleared", "deleted"],
+        blocked_targets=frozenset({"still-blocked", "unrelated"}),
+    ) == ["still-blocked"]
+
+
 @pytest.mark.parametrize(
     (
         "pressure",
@@ -1230,6 +1245,9 @@ def test_resume_replays_newly_valid_result_and_undoes_parser_strike(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "main-red-round-2"
+        ),
     )
 
     assert recovered is True
@@ -1243,6 +1261,48 @@ def test_resume_replays_newly_valid_result_and_undoes_parser_strike(
     assert state["resume_target"] is None
     assert state["admission"] is None
     assert state["status"] == "blocked"
+
+
+def test_resume_rejects_newly_parseable_private_blocker(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "005.md").write_text(
+        "DRAIN_RESULT: BLOCKED main-red round 2 -\n",
+        encoding="utf-8",
+    )
+    admission = {
+        "target": "main-red-round-2",
+        "task_label": "main-red round 2",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/main-red-round-2",
+    }
+    state = _state(
+        attempts=5,
+        consecutive_failures=2,
+        last_result={
+            "status": "INVALID_RESULT",
+            "attempt": 5,
+            "error": "malformed",
+        },
+        admission=admission,
+        resume_target="main-red-round-2",
+    )
+
+    recovered = drain.recover_invalid_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    assert recovered is True
+    assert state["consecutive_failures"] == 2
+    assert state["last_consumed_attempt"] == 5
+    assert state["last_result"]["status"] == "INVALID_BLOCKED_RESULT"
+    assert state["admission"] == admission
+    assert state["recent_blocked"] == []
 
 
 @pytest.mark.parametrize(
@@ -1330,6 +1390,43 @@ def test_resume_consumes_valid_unrecorded_current_attempt(
     assert state["admission"]["target"] == "assigned-target"
 
 
+def test_resume_rejects_unconsumed_private_blocker(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "001.md").write_text(
+        "DRAIN_RESULT: BLOCKED assigned-target -\n",
+        encoding="utf-8",
+    )
+    admission = {
+        "target": "assigned-target",
+        "task_label": "assigned target",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/assigned-target",
+    }
+    state = _state(
+        attempts=1,
+        last_result=None,
+        admission=admission,
+        resume_target="assigned-target",
+    )
+
+    recovered = drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    assert recovered is True
+    assert state["consecutive_failures"] == 1
+    assert state["last_consumed_attempt"] == 1
+    assert state["last_result"]["status"] == "INVALID_BLOCKED_RESULT"
+    assert state["admission"] == admission
+    assert state["recent_blocked"] == []
+
+
 def test_resume_refuses_unrecorded_result_for_different_admission(
     tmp_path: Path,
 ) -> None:
@@ -1388,6 +1485,9 @@ def test_resume_recovers_current_result_after_an_earlier_failed_attempt(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "assigned-target"
+        ),
     )
     assert state["last_consumed_attempt"] == 3
     assert state["status"] == "blocked"
@@ -1534,6 +1634,9 @@ def test_resume_replays_the_recorded_invalid_attempt_not_latest_attempt(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "main-red-round-2"
+        ),
     )
 
     assert recovered is True
@@ -1567,6 +1670,9 @@ def test_legacy_failure_budget_can_replay_its_terminal_current_attempt(
             state,
             results_dir=results_dir,
             repo=tmp_path,
+            blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+                "main-red-round-2"
+            ),
         )
         is True
     )
@@ -1706,6 +1812,7 @@ def test_run_replays_invalid_result_before_failure_budget(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"main-red-round-2"}),
         ),
     )
 
@@ -1769,6 +1876,7 @@ def test_recovery_log_names_recorded_attempt_not_latest_counter(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"main-red-round-2"}),
         ),
     )
 
@@ -2136,6 +2244,7 @@ def test_budget_reason_is_terminal() -> None:
         ("idle", 0),
         ("worker-failed", 2),
         ("invalid-result", 2),
+        ("invalid-blocked-result", 2),
         ("transient-provider-error", 2),
         ("transient-failure", 2),
         ("fatal-peer-error", 2),
@@ -2392,6 +2501,7 @@ def test_run_cools_down_without_dispatch_when_recent_blockers_consume_hints(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
             hints=(hint,),
+            blocked_targets=frozenset({"blocked-target"}),
         ),
     )
     monkeypatch.setattr(
@@ -2503,7 +2613,7 @@ def test_run_rejects_blocked_when_current_main_refresh_fails(
     )
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    assert exit_code == 0
+    assert exit_code == 2
     assert state["admission"]["target"] == "target"
     assert state["resume_target"] == "target"
     assert state["recent_blocked"] == []

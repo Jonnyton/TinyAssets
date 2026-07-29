@@ -465,6 +465,15 @@ def filter_recently_blocked_hints(
     )
 
 
+def reconcile_recent_blocked(
+    recent_blocked: list[str],
+    *,
+    blocked_targets: frozenset[str],
+) -> list[str]:
+    """Drop run-local suppression as soon as current main clears the blocker."""
+    return [target for target in recent_blocked if target in blocked_targets]
+
+
 def should_cooldown_without_worker(
     *,
     pressure: CandidatePressure,
@@ -679,6 +688,28 @@ def blocked_result_rejection(
     if result.target in snapshot.blocked_targets:
         return None
     return f"target={result.target} is not blocked on current origin/main"
+
+
+def current_main_blocked_result_rejection(
+    result: DrainResult,
+    *,
+    repo: Path,
+    provider: str,
+    inspector: Callable[..., CandidateSnapshot] | None = None,
+) -> str | None:
+    """Refresh current main and fail closed when BLOCKED lacks shared proof."""
+    if result.status != "BLOCKED":
+        return None
+    snapshot_inspector = inspector or inspect_current_main_snapshot
+    try:
+        snapshot = snapshot_inspector(
+            repo=repo,
+            provider=provider,
+            max_hints=0,
+        )
+    except RuntimeError as exc:
+        return str(exc)
+    return blocked_result_rejection(result, snapshot)
 
 
 def begin_attempt(state: dict[str, Any]) -> int:
@@ -1013,6 +1044,7 @@ def recover_invalid_result(
     results_dir: Path,
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
+    blocked_snapshot_inspector: Callable[..., CandidateSnapshot] | None = None,
 ) -> bool:
     """Replay the exact newly valid artifact through ordinary result handling."""
     admission_data = state.get("admission")
@@ -1038,6 +1070,26 @@ def recover_invalid_result(
         return False
     if admission_result_rejection(result, admission):
         return False
+
+    blocked_rejection = current_main_blocked_result_rejection(
+        result,
+        repo=repo,
+        provider=str(state["identity"]),
+        inspector=blocked_snapshot_inspector,
+    )
+    if blocked_rejection:
+        state["consecutive_failures"] = max(
+            0,
+            int(state.get("consecutive_failures", 0)) - 1,
+        )
+        apply_invalid_blocked_result(
+            state,
+            result,
+            attempt=attempt,
+            error=blocked_rejection,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
 
     verified = (
         merge_verifier(
@@ -1098,6 +1150,7 @@ def recover_unconsumed_result(
     results_dir: Path,
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
+    blocked_snapshot_inspector: Callable[..., CandidateSnapshot] | None = None,
 ) -> bool:
     """Apply a valid current-attempt artifact left behind by a dead controller."""
     admission_data = state.get("admission")
@@ -1122,6 +1175,22 @@ def recover_unconsumed_result(
         return False
     if admission_result_rejection(result, admission):
         return False
+
+    blocked_rejection = current_main_blocked_result_rejection(
+        result,
+        repo=repo,
+        provider=str(state["identity"]),
+        inspector=blocked_snapshot_inspector,
+    )
+    if blocked_rejection:
+        apply_invalid_blocked_result(
+            state,
+            result,
+            attempt=attempt,
+            error=blocked_rejection,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
 
     verified = (
         merge_verifier(
@@ -1201,6 +1270,7 @@ def exit_code_for_status(status: str) -> int:
     failed = {
         "worker-failed",
         "invalid-result",
+        "invalid-blocked-result",
         "transient-provider-error",
         "transient-failure",
         "fatal-peer-error",
@@ -1620,6 +1690,18 @@ def _run(args: argparse.Namespace) -> int:
                         + len(state.get("recent_blocked", []))
                     ),
                 )
+                previous_blocked = state.get("recent_blocked", [])
+                current_blocked = reconcile_recent_blocked(
+                    previous_blocked,
+                    blocked_targets=snapshot.blocked_targets,
+                )
+                if current_blocked != previous_blocked:
+                    state["recent_blocked"] = current_blocked
+                    _log(
+                        run_dir,
+                        f"released cleared blockers attempt={attempt} "
+                        f"count={len(previous_blocked) - len(current_blocked)}",
+                    )
                 candidate_hints = snapshot.hints
                 candidate_hints = filter_recently_blocked_hints(
                     candidate_hints,
@@ -1836,18 +1918,11 @@ def _run(args: argparse.Namespace) -> int:
                     continue
 
             if result.status == "BLOCKED":
-                try:
-                    blocked_snapshot = inspect_current_main_snapshot(
-                        repo=args.repo,
-                        provider=state["identity"],
-                        max_hints=0,
-                    )
-                    blocked_rejection = blocked_result_rejection(
-                        result,
-                        blocked_snapshot,
-                    )
-                except RuntimeError as exc:
-                    blocked_rejection = str(exc)
+                blocked_rejection = current_main_blocked_result_rejection(
+                    result,
+                    repo=args.repo,
+                    provider=state["identity"],
+                )
                 if blocked_rejection:
                     apply_invalid_blocked_result(
                         state,

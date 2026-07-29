@@ -28,3 +28,13 @@ The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid onl
 #### Scenario: A different candidate remains after filtering
 - **WHEN** recent blockers are filtered and another concrete claimable or stale candidate remains
 - **THEN** the controller admits and dispatches that candidate under the existing current-main contract
+
+#### Scenario: A durable blocker clears
+- **WHEN** a target in the run's recent-blocked set is no longer classified blocked by fresh current main
+- **THEN** the controller removes its run-local suppression before candidate filtering
+- **AND** may admit that target again under the ordinary candidate contract
+
+#### Scenario: Blocker retry and cooldown remain observable
+- **WHEN** a live controller is cooling down or retrying an invalid private blocker
+- **THEN** watchdog health reports waiting rather than ordinary running
+- **AND** an ended invalid-blocker diagnostic reports failure

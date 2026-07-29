@@ -20,6 +20,9 @@ repairing and folding back coordination instead of advancing product work.
 - When current-main pressure still contains candidates but recent-blocker
   filtering leaves no concrete hint, wait the bounded idle interval instead of
   spending a full write-capable worker rediscovering the same blockers.
+- Release run-local suppression as soon as current main no longer classifies a
+  previously accepted target as blocked, and expose the new transient states
+  honestly through watchdog health.
 - Keep `NO_CANDIDATE`, merge verification, failure budgets, current-main
   refresh, admission, review, and GitHub policy unchanged.
 
@@ -37,7 +40,7 @@ None.
 
 ## Impact
 
-The change is limited to `scripts/openspec_drain_supervisor.py`, its focused
+The change is limited to the OpenSpec drain supervisor/watchdog, their focused
 tests, and the development-coordination runtime delta. It changes no product
 runtime, MCP surface, cloud activation, provider authority, or repository
 policy. The running tray keeps its current controller until this change is
