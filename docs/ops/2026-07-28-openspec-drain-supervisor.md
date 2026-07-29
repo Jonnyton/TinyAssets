@@ -65,7 +65,10 @@ The controller takes the first canonical hint, runs the bounded claim feed,
 fetches current main, creates a purpose-named branch/worktree, writes
 `_PURPOSE.md`, commits the exact STATUS claim, persists that admission, and only
 then launches the worker with the prepared worktree as cwd. Replacement workers
-reuse it. A pre-existing branch/path fails visibly; it is never overwritten.
+reuse it. Branch/worktree names include the persisted attempt number, so a
+later slice can revisit one still-open target without colliding with its
+preserved earlier lane. A pre-existing exact-attempt branch/path fails visibly;
+it is never overwritten.
 Admission timeouts/errors consume the normal failure budget. `BLOCKED` preserves
 the worktree for recovery but releases active admission and skips that target
 on the next bounded snapshot. `PARTIAL` retains the lane and requires a

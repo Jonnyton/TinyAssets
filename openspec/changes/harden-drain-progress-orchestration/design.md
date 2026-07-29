@@ -69,6 +69,19 @@ owned/claimable/policy-qualified stale candidate remains. Otherwise existing
 idle behavior is preserved. `NO_CANDIDATE` and repeated `PARTIAL` retain their
 current waits.
 
+### Admission lanes are unique per attempt
+
+The controller includes the persisted attempt number in each mechanically
+created branch and worktree path. Re-admitting the same still-open target after
+a verified slice therefore creates a clean current-main lane instead of
+colliding with the preserved prior slice. An exact same-attempt path or branch
+collision continues to fail closed; the controller never deletes or overwrites
+the pre-existing lane.
+
+This is preferred over automatic worktree deletion because prior lanes remain
+available for audit/recovery, and over random names because an interrupted
+attempt retains a deterministic recovery identity.
+
 ## Risks / Trade-offs
 
 - **Artifact observed during a write** → require successful parsing plus
@@ -80,6 +93,9 @@ current waits.
   number and exact admission target; fail closed on ambiguity.
 - **Rapid block fallback spins across the same target** → retain the
   recent-block filter and require a different eligible hint.
+- **Repeated slices accumulate worktrees** → keep historical cleanup outside
+  this change; attempt-qualified lanes preserve recovery and can be retired by
+  a separately reviewed retention policy.
 
 ## Migration Plan
 

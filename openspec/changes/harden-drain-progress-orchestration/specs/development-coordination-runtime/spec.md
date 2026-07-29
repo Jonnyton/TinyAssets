@@ -222,3 +222,29 @@ next sign-in, and exit only the indicator.
 - **WHEN** the host selects exit indicator
 - **THEN** the tray process exits
 - **AND** it does not stop the watchdog or active drain
+
+## ADDED Requirements
+
+### Requirement: Repeated Drain Admissions Use Distinct Lanes
+
+The OpenSpec drain supervisor SHALL derive each mechanical admission branch and
+worktree path from the exact drain identity, canonical target, and persisted
+attempt number so one run can deliver multiple sequential slices for the same
+still-open target without colliding with a preserved prior lane. It MUST
+continue to refuse an exact path or branch collision and MUST NOT delete or
+overwrite the pre-existing lane.
+
+#### Scenario: Same target needs another verified slice
+
+- **WHEN** a later attempt in one drain run admits the same canonical target
+  after an earlier slice completed
+- **THEN** the later attempt receives a different deterministic branch and
+  worktree path
+- **AND** both lanes remain attributable to their attempt numbers
+
+#### Scenario: Exact attempt lane already exists
+
+- **WHEN** the branch or worktree path derived for the exact current attempt
+  already exists
+- **THEN** admission fails closed
+- **AND** the controller does not delete, overwrite, or reuse that lane
