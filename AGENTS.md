@@ -242,6 +242,33 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   is a dated 2026-07-28 calibration; review it on 2026-08-11 against cycle time
   and current model capability.
 
+#### All-day OpenSpec drain
+
+- Use `python scripts/openspec_drain_supervisor.py run` when the host wants one
+  controller to drain work for hours. It launches one fresh worker at a time;
+  each worker owns at most one recovery slice and one PR. Do not run it
+  alongside `scripts/fleet_supervisor.py`—the fleet's utilization floor is a
+  different mechanism.
+- One run keeps one exact `drain-<run-id>` identity. A replacement worker must
+  resume and finish/fold back that identity's existing claim before selecting
+  different work. `PARTIAL` means a PR merged but archive/STATUS debt remains.
+  One immediate same-target resume is allowed; repeated `PARTIAL` results
+  consume failure strikes and idle instead of dispatching endlessly.
+- A legacy oversized change may be drained only through one concrete recovery
+  slice of at most 12 unchecked tasks per worker, preferably fewer. Work within
+  the existing change; do not mechanically create child changes.
+- Controller-launched drain workers may cap the global `worktree_status.py`
+  diagnostic at 90 seconds. On timeout they may proceed only from a clean
+  current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
+  provider-context gates remain mandatory.
+- Write-capable peer CLIs are not reliably OS-sandboxed on the Windows host.
+  The safety boundary is clean worktree + exact claim + one PR + review/CI +
+  finite time/slice/failure budgets + controller-side GitHub merge verification.
+  Authentication/rate-limit retries and stale-lock recovery are bounded; never
+  override a lock whose recorded PID is live.
+  Start/status/stop/recovery commands live in
+  `docs/ops/2026-07-28-openspec-drain-supervisor.md`.
+
 ### Multi-Session Steering
 
 - The user may steer multiple live sessions across different providers at once.

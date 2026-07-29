@@ -30,6 +30,19 @@ At dispatch/triage time, also run `python scripts/openspec_flow.py audit` and
 finish existing delivery WIP before admitting more. This is on-demand flow
 control, not a mandatory session-start step.
 
+When the host asks for unattended all-day drain, use
+`scripts/openspec_drain_supervisor.py` rather than one giant implementation
+prompt or the utilization-floor fleet. The controller launches one fresh worker
+at a time with one PR, finite budgets, persistent state, and independent GitHub
+merge verification. Keep one exact drain identity across replacement workers
+and resume its own claim first. A legacy oversized change may supply one
+concrete recovery slice of at most 12 unchecked tasks; never mechanically fan
+out child changes. One immediate same-target `PARTIAL` resume is allowed;
+repeated `PARTIAL` results consume failure strikes and idle. Authentication and
+rate-limit retries are bounded, and stale-lock recovery must reject a live PID.
+Follow the start/status/stop/recovery runbook at
+`docs/ops/2026-07-28-openspec-drain-supervisor.md`.
+
 ## explore — a thinking partner
 
 A stance, not a workflow: curious, visual (ASCII diagrams liberally), adaptive,
