@@ -244,6 +244,10 @@ Host directive 2026-07-19: this project is spec-driven from here on.
 
 #### All-day OpenSpec drain
 
+- `Start the OpenSpec drain` is the canonical host trigger. Do not ask the host
+  to remember setup commands: inspect the autostart/watchdog state, attach or
+  start it, and report health. Normal daily operation uses the installed
+  current-user sign-in task and requires no prompt.
 - Use `python scripts/openspec_drain_supervisor.py run` when the host wants one
   controller to drain work for hours. It launches one fresh worker at a time;
   each worker owns at most one recovery slice and one PR. Do not run it
@@ -266,6 +270,13 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   finite time/slice/failure budgets + controller-side GitHub merge verification.
   Authentication/rate-limit retries and stale-lock recovery are bounded; never
   override a lock whose recorded PID is live.
+- On the Windows host, `scripts/openspec_drain_watchdog.py` owns session
+  continuity and `scripts/openspec_drain_tray.ps1` owns visible health. The
+  watchdog attaches to a live drain, resumes an abruptly interrupted exact
+  identity, starts fresh only after clean completion, and stays red/down after
+  terminal failure until explicit restart. The Task Scheduler integration runs
+  at user sign-in—not pre-login SYSTEM startup—because the tray and subscription
+  credentials belong to the interactive session.
   Start/status/stop/recovery commands live in
   `docs/ops/2026-07-28-openspec-drain-supervisor.md`.
 

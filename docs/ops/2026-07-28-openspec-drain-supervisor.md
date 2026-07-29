@@ -11,6 +11,56 @@ state, and launches a fresh context for the next slice.
 This is queue contraction, not a utilization floor. Do not run
 `fleet_supervisor.py` at the same time.
 
+## Automatic Windows mode
+
+Normal daily operation is automatic. The one-time installer registers
+`TinyAssets OpenSpec Drain` for the current user at Windows sign-in:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/install_openspec_drain_autostart.ps1 `
+  -Repo C:\Users\Jonathan\Projects\wf-openspec-drain-controller
+```
+
+Sign-in is the correct boot boundary: Codex/Claude subscription credentials and
+the notification-area tray icon exist only in the interactive user session.
+The task has no execution-time limit and ignores duplicate starts.
+
+The tray indicator maps:
+
+- information/healthy icon: watchdog and drain controller are running;
+- warning icon: starting, recovering, blocked, idle, or stopping;
+- error icon: health is stale, the controller is down, or a terminal failure
+  requires explicit restart.
+
+Its menu opens the active run, opens a live status watcher, requests a bounded
+restart, stops until the next sign-in, or exits only the indicator. Closing the
+indicator does not stop the watchdog.
+
+The watchdog adopts an existing manual drain without dispatching another
+worker. After an abrupt shutdown it resumes the newest unfinished run directory,
+preserving the exact `drain-<run-id>` identity and any live STATUS claim.
+Runtime/slice budget completion can start another finite run during the same
+computer session; fatal/failure-budget outcomes remain down.
+
+Direct health commands:
+
+```powershell
+py scripts/openspec_drain_watchdog.py status
+py scripts/openspec_drain_watchdog.py restart
+py scripts/openspec_drain_watchdog.py stop
+```
+
+Uninstall without deleting run evidence:
+
+```powershell
+py scripts/openspec_drain_watchdog.py stop
+powershell -ExecutionPolicy Bypass -File scripts/install_openspec_drain_autostart.ps1 -Uninstall
+```
+
+Wait for the tray to show down before uninstalling. The installer removes the
+sign-in task and indicator; the watchdog stop request is what safely prevents a
+new worker from starting.
+
 ## Safety model
 
 Write-capable peer workers are not reliably OS-sandboxed on this Windows host:
@@ -101,6 +151,11 @@ model is rate-limited, pin a reachable model rather than repeatedly restarting
 the controller.
 
 ## Monitor and stop
+
+In automatic Windows mode, use the watchdog commands shown above or the tray
+menu. A direct supervisor stop ends only the current bounded run; the watchdog
+will interpret that clean ending as permission to start the next bounded run.
+The direct commands below are for intentionally manual supervisor runs.
 
 ```powershell
 py scripts/openspec_drain_supervisor.py status --run-dir $drainRun

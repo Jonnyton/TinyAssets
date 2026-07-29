@@ -40,6 +40,11 @@ concrete recovery slice of at most 12 unchecked tasks; never mechanically fan
 out child changes. One immediate same-target `PARTIAL` resume is allowed;
 repeated `PARTIAL` results consume failure strikes and idle. Authentication and
 rate-limit retries are bounded, and stale-lock recovery must reject a live PID.
+`Start the OpenSpec drain` is the canonical host trigger; do not make the host
+remember launch commands. On the Windows host, prefer the installed sign-in
+watchdog/tray: attach to a live drain, resume the same identity after abrupt
+shutdown, show honest running/waiting/down health, and require explicit restart
+after terminal failure.
 Follow the start/status/stop/recovery runbook at
 `docs/ops/2026-07-28-openspec-drain-supervisor.md`.
 
