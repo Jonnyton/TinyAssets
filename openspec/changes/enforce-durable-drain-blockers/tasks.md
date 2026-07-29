@@ -11,6 +11,9 @@
 - [x] 2.2 Add failing prompt and dispatch tests for durable-blocker instructions and recent-blocked hint exhaustion; minimally suppress only the no-hint write dispatch caused by recent-block filtering while preserving owned, alternative-candidate, and true-exhaustion paths.
   - **Depends:** 2.1.
   - **Verify:** red/green tests prove zero peer dispatch during cooldown and unchanged dispatch for every preserved path.
+- [x] 2.3 Add exact-PR replay tests after the live drain counted PR #1879 more than once; persist bounded verified merge receipts, reconstruct legacy receipts on resume, and reject duplicate `MERGED` results without advancing slice count.
+  - **Depends:** 2.2 and live attempts 6-7 evidence.
+  - **Verify:** red/green unit and run-path tests prove one verified PR advances at most one slice across restart.
 
 ## 3. Verify, Review, And Deploy Safely
 

@@ -89,7 +89,21 @@ This rule does not apply when:
 - canonical pressure is truly zero, where the existing exhaustion/promotion
   worker contract remains unchanged.
 
-### 4. Deployment is an explicit post-merge step
+### 4. Verified merge consumption is idempotent
+
+The live run subsequently exposed exact merged-PR replay: attempts 6 and 7
+returned PR #1879 again and each advanced `completed_slices`. A bounded
+`merged_prs` receipt set now makes verified merge consumption idempotent.
+Legacy state reconstructs receipts from consumed result artifacts and verifies
+each unique PR before trusting it. `PARTIAL` does not consume the receipt,
+because a later `MERGED` result may legitimately use the same PR after
+foldback.
+
+An exact duplicate `MERGED` result records a finite
+`INVALID_DUPLICATE_MERGE`, retains any admission, and never advances slice
+count. Live retry is observable as waiting; an ended diagnostic is failure.
+
+### 5. Deployment is an explicit post-merge step
 
 The implementation is merged and reviewed without touching the live controller
 worktree. After its active attempt reaches terminal, the controller deployment
@@ -114,8 +128,8 @@ remain available for before/after comparison.
 1. Land the delta and tests with no live-controller mutation.
 2. Wait for the current attempt to produce a terminal result.
 3. Refresh the controller worktree to the exact merged commit.
-4. Restart the watchdog once and verify health plus a controlled invalid/durable
-   blocker probe.
+4. Restart the watchdog once and verify health plus controlled invalid/durable
+   blocker and duplicate-merge probes.
 5. Roll back by restoring the prior merged controller commit and restarting;
    run artifacts remain compatible because the added snapshot field is derived,
    not persisted.

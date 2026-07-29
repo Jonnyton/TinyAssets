@@ -37,6 +37,7 @@ TRANSIENT_PATTERNS = (
 STOP_POLL_SECONDS = 5.0
 RESULT_POLL_SECONDS = 1.0
 MAX_RECENT_BLOCKED = 12
+MAX_MERGED_PRS = 64
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
 DRAIN_CODEX_EFFORT = "medium"
@@ -521,6 +522,18 @@ def admission_result_rejection(
     return None
 
 
+def duplicate_merge_rejection(
+    result: DrainResult,
+    state: dict[str, Any],
+) -> str | None:
+    """Reject a previously consumed merge receipt before it counts again."""
+    if result.status != "MERGED":
+        return None
+    if result.pr in state.get("merged_prs", []):
+        return f"already-consumed={result.pr}"
+    return None
+
+
 def inspect_candidate_snapshot(
     *,
     repo: Path,
@@ -963,6 +976,13 @@ def apply_result(
         return
     if result.status == "MERGED":
         state["completed_slices"] += 1
+        merged_prs = [
+            pr
+            for pr in state.get("merged_prs", [])
+            if pr != result.pr
+        ]
+        merged_prs.append(result.pr)
+        state["merged_prs"] = merged_prs[-MAX_MERGED_PRS:]
         state["consecutive_failures"] = 0
         state["consecutive_partial_target"] = None
         state["consecutive_partials"] = 0
@@ -1019,6 +1039,62 @@ def apply_invalid_blocked_result(
     state["status"] = "invalid-blocked-result"
 
 
+def apply_invalid_duplicate_merge(
+    state: dict[str, Any],
+    result: DrainResult,
+    *,
+    attempt: int,
+) -> None:
+    """Record an exact merged-PR replay without advancing delivery."""
+    state["consecutive_transients"] = 0
+    state["consecutive_failures"] += 1
+    state["last_result"] = {
+        "status": "INVALID_DUPLICATE_MERGE",
+        "attempt": attempt,
+        "target": result.target,
+        "pr": result.pr,
+    }
+    state["status"] = "invalid-duplicate-merge"
+
+
+def infer_legacy_merged_prs(
+    *,
+    state: dict[str, Any],
+    results_dir: Path,
+    repo: Path,
+    merge_verifier: Callable[..., bool] = verify_merged,
+) -> list[str]:
+    """Reconstruct bounded verified merge receipts for pre-field run state."""
+    try:
+        last_consumed = max(0, int(state.get("last_consumed_attempt", 0)))
+        started_at = str(state["started_at"])
+    except (KeyError, TypeError, ValueError):
+        return []
+    receipts: list[str] = []
+    for attempt in range(1, last_consumed + 1):
+        try:
+            result = parse_result(
+                (results_dir / f"{attempt:03d}.md").read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            )
+        except (OSError, ValueError):
+            continue
+        if (
+            result.status != "MERGED"
+            or result.pr in receipts
+            or not merge_verifier(
+                result.pr,
+                repo=repo,
+                started_at=started_at,
+            )
+        ):
+            continue
+        receipts.append(result.pr)
+    return receipts[-MAX_MERGED_PRS:]
+
+
 def _recorded_invalid_result_attempt(state: dict[str, Any]) -> int | None:
     last_result = state.get("last_result")
     if (
@@ -1070,6 +1146,19 @@ def recover_invalid_result(
         return False
     if admission_result_rejection(result, admission):
         return False
+
+    if duplicate_merge_rejection(result, state):
+        state["consecutive_failures"] = max(
+            0,
+            int(state.get("consecutive_failures", 0)) - 1,
+        )
+        apply_invalid_duplicate_merge(
+            state,
+            result,
+            attempt=attempt,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
 
     blocked_rejection = current_main_blocked_result_rejection(
         result,
@@ -1176,6 +1265,15 @@ def recover_unconsumed_result(
     if admission_result_rejection(result, admission):
         return False
 
+    if duplicate_merge_rejection(result, state):
+        apply_invalid_duplicate_merge(
+            state,
+            result,
+            attempt=attempt,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
+
     blocked_rejection = current_main_blocked_result_rejection(
         result,
         repo=repo,
@@ -1271,6 +1369,7 @@ def exit_code_for_status(status: str) -> int:
         "worker-failed",
         "invalid-result",
         "invalid-blocked-result",
+        "invalid-duplicate-merge",
         "transient-provider-error",
         "transient-failure",
         "fatal-peer-error",
@@ -1428,6 +1527,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "resume_target": None,
         "admission": None,
         "recent_blocked": [],
+        "merged_prs": [],
         "status": "starting",
     }
 
@@ -1621,6 +1721,13 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
             state.setdefault("admission", None)
+            if "merged_prs" not in state:
+                state["merged_prs"] = infer_legacy_merged_prs(
+                    state=state,
+                    results_dir=results_dir,
+                    repo=args.repo,
+                    merge_verifier=verify_merged,
+                )
             if state["provider"] != args.provider or state.get("model") != args.model:
                 print("resume provider/model must match persisted state", file=sys.stderr)
                 return 2
@@ -1916,6 +2023,22 @@ def _run(args: argparse.Namespace) -> int:
                     if args.once:
                         break
                     continue
+
+            duplicate_rejection = duplicate_merge_rejection(result, state)
+            if duplicate_rejection:
+                apply_invalid_duplicate_merge(
+                    state,
+                    result,
+                    attempt=attempt,
+                )
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"reject attempt={attempt} MERGED {duplicate_rejection}",
+                )
+                if args.once:
+                    break
+                continue
 
             if result.status == "BLOCKED":
                 blocked_rejection = current_main_blocked_result_rejection(

@@ -97,6 +97,7 @@ def test_discovery_includes_supervisor_default_run_directory(tmp_path: Path) -> 
         "fatal-peer-error",
         "invalid-result",
         "invalid-blocked-result",
+        "invalid-duplicate-merge",
     ],
 )
 def test_terminal_failure_stays_down_until_explicit_restart(
@@ -131,6 +132,7 @@ def test_clean_terminal_run_allows_fresh_bounded_run(tmp_path: Path) -> None:
         ("blocked", True, "attach", "waiting"),
         ("blocked-cooldown", True, "attach", "waiting"),
         ("invalid-blocked-result", True, "attach", "waiting"),
+        ("invalid-duplicate-merge", True, "attach", "waiting"),
         ("idle", True, "attach", "waiting"),
         ("admission-failed", True, "attach", "waiting"),
         ("admission-missing", True, "attach", "waiting"),

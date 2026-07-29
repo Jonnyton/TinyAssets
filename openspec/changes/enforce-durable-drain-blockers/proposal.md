@@ -23,6 +23,9 @@ repairing and folding back coordination instead of advancing product work.
 - Release run-local suppression as soon as current main no longer classifies a
   previously accepted target as blocked, and expose the new transient states
   honestly through watchdog health.
+- Persist a bounded set of verified merged-PR receipts, reconstruct it for a
+  legacy run on resume, and reject an exact PR replay instead of counting fake
+  delivery progress.
 - Keep `NO_CANDIDATE`, merge verification, failure budgets, current-main
   refresh, admission, review, and GitHub policy unchanged.
 

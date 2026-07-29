@@ -38,3 +38,20 @@ The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid onl
 - **WHEN** a live controller is cooling down or retrying an invalid private blocker
 - **THEN** watchdog health reports waiting rather than ordinary running
 - **AND** an ended invalid-blocker diagnostic reports failure
+
+### Requirement: Verified merge receipts are idempotent per run
+The OpenSpec drain supervisor SHALL advance completed-slice progress at most once for an exact verified merged pull-request URL. It MUST persist a bounded receipt set in run state and reconstruct verified receipts from consumed legacy result artifacts when that field is absent. `PARTIAL` SHALL NOT consume the merge receipt because later foldback may legitimately return `MERGED` for the same pull request.
+
+#### Scenario: Worker replays an already consumed merged PR
+- **WHEN** a worker returns `MERGED` with a PR URL already present in the run's verified merge receipts
+- **THEN** the controller records `INVALID_DUPLICATE_MERGE`
+- **AND** does not advance completed slices or release a prepared admission
+
+#### Scenario: Legacy run resumes after merged work
+- **WHEN** run state predates the merge-receipt field
+- **THEN** the controller reconstructs a bounded unique receipt set from consumed result artifacts
+- **AND** trusts only PRs that still pass controller merge verification
+
+#### Scenario: Partial foldback later completes
+- **WHEN** a verified `PARTIAL` result is followed by `MERGED` for the same PR after foldback
+- **THEN** the `MERGED` result may advance one slice because `PARTIAL` did not consume its receipt

@@ -43,6 +43,7 @@ def _state(**overrides: object) -> dict[str, object]:
         "last_result": None,
         "resume_target": None,
         "recent_blocked": [],
+        "merged_prs": [],
         "status": "running",
     }
     state.update(overrides)
@@ -1963,6 +1964,87 @@ def test_apply_merged_requires_controller_verification() -> None:
     assert state["status"] == "merge-verification-failed"
 
 
+def test_verified_merge_records_bounded_receipt_and_rejects_exact_replay() -> None:
+    state = _state()
+    result = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/o/r/pull/12",
+    )
+
+    drain.apply_result(state, result, merge_verified=True)
+
+    assert state["completed_slices"] == 1
+    assert state["merged_prs"] == ["https://github.com/o/r/pull/12"]
+    assert (
+        drain.duplicate_merge_rejection(result, state)
+        == "already-consumed=https://github.com/o/r/pull/12"
+    )
+
+
+def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
+    tmp_path: Path,
+) -> None:
+    admission = {
+        "target": "target",
+        "task_label": "target",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/target",
+    }
+    state = _state(
+        attempts=3,
+        completed_slices=1,
+        admission=admission,
+        resume_target="target",
+        merged_prs=["https://github.com/o/r/pull/12"],
+    )
+
+    drain.apply_invalid_duplicate_merge(
+        state,
+        drain.DrainResult(
+            "MERGED",
+            "target",
+            "https://github.com/o/r/pull/12",
+        ),
+        attempt=3,
+    )
+
+    assert state["completed_slices"] == 1
+    assert state["consecutive_failures"] == 1
+    assert state["admission"] == admission
+    assert state["resume_target"] == "target"
+    assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["status"] == "invalid-duplicate-merge"
+
+
+def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    marker = (
+        "DRAIN_RESULT: MERGED target "
+        "https://github.com/o/r/pull/12\n"
+    )
+    (results_dir / "001.md").write_text(marker, encoding="utf-8")
+    (results_dir / "002.md").write_text(marker, encoding="utf-8")
+    (results_dir / "003.md").write_text(
+        "DRAIN_RESULT: BLOCKED target -\n",
+        encoding="utf-8",
+    )
+    verifier_calls: list[str] = []
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(attempts=3, last_consumed_attempt=3),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda pr, **_kwargs: verifier_calls.append(pr) or True,
+    )
+
+    assert receipts == ["https://github.com/o/r/pull/12"]
+    assert verifier_calls == ["https://github.com/o/r/pull/12"]
+
+
 def test_apply_partial_resets_failures_and_sets_resume_target() -> None:
     state = _state(consecutive_failures=1)
     result = drain.DrainResult(
@@ -2245,6 +2327,7 @@ def test_budget_reason_is_terminal() -> None:
         ("worker-failed", 2),
         ("invalid-result", 2),
         ("invalid-blocked-result", 2),
+        ("invalid-duplicate-merge", 2),
         ("transient-provider-error", 2),
         ("transient-failure", 2),
         ("fatal-peer-error", 2),
@@ -2392,6 +2475,65 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
     assert exit_code == 0
     assert state["completed_slices"] == 1
     assert state["status"] == "merged"
+
+
+def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    pr = "https://github.com/o/r/pull/12"
+    initial_state = _state(
+        attempts=0,
+        last_consumed_attempt=0,
+        completed_slices=1,
+        merged_prs=[pr],
+    )
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        result_path.write_text(
+            f"DRAIN_RESULT: MERGED old-target {pr}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+            "--max-slices",
+            "3",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert state["completed_slices"] == 1
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["merged_prs"] == [pr]
 
 
 def test_run_dispatches_inside_mechanically_admitted_lane(
