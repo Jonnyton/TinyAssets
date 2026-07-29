@@ -91,6 +91,7 @@ def test_write_codex_command_grants_only_the_resolved_git_common_dir(
 
     assert command.count("--add-dir") == 1
     assert command[command.index("--add-dir") + 1] == "C:\\source\\.git"
+    assert "approval_policy=never" in command
     assert command[command.index("-s") + 1] == "danger-full-access"
     assert "--full-auto" not in command
 
