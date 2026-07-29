@@ -687,3 +687,18 @@ fresh-host rollback edges found later.
   Unicode regression only exercised an out-of-range value. Mutation-test the
   exact semantic distinction, and scope-check newly stored provenance-shaped
   fields against the receipt-bound repository.
+
+## 2026-07-29 - first overnight OpenSpec drain evaluation
+
+- **What surprised me:** reboot recovery and work preservation succeeded while
+  throughput still remained zero; operational resilience can mask a broken
+  delivery boundary unless merged PRs, not edited files or passed tests, are
+  the throughput measure.
+- **Pattern worth capturing:** a durable task blocker and a publication
+  infrastructure failure need different terminal states. The former releases
+  admission and idles; the latter preserves the exact worktree/admission for a
+  fresh bounded delivery retry.
+- **What I would do differently:** run a real linked-worktree stage/commit
+  probe before the first unattended shift. Unit coverage for `--add-dir`
+  missed Codex's protected Git-metadata rule; the real probe exposed that
+  `danger-full-access` was required on this already-unsandboxed Windows host.
