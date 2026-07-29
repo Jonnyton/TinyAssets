@@ -18,7 +18,11 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from openspec_drain_supervisor import RunLock, _pid_is_alive  # noqa: E402
+from openspec_drain_supervisor import (  # noqa: E402
+    RunLock,
+    _pid_is_alive,
+    parse_result,
+)
 
 WATCHDOG_DIR_NAME = "openspec-drain-watchdog"
 FAILURE_STATUSES = {
@@ -30,6 +34,8 @@ FAILURE_STATUSES = {
     "transient-failure",
 }
 WAITING_STATUSES = {
+    "admission-failed",
+    "admission-missing",
     "blocked",
     "idle",
     "partial",
@@ -39,6 +45,7 @@ WAITING_STATUSES = {
     "starting",
     "stop-requested",
 }
+RESULT_HANDOFF_SETTLE_SECONDS = 120.0
 
 
 @dataclass(frozen=True)
@@ -135,6 +142,7 @@ def build_health(
     active_run: Path | None,
     controller_pid: int | None,
     message: str,
+    result_waiting: bool = False,
 ) -> dict[str, Any]:
     state = state or {}
     state_status = str(state.get("status", "unknown"))
@@ -144,6 +152,9 @@ def build_health(
         health = "waiting"
     elif not controller_alive:
         health = "waiting" if mode in {"recovering", "starting"} else "down"
+    elif result_waiting:
+        health = "waiting"
+        message = "terminal result awaiting controller consumption"
     elif state_status in WAITING_STATUSES:
         health = "waiting"
     else:
@@ -158,10 +169,61 @@ def build_health(
         "controller_pid": controller_pid,
         "identity": state.get("identity"),
         "controller_status": state_status,
+        "result_waiting": result_waiting,
         "attempts": state.get("attempts", 0),
         "completed_slices": state.get("completed_slices", 0),
         "consecutive_failures": state.get("consecutive_failures", 0),
     }
+
+
+def result_handoff_waiting(
+    *,
+    state: dict[str, Any] | None,
+    run_dir: Path | None,
+    now_epoch: float | None = None,
+    settle_seconds: float = RESULT_HANDOFF_SETTLE_SECONDS,
+) -> bool:
+    """Detect a settled valid current-attempt result not yet in controller state."""
+    if not state or not run_dir or state.get("status") != "running":
+        return False
+    try:
+        attempt = int(state.get("attempts", 0))
+    except (TypeError, ValueError):
+        return False
+    if attempt < 1:
+        return False
+
+    consumed_value = state.get("last_consumed_attempt")
+    if consumed_value is None:
+        last_result = state.get("last_result")
+        if last_result is None:
+            consumed = 0
+        elif isinstance(last_result, dict) and last_result.get("attempt"):
+            try:
+                consumed = int(last_result["attempt"])
+            except (TypeError, ValueError):
+                return False
+        else:
+            return False
+    else:
+        try:
+            consumed = int(consumed_value)
+        except (TypeError, ValueError):
+            return False
+    if attempt <= consumed:
+        return False
+
+    result_path = run_dir / "results" / f"{attempt:03d}.md"
+    now_epoch = time.time() if now_epoch is None else now_epoch
+    try:
+        if now_epoch - result_path.stat().st_mtime < settle_seconds:
+            return False
+        parse_result(
+            result_path.read_text(encoding="utf-8", errors="replace")
+        )
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -311,6 +373,7 @@ def _write_health(
     pid: int | None,
     message: str,
 ) -> None:
+    waiting = result_handoff_waiting(state=state, run_dir=run_dir)
     atomic_write_json(
         health_path,
         build_health(
@@ -320,6 +383,7 @@ def _write_health(
             active_run=run_dir,
             controller_pid=pid,
             message=message,
+            result_waiting=waiting,
         ),
     )
 
