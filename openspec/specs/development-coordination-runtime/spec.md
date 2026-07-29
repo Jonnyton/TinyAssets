@@ -306,13 +306,15 @@ untracked changes for triage without recommending that they be built.
 The development coordination runtime SHALL provide a bounded OpenSpec drain
 supervisor that invokes one fresh subscription-authenticated provider worker at
 a time, gives that worker at most one delivery slice and one PR, and starts
-another worker only after interpreting the prior worker's terminal result. The
-supervisor MUST NOT maintain a provider utilization floor or run drain workers
-in parallel in v1. One run SHALL use one fixed provider/model and one exact
-claim identity across every replacement worker. An admitted worker's brief
-SHALL identify the exact canonical target token required in its result, and the
-supervisor SHALL canonicalize an otherwise literal human-label target through
-the same bounded slug rule used for admission.
+another worker only after interpreting the prior worker's terminal result. A
+stable, valid terminal result artifact SHALL complete the worker handoff even
+when the provider launcher remains alive. The supervisor MUST NOT maintain a
+provider utilization floor or run drain workers in parallel in v1. One run
+SHALL use one fixed provider/model and one exact claim identity across every
+replacement worker. An admitted worker's brief SHALL identify the exact
+canonical target token required in its result, and the supervisor SHALL
+canonicalize an otherwise literal human-label target through the same bounded
+slug rule used for admission.
 
 #### Scenario: A slice merges successfully
 
@@ -321,6 +323,15 @@ the same bounded slug rule used for admission.
   is `MERGED`
 - **THEN** the supervisor increments the completed-slice count
 - **AND** it may dispatch the next fresh worker immediately
+
+#### Scenario: Stable terminal artifact precedes process exit
+
+- **WHEN** the assigned result file contains the same valid terminal result on
+  two observations separated by the stability interval
+- **AND** the provider launcher remains alive
+- **THEN** the supervisor terminates the launcher process tree
+- **AND** applies the ordinary admission and result validation without waiting
+  for the outer worker timeout
 
 #### Scenario: Worker cites a stale or foreign merged PR
 
@@ -341,9 +352,19 @@ the same bounded slug rule used for admission.
 - **THEN** the supervisor consumes a consecutive-failure strike
 - **AND** it waits the configured idle interval before another attempt
 
-#### Scenario: Work is blocked
+#### Scenario: A target is blocked and another candidate exists
 
-- **WHEN** a worker returns `BLOCKED` or `NO_CANDIDATE`
+- **WHEN** a worker returns `BLOCKED` for its admitted target
+- **AND** the recent-block-filtered snapshot contains a different eligible
+  owned, claimable, or policy-qualified stale candidate
+- **THEN** the supervisor considers that candidate without the configured idle
+  delay
+- **AND** it does not create or claim work itself
+
+#### Scenario: Work is globally blocked
+
+- **WHEN** a worker returns `BLOCKED` and no different eligible candidate
+  remains, or returns `NO_CANDIDATE`
 - **THEN** the supervisor persists that outcome and waits the configured idle
   interval before another selection attempt
 - **AND** it does not create or claim work itself
@@ -382,10 +403,12 @@ The drain supervisor SHALL require finite runtime, merged-slice, worker-timeout,
 and consecutive-failure budgets; SHALL persist compact atomic state and worker
 artifacts in an untracked run directory; SHALL reject a concurrent live
 controller lock; and SHALL honor a stop request between workers. It MUST expose
-run, single-pass, status, and stop operations. On resume, it SHALL replay the
-recorded attempt artifact when a parser improvement makes the immediately
-preceding `INVALID_RESULT` valid, undoing only that parser failure strike and
-applying ordinary result and admission validation.
+run, single-pass, status, and stop operations. On resume, it SHALL consume a
+valid unrecorded result for the persisted current attempt before enforcing the
+failure budget or dispatching a replacement. It SHALL replay the recorded
+attempt artifact when a parser improvement makes the immediately preceding
+`INVALID_RESULT` valid, undoing only that parser failure strike and applying
+ordinary result and admission validation.
 
 #### Scenario: Workday budget expires
 
@@ -425,8 +448,24 @@ applying ordinary result and admission validation.
 
 - **WHEN** the peer launcher remains live beyond its worker timeout and grace
   interval
+- **AND** no stable valid terminal artifact is available
 - **THEN** the supervisor terminates the launcher process tree
 - **AND** it records the attempt as a budgeted worker failure
+
+#### Scenario: Resume finds an unconsumed terminal result
+
+- **WHEN** the persisted current attempt has a valid terminal artifact absent
+  from `last_result`
+- **AND** its target matches the preserved admission
+- **THEN** the supervisor applies the ordinary result transition before
+  failure-budget enforcement or replacement dispatch
+
+#### Scenario: Resume result is ambiguous
+
+- **WHEN** the artifact is invalid, names a different admission target, or its
+  attempt cannot be determined safely
+- **THEN** the supervisor fails closed without applying it
+- **AND** does not erase a failure strike
 
 #### Scenario: Parser improvement recovers the last result
 
@@ -540,14 +579,25 @@ outcomes.
 
 The Windows integration SHALL maintain atomic health state and a system-tray
 indicator that distinguishes running, waiting/recovering, and down/failure
-states. The tray MUST provide actions to open status/logs, request a restart,
-stop until the next sign-in, and exit only the indicator.
+states. A completed current-attempt result that is not represented by
+`last_result` MUST be reported as waiting rather than active progress. The tray
+MUST provide actions to open status/logs, request a restart, stop until the
+next sign-in, and exit only the indicator.
 
 #### Scenario: Worker is active
 
 - **WHEN** the watchdog observes a live controller with running state
+- **AND** no settled current-attempt result awaits consumption
 - **THEN** the tray displays healthy/running status
 - **AND** its tooltip identifies the active drain
+
+#### Scenario: Terminal result awaits controller consumption
+
+- **WHEN** the current attempt's non-empty result artifact is older than the
+  write-settle threshold
+- **AND** `last_result` does not represent that attempt
+- **THEN** the tray displays a waiting/warning state
+- **AND** its diagnostic identifies the unconsumed result handoff
 
 #### Scenario: Drain is blocked or recovering
 
@@ -758,3 +808,27 @@ fresh worker resumes it under the existing finite failure budget.
   action or external test identity
 - **THEN** the worker returns `BLOCKED` with the durable reason
 - **AND** the supervisor may select different work after its blocked interval
+
+### Requirement: Repeated Drain Admissions Use Distinct Lanes
+
+The OpenSpec drain supervisor SHALL derive each mechanical admission branch and
+worktree path from the exact drain identity, canonical target, and persisted
+attempt number so one run can deliver multiple sequential slices for the same
+still-open target without colliding with a preserved prior lane. It MUST
+continue to refuse an exact path or branch collision and MUST NOT delete or
+overwrite the pre-existing lane.
+
+#### Scenario: Same target needs another verified slice
+
+- **WHEN** a later attempt in one drain run admits the same canonical target
+  after an earlier slice completed
+- **THEN** the later attempt receives a different deterministic branch and
+  worktree path
+- **AND** both lanes remain attributable to their attempt numbers
+
+#### Scenario: Exact attempt lane already exists
+
+- **WHEN** the branch or worktree path derived for the exact current attempt
+  already exists
+- **THEN** admission fails closed
+- **AND** the controller does not delete, overwrite, or reuse that lane
