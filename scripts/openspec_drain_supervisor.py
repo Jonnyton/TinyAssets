@@ -652,6 +652,18 @@ def no_candidate_rejection(
     )
 
 
+def blocked_result_rejection(
+    result: DrainResult,
+    snapshot: CandidateSnapshot,
+) -> str | None:
+    """Explain why a BLOCKED marker lacks durable current-main proof."""
+    if result.status != "BLOCKED":
+        return None
+    if result.target in snapshot.blocked_targets:
+        return None
+    return f"target={result.target} is not blocked on current origin/main"
+
+
 def begin_attempt(state: dict[str, Any]) -> int:
     """Persist honest active status before dispatching the next worker."""
     state["attempts"] += 1
@@ -935,6 +947,25 @@ def apply_result(
     else:
         state["consecutive_failures"] += 1
         state["status"] = "failed"
+
+
+def apply_invalid_blocked_result(
+    state: dict[str, Any],
+    result: DrainResult,
+    *,
+    attempt: int,
+    error: str,
+) -> None:
+    """Record a rejected private blocker without releasing its admission."""
+    state["consecutive_transients"] = 0
+    state["consecutive_failures"] += 1
+    state["last_result"] = {
+        "status": "INVALID_BLOCKED_RESULT",
+        "attempt": attempt,
+        "target": result.target,
+        "error": error,
+    }
+    state["status"] = "invalid-blocked-result"
 
 
 def _recorded_invalid_result_attempt(state: dict[str, Any]) -> int | None:
@@ -1752,6 +1783,35 @@ def _run(args: argparse.Namespace) -> int:
                     _log(
                         run_dir,
                         f"reject attempt={attempt} result {admission_rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
+
+            if result.status == "BLOCKED":
+                try:
+                    blocked_snapshot = inspect_current_main_snapshot(
+                        repo=args.repo,
+                        provider=state["identity"],
+                        max_hints=0,
+                    )
+                    blocked_rejection = blocked_result_rejection(
+                        result,
+                        blocked_snapshot,
+                    )
+                except RuntimeError as exc:
+                    blocked_rejection = str(exc)
+                if blocked_rejection:
+                    apply_invalid_blocked_result(
+                        state,
+                        result,
+                        attempt=attempt,
+                        error=blocked_rejection,
+                    )
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"reject attempt={attempt} BLOCKED {blocked_rejection}",
                     )
                     if args.once:
                         break
