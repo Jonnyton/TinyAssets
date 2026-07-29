@@ -14,6 +14,8 @@ was present while the controller stayed green and dispatched no foldback.
 - Report the unconsumed-result handoff as waiting rather than healthy progress.
 - After a target-local `BLOCKED`, immediately consider a different eligible
   candidate; preserve the idle interval when no alternative exists.
+- Give each admission attempt a distinct deterministic branch/worktree lane so
+  multiple verified slices can revisit one still-open target safely.
 
 ## Capabilities
 
@@ -29,5 +31,6 @@ None.
 ## Impact
 
 The change affects the OpenSpec drain supervisor, watchdog health derivation,
-their focused tests, and the operator runbook. It does not add parallel
-workers, change provider quotas, or clean up historical worktrees.
+mechanical admission naming, their focused tests, and the operator runbook. It
+does not add parallel workers, change provider quotas, or clean up historical
+worktrees.
