@@ -18,5 +18,7 @@
 - [x] 3.1 Update the operator runbook; pass 126 focused tests, lint, OpenSpec
   strict validation, a live Windows current-main snapshot probe, and
   independent Claude review (`VERDICT: APPROVE`, 2026-07-29).
-- [ ] 3.2 Sync/archive the change, land through a PR, deploy the merged
-  controller, restart the terminal scheduled run, and verify useful progress.
+- [x] 3.2 Land PR #1871, deploy merged commit `22e279ef`, restart the terminal
+  scheduled run, and verify run `openspec-drain-auto-20260729-145600` fetched
+  three current candidates and dispatched `complete-test-identity-and-reset`
+  with zero failures. Sync/archive in this foldback.
