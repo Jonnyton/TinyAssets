@@ -500,6 +500,7 @@ def inspect_candidate_snapshot(
     provider: str,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     max_hints: int = MAX_CANDIDATE_HINTS,
+    status_ref: str | None = None,
 ) -> CandidateSnapshot:
     """Read ordered canonical candidates without mutating coordination state."""
     if max_hints < 0:
@@ -511,12 +512,15 @@ def inspect_candidate_snapshot(
         provider,
         "--json",
     ]
+    if status_ref is not None:
+        command.extend(["--status-ref", status_ref])
     try:
         completed = runner(
             command,
             cwd=repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
             timeout=60,
         )
@@ -576,6 +580,28 @@ def inspect_candidate_snapshot(
             owned=owned,
         ),
         hints=hints,
+    )
+
+
+def inspect_current_main_snapshot(
+    *,
+    repo: Path,
+    provider: str,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    max_hints: int = MAX_CANDIDATE_HINTS,
+) -> CandidateSnapshot:
+    """Fetch origin and classify the exact current origin/main STATUS state."""
+    _admission_command(
+        ["git", "-C", str(repo), "fetch", "--prune", "origin"],
+        cwd=repo,
+        runner=runner,
+    )
+    return inspect_candidate_snapshot(
+        repo=repo,
+        provider=provider,
+        runner=runner,
+        max_hints=max_hints,
+        status_ref="origin/main",
     )
 
 
@@ -1116,6 +1142,7 @@ def exit_code_for_status(status: str) -> int:
         "fatal-peer-error",
         "failure-budget",
         "merge-verification-failed",
+        "candidate-snapshot-failed",
     }
     return 2 if status in failed else 0
 
@@ -1521,7 +1548,7 @@ def _run(args: argparse.Namespace) -> int:
             prompt_path = prompts_dir / f"{attempt:03d}.md"
             result_path = results_dir / f"{attempt:03d}.md"
             try:
-                snapshot = inspect_candidate_snapshot(
+                snapshot = inspect_current_main_snapshot(
                     repo=args.repo,
                     provider=state["identity"],
                     max_hints=(
@@ -1543,11 +1570,20 @@ def _run(args: argparse.Namespace) -> int:
                     f"hints={len(candidate_hints)}",
                 )
             except RuntimeError as exc:
-                candidate_hints = ()
+                state["consecutive_failures"] += 1
+                state["status"] = "candidate-snapshot-failed"
+                state["last_result"] = {
+                    "status": "CANDIDATE_SNAPSHOT_FAILED",
+                    "error": str(exc),
+                }
+                atomic_write_json(state_path, state)
                 _log(
                     run_dir,
                     f"candidate snapshot unavailable attempt={attempt}: {exc}",
                 )
+                if args.once:
+                    break
+                continue
             admission_data = state.get("admission")
             admission = (
                 Admission(
@@ -1767,7 +1803,7 @@ def _run(args: argparse.Namespace) -> int:
                 continue
             if result.status == "BLOCKED":
                 try:
-                    next_snapshot = inspect_candidate_snapshot(
+                    next_snapshot = inspect_current_main_snapshot(
                         repo=args.repo,
                         provider=state["identity"],
                         max_hints=(

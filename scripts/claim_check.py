@@ -13,6 +13,7 @@ Usage
     python scripts/claim_check.py --provider codex-gpt5-desktop \
         --check-files "tinyassets/api/runs.py, tests/"
     python scripts/claim_check.py --provider codex-gpt5-desktop --json
+    python scripts/claim_check.py --provider codex --status-ref origin/main --json
     python scripts/claim_check.py --provider cursor --reap
     python scripts/claim_check.py --provider cursor-gpt55 --reap
 
@@ -28,10 +29,12 @@ Output sections
   (candidates for reaping).
 - IN-FLIGHT: rows actively claimed; their Files are off-limits to others.
 
-Reads STATUS.md as authoritative. Uses `git log --since=24.hours -- <file>`
-to detect landed activity. A Work row can also include an explicit heartbeat
-such as `ACTIVE 2026-04-28`; this prevents active uncommitted work in a
-shared checkout from being misclassified as stale. Stdlib-only.
+Reads working-tree STATUS.md as authoritative by default. `--status-ref`
+classifies the exact `STATUS.md` stored at a caller-selected Git ref without
+fetching or mutating refs. Uses `git log --since=24.hours -- <file>` to detect
+landed activity. A Work row can also include an explicit heartbeat such as
+`ACTIVE 2026-04-28`; this prevents active uncommitted work in a shared checkout
+from being misclassified as stale. Stdlib-only.
 
 Conventions parsed
 ------------------
@@ -60,6 +63,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 # Force UTF-8 stdout so em-dashes / non-ASCII identifiers in STATUS.md
 # render correctly on Windows consoles (cp1252 default mojibakes them).
@@ -118,12 +122,57 @@ class Row:
         return self.files
 
 
-def parse_status() -> list[Row]:
-    """Extract Work-table rows from STATUS.md."""
+def load_status_text(
+    *,
+    status_ref: str | None = None,
+    repo_root: Path = REPO_ROOT,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> str:
+    """Read working-tree STATUS.md or the exact copy stored at a Git ref."""
+    if status_ref is None:
+        return STATUS_PATH.read_text(encoding="utf-8")
+    if (
+        not status_ref
+        or status_ref.startswith("-")
+        or ":" in status_ref
+        or any(character.isspace() for character in status_ref)
+    ):
+        raise RuntimeError(f"invalid STATUS ref: {status_ref!r}")
+    command = ["git", "show", f"{status_ref}:STATUS.md"]
+    try:
+        completed = runner(
+            command,
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"timed out reading {status_ref}:STATUS.md"
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            f"cannot read {status_ref}:STATUS.md: {exc}"
+        ) from exc
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise RuntimeError(
+            f"cannot read {status_ref}:STATUS.md"
+            + (f": {detail}" if detail else "")
+        )
+    return completed.stdout
+
+
+def parse_status(status_text: str | None = None) -> list[Row]:
+    """Extract Work-table rows from supplied text or working-tree STATUS.md."""
     rows: list[Row] = []
     in_work = False
     in_table = False
-    for i, line in enumerate(STATUS_PATH.read_text(encoding="utf-8").splitlines(), 1):
+    text = load_status_text() if status_text is None else status_text
+    for i, line in enumerate(text.splitlines(), 1):
         s = line.strip()
         if s.startswith("## Work"):
             in_work = True
@@ -191,7 +240,12 @@ def files_overlap(a: list[str], b: list[str]) -> list[str]:
     return hits
 
 
-def find_stale_claims(rows: list[Row]) -> list[tuple[Row, str]]:
+def find_stale_claims(
+    rows: list[Row],
+    *,
+    history_ref: str | None = None,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> list[tuple[Row, str]]:
     """Return (row, reason) for claims with no commit activity in 24h.
 
     Skips rows whose Files atoms don't include any real-looking path
@@ -214,15 +268,17 @@ def find_stale_claims(rows: list[Row]) -> list[tuple[Row, str]]:
         active = False
         for path in real_paths:
             try:
-                out = subprocess.run(
-                    [
-                        "git",
-                        "log",
-                        f"--since={iso_cutoff}",
-                        "--pretty=oneline",
-                        "--",
-                        path,
-                    ],
+                command = [
+                    "git",
+                    "log",
+                    f"--since={iso_cutoff}",
+                    "--pretty=oneline",
+                ]
+                if history_ref is not None:
+                    command.append(history_ref)
+                command.extend(["--", path])
+                out = runner(
+                    command,
                     cwd=REPO_ROOT,
                     capture_output=True,
                     text=True,
@@ -539,15 +595,27 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Emit a machine-readable JSON report instead of the human text report.",
     )
+    ap.add_argument(
+        "--status-ref",
+        help=(
+            "Read STATUS.md from this exact Git ref (for example origin/main). "
+            "Does not fetch or mutate refs."
+        ),
+    )
     args = ap.parse_args(argv)
 
-    if not STATUS_PATH.exists():
+    if args.status_ref is None and not STATUS_PATH.exists():
         print(f"STATUS.md not found at {STATUS_PATH}", file=sys.stderr)
         return 2
 
-    rows = parse_status()
+    try:
+        status_text = load_status_text(status_ref=args.status_ref)
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    rows = parse_status(status_text)
     claimable, blocked, in_flight, host_owned = classify(rows, args.provider)
-    stale = find_stale_claims(rows)
+    stale = find_stale_claims(rows, history_ref=args.status_ref)
     prospective_files = split_cli_files(args.check_files)
     if args.json:
         payload = build_payload(

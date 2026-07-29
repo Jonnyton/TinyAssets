@@ -36,6 +36,7 @@ FAILURE_STATUSES = {
 WAITING_STATUSES = {
     "admission-failed",
     "admission-missing",
+    "candidate-snapshot-failed",
     "blocked",
     "idle",
     "partial",
