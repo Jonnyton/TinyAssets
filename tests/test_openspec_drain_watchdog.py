@@ -149,6 +149,80 @@ def test_health_mapping_is_honest(
     assert health["controller_alive"] is controller_alive
 
 
+def test_settled_unconsumed_result_is_waiting_not_green(tmp_path: Path) -> None:
+    run_dir = tmp_path / "openspec-drain-live"
+    results_dir = run_dir / "results"
+    results_dir.mkdir(parents=True)
+    result_path = results_dir / "001.md"
+    result_path.write_text(
+        "done\nDRAIN_RESULT: BLOCKED assigned-target -\n",
+        encoding="utf-8",
+    )
+    os.utime(result_path, (800, 800))
+    state = {
+        "status": "running",
+        "identity": "drain-test",
+        "attempts": 1,
+        "last_result": None,
+    }
+
+    waiting = watchdog.result_handoff_waiting(
+        state=state,
+        run_dir=run_dir,
+        now_epoch=1000,
+        settle_seconds=120,
+    )
+    health = watchdog.build_health(
+        state=state,
+        controller_alive=True,
+        mode="attach",
+        active_run=run_dir,
+        controller_pid=123,
+        message="supervisor is live",
+        result_waiting=waiting,
+    )
+
+    assert waiting is True
+    assert health["health"] == "waiting"
+    assert health["result_waiting"] is True
+    assert health["message"] == "terminal result awaiting controller consumption"
+
+
+def test_consumed_or_unsettled_result_does_not_raise_waiting_health(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "openspec-drain-live"
+    results_dir = run_dir / "results"
+    results_dir.mkdir(parents=True)
+    result_path = results_dir / "002.md"
+    result_path.write_text(
+        "DRAIN_RESULT: BLOCKED assigned-target -\n",
+        encoding="utf-8",
+    )
+    os.utime(result_path, (950, 950))
+
+    assert not watchdog.result_handoff_waiting(
+        state={
+            "status": "running",
+            "attempts": 2,
+            "last_consumed_attempt": 1,
+        },
+        run_dir=run_dir,
+        now_epoch=1000,
+        settle_seconds=120,
+    )
+    assert not watchdog.result_handoff_waiting(
+        state={
+            "status": "running",
+            "attempts": 2,
+            "last_consumed_attempt": 2,
+        },
+        run_dir=run_dir,
+        now_epoch=1200,
+        settle_seconds=120,
+    )
+
+
 def test_resume_command_preserves_identity_and_finite_budgets(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     run_dir = repo / "output" / "openspec-drain-interrupted"

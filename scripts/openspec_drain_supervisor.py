@@ -35,6 +35,7 @@ TRANSIENT_PATTERNS = (
     "http 401",
 )
 STOP_POLL_SECONDS = 5.0
+RESULT_POLL_SECONDS = 1.0
 MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
@@ -436,6 +437,23 @@ def filter_recently_blocked_hints(
         for hint in hints
         if hint.classification == "OWNED"
         or _slugify(hint.task_label) not in blocked
+    )
+
+
+def has_alternative_candidate(
+    snapshot: CandidateSnapshot,
+    *,
+    recent_blocked: list[str],
+    current_target: str,
+) -> bool:
+    """Return whether a different eligible candidate remains after a block."""
+    return any(
+        hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
+        and _slugify(hint.task_label) != current_target
+        for hint in filter_recently_blocked_hints(
+            snapshot.hints,
+            recent_blocked=recent_blocked,
+        )
     )
 
 
@@ -919,6 +937,87 @@ def recover_invalid_result(
         int(state.get("consecutive_failures", 0)) - 1,
     )
     apply_result(state, result, merge_verified=verified)
+    state["last_consumed_attempt"] = attempt
+    if result.status == "BLOCKED" or (
+        result.status == "MERGED" and verified
+    ):
+        state["admission"] = None
+    return True
+
+
+def _unconsumed_result_attempt(state: dict[str, Any]) -> int | None:
+    """Return the exact live attempt whose terminal artifact is not recorded."""
+    if state.get("status") != "running":
+        return None
+    try:
+        attempt = int(state.get("attempts", 0))
+    except (TypeError, ValueError):
+        return None
+    if attempt < 1:
+        return None
+
+    consumed_value = state.get("last_consumed_attempt")
+    if consumed_value is None:
+        last_result = state.get("last_result")
+        if last_result is None:
+            consumed = 0
+        elif isinstance(last_result, dict) and last_result.get("attempt"):
+            try:
+                consumed = int(last_result["attempt"])
+            except (TypeError, ValueError):
+                return None
+        else:
+            return None
+    else:
+        try:
+            consumed = int(consumed_value)
+        except (TypeError, ValueError):
+            return None
+    return attempt if attempt == consumed + 1 else None
+
+
+def recover_unconsumed_result(
+    state: dict[str, Any],
+    *,
+    results_dir: Path,
+    repo: Path,
+    merge_verifier: Callable[..., bool] = verify_merged,
+) -> bool:
+    """Apply a valid current-attempt artifact left behind by a dead controller."""
+    admission_data = state.get("admission")
+    attempt = _unconsumed_result_attempt(state)
+    if attempt is None or not isinstance(admission_data, dict):
+        return False
+    try:
+        started_at = str(state["started_at"])
+        admission = Admission(
+            target=str(admission_data["target"]),
+            task_label=str(admission_data["task_label"]),
+            worktree=Path(admission_data["worktree"]),
+            branch=str(admission_data["branch"]),
+        )
+        result = parse_result(
+            (results_dir / f"{attempt:03d}.md").read_text(
+                encoding="utf-8",
+                errors="replace",
+            )
+        )
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    if admission_result_rejection(result, admission):
+        return False
+
+    verified = (
+        merge_verifier(
+            result.pr,
+            repo=repo,
+            started_at=started_at,
+        )
+        if result.status in {"MERGED", "PARTIAL"}
+        else False
+    )
+    apply_result(state, result, merge_verified=verified)
+    state["last_consumed_attempt"] = attempt
     if result.status == "BLOCKED" or (
         result.status == "MERGED" and verified
     ):
@@ -1137,6 +1236,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "consecutive_partial_target": None,
         "consecutive_partials": 0,
         "attempts": 0,
+        "last_consumed_attempt": 0,
         "last_result": None,
         "resume_target": None,
         "admission": None,
@@ -1201,33 +1301,73 @@ def _dispatch(
         stderr=subprocess.PIPE,
         text=True,
     )
-    try:
-        stdout, stderr = process.communicate(timeout=args.worker_timeout + 90)
-        return subprocess.CompletedProcess(
-            command,
-            process.returncode,
-            stdout=stdout,
-            stderr=stderr,
-        )
-    except subprocess.TimeoutExpired as exc:
-        _terminate_process_tree(process)
+    deadline = time.monotonic() + args.worker_timeout + 90
+    prior_valid_artifact: str | None = None
+    last_timeout: subprocess.TimeoutExpired | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _terminate_process_tree(process)
+            try:
+                stdout, stderr = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
+                process.wait(timeout=10)
+                stdout = last_timeout.stdout if last_timeout else ""
+                stderr = last_timeout.stderr if last_timeout else ""
+            return subprocess.CompletedProcess(
+                command,
+                124,
+                stdout=stdout or "",
+                stderr=stderr or "outer supervisor timeout",
+            )
         try:
-            stdout, stderr = process.communicate(timeout=10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            if process.stdout:
-                process.stdout.close()
-            if process.stderr:
-                process.stderr.close()
-            process.wait(timeout=10)
-            stdout = exc.stdout or ""
-            stderr = exc.stderr or ""
-        return subprocess.CompletedProcess(
-            command,
-            124,
-            stdout=stdout or "",
-            stderr=stderr or "outer supervisor timeout",
-        )
+            stdout, stderr = process.communicate(
+                timeout=min(RESULT_POLL_SECONDS, remaining)
+            )
+            return subprocess.CompletedProcess(
+                command,
+                process.returncode,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except subprocess.TimeoutExpired as exc:
+            last_timeout = exc
+            try:
+                artifact = result_path.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+                parse_result(artifact)
+            except (OSError, ValueError):
+                prior_valid_artifact = None
+                continue
+            if artifact != prior_valid_artifact:
+                prior_valid_artifact = artifact
+                continue
+
+            _terminate_process_tree(process)
+            try:
+                stdout, stderr = process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                if process.stdout:
+                    process.stdout.close()
+                if process.stderr:
+                    process.stderr.close()
+                process.wait(timeout=10)
+                stdout = exc.stdout or ""
+                stderr = exc.stderr or ""
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=stdout or "",
+                stderr=stderr or "",
+            )
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
@@ -1300,16 +1440,30 @@ def _run(args: argparse.Namespace) -> int:
                 timespec="seconds"
             )
             recovery_attempt = _recorded_invalid_result_attempt(state)
-            recovered_result = recover_invalid_result(
+            recovered_invalid_result = recover_invalid_result(
                 state,
                 results_dir=results_dir,
                 repo=args.repo,
+                merge_verifier=verify_merged,
             )
+            recovered_result = recovered_invalid_result
+            if not recovered_result:
+                recovery_attempt = _unconsumed_result_attempt(state)
+                recovered_result = recover_unconsumed_result(
+                    state,
+                    results_dir=results_dir,
+                    repo=args.repo,
+                    merge_verifier=verify_merged,
+                )
             if recovered_result:
+                recovery_message = (
+                    "replayed newly valid result"
+                    if recovered_invalid_result
+                    else "recovered unconsumed terminal result"
+                )
                 _log(
                     run_dir,
-                    "replayed newly valid result "
-                    f"attempt={recovery_attempt} "
+                    f"{recovery_message} attempt={recovery_attempt} "
                     f"status={state['last_result']['status']}",
                 )
         else:
@@ -1561,6 +1715,7 @@ def _run(args: argparse.Namespace) -> int:
                 else False
             )
             apply_result(state, result, merge_verified=verified)
+            state["last_consumed_attempt"] = attempt
             if result.status == "BLOCKED" or (
                 result.status == "MERGED" and verified
             ):
@@ -1581,6 +1736,33 @@ def _run(args: argparse.Namespace) -> int:
                 and state["status"] == "partial"
             ):
                 continue
+            if result.status == "BLOCKED":
+                try:
+                    next_snapshot = inspect_candidate_snapshot(
+                        repo=args.repo,
+                        provider=state["identity"],
+                        max_hints=(
+                            MAX_CANDIDATE_HINTS
+                            + len(state.get("recent_blocked", []))
+                        ),
+                    )
+                    alternative = has_alternative_candidate(
+                        next_snapshot,
+                        recent_blocked=state.get("recent_blocked", []),
+                        current_target=result.target,
+                    )
+                except RuntimeError as exc:
+                    alternative = False
+                    _log(
+                        run_dir,
+                        f"post-block snapshot unavailable attempt={attempt}: {exc}",
+                    )
+                if alternative:
+                    _log(
+                        run_dir,
+                        f"post-block alternative available attempt={attempt}",
+                    )
+                    continue
             if result.status in {"BLOCKED", "NO_CANDIDATE"} or (
                 result.status == "PARTIAL" and verified
             ):

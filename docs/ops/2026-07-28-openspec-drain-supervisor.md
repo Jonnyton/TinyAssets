@@ -195,6 +195,11 @@ py scripts/openspec_drain_supervisor.py stop --run-dir $drainRun
 Idle waiting checks the stop file every five seconds. An active worker is
 allowed to return or reach its finite timeout; no new worker starts afterward.
 
+Yellow health with `result_waiting: true` means the current attempt has written
+a settled, valid terminal artifact that the controller has not consumed yet.
+This is a handoff stall, not active green progress. The watchdog preserves the
+run identity so a restart can recover that artifact.
+
 ## Resume and recovery
 
 The exact `drain-<run-id>` STATUS identity persists across replacement workers.
@@ -224,6 +229,13 @@ Never use `--recover-stale-lock` merely because a live controller appears slow.
 Recovery checks the PID stored in the lock through the Windows process API and
 refuses to replace it while that controller is alive.
 
+For a controller crash after a worker writes its result, resume checks the
+exact current attempt before enforcing the failure budget or dispatching a
+replacement. A valid result must match the preserved admission and passes
+ordinary GitHub merge verification. Invalid, ambiguous, or foreign-target
+artifacts fail closed. Successful recovery records the consumed attempt, then
+dispatches the next worker; a recovered `PARTIAL` therefore resumes foldback.
+
 If the immediately preceding attempt is recorded as `INVALID_RESULT`, resume
 re-parses that exact result artifact before checking the failure budget. When
 an upgraded parser now accepts the marker and it matches the preserved
@@ -247,8 +259,9 @@ closed instead of guessing.
   that worker also returns `PARTIAL` for the same target, the controller
   consumes a failure strike and waits before trying again.
 - `BLOCKED`: a durable task, host, dependency, review, or policy gate prevents
-  progress; the target is preserved in the recent-block list and the controller
-  idles.
+  progress; the target is preserved in the recent-block list. The controller
+  immediately considers a different eligible owned, claimable, or stale
+  candidate and idles only when none remains.
 - `NO_CANDIDATE`: nothing is safely deliverable; controller idles rather than
   inventing work.
 - `FAILED`: worker or delivery-infrastructure failure; consumes the
@@ -268,7 +281,11 @@ resolves to a `.CMD` shim.
 CLI-unavailable exit 127 stops immediately. Authentication/rate-limit-shaped
 failures receive at most three consecutive free idle retries; later repeats
 consume failure strikes. Missing, echoed, multiple, or non-final result markers
-are failures. An outer worker timeout terminates the launcher process tree.
+are failures. While the launcher is live, the controller accepts the same valid
+terminal artifact on two one-second observations, terminates the lingering
+launcher tree, and applies ordinary admission/result validation. An outer
+worker timeout terminates the launcher tree only when no such stable artifact
+is available.
 
 When resuming after an unrecoverable `failure-budget`, raise `--max-failures`
 above the persisted failure count only after correcting and inspecting the

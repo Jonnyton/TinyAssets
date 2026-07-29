@@ -393,6 +393,105 @@ def test_codex_drain_dispatch_uses_balanced_reasoning_effort(
     assert "--effort" not in claude_command
 
 
+def test_dispatch_completes_from_stable_valid_artifact_before_process_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result_path = tmp_path / "result.md"
+    result_path.write_text(
+        "merged\n"
+        "DRAIN_RESULT: PARTIAL target https://github.com/o/r/pull/12\n",
+        encoding="utf-8",
+    )
+    args = SimpleNamespace(
+        provider="codex",
+        repo=tmp_path,
+        worker_timeout=5400,
+        model=None,
+    )
+
+    class HangingProcess:
+        pid = 42
+        returncode: int | None = None
+        stdout = None
+        stderr = None
+        terminated = False
+
+        def communicate(self, timeout: float) -> tuple[str, str]:
+            if self.terminated:
+                return "", ""
+            raise subprocess.TimeoutExpired(["peer"], timeout)
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    process = HangingProcess()
+    monkeypatch.setattr(drain.subprocess, "Popen", lambda *_a, **_kw: process)
+
+    def terminate(candidate: HangingProcess) -> None:
+        candidate.terminated = True
+        candidate.returncode = -9
+
+    monkeypatch.setattr(drain, "_terminate_process_tree", terminate)
+
+    completed = drain._dispatch(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=result_path,
+    )
+
+    assert completed.returncode == 0
+    assert process.terminated is True
+
+
+def test_dispatch_does_not_complete_from_invalid_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result_path = tmp_path / "result.md"
+    result_path.write_text("ordinary prose\n", encoding="utf-8")
+    args = SimpleNamespace(
+        provider="codex",
+        repo=tmp_path,
+        worker_timeout=5400,
+        model=None,
+    )
+
+    class EventuallyExits:
+        pid = 42
+        returncode: int | None = None
+        stdout = None
+        stderr = None
+        calls = 0
+
+        def communicate(self, timeout: float) -> tuple[str, str]:
+            self.calls += 1
+            if self.calls < 3:
+                raise subprocess.TimeoutExpired(["peer"], timeout)
+            self.returncode = 0
+            return "", ""
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+    process = EventuallyExits()
+    monkeypatch.setattr(drain.subprocess, "Popen", lambda *_a, **_kw: process)
+    monkeypatch.setattr(
+        drain,
+        "_terminate_process_tree",
+        lambda _process: pytest.fail("invalid artifact terminated worker"),
+    )
+
+    completed = drain._dispatch(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=result_path,
+    )
+
+    assert completed.returncode == 0
+    assert process.calls == 3
+
+
 def test_mechanical_admission_claims_candidate_in_prepared_worktree(
     tmp_path: Path,
 ) -> None:
@@ -691,6 +790,42 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
     ]
 
 
+def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
+    snapshot = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(claimable=1, stale=0, owned=1),
+        hints=(
+            drain.CandidateHint(
+                "OWNED",
+                "first target",
+                (),
+                1,
+                "claimed:drain-test",
+            ),
+            drain.CandidateHint(
+                "CLAIMABLE",
+                "second target",
+                (),
+                2,
+                "pending",
+            ),
+        ),
+    )
+
+    assert drain.has_alternative_candidate(
+        snapshot,
+        recent_blocked=["first-target"],
+        current_target="first-target",
+    )
+    assert not drain.has_alternative_candidate(
+        drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(claimable=0, stale=0, owned=1),
+            hints=snapshot.hints[:1],
+        ),
+        recent_blocked=["first-target"],
+        current_target="first-target",
+    )
+
+
 def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     admission = drain.Admission(
         target="assigned-target",
@@ -821,6 +956,145 @@ def test_resume_retains_failure_when_last_result_cannot_be_safely_replayed(
     assert state["consecutive_failures"] == 2
     assert state["last_result"]["status"] == "INVALID_RESULT"
     assert state["admission"]["target"] == "main-red-round-2"
+
+
+def test_resume_consumes_valid_unrecorded_current_attempt(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "001.md").write_text(
+        "Merged implementation; foldback remains.\n"
+        "DRAIN_RESULT: PARTIAL assigned-target "
+        "https://github.com/o/r/pull/12\n",
+        encoding="utf-8",
+    )
+    state = _state(
+        attempts=1,
+        last_result=None,
+        admission={
+            "target": "assigned-target",
+            "task_label": "assigned target",
+            "worktree": str(tmp_path),
+            "branch": "drain/run/assigned-target",
+        },
+        resume_target="assigned-target",
+    )
+
+    recovered = drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda *_args, **_kwargs: True,
+    )
+
+    assert recovered is True
+    assert state["status"] == "partial"
+    assert state["resume_target"] == "assigned-target"
+    assert state["last_consumed_attempt"] == 1
+    assert state["last_result"]["status"] == "PARTIAL"
+    assert state["admission"]["target"] == "assigned-target"
+
+
+def test_resume_refuses_unrecorded_result_for_different_admission(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "001.md").write_text(
+        "DRAIN_RESULT: BLOCKED different-target -\n",
+        encoding="utf-8",
+    )
+    state = _state(
+        attempts=1,
+        last_result=None,
+        admission={
+            "target": "assigned-target",
+            "task_label": "assigned target",
+            "worktree": str(tmp_path),
+            "branch": "drain/run/assigned-target",
+        },
+    )
+
+    assert not drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+    )
+    assert state["last_result"] is None
+    assert "last_consumed_attempt" not in state
+
+
+def test_run_recovers_unconsumed_result_before_replacement_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    results_dir = run_dir / "results"
+    results_dir.mkdir(parents=True)
+    state = _state(
+        attempts=1,
+        last_result=None,
+        admission={
+            "target": "assigned-target",
+            "task_label": "assigned target",
+            "worktree": str(repo),
+            "branch": "drain/run/assigned-target",
+        },
+        resume_target="assigned-target",
+    )
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    (results_dir / "001.md").write_text(
+        "DRAIN_RESULT: PARTIAL assigned-target "
+        "https://github.com/o/r/pull/12\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(drain, "verify_merged", lambda *_a, **_kw: True)
+    dispatched_prompts: list[str] = []
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+        worker_cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args
+        assert worker_cwd == repo
+        dispatched_prompts.append(prompt_path.read_text(encoding="utf-8"))
+        result_path.write_text(
+            "DRAIN_RESULT: BLOCKED assigned-target -\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--resume",
+            "--once",
+            "--hours",
+            "1",
+        ]
+    )
+
+    persisted = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    log = (run_dir / "supervisor.log").read_text(encoding="utf-8")
+    assert exit_code == 0
+    assert "recovered unconsumed terminal result attempt=1 status=PARTIAL" in log
+    assert len(dispatched_prompts) == 1
+    assert "implementation PR is already merged" in dispatched_prompts[0]
+    assert persisted["attempts"] == 2
+    assert persisted["last_consumed_attempt"] == 2
+    assert persisted["status"] == "blocked"
 
 
 def test_resume_does_not_recover_a_missing_recorded_artifact(
