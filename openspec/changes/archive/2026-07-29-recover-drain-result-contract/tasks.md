@@ -11,4 +11,4 @@
 ## 3. Verification And Rollout
 
 - [x] 3.1 Run focused tests, strict OpenSpec validation, and independent opposite-provider review.
-- [ ] 3.2 Land and archive the change, retire its STATUS row, update the controller, and prove the preserved run leaves red state.
+- [x] 3.2 Land and archive the change, retire its STATUS row, update the controller, and prove the scheduled drain leaves red state with admitted work preserved.

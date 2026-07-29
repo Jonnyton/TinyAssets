@@ -59,9 +59,11 @@ intact.
 
 1. Land the parser, explicit prompt, replay path, tests, and spec delta.
 2. Update the detached controller checkout to the merged `origin/main`.
-3. Restart the watchdog; the preserved terminal `failure-budget` state safely
+3. A direct resume of the preserved terminal `failure-budget` state safely
    infers and replays attempt 5 even though that pre-change result record lacks
-   the new exact-attempt field.
+   the new exact-attempt field. The watchdog's explicit terminal-failure
+   restart policy may instead begin a new run; that path leaves the old
+   artifacts intact and uses the repaired parser for all new attempts.
 4. Roll back by stopping the scheduled watchdog and reverting the PR; preserved
    run artifacts remain available for diagnosis.
 
