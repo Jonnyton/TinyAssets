@@ -15,8 +15,10 @@ Modes:
   default   read-only-ish. claude: plain `-p` (edit/bash tools denied).
             codex: `-s read-only -c approval_policy=never`.
   --write   full agent. claude: --dangerously-skip-permissions.
-            codex: --full-auto (workspace-write sandbox; weak on Windows —
-            point --cwd at a worktree, not the live checkout).
+            codex: danger-full-access with approval_policy=never because Codex
+            protects linked-worktree Git metadata even when its common
+            directory is added. Point --cwd at a worktree, not the live
+            checkout; worktree/claim/review gates are the safety boundary.
 
 Output contract: on success the --out file holds the peer's final message;
 on failure it holds a `[peer_agent] ERROR ...` block and the exit code is
@@ -110,7 +112,43 @@ def build_claude_cmd(args: argparse.Namespace) -> list[str]:
     return cmd
 
 
-def build_codex_cmd(args: argparse.Namespace, out_path: str) -> list[str]:
+def resolve_git_common_dir(
+    cwd: str | Path,
+    *,
+    runner: object = subprocess.run,
+) -> str | None:
+    """Resolve linked-worktree Git metadata without assuming repository shape."""
+    try:
+        result = runner(
+            [
+                "git",
+                "-C",
+                str(cwd),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    path = Path(result.stdout.strip())
+    if not path.is_absolute():
+        path = Path(cwd) / path
+    return str(path.resolve())
+
+
+def build_codex_cmd(
+    args: argparse.Namespace,
+    out_path: str,
+    *,
+    git_common_dir: str | None = None,
+) -> list[str]:
     cmd = [
         resolve_codex(),
         "exec",
@@ -124,7 +162,12 @@ def build_codex_cmd(args: argparse.Namespace, out_path: str) -> list[str]:
         out_path,
     ]
     if args.write:
-        cmd.append("--full-auto")
+        # Codex protects Git metadata under workspace-write even when a linked
+        # worktree's common directory is supplied via --add-dir. A write peer
+        # must stage and commit; callers isolate it in a claimed worktree first.
+        cmd.extend(["-s", "danger-full-access"])
+        if git_common_dir:
+            cmd.extend(["--add-dir", git_common_dir])
     else:
         cmd.extend(["-s", "read-only"])
     # No -m by default: codex then uses the model from ~/.codex/config.toml,
@@ -136,6 +179,13 @@ def build_codex_cmd(args: argparse.Namespace, out_path: str) -> list[str]:
     if args.effort:
         cmd.extend(["-c", f"model_reasoning_effort={args.effort}"])
     return cmd
+
+
+def creation_flags() -> int:
+    """Prevent provider `.CMD` shims from creating a closeable console."""
+    if sys.platform == "win32":
+        return int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+    return 0
 
 
 def unsafe_cmd_argv(cmd: list[str]) -> str | None:
@@ -244,7 +294,14 @@ def main() -> int:
         else:
             # Never accept a pre-existing -o file as a fresh codex result.
             Path(out_path).unlink(missing_ok=True)
-        cmd = build_codex_cmd(args, out_path)
+        git_common_dir = (
+            resolve_git_common_dir(args.cwd) if args.write else None
+        )
+        cmd = build_codex_cmd(
+            args,
+            out_path,
+            git_common_dir=git_common_dir,
+        )
 
     bad_arg = unsafe_cmd_argv(cmd)
     if bad_arg is not None:
@@ -270,6 +327,7 @@ def main() -> int:
             stderr=subprocess.PIPE,
             env=env,
             cwd=args.cwd,
+            creationflags=creation_flags(),
         )
         try:
             stdout_b, stderr_b = proc.communicate(

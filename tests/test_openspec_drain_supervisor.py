@@ -54,7 +54,6 @@ def test_parse_result_accepts_one_literal_final_marker() -> None:
         "Implemented and verified.\n"
         "DRAIN_RESULT: MERGED repair-first-contact https://github.com/o/r/pull/12\n"
     )
-
     assert result == drain.DrainResult(
         status="MERGED",
         target="repair-first-contact",
@@ -102,6 +101,7 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
         ),
         objective="Drain current OpenSpec delivery debt.",
     )
+    normalized = " ".join(prompt.split())
 
     assert "drain-20260728-abc123" in prompt
     assert "provider-attempt-receipts" in prompt
@@ -111,6 +111,10 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     assert "blocked-a" in prompt
     assert "worktree_status.py" in prompt and "90 seconds" in prompt
     assert "not reliably OS-sandboxed" in prompt
+    assert "shell `git` and `gh`" in normalized
+    assert "`BLOCKED` is reserved" in normalized
+    assert "staging, committing, pushing, or creating the PR fails" in normalized
+    assert "return `FAILED`" in normalized
     assert prompt.rstrip().endswith(
         "DRAIN_RESULT: <MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED> "
         "<target-or-dash> <PR-url-or-dash>"
@@ -1223,6 +1227,25 @@ def test_blocked_target_is_bounded_and_no_candidate_does_not_fail() -> None:
     assert state["recent_blocked"][-1] == "new"
     assert len(state["recent_blocked"]) == drain.MAX_RECENT_BLOCKED
     assert state["status"] == "idle"
+
+
+def test_failed_delivery_preserves_admission_for_a_fresh_worker() -> None:
+    admission = {
+        "target": "target",
+        "worktree": "C:/worktree",
+        "branch": "drain/target",
+    }
+    state = _state(
+        admission=admission,
+        recent_blocked=["other-target"],
+    )
+
+    drain.apply_result(state, drain.DrainResult("FAILED", "target", "-"))
+
+    assert state["admission"] == admission
+    assert state["recent_blocked"] == ["other-target"]
+    assert state["consecutive_failures"] == 1
+    assert state["status"] == "failed"
 
 
 def test_verify_merged_uses_github_pr_state() -> None:

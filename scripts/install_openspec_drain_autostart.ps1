@@ -26,17 +26,18 @@ if (-not $Repo) {
 }
 $repoPath = (Resolve-Path -LiteralPath $Repo).Path
 $trayScript = Join-Path $repoPath "scripts\openspec_drain_tray.ps1"
+$launcherScript = Join-Path $repoPath "scripts\launch_openspec_drain_tray.vbs"
 $watchdogScript = Join-Path $repoPath "scripts\openspec_drain_watchdog.py"
 $supervisorScript = Join-Path $repoPath "scripts\openspec_drain_supervisor.py"
-foreach ($required in @($trayScript, $watchdogScript, $supervisorScript)) {
+foreach ($required in @($trayScript, $launcherScript, $watchdogScript, $supervisorScript)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required drain file is missing: $required"
     }
 }
 
-$arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$trayScript`" -Repo `"$repoPath`""
+$arguments = "//B //Nologo `"$launcherScript`" `"$repoPath`""
 $action = New-ScheduledTaskAction `
-    -Execute "powershell.exe" `
+    -Execute "wscript.exe" `
     -Argument $arguments `
     -WorkingDirectory $repoPath
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME

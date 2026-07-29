@@ -292,3 +292,18 @@ def test_installer_uninstall_does_not_require_repo_argument() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_autostart_uses_a_windowless_script_host() -> None:
+    installer = (
+        SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    ).read_text(encoding="utf-8")
+    launcher = (SCRIPT.parent / "launch_openspec_drain_tray.vbs").read_text(
+        encoding="utf-8"
+    )
+
+    assert '-Execute "wscript.exe"' in installer
+    assert '-Execute "powershell.exe"' not in installer
+    assert "launch_openspec_drain_tray.vbs" in installer
+    assert "shell.Run(command, 0, True)" in launcher
+    assert "openspec_drain_tray.ps1" in launcher
