@@ -356,6 +356,64 @@ def test_candidate_snapshot_extracts_all_blocked_targets_beyond_hint_limit(
     )
 
 
+def test_blocked_target_identity_does_not_alias_long_claimable_label(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shared_prefix = "same long task identity " * 4
+    claimable_label = f"{shared_prefix}claimable ending"
+    blocked_label = f"{shared_prefix}blocked ending"
+    payload = {
+        "counts": {
+            "claimable": 1,
+            "blocked": 1,
+            "in_flight": 0,
+            "host_owned": 0,
+            "stale": 0,
+        },
+        "claimable": [
+            {"task_label": claimable_label, "files": ["claimable.py"]},
+        ],
+        "blocked": [
+            {
+                "row": {
+                    "task_label": blocked_label,
+                    "files": ["blocked.py"],
+                },
+                "reasons": ["dependency"],
+            },
+        ],
+        "in_flight": [],
+        "stale": [],
+    }
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+    claimable_target = drain._slugify(snapshot.hints[0].task_label)
+
+    assert len(claimable_target) <= 48
+    assert claimable_target not in snapshot.blocked_targets
+    assert (
+        drain.blocked_result_rejection(
+            drain.DrainResult("BLOCKED", claimable_target, "-"),
+            snapshot,
+        )
+        == f"target={claimable_target} is not blocked on current origin/main"
+    )
+
+
 @pytest.mark.parametrize(
     "blocked",
     [
@@ -1982,6 +2040,49 @@ def test_verified_merge_records_bounded_receipt_and_rejects_exact_replay() -> No
     )
 
 
+def test_merge_receipt_rejects_repo_case_and_number_format_replay() -> None:
+    state = _state(
+        completed_slices=1,
+        merged_prs=["https://github.com/o/r/pull/12"],
+    )
+    replay = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/O/R/pull/0012",
+    )
+
+    assert (
+        drain.duplicate_merge_rejection(replay, state)
+        == "already-consumed=https://github.com/o/r/pull/12"
+    )
+
+
+def test_merge_receipts_survive_for_the_whole_bounded_run() -> None:
+    state = _state()
+    first = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/o/r/pull/1",
+    )
+
+    for number in range(1, 66):
+        drain.apply_result(
+            state,
+            drain.DrainResult(
+                "MERGED",
+                f"target-{number}",
+                f"https://github.com/o/r/pull/{number}",
+            ),
+            merge_verified=True,
+        )
+
+    assert len(state["merged_prs"]) == 65
+    assert (
+        drain.duplicate_merge_rejection(first, state)
+        == "already-consumed=https://github.com/o/r/pull/1"
+    )
+
+
 def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
     tmp_path: Path,
 ) -> None:
@@ -2027,15 +2128,30 @@ def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
         "https://github.com/o/r/pull/12\n"
     )
     (results_dir / "001.md").write_text(marker, encoding="utf-8")
-    (results_dir / "002.md").write_text(marker, encoding="utf-8")
+    (results_dir / "002.md").write_text(
+        "DRAIN_RESULT: MERGED target "
+        "https://github.com/O/R/pull/0012\n",
+        encoding="utf-8",
+    )
     (results_dir / "003.md").write_text(
         "DRAIN_RESULT: BLOCKED target -\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 result attempt=1 status=merged "
+        "target=target pr=https://github.com/o/r/pull/12\n"
+        "2026-07-29T00:01:00-07:00 result attempt=2 status=merged "
+        "target=target pr=https://github.com/O/R/pull/0012\n",
         encoding="utf-8",
     )
     verifier_calls: list[str] = []
 
     receipts = drain.infer_legacy_merged_prs(
-        state=_state(attempts=3, last_consumed_attempt=3),
+        state=_state(
+            attempts=3,
+            last_consumed_attempt=3,
+            completed_slices=2,
+        ),
         results_dir=results_dir,
         repo=tmp_path,
         merge_verifier=lambda pr, **_kwargs: verifier_calls.append(pr) or True,
@@ -2043,6 +2159,41 @@ def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
 
     assert receipts == ["https://github.com/o/r/pull/12"]
     assert verifier_calls == ["https://github.com/o/r/pull/12"]
+
+
+def test_legacy_merge_receipts_exclude_prior_verification_failure(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 result attempt=1 "
+        f"status=merge-verification-failed target=target pr={pr}\n",
+        encoding="utf-8",
+    )
+    verifier_calls: list[str] = []
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=0,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda candidate, **_kwargs: (
+            verifier_calls.append(candidate) or True
+        ),
+    )
+
+    assert receipts == []
+    assert verifier_calls == []
 
 
 def test_apply_partial_resets_failures_and_sets_resume_target() -> None:

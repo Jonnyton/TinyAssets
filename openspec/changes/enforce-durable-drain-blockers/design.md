@@ -92,12 +92,17 @@ This rule does not apply when:
 ### 4. Verified merge consumption is idempotent
 
 The live run subsequently exposed exact merged-PR replay: attempts 6 and 7
-returned PR #1879 again and each advanced `completed_slices`. A bounded
+returned PR #1879 again and each advanced `completed_slices`. A run-bounded
 `merged_prs` receipt set now makes verified merge consumption idempotent.
-Legacy state reconstructs receipts from consumed result artifacts and verifies
-each unique PR before trusting it. `PARTIAL` does not consume the receipt,
-because a later `MERGED` result may legitimately use the same PR after
-foldback.
+Receipts use canonical GitHub owner/repository casing and numeric PR identity,
+and remain present for the entire bounded run rather than becoming replayable
+through fixed-size eviction.
+Legacy state reconstructs receipts only when the result artifact and the
+supervisor audit both show that merge verification succeeded, then verifies
+each unique PR again before trusting it. This prevents a previously failed
+verification that later becomes merged from suppressing its first legitimate
+retry. `PARTIAL` does not consume the receipt, because a later `MERGED` result
+may legitimately use the same PR after foldback.
 
 An exact duplicate `MERGED` result records a finite
 `INVALID_DUPLICATE_MERGE`, retains any admission, and never advances slice
@@ -117,9 +122,9 @@ remain available for before/after comparison.
 - **[A blocker clears without a STATUS edit]** → The row must be updated to
   become claimable; shared coordination truth, not controller memory, controls
   retry.
-- **[Target labels collide after slugification]** → Preserve the existing
-  canonical target contract and add duplicate-slug test coverage; do not invent
-  a second identifier in this slice.
+- **[Target labels share the truncated slug prefix]** → Preserve the bounded
+  canonical target contract while adding a deterministic content-hash suffix;
+  duplicate-prefix coverage proves distinct rows cannot authorize each other.
 - **[Current-main fetch is unavailable]** → Fail closed and retain admission
   rather than suppressing work on stale evidence.
 

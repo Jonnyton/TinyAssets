@@ -40,17 +40,22 @@ The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid onl
 - **AND** an ended invalid-blocker diagnostic reports failure
 
 ### Requirement: Verified merge receipts are idempotent per run
-The OpenSpec drain supervisor SHALL advance completed-slice progress at most once for an exact verified merged pull-request URL. It MUST persist a bounded receipt set in run state and reconstruct verified receipts from consumed legacy result artifacts when that field is absent. `PARTIAL` SHALL NOT consume the merge receipt because later foldback may legitimately return `MERGED` for the same pull request.
+The OpenSpec drain supervisor SHALL advance completed-slice progress at most once for a canonical verified merged pull-request identity. Owner and repository casing plus numeric formatting of the pull-request number MUST NOT create a distinct identity. It MUST persist every successful receipt for the bounded run and reconstruct canonical verified receipts only for legacy result artifacts whose supervisor audit records successful merge consumption. Result text or current merge state alone MUST NOT turn a previously failed verification into a consumed receipt. `PARTIAL` SHALL NOT consume the merge receipt because later foldback may legitimately return `MERGED` for the same pull request.
 
 #### Scenario: Worker replays an already consumed merged PR
-- **WHEN** a worker returns `MERGED` with a PR URL already present in the run's verified merge receipts
+- **WHEN** a worker returns `MERGED` with a canonical PR identity already present in the run's verified merge receipts
 - **THEN** the controller records `INVALID_DUPLICATE_MERGE`
 - **AND** does not advance completed slices or release a prepared admission
 
 #### Scenario: Legacy run resumes after merged work
 - **WHEN** run state predates the merge-receipt field
-- **THEN** the controller reconstructs a bounded unique receipt set from consumed result artifacts
+- **THEN** the controller reconstructs the complete run-bounded unique canonical receipt set from successfully consumed result artifacts and their supervisor audit records
 - **AND** trusts only PRs that still pass controller merge verification
+
+#### Scenario: Previously failed merge verification later becomes merged
+- **WHEN** a consumed legacy result reported `MERGED` but its supervisor audit records `merge-verification-failed`
+- **THEN** receipt reconstruction does not consume that PR
+- **AND** a later verified `MERGED` retry may advance one slice
 
 #### Scenario: Partial foldback later completes
 - **WHEN** a verified `PARTIAL` result is followed by `MERGED` for the same PR after foldback

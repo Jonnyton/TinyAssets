@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -37,7 +38,6 @@ TRANSIENT_PATTERNS = (
 STOP_POLL_SECONDS = 5.0
 RESULT_POLL_SECONDS = 1.0
 MAX_RECENT_BLOCKED = 12
-MAX_MERGED_PRS = 64
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
 DRAIN_CODEX_EFFORT = "medium"
@@ -136,7 +136,14 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
 
 def _slugify(value: str, *, limit: int = 48) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return (slug or "candidate")[:limit].rstrip("-")
+    slug = slug or "candidate"
+    if len(slug) <= limit:
+        return slug
+    digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+    if limit <= len(digest):
+        return digest[:limit]
+    prefix = slug[: limit - len(digest) - 1].rstrip("-")
+    return f"{prefix}-{digest}" if prefix else digest[:limit]
 
 
 def _admission_command(
@@ -529,8 +536,14 @@ def duplicate_merge_rejection(
     """Reject a previously consumed merge receipt before it counts again."""
     if result.status != "MERGED":
         return None
-    if result.pr in state.get("merged_prs", []):
-        return f"already-consumed={result.pr}"
+    receipt = canonical_pr_receipt(result.pr)
+    consumed = {
+        canonical_pr_receipt(pr)
+        for pr in state.get("merged_prs", [])
+        if isinstance(pr, str)
+    }
+    if receipt in consumed:
+        return f"already-consumed={receipt}"
     return None
 
 
@@ -949,6 +962,17 @@ def _github_repo_slug(remote_url: str) -> str | None:
     return f"{match.group('owner')}/{match.group('repo')}".lower()
 
 
+def canonical_pr_receipt(pr_url: str) -> str:
+    """Return the stable GitHub identity for a parsed pull-request URL."""
+    match = PR_RE.fullmatch(pr_url)
+    if not match:
+        return pr_url
+    owner = match.group("owner").lower()
+    repo = match.group("repo").lower()
+    number = match.group("number").lstrip("0") or "0"
+    return f"https://github.com/{owner}/{repo}/pull/{number}"
+
+
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -976,13 +1000,16 @@ def apply_result(
         return
     if result.status == "MERGED":
         state["completed_slices"] += 1
+        receipt = canonical_pr_receipt(result.pr)
         merged_prs = [
-            pr
+            canonical_pr_receipt(pr)
             for pr in state.get("merged_prs", [])
-            if pr != result.pr
+            if isinstance(pr, str) and canonical_pr_receipt(pr) != receipt
         ]
-        merged_prs.append(result.pr)
-        state["merged_prs"] = merged_prs[-MAX_MERGED_PRS:]
+        merged_prs.append(receipt)
+        # A run is already bounded by max_slices. Keep every successful
+        # receipt for that run so an old merge can never become replayable.
+        state["merged_prs"] = merged_prs
         state["consecutive_failures"] = 0
         state["consecutive_partial_target"] = None
         state["consecutive_partials"] = 0
@@ -1064,14 +1091,28 @@ def infer_legacy_merged_prs(
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
 ) -> list[str]:
-    """Reconstruct bounded verified merge receipts for pre-field run state."""
+    """Reconstruct accepted verified receipts for pre-field run state."""
     try:
         last_consumed = max(0, int(state.get("last_consumed_attempt", 0)))
         started_at = str(state["started_at"])
     except (KeyError, TypeError, ValueError):
         return []
+    log_path = results_dir.parent / "supervisor.log"
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # Result text alone cannot prove that merge verification succeeded.
+        return []
+    accepted_attempts = {
+        int(match.group("attempt"))
+        for match in re.finditer(
+            r"\bresult attempt=(?P<attempt>[1-9][0-9]*) status=merged\b",
+            log_text,
+        )
+        if int(match.group("attempt")) <= last_consumed
+    }
     receipts: list[str] = []
-    for attempt in range(1, last_consumed + 1):
+    for attempt in sorted(accepted_attempts):
         try:
             result = parse_result(
                 (results_dir / f"{attempt:03d}.md").read_text(
@@ -1081,18 +1122,17 @@ def infer_legacy_merged_prs(
             )
         except (OSError, ValueError):
             continue
-        if (
-            result.status != "MERGED"
-            or result.pr in receipts
-            or not merge_verifier(
-                result.pr,
-                repo=repo,
-                started_at=started_at,
-            )
+        receipt = canonical_pr_receipt(result.pr)
+        if result.status != "MERGED" or receipt in receipts:
+            continue
+        if not merge_verifier(
+            result.pr,
+            repo=repo,
+            started_at=started_at,
         ):
             continue
-        receipts.append(result.pr)
-    return receipts[-MAX_MERGED_PRS:]
+        receipts.append(receipt)
+    return receipts
 
 
 def _recorded_invalid_result_attempt(state: dict[str, Any]) -> int | None:
