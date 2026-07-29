@@ -18,5 +18,5 @@
 - [x] 4.1 Update the operator runbook and pass focused tests, lint, OpenSpec validation, and opposite-provider review.
 - [x] 4.2 Add a failing regression test for multiple admissions of one target in the same run.
 - [x] 4.3 Derive collision-safe admission branches and worktrees from the persisted attempt number.
-- [ ] 4.4 Re-run focused/installer gates and opposite-provider review for the follow-up.
+- [x] 4.4 Re-run focused/installer gates and opposite-provider review for the follow-up.
 - [ ] 4.5 Sync/archive the change, land through a PR, restart the scheduled drain, and prove continued dispatch.
