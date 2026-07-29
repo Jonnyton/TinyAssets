@@ -393,6 +393,29 @@ def test_codex_drain_dispatch_uses_balanced_reasoning_effort(
     assert "--effort" not in claude_command
 
 
+def test_repeated_target_attempts_get_distinct_deterministic_lanes(
+    tmp_path: Path,
+) -> None:
+    first_worktree, first_branch = drain.admission_lane(
+        repo=tmp_path / "controller",
+        identity="drain-20260729-edda35",
+        target="same-target",
+        attempt=1,
+    )
+    second_worktree, second_branch = drain.admission_lane(
+        repo=tmp_path / "controller",
+        identity="drain-20260729-edda35",
+        target="same-target",
+        attempt=2,
+    )
+
+    assert first_worktree.name.endswith("-same-target-a001")
+    assert second_worktree.name.endswith("-same-target-a002")
+    assert first_worktree != second_worktree
+    assert first_branch == "drain/20260729-edda35/same-target-a001"
+    assert second_branch == "drain/20260729-edda35/same-target-a002"
+
+
 def test_dispatch_completes_from_stable_valid_artifact_before_process_exit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -553,6 +576,7 @@ def test_mechanical_admission_claims_candidate_in_prepared_worktree(
     admission = drain.admit_candidate(
         repo=repo,
         identity="drain-20260728-fast",
+        attempt=1,
         hint=drain.CandidateHint(
             classification="CLAIMABLE",
             task_label="main-red round 2",
@@ -622,6 +646,7 @@ def test_mechanical_admission_never_deletes_preexisting_branch(
         drain.admit_candidate(
             repo=repo,
             identity="drain-existing",
+            attempt=1,
             hint=drain.CandidateHint(
                 classification="CLAIMABLE",
                 task_label="target",
@@ -707,6 +732,7 @@ def test_mechanical_stale_admission_commits_reap_before_claim(
     admission = drain.admit_candidate(
         repo=repo,
         identity="drain-stale",
+        attempt=1,
         hint=drain.CandidateHint(
             classification="STALE",
             task_label="stale target",

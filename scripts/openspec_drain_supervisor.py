@@ -215,11 +215,32 @@ def _set_status_claim(
     status_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def admission_lane(
+    *,
+    repo: Path,
+    identity: str,
+    target: str,
+    attempt: int,
+) -> tuple[Path, str]:
+    """Derive the deterministic branch/worktree lane for one exact attempt."""
+    if attempt < 1:
+        raise ValueError("admission attempt must be positive")
+    run_slug = _slugify(identity.removeprefix("drain-"), limit=32)
+    attempt_slug = f"a{attempt:03d}"
+    worktree = (
+        repo.parent
+        / f"wf-drain-{run_slug}-{target[:32]}-{attempt_slug}"
+    )
+    branch = f"drain/{run_slug}/{target}-{attempt_slug}"
+    return worktree, branch
+
+
 def admit_candidate(
     *,
     repo: Path,
     identity: str,
     hint: CandidateHint,
+    attempt: int,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     today: str | None = None,
 ) -> Admission:
@@ -229,10 +250,13 @@ def admit_candidate(
     if hint.line_no <= 0 or not hint.status:
         raise RuntimeError("candidate lacks canonical line/status metadata")
     date = today or datetime.now().astimezone().date().isoformat()
-    run_slug = _slugify(identity.removeprefix("drain-"), limit=32)
     target = _slugify(hint.task_label)
-    worktree = repo.parent / f"wf-drain-{run_slug}-{target[:32]}"
-    branch = f"drain/{run_slug}/{target}"
+    worktree, branch = admission_lane(
+        repo=repo,
+        identity=identity,
+        target=target,
+        attempt=attempt,
+    )
 
     clean = _admission_command(
         ["git", "-C", str(repo), "status", "--porcelain"],
@@ -1562,6 +1586,7 @@ def _run(args: argparse.Namespace) -> int:
                         repo=args.repo,
                         identity=state["identity"],
                         hint=candidate_hints[0],
+                        attempt=attempt,
                     )
                 except RuntimeError as exc:
                     state["consecutive_failures"] += 1
