@@ -1,6 +1,6 @@
 ---
 name: ui-test
-description: Simulate a Claude.ai or ChatGPT user driving the TinyAssets daemon via the custom MCP connector. Use when testing the live end-user surface. Codex/OpenAI-family sessions use Claude.ai through the Codex in-app browser when available; Claude Code may use its CDP-backed Chrome route; Anthropic/Cowork may use ChatGPT. Type into the real chatbot UI, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
+description: Simulate a Claude.ai or ChatGPT user driving the TinyAssets daemon via the custom MCP connector. Use when testing the live end-user surface. Any provider may use any harness-supported browser control route as long as the host can watch the same rendered chatbot tab. Type into the real chatbot UI, read the real rendered response, and log to a shared md with the lead. No MCP bypass. No browser tricks a human user could not do.
 ---
 
 # ui-test
@@ -11,13 +11,13 @@ The human host is watching the browser tab. Your job is to look like a naive, cu
 
 ## Driver routes
 
-- **Codex / OpenAI-family route:** use the Codex in-app browser to open or continue `https://claude.ai/`. If the app context already shows a Claude.ai conversation, use that visible tab. Do not block this route on `scripts/claude_chat.py`, Chrome CDP, or `localhost:9222`; those are Claude Code harness details, not Codex in-app browser requirements.
+- **Codex / OpenAI-family route:** use any harness-supported browser control path that keeps the same live chatbot tab visible to the host: Codex in-app Browser, the Chrome extension/plugin, CDP or a CLI browser driver, or an equivalent visible route. Open or continue `https://claude.ai/` by default; ChatGPT Developer Mode is also valid when its TinyAssets connector is installed. If one driver is unavailable, try another host-visible driver before declaring a blocker.
 - **Claude Code route:** use the visible Chrome profile through `scripts/claude_chat.py`. This remains the default route for Claude team user-sim. Host-login Claude.ai access is not the proof requirement; Claude.ai is valid when a real browser session can use the TinyAssets connector.
 - **Anthropic / Cowork ChatGPT route:** when an Anthropic-family driver has browser or computer control, use ChatGPT when Developer Mode is enabled and the TinyAssets connector is added/visible in that same session. Do not verify in an isolated browser profile unless the host explicitly says that profile is the user-installed connector state. Claude Code on Windows can drive this route via `scripts/chatgpt_chat.py` (sibling of `claude_chat.py`, same CDP at `localhost:9222`, reuses the Chrome profile).
 
 ## Proof standard
 
-The verification target is a rendered chatbot conversation using the live installed connector. Claude.ai, ChatGPT Developer Mode, and future chatbot clients are all acceptable when the tester can see the connector in the browser, type a normal user prompt, and observe the chatbot's rendered answer or tool-use result. Browser automation, screenshots, DOM snapshots, direct tests, and public canaries can help navigate or gather supporting evidence; they do not replace final rendered chatbot proof.
+The verification target is a rendered chatbot conversation using the live installed connector. Claude.ai, ChatGPT Developer Mode, and future chatbot clients are all acceptable when the host can watch the same live tab, the tester can see the connector in the browser, type a normal user prompt, and observe the chatbot's rendered answer or tool-use result. The browser-control transport is an implementation detail, not part of the proof contract. Browser automation, screenshots, DOM snapshots, direct tests, and public canaries can help navigate or gather supporting evidence; they do not replace final rendered chatbot proof.
 
 ## CRITICAL — cross-client MCP alignment is a project prerequisite (mandatory pre-ship check)
 
@@ -63,7 +63,7 @@ If both probes can't be run (e.g., Codex driver is the only one available), STOP
 
 ## Preflight (route-specific)
 
-Before the first prompt, run your route's preflight checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex Claude.ai in-app · ChatGPT live · Claude Code CDP). **If a preflight item is unavailable, stop the mission and name the exact blocker** (Codex route: the harness/connector blocker — not `claude_chat.py`/CDP; ChatGPT route: ask the host to fix the exact item). Never test through a fresh profile or a direct MCP call.
+Before the first prompt, run your route's preflight checklist and log the result — full checklists in `references/preflight-and-setup.md` (Codex host-visible browser · ChatGPT live · Claude Code CDP). If one browser driver is unavailable, try another harness-supported host-visible route. **Stop only when no available route can keep the real chatbot tab visible to the host or the connector itself is unavailable.** Never test through a fresh profile or a direct MCP call.
 
 After `ui-test` passes, also look for post-fix clean-use evidence from actual users when the affected feature is public or high-risk. Check available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Record the timestamp, environment, and evidence source. If no real-user use is visible yet, say so plainly and leave a short watch item in `STATUS.md` rather than implying the feature has been proven clean for users.
 
@@ -189,15 +189,15 @@ The binary is auto-detected as the newest installed Playwright chromium, overrid
 host machine — auto-launch then failed with a bare "Cannot connect to CDP" and no hint that it had
 just started a broken binary. Do not re-pin a build number.
 
-Full reference: `references/preflight-and-setup.md`. Not applicable to the Codex in-app browser route.
+Full reference: `references/preflight-and-setup.md`. These `claude_chat.py` details apply only when that driver is selected.
 
 ## CRITICAL — TAB HYGIENE (forever rule, every step)
 
 **One visible chatbot tab, always. Not just at start — forever.** The host watches a single visible chatbot tab. If a second tab exists at ANY moment, the host cannot see what you are doing. Host should never be the one to notice a second tab. Neither should lead. Only you.
 
-- **BEFORE every prompt you send:** confirm the route's visible browser has exactly one mission tab. On Claude Code, query the open-tab list (CDP `Target.getTargets`, `python scripts/claude_chat.py tabs` if it exists, or equivalent). On Codex, use the in-app browser's visible current tab/context; do not require CDP just to prove the tab exists.
+- **BEFORE every prompt you send:** confirm the route's visible browser has exactly one mission tab. Use the selected route's tab inventory (Codex Browser/Chrome plugin, CDP `Target.getTargets`, `python scripts/claude_chat.py tabs`, or equivalent); do not require a specific transport when another host-visible route provides the same proof.
 - **AFTER every action that might have navigated:** re-check. Links, OAuth flows, extension redirects, and Claude.ai's own UI can all spawn tabs unexpectedly.
-- **If >1 tab is ever seen:** stop the mission. Decide which tab is the correct mission tab (the claude.ai/chatgpt chat with the active conversation). Close all others using the route's available browser controls; use CDP only on the Claude Code route. Log `## [...] TAB HYGIENE: closed N extra tab(s) — healed to 1 tab at URL=...` with a diagnosis of how the extra tab appeared. Then resume.
+- **If >1 tab is ever seen:** stop the mission. Decide which tab is the correct mission tab (the claude.ai/chatgpt chat with the active conversation). Close all others using the selected route's available browser controls. Log `## [...] TAB HYGIENE: closed N extra tab(s) — healed to 1 tab at URL=...` with a diagnosis of how the extra tab appeared. Then resume.
 - **Do NOT call `new_tab` / `open_tab` / `window.open` / equivalent.** Ever. If a flow forces a new tab (OAuth popup, "open in new tab" links), navigate in the same tab or pause and flag lead.
 - **Log every tab check** to `sessions.md` / `user_sim_session.md` with a one-line `TAB HYGIENE: 1 tab, URL=...` entry. The log proves you checked; absence of the line means you skipped the check.
 - **Residue at session start is no excuse.** If extra tabs exist at startup, close them before the first prompt. This rule holds from session start to session end with zero exceptions.
@@ -471,7 +471,7 @@ Every `ask` burns host's claude.ai quota. Every log entry is lead's context. Be 
 
 **Hard-stop triggers (these still stop):**
 - Lead writes `LEAD STOP` -> stop immediately.
-- Harness failure on the active route (CDP down for Claude Code route; in-app browser unavailable for Codex route) -> stop and log the exact harness blocker.
+- No harness-supported route can keep the live chatbot tab visible to the host -> stop and log the exact harness blocker.
 
 **When in doubt about whether to ask:** don't. Write a `NOTE` entry with the question and let the lead decide. Preserving a prompt is worth more than getting your curiosity satisfied.
 
@@ -489,7 +489,7 @@ These are the only triggers that stop the mission outright. Everything else gets
 
 - Lead writes `LEAD STOP` or sends a stop message -> stop immediately. No "relaxed pace."
 - Claude Code route only: `claude_chat.py status` starts failing -> stop, SendMessage. (CDP is route-specific; does not apply to Codex.)
-- Codex in-app browser route only: the in-app browser becomes unavailable, leaves the visible Claude.ai mission tab, or cannot show the TinyAssets connector -> stop and log the exact harness blocker.
+- Codex / OpenAI-family route: if the selected driver fails, try another harness-supported host-visible driver; stop only when none can show and control the TinyAssets chatbot session.
 - Anthropic / Cowork ChatGPT route only: ChatGPT browser context lost or TinyAssets connector becomes invisible in the Developer Mode composer -> stop and log the harness blocker.
 - Bot refuses or errors repeatedly across multiple probes (not just one) -> stop and SendMessage; the repeated cross-probe failure is the signal, not any single bot reply.
 
