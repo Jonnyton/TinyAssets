@@ -1662,3 +1662,14 @@ Notes:
 - Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
 - Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass
 - Update 2026-07-28: exact semantic head `c95876fe` received Opus 5 APPROVE; every named mutation died, all 45 concrete forgery probes were rejected, and no correctness or authority defect remained
+
+## 2026-07-29 15:00 - create repair-synthesis-checklist
+
+- Provider: `drain-20260729-145600-e75271`
+- Branch: `drain/20260729-145600-e75271/repair-synthesis-checklist`
+- Lane state: Active lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-145600-e75271`
+- STATUS/Issue/PR: `Repair stale synthesis-checklist assertion`; PR pending
+- PLAN refs: no architectural change; test-only expectation repair
+- Purpose: align one stale ledger assertion with canonical handle retirement
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-20260729-145600-e75271/_PURPOSE.md`
