@@ -5,7 +5,10 @@
 Canonical `/mcp` `write_page` SHALL accept `scope="commons" | "universe"` as an additive target
 selector. The selector SHALL be validated before any mutation. `scope="commons"` SHALL keep the
 authenticated shared-commons write path available even when the caller has a founder-home
-universe. `scope="universe"` SHALL use the existing sole-writer relay path. Omission SHALL retain
+universe. `scope="universe"` SHALL use the existing sole-writer relay path. An explicit universe
+scope that resolves neither an explicit universe nor a founder home SHALL fail before mutation.
+Typed `kind=` commons filings SHALL reject `scope="universe"` rather than silently ignoring it.
+Authentication rejection SHALL retain precedence over target validation. Omission SHALL retain
 the historical target-resolution behavior for existing clients.
 
 #### Scenario: an authenticated founder explicitly writes shared knowledge
@@ -22,6 +25,16 @@ the historical target-resolution behavior for existing clients.
 
 - **WHEN** a caller supplies a scope other than `commons` or `universe`
 - **THEN** the call returns a validation error naming the valid values before any page is mutated
+
+#### Scenario: explicit universe scope never falls through to commons
+
+- **WHEN** `scope="universe"` resolves no explicit universe or founder home
+- **THEN** the call fails before mutation instead of writing the shared commons
+
+#### Scenario: a universe-scoped filing is contradictory
+
+- **WHEN** `scope="universe"` is combined with a typed `kind=` commons filing
+- **THEN** the call fails before filing the commons page
 
 #### Scenario: legacy omission remains compatible
 

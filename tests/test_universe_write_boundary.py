@@ -282,6 +282,51 @@ class TestPrivateCanonRelay:
         assert out.get("universe_id") == "u-relay-carol", out
         assert out.get("relay", {}).get("content"), out
 
+    def test_explicit_universe_scope_without_a_target_fails_closed(
+        self, universe_base, monkeypatch
+    ):
+        from tinyassets.api import helpers
+        from tinyassets.universe_server import write_page
+
+        monkeypatch.setattr(helpers, "_request_universe", lambda _requested: "")
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope="universe",
+            category="notes",
+            filename="must-not-exist",
+            content="No universe target resolved.",
+            dry_run=False,
+        ))
+
+        assert out["error"] == (
+            "scope=universe requires universe_id or a founder home"
+        )
+        assert not list(universe_base.rglob("must-not-exist.md"))
+
+    def test_universe_scope_rejects_a_commons_filing(
+        self, universe_base
+    ):
+        from tinyassets.universe_server import write_page
+
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope="universe",
+            universe_id="u-relay-carol",
+            kind="bug",
+            title="must not file",
+        ))
+
+        assert out["error"] == "scope=universe cannot be combined with kind"
+        assert not list(universe_base.rglob("*.md"))
+
     @pytest.mark.parametrize("scope", ["elsewhere", " COMMONS "])
     def test_unknown_scope_fails_closed_before_mutation(
         self, universe_base, scope

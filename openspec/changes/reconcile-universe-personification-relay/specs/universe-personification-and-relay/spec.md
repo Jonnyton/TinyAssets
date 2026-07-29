@@ -116,9 +116,11 @@ Canonical `write_page` SHALL accept an optional explicit target selector:
 SHALL reject a simultaneous `universe_id`. `scope="universe"` SHALL resolve the explicit
 `universe_id` or authenticated founder's home and return the existing `relay_to_universe`
 envelope naming `converse`; it SHALL NOT write a universe page substrate directly. Unknown scope
-values SHALL fail closed before mutation. Omitted scope SHALL preserve the existing compatibility
-behavior: a resolvable universe target is relayed, while no resolvable target writes the commons.
-Typed `kind=` filings remain commons operations without the selector.
+values SHALL fail closed before mutation. An explicit universe scope with no resolved target SHALL
+also fail rather than falling through to commons. Omitted scope SHALL preserve the existing
+compatibility behavior: a resolvable universe target is relayed, while no resolvable target writes
+the commons. Typed `kind=` filings remain commons operations without the selector and SHALL reject
+`scope="universe"` as contradictory.
 
 The selector SHALL NOT classify prose as "dossier-shaped" or "profile-shaped": legitimate
 public `people` pages remain writable. It also SHALL NOT restrict the universe's own governed
@@ -148,6 +150,10 @@ review 2026-07-22 finding 2 and host decision 2026-07-25).
 #### Scenario: an unknown target fails closed
 - **WHEN** a caller supplies an unknown `scope`
 - **THEN** no page is mutated and the error names `commons` and `universe`
+
+#### Scenario: explicit universe scope cannot become a commons write
+- **WHEN** `scope="universe"` resolves neither an explicit universe nor a founder home
+- **THEN** no page is mutated and the call fails instead of writing the commons
 
 #### Scenario: omitted scope preserves compatibility
 - **WHEN** an existing caller omits `scope`

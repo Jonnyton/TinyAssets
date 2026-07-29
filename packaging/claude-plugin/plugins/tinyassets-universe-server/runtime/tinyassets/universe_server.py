@@ -840,14 +840,6 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     normalized_kind = kind.strip().lower()
-    if scope not in {"", "commons", "universe"}:
-        return json.dumps({
-            "error": "scope must be one of: commons, universe",
-        })
-    if scope == "commons" and universe_id.strip():
-        return json.dumps({
-            "error": "scope=commons cannot be combined with universe_id",
-        })
     # Gate every path except a dry-run PATCH preview: the patch handler is
     # the only wiki path that honors dry_run (full writes ignore it and
     # mutate; filings always mutate).
@@ -889,6 +881,18 @@ def write_page(
             return rejection
     if is_canary_write:
         return _write_reserved_wiki_canary(content)
+    if scope not in {"", "commons", "universe"}:
+        return json.dumps({
+            "error": "scope must be one of: commons, universe",
+        })
+    if scope == "commons" and universe_id.strip():
+        return json.dumps({
+            "error": "scope=commons cannot be combined with universe_id",
+        })
+    if scope == "universe" and normalized_kind:
+        return json.dumps({
+            "error": "scope=universe cannot be combined with kind",
+        })
     if normalized_kind:
         # Issue filings (bug/patch_request/feature/design) are shared-commons
         # coordination, not private canon — they stay on the global commons.
@@ -924,6 +928,10 @@ def write_page(
 
         if is_authenticated_request():
             target_universe = _request_universe("")
+    if scope == "universe" and not target_universe:
+        return json.dumps({
+            "error": "scope=universe requires universe_id or a founder home",
+        })
     if target_universe:
         import json as _json
 
