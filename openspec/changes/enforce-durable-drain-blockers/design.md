@@ -42,7 +42,9 @@ is needed.
 
 `CandidateSnapshot` will carry the canonical target slugs found in the complete
 `blocked` payload returned by `claim_check.py --json`. This collection is not
-bounded by the candidate-hint display limit.
+bounded by the candidate-hint display limit. Claim-check payloads preserve the
+complete normalized task label, and bounded target slugs use a deterministic
+content-hash suffix so labels that share a long prefix remain distinct.
 
 After parsing a `BLOCKED` marker, the supervisor fetches origin and inspects
 exact `origin/main`. It accepts the result only when the reported target slug
@@ -125,6 +127,9 @@ remain available for before/after comparison.
 - **[Target labels share the truncated slug prefix]** → Preserve the bounded
   canonical target contract while adding a deterministic content-hash suffix;
   duplicate-prefix coverage proves distinct rows cannot authorize each other.
+- **[A live pre-hash run resumes]** → Rekey its persisted admission from the
+  complete task label and release legacy recent-blocked slugs for a harmless
+  current-main retry; never keep a lossy cooldown that cannot be translated.
 - **[Current-main fetch is unavailable]** → Fail closed and retain admission
   rather than suppressing work on stale evidence.
 
@@ -135,9 +140,9 @@ remain available for before/after comparison.
 3. Refresh the controller worktree to the exact merged commit.
 4. Restart the watchdog once and verify health plus controlled invalid/durable
    blocker and duplicate-merge probes.
-5. Roll back by restoring the prior merged controller commit and restarting;
-   run artifacts remain compatible because the added snapshot field is derived,
-   not persisted.
+5. Roll back by restoring the prior merged controller commit and starting a
+   fresh run. Forward migration rekeys any persisted long-label admission and
+   releases legacy cooldown slugs that cannot be translated safely.
 
 ## Open Questions
 

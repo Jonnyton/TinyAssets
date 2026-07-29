@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: OpenSpec drain blockers become suppressible only after durable current-main classification
-The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid only when a fresh exact `origin/main` claim-check snapshot classifies the same canonical target as blocked. The worker MUST first land a sanitized STATUS dependency or blocker through normal repository review. A target that remains claimable or stale, disappears without explicit blocked classification, or cannot be checked because current-main refresh fails SHALL NOT enter the recent-blocked set. The supervisor MUST retain any prepared admission, record a bounded invalid-blocked failure, and send a fresh worker back to the same lane within the existing failure budget.
+The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid only when a fresh exact `origin/main` claim-check snapshot classifies the same canonical target as blocked. Claim-check snapshots MUST preserve the complete normalized task label, and the supervisor's bounded target identity MUST remain distinct for labels that share a long prefix. The worker MUST first land a sanitized STATUS dependency or blocker through normal repository review. A target that remains claimable or stale, disappears without explicit blocked classification, or cannot be checked because current-main refresh fails SHALL NOT enter the recent-blocked set. The supervisor MUST retain any prepared admission, record a bounded invalid-blocked failure, and send a fresh worker back to the same lane within the existing failure budget.
 
 #### Scenario: Worker reports a blocker that exists only in its result file
 - **WHEN** an admitted worker returns `BLOCKED` but current main still classifies the target claimable
@@ -19,6 +19,16 @@ The OpenSpec drain supervisor SHALL treat a worker `BLOCKED` marker as valid onl
 #### Scenario: Worker deletes the target instead of recording a blocker
 - **WHEN** a `BLOCKED` marker names a target absent from the fresh current-main blocked collection
 - **THEN** the supervisor rejects the result and does not treat disappearance as blocker proof
+
+#### Scenario: Distinct labels share a long prefix
+- **WHEN** a blocked row and a claimable row have task labels that differ only after a long common prefix
+- **THEN** claim-check preserves both complete labels and the supervisor derives distinct bounded target identities
+- **AND** the blocked row cannot authorize or cool down the claimable row
+
+#### Scenario: Pre-hash run resumes with a long-label admission
+- **WHEN** persisted state predates collision-resistant target identity
+- **THEN** the supervisor rekeys the admission and resume target from its complete task label
+- **AND** releases legacy recent-blocked slugs that cannot be translated safely
 
 #### Scenario: Recent blockers consume every concrete candidate hint
 - **WHEN** current-main pressure still reports claimable or stale rows, no owned or prepared admission exists, and filtering this run's recent blockers leaves no concrete hint

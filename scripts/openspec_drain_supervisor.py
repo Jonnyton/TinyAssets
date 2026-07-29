@@ -41,6 +41,7 @@ MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
 DRAIN_CODEX_EFFORT = "medium"
+TARGET_IDENTITY_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -127,7 +128,7 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
         raise TypeError("candidate files must be a string list")
     return CandidateHint(
         classification=classification,
-        task_label=" ".join(task_label.split())[:240],
+        task_label=" ".join(task_label.split()),
         files=tuple(" ".join(path.split())[:160] for path in files[:4]),
         line_no=int(row.get("line_no", 0)),
         status=str(row.get("status", "")),
@@ -144,6 +145,32 @@ def _slugify(value: str, *, limit: int = 48) -> str:
         return digest[:limit]
     prefix = slug[: limit - len(digest) - 1].rstrip("-")
     return f"{prefix}-{digest}" if prefix else digest[:limit]
+
+
+def migrate_target_identities(state: dict[str, Any]) -> bool:
+    """Rekey pre-hash admission state and release incompatible cooldowns."""
+    try:
+        version = int(state.get("target_identity_version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    if version >= TARGET_IDENTITY_VERSION:
+        return False
+
+    admission = state.get("admission")
+    if isinstance(admission, dict):
+        task_label = admission.get("task_label")
+        old_target = admission.get("target")
+        if isinstance(task_label, str) and isinstance(old_target, str):
+            new_target = _slugify(" ".join(task_label.split()))
+            admission["target"] = new_target
+            if state.get("resume_target") == old_target:
+                state["resume_target"] = new_target
+
+    # Legacy entries contain only the old lossy slug, so they cannot be
+    # rekeyed safely. Releasing them causes a harmless current-main retry.
+    state["recent_blocked"] = []
+    state["target_identity_version"] = TARGET_IDENTITY_VERSION
+    return True
 
 
 def _admission_command(
@@ -1568,6 +1595,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "admission": None,
         "recent_blocked": [],
         "merged_prs": [],
+        "target_identity_version": TARGET_IDENTITY_VERSION,
         "status": "starting",
     }
 
@@ -1761,6 +1789,7 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
             state.setdefault("admission", None)
+            migrate_target_identities(state)
             if "merged_prs" not in state:
                 state["merged_prs"] = infer_legacy_merged_prs(
                     state=state,

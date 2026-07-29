@@ -23,11 +23,14 @@ repairing and folding back coordination instead of advancing product work.
 - Release run-local suppression as soon as current main no longer classifies a
   previously accepted target as blocked, and expose the new transient states
   honestly through watchdog health.
-- Persist a bounded set of verified merged-PR receipts, reconstruct it for a
-  legacy run on resume, and reject an exact PR replay instead of counting fake
-  delivery progress.
+- Persist every canonical verified merged-PR receipt for the bounded run,
+  reconstruct only audit-proven receipts for a legacy run on resume, and
+  reject equivalent PR replays instead of counting fake delivery progress.
 - Keep `NO_CANDIDATE`, merge verification, failure budgets, current-main
-  refresh, admission, review, and GitHub policy unchanged.
+  refresh, admission, and GitHub merge behavior unchanged. The host-approved
+  hard-limit review fallback is recorded in `AGENTS.md`: opposite-provider
+  review remains preferred, while a documented account limit permits a fresh
+  independent same-provider exact-head review.
 
 ## Capabilities
 
@@ -43,8 +46,10 @@ None.
 
 ## Impact
 
-The change is limited to the OpenSpec drain supervisor/watchdog, their focused
-tests, and the development-coordination runtime delta. It changes no product
-runtime, MCP surface, cloud activation, provider authority, or repository
-policy. The running tray keeps its current controller until this change is
-merged, reviewed, and deployed after its active attempt reaches terminal.
+The change is limited to the OpenSpec drain supervisor/watchdog, full
+claim-check task-label identity, their focused tests, the
+development-coordination runtime delta, and the host-approved review-limit
+policy in `AGENTS.md`. It changes no product runtime, MCP surface, cloud
+activation, provider authority, or GitHub merge behavior. The running tray
+keeps its current controller until this change is merged, reviewed, and
+deployed after its active attempt reaches terminal.

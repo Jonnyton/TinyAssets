@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -361,7 +362,7 @@ def test_blocked_target_identity_does_not_alias_long_claimable_label(
 ) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
-    shared_prefix = "same long task identity " * 4
+    shared_prefix = "same long task identity " * 12
     claimable_label = f"{shared_prefix}claimable ending"
     blocked_label = f"{shared_prefix}blocked ending"
     payload = {
@@ -412,6 +413,37 @@ def test_blocked_target_identity_does_not_alias_long_claimable_label(
         )
         == f"target={claimable_target} is not blocked on current origin/main"
     )
+
+
+def test_legacy_target_identity_migration_rekeys_admission_and_retries_blockers(
+    tmp_path: Path,
+) -> None:
+    task_label = ("legacy long task identity " * 4) + "ending"
+    legacy_target = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        task_label.lower(),
+    ).strip("-")[:48].rstrip("-")
+    state = _state(
+        admission={
+            "target": legacy_target,
+            "task_label": task_label,
+            "worktree": str(tmp_path),
+            "branch": f"drain/run/{legacy_target}",
+        },
+        resume_target=legacy_target,
+        recent_blocked=[legacy_target, "another-legacy-target"],
+    )
+
+    changed = drain.migrate_target_identities(state)
+
+    expected_target = drain._slugify(task_label)
+    assert changed is True
+    assert state["target_identity_version"] == 2
+    assert state["admission"]["target"] == expected_target
+    assert state["resume_target"] == expected_target
+    assert state["recent_blocked"] == []
+    assert drain.migrate_target_identities(state) is False
 
 
 @pytest.mark.parametrize(
