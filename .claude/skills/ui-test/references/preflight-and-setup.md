@@ -5,23 +5,29 @@ split out of `SKILL.md` (consulted at session start / host setup, not on the
 per-step loop). The body keeps the operational rules (run your route's preflight
 and stop on a blocker; the CDP-down stop rule); this file holds the details.
 
-## Codex Claude.ai in-app preflight
+## Codex host-visible chatbot preflight
 
 When Codex runs `ui-test`, check these before the first prompt and log the result:
 
-- The visible in-app browser tab is `https://claude.ai/` or an existing `claude.ai/chat/...` conversation.
+- The selected harness-supported browser route exposes `https://claude.ai/`, an existing `claude.ai/chat/...` conversation, or ChatGPT Developer Mode.
 - The conversation can use the TinyAssets connector at `https://tinyassets.io/mcp`.
 - The host-visible tab is the same one Codex is reading and typing into.
 
-If login, connector installation, or the in-app browser itself is unavailable, stop the mission and name that exact harness blocker. Do not report `claude_chat.py status` or CDP failure as a blocker for the Codex route.
+Codex may use its in-app Browser, Chrome extension/plugin, CDP or CLI browser driver, or an equivalent visible route. If one driver is unavailable, try another before stopping. Stop only when no available driver keeps the real chatbot tab host-visible, login is unavailable, or the connector is absent. Never substitute a direct MCP call.
 
 ## ChatGPT live preflight
 
-When using the Anthropic / Cowork ChatGPT route, check these before the first prompt and log the result:
+When using the ChatGPT route, check these before the first prompt and log the result:
 
 - The visible tab is `https://chatgpt.com/` or an existing `chatgpt.com/c/...` conversation.
 - Developer mode is enabled for the conversation.
 - The composer shows the `TinyAssets` connector/tool as available.
+- The selected model actually exposes developer-plugin actions. On 2026-07-28, Pro accepted the
+  TinyAssets attachment but told the user no TinyAssets tools were available; Instant exposed the
+  actions correctly. If the attachment pill is visible but the model denies tool availability,
+  switch to Instant and start a fresh Temporary Chat before declaring a connector blocker.
+- For anonymous-caller proof, the custom plugin's Authentication setting is explicitly `No Auth`;
+  OAuth or Mixed does not establish an anonymous request.
 
 If any item is missing, stop the mission and ask the host to fix that exact item. Do not test through a fresh profile or a direct MCP call.
 
