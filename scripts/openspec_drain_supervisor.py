@@ -1142,6 +1142,7 @@ def exit_code_for_status(status: str) -> int:
         "fatal-peer-error",
         "failure-budget",
         "merge-verification-failed",
+        "candidate-snapshot-failed",
     }
     return 2 if status in failed else 0
 

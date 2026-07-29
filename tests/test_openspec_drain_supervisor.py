@@ -2153,7 +2153,7 @@ def test_run_does_not_dispatch_when_current_main_snapshot_fails(
     )
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    assert exit_code == 0
+    assert exit_code == 2
     assert state["status"] == "candidate-snapshot-failed"
     assert state["consecutive_failures"] == 1
     assert state["last_result"]["status"] == "CANDIDATE_SNAPSHOT_FAILED"

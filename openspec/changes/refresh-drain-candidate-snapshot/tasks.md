@@ -15,7 +15,8 @@
 
 ## 3. Verification And Rollout
 
-- [ ] 3.1 Update the operator runbook; pass focused tests, lint, OpenSpec strict
-  validation, and independent opposite-provider review.
+- [x] 3.1 Update the operator runbook; pass 126 focused tests, lint, OpenSpec
+  strict validation, a live Windows current-main snapshot probe, and
+  independent Claude review (`VERDICT: APPROVE`, 2026-07-29).
 - [ ] 3.2 Sync/archive the change, land through a PR, deploy the merged
   controller, restart the terminal scheduled run, and verify useful progress.
