@@ -309,8 +309,8 @@ def test_create_universe_surfaces_synthesis_first_run_checklist(
     assert checklist["steps"][0]["complete"] is True
     assert checklist["steps"][1]["complete"] is False
     assert checklist["next_action"] == (
-        "Upload canon with add_canon or add_canon_from_path, then wait for "
-        "the daemon to process the synthesize_source signal."
+        "Canon-source upload and synthesis waiting are not exposed by the "
+        "advertised handles."
     )
 
 
