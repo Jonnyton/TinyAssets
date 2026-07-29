@@ -98,7 +98,7 @@ retired requirement "One identity, modulated by interlocutor and surface").
 - **WHEN** soul or org-chart policy changes the allowed action or disclosure
 - **THEN** it governs the same learned identity rather than supplying or replacing that identity
 
-### Requirement: The anti-collision boundary is stated honestly — host-memory ingestion is advisory, only the commons write surface is enforceable
+### Requirement: The anti-collision boundary uses explicit target routing, not prose classification
 The anti-collision contract SHALL distinguish two boundaries that the retired change conflated,
 and SHALL NOT claim enforcement it cannot perform:
 
@@ -111,13 +111,21 @@ and SHALL NOT claim enforcement it cannot perform:
    writership*, not dossier-rejection: the universe intelligence is the sole writer of its own
    brain via the governed learning path.
 
-Accordingly, a write-path restriction SHALL be scoped to the **external/commons** write surface
-and SHALL NOT restrict the universe's own governed learning path, which deliberately and
-correctly persists a description of the founder to `founder.md`
+Canonical `write_page` SHALL accept an optional explicit target selector:
+`scope="commons" | "universe"`. `scope="commons"` SHALL write only the shared public commons and
+SHALL reject a simultaneous `universe_id`. `scope="universe"` SHALL resolve the explicit
+`universe_id` or authenticated founder's home and return the existing `relay_to_universe`
+envelope naming `converse`; it SHALL NOT write a universe page substrate directly. Unknown scope
+values SHALL fail closed before mutation. Omitted scope SHALL preserve the existing compatibility
+behavior: a resolvable universe target is relayed, while no resolvable target writes the commons.
+Typed `kind=` filings remain commons operations without the selector.
+
+The selector SHALL NOT classify prose as "dossier-shaped" or "profile-shaped": legitimate
+public `people` pages remain writable. It also SHALL NOT restrict the universe's own governed
+learning path, which deliberately persists a description of the founder to `founder.md`
 (`universe_intelligence.py` `_GROUNDING_FILES`, `"founder.md": "<markdown: who my founder is>"`).
-Any such restriction SHALL name its exact endpoint, its predicate, and its redirect destination
-before it is implemented — an unscoped "reject profile-shaped writes" rule would contradict
-landed behavior (provenance: retired task 2.6, corrected by Codex review 2026-07-22 finding 2).
+This is target routing, not content moderation (provenance: retired task 2.6, corrected by Codex
+review 2026-07-22 finding 2 and host decision 2026-07-25).
 
 #### Scenario: the host-memory guard is described as advisory
 - **WHEN** the anti-collision guard is documented or surfaced
@@ -127,10 +135,23 @@ landed behavior (provenance: retired task 2.6, corrected by Codex review 2026-07
 - **WHEN** the governed learning path persists founder facts the founder explicitly stated
 - **THEN** the write succeeds — sole-writership governs this path, not dossier-shape rejection
 
-#### Scenario: an external dossier write is refused only under a defined predicate
-- **WHEN** an external caller writes person-dossier content to the commons surface
-- **THEN** it is refused only if it matches the named endpoint and predicate defined for that surface
-- **AND** the refusal names the correct destination instead of failing silently
+#### Scenario: an explicit commons write stays out of every universe brain
+- **WHEN** an authenticated caller selects `scope="commons"` for a free-form page write
+- **THEN** the write targets only the shared public commons
+- **AND** a simultaneous `universe_id` is rejected as contradictory
+
+#### Scenario: an explicit universe write is relayed to the sole writer
+- **WHEN** an authenticated caller selects `scope="universe"` for a free-form write or patch
+- **THEN** the result is `relay_to_universe` naming the resolved universe and `converse`
+- **AND** no external page-write path writes that universe's brain directly
+
+#### Scenario: an unknown target fails closed
+- **WHEN** a caller supplies an unknown `scope`
+- **THEN** no page is mutated and the error names `commons` and `universe`
+
+#### Scenario: omitted scope preserves compatibility
+- **WHEN** an existing caller omits `scope`
+- **THEN** a resolvable universe target is relayed and a call with no resolvable target writes the commons
 
 ### Requirement: Persona is a forkable default under first-party custody; the substrate enforces only the floor
 A universe's persona SHALL be a forkable `[composable]` default that the founder can tune, and

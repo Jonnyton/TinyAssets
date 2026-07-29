@@ -804,6 +804,7 @@ def write_page(
     reporter_context: str = "",
     dry_run: bool = True,
     universe_id: str = "",
+    scope: str = "",
 ) -> str:
     """Write or patch a commons page, file an issue, or relay private canon.
 
@@ -815,6 +816,8 @@ def write_page(
 
     Args:
         universe_id: Optional target universe page substrate.
+        scope: Optional explicit target: commons or universe. Omit to preserve
+            legacy target resolution.
         page: Wiki page slug or path for page writes.
         category: Wiki category for full page writes.
         filename: Wiki filename for full page writes.
@@ -837,6 +840,14 @@ def write_page(
         dry_run: Preview consolidation-style wiki writes when supported.
     """
     normalized_kind = kind.strip().lower()
+    if scope not in {"", "commons", "universe"}:
+        return json.dumps({
+            "error": "scope must be one of: commons, universe",
+        })
+    if scope == "commons" and universe_id.strip():
+        return json.dumps({
+            "error": "scope=commons cannot be combined with universe_id",
+        })
     # Gate every path except a dry-run PATCH preview: the patch handler is
     # the only wiki path that honors dry_run (full writes ignore it and
     # mutate; filings always mutate).
@@ -862,6 +873,7 @@ def write_page(
             tags,
             reporter_context,
             universe_id,
+            scope,
         ))
         and force_new is False
         and is_exact_wiki_canary_arguments({
@@ -905,8 +917,8 @@ def write_page(
     # authenticated founder's home. Only a write with NO universe target
     # (anonymous/dev) is a shared COMMONS write, which the relay may still do;
     # issue filings (kind=) above always stay on the commons.
-    target_universe = universe_id.strip()
-    if not target_universe:
+    target_universe = "" if scope == "commons" else universe_id.strip()
+    if scope != "commons" and not target_universe:
         from tinyassets.api.helpers import _request_universe
         from tinyassets.api.permissions import is_authenticated_request
 

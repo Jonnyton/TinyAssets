@@ -224,6 +224,111 @@ class TestPrivateCanonRelay:
         )
         assert not commons_hits, f"private canon leaked to commons: {commons_hits}"
 
+    def test_founder_can_explicitly_write_shared_commons(
+        self, universe_base, monkeypatch
+    ):
+        from tinyassets.api import helpers
+        from tinyassets.universe_server import write_page
+
+        monkeypatch.setattr(
+            helpers, "_request_universe", lambda _requested: "u-commons-carol"
+        )
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope="commons",
+            category="notes",
+            filename="shared-reference",
+            content="A public reference for every universe.",
+            dry_run=False,
+        ))
+
+        assert out.get("status") != "relay_to_universe", out
+        commons_hits = list(
+            (universe_base / "wiki").rglob("shared-reference.md")
+        )
+        assert commons_hits, out
+        universe_hits = list(
+            (universe_base / "u-commons-carol" / "wiki").rglob(
+                "shared-reference.md"
+            )
+        )
+        assert not universe_hits
+
+    def test_explicit_universe_scope_uses_the_sole_writer_relay(
+        self, universe_base
+    ):
+        from tinyassets.universe_server import write_page
+
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope="universe",
+            universe_id="u-relay-carol",
+            category="lore",
+            filename="private-reference",
+            content="This belongs to the universe's learned mind.",
+            dry_run=False,
+        ))
+
+        assert out.get("status") == "relay_to_universe", out
+        assert out.get("universe_id") == "u-relay-carol", out
+        assert out.get("relay", {}).get("content"), out
+
+    @pytest.mark.parametrize("scope", ["elsewhere", " COMMONS "])
+    def test_unknown_scope_fails_closed_before_mutation(
+        self, universe_base, scope
+    ):
+        from tinyassets.universe_server import write_page
+
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope=scope,
+            category="notes",
+            filename="must-not-exist",
+            content="This target is invalid.",
+            dry_run=False,
+        ))
+
+        assert out["error"] == (
+            "scope must be one of: commons, universe"
+        )
+        assert not list(universe_base.rglob("must-not-exist.md"))
+
+    def test_commons_scope_rejects_a_simultaneous_universe_target(
+        self, universe_base
+    ):
+        from tinyassets.universe_server import write_page
+
+        _authenticate(
+            "carol",
+            _FOUNDER_SCOPES + ["tinyassets.wiki.write", "tinyassets.wiki.read"],
+        )
+
+        out = json.loads(write_page(
+            scope="commons",
+            universe_id="u-contradictory",
+            category="notes",
+            filename="must-not-exist",
+            content="Contradictory targets must not mutate.",
+            dry_run=False,
+        ))
+
+        assert out["error"] == (
+            "scope=commons cannot be combined with universe_id"
+        )
+        assert not list(universe_base.rglob("must-not-exist.md"))
+
     def test_issue_filing_stays_on_commons_not_founder_home(self, universe_base):
         from tinyassets.universe_server import write_page
 
