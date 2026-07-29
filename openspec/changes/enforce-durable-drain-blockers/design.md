@@ -44,7 +44,8 @@ is needed.
 `blocked` payload returned by `claim_check.py --json`. This collection is not
 bounded by the candidate-hint display limit. Claim-check payloads preserve the
 complete normalized task label, and bounded target slugs use a deterministic
-content-hash suffix so labels that share a long prefix remain distinct.
+content-hash suffix computed before lossy punctuation folding so labels that
+share a long readable prefix remain distinct.
 
 After parsing a `BLOCKED` marker, the supervisor fetches origin and inspects
 exact `origin/main`. It accepts the result only when the reported target slug

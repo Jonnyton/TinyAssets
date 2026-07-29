@@ -363,8 +363,8 @@ def test_blocked_target_identity_does_not_alias_long_claimable_label(
     repo = tmp_path / "repo"
     repo.mkdir()
     shared_prefix = "same long task identity " * 12
-    claimable_label = f"{shared_prefix}claimable ending"
-    blocked_label = f"{shared_prefix}blocked ending"
+    claimable_label = f"{shared_prefix}alpha/beta"
+    blocked_label = f"{shared_prefix}alpha-beta"
     payload = {
         "counts": {
             "claimable": 1,
@@ -439,7 +439,7 @@ def test_legacy_target_identity_migration_rekeys_admission_and_retries_blockers(
 
     expected_target = drain._slugify(task_label)
     assert changed is True
-    assert state["target_identity_version"] == 2
+    assert state["target_identity_version"] == 3
     assert state["admission"]["target"] == expected_target
     assert state["resume_target"] == expected_target
     assert state["recent_blocked"] == []

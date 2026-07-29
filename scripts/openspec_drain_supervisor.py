@@ -41,7 +41,7 @@ MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
 DRAIN_CODEX_EFFORT = "medium"
-TARGET_IDENTITY_VERSION = 2
+TARGET_IDENTITY_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -136,11 +136,14 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
 
 
 def _slugify(value: str, *, limit: int = 48) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    normalized_label = " ".join(value.split()).casefold()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized_label).strip("-")
     slug = slug or "candidate"
     if len(slug) <= limit:
         return slug
-    digest = hashlib.sha256(slug.encode("utf-8")).hexdigest()[:8]
+    # Hash the complete label before its punctuation is folded into the
+    # readable prefix. Distinct labels must not inherit one another's blocker.
+    digest = hashlib.sha256(normalized_label.encode("utf-8")).hexdigest()[:8]
     if limit <= len(digest):
         return digest[:limit]
     prefix = slug[: limit - len(digest) - 1].rstrip("-")
