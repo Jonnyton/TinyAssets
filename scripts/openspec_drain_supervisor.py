@@ -708,12 +708,20 @@ Delivery contract:
 5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
    Work inside the existing change; do not mechanically fan out child changes.
-6. Implement test-first, obtain required independent review, push the PR, and
-   wait for required CI/auto-merge.
+6. Implement test-first and obtain required independent review. Use shell `git` and `gh`
+   commands from the assigned worktree to stage, commit, push, create the PR,
+   and wait for required CI/auto-merge. Do not treat an unavailable
+   provider-specific GitHub action as proof that repository publication is
+   unavailable.
 7. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
    retire the STATUS row. If merge succeeded but foldback remains, report
    PARTIAL so the next fresh worker resumes it.
-8. Preserve blockers honestly. Do not broaden into full-platform conversion.
+8. Preserve blockers honestly. `BLOCKED` is reserved for a durable task, host,
+   dependency, review, or policy gate. If verified local work exists but
+   staging, committing, pushing, or creating the PR fails, preserve the
+   worktree and return `FAILED`; the next fresh worker will resume the same
+   admission within the finite failure budget. Do not broaden into full-platform
+   conversion.
 
 Your last non-empty line must replace every placeholder in exactly this form.
 Do not print any other DRAIN_RESULT line:

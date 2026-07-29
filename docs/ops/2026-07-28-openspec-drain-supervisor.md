@@ -246,10 +246,24 @@ closed instead of guessing.
   next worker resumes the same target without counting a completed slice. If
   that worker also returns `PARTIAL` for the same target, the controller
   consumes a failure strike and waits before trying again.
-- `BLOCKED`: target is preserved in the recent-block list; controller idles.
+- `BLOCKED`: a durable task, host, dependency, review, or policy gate prevents
+  progress; the target is preserved in the recent-block list and the controller
+  idles.
 - `NO_CANDIDATE`: nothing is safely deliverable; controller idles rather than
   inventing work.
-- `FAILED`: worker-level failure; consumes the consecutive-failure budget.
+- `FAILED`: worker or delivery-infrastructure failure; consumes the
+  consecutive-failure budget while preserving the admitted worktree for a
+  fresh worker to resume. Verified work that cannot be staged, committed,
+  pushed, or published as a PR is `FAILED`, not `BLOCKED`.
+
+Workers publish from their assigned worktree with shell `git` and `gh`.
+Write-capable Codex workers receive the linked worktree's resolved Git common
+directory as an additional writable root and use `danger-full-access`, because
+Codex protects Git metadata under workspace-write even when that root is added.
+This mode is allowed only in the prepared, claimed worktree; claim, review, CI,
+and finite budgets are the safety boundary. Read-only peers stay read-only. On
+Windows, the peer launcher uses `CREATE_NO_WINDOW`, including when the CLI
+resolves to a `.CMD` shim.
 
 CLI-unavailable exit 127 stops immediately. Authentication/rate-limit-shaped
 failures receive at most three consecutive free idle retries; later repeats
