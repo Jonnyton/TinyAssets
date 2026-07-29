@@ -265,6 +265,35 @@ Host directive 2026-07-19: this project is spec-driven from here on.
   diagnostic at 90 seconds. On timeout they may proceed only from a clean
   current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
   provider-context gates remain mandatory.
+- Before dispatch, the controller snapshots a bounded STATUS-ordered candidate
+  set from `claim_check.py --json`. Controller admission reruns the checker in
+  the current-main worktree and commits the first still-valid claim before
+  dispatch. The worker verifies that prepared claim before broad audit.
+  Snapshot hints never override current collision, liveness, or host gates.
+- Disposable Codex drain workers use balanced `medium` reasoning effort. Their
+  safety/quality boundary is the preselected single slice plus tests,
+  independent review, CI, and finite budgets; they do not inherit a host
+  interactive session's higher deliberation setting.
+- The drain controller, not the paid coding worker, admits the first canonical
+  candidate. It runs the bounded claim feed, fetches current main, creates the
+  clean branch/worktree and `_PURPOSE.md`, commits the exact claim, persists
+  that lane, then launches the worker inside it. This is the drain-specific
+  session-start fast path: the worker begins at `--phase build`, must reuse the
+  prepared lane, and must not repeat selection or create another worktree.
+  Stale admission records a reaping commit first. Existing paths/branches are
+  never overwritten. `BLOCKED` preserves the lane but releases active admission
+  and adds the target to the bounded skip list; admission errors consume the
+  normal failure budget. Terminal results must name the assigned target.
+  `PARTIAL` replacement workers restack on current main before foldback.
+- `NO_CANDIDATE` requires proved exhaustion, not a glance at the CLAIMABLE
+  heading. Before idle, a drain worker must resume its own claim, select
+  claimable finish-first work, reap policy-qualified stale claims,
+  freshness-check blocker labels, then consider one safe cross-cutting
+  promotion under "Staying unblocked." The controller re-runs
+  `claim_check.py --json` and rejects `NO_CANDIDATE` while `claimable`, `stale`,
+  or rows owned by the exact drain identity are nonzero. Explicit host
+  confirmation that named sessions are closed releases their claims
+  immediately; autonomous same-day liveness is never guessed.
 - Write-capable peer CLIs are not reliably OS-sandboxed on the Windows host.
   The safety boundary is clean worktree + exact claim + one PR + review/CI +
   finite time/slice/failure budgets + controller-side GitHub merge verification.

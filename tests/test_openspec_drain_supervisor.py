@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,17 @@ drain = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 sys.modules[SPEC.name] = drain
 SPEC.loader.exec_module(drain)
+
+CLAIM_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "claim_check.py"
+CLAIM_SPEC = importlib.util.spec_from_file_location(
+    "claim_check_contract",
+    CLAIM_SCRIPT,
+)
+assert CLAIM_SPEC is not None
+claim_check = importlib.util.module_from_spec(CLAIM_SPEC)
+assert CLAIM_SPEC.loader is not None
+sys.modules[CLAIM_SPEC.name] = claim_check
+CLAIM_SPEC.loader.exec_module(claim_check)
 
 
 def _state(**overrides: object) -> dict[str, object]:
@@ -90,6 +102,592 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
         "DRAIN_RESULT: <MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED> "
         "<target-or-dash> <PR-url-or-dash>"
     )
+
+
+def test_worker_prompt_requires_proven_exhaustion_before_no_candidate() -> None:
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+    )
+
+    ordered_steps = [
+        "claimable finish-first",
+        "policy-qualified stale",
+        "freshness-check",
+        "cross-cutting",
+    ]
+    positions = [prompt.index(step) for step in ordered_steps]
+    assert positions == sorted(positions)
+    normalized = " ".join(prompt.split())
+    assert "claimable` and `stale` counts are both zero" in normalized
+    assert "NO_CANDIDATE" in prompt
+
+
+def test_worker_prompt_claims_preselected_candidate_before_broad_audit() -> None:
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+        candidate_hints=(
+            drain.CandidateHint(
+                classification="CLAIMABLE",
+                task_label="main-red round 2",
+                files=("tests/test_universe_server_framing.py",),
+            ),
+        ),
+    )
+
+    assert "[CLAIMABLE] main-red round 2" in prompt
+    assert "Before any broad audit or backlog scan" in prompt
+    assert "--phase claim --limit 10" in " ".join(prompt.split())
+    assert "commit that claim" in prompt
+    assert prompt.index("commit that claim") < prompt.index(
+        "openspec_flow.py audit"
+    )
+
+
+def test_candidate_snapshot_preserves_order_and_bounds_hints(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        claimable = [
+            {
+                "task_label": f"candidate-{index}",
+                "files": [f"file-{index}.py"],
+                "claimer": None,
+            }
+            for index in range(7)
+        ]
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 7,
+                        "blocked": 0,
+                        "in_flight": 1,
+                        "host_owned": 0,
+                        "stale": 1,
+                    },
+                    "claimable": claimable,
+                    "stale": [
+                        {
+                            "row": {
+                                "task_label": "stale-last",
+                                "files": ["stale.py"],
+                                "claimer": "old-session",
+                            },
+                            "reason": "no activity in 24h",
+                            "suggested_reap_status": (
+                                "reaped:drain-test:no-activity-24h"
+                            ),
+                        }
+                    ],
+                    "in_flight": [
+                        {
+                            "task_label": "resume-first",
+                            "files": ["resume.py"],
+                            "claimer": "drain-test",
+                        }
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    assert hasattr(drain, "inspect_candidate_snapshot")
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+        max_hints=5,
+    )
+
+    assert snapshot.pressure == drain.CandidatePressure(
+        claimable=7,
+        stale=1,
+        owned=1,
+    )
+    assert [hint.task_label for hint in snapshot.hints] == [
+        "resume-first",
+        "candidate-0",
+        "candidate-1",
+        "candidate-2",
+        "candidate-3",
+    ]
+    assert snapshot.hints[0].classification == "OWNED"
+
+
+def test_candidate_snapshot_unwraps_canonical_stale_rows(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    claimable_row = claim_check.Row(
+        raw_task="**claimable-first**",
+        files=["claimable.py"],
+        depends_raw="-",
+        status="pending",
+        line_no=1,
+    )
+    stale_row = claim_check.Row(
+        raw_task="**stale-second**",
+        files=["stale.py"],
+        depends_raw="-",
+        status="claimed:closed-session",
+        line_no=2,
+    )
+    payload = claim_check.build_payload(
+        provider="drain-test",
+        claimable=[claimable_row],
+        blocked=[],
+        in_flight=[],
+        host_owned=[],
+        stale=[(stale_row, "no activity in 24h")],
+        show_reap=True,
+    )
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+
+    assert [
+        (hint.classification, hint.task_label) for hint in snapshot.hints
+    ] == [
+        ("CLAIMABLE", "claimable-first"),
+        ("STALE", "stale-second"),
+    ]
+
+
+def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 3,
+                        "blocked": 2,
+                        "in_flight": 1,
+                        "host_owned": 4,
+                        "stale": 2,
+                    },
+                    "in_flight": [
+                        {"claimer": "drain-test"},
+                        {"claimer": "other-provider"},
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+    assert hasattr(drain, "inspect_candidate_pressure")
+    pressure = drain.inspect_candidate_pressure(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+
+    assert pressure.claimable == 3
+    assert pressure.stale == 2
+    assert pressure.owned == 1
+
+
+@pytest.mark.parametrize(
+    ("claimable", "stale", "owned", "expected"),
+    [
+        (1, 0, 0, "claimable=1 stale=0 owned=0"),
+        (0, 2, 0, "claimable=0 stale=2 owned=0"),
+        (0, 0, 1, "claimable=0 stale=0 owned=1"),
+        (0, 0, 0, None),
+    ],
+)
+def test_no_candidate_rejection_requires_zero_pressure(
+    claimable: int,
+    stale: int,
+    owned: int,
+    expected: str | None,
+) -> None:
+    assert hasattr(drain, "CandidatePressure")
+    assert hasattr(drain, "no_candidate_rejection")
+    pressure = drain.CandidatePressure(
+        claimable=claimable,
+        stale=stale,
+        owned=owned,
+    )
+    result = drain.DrainResult("NO_CANDIDATE", "-", "-")
+
+    assert drain.no_candidate_rejection(result, pressure) == expected
+
+
+def test_begin_attempt_marks_idle_controller_running() -> None:
+    state = _state(attempts=1, status="idle")
+
+    assert hasattr(drain, "begin_attempt")
+    attempt = drain.begin_attempt(state)
+
+    assert attempt == 2
+    assert state["attempts"] == 2
+    assert state["status"] == "running"
+
+
+def test_codex_drain_dispatch_uses_balanced_reasoning_effort(
+    tmp_path: Path,
+) -> None:
+    args = SimpleNamespace(
+        provider="codex",
+        repo=tmp_path,
+        worker_timeout=5400,
+        model=None,
+    )
+
+    assert hasattr(drain, "build_dispatch_command")
+    command = drain.build_dispatch_command(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=tmp_path / "result.md",
+    )
+
+    assert command[command.index("--effort") + 1] == "medium"
+
+    args.provider = "claude"
+    claude_command = drain.build_dispatch_command(
+        args=args,
+        prompt_path=tmp_path / "prompt.md",
+        result_path=tmp_path / "result.md",
+    )
+    assert "--effort" not in claude_command
+
+
+def test_mechanical_admission_claims_candidate_in_prepared_worktree(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "controller"
+    repo.mkdir()
+    status_text = (
+        "# Status\n\n"
+        "## Work\n\n"
+        "| Task | Files | Depends | Status |\n"
+        "|---|---|---|---|\n"
+        "| **main-red round 2** | `tests/red.py` | - | pending |\n"
+    )
+    (repo / "STATUS.md").write_text(status_text, encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if any("claim_check.py" in part for part in command):
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout=json.dumps(
+                    {
+                        "counts": {
+                            "claimable": 1,
+                            "blocked": 0,
+                            "in_flight": 0,
+                            "host_owned": 0,
+                            "stale": 0,
+                        },
+                        "claimable": [
+                            {
+                                "task_label": "main-red round 2",
+                                "files": ["tests/red.py"],
+                                "claimer": None,
+                                "line_no": 7,
+                                "status": "pending",
+                            }
+                        ],
+                        "stale": [],
+                        "in_flight": [],
+                    }
+                ),
+                stderr="",
+            )
+        if "status" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if "show-ref" in command:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+        if "worktree" in command and "add" in command:
+            worktree = Path(command[-2])
+            worktree.mkdir()
+            (worktree / "STATUS.md").write_text(status_text, encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    admission = drain.admit_candidate(
+        repo=repo,
+        identity="drain-20260728-fast",
+        hint=drain.CandidateHint(
+            classification="CLAIMABLE",
+            task_label="main-red round 2",
+            files=("tests/red.py",),
+            line_no=7,
+            status="pending",
+        ),
+        runner=runner,
+        today="2026-07-28",
+    )
+
+    claimed_status = (admission.worktree / "STATUS.md").read_text(
+        encoding="utf-8"
+    )
+    assert "claimed:drain-20260728-fast ACTIVE 2026-07-28" in claimed_status
+    assert admission.target == "main-red-round-2"
+    assert (admission.worktree / "_PURPOSE.md").exists()
+    assert any("worktree" in command and "add" in command for command in commands)
+    assert sum("commit" in command for command in commands) == 1
+
+
+def test_admitted_prompt_forbids_reselection_and_duplicate_worktree(
+    tmp_path: Path,
+) -> None:
+    admission = drain.Admission(
+        target="main-red-round-2",
+        task_label="main-red round 2",
+        worktree=tmp_path / "wf-drain-fast-main-red",
+        branch="drain/drain-fast/main-red-round-2",
+    )
+
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+        admission=admission,
+    )
+
+    assert "already admitted and claimed" in prompt
+    assert "Do not create another worktree" in prompt
+    assert "Do not select a different lane" in prompt
+    assert str(admission.worktree) in prompt
+
+
+def test_mechanical_admission_never_deletes_preexisting_branch(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "controller"
+    repo.mkdir()
+    (repo / "STATUS.md").write_text(
+        "## Work\n| Task | Files | Depends | Status |\n"
+        "|---|---|---|---|\n"
+        "| **target** | `x.py` | - | pending |\n",
+        encoding="utf-8",
+    )
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if "show-ref" in command:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    with pytest.raises(RuntimeError, match="branch already exists"):
+        drain.admit_candidate(
+            repo=repo,
+            identity="drain-existing",
+            hint=drain.CandidateHint(
+                classification="CLAIMABLE",
+                task_label="target",
+                files=("x.py",),
+                line_no=4,
+                status="pending",
+            ),
+            runner=runner,
+            today="2026-07-28",
+        )
+
+    assert not any("branch" in command and "-D" in command for command in commands)
+
+
+def test_mechanical_stale_admission_commits_reap_before_claim(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "controller"
+    repo.mkdir()
+    status_text = (
+        "## Work\n| Task | Files | Depends | Status |\n"
+        "|---|---|---|---|\n"
+        "| **stale target** | `x.py` | - | claimed:closed-session |\n"
+    )
+    (repo / "STATUS.md").write_text(status_text, encoding="utf-8")
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if any("claim_check.py" in part for part in command):
+            return subprocess.CompletedProcess(
+                command,
+                1,
+                stdout=json.dumps(
+                    {
+                        "counts": {
+                            "claimable": 0,
+                            "blocked": 0,
+                            "in_flight": 1,
+                            "host_owned": 0,
+                            "stale": 1,
+                        },
+                        "claimable": [],
+                        "in_flight": [
+                            {
+                                "task_label": "stale target",
+                                "files": ["x.py"],
+                                "line_no": 4,
+                                "status": "claimed:closed-session",
+                                "claimer": "closed-session",
+                            }
+                        ],
+                        "stale": [
+                            {
+                                "row": {
+                                    "task_label": "stale target",
+                                    "files": ["x.py"],
+                                    "line_no": 4,
+                                    "status": "claimed:closed-session",
+                                    "claimer": "closed-session",
+                                },
+                                "reason": "no activity in 24h",
+                                "suggested_reap_status": (
+                                    "reaped:drain-stale:no-activity-24h"
+                                ),
+                            }
+                        ],
+                    }
+                ),
+                stderr="",
+            )
+        if "show-ref" in command:
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="")
+        if "worktree" in command and "add" in command:
+            worktree = Path(command[-2])
+            worktree.mkdir()
+            (worktree / "STATUS.md").write_text(status_text, encoding="utf-8")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    admission = drain.admit_candidate(
+        repo=repo,
+        identity="drain-stale",
+        hint=drain.CandidateHint(
+            classification="STALE",
+            task_label="stale target",
+            files=("x.py",),
+            line_no=4,
+            status="claimed:closed-session",
+        ),
+        runner=runner,
+        today="2026-07-28",
+    )
+
+    commit_messages = [
+        command[command.index("-m") + 1]
+        for command in commands
+        if "commit" in command
+    ]
+    assert commit_messages == [
+        "coord: reap stale stale-target claim",
+        "coord: claim stale-target for drain",
+    ]
+    assert "claimed:drain-stale ACTIVE 2026-07-28" in (
+        admission.worktree / "STATUS.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_admission_command_normalizes_timeout_to_runtime_error(
+    tmp_path: Path,
+) -> None:
+    def runner(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, 120)
+
+    with pytest.raises(RuntimeError, match="timed out"):
+        drain._admission_command(
+            ["git", "fetch"],
+            cwd=tmp_path,
+            runner=runner,
+        )
+
+
+def test_admission_cleanup_never_masks_original_failure(tmp_path: Path) -> None:
+    def runner(
+        command: list[str],
+        **_: object,
+    ) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(command, 30)
+
+    drain._best_effort_admission_cleanup(
+        ["git", "worktree", "remove", "--force", "known-path"],
+        cwd=tmp_path,
+        runner=runner,
+        timeout=30,
+    )
+
+
+def test_blocked_candidates_are_filtered_before_next_admission() -> None:
+    hints = (
+        drain.CandidateHint(
+            "OWNED",
+            "first target",
+            (),
+            1,
+            "claimed:drain-test",
+        ),
+        drain.CandidateHint("CLAIMABLE", "first target", (), 1, "pending"),
+        drain.CandidateHint("CLAIMABLE", "second target", (), 2, "pending"),
+    )
+
+    remaining = drain.filter_recently_blocked_hints(
+        hints,
+        recent_blocked=["first-target"],
+    )
+
+    assert [
+        (hint.classification, hint.task_label) for hint in remaining
+    ] == [
+        ("OWNED", "first target"),
+        ("CLAIMABLE", "second target"),
+    ]
+
+
+def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
+    admission = drain.Admission(
+        target="assigned-target",
+        task_label="assigned target",
+        worktree=tmp_path,
+        branch="drain/run/assigned-target",
+    )
+
+    rejection = drain.admission_result_rejection(
+        drain.DrainResult("BLOCKED", "different-target", "-"),
+        admission,
+    )
+
+    assert rejection == "assigned=assigned-target reported=different-target"
 
 
 def test_apply_merged_requires_controller_verification() -> None:
@@ -486,3 +1084,77 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
     assert exit_code == 0
     assert state["completed_slices"] == 1
     assert state["status"] == "merged"
+
+
+def test_run_dispatches_inside_mechanically_admitted_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "wf-drain-fast-target"
+    worktree.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        classification="CLAIMABLE",
+        task_label="target",
+        files=("x.py",),
+        line_no=1,
+        status="pending",
+    )
+    admission = drain.Admission(
+        target="target",
+        task_label="target",
+        worktree=worktree,
+        branch="drain/fast/target",
+    )
+    monkeypatch.setattr(
+        drain,
+        "inspect_candidate_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
+            hints=(hint,),
+        ),
+    )
+    monkeypatch.setattr(drain, "admit_candidate", lambda **_kwargs: admission)
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+        worker_cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args
+        assert worker_cwd == worktree
+        assert "already admitted and claimed" in prompt_path.read_text(
+            encoding="utf-8"
+        )
+        result_path.write_text(
+            "preserved\nDRAIN_RESULT: BLOCKED target -\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--once",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["admission"] is None
+    assert state["recent_blocked"] == ["target"]
+    assert state["status"] == "blocked"

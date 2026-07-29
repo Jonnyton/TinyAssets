@@ -42,6 +42,35 @@ preserving the exact `drain-<run-id>` identity and any live STATUS claim.
 Runtime/slice budget completion can start another finite run during the same
 computer session; fatal/failure-budget outcomes remain down.
 
+Yellow `idle` is valid only after proved exhaustion. A worker must process
+claimable rows, policy-qualified stale claims, current blocker evidence, and
+safe cross-cutting recovery in that order. After a `NO_CANDIDATE` marker, the
+controller independently runs `claim_check.py --json`; any nonzero claimable,
+stale, or exact-drain-owned count rejects the result and consumes a bounded
+failure strike. Two ignored rejections therefore become visibly down instead
+of burning subscription in an endless false-idle loop.
+
+Immediately before dispatch, the controller also injects at most five ordered
+candidate hints from the canonical checker. A worker reruns that checker and
+commits the first still-valid claim before broad audit. The recheck keeps the
+snapshot race-safe while avoiding an unbounded startup scan.
+
+Codex drain workers are launched at `medium` reasoning effort even when the
+host's interactive Codex default is `high`. The drain's narrow preselected
+slice, tests, independent review, CI, and finite budgets provide the quality
+boundary while keeping admission latency proportional to the task.
+
+Admission itself is deterministic and does not consume a coding-worker turn.
+The controller takes the first canonical hint, runs the bounded claim feed,
+fetches current main, creates a purpose-named branch/worktree, writes
+`_PURPOSE.md`, commits the exact STATUS claim, persists that admission, and only
+then launches the worker with the prepared worktree as cwd. Replacement workers
+reuse it. A pre-existing branch/path fails visibly; it is never overwritten.
+Admission timeouts/errors consume the normal failure budget. `BLOCKED` preserves
+the worktree for recovery but releases active admission and skips that target
+on the next bounded snapshot. `PARTIAL` retains the lane and requires a
+current-main restack before foldback publication.
+
 Direct health commands:
 
 ```powershell
