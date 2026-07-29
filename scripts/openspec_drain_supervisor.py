@@ -69,6 +69,7 @@ class CandidateHint:
 class CandidateSnapshot:
     pressure: CandidatePressure
     hints: tuple[CandidateHint, ...]
+    blocked_targets: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -530,18 +531,25 @@ def inspect_candidate_snapshot(
         stale = int(counts["stale"])
         in_flight = payload.get("in_flight", [])
         claimable_rows = payload.get("claimable", [])
+        blocked_rows = payload.get("blocked", [])
         stale_rows = payload.get("stale", [])
         if not all(
             isinstance(rows, list)
-            for rows in (in_flight, claimable_rows, stale_rows)
+            for rows in (in_flight, claimable_rows, blocked_rows, stale_rows)
         ):
             raise TypeError("candidate collections must be lists")
         if not all(
             isinstance(row, dict)
-            for rows in (in_flight, claimable_rows, stale_rows)
+            for rows in (in_flight, claimable_rows, blocked_rows, stale_rows)
             for row in rows
         ):
             raise TypeError("candidate rows must be objects")
+        unwrapped_blocked_rows = []
+        for entry in blocked_rows:
+            row = entry.get("row")
+            if not isinstance(row, dict):
+                raise TypeError("blocked candidate row must be an object")
+            unwrapped_blocked_rows.append(row)
         unwrapped_stale_rows = []
         for entry in stale_rows:
             row = entry.get("row")
@@ -564,6 +572,10 @@ def inspect_candidate_snapshot(
             _candidate_hint(row, classification)
             for row, classification in ordered_rows[:max_hints]
         )
+        blocked_targets = frozenset(
+            _slugify(_candidate_hint(row, "BLOCKED").task_label)
+            for row in unwrapped_blocked_rows
+        )
     except (
         KeyError,
         OSError,
@@ -580,6 +592,7 @@ def inspect_candidate_snapshot(
             owned=owned,
         ),
         hints=hints,
+        blocked_targets=blocked_targets,
     )
 
 

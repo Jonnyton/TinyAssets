@@ -289,6 +289,107 @@ def test_candidate_snapshot_unwraps_canonical_stale_rows(
     ]
 
 
+def test_candidate_snapshot_extracts_all_blocked_targets_beyond_hint_limit(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    payload = {
+        "counts": {
+            "claimable": 2,
+            "blocked": 3,
+            "in_flight": 0,
+            "host_owned": 0,
+            "stale": 0,
+        },
+        "claimable": [
+            {"task_label": "candidate one", "files": ["one.py"]},
+            {"task_label": "candidate two", "files": ["two.py"]},
+        ],
+        "blocked": [
+            {
+                "row": {
+                    "task_label": f"blocked target {index}",
+                    "files": [f"blocked-{index}.py"],
+                },
+                "reasons": ["dependency"],
+            }
+            for index in range(3)
+        ],
+        "in_flight": [],
+        "stale": [],
+    }
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+        max_hints=1,
+    )
+
+    assert len(snapshot.hints) == 1
+    assert snapshot.blocked_targets == frozenset(
+        {
+            "blocked-target-0",
+            "blocked-target-1",
+            "blocked-target-2",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        {"row": {"task_label": "not-a-list"}},
+        [{}],
+        [{"row": "not-an-object", "reasons": ["dependency"]}],
+    ],
+)
+def test_candidate_snapshot_rejects_malformed_blocked_collection(
+    tmp_path: Path,
+    blocked: object,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 0,
+                        "blocked": 1,
+                        "in_flight": 0,
+                        "host_owned": 0,
+                        "stale": 0,
+                    },
+                    "claimable": [],
+                    "blocked": blocked,
+                    "in_flight": [],
+                    "stale": [],
+                }
+            ),
+            stderr="",
+        )
+
+    with pytest.raises(RuntimeError, match="claim pressure inspection failed"):
+        drain.inspect_candidate_snapshot(
+            repo=repo,
+            provider="drain-test",
+            runner=runner,
+        )
+
+
 def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

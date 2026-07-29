@@ -1,6 +1,6 @@
 ## 1. Make Blocker Classification Inspectable
 
-- [ ] 1.1 Add failing snapshot tests for complete canonical blocked-target extraction, including malformed payload and bounded-hint independence; minimally expose the derived blocked target set on `CandidateSnapshot`.
+- [x] 1.1 Add failing snapshot tests for complete canonical blocked-target extraction, including malformed payload and bounded-hint independence; minimally expose the derived blocked target set on `CandidateSnapshot`.
   - **Verify:** focused snapshot tests fail before implementation and pass after it.
 
 ## 2. Enforce Durable Results
