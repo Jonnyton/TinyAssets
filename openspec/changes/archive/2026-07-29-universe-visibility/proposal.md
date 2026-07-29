@@ -6,10 +6,13 @@ There is no defined public/private model for a universe. Nothing expresses per-u
 intent, so everything defaults to visible — and neither the platform nor a reader can tell whether
 that is correct.
 
-Found by live ui-test on 2026-07-21 (first-contact flow, Claude.ai incognito, connector added from
-scratch, never authenticated). An anonymous caller enumerated every universe with metadata — name,
-word count, activity dates, state — and read the `default-universe` commons, which currently holds
-the project's own engineering backlog (patch requests, bug reports, identity/lease defect notes).
+Historical evidence from a 2026-07-21 live ui-test first exposed the missing visibility contract:
+a fresh Claude.ai incognito window enumerated every universe with metadata — name, word count,
+activity dates, state — and read the `default-universe` commons, which currently holds the project's
+own engineering backlog (patch requests, bug reports, identity/lease defect notes). That session was
+initially classified as anonymous because no interactive login occurred, but 2026-07-28 revalidation
+contradicted that classification: Claude's account-level OAuth grant survived connector removal and
+re-add, so the historical caller was authenticated.
 
 **This is a specification gap, not (only) a bug.** The existing universes are old and
 publicly-intended; they carry no marking that would make them read as anything else. There was no
@@ -17,10 +20,10 @@ declared boundary to breach. That is exactly the problem: correctness is current
 implementation can be verified against it. The model has to be defined before anything can be called
 a leak or a fix.
 
-Related but distinct: an unauthenticated session also resolves to a concrete account principal and
-reports host daemon liveness, provider auth state, and host disk telemetry. That is an identity-
-resolution defect handled in the `distributed-execution` change — no visibility setting would make it
-correct, because none of it is universe content.
+Related but distinct: the historical Claude session resolved to a concrete account principal and
+reported host daemon liveness, provider auth state, and host disk telemetry. Its original anonymous
+classification is retracted; identity resolution and telemetry exposure remain outside this
+visibility model because none of that data is universe content.
 
 ## What Changes
 

@@ -64,9 +64,14 @@ The `create` default *value* (public vs private) remains a host knob (design 1.3
       clean. Legacy get_status/telemetry suites migrated (fixtures declare, or the
       `tests/conftest.py` backfill-emulation for pre-visibility modules) — zero net new
       failures vs origin/main on the universe/wiki/status sweep.
-- [ ] 3.2 Re-run the first-contact ui-test and confirm what an anonymous caller can enumerate matches
+- [x] 3.2 Re-run the first-contact ui-test and confirm what an anonymous caller can enumerate matches
       the declared intent
-      → **BLOCKED on live acceptance**: requires a deployed build + browser connector
-      (`ui-test` through `https://tinyassets.io/mcp`). This is a verifier/host acceptance step
-      after cross-family review + deploy — not runnable in this builder lane. Left unchecked
-      deliberately.
+      → Passed 2026-07-28 in a host-visible ChatGPT Temporary Chat through the canonical
+      `https://tinyassets.io/mcp` connector configured with `No Auth`. `get_status` rendered
+      `request_identity.bearer_present: false` and the deployment-scoped anonymous fingerprint
+      `v1:anonymous:61f93258…bfd291`; `read_graph(target=graphs)` rendered exactly 15 discoverable
+      universes, each alongside `visibility: public`, without a hidden count or hidden universe name.
+      Evidence: `output/user_sim_session.md`,
+      `output/2026-07-28-universe-visibility-anonymous-identity-proof.jpg`,
+      `output/2026-07-28-universe-visibility-anonymous-proof-middle.jpg`, and
+      `output/2026-07-28-universe-visibility-anonymous-proof-lower.jpg`.

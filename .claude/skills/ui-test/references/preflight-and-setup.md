@@ -17,11 +17,17 @@ Codex may use its in-app Browser, Chrome extension/plugin, CDP or CLI browser dr
 
 ## ChatGPT live preflight
 
-When using the Anthropic / Cowork ChatGPT route, check these before the first prompt and log the result:
+When using the ChatGPT route, check these before the first prompt and log the result:
 
 - The visible tab is `https://chatgpt.com/` or an existing `chatgpt.com/c/...` conversation.
 - Developer mode is enabled for the conversation.
 - The composer shows the `TinyAssets` connector/tool as available.
+- The selected model actually exposes developer-plugin actions. On 2026-07-28, Pro accepted the
+  TinyAssets attachment but told the user no TinyAssets tools were available; Instant exposed the
+  actions correctly. If the attachment pill is visible but the model denies tool availability,
+  switch to Instant and start a fresh Temporary Chat before declaring a connector blocker.
+- For anonymous-caller proof, the custom plugin's Authentication setting is explicitly `No Auth`;
+  OAuth or Mixed does not establish an anonymous request.
 
 If any item is missing, stop the mission and ask the host to fix that exact item. Do not test through a fresh profile or a direct MCP call.
 
