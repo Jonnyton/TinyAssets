@@ -122,6 +122,11 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     assert "worktree_status.py" in prompt and "90 seconds" in prompt
     assert "not reliably OS-sandboxed" in prompt
     assert "shell `git` and `gh`" in normalized
+    assert "create the PR as a draft" in normalized
+    assert "Drain-Review-Verdict: APPROVE" in prompt
+    assert "Drain-Review-Head:" in prompt
+    assert "Drain-Review-Artifact:" in prompt
+    assert "Do not invoke `gh pr merge` directly" in normalized
     assert "`BLOCKED` is reserved" in normalized
     assert "must first land a sanitized STATUS dependency or blocker" in normalized
     assert "current `origin/main` classifies the exact target as blocked" in normalized

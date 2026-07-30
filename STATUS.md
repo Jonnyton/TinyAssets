@@ -9,7 +9,6 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
 - **[P2 filed:2026-06-30 verified:2026-07-22]** slice-3 F5 / escrow F1: `_current_actor` env fallback (engine_helpers.py:192) bypasses permissions.py.
 - [filed:2026-04-17 verified:2026-07-25] Privacy Q6.3: legacy set_engine writes no ceiling; gemini/groq/grok remain fallbacks (router.py:89-92), and ambient no-universe env can reach maintainer auth until V2.
-- **[P1 filed:2026-07-29 verified:2026-07-29]** Drain can merge before independent review; #1884 did, and #1888 repaired the review-found defects.
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
