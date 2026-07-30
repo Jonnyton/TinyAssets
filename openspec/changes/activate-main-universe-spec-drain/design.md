@@ -85,10 +85,13 @@ Activation is gated on current-main prerequisites:
 ### 3. Activation, claims, and external effects use separate durable identities
 
 Host decision 2026-07-29: epoch-2 transactional claiming is the sole live
-mutation authority. Epoch-1 file locking is compatibility-drain-only during a
-bounded migration and cannot admit new work or mutate this automation while
-epoch 2 is active. Cutover is fail-closed and the two authorities are never
-dual-active.
+mutation authority in the approved target. As built, epoch 2 remains
+dark/inactive and epoch-1 file locking remains the live bridge until task 4.1
+implements and proves the server-authoritative cutover. Migration closes
+epoch-1 admission and drains or fences already-admitted work before activation;
+afterward epoch 1 is compatibility-reconciliation-only and cannot admit new
+work or mutate this automation. Cutover is fail-closed and the two authorities
+are never dual-active.
 
 Every invocation reads exact current `origin/main`, follows the canonical
 STATUS/OpenSpec admission policy, and acquires one durable task claim before
