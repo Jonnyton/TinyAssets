@@ -574,6 +574,25 @@ class HandoffStore:
         })
 
         with self._open(write=True) as conn:
+            if handoff_id:
+                existing = conn.execute(
+                    """
+                    SELECT outcome_id, account_id
+                      FROM outcome_evidence
+                     WHERE handoff_id = ?
+                     LIMIT 1
+                    """,
+                    (handoff_id,),
+                ).fetchone()
+                if existing is not None:
+                    if existing["account_id"] != account_id:
+                        raise HandoffAccessError(
+                            f"handoff {handoff_id!r} is not available to this account"
+                        )
+                    return self.get_outcome_evidence(
+                        existing["outcome_id"],
+                        actor_id=account_id,
+                    )
             conn.execute(
                 """
                 INSERT INTO outcome_event (

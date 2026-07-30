@@ -26,6 +26,28 @@ never assume repo-local paths. If status reports
 operation isn't supported in this slice — treat linked repos/folders as read-only
 and STOP before editing.
 
+At dispatch/triage time, also run `python scripts/openspec_flow.py audit` and
+finish existing delivery WIP before admitting more. This is on-demand flow
+control, not a mandatory session-start step.
+
+When the host asks for unattended all-day drain, use
+`scripts/openspec_drain_supervisor.py` rather than one giant implementation
+prompt or the utilization-floor fleet. The controller launches one fresh worker
+at a time with one PR, finite budgets, persistent state, and independent GitHub
+merge verification. Keep one exact drain identity across replacement workers
+and resume its own claim first. A legacy oversized change may supply one
+concrete recovery slice of at most 12 unchecked tasks; never mechanically fan
+out child changes. One immediate same-target `PARTIAL` resume is allowed;
+repeated `PARTIAL` results consume failure strikes and idle. Authentication and
+rate-limit retries are bounded, and stale-lock recovery must reject a live PID.
+`Start the OpenSpec drain` is the canonical host trigger; do not make the host
+remember launch commands. On the Windows host, prefer the installed sign-in
+watchdog/tray: attach to a live drain, resume the same identity after abrupt
+shutdown, show honest running/waiting/down health, and require explicit restart
+after terminal failure.
+Follow the start/status/stop/recovery runbook at
+`docs/ops/2026-07-28-openspec-drain-supervisor.md`.
+
 ## explore — a thinking partner
 
 A stance, not a workflow: curious, visual (ASCII diagrams liberally), adaptive,
@@ -48,6 +70,18 @@ ready artifacts in dependency order: `openspec instructions <artifact-id>
 these blocks into the file). Read completed dependencies for context, write each
 artifact, re-check status, until every `applyRequires` artifact is `done`. Verify
 each file exists before moving on.
+
+A delivery change has one intent expressible in one sentence, one owner, one
+branch, one PR, explicit acceptance/verification, and at most 12 total task
+checkboxes. Reference full-product vision in PLAN/design/audits; never
+bulk-convert it into active changes. Park incidental findings outside the
+active queue. After scaffolding the change and before claiming or building it,
+run `python scripts/openspec_flow.py check-change <name> --provider
+<exact-session-provider>`. Every matching claimed row counts conservatively.
+One active delivery change is allowed per exact STATUS identity; global WIP
+stays visible and minting provider suffixes to evade the limit is a review
+violation. Existing oversized changes remain diagnostic legacy state. The
+12-task ceiling is a 2026-07-28 calibration to review on 2026-08-11.
 
 ## apply — implement the tasks
 
@@ -83,4 +117,5 @@ delta specs exist, assess sync state and offer to sync first (recommended). Then
 - [ ] Oriented via `openspec list`/`status --json`; used resolved paths, not assumed ones
 - [ ] No code written in explore mode; insights captured only with user consent
 - [ ] All `applyRequires` artifacts `done` before apply; tasks checked off as completed
+- [ ] Delivery admission checked; one intent/owner/branch/PR and no more than 12 total task checkboxes
 - [ ] Spec sync preserved unmentioned content and is idempotent; archive confirmed on incomplete work

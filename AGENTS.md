@@ -168,7 +168,7 @@ scoped reader at `python scripts/docview.py`.
 - When the right workflow skill is not obvious, start with `using-agent-skills` and then read the matching skill.
 - After editing shared skills, run `powershell -ExecutionPolicy Bypass -File scripts/sync-skills.ps1` to refresh the Claude Code mirror.
 - When the user points at an outside project, repo, paper, benchmark, article, or codebase and asks what TinyAssets should learn or integrate, use `external-research-implications`. That process must canonicalize the source, research current context, compare module-by-module against TinyAssets, write durable implications, and self-update the skill when the process itself improves.
-- Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and TinyAssets context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding.
+- Research-derived concepts need opposite-provider review before implementation. If Codex makes the initial finding, Claude researches/reviews it; if Claude makes the initial finding, Codex researches/reviews it. If another provider makes the initial finding, name a different reviewer provider explicitly in `STATUS.md`, preferring the Codex/Claude pair when available. The review must re-check sources and TinyAssets context, leave a durable artifact, and gate any build, git push, live rollout, or acceptance test based on the finding. When the required opposite provider reports a hard account, subscription, spend, or usage limit, the review-provider limit fallback under Quality Gates applies.
 
 ### Skill methodology [all providers]
 
@@ -214,6 +214,100 @@ Host directive 2026-07-19: this project is spec-driven from here on.
 - **Truth split stays.** `PLAN.md` owns architecture and principles (why the
   system is shaped this way); `openspec/specs/` owns behavioral requirements
   (what each capability does). Specs complement PLAN.md, never replace it.
+
+#### OpenSpec delivery flow v1 (review 2026-08-11)
+
+- **Delta-first, never vision conversion.** A delivery change has one intent
+  expressible in one sentence, one owner, one branch, one PR, explicit
+  acceptance/verification, and at most 12 total task checkboxes. Full-product
+  vision belongs in PLAN/design/audits; reference it instead of bulk-converting
+  it into active changes. Park incidental findings in the idea feed unless
+  required by the current acceptance contract.
+- **One delivery change per exact session identity.** After scaffolding a
+  change, and before claiming or building it, run `python
+  scripts/openspec_flow.py check-change <name> --provider
+  <session-specific-provider>`. The exact `claimed:<provider>` value owns the
+  slot. Every matching claimed row counts conservatively, every result reports
+  global WIP, and minting a new provider suffix to evade the limit is a review
+  violation. A P0/security exception must name the exception and the WIP it
+  displaces.
+- **Finish before starting.** At dispatch/triage time, run `python
+  scripts/openspec_flow.py audit`. Prefer complete-but-unarchived, then the
+  smallest unblocked in-flight change, then the smallest P0/uptime
+  dependency-removal slice, before admitting new work. This is on-demand flow
+  control, not another mandatory session-start gate.
+- **Legacy debt is diagnostic.** Existing oversized changes are grandfathered
+  for visibility, not blessed. Do not mechanically fan them into child changes;
+  select a concrete delivery slice when capacity is free. The 12-task ceiling
+  is a dated 2026-07-28 calibration; review it on 2026-08-11 against cycle time
+  and current model capability.
+
+#### All-day OpenSpec drain
+
+- `Start the OpenSpec drain` is the canonical host trigger. Do not ask the host
+  to remember setup commands: inspect the autostart/watchdog state, attach or
+  start it, and report health. Normal daily operation uses the installed
+  current-user sign-in task and requires no prompt.
+- Use `python scripts/openspec_drain_supervisor.py run` when the host wants one
+  controller to drain work for hours. It launches one fresh worker at a time;
+  each worker owns at most one recovery slice and one PR. Do not run it
+  alongside `scripts/fleet_supervisor.py`—the fleet's utilization floor is a
+  different mechanism.
+- One run keeps one exact `drain-<run-id>` identity. A replacement worker must
+  resume and finish/fold back that identity's existing claim before selecting
+  different work. `PARTIAL` means a PR merged but archive/STATUS debt remains.
+  One immediate same-target resume is allowed; repeated `PARTIAL` results
+  consume failure strikes and idle instead of dispatching endlessly.
+- A legacy oversized change may be drained only through one concrete recovery
+  slice of at most 12 unchecked tasks per worker, preferably fewer. Work within
+  the existing change; do not mechanically create child changes.
+- Controller-launched drain workers may cap the global `worktree_status.py`
+  diagnostic at 90 seconds. On timeout they may proceed only from a clean
+  current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
+  provider-context gates remain mandatory.
+- Before dispatch, the controller snapshots a bounded STATUS-ordered candidate
+  set from `claim_check.py --json`. Controller admission reruns the checker in
+  the current-main worktree and commits the first still-valid claim before
+  dispatch. The worker verifies that prepared claim before broad audit.
+  Snapshot hints never override current collision, liveness, or host gates.
+- Disposable Codex drain workers use balanced `medium` reasoning effort. Their
+  safety/quality boundary is the preselected single slice plus tests,
+  independent review, CI, and finite budgets; they do not inherit a host
+  interactive session's higher deliberation setting.
+- The drain controller, not the paid coding worker, admits the first canonical
+  candidate. It runs the bounded claim feed, fetches current main, creates the
+  clean branch/worktree and `_PURPOSE.md`, commits the exact claim, persists
+  that lane, then launches the worker inside it. This is the drain-specific
+  session-start fast path: the worker begins at `--phase build`, must reuse the
+  prepared lane, and must not repeat selection or create another worktree.
+  Stale admission records a reaping commit first. Existing paths/branches are
+  never overwritten. `BLOCKED` preserves the lane but releases active admission
+  and adds the target to the bounded skip list; admission errors consume the
+  normal failure budget. Terminal results must name the assigned target.
+  `PARTIAL` replacement workers restack on current main before foldback.
+- `NO_CANDIDATE` requires proved exhaustion, not a glance at the CLAIMABLE
+  heading. Before idle, a drain worker must resume its own claim, select
+  claimable finish-first work, reap policy-qualified stale claims,
+  freshness-check blocker labels, then consider one safe cross-cutting
+  promotion under "Staying unblocked." The controller re-runs
+  `claim_check.py --json` and rejects `NO_CANDIDATE` while `claimable`, `stale`,
+  or rows owned by the exact drain identity are nonzero. Explicit host
+  confirmation that named sessions are closed releases their claims
+  immediately; autonomous same-day liveness is never guessed.
+- Write-capable peer CLIs are not reliably OS-sandboxed on the Windows host.
+  The safety boundary is clean worktree + exact claim + one PR + review/CI +
+  finite time/slice/failure budgets + controller-side GitHub merge verification.
+  Authentication/rate-limit retries and stale-lock recovery are bounded; never
+  override a lock whose recorded PID is live.
+- On the Windows host, `scripts/openspec_drain_watchdog.py` owns session
+  continuity and `scripts/openspec_drain_tray.ps1` owns visible health. The
+  watchdog attaches to a live drain, resumes an abruptly interrupted exact
+  identity, starts fresh only after clean completion, and stays red/down after
+  terminal failure until explicit restart. The Task Scheduler integration runs
+  at user sign-in—not pre-login SYSTEM startup—because the tray and subscription
+  credentials belong to the interactive session.
+  Start/status/stop/recovery commands live in
+  `docs/ops/2026-07-28-openspec-drain-supervisor.md`.
 
 ### Multi-Session Steering
 
@@ -267,7 +361,9 @@ Three patterns keep agent output trustworthy:
 
 **Verification is structural.** Every substantive change needs test/check evidence and an independent review path before it is treated as landed. Claude Code's `TaskCompleted` -> verifier loop is the preferred team implementation. Codex/Cowork satisfy the same invariant with focused tests plus independent diff/subagent review where available. Self-review alone is not enough for public-surface, storage, auth, migration, concurrency, or data-loss-risk changes.
 
-**Final chatbot-surface verification is a rendered chatbot conversation through the live connector.** For changes affecting public MCP behavior, chatbot UX, connector tool descriptions, user-visible node/workflow state, or `tinyassets.io`, final acceptance must use a real browser-rendered chatbot conversation with the installed TinyAssets MCP connector at `https://tinyassets.io/mcp`, following `ui-test`. Claude.ai and ChatGPT Developer Mode both satisfy this when the TinyAssets connector is visible/installed and the tester types user-like prompts in the browser. The proof requirement is not host-login Claude.ai access; it is a real user path through the live MCP service. Direct MCP calls, local scripts, tests, DOM-only checks, and canaries are supporting evidence, not final user-surface proof. Log the rendered prompt/result in `output/user_sim_session.md` and include a trace or screenshot path when available.
+**Review-provider limit fallback.** Opposite-provider review remains the first choice. When that provider reports a hard account, subscription, spend, or usage limit, record dated evidence of the limit and dispatch a fresh-context independent reviewer from the available provider against the exact commit. The reviewer must not be the author, self-review never qualifies, and every blocking finding must be resolved before implementation, landing, rollout, or acceptance advances. Mere inconvenience, latency, or reviewer disagreement does not activate this fallback.
+
+**Final chatbot-surface verification is a rendered chatbot conversation through the live connector.** For changes affecting public MCP behavior, chatbot UX, connector tool descriptions, user-visible node/workflow state, or `tinyassets.io`, final acceptance must use a real browser-rendered chatbot conversation with the installed TinyAssets MCP connector at `https://tinyassets.io/mcp`, following `ui-test`. Claude.ai and ChatGPT Developer Mode both satisfy this when the TinyAssets connector is visible/installed and the tester types user-like prompts in the browser. **Host-visible rendered chatbot use is the invariant; the automation transport is provider- and harness-specific.** A provider may use any supported route that lets the host watch the same live chatbot tab (built-in browser, browser/Chrome plugin, CDP/CLI driver, or equivalent). Failure of one preferred route is not a blocker while another host-visible route is available. The proof requirement is not host-login Claude.ai access; it is a real user path through the live MCP service. Direct MCP calls, local scripts, tests, DOM-only checks, and canaries are supporting evidence, not final user-surface proof. Log the rendered prompt/result in `output/user_sim_session.md` and include a trace or screenshot path when available.
 
 **Post-fix clean-use evidence.** After the fix and `ui-test`, final verification must also look for evidence that actual users have used the affected feature cleanly since the fix landed. Use available production traces, connector/server logs, support reports, user-visible history, or other real-user evidence. Freshness-stamp the evidence. If no post-fix real-user use is visible yet, say that explicitly and, for public-surface or high-risk changes, leave a short watch item in `STATUS.md` instead of claiming proven clean use.
 

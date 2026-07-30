@@ -36,6 +36,8 @@ Format for future entries:
 
 ---
 
+---
+
 ## 2026-07-27 - create preview-boundary-bootstrap
 
 - Provider: codex-gpt5-desktop-full-product
@@ -1681,3 +1683,56 @@ Notes:
 - Update 2026-07-28: targeted Opus rerun killed the full requested 21-mutation battery plus the three added guards; count reconciliation, repository database-id type, and oracle literal were the final isolated survivors and now have direct regressions
 - Update 2026-07-28: bounded Opus rerun killed all 34 requested mutations and rejected 11 concrete forgeries; expanded sweep found six deeper receipt-shape guards without isolated tests, now pinned in one final schema/completeness pass
 - Update 2026-07-28: exact semantic head `c95876fe` received Opus 5 APPROVE; every named mutation died, all 45 concrete forgery probes were rejected, and no correctness or authority defect remained
+
+## 2026-07-29 15:00 - create repair-synthesis-checklist
+
+- Provider: `drain-20260729-145600-e75271`
+- Branch: `drain/20260729-145600-e75271/repair-synthesis-checklist`
+- Lane state: Active lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-145600-e75271`
+- STATUS/Issue/PR: `Repair stale synthesis-checklist assertion`; PR pending
+- PLAN refs: no architectural change; test-only expectation repair
+- Purpose: align one stale ledger assertion with canonical handle retirement
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-20260729-145600-e75271/_PURPOSE.md`
+
+## 2026-07-29 17:25 - create independent-targets-handoff-5.2
+
+- Provider: `drain-20260729-171925-6b1b07`
+- Branch: `chore/drain-20260729-171925-6b1b07-recovery`
+- Lane state: Active lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
+- STATUS/Issue/PR: `independent-full-platform-targets recovery slice 5.2`; PR pending
+- PLAN refs: Daemon Platform; Security Model; External Effects and Handoffs
+- Purpose: verify and fold back the already-implemented task 5.2 authority/evidence contract without entering deferred verification transport or disputes.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery/_PURPOSE.md`
+- Memory refs: task 5.2 landing note at `cf8a03f5`; PR #1876 boundary foldback
+- Related implications: tasks 5.3 and 5.5-5.7 remain blocked and out of scope.
+- Idea feed refs: none
+
+## 2026-07-29 18:15 - land independent-targets-handoff-5.2
+
+- Provider: `drain-20260729-171925-6b1b07`
+- Branch: `chore/drain-20260729-171925-6b1b07-recovery`
+- Lane state: Landed; local worktree retained through foldback merge
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
+- STATUS/Issue/PR: claim retired; implementation PR #1884 merged as `22bbb0a7`
+- Verification: 82 focused tests passed; all 28 handoff mutations went red; strict OpenSpec validation passed on Windows, 2026-07-29
+
+## 2026-07-29 18:25 - reopen independent-targets-handoff-5.2
+
+- Provider: `drain-20260729-171925-6b1b07`
+- Branch: `chore/drain-20260729-171925-6b1b07-recovery`
+- Lane state: Active corrective lane; implementation PR #1884 and premature foldback PR #1886 merged
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
+- STATUS/Issue/PR: task 5.2 reopened locally after exact-`22bbb0a7` independent review found two High blockers and one Medium gap
+- Pickup: add failing actor/run-authority, receipt-success replay, lifecycle-read, and positive-bound tests before repair; preserve plugin parity
+- Recovery: `d3bcac92` independently approved; 130 focused tests pass, 28 mutations go red, strict OpenSpec 59/59, core/plugin parity clean; claim retires with PR #1888
+
+## 2026-07-29 17:00 - land repair-synthesis-checklist
+
+- Provider: `drain-20260729-145600-e75271`
+- Branch: `drain/20260729-145600-e75271/repair-synthesis-checklist`
+- Lane state: Landed; local worktree retained through foldback merge
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-145600-e75271`
+- STATUS/Issue/PR: `Repair stale synthesis-checklist assertion`; implementation PR #1881 merged as `9514f938`
+- Verification: `python -m pytest tests/test_universe_server_ledger.py -q` — 20 passed on Windows, 2026-07-29

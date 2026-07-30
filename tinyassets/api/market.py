@@ -743,8 +743,13 @@ def _outcome_connect(base_path: "Path") -> Any:
     return conn
 
 
-def _outcome_row_to_dict(row: Any) -> dict:
-    return {
+def _outcome_row_to_dict(
+    row: Any,
+    *,
+    evidence: Any | None = None,
+    transitions: list[Any] | None = None,
+) -> dict:
+    result = {
         "outcome_id": row["outcome_id"],
         "run_id": row["run_id"],
         "outcome_type": row["outcome_type"],
@@ -756,15 +761,76 @@ def _outcome_row_to_dict(row: Any) -> dict:
         "recorded_at": row["recorded_at"],
         "note": row["note"] or "",
     }
+    if evidence is not None:
+        result.update({
+            "account_id": evidence["account_id"],
+            "branch_def_id": evidence["branch_def_id"],
+            "branch_version_id": evidence["branch_version_id"],
+            "content_hash": evidence["content_hash"],
+            "output_field": evidence["output_field"],
+            "output_sha256": evidence["output_sha256"],
+            "handoff_id": evidence["handoff_id"],
+            "effect_key": evidence["effect_key"],
+            "sink": evidence["sink"],
+            "evidence_source": evidence["evidence_source"],
+            "evidence_level": evidence["evidence_level"],
+            "external_id": evidence["external_id"],
+            "normalized_external_ref": evidence["normalized_external_ref"],
+            "attested_by": evidence["attested_by"],
+            "evidence_updated_at": evidence["updated_at"],
+            "evidence_transitions": [
+                {
+                    "seq": item["seq"],
+                    "from_level": item["from_level"],
+                    "to_level": item["to_level"],
+                    "evidence_source": item["evidence_source"],
+                    "actor_id": item["actor_id"],
+                    "evidence": json.loads(item["evidence_json"] or "{}"),
+                    "recorded_at": item["recorded_at"],
+                }
+                for item in (transitions or [])
+            ],
+        })
+    return result
+
+
+def _outcome_lifecycle(conn: Any, outcome_id: str) -> tuple[Any | None, list[Any]]:
+    evidence = conn.execute(
+        "SELECT * FROM outcome_evidence WHERE outcome_id = ?",
+        (outcome_id,),
+    ).fetchone()
+    transitions = conn.execute(
+        """
+        SELECT *
+          FROM outcome_evidence_transition
+         WHERE outcome_id = ?
+         ORDER BY seq
+        """,
+        (outcome_id,),
+    ).fetchall()
+    return evidence, transitions
+
+
+def _outcome_run_owner(run: dict[str, Any]) -> str:
+    owner = str(run.get("owner_user_id") or "").strip()
+    if owner:
+        return owner
+    actor = str(run.get("actor") or "").strip()
+    return "" if actor == "anonymous" else actor
 
 
 def _action_record_outcome(kwargs: dict[str, Any]) -> str:
     import uuid as _uuid
     from datetime import datetime, timezone
 
-    from tinyassets.outcomes.schema import OUTCOME_TYPES
+    from tinyassets.outcomes.schema import (
+        OUTCOME_TYPES,
+        record_user_attested_outcome_evidence,
+    )
+    from tinyassets.runs import get_run
 
     run_id = (kwargs.get("run_id") or "").strip()
+    actor_id = (kwargs.get("actor_id") or "").strip()
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     if not run_id:
         return json.dumps({"error": "run_id is required."})
@@ -774,6 +840,16 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
         return json.dumps({
             "error": f"Unknown outcome_type '{outcome_type}'.",
             "valid": sorted(OUTCOME_TYPES),
+        })
+    source_run = get_run(_base_path(), run_id)
+    if (
+        not actor_id
+        or source_run is None
+        or _outcome_run_owner(source_run) != actor_id
+    ):
+        return json.dumps({
+            "error": f"run {run_id!r} is not available to this account",
+            "code": "handoff_authority_required",
         })
     evidence_url = (kwargs.get("evidence_url") or "").strip() or None
     gate_event_id = (kwargs.get("gate_event_id") or "").strip() or None
@@ -799,6 +875,12 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
             (outcome_id, run_id, outcome_type, evidence_url,
              gate_event_id, payload, recorded_at, note),
         )
+        record_user_attested_outcome_evidence(
+            conn,
+            outcome_id=outcome_id,
+            account_id=actor_id,
+            actor_id=actor_id,
+        )
     return json.dumps({
         "status": "recorded",
         "outcome_id": outcome_id,
@@ -813,7 +895,7 @@ def _action_list_outcomes(kwargs: dict[str, Any]) -> str:
     run_id = (kwargs.get("run_id") or "").strip()
     outcome_type = (kwargs.get("outcome_type") or "").strip()
     try:
-        limit = min(int(kwargs.get("limit") or 50), 200)
+        limit = max(1, min(int(kwargs.get("limit") or 50), 200))
     except (TypeError, ValueError):
         limit = 50
 
@@ -849,7 +931,16 @@ def _action_list_outcomes(kwargs: dict[str, Any]) -> str:
             f"SELECT * FROM outcome_event {where} ORDER BY recorded_at DESC LIMIT ?",
             params,
         ).fetchall()
-    outcomes = [_outcome_row_to_dict(r) for r in rows]
+        outcomes = []
+        for row in rows:
+            evidence, transitions = _outcome_lifecycle(conn, row["outcome_id"])
+            outcomes.append(
+                _outcome_row_to_dict(
+                    row,
+                    evidence=evidence,
+                    transitions=transitions,
+                )
+            )
     return json.dumps({"outcomes": outcomes, "count": len(outcomes)})
 
 
@@ -863,9 +954,16 @@ def _action_get_outcome(kwargs: dict[str, Any]) -> str:
             "SELECT * FROM outcome_event WHERE outcome_id = ?",
             (outcome_id,),
         ).fetchone()
+        evidence, transitions = (
+            _outcome_lifecycle(conn, outcome_id)
+            if row is not None
+            else (None, [])
+        )
     if row is None:
         return json.dumps({"error": f"outcome_id '{outcome_id}' not found."})
-    return json.dumps(_outcome_row_to_dict(row))
+    return json.dumps(
+        _outcome_row_to_dict(row, evidence=evidence, transitions=transitions)
+    )
 
 
 _OUTCOME_ACTIONS: dict[str, Any] = {

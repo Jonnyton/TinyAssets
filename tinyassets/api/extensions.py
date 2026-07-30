@@ -750,7 +750,17 @@ def _extensions_impl(
     # ── Outcome events ─────────────────────────────────────────────────────
     outcome_handler = _OUTCOME_ACTIONS.get(action)
     if outcome_handler is not None:
+        actor_id = ""
+        if action == "record_outcome":
+            from tinyassets.handoffs.authority import request_subject
+            from tinyassets.handoffs.models import HandoffAuthorityError
+
+            try:
+                actor_id = request_subject()
+            except HandoffAuthorityError as exc:
+                return json.dumps({"error": str(exc), "code": exc.code})
         oc_kwargs: dict[str, Any] = {
+            "actor_id": actor_id,
             "branch_def_id": branch_def_id,
             "run_id": run_id,
             "outcome_id": outcome_id,

@@ -195,6 +195,19 @@ def test_universe_write_page_mutating_write_rejects_anonymous(monkeypatch):
     assert payload.get("auth_required") is True
 
 
+def test_universe_write_page_auth_rejection_precedes_scope_validation():
+    from tinyassets import universe_server
+
+    set_provider(_FakeProvider(gates_writes=True, identity=_SUBJECT))
+    auth_middleware(None)
+    payload = _payload(
+        universe_server.write_page(
+            scope="bogus", page="p", content="c", dry_run=False,
+        )
+    )
+    assert payload.get("auth_required") is True
+
+
 def test_universe_write_page_patch_preview_stays_open(monkeypatch):
     from tinyassets import universe_server
 

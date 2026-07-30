@@ -69,6 +69,27 @@ reversed change does not reach for the default command.
 `stale-backlog-rows-misdirect` lesson, a premise stated without verification is the failure mode
 being fixed. Every "already landed" row below names the file and the behavior.
 
+**D5 — Anti-collision is explicit target routing, never prose classification.** The host
+resolved the residual on 2026-07-25: authenticated callers may continue writing the shared
+commons, but canonical `write_page` must require an explicit target when the caller wants to
+override its historical founder-home routing.
+
+- `scope="commons"` writes only the shared public commons and rejects a simultaneous
+  `universe_id` as contradictory;
+- `scope="universe"` resolves an explicit `universe_id` or the authenticated founder's home and
+  returns the existing `relay_to_universe` envelope naming `converse`;
+- unknown values fail closed before mutation;
+- omitted scope preserves the existing compatibility behavior: authenticated founder-home calls
+  relay to that universe, while calls with no resolvable universe target write the commons;
+- typed `kind=` issue filings remain commons operations; and
+- the in-process governed learning path is outside this external selector, so `founder.md`
+  learning remains legal.
+
+This is deliberately not a content classifier. Public `people` pages are legitimate commons
+content, and a "dossier-shaped prose" predicate would be both bypassable and incompatible with
+the host decision that commons stays writable. The selector closes the collision by making the
+caller's intended destination explicit.
+
 ## Task-by-task reconciliation
 
 11 unchecked tasks. Verified against `origin/main`.

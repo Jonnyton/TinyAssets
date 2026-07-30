@@ -77,6 +77,12 @@ model read as current spec truth.
 
 ## Impact
 
+> **Implementation update (2026-07-29):** the original reconciliation PR was spec-only, but
+> this active successor change intentionally remained open for the surviving requirements.
+> Runtime tasks 6.3/6.6/6.8/6.9-interlocutor landed in PR #1776; this recovery slice implements
+> the host-decided 6.1/6.7 explicit `write_page` target boundary. The historical impact bullets
+> below describe the original reconciliation PR, not the current cumulative change state.
+
 - **Spec-only. No runtime code changes.** The relay behavior already shipped and is not
   touched here.
 - **`openspec/changes/universe-personification/**`** → archived to

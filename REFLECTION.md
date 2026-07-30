@@ -1,3 +1,27 @@
+## 2026-07-29 - outcome settlement recovery
+
+- **What surprised me:** making sequential receipt replay repair a missing
+  outcome exposed a second race: two repairers could each create their own
+  outcome even though the external effect remained exactly once.
+- **Pattern worth capturing:** exactly-once effects and exactly-once derived
+  evidence need the same transactional identity. A preflight read is not a
+  deduplication boundary; the handoff-keyed get-or-create must happen under the
+  store's write lock, with a two-party replay regression.
+- **What I would do differently:** start the crash-recovery test matrix with
+  simultaneous replacement workers, not only one sequential replay, and review
+  every compatibility write for both authenticated attribution and lifecycle
+  read parity.
+
+## 2026-07-29 — OpenSpec drain progress hardening
+
+What surprised me: the controller's reported slice count was not evidence of delivery. Raw PR-string equality, fixed receipt eviction, private blockers, lossy task identities, and ambiguous restart audits could each manufacture progress independently.
+
+Pattern worth capturing: autonomous drains need durable external truth for every terminal state, idempotent canonical receipts for the full bounded run, and fail-open retry whenever legacy evidence cannot identify which work truly succeeded. Independent review is valuable when each finding becomes executable regression coverage.
+
+One thing I would do differently: model restart migration and historical audit ambiguity in the first test matrix, alongside the happy-path result parser, before trusting a persisted controller state shape.
+
+## 2026-07-23 — deploy receipt observability
+
 What surprised me: the deploy workflow already had nearly all facts needed for a release receipt; the gap was mostly that none of them were written into a machine-readable runtime artifact.
 
 Pattern worth capturing: release observability should be deploy-published and status-read-only. That keeps `get_status` safe while still making live drift checkable by chatbots and local tools.
@@ -687,3 +711,54 @@ fresh-host rollback edges found later.
   Unicode regression only exercised an out-of-range value. Mutation-test the
   exact semantic distinction, and scope-check newly stored provenance-shaped
   fields against the receipt-bound repository.
+
+## 2026-07-29 - first overnight OpenSpec drain evaluation
+
+- **What surprised me:** reboot recovery and work preservation succeeded while
+  throughput still remained zero; operational resilience can mask a broken
+  delivery boundary unless merged PRs, not edited files or passed tests, are
+  the throughput measure.
+- **Pattern worth capturing:** a durable task blocker and a publication
+  infrastructure failure need different terminal states. The former releases
+  admission and idles; the latter preserves the exact worktree/admission for a
+  fresh bounded delivery retry.
+- **What I would do differently:** run a real linked-worktree stage/commit
+  probe before the first unattended shift. Unit coverage for `--add-dir`
+  missed Codex's protected Git-metadata rule; the real probe exposed that
+  `danger-full-access` was required on this already-unsandboxed Windows host.
+
+## 2026-07-29 - current-main drain selection
+
+- **What surprised me:** admission was correctly fresh while the earlier
+  selector was stale, so the safety check itself became a bounded retry loop;
+  the first real end-to-end probe also exposed UTF-8 output being decoded as
+  Windows cp1252 even though every mocked JSON test was green.
+- **Pattern worth capturing:** a long-lived controller may pin its executable
+  code, but every mutable coordination decision must bind all derived reads
+  (rows and stale-history evidence) to one freshly fetched ref and refuse to
+  dispatch when that snapshot is unavailable.
+- **What I would do differently:** run the exact live subprocess boundary
+  immediately after the first red unit test, including non-ASCII STATUS data,
+  rather than waiting until the focused suite is complete.
+
+## 2026-07-29 - legacy outcome evidence foldback
+
+- **What surprised me:** the schema migration correctly upgraded historical
+  outcome rows, but a new legacy-router write happened after that migration and
+  therefore escaped the evolved evidence lifecycle.
+- **Pattern worth capturing:** compatibility writers must invoke the canonical
+  migration bridge for each new row; startup backfill alone cannot preserve an
+  invariant for writes that continue after startup.
+- **What I would do differently:** add the router-bound lifecycle assertion
+  when the evidence tables first land, alongside the lower-level store tests,
+  so the old action cannot remain a parallel partial writer.
+
+## 2026-07-29 - serialized mutation verification
+
+- **What surprised me:** a timed-out mutation probe briefly outlived its parent
+  shell and overlapped a focused test rerun, producing two transient failures
+  while it intentionally changed the normalization invariant.
+- **Pattern worth capturing:** mutation probes and ordinary suites must run
+  serially, with a clean-tree check after the probe restores its mutations.
+- **What I would do differently:** run each long verification as its own
+  bounded command and confirm no probe process remains before the green rerun.
