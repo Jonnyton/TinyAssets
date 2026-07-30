@@ -1699,6 +1699,15 @@ Notes:
 - STATUS/Issue/PR: claim retired; implementation PR #1884 merged as `22bbb0a7`
 - Verification: 82 focused tests passed; all 28 handoff mutations went red; strict OpenSpec validation passed on Windows, 2026-07-29
 
+## 2026-07-29 18:25 - reopen independent-targets-handoff-5.2
+
+- Provider: `drain-20260729-171925-6b1b07`
+- Branch: `chore/drain-20260729-171925-6b1b07-recovery`
+- Lane state: Active corrective lane; implementation PR #1884 and premature foldback PR #1886 merged
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
+- STATUS/Issue/PR: task 5.2 reopened locally after exact-`22bbb0a7` independent review found two High blockers and one Medium gap
+- Pickup: add failing actor/run-authority, receipt-success replay, lifecycle-read, and positive-bound tests before repair; preserve plugin parity
+
 ## 2026-07-29 17:00 - land repair-synthesis-checklist
 
 - Provider: `drain-20260729-145600-e75271`
