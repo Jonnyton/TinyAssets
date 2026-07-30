@@ -366,6 +366,8 @@ def test_operational_projection_requires_binding_for_attempt() -> None:
         "binding_attempt_budget",
         "binding_cost_budget",
         "attempt_cost_budget",
+        "attempt_count_budget",
+        "attempt_depth_budget",
     ],
 )
 def test_operational_projection_rejects_cross_record_relation(
@@ -440,11 +442,15 @@ def test_operational_projection_rejects_cross_record_relation(
             binding,
             remaining_cost_microunits=5_000_001,
         )
-    else:
+    elif relation == "attempt_cost_budget":
         attempt = replace(
             attempt,
             remaining_cost_microunits=5_000_001,
         )
+    elif relation == "attempt_count_budget":
+        attempt = replace(attempt, remaining_count=2)
+    else:
+        attempt = replace(attempt, remaining_depth=1)
 
     with pytest.raises(automation.AutomationProjectionError):
         automation.project_operational_state(

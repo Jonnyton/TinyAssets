@@ -341,6 +341,8 @@ def project_operational_state(
             <= binding.remaining_cost_microunits,
             attempt.remaining_cost_microunits
             <= definition.max_cost_microunits,
+            attempt.remaining_count <= binding.remaining_count,
+            attempt.remaining_depth <= binding.remaining_depth,
         )
         if not all(attempt_matches):
             raise AutomationProjectionError("attempt does not match definition and binding")
