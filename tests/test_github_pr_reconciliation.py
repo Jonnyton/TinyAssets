@@ -81,6 +81,10 @@ def test_effect_identity_is_closed_canonical_and_secret_free():
         ("automation_id", " automation-7"),
         ("claim_id", "x\nclaim"),
         ("repository", "not-a-repository"),
+        ("repository", "../repo"),
+        ("repository", "owner/.."),
+        ("repository", "./repo"),
+        ("repository", "owner/."),
         ("intended_head_sha", "abc"),
         ("effect_kind", "github_issue"),
     ],
@@ -170,6 +174,33 @@ def test_full_page_is_indeterminate_without_pagination_proof():
         ],
         lambda identity: [
             _pull(identity, repository="other/repo"),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    f"{github_pr.github_pr_effect_marker(_identity(claim_id='other'))}"
+                ),
+            ),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    f"{github_pr.github_pr_effect_marker(identity)}"
+                ),
+            ),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    "<!-- tinyassets-github-pr-effect:v1:not-a-digest -->"
+                ),
+            ),
         ],
         lambda identity: [
             _pull(identity, number=1),

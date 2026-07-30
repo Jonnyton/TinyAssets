@@ -149,6 +149,7 @@ _CAPABILITIES_ENV = "TINYASSETS_GITHUB_PR_CAPABILITIES"
 _GH_PR_TIMEOUT_S = 60.0
 _GITHUB_API = "https://api.github.com"
 _GITHUB_PR_EFFECT_KIND = "github_pull_request"
+_GITHUB_PR_EFFECT_MARKER_FAMILY = "tinyassets-github-pr-effect:"
 _GITHUB_PR_EFFECT_MARKER_PREFIX = "tinyassets-github-pr-effect:v1:"
 _GITHUB_PR_EFFECT_MARKER_RE = re.compile(
     r"<!-- tinyassets-github-pr-effect:v1:([0-9a-f]{64}) -->"
@@ -193,10 +194,13 @@ class GitHubPullRequestEffectIdentity:
         if not isinstance(self.repository, str):
             raise ValueError("repository must be a string")
         repository = self.repository.strip().lower()
+        repository_parts = repository.split("/")
         if (
             repository != self.repository.lower()
             or len(repository) > _MAX_IDENTITY_COMPONENT_LENGTH
             or _GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+            or len(repository_parts) != 2
+            or any(part in {".", ".."} for part in repository_parts)
         ):
             raise ValueError("repository must be a canonical owner/repo")
         object.__setattr__(self, "repository", repository)
@@ -257,7 +261,7 @@ def with_github_pr_effect_marker(
         if existing_markers != [identity.digest]:
             raise ValueError("body contains a different TinyAssets effect marker")
         return body
-    if _GITHUB_PR_EFFECT_MARKER_PREFIX in body:
+    if _GITHUB_PR_EFFECT_MARKER_FAMILY in body:
         raise ValueError("body contains a malformed TinyAssets effect marker")
     marked = f"{body.rstrip()}\n\n{marker}" if body.rstrip() else marker
     if len(marked) > _MAX_GITHUB_PR_BODY_LENGTH:
@@ -328,7 +332,6 @@ def reconcile_github_pull_request_effect(
             examined=100,
         )
 
-    marker = github_pr_effect_marker(identity)
     exact: list[dict[str, Any]] = []
     partial_count = 0
     malformed_count = 0
@@ -372,7 +375,13 @@ def reconcile_github_pull_request_effect(
 
         sha_matches = head_sha.lower() == identity.intended_head_sha
         repository_matches = repository.lower() == identity.repository
-        marker_matches = marker in body
+        marker_digests = _GITHUB_PR_EFFECT_MARKER_RE.findall(body)
+        marker_family_count = body.count(_GITHUB_PR_EFFECT_MARKER_FAMILY)
+        marker_matches = (
+            marker_digests == [identity.digest]
+            and marker_family_count == 1
+        )
+        marker_present = marker_family_count > 0
         if sha_matches and repository_matches and marker_matches:
             exact.append(
                 {
@@ -381,7 +390,7 @@ def reconcile_github_pull_request_effect(
                     "pr_state": state,
                 }
             )
-        elif sha_matches or repository_matches or marker_matches:
+        elif sha_matches or repository_matches or marker_present:
             partial_count += 1
 
     if malformed_count:

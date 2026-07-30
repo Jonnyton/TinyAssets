@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 15:35 - create Ringer GitHub reconciliation hardening
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-github-reconcile-hardening-20260730`
+- Lane state: Active exact-head review remediation
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-hardening-20260730`
+- STATUS/Issue/PR: existing Ringer activation claim; follow-up after #1951/#1953
+- Purpose: close marker-set ambiguity and dot-segment repository identity findings from independent review
+- Review gate: focused TDD and independent re-review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-hardening-20260730/_PURPOSE.md`
+- Ship/abandon: focused corrective PR to `main`; keep the adapter dark
+
 ## 2026-07-30 15:20 - create Ringer GitHub reconciliation
 
 - Provider: `codex-gpt5-desktop`
