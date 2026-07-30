@@ -409,7 +409,7 @@ class LifecycleHost:
                 "Image": image,
                 "State": {"Running": running, "Pid": 1000 + index if running else 0},
                 "HostConfig": {"RestartPolicy": {"Name": "always"}},
-                "Config": {"Env": []},
+                "Config": {"Env": [], "Labels": {}},
                 "Mounts": [
                     {
                         "Destination": "/data",
@@ -563,8 +563,12 @@ class LifecycleHost:
                     image,
                     running=True,
                 )
+                project = command[command.index("--project-name") + 1]
                 for info in self.containers.values():
                     info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+                    info["Config"]["Labels"][
+                        "com.docker.compose.project"
+                    ] = project
             return ""
         if command[:2] == ("docker", "update"):
             policy = next(
@@ -1859,6 +1863,81 @@ def test_finalize_refences_when_expiry_timer_disappears(
             host,
             source_run_id="source-run-1",
             run_id="recovery-timer-drift",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
+        "unsafe_fenced"
+    )
+
+
+def test_refence_rejects_replaced_container_generation_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-owned-generation",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    for index, info in enumerate(host.containers.values()):
+        info["Id"] = f"replacement-{index}"
+    calls_before = len(host.calls)
+
+    with pytest.raises(FenceError, match="identities changed"):
+        refence_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-owned-generation",
+            state_path=state_path,
+        )
+
+    assert len(host.calls) == calls_before
+    assert all(info["State"]["Running"] for info in host.containers.values())
+
+
+def test_finalize_refences_new_writer_activator_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    missing = "tinyassets-autoheal.timer"
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.units.pop(missing)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["present_restart_racer_units"].remove(missing)
+    state["restart_racer_state"].pop(missing)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-new-activator",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    host.units[missing] = {
+        "active": "active",
+        "enabled": "enabled",
+        "load": "loaded",
+    }
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        finalize_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-new-activator",
             image_ref=host.old_image_ref,
             revision=host.old_revision,
             state_path=state_path,

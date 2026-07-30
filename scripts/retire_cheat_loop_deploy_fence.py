@@ -1736,6 +1736,37 @@ def _recovery_unit_name(run_id: str) -> str:
     return f"tinyassets-recovery-expiry-{suffix}"
 
 
+def _recovery_project_name(run_id: str) -> str:
+    suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+    return f"tinyassets-recovery-{suffix}"
+
+
+def _assert_recovery_container_ownership(
+    host: Host,
+    state: Mapping[str, Any],
+) -> dict[str, str]:
+    """Reject mutation unless all current writers belong to this generation."""
+
+    if not host.volume_container_names():
+        return {}
+    project = str(state.get("recovery_project_name", ""))
+    if not project:
+        raise FenceError("recovery container generation is not durable")
+    inspections = _exact_inspections(host)
+    actual_ids: dict[str, str] = {}
+    for name, info in inspections.items():
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("com.docker.compose.project") != project:
+            raise FenceError(
+                f"writer belongs to another recovery generation: {name}"
+            )
+        actual_ids[name] = str(info.get("Id", ""))
+    recorded = state.get("recovery_container_ids")
+    if recorded and dict(recorded) != actual_ids:
+        raise FenceError("recovery container identities changed")
+    return actual_ids
+
+
 def _prove_recovery_entrypoint() -> str:
     """Prove the expiry timer will invoke this exact installed script."""
 
@@ -1799,6 +1830,7 @@ def _prove_recovery_fences(
 ) -> dict[str, Any]:
     """Require every temporary recovery fence immediately before restore."""
 
+    _assert_recovery_container_ownership(host, state)
     inspections = _exact_inspections(host)
     policies = {
         name: host.container_restart_policy(str(info.get("Id", "")))
@@ -1808,9 +1840,18 @@ def _prove_recovery_fences(
         raise FenceError(
             f"recovery restart fence drifted before finalization: {policies}"
         )
+    saved_racers = set(state.get("present_restart_racer_units") or ())
+    current_racers = {
+        unit for unit in RESTART_RACER_UNITS if host.unit_present(unit)
+    }
+    if current_racers != saved_racers:
+        raise FenceError(
+            "writer boot activator inventory drifted before finalization: "
+            f"saved={sorted(saved_racers)} current={sorted(current_racers)}"
+        )
     unit_proof: dict[str, dict[str, str]] = {}
     for unit in (
-        *tuple(state.get("present_restart_racer_units") or ()),
+        *tuple(sorted(saved_racers)),
         DAEMON_SERVICE,
     ):
         unit_state = _validated_unit_state(host, unit)
@@ -1889,6 +1930,7 @@ def _reconcile_orphaned_recovery(
         or state.get("phase") in {"canary_accepted", "finalizing"}
     ):
         raise FenceError("another recovery attempt still owns an active lease")
+    _assert_recovery_container_ownership(host, state)
     quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
 
@@ -1927,6 +1969,7 @@ def recover_unsafe(
     state["recovery_run_id"] = run_id
     state["recovery_attempts"] = attempts
     state["recovery_deadline_epoch"] = time.time() + RECOVERY_LEASE_SECONDS
+    state["recovery_project_name"] = _recovery_project_name(run_id)
     if recovery_script_sha256:
         state["recovery_script_sha256"] = recovery_script_sha256
     state["phase"] = "recovery_planned"
@@ -1945,6 +1988,8 @@ def recover_unsafe(
             [
                 "docker",
                 "compose",
+                "--project-name",
+                str(state["recovery_project_name"]),
                 "--env-file",
                 "/etc/tinyassets/env",
                 "-f",
@@ -1956,6 +2001,12 @@ def recover_unsafe(
             ]
         )
         inspections = _exact_inspections(host)
+        state["recovery_container_ids"] = {
+            name: str(info.get("Id", ""))
+            for name, info in inspections.items()
+        }
+        _atomic_json(state_path, state)
+        _assert_recovery_container_ownership(host, state)
         state["recovery_restart_policy_proof"] = _set_restart_no(
             host,
             inspections,
@@ -2109,6 +2160,10 @@ def finalize_recovery(
         return restored
     except (FenceError, OSError) as finalize_error:
         try:
+            _assert_recovery_container_ownership(
+                host,
+                _load_state(state_path),
+            )
             quiesce_unsafe(host, run_id=run_id, state_path=state_path)
         except (FenceError, OSError) as refence_error:
             raise FenceError(
@@ -2139,6 +2194,7 @@ def refence_recovery(
     )
     if state.get("phase") == "restored":
         raise FenceError("restored recovery cannot be re-fenced")
+    _assert_recovery_container_ownership(host, state)
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
 
@@ -2166,6 +2222,7 @@ def reconcile_recovery_on_boot(
         source_run_id=source_run_id,
         run_id=run_id,
     )
+    _assert_recovery_container_ownership(host, state)
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
 
