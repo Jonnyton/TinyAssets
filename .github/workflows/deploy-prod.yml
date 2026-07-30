@@ -42,6 +42,10 @@ on:
         description: 'Image tag to deploy (default = current main commit short-SHA)'
         required: false
         type: string
+      unsafe_fence_source_run_id:
+        description: 'Manual-only recovery source run ID for a canonical unsafe fence'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -60,10 +64,168 @@ env:
   DIRECT_URL: https://mcp.tinyassets.io/mcp
 
 jobs:
+  recover-unsafe:
+    if: >
+      github.event_name == 'workflow_dispatch' &&
+      inputs.unsafe_fence_source_run_id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify recovery secrets present
+        run: |
+          test -n "$DO_DROPLET_HOST"
+          test -n "$DO_SSH_USER"
+          test -n "${{ secrets.DO_SSH_KEY }}"
+      - name: Install recovery SSH key
+        env:
+          SSH_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$SSH_KEY" > ~/.ssh/do_deploy
+          chmod 600 ~/.ssh/do_deploy
+          ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Resolve unsafe recovery image
+        id: recovery-image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_IMAGE_TAG}"
+          if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::unsafe-fence recovery requires a valid image_tag"
+            exit 1
+          fi
+          owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lower}/tinyassets-daemon"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
+          docker manifest inspect "${image}:${tag}" >/dev/null
+          digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::recovery image did not resolve to an immutable digest"
+            exit 1
+          fi
+          image_ref="${image}@${digest}"
+          docker pull "${image_ref}" >/dev/null
+          revision="$(
+            docker image inspect "${image_ref}" \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          )"
+          if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::recovery image has no canonical source revision"
+            exit 1
+          fi
+          git cat-file -e "${revision}^{commit}"
+          STOP_WRITER_SHA=35da9d4fc1a1fc51d3db56bf5d1627691f54d894
+          git merge-base --is-ancestor "${STOP_WRITER_SHA}" "${revision}" || {
+            echo "::error::recovery revision predates filing-only stop-writer floor"
+            exit 1
+          }
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
+      - name: Recover canonical unsafe fence
+        env:
+          SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
+          RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
+          mkdir -p "$evidence_dir"
+          if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::refusing invalid unsafe fence source run ID"
+            exit 1
+          fi
+          script_sha="$(sha256sum scripts/retire_cheat_loop_deploy_fence.py | awk '{print $1}')"
+          override_sha="$(sha256sum deploy/recovery-restart-no.yml | awk '{print $1}')"
+          reconcile_sha="$(sha256sum deploy/tinyassets-recovery-reconcile.service | awk '{print $1}')"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+            scripts/retire_cheat_loop_deploy_fence.py \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+            deploy/recovery-restart-no.yml \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/recovery-restart-no.yml"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+            deploy/tinyassets-recovery-reconcile.service \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-recovery-reconcile.service"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "set -euo pipefail; \
+             printf '%s  %s\n' '${script_sha}' /tmp/retire-cheat-loop-deploy-fence.py '${override_sha}' /tmp/recovery-restart-no.yml '${reconcile_sha}' /tmp/tinyassets-recovery-reconcile.service | sha256sum -c -; \
+             sudo install -d -m 0755 -o root -g root /opt/tinyassets/deploy; \
+             sudo install -m 0755 -o root -g root /tmp/retire-cheat-loop-deploy-fence.py /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py; \
+             sudo install -m 0644 -o root -g root /tmp/recovery-restart-no.yml /opt/tinyassets/deploy/recovery-restart-no.yml; \
+             sudo install -m 0644 -o root -g root /tmp/tinyassets-recovery-reconcile.service /etc/systemd/system/tinyassets-recovery-reconcile.service; \
+             printf '%s  %s\n' '${script_sha}' /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py '${override_sha}' /opt/tinyassets/deploy/recovery-restart-no.yml '${reconcile_sha}' /etc/systemd/system/tinyassets-recovery-reconcile.service | sudo sha256sum -c -; \
+             sudo systemctl daemon-reload; \
+             sudo systemctl enable tinyassets-recovery-reconcile.service"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}'" \
+            > "$evidence_dir/recovery.json"
+      - name: Recovery canonical MCP canary
+        run: |
+          python scripts/mcp_public_canary.py \
+            --url "${CANARY_URL}" --assert-name TinyAssets --verbose
+      - name: Recovery exact-seven surface assertion
+        run: |
+          python scripts/mcp_public_canary.py \
+            --url "${CANARY_URL}" --assert-handles --verbose
+      - name: Finalize canonical unsafe-fence recovery
+        env:
+          SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
+          RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
+        run: |
+          set -euo pipefail
+          evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
+          if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::refusing invalid unsafe fence source run ID"
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-finalize-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py finalize-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
+            > "$evidence_dir/finalize.json"
+      - name: Re-fence failed recovery
+        if: ${{ failure() || cancelled() }}
+        env:
+          SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+        run: |
+          set +e
+          evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
+          mkdir -p "$evidence_dir"
+          if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::refusing invalid unsafe fence source run ID"
+            exit 1
+          fi
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py refence-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+            > "$evidence_dir/refence.json"
+          refence_status=$?
+          echo "{\"refence_exit_status\":${refence_status}}" \
+            > "$evidence_dir/refence-status.json"
+          exit 0
+      - name: Upload unsafe-fence recovery proof
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retire-cheat-loop-recovery-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/stop-writer-recovery-evidence
+          if-no-files-found: error
+          retention-days: 30
+
   deploy:
     # Don't run on failed build-image runs. Manual dispatch always allowed.
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.unsafe_fence_source_run_id == '') ||
       (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15

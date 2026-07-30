@@ -54,6 +54,14 @@ transition; it SHALL never authorize a retry or replacement execution.
 - **THEN** deployment stops before replacing runtime or deleting its evidence readers
 - **AND** no missing authority store is treated as proof that provider work did not launch
 
+#### Scenario: Emergency-fenced cutover recovers without reopening retired writers
+
+- **WHEN** a failed cutover has durably emergency-fenced every controlled production writer and the live surface requires recovery
+- **THEN** recovery runs under the same host mutation lock, requires the exact original fence provenance, and admits only a stop-writer image/revision already bound by that fence
+- **AND** before starting service it proves the controlled fleet remains stopped, restart-fenced, free of extra or stray volume writers, free of retired queue risk, and bound to the unchanged receipt snapshot
+- **AND** it starts and proves exactly the daemon plus four workers on one admitted immutable image/revision before restoring restart activators to their bounded stable prior states
+- **AND** any failed or indeterminate recovery attempt returns the host to the durable emergency-fenced state rather than deleting/editing the fence, bypassing it with a direct host mutation, or restoring a pre-stop-writer writer
+
 #### Scenario: Pending v1 row uses cancelled
 
 - **WHEN** migration observes an unchanged v1 retired row in `pending`
