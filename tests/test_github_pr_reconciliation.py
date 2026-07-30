@@ -105,6 +105,16 @@ def test_body_marker_append_is_idempotent_and_rejects_conflicting_marker():
         github_pr.with_github_pr_effect_marker(marked, other)
 
 
+def test_body_marker_append_rejects_expected_plus_malformed_reserved_marker():
+    identity = _identity()
+    body = (
+        f"{github_pr.github_pr_effect_marker(identity)}\n"
+        "<!-- tinyassets-github-pr-effect:v1:not-a-digest -->"
+    )
+    with pytest.raises(ValueError, match="malformed TinyAssets effect marker"):
+        github_pr.with_github_pr_effect_marker(body, identity)
+
+
 def test_exact_commit_marker_and_repository_match_reconciles_success():
     identity = _identity()
     proxy, channel = _proxy([_pull(identity)])

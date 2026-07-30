@@ -257,12 +257,13 @@ def with_github_pr_effect_marker(
         raise ValueError("pull-request body must be a string")
     marker = github_pr_effect_marker(identity)
     existing_markers = _GITHUB_PR_EFFECT_MARKER_RE.findall(body)
+    marker_family_count = body.count(_GITHUB_PR_EFFECT_MARKER_FAMILY)
+    if marker_family_count != len(existing_markers):
+        raise ValueError("body contains a malformed TinyAssets effect marker")
     if existing_markers:
         if existing_markers != [identity.digest]:
             raise ValueError("body contains a different TinyAssets effect marker")
         return body
-    if _GITHUB_PR_EFFECT_MARKER_FAMILY in body:
-        raise ValueError("body contains a malformed TinyAssets effect marker")
     marked = f"{body.rstrip()}\n\n{marker}" if body.rstrip() else marker
     if len(marked) > _MAX_GITHUB_PR_BODY_LENGTH:
         raise ValueError("pull-request body exceeds GitHub's size limit")
