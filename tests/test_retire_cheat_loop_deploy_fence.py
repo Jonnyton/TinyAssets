@@ -1657,6 +1657,8 @@ def test_recover_unsafe_starts_restart_fenced_then_finalizes_exact_identity(
         f"old-{index}" for index, _name in enumerate(EXPECTED_CONTAINERS)
     }
     assert host.calls.index(remove) < host.calls.index(compose)
+    assert "--no-deps" in compose
+    assert compose[compose.index("--no-deps") + 1 :] == fence.RECOVERY_SERVICES
     assert str(fence.RECOVERY_COMPOSE_OVERRIDE_PATH) in compose
     assert all(
         info["HostConfig"]["RestartPolicy"]["Name"] == "no"
@@ -2302,6 +2304,106 @@ def test_expired_pending_recovery_is_reconciled_before_new_attempt(
         f"recovered-{index}"
         for index, _name in enumerate(EXPECTED_CONTAINERS)
     }
+
+
+def test_expired_partial_owned_recovery_is_stopped_removed_and_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update(
+        {
+            "phase": "recovery_starting",
+            "recovery_deadline_epoch": 0,
+            "recovery_project_name": "tinyassets-recovery-old",
+            "recovery_attempts": ["recovery-old"],
+        }
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {
+        name: info
+        for name, info in host._containers(
+            "partial",
+            "sha256:old",
+            running=True,
+        ).items()
+        if name in {"tinyassets-daemon", "tinyassets-worker"}
+    }
+    for info in host.containers.values():
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        info["Config"]["Labels"][
+            "com.docker.compose.project"
+        ] = "tinyassets-recovery-old"
+    host.start_installs_target = True
+
+    evidence = recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-new",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "recovery_pending_canary"
+    stop = next(call for call in host.calls if call[:2] == ("docker", "stop"))
+    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
+    assert set(stop[2:]) == {"partial-0", "partial-1"}
+    assert set(remove[2:]) == {"partial-0", "partial-1"}
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_removed_partial_container_ids"] == {
+        "tinyassets-daemon": "partial-0",
+        "tinyassets-worker": "partial-1",
+    }
+
+
+def test_expired_partial_foreign_recovery_generation_is_not_touched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update(
+        {
+            "phase": "recovery_starting",
+            "recovery_deadline_epoch": 0,
+            "recovery_project_name": "tinyassets-recovery-old",
+        }
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {
+        "tinyassets-daemon": host._containers(
+            "foreign",
+            "sha256:old",
+            running=True,
+        )["tinyassets-daemon"]
+    }
+    info = host.containers["tinyassets-daemon"]
+    info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    info["Config"]["Labels"][
+        "com.docker.compose.project"
+    ] = "another-project"
+
+    with pytest.raises(FenceError, match="another recovery generation"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-new",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2] in {("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+    assert info["State"]["Running"]
 
 
 @pytest.mark.parametrize(
