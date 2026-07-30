@@ -76,7 +76,8 @@ const FORBIDDEN_RESPONSE_HEADERS = new Set([
 /**
  * Proxy one request to the tunnel origin.
  *
- * Preserves method, body stream, and all non-hop-by-hop headers.
+ * Preserves method, body stream, and allowed non-hop-by-hop headers.
+ * Upstream response cookies never cross the public boundary.
  * Rewrites Host to `mcp.tinyassets.io` (Cloudflare's edge routes the
  * subrequest to the tunnel based on hostname, so this is load-bearing).
  *
