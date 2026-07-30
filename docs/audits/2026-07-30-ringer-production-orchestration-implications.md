@@ -2,8 +2,9 @@
 
 Date: 2026-07-30  
 Initial provider: Codex (`codex-gpt5-desktop`)  
-Review gate: mandatory opposite-provider Claude source/context review before
-implementation based on these findings  
+Review gate: Claude hit a hard monthly spend limit; host-approved fresh-context
+Codex fallback returned `ADAPT`; blocking findings must be folded and receive
+exact-head independent approval before runtime implementation
 TinyAssets base: `ef65fdc7f37fb96d7d1be711dda3b34e9de9c0c8`
 
 ## Executive Judgment
@@ -22,7 +23,7 @@ executor boundary:
 
 - work is expressed as bounded packets;
 - workers are disposable;
-- each attempt is isolated;
+- each task has an isolated workspace and bounded retries reuse that workspace;
 - verification is executed rather than self-attested;
 - a failed check supplies bounded retry context;
 - attempt outcomes are durable and measurable.
@@ -41,9 +42,10 @@ dependency-heavy coding less well.
 
 The production target is therefore:
 
-> Durable control-plane work packets and dependency-aware waves; disposable
-> BYOC executors; independent executable evaluation; reviewed PR/receipt
-> delivery; phone-chatbot control; separate backlog refinement from delivery.
+> Immutable user-authored work definitions and read-only operational
+> projections; disposable BYOC executors; independent executable evaluation;
+> reviewed PR/receipt delivery; phone-chatbot control; separate backlog
+> refinement from delivery.
 
 This is not a new privileged drain service. It is an ordinary user-authored
 Branch composition over TinyAssets' existing Branch, Trigger, Goal, Gate, Run,
@@ -67,9 +69,11 @@ destination while all personal computers are off.
 | License | PolyForm Shield 1.0.0 (`LICENSE.md`; GitHub classifies it as “Other”) |
 
 The PolyForm Shield terms include a competitive-use restriction. TinyAssets
-may be a competing orchestration platform. Do not vendor, port, translate, or
-copy Ringer implementation code. This report adopts independently described
-production patterns and maps them onto already-approved TinyAssets primitives.
+may be a competing orchestration platform. Do not use, incorporate, adapt, or
+derive Ringer implementation code, tests, templates, command structure, or
+internal data formats without compatible licensing or qualified legal
+approval. This report independently restates high-level production properties
+and maps them onto pre-existing TinyAssets architecture.
 
 The inspected repository is primarily Python (905,816 bytes reported by the
 GitHub languages endpoint). Its central `ringer.py` is an approximately
@@ -80,13 +84,13 @@ hook, template, and test directories.
 
 | Ringer area | Observed responsibility | Useful lesson | TinyAssets boundary |
 |---|---|---|---|
-| Manifest / `TaskSpec` | Key, spec, check, expected files, engine/model, task type, timeout, attempts, access | Make the unit of execution explicit and bounded | Represent as an ordinary versioned work-packet schema in Branch/Run state, not a new top-level primitive |
-| Runner | Semaphore-bounded parallel tasks, worker process, verifier, retry | Scheduler owns concurrency; workers do not select their own fan-out | Server authority selects only dependency-ready, non-colliding packets |
+| Manifest / `TaskSpec` | Key, spec, check, expected files, engine/model, task type, timeout, attempts, access | Make the unit of execution explicit and bounded | Represent stable inputs as an immutable Branch definition; keep runtime authority with existing owners |
+| Runner | Semaphore-bounded parallel tasks, worker process, verifier, retry | Scheduler owns concurrency; workers do not select their own fan-out | First slice is single-flight; a later epoch-2 delta may select dependency-ready, non-colliding definitions |
 | Verifier | Shell exit code plus nonempty expected artifacts | Execute acceptance; never trust “done” summaries | Repo-owned CI/evaluator references; do not accept arbitrary tenant shell on the control plane |
 | Baseline mode | Run checks before spending tokens | Prove acceptance is falsifiable and not pre-broken | Admission gate classifies new-behavior assertions versus unchanged invariants |
-| Lint | Detect unfailable/silent checks, write collisions, serial fan-out, disappearing work | Reject or warn on structurally wasteful packets before dispatch | OpenSpec/packet admission and graph validation |
+| Lint | Detect unfailable/silent checks, write collisions, serial fan-out, disappearing work | Reject or warn on structurally wasteful definitions before dispatch | OpenSpec/Branch-definition admission and graph validation |
 | Worktree mode | One isolated worktree per task | Isolation is a prerequisite for safe concurrency | Existing GitHub/worktree spine or cloud ephemeral workspace |
-| Retry | Default one retry with raw failure context | Bounded correction can rescue mechanical failures | One same-packet retry, then replan/refine/block; never endless agent loops |
+| Retry | Default one retry with raw failure context | Bounded correction can rescue mechanical failures | One same-workspace retry with fresh attempt/provider generations, then replan/refine/block |
 | Eval log | Attempts, model, task type, duration, tokens, raw check result | Route from evidence, especially first-try pass rate | Typed attempt/EvalResult/receipt rows owned by the user's universe |
 | Ringside | Live state, histories, failures, artifacts | Supervisors need observable durable state | Existing chatbot handles and user-visible nodes are canonical; a dashboard may be community-built |
 | Engine registry | Pluggable CLI/model routes | Separate work policy from executor route | BYOC capability routing first; market routes later |
@@ -96,14 +100,14 @@ hook, template, and test directories.
 
 | TinyAssets area | Current relevant seam | Ringer/Symphony adaptation |
 |---|---|---|
-| `openspec/changes/activate-main-universe-spec-drain/` | Approved ordinary private Branch composition, BYOC-first, activation epoch, single-active claim, GitHub effect receipt, phone control | Generalize wording and work-packet contract so repository/spec/drain identity are user-selected inputs; keep Jonathan as first proof |
+| `openspec/changes/activate-main-universe-spec-drain/` | Approved ordinary private Branch composition, BYOC-first, activation epoch, single-active claim, GitHub effect receipt, phone control | Generalize immutable inputs and read-only projection; keep Jonathan as first proof |
 | `tinyassets/storage/request_admissions.py` | Transactional request/task records, pickable indexes, leases, recovery and quarantine | Durable admission and claim substrate for ready work; extend only through the owning authority change |
 | `tinyassets/branch_tasks_v2.py` | Epoch-2 task adapter and queue consumer seam | Execute one server-authoritative claim generation; no alternate local identity |
 | `tinyassets/background_branch_authority.py` | Typed background authority/provenance attempts | Bind every attempt to real user, universe, immutable Branch version, provider authority, and effect scope |
-| `tinyassets/cloud_worker.py` | Persistent cloud supervisor, heartbeat, restart recovery | Disposable executor host supervised by cloud control plane; worker restart must not duplicate a packet |
+| `tinyassets/cloud_worker.py` | Persistent cloud supervisor, heartbeat, restart recovery | Disposable executor host supervised by cloud control plane; worker restart must resume the owning attempt |
 | `tinyassets/evaluation/` | `EvalResult`, structural/editorial/process/scenario evaluation | Evaluator is distinct from implementer; verifier references and evidence are immutable inputs |
 | `tinyassets/effectors/github_pr.py` and GitHub effectors | External repository effects | Destination-scoped, idempotent PR effect with remote reconciliation and durable receipt |
-| `tinyassets/api/runtime_ops.py`, existing canonical handles | Read/control surfaces | Inspect, pause, resume, reprioritize, repair, version, and rollback from a phone chatbot without a new MCP handle |
+| `tinyassets/api/runtime_ops.py`, existing canonical handles | Read/control surfaces | Authenticated inspect, pause, resume, stop, publish, and rollback from a phone chatbot without a new MCP handle |
 | `scripts/openspec_flow.py` | Current WIP/admission/finish-first diagnostics | Backlog refinery input and delivery admission evidence; not itself the production scheduler |
 | GitHub branch/worktree/PR spine | Durable implementation integration | A PASS is not delivery until commit/diff/PR/evidence is durable and review/CI can shepherd it to merge |
 
@@ -113,16 +117,17 @@ hook, template, and test directories.
 
 The session is currently the durable unit. When it compacts, exits, hits a
 limit, waits for review, or meets a host action, production loses momentum.
-Durable packet state must instead own the job while sessions become replaceable
-attempt executors.
+Durable records under the existing activation, attempt, provider, evaluation,
+and effect owners must instead retain the job while sessions become
+replaceable attempt executors.
 
 ### 2. Refinement and delivery share one queue
 
 The 2026-07-29 inventory found 33 active changes and 833 unchecked tasks, but
 only four claimable candidates. Coding harder cannot drain dependency and
 policy debt. A refinery must raise claimable pressure; a delivery executor must
-consume already-admitted packets. Neither may silently turn every finding into
-active work.
+consume already-admitted definitions. Neither may silently turn every finding
+into active work.
 
 ### 3. Parallelism is based on available subscriptions
 
@@ -140,53 +145,49 @@ OpenSpec foldback, and release receipts are the production outcome.
 ### 5. Retry and recovery boundaries are implicit
 
 A broad goal survives indefinitely while the agent changes approach. Each work
-packet instead needs a timeout, attempt budget, exact retry identity, and a
-terminal state. After the one bounded correction attempt, the controller
-replans, refines, or blocks with durable evidence.
+definition instead needs a timeout and attempt budget, while existing authority
+owners supply exact retry identities and terminal state. After one bounded
+correction attempt, the controller replans, refines, or blocks with durable
+evidence.
 
 ## Target Production Contract
 
-### Verified production work packet
+### Immutable work definition and derived projection
 
-The minimum packet is a composition record, not a new platform primitive. It
-contains:
+The user-authored definition contains stable references only: principal,
+universe, repository, accepted spec, immutable Branch version, typed evaluator
+policy, provider/executor requirements, declared budgets, and destination
+purpose. It is immutable once published.
 
-- stable packet ID and task type;
-- user, universe, repository, accepted-spec, and immutable Branch-version
-  references;
-- exact dependency packet IDs;
-- exact write-set or artifact ownership;
-- acceptance evaluator/check references and expected evidence;
-- provider/executor capability requirements;
-- timeout and maximum attempts;
-- budget ceiling and authority source;
-- GitHub destination/effect reservation;
-- current activation epoch, lease generation, attempt state, and blocker;
-- terminal evidence handles and next action.
-
-Packet text may be generated, but identity, authority, dependencies, evaluator,
-budgets, and effect destination are controller-derived and immutable for an
-attempt.
+It does not own activation epochs, leases, attempt lifecycle, provider
+reservations, evaluation outcomes, effect reservations, or terminal state.
+Those remain with their existing authority domains. The chatbot-facing
+operational view is a read-only projection assembled from those independently
+authorized records; it cannot mint authority or advance the composite
+lifecycle.
 
 ### Baseline/falsifiability gate
 
 Before model spend:
 
-1. validate the packet and its immutable references;
+1. validate the definition and its immutable references;
 2. check dependency completion and write-set collisions;
-3. execute or inspect the declared acceptance baseline in a sandbox;
+3. execute the declared typed deterministic evaluator without tenant code;
 4. require new-behavior assertions to fail for the intended reason;
 5. require unchanged-invariant checks to pass;
 6. reject silent, unfailable, missing-artifact, or self-attested checks.
 
-For a multi-tenant cloud system, user-provided arbitrary shell is not trusted
-control-plane input. Checks must be repository-owned CI commands in an isolated
-workspace, typed TinyAssets evaluators, or sandboxed external tool nodes under
-declared policy.
+For a multi-tenant cloud system, repository ownership does not make arbitrary
+shell trusted. The first slice accepts only typed deterministic evaluators that
+execute no tenant code. Repository commands, shell, CI emulation, and external
+tools fail closed with `sandbox_unavailable` until a production-ready isolated
+execution backend proves secret absence, exact source staging, resource
+limits, cleanup, and signed/fenced terminal evidence.
 
-### Dependency-aware work-conserving waves
+### Later dependency-aware waves
 
-The supervisor computes READY packets from:
+After single-packet conformance, a later delta may compute READY definitions
+from:
 
 - all dependencies terminal-success;
 - no overlap with currently leased write sets;
@@ -194,8 +195,8 @@ The supervisor computes READY packets from:
 - review/CI/effect capacity below its configured limit;
 - activation epoch and immutable version still current.
 
-It fills available slots only with READY packets. A dependency-heavy slice
-remains sequential. A broad independent batch may fan out. Parallelism is a
+The first change remains single-packet and single-repository. It does not add a
+DAG table, write-set scheduler, or backlog refinery. Later parallelism is a
 derived scheduling result, never a fixed “run two agents all day” policy.
 
 ### Attempt and retry state machine
@@ -205,17 +206,21 @@ published → merged → folded_back → succeeded`
 
 Terminal alternatives are `failed`, `blocked`, `cancelled`, and `superseded`.
 
-A failed evaluation may retry once under the same packet and effect identity
-with bounded raw failure context. A second failure exits execution and creates
-a refinery/replan input; it does not remain in an agent loop.
+A failed evaluation may retry once in the same preserved task workspace, with
+a new target attempt generation, a new provider invocation authority/budget,
+bounded raw failure context, and the same logical work definition and
+system-derived GitHub effect identity. A second failure exits execution and
+creates a refinery/replan input; it does not remain in an agent loop.
 
 ### Durable delivery
 
 Successful evaluator output is not discarded. Before releasing an isolated
 workspace, the controller must have a durable commit/diff bundle and, for
 software delivery, a destination-scoped PR or explicit artifact receipt.
-GitHub remains authoritative for checks, review, and merge. Foldback verifies
-remote merge before syncing/archiving OpenSpec and retiring the live claim.
+GitHub supplies fresh external truth for PR, checks, review, protected head,
+and merge. TinyAssets remains authoritative for activation, budgets,
+evaluation, and receipts. Foldback combines both before syncing/archiving
+OpenSpec and retiring the live claim.
 
 ### BYOC routing
 
@@ -233,20 +238,21 @@ Existing canonical handles must support:
 - “What is running and what is blocked?”
 - “Pause after the current irreversible boundary.”
 - “Resume with this immutable version.”
-- “Prioritize this ready packet.”
 - “Show the failed evaluator and retry budget.”
 - “Publish/activate this reviewed orchestration version.”
 - “Roll back to the previous version.”
 
 The answer is rendered from durable cloud state. No tray process, local
-dashboard, PowerShell command, or computer is required.
+dashboard, PowerShell command, or computer is required. Reprioritization is
+deferred until epoch-2 queue policy owns a reviewed concurrency-safe mutation
+contract.
 
 ## Backlog Refinery Versus Delivery Executor
 
 | Refinery | Delivery executor |
 |---|---|
-| Measures WIP, blockers, stale claims, oversize changes, and arrival/closure | Claims only READY packets |
-| Proposes slices, dependency corrections, and acceptance contracts | Implements exactly one admitted packet |
+| Measures WIP, blockers, stale claims, oversize changes, and arrival/closure | Claims only the admitted definition |
+| Proposes slices, dependency corrections, and acceptance contracts | Implements exactly one admitted definition |
 | Can produce a reviewed planning artifact | Produces evaluated code/artifact and durable PR/receipt |
 | May increase claimable pressure | Must not invent new scope |
 | Never rewrites PLAN authority automatically | Never bypasses review/CI/effect authority |
@@ -286,7 +292,7 @@ Task count is diagnostic, not a productivity score.
 
 ### Adapt
 
-- Ringer manifest → ordinary TinyAssets verified work-packet composition.
+- Ringer manifest → immutable TinyAssets Branch definition plus read-only projection.
 - Local semaphore → server-authoritative dependency/write-set wave scheduler.
 - Local CLI engine config → user-owned provider/executor capability binding.
 - Local Ringside HUD → canonical chatbot control and user-visible nodes.
@@ -330,34 +336,40 @@ Amend the change before runtime work to:
 1. replace Jonathan-specific behavioral requirements with generic
    user/repository/spec inputs while retaining Jonathan as the acceptance
    fixture;
-2. define the verified work-packet schema using existing composition state;
-3. add baseline/falsifiability admission;
-4. separate refinery proposals from delivery claims;
-5. admit a single READY packet under the already-approved epoch-2 activation
-   and lease authority;
-6. execute one BYOC attempt, one independent evaluator, and at most one bounded
-   retry;
-7. preserve a durable commit/diff and destination-scoped PR/effect receipt;
-8. expose status/pause/resume/reprioritize through existing chatbot handles;
+2. define an immutable work definition and a read-only projection over
+   existing authority owners, with no composite state machine;
+3. add typed no-tenant-code baseline/falsifiability admission and fail closed
+   with `sandbox_unavailable` for repository commands;
+4. admit one definition under the already-approved epoch-2 activation and
+   background-attempt authority;
+5. execute one BYOC attempt, one frozen `AcceptanceScenario`, and at most one
+   same-workspace retry with fresh target/provider generations;
+6. preserve a content-addressed commit/diff before cleanup;
+7. depend on outbound-boundary GitHub reconciliation rather than adding a
+   target-local receipt or effect loop;
+8. expose inspect/pause/resume/stop/publish/rollback through existing chatbot
+   handles;
 9. prove two-trigger collision safety and cloud-worker restart recovery.
 
 Only after single-packet conformance passes should the next delta add a
-two-packet independent wave and §14 load proof. This preserves the final
-architecture without making parallelism the first correctness problem.
+two-packet independent wave, backlog-refinery admission, reprioritization, and
+§14 load proof. This preserves the final architecture without making
+parallelism the first correctness problem.
 
-## Review Questions For Claude
+## Independent Review Resolution
 
-1. Is Ringer characterized accurately at commit
-   `a1a91b8b384a90dcca379e1cb9ab91405275ac46`?
-2. Does the PolyForm Shield restriction require any stronger avoid language?
-3. Does the proposed work packet compose from existing TinyAssets primitives,
-   or does it silently introduce a new top-level primitive?
-4. Does this collide with current epoch-2 request admission, background
-   authority, evaluator, GitHub effect, or distributed-execution owners?
-5. Are baseline checks safe and meaningful for a multi-tenant cloud?
-6. Is the smallest slice generic enough for ordinary users while remaining
-   deliverable?
-7. Which findings are overstated, missing, or unsafe?
+Claude Code hit the documented monthly-spend limit. The host-approved
+fresh-context Codex fallback returned `ADAPT`; its durable verdict is
+`docs/audits/2026-07-30-ringer-production-orchestration-claude-review.md`.
+This revision:
+
+- corrects Ringer's per-task workspace/retry behavior;
+- strengthens the PolyForm Shield avoid boundary;
+- removes the proposed aggregate packet authority;
+- blocks tenant-code execution without production confinement;
+- binds GitHub reconciliation to `outbound-boundary-layer`;
+- removes waves, refinery automation, and reprioritization from the first
+  slice.
 
 ## Worktree / Pickup Packet
 
@@ -365,7 +377,7 @@ architecture without making parallelism the first correctness problem.
 - Worktree:
   `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730`
 - Base: `ef65fdc7f37fb96d7d1be711dda3b34e9de9c0c8`
-- Claim: STATUS row “Implement Ringer-informed generic GitHub→spec production
+- Claim: STATUS row “Implement Ringer-informed generic GitHub-to-spec production
   orchestration”
 - Research artifact:
   `docs/audits/2026-07-30-ringer-production-orchestration-implications.md`
