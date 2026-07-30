@@ -819,3 +819,18 @@ fresh-host rollback edges found later.
   when budgets can mutate without rotating those generations. Fence the exact
   immutable record (or a revision advanced by every mutation), and test the
   stale second writer against the mutable envelope itself.
+
+## 2026-07-30 - deterministic background attempt keys
+
+- **What surprised me:** checking that source families produce distinct keys
+  does not prove that every field inside one family is load-bearing; an omitted
+  generation or retry ordinal can remain invisible behind a valid-looking
+  digest.
+- **Pattern worth capturing:** validate nominal IDs, canonical revisions,
+  timestamps, digests, and ordinals before hashing a versioned canonical
+  envelope. The resulting key is stable and non-secret while each source
+  boundary remains independently mutation-tested.
+- **What I would do differently:** define one golden vector and the
+  all-fields-mutate table with the first builder, so later source builders must
+  join the same compatibility contract rather than adding ad hoc string
+  concatenation.
