@@ -7,12 +7,14 @@ generated keypair and inject a fake JWKS client, so nothing touches the network.
 
 from __future__ import annotations
 
+import logging
 import time
 
 import jwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
+import tinyassets.auth.workos_provider as workos_provider_module
 from tinyassets.auth.provider import Identity, create_provider
 from tinyassets.auth.workos_provider import (
     WorkOSAuthProvider,
@@ -46,6 +48,27 @@ class _FakeJWKSClient:
 
     def get_signing_key_from_jwt(self, token: str) -> _FakeSigningKey:
         return self._key
+
+
+class _FailingJWKSClient:
+    def get_signing_key_from_jwt(self, token: str) -> _FakeSigningKey:
+        raise RuntimeError("sensitive-jwks-detail")
+
+
+@pytest.fixture
+def isolated_rejection_log(monkeypatch):
+    monkeypatch.setattr(
+        workos_provider_module,
+        "_token_rejection_log_state",
+        {},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        workos_provider_module,
+        "_rejection_log_now",
+        lambda: 100.0,
+        raising=False,
+    )
 
 
 def _provider(
@@ -185,6 +208,121 @@ def test_empty_token_returns_none(keypair) -> None:
     p = _provider(keypair)
     assert p.resolve_token("") is None
     assert p.resolve_token("   ") is None
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (jwt.ExpiredSignatureError("sensitive-expiry-detail"), "expired"),
+        (jwt.InvalidAudienceError("sensitive-audience-detail"), "audience"),
+        (jwt.InvalidIssuerError("sensitive-issuer-detail"), "issuer"),
+        (jwt.MissingRequiredClaimError("sensitive-claim-name"), "required_claim"),
+        (jwt.InvalidSignatureError("sensitive-signature-detail"), "signature"),
+        (jwt.InvalidAlgorithmError("sensitive-algorithm-detail"), "algorithm"),
+        (jwt.DecodeError("sensitive-decode-detail"), "malformed"),
+        (jwt.InvalidTokenError("sensitive-token-detail"), "invalid_token"),
+    ],
+)
+def test_validation_failure_logs_only_allowlisted_category(
+    keypair,
+    monkeypatch,
+    caplog,
+    isolated_rejection_log,
+    error: jwt.PyJWTError,
+    category: str,
+) -> None:
+    def _reject(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(jwt, "decode", _reject)
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+    token = _sign(keypair)
+
+    assert _provider(keypair).resolve_token(token) is None
+    assert f"category={category}" in caplog.text
+    assert "sensitive-" not in caplog.text
+    assert token not in caplog.text
+
+
+def test_signing_key_failure_logs_no_exception_or_token(
+    keypair,
+    caplog,
+    isolated_rejection_log,
+) -> None:
+    token = _sign(keypair, email="sensitive-user@example.com")
+    provider = WorkOSAuthProvider(
+        issuer=ISSUER,
+        jwks_uri="https://example.invalid/oauth2/jwks",
+        jwks_client=_FailingJWKSClient(),
+    )
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    assert provider.resolve_token(token) is None
+    assert "category=signing_key" in caplog.text
+    assert "sensitive-" not in caplog.text
+    assert token not in caplog.text
+
+
+def test_invalid_subject_logs_sanitized_category(
+    keypair,
+    caplog,
+    isolated_rejection_log,
+) -> None:
+    token = _sign(keypair, sub="anonymous")
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    assert _provider(keypair).resolve_token(token) is None
+    assert "category=invalid_subject" in caplog.text
+    assert token not in caplog.text
+
+
+def test_rejection_logs_are_bounded_per_category(
+    keypair,
+    monkeypatch,
+    caplog,
+    isolated_rejection_log,
+) -> None:
+    times = iter((100.0, 100.0, 161.0))
+    monkeypatch.setattr(
+        workos_provider_module,
+        "_rejection_log_now",
+        lambda: next(times),
+        raising=False,
+    )
+    provider = WorkOSAuthProvider(
+        issuer=ISSUER,
+        jwks_uri="https://example.invalid/oauth2/jwks",
+        jwks_client=_FailingJWKSClient(),
+    )
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    for _ in range(3):
+        assert provider.resolve_token(_sign(keypair)) is None
+
+    records = [
+        record
+        for record in caplog.records
+        if "category=signing_key" in record.getMessage()
+    ]
+    assert len(records) == 2
+    assert "suppressed=0" in records[0].getMessage()
+    assert "suppressed=1" in records[1].getMessage()
+
+
+def test_real_key_client_classifies_malformed_token_before_jwks_lookup(
+    caplog,
+    isolated_rejection_log,
+) -> None:
+    provider = WorkOSAuthProvider(
+        issuer=ISSUER,
+        jwks_uri="https://example.invalid/oauth2/jwks",
+    )
+    caplog.set_level(logging.WARNING, logger="universe_server.auth.workos")
+
+    assert provider.resolve_token("not-a-jwt") is None
+    assert "category=malformed" in caplog.text
+    assert "category=signing_key" not in caplog.text
+    assert "not-a-jwt" not in caplog.text
 
 
 # --- audience binding ------------------------------------------------------

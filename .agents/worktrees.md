@@ -1839,3 +1839,14 @@ Notes:
 - Purpose: close the durable worktree lifecycle after merge verification
 - Review gate: PR #1927 exact head `879f6dda` independently approved; merged tree matches that head
 - Publish/cleanup: safe to remove after this ledger foldback lands
+
+## 2026-07-30 12:35 - ChatGPT OAuth continuity blocks cloud drain
+
+- Provider: `codex-chatgpt-oauth-cloud-drain-20260730`
+- Branch: `codex/chatgpt-oauth-cloud-drain-20260730`
+- Lane state: Claimed; root-cause investigation before behavior changes
+- Worktree: `C:/Users/Jonathan/Projects/wf-chatgpt-oauth-cloud-drain-20260730`
+- STATUS/Issue/PR: P0 user-owned cloud execution; PR pending
+- Purpose: repair immediate post-reconnect 401 and make durable chatbot control an implementation gate for generic user-authored GitHub-to-spec cloud automation
+- Review gate: independent exact-diff review plus rendered ChatGPT temporary-chat proof
+- Publish/cleanup: draft PR after root cause and OpenSpec artifacts are reviewable
