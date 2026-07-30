@@ -738,3 +738,13 @@ fresh-host rollback edges found later.
 - **What I would do differently:** add the router-bound lifecycle assertion
   when the evidence tables first land, alongside the lower-level store tests,
   so the old action cannot remain a parallel partial writer.
+
+## 2026-07-29 - serialized mutation verification
+
+- **What surprised me:** a timed-out mutation probe briefly outlived its parent
+  shell and overlapped a focused test rerun, producing two transient failures
+  while it intentionally changed the normalization invariant.
+- **Pattern worth capturing:** mutation probes and ordinary suites must run
+  serially, with a clean-tree check after the probe restores its mutations.
+- **What I would do differently:** run each long verification as its own
+  bounded command and confirm no probe process remains before the green rerun.

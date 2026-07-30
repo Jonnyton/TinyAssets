@@ -1690,6 +1690,15 @@ Notes:
 - Related implications: tasks 5.3 and 5.5-5.7 remain blocked and out of scope.
 - Idea feed refs: none
 
+## 2026-07-29 18:15 - land independent-targets-handoff-5.2
+
+- Provider: `drain-20260729-171925-6b1b07`
+- Branch: `chore/drain-20260729-171925-6b1b07-recovery`
+- Lane state: Landed; local worktree retained through foldback merge
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
+- STATUS/Issue/PR: claim retired; implementation PR #1884 merged as `22bbb0a7`
+- Verification: 82 focused tests passed; all 28 handoff mutations went red; strict OpenSpec validation passed on Windows, 2026-07-29
+
 ## 2026-07-29 17:00 - land repair-synthesis-checklist
 
 - Provider: `drain-20260729-145600-e75271`
