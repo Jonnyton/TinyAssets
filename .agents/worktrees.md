@@ -1779,10 +1779,10 @@ Notes:
 - Lane state: Parked draft lane; audit complete and STATUS claim retired in branch pending PR merge
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
 - STATUS/Issue/PR: completed `Reconcile current-main OpenSpec finish-first debt after #1918/#1924`; one draft PR expected
-- Purpose: publish a bounded current-main recovery map while preserving the task 1.5 foldback owner
+- Purpose: publish a bounded current-main recovery map after observing task 1.5 foldback retirement
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: preserve the lane until merge verification and foldback
-- Update 2026-07-30: post-#1928 audit found 0 complete-unarchived, one exact task 1.5 foldback owner, 18 untracked changes, and 29 oversized changes; exact claim check remained `claimable=0`, `stale=0`
+- Update 2026-07-30: post-#1929 audit found 0 complete-unarchived, zero WIP owners, 18 untracked changes, and 29 oversized changes; exact claim check remained `claimable=0`, `stale=0`
 
 ## 2026-07-30 10:58 - background authority logical-attempt keys
 
