@@ -591,6 +591,14 @@ class LifecycleHost:
                         info["State"]["Running"] = False
                         info["State"]["Pid"] = 0
             return ""
+        if command[:2] == ("docker", "rm"):
+            identities = set(command[2:])
+            self.containers = {
+                name: info
+                for name, info in self.containers.items()
+                if info["Id"] not in identities and name not in identities
+            }
+            return ""
         if command[:2] == ("docker", "ps") and "-a" in command:
             if self.container_state_error:
                 raise FenceError("docker ps failed")
@@ -1579,8 +1587,8 @@ def _unsafe_recovery_state(host: LifecycleHost, state_path: Path) -> None:
                 "receipt_snapshot": snapshot,
                 "preliminary_receipt_snapshot": snapshot,
                 "old_container_ids": {
-                    name: f"pre-cutover-{index}"
-                    for index, name in enumerate(EXPECTED_CONTAINERS)
+                    name: str(host.containers[name]["Id"])
+                    for name in EXPECTED_CONTAINERS
                 },
                 "old_restart_policies": {
                     name: "always" for name in EXPECTED_CONTAINERS
@@ -1644,6 +1652,11 @@ def test_recover_unsafe_starts_restart_fenced_then_finalizes_exact_identity(
     assert evidence["source_run_id"] == "source-run-1"
     assert ("systemctl", "start", DAEMON_SERVICE) not in host.calls
     compose = next(call for call in host.calls if call[:2] == ("docker", "compose"))
+    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
+    assert set(remove[2:]) == {
+        f"old-{index}" for index, _name in enumerate(EXPECTED_CONTAINERS)
+    }
+    assert host.calls.index(remove) < host.calls.index(compose)
     assert str(fence.RECOVERY_COMPOSE_OVERRIDE_PATH) in compose
     assert all(
         info["HostConfig"]["RestartPolicy"]["Name"] == "no"
@@ -1660,6 +1673,9 @@ def test_recover_unsafe_starts_restart_fenced_then_finalizes_exact_identity(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["source_run_id"] == "source-run-1"
     assert state["recovery_attempts"] == ["recovery-1"]
+    assert state["recovery_removed_stopped_container_ids"] == {
+        name: f"old-{index}" for index, name in enumerate(EXPECTED_CONTAINERS)
+    }
     assert state["phase"] == "recovery_pending_canary"
 
     finalized = finalize_recovery(
@@ -1704,6 +1720,32 @@ def test_recover_unsafe_accepts_compose_down_zero_container_fence(
         info["HostConfig"]["RestartPolicy"]["Name"] == "no"
         for info in host.containers.values()
     )
+
+
+def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["old_container_ids"]["tinyassets-worker"] = "another-generation"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.start_installs_target = True
+
+    with pytest.raises(FenceError, match="recorded fenced generation"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-wrong-generation",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
 
 
 def test_recovery_arms_expiry_before_starting_any_container(
@@ -2226,6 +2268,14 @@ def test_expired_pending_recovery_is_reconciled_before_new_attempt(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["recovery_attempts"] == ["recovery-old", "recovery-new"]
     assert state["recovery_run_id"] == "recovery-new"
+    removed = [
+        call for call in host.calls if call[:2] == ("docker", "rm")
+    ]
+    assert len(removed) == 1
+    assert set(removed[0][2:]) == {
+        f"recovered-{index}"
+        for index, _name in enumerate(EXPECTED_CONTAINERS)
+    }
 
 
 @pytest.mark.parametrize(

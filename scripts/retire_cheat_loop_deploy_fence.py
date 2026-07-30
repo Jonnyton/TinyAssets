@@ -1741,6 +1741,47 @@ def _recovery_project_name(run_id: str) -> str:
     return f"tinyassets-recovery-{suffix}"
 
 
+def _remove_recorded_stopped_fleet_for_recovery(
+    host: Host,
+    state: Mapping[str, Any],
+) -> dict[str, str]:
+    """Remove only the exact recorded, already-fenced container generation."""
+
+    names = set(host.volume_container_names())
+    if not names:
+        return {}
+    if names != set(EXPECTED_CONTAINERS):
+        raise FenceError("recovery cannot replace a partial or extra fleet")
+    inspections = _exact_inspections(host)
+    actual = {
+        name: str(info.get("Id", ""))
+        for name, info in inspections.items()
+    }
+    recorded_source = ""
+    for source in ("recovery_container_ids", "old_container_ids"):
+        recorded = {
+            str(name): str(identity)
+            for name, identity in dict(state.get(source) or {}).items()
+        }
+        if set(recorded) == set(EXPECTED_CONTAINERS) and actual == recorded:
+            recorded_source = source
+            break
+    if not recorded_source:
+        raise FenceError(
+            "stopped fleet is not the recorded fenced generation"
+        )
+    for name, info in inspections.items():
+        if info.get("State", {}).get("Running"):
+            raise FenceError(f"recovery writer is still running: {name}")
+        identity = actual[name]
+        if host.container_restart_policy(identity) != "no":
+            raise FenceError("recovery writer restart policy is not no")
+    host.run(["docker", "rm", *actual.values()])
+    if host.volume_container_names():
+        raise FenceError("recorded stopped fleet removal did not converge")
+    return actual
+
+
 def _assert_recovery_container_ownership(
     host: Host,
     state: Mapping[str, Any],
@@ -2002,6 +2043,10 @@ def recover_unsafe(
         revision=revision,
         state_path=state_path,
     )
+    removed_stopped = _remove_recorded_stopped_fleet_for_recovery(host, state)
+    if removed_stopped:
+        state["recovery_removed_stopped_container_ids"] = removed_stopped
+        _atomic_json(state_path, state)
     attempts = list(state.get("recovery_attempts") or [])
     if run_id in attempts:
         raise FenceError("recovery attempt identity was already used")
