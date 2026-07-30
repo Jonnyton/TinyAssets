@@ -256,7 +256,7 @@ _Last audited: 2026-05-19_
 
 **Purpose:** A multi-tenant workflow platform where many users and daemons collaborate without collapsing into one shared chat or one hidden runtime.
 
-**In scope:** Daemon identity (souls, fingerprints, forks), runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, file-locked claim across cloud + host executors.
+**In scope:** Daemon identity (souls, fingerprints, forks), runtime instance allocation, host pool registry, soul eligibility per node/gate, soul-guided dispatch, capacity-bounded fleet sizing, server-authoritative transactional activation and claiming across cloud + host executor classes.
 
 **Out of scope:** What a daemon *knows* (Brain); what a daemon *evaluates* (Evolution & Evaluation); goal/gate ladder definitions (Goals & Gates); MCP tool surface (API & MCP Interface).
 
@@ -266,17 +266,18 @@ _Last audited: 2026-05-19_
 - *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
 - *Host-independent user loops live with their universe.* If a user asks a recurring workflow to run continuously, its durable definition, schedule, checkpoints, receipts, and health live in that user's cloud universe. Cloud and tray executors may understand the same versioned Branch, but one activation authority owns a normal loop at a time; a host-to-cloud migration stops the host activation before proving cloud acceptance. Turning off a tray cannot erase or pause an accepted cloud-owned loop.
+- *Epoch-2 transactional claiming is the sole live mutation authority (host-approved 2026-07-29).* The canonical transactional control plane owns activation epochs, conditional claims, lease generations, executor identity, fencing, recovery, and integrity checks. A claim is valid only while its `(universe, automation, activation epoch, immutable Branch version, executor class, lease generation)` still matches authoritative state. Epoch-1 file locking is compatibility-drain-only: it may finish or retire already-admitted legacy work during a bounded migration, but it cannot admit new work or mutate the same automation while epoch 2 is active. Cutover fails closed; the two claim authorities are never dual-active.
 - *Host fleets are capacity-bounded, not product-capped.* A host may summon as many daemons as they can afford and operate, including multiple daemons on the same provider. Second-and-later same-provider summons show warning-only subscription/rate-limit guidance; no platform subscription gate.
 - *Host subscription auth can fan out to multiple same-provider workers when the provider account supports it.* The 2026-06-20 host fleet baseline is two Codex workers sharing `CODEX_HOME=/data/.codex` and two Claude workers sharing `CLAUDE_CONFIG_DIR=/data/.claude`; no second subscription or per-worker auth home is required. Codex's single-use refresh-token chain must be serialized through the shipped `codex` flock wrapper whenever that shared auth home is used.
 - *Soul eligibility.* Nodes and gates may declare whether daemon souls are allowed, forbidden, required, replaced, or combined with a temporary node/gate header. They may declare domain requirements (scientific, legal, artistic, local-model-only). Claim-time verification checks soul fingerprint + required claims/proofs before execution.
 - *Soul-guided dispatch.* A soul-bearing daemon returns to a decision step listing eligible work + soul policy + domain requirements + required capability + offer. The daemon may choose money, interests, reputation, public-good impact, or refusal per its soul. Soulless daemons use the default platform dispatcher.
-- *Two coexisting executors, one file-locked claim.* Cloud-side `cloud_worker` (identity `cloud-droplet`) + opt-in host-tray (identity `host`); both call `branch_tasks.claim_task`; file-lock sidecar guarantees no double-claim.
+- *Two executor classes, one transactional authority.* Cloud workers and opt-in host trays may execute the same immutable Branch contract, but only the executor class named by the current server-authoritative activation epoch can claim. Stop/cutover/rollback advance that epoch with compare-and-swap; stale, partitioned, or alternate local identities are fenced rather than trusted.
 
-**Substrate:** `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks.py`, `tinyassets/runtime/`, `tinyassets/singleton_lock.py`. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
+**Substrate:** `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/branch_tasks_v2.py`, `tinyassets/storage/request_admissions.py`, `tinyassets/runtime/`, and the canonical transactional control plane. `tinyassets/branch_tasks.py` / `tinyassets/singleton_lock.py` remain epoch-1 compatibility-drain substrate until migration proof permits removal; they are not the target claim authority. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
 
 **Open evolution:** Cross-host node-execution hopping is not supported (cross-host software donation IS, see Distribution). N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, scientific publication co-signature) is unscoped.
 
-_Last audited: 2026-05-19_
+_Last audited: 2026-07-29_
 
 ---
 
@@ -597,6 +598,7 @@ ADR-style index of decisions that don't fit cleanly inside one module.
 - **Local-first execution, git-native sync (bridge state).** DO Droplet self-host is the current bridge. Postgres-canonical replaces local-first when the control-plane backend ships.
 - **User-controllable state architecture.** Users should eventually inspect, steer, and redesign tinyassets/state structure conversationally.
 - **Multi-host is the destination.** Local-host is important, but end-state is a network of hosts contributing model capacity to shared projects.
+- **Epoch-2 transactional claiming is the single live mutation authority (host-approved 2026-07-29).** The transactional control plane owns activation, claim, lease, fence, and recovery truth across cloud and host executor classes. Epoch-1 file locking is compatibility-drain-only during bounded migration and is never dual-active for the same automation. This resolves the prerequisite identified in `docs/audits/2026-07-29-cloud-drain-current-main-prerequisites.md`.
 - **The system must evolve itself.** Stagnation is the worst failure mode.
 - **Context is tools, not pre-assembly.** The writer should query through tools. Pre-assembly is transitional.
 - **Bad decisions are data.** When the daemon decides poorly, improve goals/tools/state/evals. Don't reflexively add rules.
