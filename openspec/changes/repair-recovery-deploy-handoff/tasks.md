@@ -11,6 +11,11 @@
   recorded stopped recovery generation during target preparation.
 - [x] 1.3 Add and pass interruption/replay tests proving removal intent is
   durable, exact-empty replay is idempotent, and partial substitution fails.
+- [x] 1.4 Add a production-shaped failing test for a stopped strict-subset
+  canonical target left by failed health convergence, plus foreign/running/
+  restart-enabled/same-name refusal.
+- [x] 1.5 Write-ahead and replay removal of only the exact proved partial target
+  IDs, without `-v`, before unsafe recovery starts.
 
 ## 2. Verification And Release
 

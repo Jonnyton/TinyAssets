@@ -706,6 +706,37 @@ def _named_container_running(host: Host, name: str) -> bool:
     return True
 
 
+def _named_container_absent_exact(host: Host, name: str) -> bool:
+    """Prove an exact canonical container name is absent in every state."""
+
+    output = host.run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--filter",
+            f"name=^/{name}$",
+            "--format",
+            "{{.ID}}",
+        ]
+    )
+    if not output:
+        return True
+    rows = output.splitlines()
+    if len(rows) != 1 or not rows[0]:
+        raise FenceError(f"named container absence is not authoritative: {name}")
+    return False
+
+
+def _prove_expected_container_names_absent(host: Host) -> None:
+    """Fail closed unless every canonical container name is globally absent."""
+
+    for name in EXPECTED_CONTAINERS:
+        if not _named_container_absent_exact(host, name):
+            raise FenceError(f"canonical target name still exists: {name}")
+
+
 def _wait_units_quiesced(
     host: Host,
     units: Sequence[str],
@@ -1916,15 +1947,22 @@ def _validate_unsafe_recovery_source(
     ):
         raise FenceError("saved restart policy is invalid")
     names = set(host.volume_container_names())
-    if names not in (set(), set(EXPECTED_CONTAINERS)):
+    expected_names = set(EXPECTED_CONTAINERS)
+    if names - expected_names:
         raise FenceError("fenced volume has partial or extra writer containers")
+    if names and names < expected_names:
+        _partial_canonical_target_ids(host, state, names)
     if names:
-        inspections = _exact_inspections(host)
+        inspections = (
+            _exact_inspections(host)
+            if names == expected_names
+            else {name: host.container_info(name) for name in names}
+        )
         for name, info in inspections.items():
             if info.get("State", {}).get("Running"):
                 raise FenceError(f"fenced writer is still running: {name}")
             identity = host.image_identity(str(info.get("Image", "")), repository)
-            if identity != (image_ref, revision):
+            if names == expected_names and identity != (image_ref, revision):
                 raise FenceError(
                     "fenced fleet identity disagrees with runner binding"
                 )
@@ -1973,6 +2011,147 @@ def _recovery_unit_name(run_id: str) -> str:
 def _recovery_project_name(run_id: str) -> str:
     suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
     return f"tinyassets-recovery-{suffix}"
+
+
+def _partial_canonical_target_ids(
+    host: Host,
+    state: Mapping[str, Any],
+    names: set[str],
+) -> dict[str, str]:
+    """Prove a strict subset belongs to the recorded failed canonical target."""
+
+    expected_names = set(EXPECTED_CONTAINERS)
+    if not names or not names < expected_names:
+        raise FenceError("partial canonical target names are invalid")
+    target_image_ref = str(state.get("target_image_ref", ""))
+    target_revision = str(state.get("target_revision", ""))
+    if (
+        not CANONICAL_IMAGE_RE.fullmatch(target_image_ref)
+        or not REVISION_RE.fullmatch(target_revision)
+    ):
+        raise FenceError("partial canonical target identity is not recorded")
+    repository = target_image_ref.partition("@")[0]
+    inspections = {name: host.container_info(name) for name in names}
+    actual: dict[str, str] = {}
+    for name, info in inspections.items():
+        if info.get("State", {}).get("Running"):
+            raise FenceError(f"partial canonical target is running: {name}")
+        identity = host.image_identity(str(info.get("Image", "")), repository)
+        if identity != (target_image_ref, target_revision):
+            raise FenceError(
+                f"partial canonical target image changed: {name}"
+            )
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("com.docker.compose.project") != "tinyassets":
+            raise FenceError(
+                f"partial canonical target project changed: {name}"
+            )
+        container_id = str(info.get("Id", ""))
+        if not container_id:
+            raise FenceError(
+                f"partial canonical target identity is missing: {name}"
+            )
+        if host.container_restart_policy(container_id) != "no":
+            raise FenceError(
+                f"partial canonical target restart policy is not no: {name}"
+            )
+        actual[name] = container_id
+    for name in expected_names - names:
+        if not _named_container_absent_exact(host, name):
+            raise FenceError(
+                f"missing partial target name still exists off-volume: {name}"
+            )
+    return actual
+
+
+def _remove_partial_canonical_target_for_recovery(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> dict[str, str]:
+    """Write-ahead and remove only a proved failed canonical target subset."""
+
+    raw_plan = state.get("partial_target_removal")
+    if "partial_target_removal" in state and not isinstance(raw_plan, dict):
+        raise FenceError("partial target removal intent is invalid")
+    plan = raw_plan if isinstance(raw_plan, dict) else None
+    names = set(host.volume_container_names())
+    recorded: dict[str, str] = {}
+    if plan:
+        recorded = {
+            str(name): str(identity)
+            for name, identity in dict(plan.get("container_ids") or {}).items()
+        }
+        if (
+            plan.get("image_ref") != state.get("target_image_ref")
+            or plan.get("revision") != state.get("target_revision")
+            or plan.get("project_name") != "tinyassets"
+            or plan.get("removal_phase") not in {"planned", "removed"}
+            or not recorded
+            or not set(recorded) < set(EXPECTED_CONTAINERS)
+        ):
+            raise FenceError("partial target removal intent is invalid")
+        if not names <= set(recorded):
+            raise FenceError("partial target removal inventory changed")
+
+    if not names:
+        if not plan:
+            return {}
+        for name, identity in recorded.items():
+            if not _container_absent_exact(host, identity):
+                raise FenceError(
+                    f"removed partial target still exists: {name}"
+                )
+        _prove_expected_container_names_absent(host)
+        if plan["removal_phase"] != "removed":
+            plan["removal_phase"] = "removed"
+            _atomic_json(state_path, state)
+        return recorded
+    if not names < set(EXPECTED_CONTAINERS):
+        return {}
+
+    actual = _partial_canonical_target_ids(host, state, names)
+    if not plan:
+        plan = {
+            "container_ids": dict(actual),
+            "image_ref": str(state["target_image_ref"]),
+            "project_name": "tinyassets",
+            "removal_phase": "planned",
+            "revision": str(state["target_revision"]),
+        }
+        state["partial_target_removal"] = plan
+        _atomic_json(state_path, state)
+        recorded = dict(actual)
+    if (
+        plan.get("image_ref") != state.get("target_image_ref")
+        or plan.get("revision") != state.get("target_revision")
+        or plan.get("project_name") != "tinyassets"
+        or plan.get("removal_phase") != "planned"
+        or not recorded
+        or not set(recorded) < set(EXPECTED_CONTAINERS)
+        or not names <= set(recorded)
+        or actual != {name: recorded[name] for name in names}
+    ):
+        raise FenceError("partial target removal intent changed")
+    for name in set(recorded) - names:
+        if not _container_absent_exact(host, recorded[name]):
+            raise FenceError(
+                f"removed partial target still exists: {name}"
+            )
+    host.run(
+        [
+            "docker",
+            "rm",
+            *(recorded[name] for name in EXPECTED_CONTAINERS if name in names),
+        ]
+    )
+    if host.volume_container_names():
+        raise FenceError("partial target removal did not converge")
+    _prove_expected_container_names_absent(host)
+    plan["removal_phase"] = "removed"
+    _atomic_json(state_path, state)
+    return recorded
 
 
 def _remove_recorded_stopped_fleet_for_recovery(
@@ -2335,6 +2514,14 @@ def recover_unsafe(
     attempts = list(state.get("recovery_attempts") or [])
     if run_id in attempts:
         raise FenceError("recovery attempt identity was already used")
+    removed_partial_target = _remove_partial_canonical_target_for_recovery(
+        host,
+        state,
+        state_path=state_path,
+    )
+    if removed_partial_target:
+        state["recovery_removed_partial_target_ids"] = removed_partial_target
+        _atomic_json(state_path, state)
     removed_stopped = _remove_recorded_stopped_fleet_for_recovery(host, state)
     if removed_stopped:
         state["recovery_removed_stopped_container_ids"] = removed_stopped

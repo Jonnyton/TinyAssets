@@ -45,3 +45,18 @@ removal intent before container mutation.
 - **AND** any pre-intent partial fleet, extra writer, substituted identity,
   running survivor, restart-enabled survivor, or foreign-project survivor
   fails closed
+
+#### Scenario: Unsafe recovery replaces a proved partial canonical target
+
+- **WHEN** a failed normal start leaves a strict subset of expected container
+  names on the production volume
+- **AND** every survivor has the exact recorded target image and revision,
+  canonical Compose project label, stopped state, and `restart=no`
+- **AND** every missing expected canonical name is absent in every container
+  state
+- **THEN** recovery records the exact survivor IDs before mutation, removes
+  only those IDs without `-v`, proves the volume inventory empty, and may start
+  the admitted recovery image
+- **AND** interruption may replay only the exact remaining recorded subset
+- **AND** any extra, substituted, foreign, running, restart-enabled, or
+  same-name off-volume container fails before removal

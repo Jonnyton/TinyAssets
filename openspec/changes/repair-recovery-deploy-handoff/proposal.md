@@ -18,6 +18,8 @@ names.
 - Preserve the production data volume and every non-recorded container.
 - Record the retired recovery generation before the canonical service may
   start, so retries remain bounded and auditable.
+- Permit unsafe recovery to retire a failed canonical start's stopped strict
+  subset only after exact target-image, project, name, and restart-fence proof.
 
 ## Capabilities
 

@@ -13,7 +13,7 @@
 - Memory refs: `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`; `ideas/INBOX.md` 2026-07-29 backlog-refinery capture
 - Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/activate-main-universe-spec-drain/`
 - Idea feed refs: separate backlog refinery from delivery executor; measure claimable-pressure gain
-- Ship/abandon: draft PR after Codex artifact and mandatory Claude opposite-provider review; no implementation push before verdict
+- Ship/abandon: fresh-context Codex review returned ADAPT after Claude hard limit; fold all blockers, validate OpenSpec, then seek exact-head independent approval before implementation
 
 ## 2026-07-30 13:35 - recovery-to-normal deploy handoff
 
