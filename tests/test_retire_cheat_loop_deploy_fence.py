@@ -2406,6 +2406,61 @@ def test_expired_partial_foreign_recovery_generation_is_not_touched(
     assert info["State"]["Running"]
 
 
+def test_unexpired_stopped_partial_recovery_lease_is_not_stolen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update(
+        {
+            "phase": "recovery_starting",
+            "recovery_deadline_epoch": time.time() + 600,
+            "recovery_project_name": "tinyassets-recovery-live",
+        }
+    )
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {
+        name: info
+        for name, info in host._containers(
+            "leased",
+            "sha256:old",
+            running=False,
+        ).items()
+        if name in {"tinyassets-daemon", "tinyassets-worker"}
+    }
+    for info in host.containers.values():
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        info["Config"]["Labels"][
+            "com.docker.compose.project"
+        ] = "tinyassets-recovery-live"
+
+    with pytest.raises(FenceError, match="active lease"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-new",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2] in {
+            ("docker", "stop"),
+            ("docker", "rm"),
+            ("docker", "compose"),
+        }
+        for call in host.calls
+    )
+    assert set(host.containers) == {
+        "tinyassets-daemon",
+        "tinyassets-worker",
+    }
+
+
 @pytest.mark.parametrize(
     "phase",
     [
