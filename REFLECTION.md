@@ -726,3 +726,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** run the exact live subprocess boundary
   immediately after the first red unit test, including non-ASCII STATUS data,
   rather than waiting until the focused suite is complete.
+
+## 2026-07-29 - legacy outcome evidence foldback
+
+- **What surprised me:** the schema migration correctly upgraded historical
+  outcome rows, but a new legacy-router write happened after that migration and
+  therefore escaped the evolved evidence lifecycle.
+- **Pattern worth capturing:** compatibility writers must invoke the canonical
+  migration bridge for each new row; startup backfill alone cannot preserve an
+  invariant for writes that continue after startup.
+- **What I would do differently:** add the router-bound lifecycle assertion
+  when the evidence tables first land, alongside the lower-level store tests,
+  so the old action cannot remain a parallel partial writer.
