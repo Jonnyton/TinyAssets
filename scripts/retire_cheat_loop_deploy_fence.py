@@ -37,6 +37,13 @@ EXPECTED_CONTAINERS = (
     "tinyassets-worker-claude-1",
     "tinyassets-worker-claude-2",
 )
+RECOVERY_SERVICES = (
+    "daemon",
+    "worker",
+    "worker-codex-2",
+    "worker-claude-1",
+    "worker-claude-2",
+)
 RESTART_RACER_UNITS = (
     "daemon-watchdog.timer",
     "daemon-watchdog.service",
@@ -1782,6 +1789,62 @@ def _remove_recorded_stopped_fleet_for_recovery(
     return actual
 
 
+def _remove_partial_owned_recovery_generation(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> bool:
+    """Remove an expired partial compose start owned by the recorded recovery."""
+
+    names = set(host.volume_container_names())
+    if not names or names == set(EXPECTED_CONTAINERS):
+        return False
+    if (
+        state.get("phase") != "recovery_starting"
+        or not names < set(EXPECTED_CONTAINERS)
+    ):
+        raise FenceError("recovery volume inventory is not the exact owned five")
+    project = str(state.get("recovery_project_name", ""))
+    if not project:
+        raise FenceError("partial recovery generation is not durable")
+    inspections = {name: host.container_info(name) for name in names}
+    actual: dict[str, str] = {}
+    for name, info in inspections.items():
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("com.docker.compose.project") != project:
+            raise FenceError(
+                f"partial writer belongs to another recovery generation: {name}"
+            )
+        identity = str(info.get("Id", ""))
+        if not identity or host.container_restart_policy(identity) != "no":
+            raise FenceError("partial recovery writer restart policy is not no")
+        actual[name] = identity
+    recorded = dict(state.get("recovery_container_ids") or {})
+    if recorded and any(recorded.get(name) != identity for name, identity in actual.items()):
+        raise FenceError("partial recovery container identities changed")
+    running = [
+        actual[name]
+        for name, info in inspections.items()
+        if info.get("State", {}).get("Running")
+    ]
+    if running:
+        host.run(["docker", "stop", *running])
+    for name, identity in actual.items():
+        info = host.container_info(name)
+        if info.get("State", {}).get("Running"):
+            raise FenceError(f"partial recovery writer did not stop: {name}")
+        if host.container_restart_policy(identity) != "no":
+            raise FenceError("partial recovery writer restart policy changed")
+    host.run(["docker", "rm", *actual.values()])
+    if host.volume_container_names():
+        raise FenceError("partial recovery generation removal did not converge")
+    state["recovery_removed_partial_container_ids"] = actual
+    state["phase"] = "unsafe_fenced"
+    _atomic_json(state_path, state)
+    return True
+
+
 def _assert_recovery_container_ownership(
     host: Host,
     state: Mapping[str, Any],
@@ -2013,6 +2076,12 @@ def _reconcile_orphaned_recovery(
         or state.get("phase") in {"canary_accepted", "finalizing"}
     ):
         raise FenceError("another recovery attempt still owns an active lease")
+    if _remove_partial_owned_recovery_generation(
+        host,
+        state,
+        state_path=state_path,
+    ):
+        return
     _assert_recovery_container_ownership(host, state)
     quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
@@ -2094,6 +2163,8 @@ def recover_unsafe(
                 str(RECOVERY_COMPOSE_OVERRIDE_PATH),
                 "up",
                 "-d",
+                "--no-deps",
+                *RECOVERY_SERVICES,
             ]
         )
         inspections = _exact_inspections(host)
