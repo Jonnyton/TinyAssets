@@ -6,6 +6,8 @@ perform no persistence, queue mutation, credential lookup, or Branch run.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -203,6 +205,7 @@ _NOMINAL_REFERENCE_PREFIXES = (
     "task:",
     "child_",
     "child:",
+    "logical_attempt:",
     "daemon_",
     "daemon:",
     "runtime_",
@@ -317,6 +320,190 @@ def _enum_value(enum_type: type[Enum], value: Any, field_name: str) -> Any:
         return enum_type(value)
     except ValueError as exc:
         raise ValueError(f"{field_name} has unsupported value {value!r}") from exc
+
+
+def _logical_attempt_key(kind: str, parts: tuple[object, ...]) -> str:
+    canonical = json.dumps(
+        {
+            "kind": kind,
+            "parts": parts,
+            "version": 1,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    digest = hashlib.sha256(canonical).hexdigest()
+    return _reference(f"logical_attempt:{kind}:{digest}", "logical_attempt_key")
+
+
+def build_schedule_attempt_key(
+    *,
+    schedule_id: str,
+    schedule_generation: int,
+    schedule_period_id: str,
+) -> str:
+    """Key one schedule generation and durable nominal period."""
+    return _logical_attempt_key(
+        "schedule",
+        (
+            _reference(schedule_id, "schedule_id"),
+            _integer(schedule_generation, "schedule_generation", minimum=1),
+            _reference(schedule_period_id, "schedule_period_id"),
+        ),
+    )
+
+
+def build_subscription_event_attempt_key(
+    *,
+    subscription_id: str,
+    subscription_generation: int,
+    event_id: str,
+) -> str:
+    """Key one event delivery for one subscription generation."""
+    return _logical_attempt_key(
+        "subscription_event",
+        (
+            _reference(subscription_id, "subscription_id"),
+            _integer(subscription_generation, "subscription_generation", minimum=1),
+            _reference(event_id, "event_id"),
+        ),
+    )
+
+
+def build_soul_cycle_attempt_key(
+    *,
+    universe_id: str,
+    soul_version_id: str,
+    soul_digest: str,
+    cycle_ordinal: int,
+) -> str:
+    """Key one cycle of an exact pinned soul."""
+    return _logical_attempt_key(
+        "soul_cycle",
+        (
+            _reference(universe_id, "universe_id"),
+            _reference(soul_version_id, "soul_version_id"),
+            _digest(soul_digest, "soul_digest"),
+            _integer(cycle_ordinal, "cycle_ordinal", minimum=0),
+        ),
+    )
+
+
+def build_request_task_attempt_key(
+    *,
+    tenant_id: str,
+    request_id: str,
+    admission_id: str,
+    task_id: str,
+    body_digest: str,
+    admission_generation: int,
+) -> str:
+    """Key one body-bound admitted Request task."""
+    return _logical_attempt_key(
+        "request_task",
+        (
+            _reference(tenant_id, "tenant_id"),
+            _reference(request_id, "request_id"),
+            _reference(admission_id, "admission_id"),
+            _reference(task_id, "task_id"),
+            _digest(body_digest, "body_digest"),
+            _integer(admission_generation, "admission_generation", minimum=1),
+        ),
+    )
+
+
+def build_producer_subscription_item_attempt_key(
+    *,
+    subscription_id: str,
+    subscription_generation: int,
+    item_revision: str,
+    subscriber_universe_id: str,
+) -> str:
+    """Key one durable producer-subscription item."""
+    return _logical_attempt_key(
+        "producer_subscription_item",
+        (
+            _reference(subscription_id, "subscription_id"),
+            _integer(subscription_generation, "subscription_generation", minimum=1),
+            _revision(item_revision, "item_revision"),
+            _reference(subscriber_universe_id, "subscriber_universe_id"),
+        ),
+    )
+
+
+def build_market_contract_item_attempt_key(
+    *,
+    contract_id: str,
+    contract_generation: int,
+    item_revision: str,
+    subscriber_universe_id: str,
+) -> str:
+    """Key one accepted paid-market contract item."""
+    return _logical_attempt_key(
+        "market_contract_item",
+        (
+            _reference(contract_id, "contract_id"),
+            _integer(contract_generation, "contract_generation", minimum=1),
+            _revision(item_revision, "item_revision"),
+            _reference(subscriber_universe_id, "subscriber_universe_id"),
+        ),
+    )
+
+
+def build_resume_checkpoint_attempt_key(
+    *,
+    run_id: str,
+    checkpoint_id: str,
+    checkpoint_version: str,
+    resume_generation: int,
+) -> str:
+    """Key one exact run checkpoint and resume generation."""
+    return _logical_attempt_key(
+        "resume_checkpoint",
+        (
+            _reference(run_id, "run_id"),
+            _reference(checkpoint_id, "checkpoint_id"),
+            _revision(checkpoint_version, "checkpoint_version"),
+            _integer(resume_generation, "resume_generation", minimum=1),
+        ),
+    )
+
+
+def build_claimed_task_attempt_key(
+    *,
+    physical_universe_id: str,
+    task_id: str,
+    task_generation: int,
+) -> str:
+    """Key one physical-universe task generation."""
+    return _logical_attempt_key(
+        "claimed_task",
+        (
+            _reference(physical_universe_id, "physical_universe_id"),
+            _reference(task_id, "task_id"),
+            _integer(task_generation, "task_generation", minimum=1),
+        ),
+    )
+
+
+def build_graph_child_attempt_key(
+    *,
+    parent_attempt_id: str,
+    invocation_ordinal: int,
+    child_ordinal: int,
+    retry_ordinal: int,
+) -> str:
+    """Key one graph/direct child invocation and retry ordinal."""
+    return _logical_attempt_key(
+        "graph_child",
+        (
+            _reference(parent_attempt_id, "parent_attempt_id"),
+            _integer(invocation_ordinal, "invocation_ordinal", minimum=0),
+            _integer(child_ordinal, "child_ordinal", minimum=0),
+            _integer(retry_ordinal, "retry_ordinal", minimum=0),
+        ),
+    )
 
 
 def _text_tuple(value: Any, field_name: str, *, allow_empty: bool = False) -> tuple[str, ...]:

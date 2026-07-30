@@ -30,6 +30,15 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchProvenance,
     BackgroundBranchSourceKind,
     BackgroundBranchTargetMode,
+    build_claimed_task_attempt_key,
+    build_graph_child_attempt_key,
+    build_market_contract_item_attempt_key,
+    build_producer_subscription_item_attempt_key,
+    build_request_task_attempt_key,
+    build_resume_checkpoint_attempt_key,
+    build_schedule_attempt_key,
+    build_soul_cycle_attempt_key,
+    build_subscription_event_attempt_key,
 )
 
 _BINDING_DIGEST = f"sha256:{'a' * 64}"
@@ -838,3 +847,363 @@ def test_exact_record_fences_require_their_typed_record() -> None:
         BackgroundBranchBindingFence(expected_record=object())  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Attempt"):
         BackgroundBranchAttemptFence(expected_record=object())  # type: ignore[arg-type]
+
+
+def _logical_attempt_key_cases() -> list[tuple[str, str]]:
+    return [
+        (
+            "schedule",
+            build_schedule_attempt_key(
+                schedule_id="schedule_nightly",
+                schedule_generation=2,
+                schedule_period_id="schedule:period:2026-07-31",
+            ),
+        ),
+        (
+            "subscription_event",
+            build_subscription_event_attempt_key(
+                subscription_id="subscription_news",
+                subscription_generation=3,
+                event_id="subscription:event:42",
+            ),
+        ),
+        (
+            "soul_cycle",
+            build_soul_cycle_attempt_key(
+                universe_id="universe_main",
+                soul_version_id="soul_version_9",
+                soul_digest=_SOURCE_DIGEST,
+                cycle_ordinal=8,
+            ),
+        ),
+        (
+            "request_task",
+            build_request_task_attempt_key(
+                tenant_id="account-tenant",
+                request_id="request_17",
+                admission_id="request:admission:17",
+                task_id="task_44",
+                body_digest=_SOURCE_DIGEST,
+                admission_generation=4,
+            ),
+        ),
+        (
+            "producer_subscription_item",
+            build_producer_subscription_item_attempt_key(
+                subscription_id="subscription_goals",
+                subscription_generation=5,
+                item_revision="11",
+                subscriber_universe_id="universe_main",
+            ),
+        ),
+        (
+            "market_contract_item",
+            build_market_contract_item_attempt_key(
+                contract_id="contract_accepted_2",
+                contract_generation=6,
+                item_revision="12",
+                subscriber_universe_id="universe_main",
+            ),
+        ),
+        (
+            "resume_checkpoint",
+            build_resume_checkpoint_attempt_key(
+                run_id="run_91",
+                checkpoint_id="run:checkpoint:halfway",
+                checkpoint_version="7",
+                resume_generation=2,
+            ),
+        ),
+        (
+            "claimed_task",
+            build_claimed_task_attempt_key(
+                physical_universe_id="universe_physical_1",
+                task_id="task_77",
+                task_generation=9,
+            ),
+        ),
+        (
+            "graph_child",
+            build_graph_child_attempt_key(
+                parent_attempt_id="att_parent",
+                invocation_ordinal=3,
+                child_ordinal=2,
+                retry_ordinal=1,
+            ),
+        ),
+    ]
+
+
+def test_logical_attempt_key_builders_are_deterministic_distinct_and_non_secret() -> None:
+    first = _logical_attempt_key_cases()
+    second = _logical_attempt_key_cases()
+
+    assert first == second
+    assert len({key for _, key in first}) == len(first)
+    for kind, key in first:
+        assert key.startswith(f"logical_attempt:{kind}:")
+        assert len(key.rsplit(":", 1)[-1]) == 64
+        assert all(character in "0123456789abcdef" for character in key.rsplit(":", 1)[-1])
+        assert "schedule_nightly" not in key
+        assert "universe_main" not in key
+
+
+def test_schedule_logical_attempt_key_has_a_stable_golden_vector() -> None:
+    assert (
+        build_schedule_attempt_key(
+            schedule_id="schedule_nightly",
+            schedule_generation=2,
+            schedule_period_id="schedule:period:2026-07-31",
+        )
+        == "logical_attempt:schedule:"
+        "5dba4187e26beec9aa8fbac72ed1d21d60dc9e013d6e2eeab222a397ad5736cf"
+    )
+
+
+def test_schedule_key_uses_nominal_period_identity_across_dst_gap_replay() -> None:
+    nominal_gap_period = "schedule:period:2026-03-08T02:30:00-America-Los_Angeles"
+    original = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id=nominal_gap_period,
+    )
+    replayed_at_next_valid_instant = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id=nominal_gap_period,
+    )
+    next_nominal_period = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id="schedule:period:2026-03-09T02:30:00-America-Los_Angeles",
+    )
+
+    assert original == replayed_at_next_valid_instant
+    assert original != next_nominal_period
+    assert "due_at" not in inspect.signature(build_schedule_attempt_key).parameters
+
+
+def test_logical_attempt_keys_change_when_any_replay_boundary_changes() -> None:
+    base_schedule = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id="schedule:period:2026-07-31",
+    )
+    assert base_schedule != build_schedule_attempt_key(
+        schedule_id="schedule_other",
+        schedule_generation=2,
+        schedule_period_id="schedule:period:2026-07-31",
+    )
+    assert base_schedule != build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=3,
+        schedule_period_id="schedule:period:2026-07-31",
+    )
+    assert base_schedule != build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id="schedule:period:2026-08-01",
+    )
+
+    base_child = build_graph_child_attempt_key(
+        parent_attempt_id="att_parent",
+        invocation_ordinal=3,
+        child_ordinal=2,
+        retry_ordinal=1,
+    )
+    assert base_child != build_graph_child_attempt_key(
+        parent_attempt_id="att_other",
+        invocation_ordinal=3,
+        child_ordinal=2,
+        retry_ordinal=1,
+    )
+    for field in ("invocation_ordinal", "child_ordinal", "retry_ordinal"):
+        values = {
+            "parent_attempt_id": "att_parent",
+            "invocation_ordinal": 3,
+            "child_ordinal": 2,
+            "retry_ordinal": 1,
+        }
+        values[field] += 1  # type: ignore[operator]
+        assert base_child != build_graph_child_attempt_key(**values)  # type: ignore[arg-type]
+
+
+def test_every_logical_attempt_key_input_is_load_bearing() -> None:
+    cases = [
+        (
+            build_subscription_event_attempt_key,
+            {
+                "subscription_id": "subscription_news",
+                "subscription_generation": 3,
+                "event_id": "subscription:event:42",
+            },
+            {
+                "subscription_id": "subscription_other",
+                "subscription_generation": 4,
+                "event_id": "subscription:event:43",
+            },
+        ),
+        (
+            build_soul_cycle_attempt_key,
+            {
+                "universe_id": "universe_main",
+                "soul_version_id": "soul_version_9",
+                "soul_digest": _SOURCE_DIGEST,
+                "cycle_ordinal": 8,
+            },
+            {
+                "universe_id": "universe_other",
+                "soul_version_id": "soul_version_10",
+                "soul_digest": _BRANCH_CONTENT_DIGEST,
+                "cycle_ordinal": 9,
+            },
+        ),
+        (
+            build_request_task_attempt_key,
+            {
+                "tenant_id": "account-tenant",
+                "request_id": "request_17",
+                "admission_id": "request:admission:17",
+                "task_id": "task_44",
+                "body_digest": _SOURCE_DIGEST,
+                "admission_generation": 4,
+            },
+            {
+                "tenant_id": "account-other",
+                "request_id": "request_18",
+                "admission_id": "request:admission:18",
+                "task_id": "task_45",
+                "body_digest": _BRANCH_CONTENT_DIGEST,
+                "admission_generation": 5,
+            },
+        ),
+        (
+            build_producer_subscription_item_attempt_key,
+            {
+                "subscription_id": "subscription_goals",
+                "subscription_generation": 5,
+                "item_revision": "11",
+                "subscriber_universe_id": "universe_main",
+            },
+            {
+                "subscription_id": "subscription_other",
+                "subscription_generation": 6,
+                "item_revision": "12",
+                "subscriber_universe_id": "universe_other",
+            },
+        ),
+        (
+            build_market_contract_item_attempt_key,
+            {
+                "contract_id": "contract_accepted_2",
+                "contract_generation": 6,
+                "item_revision": "12",
+                "subscriber_universe_id": "universe_main",
+            },
+            {
+                "contract_id": "contract_accepted_3",
+                "contract_generation": 7,
+                "item_revision": "13",
+                "subscriber_universe_id": "universe_other",
+            },
+        ),
+        (
+            build_resume_checkpoint_attempt_key,
+            {
+                "run_id": "run_91",
+                "checkpoint_id": "run:checkpoint:halfway",
+                "checkpoint_version": "7",
+                "resume_generation": 2,
+            },
+            {
+                "run_id": "run_92",
+                "checkpoint_id": "run:checkpoint:later",
+                "checkpoint_version": "8",
+                "resume_generation": 3,
+            },
+        ),
+        (
+            build_claimed_task_attempt_key,
+            {
+                "physical_universe_id": "universe_physical_1",
+                "task_id": "task_77",
+                "task_generation": 9,
+            },
+            {
+                "physical_universe_id": "universe_physical_2",
+                "task_id": "task_78",
+                "task_generation": 10,
+            },
+        ),
+    ]
+
+    for builder, base, replacements in cases:
+        base_key = builder(**base)
+        for field, replacement in replacements.items():
+            changed = {**base, field: replacement}
+            assert builder(**changed) != base_key, (builder.__name__, field)
+
+
+@pytest.mark.parametrize(
+    "builder, kwargs",
+    [
+        (
+            build_schedule_attempt_key,
+            {
+                "schedule_id": "schedule_nightly",
+                "schedule_generation": 0,
+                "schedule_period_id": "schedule:period:2026-07-31",
+            },
+        ),
+        (
+            build_subscription_event_attempt_key,
+            {
+                "subscription_id": "xoxb-secret-token",
+                "subscription_generation": 1,
+                "event_id": "subscription:event:42",
+            },
+        ),
+        (
+            build_soul_cycle_attempt_key,
+            {
+                "universe_id": "universe_main",
+                "soul_version_id": "soul_version_9",
+                "soul_digest": "not-a-digest",
+                "cycle_ordinal": 0,
+            },
+        ),
+        (
+            build_resume_checkpoint_attempt_key,
+            {
+                "run_id": "run_91",
+                "checkpoint_id": "run:checkpoint:halfway",
+                "checkpoint_version": "07",
+                "resume_generation": 1,
+            },
+        ),
+        (
+            build_graph_child_attempt_key,
+            {
+                "parent_attempt_id": "att_parent",
+                "invocation_ordinal": 0,
+                "child_ordinal": 0,
+                "retry_ordinal": -1,
+            },
+        ),
+    ],
+)
+def test_logical_attempt_key_builders_reject_noncanonical_inputs(
+    builder: object,
+    kwargs: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        builder(**kwargs)  # type: ignore[operator]
+
+
+def test_no_wiki_filing_logical_attempt_key_builder_exists() -> None:
+    import tinyassets.background_branch_authority as authority
+
+    assert not any(
+        name.startswith("build_") and "wiki" in name and name.endswith("_attempt_key")
+        for name in vars(authority)
+    )

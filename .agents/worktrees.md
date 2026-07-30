@@ -1779,7 +1779,18 @@ Notes:
 - Lane state: Parked draft lane; audit complete and STATUS claim retired in branch pending PR merge
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
 - STATUS/Issue/PR: completed `Reconcile current-main OpenSpec finish-first debt after #1918/#1924`; one draft PR expected
-- Purpose: publish a bounded current-main recovery map after preserving and then observing retirement of the task 1.4 owner
+- Purpose: publish a bounded current-main recovery map while preserving the task 1.5 foldback owner
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: preserve the lane until merge verification and foldback
-- Update 2026-07-30: post-#1926 audit found 0 complete-unarchived, zero WIP owners, 18 untracked changes, and 29 oversized changes; exact claim check remained `claimable=0`, `stale=0`
+- Update 2026-07-30: post-#1928 audit found 0 complete-unarchived, one exact task 1.5 foldback owner, 18 untracked changes, and 29 oversized changes; exact claim check remained `claimable=0`, `stale=0`
+
+## 2026-07-30 10:58 - background authority logical-attempt keys
+
+- Provider: `codex-cloud-drain-logical-keys-20260730`
+- Branch: `codex/background-logical-keys-20260730`
+- Lane state: Claimed OpenSpec task 1.5
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-logical-keys-20260730`
+- STATUS/Issue/PR: deterministic source-specific attempt keys; PR pending
+- Purpose: close duplicate-fire/replay races for every approved background source without a wiki-filing key
+- Review gate: focused tests plus fresh-context independent exact-head review
+- Publish/cleanup: one draft PR; retain worktree until merge and foldback
