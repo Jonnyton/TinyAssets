@@ -313,6 +313,12 @@ def reconcile_github_pull_request_effect(
         )
     if not isinstance(response, list) or len(response) > 100:
         return _unknown_reconciliation(identity, "destination_malformed")
+    if len(response) == 100:
+        return _unknown_reconciliation(
+            identity,
+            "destination_result_truncated",
+            examined=100,
+        )
 
     marker = github_pr_effect_marker(identity)
     exact: list[dict[str, Any]] = []

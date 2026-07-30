@@ -134,6 +134,17 @@ def test_authoritative_empty_commit_association_is_terminal_absence():
     assert result["evidence"]["exact_matches"] == 0
 
 
+def test_full_page_is_indeterminate_without_pagination_proof():
+    identity = _identity()
+    result = github_pr.reconcile_github_pull_request_effect(
+        identity,
+        capability_token="token",
+        get_json=_getter([_pull(identity, number=index + 1) for index in range(100)]),
+    )
+    assert result["status"] == "unknown"
+    assert result["reason"] == "destination_result_truncated"
+
+
 @pytest.mark.parametrize(
     "pulls",
     [
