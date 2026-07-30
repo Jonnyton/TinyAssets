@@ -14,6 +14,12 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any, Collection
 
+from tinyassets.background_branch_authority import (
+    BackgroundBranchAttempt,
+    BackgroundBranchBinding,
+    BackgroundBranchExecutorClass,
+    BackgroundBranchTargetMode,
+)
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
 
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -173,6 +179,10 @@ class AutomationAdmissionError(ValueError):
         super().__init__(f"{code}: {detail}")
 
 
+class AutomationProjectionError(ValueError):
+    """A supplied authority record does not belong to this definition."""
+
+
 @dataclass(frozen=True, slots=True)
 class AdmittedWorkDefinition:
     definition: RepositorySpecWorkDefinition
@@ -180,6 +190,32 @@ class AdmittedWorkDefinition:
     evaluator_chain: tuple[str, ...]
     input_artifact_digests: tuple[str, ...]
     privacy_scope: str
+
+
+@dataclass(frozen=True, slots=True)
+class RepositorySpecOperationalProjection:
+    """Ephemeral read-only view over independently owned authority records."""
+
+    definition_digest: str
+    principal_id: str
+    universe_id: str
+    repository: str
+    accepted_spec_ref: str
+    branch_version_id: str
+    acceptance_scenario_id: str
+    binding_id: str | None
+    binding_generation: int | None
+    binding_status: str
+    attempt_id: str | None
+    logical_attempt_key: str | None
+    source_generation: int | None
+    claim_generation: int | None
+    lease_generation: int | None
+    attempt_lifecycle: str | None
+    blocker: str | None
+    provider_work_receipt_id: str | None
+    provider_attempt_receipt_id: str | None
+    effect_receipt_id: str | None
 
 
 def acceptance_scenario_digest(scenario: AcceptanceScenario) -> str:
@@ -231,10 +267,91 @@ def admit_work_definition(
     )
 
 
+def project_operational_state(
+    definition: RepositorySpecWorkDefinition,
+    *,
+    binding: BackgroundBranchBinding | None = None,
+    attempt: BackgroundBranchAttempt | None = None,
+) -> RepositorySpecOperationalProjection:
+    """Derive status without persisting or authorizing the projected fields."""
+
+    if attempt is not None and binding is None:
+        raise AutomationProjectionError("attempt requires its binding")
+    if binding is not None:
+        expected_binding = (
+            binding.authorizing_principal_id == definition.principal_id,
+            binding.universe_id == definition.universe_id,
+            binding.branch_def_id == definition.branch_def_id,
+            binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
+            binding.pinned_branch_version_id == definition.branch_version_id,
+            BackgroundBranchExecutorClass.CLOUD
+            in binding.permitted_executor_classes,
+        )
+        if not expected_binding[0]:
+            raise AutomationProjectionError("binding principal does not match definition")
+        if not all(expected_binding[1:]):
+            raise AutomationProjectionError("binding target does not match definition")
+    if attempt is not None and binding is not None:
+        attempt_matches = (
+            attempt.binding_id == binding.binding_id,
+            attempt.binding_digest == binding.binding_digest,
+            attempt.binding_generation == binding.generation,
+            attempt.authorizing_principal_id == definition.principal_id,
+            attempt.universe_id == definition.universe_id,
+            attempt.branch_def_id == definition.branch_def_id,
+            attempt.branch_version_id == definition.branch_version_id,
+            attempt.branch_content_digest == definition.branch_content_digest,
+        )
+        if not all(attempt_matches):
+            raise AutomationProjectionError("attempt does not match definition and binding")
+
+    refs = attempt.provenance.receipt_refs if attempt is not None else None
+    blocker = None
+    if attempt is not None:
+        blocker = (
+            attempt.hold_reason.value
+            if attempt.hold_reason is not None
+            else attempt.terminal_reason
+        )
+    return RepositorySpecOperationalProjection(
+        definition_digest=definition.definition_digest,
+        principal_id=definition.principal_id,
+        universe_id=definition.universe_id,
+        repository=definition.repository,
+        accepted_spec_ref=definition.accepted_spec_ref,
+        branch_version_id=definition.branch_version_id,
+        acceptance_scenario_id=definition.acceptance_scenario_id,
+        binding_id=binding.binding_id if binding is not None else None,
+        binding_generation=binding.generation if binding is not None else None,
+        binding_status=binding.status.value if binding is not None else "inactive",
+        attempt_id=attempt.attempt_id if attempt is not None else None,
+        logical_attempt_key=(
+            attempt.logical_attempt_key if attempt is not None else None
+        ),
+        source_generation=attempt.source_generation if attempt is not None else None,
+        claim_generation=attempt.claim_generation if attempt is not None else None,
+        lease_generation=attempt.lease_generation if attempt is not None else None,
+        attempt_lifecycle=(
+            attempt.lifecycle.value if attempt is not None else None
+        ),
+        blocker=blocker,
+        provider_work_receipt_id=(
+            refs.provider_work_receipt_id if refs is not None else None
+        ),
+        provider_attempt_receipt_id=(
+            refs.provider_attempt_receipt_id if refs is not None else None
+        ),
+        effect_receipt_id=refs.effect_receipt_id if refs is not None else None,
+    )
+
+
 __all__ = [
     "AdmittedWorkDefinition",
     "AutomationAdmissionError",
+    "AutomationProjectionError",
     "RepositorySpecWorkDefinition",
+    "RepositorySpecOperationalProjection",
     "acceptance_scenario_digest",
     "admit_work_definition",
+    "project_operational_state",
 ]
