@@ -17,10 +17,11 @@
 
 ## 3. Verify, Review, And Deploy Safely
 
-- [ ] 3.1 Run the focused supervisor/watchdog suites, Ruff, strict OpenSpec validation, and a controlled run-directory simulation; obtain opposite-provider exact-head review or the approved same-provider fallback under the AGENTS.md hard-limit rule, then resolve every blocking finding.
+- [x] 3.1 Run the focused supervisor/watchdog suites, Ruff, strict OpenSpec validation, and a controlled run-directory simulation; obtain opposite-provider exact-head review or the approved same-provider fallback under the AGENTS.md hard-limit rule, then resolve every blocking finding.
   - **Depends:** 2.3.
   - **Verify:** fresh commands and review artifact identify the exact commit.
-  - **Fallback activated 2026-07-29:** Claude CLI and Claude.ai (Opus and Sonnet) report the account-wide monthly spend limit, so the host approved fresh-context independent Codex review. Five exact-head reviews found receipt, ambiguous recovery, collision, migration, punctuation-identity, and proposal-scope blockers; the next candidate has regression fixes with 167 tests, Ruff, strict validation, and OpenSpec flow green, pending exact-head re-review.
-- [ ] 3.2 After merge and only after the live controller's active attempt is terminal, deploy the exact merged commit, restart once, verify green health plus durable/invalid blocker probes, sync/archive the change, retire its STATUS row, and record the significant-task reflection.
+  - **Completed 2026-07-29:** Claude CLI and Claude.ai (Opus and Sonnet) reported the account-wide monthly spend limit, so the host approved fresh-context independent Codex review. Five reviews found concrete receipt, ambiguous recovery, collision, migration, punctuation-identity, and proposal-scope blockers. Exact rebased head `be33e410` received final independent APPROVE with 167 tests, Ruff, strict validation, OpenSpec flow, dry-run, and GitHub checks green; squash merge `0b155d7c`.
+- [x] 3.2 After merge and only after the live controller's active attempt is terminal, deploy the exact merged commit, restart once, verify green health plus durable/invalid blocker probes, sync/archive the change, retire its STATUS row, and record the significant-task reflection.
   - **Depends:** 3.1 and merged PR.
   - **Verify:** deployed commit, watchdog status, run artifacts, canonical spec, and git history agree.
+  - **Completed 2026-07-29:** old run stopped gracefully at 15 attempts / 10 reported slices; clean detached controller deployed squash `0b155d7c`, scheduled tray retained, fresh watchdog `drain-20260729-171925-6b1b07` became healthy with zero slices, and the exact merged tree passed 167 focused blocker/replay tests plus Ruff and strict validation before archive.

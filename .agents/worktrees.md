@@ -36,21 +36,6 @@ Format for future entries:
 
 ---
 
-## 2026-07-29 15:49 - create drain-throughput
-
-- Provider: codex-drain-throughput
-- Branch: fix/persist-drain-blockers
-- Lane state: Active lane
-- Worktree: C:\Users\Jonathan\Projects\wf-drain-throughput
-- STATUS/Issue/PR: `Require durable blocker truth before the OpenSpec drain advances`; PR pending
-- PLAN refs: Daemon Platform; Harness & Coordination; Uptime & Alarms
-- Purpose: stop full drain workers from rediscovering blockers that were never made durable on current main.
-- _PURPOSE.md: C:\Users\Jonathan\Projects\wf-drain-throughput\_PURPOSE.md
-- Memory refs: `output/openspec-drain-auto-20260729-145600/results/001.md`, `002.md`, `004.md`; PR #1878
-- Related implications: main-universe cloud drain remains a separate blocked activation lane; this hardens the temporary tray bridge.
-- Idea feed refs: none
-- Ship/abandon: one focused PR; deploy only after the current live attempt reaches terminal.
-
 ---
 
 ## 2026-07-27 - create preview-boundary-bootstrap
