@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.retire_cheat_loop_deploy_fence import RECOVERY_SCRIPT_PATH
+
 try:
     import yaml
 
@@ -32,6 +34,7 @@ except ImportError:
 
 _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "deploy-prod.yml"
+_RECOVERY_OVERRIDE = _REPO / "deploy" / "recovery-restart-no.yml"
 
 pytestmark = pytest.mark.skipif(not _YAML_AVAILABLE, reason="pyyaml not installed")
 
@@ -76,6 +79,98 @@ def test_workflow_dispatch_has_image_tag_input():
     dispatch = triggers.get("workflow_dispatch") or {}
     inputs = dispatch.get("inputs") or {}
     assert "image_tag" in inputs, "workflow_dispatch must expose image_tag input"
+
+
+def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
+    wf = _load()
+    inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
+    assert "unsafe_fence_source_run_id" in inputs
+    recovery = wf["jobs"]["recover-unsafe"]
+    assert "workflow_dispatch" in str(recovery.get("if", ""))
+    checkout = recovery["steps"][0]
+    assert checkout.get("uses") == "actions/checkout@v4"
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+    step = _step_named({"jobs": {"deploy": recovery}}, "Recover canonical unsafe fence")
+    script = str(step.get("run", ""))
+    assert "recover-unsafe --source-run-id" in script
+    assert "[A-Za-z0-9._-]{1,128}" in script
+    assert step.get("env", {}).get("SOURCE_RUN_ID") == (
+        "${{ inputs.unsafe_fence_source_run_id }}"
+    )
+    assert "inputs.unsafe_fence_source_run_id" not in script
+    assert " --image-ref " in script
+    assert " --revision " in script
+    assert " --expected-script-sha256 " in script
+    assert "sha256sum scripts/retire_cheat_loop_deploy_fence.py" in script
+    assert "sha256sum -c -" in script
+    assert "set -euo pipefail" in script
+    assert "deploy/recovery-restart-no.yml" in script
+    assert "deploy/tinyassets-recovery-reconcile.service" in script
+    assert "systemctl enable tinyassets-recovery-reconcile.service" in script
+    reconcile_unit = (
+        Path("deploy/tinyassets-recovery-reconcile.service")
+        .read_text(encoding="utf-8")
+    )
+    assert "reconcile-recovery-on-boot" in reconcile_unit
+    assert "After=docker.service" in reconcile_unit
+    for unit in (
+        "daemon-watchdog.timer",
+        "tinyassets-watchdog.timer",
+        "tinyassets-autoheal.timer",
+        "tinyassets-daemon.service",
+    ):
+        assert unit in reconcile_unit
+    recovery_script_path = RECOVERY_SCRIPT_PATH.as_posix()
+    assert recovery_script_path in script
+    assert (
+        f"/tmp/retire-cheat-loop-deploy-fence.py {recovery_script_path}"
+        in script
+    )
+    assert "recovery_pending_canary" not in script
+    resolve = _step_named(
+        {"jobs": {"deploy": recovery}}, "Resolve unsafe recovery image"
+    )
+    resolve_script = str(resolve.get("run", ""))
+    assert "docker buildx imagetools inspect" in resolve_script
+    assert "org.opencontainers.image.revision" in resolve_script
+    assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in resolve_script
+    assert "git merge-base --is-ancestor" in resolve_script
+    refence = _step_named(
+        {"jobs": {"deploy": recovery}}, "Re-fence failed recovery"
+    )
+    refence_script = str(refence.get("run", ""))
+    assert "refence-recovery --source-run-id" in refence_script
+    assert "[A-Za-z0-9._-]{1,128}" in refence_script
+    assert "quiesce-unsafe" not in refence_script
+    assert "cancelled()" in str(refence.get("if", ""))
+    finalize = _step_named(
+        {"jobs": {"deploy": recovery}},
+        "Finalize canonical unsafe-fence recovery",
+    )
+    assert "finalize-recovery --source-run-id" in str(finalize.get("run", ""))
+    step_names = [str(item.get("name", "")) for item in recovery["steps"]]
+    assert step_names.index("Recovery canonical MCP canary") < step_names.index(
+        "Finalize canonical unsafe-fence recovery"
+    )
+    assert step_names.index("Recovery exact-seven surface assertion") < step_names.index(
+        "Finalize canonical unsafe-fence recovery"
+    )
+    assert "inputs.unsafe_fence_source_run_id == ''" in str(
+        wf["jobs"]["deploy"].get("if", "")
+    )
+
+
+def test_recovery_override_fences_exact_receipt_capable_fleet():
+    override = yaml.safe_load(_RECOVERY_OVERRIDE.read_text(encoding="utf-8"))
+    services = override["services"]
+    assert set(services) == {
+        "daemon",
+        "worker",
+        "worker-codex-2",
+        "worker-claude-1",
+        "worker-claude-2",
+    }
+    assert all(service.get("restart") == "no" for service in services.values())
 
 
 def test_deploy_resolves_image_to_digest_and_never_latest():

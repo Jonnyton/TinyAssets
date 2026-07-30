@@ -1,0 +1,18 @@
+# Transitional recovery override for retire-cheat-loop task 2.1.
+#
+# The five receipt-capable containers must be created with restart policy "no"
+# before an unsafe-fence recovery exposes them to traffic. The public canaries
+# and exact-fleet proof run while this override is active. Finalization restores
+# the policies recorded by the original fenced generation and proves each
+# read-back before restoring systemd activators.
+services:
+  daemon:
+    restart: "no"
+  worker:
+    restart: "no"
+  worker-codex-2:
+    restart: "no"
+  worker-claude-1:
+    restart: "no"
+  worker-claude-2:
+    restart: "no"
