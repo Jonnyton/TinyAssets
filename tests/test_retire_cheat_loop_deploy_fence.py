@@ -1748,6 +1748,32 @@ def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
     assert set(host.containers) == set(EXPECTED_CONTAINERS)
 
 
+def test_recover_unsafe_refuses_reused_attempt_before_removing_stopped_fleet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["recovery_attempts"] = ["recovery-reused"]
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.start_installs_target = True
+
+    with pytest.raises(FenceError, match="identity was already used"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-reused",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
+
+
 def test_recovery_arms_expiry_before_starting_any_container(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
