@@ -62,6 +62,11 @@ The OpenSpec drain supervisor SHALL advance completed-slice progress at most onc
 - **THEN** the controller reconstructs the complete run-bounded unique canonical receipt set from successfully consumed result artifacts and their supervisor audit records
 - **AND** trusts only PRs that still pass controller merge verification
 
+#### Scenario: Legacy merge succeeded through restart recovery
+- **WHEN** a pre-receipt run audit records a recovered or replayed `MERGED` result and the completed-slice ledger has capacity for that recovery
+- **THEN** the controller reconstructs and verifies its canonical receipt
+- **AND** a recovery audit cannot create more receipts than persisted completed-slice progress
+
 #### Scenario: Previously failed merge verification later becomes merged
 - **WHEN** a consumed legacy result reported `MERGED` but its supervisor audit records `merge-verification-failed`
 - **THEN** receipt reconstruction does not consume that PR

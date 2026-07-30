@@ -1124,6 +1124,7 @@ def infer_legacy_merged_prs(
     """Reconstruct accepted verified receipts for pre-field run state."""
     try:
         last_consumed = max(0, int(state.get("last_consumed_attempt", 0)))
+        completed_slices = max(0, int(state.get("completed_slices", 0)))
         started_at = str(state["started_at"])
     except (KeyError, TypeError, ValueError):
         return []
@@ -1133,7 +1134,7 @@ def infer_legacy_merged_prs(
     except OSError:
         # Result text alone cannot prove that merge verification succeeded.
         return []
-    accepted_attempts = {
+    ordinary_attempts = {
         int(match.group("attempt"))
         for match in re.finditer(
             r"\bresult attempt=(?P<attempt>[1-9][0-9]*) status=merged\b",
@@ -1141,6 +1142,28 @@ def infer_legacy_merged_prs(
         )
         if int(match.group("attempt")) <= last_consumed
     }
+    recovery_candidates = sorted(
+        {
+            int(match.group("attempt"))
+            for match in re.finditer(
+                r"\b(?:replayed newly valid result|"
+                r"recovered unconsumed terminal result) "
+                r"attempt=(?P<attempt>[1-9][0-9]*) status=MERGED\b",
+                log_text,
+            )
+            if int(match.group("attempt")) <= last_consumed
+        }
+        - ordinary_attempts
+    )
+    # Legacy recovery logs recorded the worker marker but not the controller's
+    # verification status. The completed-slice ledger bounds how many of those
+    # ambiguous recovery events can have succeeded.
+    recovery_slots = max(0, completed_slices - len(ordinary_attempts))
+    accepted_attempts = ordinary_attempts | set(
+        recovery_candidates[-recovery_slots:]
+        if recovery_slots
+        else []
+    )
     receipts: list[str] = []
     for attempt in sorted(accepted_attempts):
         try:

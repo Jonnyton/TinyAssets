@@ -2228,6 +2228,76 @@ def test_legacy_merge_receipts_exclude_prior_verification_failure(
     assert verifier_calls == []
 
 
+@pytest.mark.parametrize(
+    "audit_message",
+    [
+        "replayed newly valid result",
+        "recovered unconsumed terminal result",
+    ],
+)
+def test_legacy_merge_receipts_include_successful_recovery_audits(
+    tmp_path: Path,
+    audit_message: str,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        f"2026-07-29T00:00:00-07:00 {audit_message} "
+        "attempt=1 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=1,
+            status="merged",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == [pr]
+
+
+def test_legacy_recovery_audit_cannot_exceed_completed_slice_ledger(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 replayed newly valid result "
+        "attempt=1 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=0,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == []
+
+
 def test_apply_partial_resets_failures_and_sets_resume_target() -> None:
     state = _state(consecutive_failures=1)
     result = drain.DrainResult(
