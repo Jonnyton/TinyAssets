@@ -22,10 +22,10 @@ on:
   # pull_request_target: this workflow is always the TRUSTED copy from the default
   # branch. With plain `pull_request`, a PR could edit the very workflow that
   # judges it — the guard would grade its own homework. We never check out or
-  # execute PR code here, so using _target is safe: we only read metadata.
+  # execute PR-head code here, so using _target is safe.
   pull_request_target:
     # `labeled`/`unlabeled` matter: declaring an infra change must re-run the gate.
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -41,9 +41,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Deliberately NO actions/checkout: under pull_request_target a checkout of
-      # the PR head would execute untrusted code with a privileged token. The file
-      # list comes from the API instead.
+      - name: Check out trusted policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Require exact-head review for drain PRs
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body.md"
+          python scripts/drain_review_gate.py \
+            --branch "${HEAD_REF}" \
+            --head "${HEAD_OID}" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
+      # Under pull_request_target, only the trusted base SHA above is checked out.
+      # The PR head is never executed with this workflow's token. The file list
+      # below comes from the API.
       - name: Compare the PR diff against release-critical paths
         env:
           GH_TOKEN: ${{ github.token }}

@@ -61,7 +61,7 @@ protection prevents merge while enrollment cancellation is still running.
   a head other than the current pull-request head
 - **THEN** the trusted repository workflow does not enable auto-merge and
   disables any existing auto-merge request
-- **AND** the required current-head policy check fails so branch protection
+- **AND** the required current-head scope check fails so branch protection
   prevents merge before or during cancellation
 
 #### Scenario: Drain pull request has exact-head approval
@@ -71,8 +71,8 @@ protection prevents merge while enrollment cancellation is still running.
   marker
 - **THEN** the trusted repository workflow may idempotently enable auto-merge
   under the ordinary required CI and branch-protection gates
-- **AND** the required policy check may pass that head through to the existing
-  writer/checker family policy
+- **AND** the required scope check may pass that head through to the existing
+  diff-scope policy
 
 #### Scenario: Reviewed drain head changes
 

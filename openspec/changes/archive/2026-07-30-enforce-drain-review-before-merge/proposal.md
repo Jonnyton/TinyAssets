@@ -34,5 +34,5 @@ None.
 ## Impact
 
 The change affects the drain worker brief, the trusted auto-enroll and required
-policy workflows, a small review-receipt validator, and focused tests. It adds
+scope workflows, a small review-receipt validator, and focused tests. It adds
 no dependency, product API, production runtime, or public connector behavior.

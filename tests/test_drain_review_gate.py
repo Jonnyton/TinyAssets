@@ -15,7 +15,7 @@ POLICY_WORKFLOW = (
     Path(__file__).resolve().parents[1]
     / ".github"
     / "workflows"
-    / "daemon-request-policy.yml"
+    / "pr-scope-guard.yml"
 )
 HEAD = "a" * 40
 
@@ -134,7 +134,7 @@ def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
     )
 
 
-def test_required_policy_fails_closed_on_unreviewed_drain_head() -> None:
+def test_required_scope_check_fails_closed_on_unreviewed_drain_head() -> None:
     text = POLICY_WORKFLOW.read_text(encoding="utf-8")
 
     assert "pull_request_target:" in text
@@ -144,6 +144,6 @@ def test_required_policy_fails_closed_on_unreviewed_drain_head() -> None:
         in text
     )
     assert "scripts/drain_review_gate.py" in text
-    assert "--branch \"$HEAD_REF\"" in text
-    assert "--head \"$HEAD_OID\"" in text
+    assert "--branch \"${HEAD_REF}\"" in text
+    assert "--head \"${HEAD_OID}\"" in text
     assert "--body-file \"$RUNNER_TEMP/pr-body.md\"" in text
