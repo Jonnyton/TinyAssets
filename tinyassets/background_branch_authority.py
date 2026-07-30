@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+from types import MappingProxyType
 from typing import Any
 
 
@@ -137,6 +139,22 @@ def _json_object(
     return copy.deepcopy(value)
 
 
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class BackgroundBranchProvenance:
     authorizing_principal_id: str
@@ -149,7 +167,7 @@ class BackgroundBranchProvenance:
     parent_attempt_id: str | None
     origin_attempt_id: str
     audit_correlation_ids: tuple[str, ...]
-    receipt_refs: dict[str, str]
+    receipt_refs: Mapping[str, str]
 
     _FIELDS = frozenset(
         {
@@ -182,7 +200,8 @@ class BackgroundBranchProvenance:
             _text(value, "audit_correlation_ids")
         if len(set(self.audit_correlation_ids)) != len(self.audit_correlation_ids):
             raise ValueError("audit_correlation_ids must not contain duplicates")
-        _json_object(self.receipt_refs, "receipt_refs", non_empty_values=True)
+        receipt_refs = _json_object(dict(self.receipt_refs), "receipt_refs", non_empty_values=True)
+        object.__setattr__(self, "receipt_refs", _freeze_json(receipt_refs))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchProvenance:
@@ -217,7 +236,7 @@ class BackgroundBranchProvenance:
             "parent_attempt_id": self.parent_attempt_id,
             "origin_attempt_id": self.origin_attempt_id,
             "audit_correlation_ids": list(self.audit_correlation_ids),
-            "receipt_refs": copy.deepcopy(self.receipt_refs),
+            "receipt_refs": _thaw_json(self.receipt_refs),
         }
 
 
@@ -247,7 +266,7 @@ class BackgroundBranchBinding:
     remaining_depth: int
     remaining_count: int
     remaining_cost_microunits: int
-    child_delegation: dict[str, Any]
+    child_delegation: Mapping[str, Any]
 
     _FIELDS = frozenset(
         {
@@ -326,7 +345,8 @@ class BackgroundBranchBinding:
             "remaining_cost_microunits",
             minimum=0,
         )
-        _json_object(self.child_delegation, "child_delegation")
+        child_delegation = _json_object(_thaw_json(self.child_delegation), "child_delegation")
+        object.__setattr__(self, "child_delegation", _freeze_json(child_delegation))
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchBinding:
@@ -397,7 +417,7 @@ class BackgroundBranchBinding:
             "remaining_depth": self.remaining_depth,
             "remaining_count": self.remaining_count,
             "remaining_cost_microunits": self.remaining_cost_microunits,
-            "child_delegation": copy.deepcopy(self.child_delegation),
+            "child_delegation": _thaw_json(self.child_delegation),
         }
 
 

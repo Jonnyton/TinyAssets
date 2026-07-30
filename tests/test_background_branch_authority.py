@@ -250,3 +250,20 @@ def test_provenance_is_strict_and_receipts_are_non_bearer_references() -> None:
         BackgroundBranchProvenance.from_dict(unknown)
     with pytest.raises(ValueError):
         BackgroundBranchProvenance.from_dict(malformed_receipt)
+
+
+def test_nested_policy_and_receipt_data_cannot_mutate_records() -> None:
+    binding_payload = _binding_payload()
+    binding = BackgroundBranchBinding.from_dict(binding_payload)
+    provenance_payload = _provenance_payload()
+    provenance = BackgroundBranchProvenance.from_dict(provenance_payload)
+
+    binding_payload["child_delegation"]["allowed_branch_def_ids"].append("evil")
+    provenance_payload["receipt_refs"]["provider_work"] = "replaced"
+
+    assert binding.to_dict()["child_delegation"]["allowed_branch_def_ids"] == ["branch_review"]
+    assert provenance.to_dict()["receipt_refs"]["provider_work"] == "pwr_01"
+    with pytest.raises(TypeError):
+        binding.child_delegation["new_policy"] = True
+    with pytest.raises(TypeError):
+        provenance.receipt_refs["provider_work"] = "replaced"
