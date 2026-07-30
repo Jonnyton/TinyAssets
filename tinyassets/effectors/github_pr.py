@@ -80,6 +80,7 @@ Design source: ``drafts/concepts/external-write-phase-2-authority.md``.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import logging
 import os
@@ -90,6 +91,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -141,8 +143,282 @@ _PUSH_CAPABILITIES_ENV = "TINYASSETS_GITHUB_PUSH_CAPABILITIES"
 _CAPABILITIES_ENV = "TINYASSETS_GITHUB_PR_CAPABILITIES"
 _GH_PR_TIMEOUT_S = 60.0
 _GITHUB_API = "https://api.github.com"
+_GITHUB_PR_EFFECT_KIND = "github_pull_request"
+_GITHUB_PR_EFFECT_MARKER_PREFIX = "tinyassets-github-pr-effect:v1:"
+_GITHUB_PR_EFFECT_MARKER_RE = re.compile(
+    r"<!-- tinyassets-github-pr-effect:v1:([0-9a-f]{64}) -->"
+)
+_GITHUB_REPOSITORY_RE = re.compile(r"[\w.-]+/[\w.-]+")
+_GITHUB_SHA_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})")
+_MAX_IDENTITY_COMPONENT_LENGTH = 256
+_MAX_GITHUB_PR_BODY_LENGTH = 65_536
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+@dataclass(frozen=True)
+class GitHubPullRequestEffectIdentity:
+    """Closed server-authored identity for one repository PR effect.
+
+    This type is not constructed from a Branch packet. The automation owner
+    must derive every field from its existing authority records before handing
+    the identity to the outbound boundary.
+    """
+
+    universe_id: str
+    automation_id: str
+    claim_id: str
+    repository: str
+    intended_head_sha: str
+    effect_kind: str = _GITHUB_PR_EFFECT_KIND
+
+    def __post_init__(self) -> None:
+        for name in ("universe_id", "automation_id", "claim_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string")
+            if (
+                not value
+                or value != value.strip()
+                or len(value) > _MAX_IDENTITY_COMPONENT_LENGTH
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            ):
+                raise ValueError(f"{name} must be a bounded canonical identifier")
+
+        if not isinstance(self.repository, str):
+            raise ValueError("repository must be a string")
+        repository = self.repository.strip().lower()
+        if (
+            repository != self.repository.lower()
+            or len(repository) > _MAX_IDENTITY_COMPONENT_LENGTH
+            or _GITHUB_REPOSITORY_RE.fullmatch(repository) is None
+        ):
+            raise ValueError("repository must be a canonical owner/repo")
+        object.__setattr__(self, "repository", repository)
+
+        if (
+            not isinstance(self.intended_head_sha, str)
+            or _GITHUB_SHA_RE.fullmatch(self.intended_head_sha) is None
+        ):
+            raise ValueError("intended_head_sha must be a full GitHub commit SHA")
+        object.__setattr__(
+            self,
+            "intended_head_sha",
+            self.intended_head_sha.lower(),
+        )
+        if self.effect_kind != _GITHUB_PR_EFFECT_KIND:
+            raise ValueError(
+                f"effect_kind must be {_GITHUB_PR_EFFECT_KIND!r}"
+            )
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return json.dumps(
+            {
+                "automation_id": self.automation_id,
+                "claim_id": self.claim_id,
+                "effect_kind": self.effect_kind,
+                "intended_head_sha": self.intended_head_sha,
+                "repository": self.repository,
+                "universe_id": self.universe_id,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(self.canonical_bytes).hexdigest()
+
+
+def github_pr_effect_marker(identity: GitHubPullRequestEffectIdentity) -> str:
+    """Return the public digest-only marker for a typed PR effect."""
+    if not isinstance(identity, GitHubPullRequestEffectIdentity):
+        raise TypeError("identity must be a server-authored PR effect identity")
+    return f"<!-- {_GITHUB_PR_EFFECT_MARKER_PREFIX}{identity.digest} -->"
+
+
+def with_github_pr_effect_marker(
+    body: str,
+    identity: GitHubPullRequestEffectIdentity,
+) -> str:
+    """Append the exact marker once and reject a conflicting marker."""
+    if not isinstance(body, str):
+        raise ValueError("pull-request body must be a string")
+    marker = github_pr_effect_marker(identity)
+    existing_markers = _GITHUB_PR_EFFECT_MARKER_RE.findall(body)
+    if existing_markers:
+        if existing_markers != [identity.digest]:
+            raise ValueError("body contains a different TinyAssets effect marker")
+        return body
+    if _GITHUB_PR_EFFECT_MARKER_PREFIX in body:
+        raise ValueError("body contains a malformed TinyAssets effect marker")
+    marked = f"{body.rstrip()}\n\n{marker}" if body.rstrip() else marker
+    if len(marked) > _MAX_GITHUB_PR_BODY_LENGTH:
+        raise ValueError("pull-request body exceeds GitHub's size limit")
+    return marked
+
+
+def _unknown_reconciliation(
+    identity: GitHubPullRequestEffectIdentity,
+    reason: str,
+    **evidence: Any,
+) -> dict[str, Any]:
+    return {
+        "status": "unknown",
+        "reason": reason,
+        "evidence": {
+            "repository": identity.repository,
+            "intended_head_sha": identity.intended_head_sha,
+            "effect_digest": identity.digest,
+            **evidence,
+        },
+    }
+
+
+def reconcile_github_pull_request_effect(
+    identity: GitHubPullRequestEffectIdentity,
+    *,
+    capability_token: str,
+    get_json: Any | None = None,
+) -> dict[str, Any]:
+    """Read GitHub's commit-associated PRs and classify exact remote state.
+
+    The function performs one GET and never mutates GitHub. It returns the
+    status vocabulary consumed by the outbound reconciliation journal:
+    ``succeeded`` for one exact match, ``failed`` for authoritative absence,
+    and ``unknown`` for every ambiguous or unavailable state.
+    """
+    if not isinstance(identity, GitHubPullRequestEffectIdentity):
+        raise TypeError("identity must be a server-authored PR effect identity")
+    if not isinstance(capability_token, str) or not capability_token:
+        raise ValueError("capability_token must be non-empty")
+    request = get_json or _git_data_api
+    response, error = request(
+        method="GET",
+        path=(
+            f"/repos/{identity.repository}/commits/"
+            f"{identity.intended_head_sha}/pulls?per_page=100"
+        ),
+        capability_token=capability_token,
+        body=None,
+    )
+    if error is not None:
+        http_status = error.get("http_status") if isinstance(error, dict) else None
+        return _unknown_reconciliation(
+            identity,
+            "destination_unavailable",
+            http_status=http_status if isinstance(http_status, int) else None,
+        )
+    if not isinstance(response, list) or len(response) > 100:
+        return _unknown_reconciliation(identity, "destination_malformed")
+    if len(response) == 100:
+        return _unknown_reconciliation(
+            identity,
+            "destination_result_truncated",
+            examined=100,
+        )
+
+    marker = github_pr_effect_marker(identity)
+    exact: list[dict[str, Any]] = []
+    partial_count = 0
+    malformed_count = 0
+    for pull in response:
+        if not isinstance(pull, dict):
+            malformed_count += 1
+            continue
+        head = pull.get("head")
+        base = pull.get("base")
+        base_repo = base.get("repo") if isinstance(base, dict) else None
+        head_sha = head.get("sha") if isinstance(head, dict) else None
+        repository = (
+            base_repo.get("full_name")
+            if isinstance(base_repo, dict)
+            else None
+        )
+        body = pull.get("body")
+        number = pull.get("number")
+        url = pull.get("html_url")
+        state = pull.get("state")
+        if body is None:
+            body = ""
+        expected_url = (
+            f"https://github.com/{identity.repository}/pull/{number}"
+            if isinstance(number, int)
+            else ""
+        )
+        if (
+            not isinstance(head_sha, str)
+            or not isinstance(repository, str)
+            or not isinstance(body, str)
+            or not isinstance(number, int)
+            or number <= 0
+            or not isinstance(url, str)
+            or len(url) > 2_048
+            or url.lower() != expected_url
+            or state not in {"open", "closed"}
+        ):
+            malformed_count += 1
+            continue
+
+        sha_matches = head_sha.lower() == identity.intended_head_sha
+        repository_matches = repository.lower() == identity.repository
+        marker_matches = marker in body
+        if sha_matches and repository_matches and marker_matches:
+            exact.append(
+                {
+                    "pr_number": number,
+                    "pr_url": url,
+                    "pr_state": state,
+                }
+            )
+        elif sha_matches or repository_matches or marker_matches:
+            partial_count += 1
+
+    if malformed_count:
+        return _unknown_reconciliation(
+            identity,
+            "destination_malformed",
+            examined=len(response),
+            malformed_matches=malformed_count,
+        )
+    if len(exact) > 1:
+        return _unknown_reconciliation(
+            identity,
+            "destination_multiple_matches",
+            examined=len(response),
+            exact_matches=len(exact),
+        )
+    if partial_count:
+        return _unknown_reconciliation(
+            identity,
+            "destination_partial_match",
+            examined=len(response),
+            exact_matches=len(exact),
+            partial_matches=partial_count,
+        )
+    if not exact:
+        return {
+            "status": "failed",
+            "reason": "destination_absent",
+            "evidence": {
+                "repository": identity.repository,
+                "intended_head_sha": identity.intended_head_sha,
+                "effect_digest": identity.digest,
+                "examined": len(response),
+                "exact_matches": 0,
+            },
+        }
+    return {
+        "status": "succeeded",
+        "evidence": {
+            "repository": identity.repository,
+            "intended_head_sha": identity.intended_head_sha,
+            "effect_digest": identity.digest,
+            **exact[0],
+        },
+    }
 
 
 def _env_truthy(name: str) -> bool:

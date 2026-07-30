@@ -1,6 +1,6 @@
 ## 0. Prerequisites and premise verification
 
-- [ ] 0.1 Before any implementation write, re-verify against `origin/main` that `openspec/specs/external-effect-receipts/spec.md` still describes caller-supplied hint semantics and no batch guarantee; if a later change already landed system-derived identity, reclassify these tasks instead of building over them.
+- [x] 0.1 Before any implementation write, re-verify against `origin/main` that `openspec/specs/external-effect-receipts/spec.md` still describes caller-supplied hint semantics and no batch guarantee; if a later change already landed system-derived identity, reclassify these tasks instead of building over them. Reverified 2026-07-30 at `83ad51ac`: canonical lines 33-57 still describe caller-supplied hints, optional deduplication, and no batch guarantee; the stronger active delta remains unsynced.
 - [x] 0.2 Confirm `paid-market-track-e-wave-2-transport` has landed its single authenticated transaction transport before implementing any value-moving boundary effect; until then, implement only non-value-moving boundary behavior.
 - [x] 0.3 Confirm the umbrella `build-forward-platform-capabilities` decisions D1–D8 still hold for this slice and record any divergence as a design change here, not as silent drift.
 - [x] 0.4 Take no requirement from the host-gated open-production-commons reframe (`.agents/handoffs/2026-07-19-distributed-execution-resume/RESUME-SPEC.md` §9). It is unapproved context, blocked on a host Q6 confirmation and PLAN.md foldback approval, and per umbrella D9 it binds nothing in either direction: "keep the reframe reachable" is not a design constraint on this slice and not a review gate against it. Build to D1–D8 and this change's own requirements. If the reframe is ever approved, it arrives as its own change.
@@ -25,6 +25,7 @@
 - [x] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
 - [x] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
 - [x] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
+- [ ] 3.6 Add the dark typed GitHub pull-request identity, digest marker, and read-only commit-association reconciler for repository-to-spec automation; prove exact match, conclusive absence, partial/multiple-match holds, malformed/transport holds, bounded evidence, and zero mutation. Do not let Branch packet fields mint this identity.
 
 ## 4. Inboxes and typed artifacts
 
