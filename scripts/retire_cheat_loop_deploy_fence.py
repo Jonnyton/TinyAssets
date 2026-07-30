@@ -1803,9 +1803,13 @@ def _reconcile_orphaned_recovery(
     if state.get("phase") == "restored":
         raise FenceError("restored recovery cannot be replaced")
     deadline = float(state.get("recovery_deadline_epoch") or 0)
-    controlled = set(host.volume_container_names())
+    controlled_running = any(
+        bool(host.container_info(name).get("State", {}).get("Running"))
+        for name in host.volume_container_names()
+    )
     if time.time() < deadline and (
-        controlled or state.get("phase") in {"canary_accepted", "finalizing"}
+        controlled_running
+        or state.get("phase") in {"canary_accepted", "finalizing"}
     ):
         raise FenceError("another recovery attempt still owns an active lease")
     quiesce_unsafe(host, run_id=run_id, state_path=state_path)
