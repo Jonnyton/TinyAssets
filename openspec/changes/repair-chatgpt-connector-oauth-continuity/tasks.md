@@ -4,7 +4,7 @@
 
 ## 1. Evidence before correction
 
-- [ ] 1.1 Test-first, add allowlisted WorkOS token-validation failure categories and prove logs/responses exclude bearer tokens, JWT material, exception messages, claim values, and user-identifying data while the caller still receives standard `401 invalid_token`.
+- [x] 1.1 Test-first, add allowlisted WorkOS token-validation failure categories and prove logs/responses exclude bearer tokens, JWT material, exception messages, claim values, and user-identifying data while the caller still receives standard `401 invalid_token`. Completed 2026-07-30 on Windows/Python 3.13: 10 initial red tests plus 2 independent-review red tests for per-category log bounding and real malformed-token ordering failed before their implementations, then passed; full `py -m pytest -q tests/test_workos_provider.py` passed 53 tests and focused Ruff was clean. Token acceptance and the caller's existing middleware response were unchanged.
 - [ ] 1.2 Deploy diagnostics without changing token acceptance, reproduce one post-reconnect authenticated call, and record the safe failure category plus public metadata/deployed-resource configuration parity.
 
 ## 2. Exact continuity repair
