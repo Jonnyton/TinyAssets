@@ -340,6 +340,89 @@ def test_policy_and_receipt_schemas_reject_secret_shaped_material() -> None:
 @pytest.mark.parametrize(
     "field",
     [
+        "b2_execution_grant_id",
+        "provider_work_receipt_id",
+        "provider_attempt_receipt_id",
+        "payment_receipt_id",
+        "effect_receipt_id",
+    ],
+)
+@pytest.mark.parametrize(
+    "bearer",
+    [
+        "xoxb-123456789-secret",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+    ],
+)
+def test_receipt_fields_require_kind_specific_nominal_references(
+    field: str,
+    bearer: str,
+) -> None:
+    payload = _provenance_payload()
+    payload["receipt_refs"][field] = bearer
+
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchProvenance.from_dict(payload)
+
+
+def test_all_receipt_reference_kinds_have_closed_valid_shapes() -> None:
+    payload = _provenance_payload()
+    payload["receipt_refs"] = {
+        "b2_execution_grant_id": "b2g_01",
+        "provider_work_receipt_id": "pwr_01",
+        "provider_attempt_receipt_id": "pat_01",
+        "payment_receipt_id": "pay_01",
+        "effect_receipt_id": "eff_01",
+    }
+
+    assert BackgroundBranchProvenance.from_dict(payload).to_dict() == payload
+
+
+@pytest.mark.parametrize(
+    ("record", "field"),
+    [
+        ("binding", "source_id"),
+        ("provenance", "source_id"),
+        ("provenance", "audit_correlation_ids"),
+    ],
+)
+@pytest.mark.parametrize(
+    "bearer",
+    [
+        "xoxb-123456789-secret",
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.signature",
+    ],
+)
+def test_generic_authority_references_require_nominal_domain_prefixes(
+    record: str,
+    field: str,
+    bearer: str,
+) -> None:
+    if record == "binding":
+        payload = _binding_payload()
+        payload[field] = bearer
+        parser = BackgroundBranchBinding.from_dict
+    else:
+        payload = _provenance_payload()
+        payload[field] = [bearer] if field == "audit_correlation_ids" else bearer
+        parser = BackgroundBranchProvenance.from_dict
+
+    with pytest.raises(ValueError, match="reference"):
+        parser(payload)
+
+
+@pytest.mark.parametrize("revision", ["04", "-1", "latest", "xoxb-123-secret"])
+def test_source_revision_is_a_canonical_decimal_generation(revision: str) -> None:
+    payload = _binding_payload()
+    payload["source_revision"] = revision
+
+    with pytest.raises(ValueError, match="revision"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
         "binding_id",
         "binding_digest",
         "authorizing_principal_id",
@@ -357,7 +440,7 @@ def test_binding_ids_digests_and_source_fields_reject_bearer_material(field: str
     payload = _binding_payload()
     payload[field] = "Bearer sk-live-secret"
 
-    with pytest.raises(ValueError, match="reference|SHA-256"):
+    with pytest.raises(ValueError, match="reference|revision|SHA-256"):
         BackgroundBranchBinding.from_dict(payload)
 
 

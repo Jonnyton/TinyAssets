@@ -127,23 +127,70 @@ def _optional_text(value: Any, field_name: str) -> str | None:
 
 
 _REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}$")
+_REVISION_PATTERN = re.compile(r"^(?:0|[1-9][0-9]*)$")
 _SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RFC3339_UTC_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
-_SECRET_PREFIXES = (
-    "bearer",
-    "sk-",
-    "sk_",
-    "ghp_",
-    "github_pat_",
-    "secret:",
-    "token:",
+_NOMINAL_REFERENCE_PREFIXES = (
+    "acct_",
+    "account-",
+    "user_",
+    "user::",
+    "universe_",
+    "universe:",
+    "branch_",
+    "branch:",
+    "schedule_",
+    "schedule:",
+    "subscription_",
+    "subscription:",
+    "soul_",
+    "soul:",
+    "run_",
+    "run:",
+    "request_",
+    "request:",
+    "producer_",
+    "producer:",
+    "contract_",
+    "contract:",
+    "market_",
+    "market:",
+    "task_",
+    "task:",
+    "child_",
+    "child:",
+    "daemon_",
+    "daemon:",
+    "runtime_",
+    "runtime:",
+    "worker_",
+    "worker:",
+    "att_",
+    "bnd_",
+    "trace:",
+    "audit:",
+    "b2g_",
+    "pwr_",
+    "pat_",
+    "pay_",
+    "eff_",
 )
+_RECEIPT_REFERENCE_PREFIXES = {
+    "b2_execution_grant_id": "b2g_",
+    "provider_work_receipt_id": "pwr_",
+    "provider_attempt_receipt_id": "pat_",
+    "payment_receipt_id": "pay_",
+    "effect_receipt_id": "eff_",
+}
+_MAX_JSON_INTEGER = (1 << 53) - 1
 
 
 def _reference(value: Any, field_name: str) -> str:
     result = _text(value, field_name)
-    if result.lower().startswith(_SECRET_PREFIXES) or not _REFERENCE_PATTERN.fullmatch(result):
-        raise ValueError(f"{field_name} must be a non-bearer reference")
+    if not _REFERENCE_PATTERN.fullmatch(result) or not result.startswith(
+        _NOMINAL_REFERENCE_PREFIXES
+    ):
+        raise ValueError(f"{field_name} must be a nominal non-bearer reference")
     return result
 
 
@@ -151,6 +198,30 @@ def _optional_reference(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
     return _reference(value, field_name)
+
+
+def _receipt_reference(value: Any, field_name: str) -> str:
+    result = _text(value, field_name)
+    prefix = _RECEIPT_REFERENCE_PREFIXES[field_name]
+    if not _REFERENCE_PATTERN.fullmatch(result) or not result.startswith(prefix):
+        raise ValueError(f"{field_name} must be a nominal {prefix} reference")
+    return result
+
+
+def _optional_receipt_reference(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _receipt_reference(value, field_name)
+
+
+def _revision(value: Any, field_name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or _REVISION_PATTERN.fullmatch(value) is None
+        or int(value) > _MAX_JSON_INTEGER
+    ):
+        raise ValueError(f"{field_name} must be a canonical decimal revision")
+    return value
 
 
 def _digest(value: Any, field_name: str) -> str:
@@ -185,8 +256,13 @@ def _optional_timestamp_text(value: Any, field_name: str) -> str | None:
 
 
 def _integer(value: Any, field_name: str, *, minimum: int) -> int:
-    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-        raise ValueError(f"{field_name} must be an integer >= {minimum}")
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > _MAX_JSON_INTEGER
+    ):
+        raise ValueError(f"{field_name} must be an integer from {minimum} to {_MAX_JSON_INTEGER}")
     return value
 
 
@@ -330,12 +406,14 @@ class BackgroundBranchReceiptRefs:
 
     def __post_init__(self) -> None:
         for name in self._FIELD_ORDER:
-            _optional_reference(getattr(self, name), name)
+            _optional_receipt_reference(getattr(self, name), name)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchReceiptRefs:
         _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
-        return cls(**{name: _optional_reference(data[name], name) for name in cls._FIELD_ORDER})
+        return cls(
+            **{name: _optional_receipt_reference(data[name], name) for name in cls._FIELD_ORDER}
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {name: getattr(self, name) for name in self._FIELD_ORDER}
@@ -544,9 +622,9 @@ class BackgroundBranchBinding:
             "universe_id",
             "branch_def_id",
             "source_id",
-            "source_revision",
         ):
             _reference(getattr(self, name), name)
+        _revision(self.source_revision, "source_revision")
         _digest(self.binding_digest, "binding_digest")
         _digest(self.source_digest, "source_digest")
         if not isinstance(self.status, BackgroundBranchBindingStatus):
@@ -616,7 +694,7 @@ class BackgroundBranchBinding:
             operation=_enum_value(BackgroundBranchOperation, data["operation"], "operation"),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
             source_id=_reference(data["source_id"], "source_id"),
-            source_revision=_reference(data["source_revision"], "source_revision"),
+            source_revision=_revision(data["source_revision"], "source_revision"),
             source_digest=_digest(data["source_digest"], "source_digest"),
             revocation_generation=_integer(
                 data["revocation_generation"], "revocation_generation", minimum=0

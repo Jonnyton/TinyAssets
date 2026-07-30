@@ -6,8 +6,9 @@
   combinations that each enum permitted but the spec forbade.
 - **Pattern worth capturing:** security-record tests must exercise both the JSON
   parser and direct typed construction, require canonical container shapes, and
-  validate each identity, digest, and timestamp through its own semantic field
-  class rather than a shared permissive string validator.
+  validate each identity, receipt, revision, digest, and timestamp through its
+  own allowlisted semantic field class. A finite blacklist of known token
+  prefixes cannot prove a serialized reference is non-bearer.
 - **What I would do differently:** derive negative tests from every field class
   in the approved table before implementing the model, including invariants
   between source identity, parent lineage, and separately named limits.
