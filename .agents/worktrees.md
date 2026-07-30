@@ -1748,3 +1748,14 @@ Notes:
 - Review: fresh-context fallback APPROVE at `9f0e868f`; final foldback-head review still required before ready-for-review
 - Verification: 174 focused/full drain tests, Ruff, workflow parsing, and strict OpenSpec validation passed on Windows, 2026-07-29
 - Publish/cleanup: one draft PR; retain worktree until GitHub merge and controller verification
+
+## 2026-07-30 10:24 - open drain blocker freshness audit
+
+- Provider: `drain-20260730-095018-67aecc`
+- Branch: `chore/drain-blocker-refresh-67aecc`
+- Lane state: Active coordination recovery lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-blocker-refresh-67aecc`
+- STATUS/Issue/PR: `Freshness-check blocked OpenSpec drain rows`; draft PR pending
+- Purpose: verify current-main dependency labels against GitHub and worktrees, retiring only disproved blockers
+- Review gate: independent exact-head review plus required CI before ready-for-review
+- Publish/cleanup: one draft PR; preserve the lane until merge and foldback
