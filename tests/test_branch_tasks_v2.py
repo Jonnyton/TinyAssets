@@ -27,6 +27,11 @@ from tinyassets.branch_tasks_v2 import (
 from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage import db_path
+from tinyassets.storage.automation_activations import (
+    AutomationActivation,
+    AutomationActivationExecutor,
+    AutomationActivationStore,
+)
 from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
     migrate_request_admission_schema,
@@ -56,6 +61,7 @@ def _commit(
     directed_authority_scope: str = "owner",
     universe_id: str = "universe-a",
     created_at: str = "2026-07-24T08:00:00+00:00",
+    automation_activation: AutomationActivation | None = None,
 ) -> dict:
     if not key.startswith("hmac-sha256:"):
         key = "hmac-sha256:" + hashlib.sha256(key.encode()).hexdigest()
@@ -103,6 +109,7 @@ def _commit(
         },
         directed_daemon_id=directed_daemon_id,
         created_at=created_at,
+        automation_activation=automation_activation,
     )
 
 
@@ -111,6 +118,7 @@ def _descriptor(
     worker_id: str = "worker-a",
     universe_id: str = "universe-a",
     expires_at: str = "2026-07-24T08:02:15+00:00",
+    executor_class: AutomationActivationExecutor | None = None,
 ) -> WorkerClaimDescriptor:
     return WorkerClaimDescriptor(
         queue_protocol_version=2,
@@ -122,6 +130,7 @@ def _descriptor(
         config_hash="b" * 64,
         universe_id=universe_id,
         expires_at=expires_at,
+        executor_class=executor_class,
     )
 
 
@@ -431,6 +440,137 @@ def test_claim_rechecks_exact_live_descriptor_inside_transaction(
         universe_id="universe-a",
         worker_id="worker-a",
     ) is False
+
+
+def test_activation_bound_claim_rechecks_current_epoch_and_executor(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    stopped = activations.create_stopped(
+        universe_id="universe-a",
+        automation_id="automation-a",
+    )
+    active = activations.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        immutable_branch_version="branch-version-a",
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    stale_task = _commit(
+        tmp_path,
+        key="activation-stale",
+        automation_activation=active,
+    )
+    rebound = activations.rebind(
+        expected=active,
+        immutable_branch_version="branch-version-b",
+        lease_id="activation-lease-b",
+    )
+    assert rebound is not None
+    current_task = _commit(
+        tmp_path,
+        key="activation-current",
+        created_at="2026-07-24T08:00:01+00:00",
+        automation_activation=rebound,
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+    cloud = _descriptor(
+        executor_class=AutomationActivationExecutor.CLOUD,
+    )
+    tray = _descriptor(
+        worker_id="worker-tray",
+        executor_class=AutomationActivationExecutor.TRAY,
+    )
+
+    assert adapter.claim(
+        stale_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    ) is None
+    assert adapter.claim(
+        current_task["branch_task_id"],
+        descriptor=tray,
+        descriptor_reader=lambda _conn, _worker_id: tray,
+    ) is None
+    claimed = adapter.claim(
+        current_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    )
+    assert claimed is not None
+    assert claimed.claimed_by == "worker-a"
+
+
+def test_stopped_or_tampered_activation_cannot_claim(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    stopped = activations.create_stopped(
+        universe_id="universe-a",
+        automation_id="automation-a",
+    )
+    active = activations.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        immutable_branch_version="branch-version-a",
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    stopped_task = _commit(
+        tmp_path,
+        key="activation-stopped",
+        automation_activation=active,
+    )
+    stopped_again = activations.stop(expected=active)
+    assert stopped_again is not None
+    cloud = _descriptor(
+        executor_class=AutomationActivationExecutor.CLOUD,
+    )
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=_MutableClock("2026-07-24T08:01:00+00:00"),
+    )
+
+    assert adapter.claim(
+        stopped_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    ) is None
+
+    reactivated = activations.activate(
+        expected=stopped_again,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        immutable_branch_version="branch-version-b",
+        lease_id="activation-lease-b",
+    )
+    assert reactivated is not None
+    tampered_task = _commit(
+        tmp_path,
+        key="activation-tampered",
+        created_at="2026-07-24T08:00:01+00:00",
+        automation_activation=reactivated,
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET automation_id = 'alternate-automation'
+            WHERE branch_task_id = ?
+            """,
+            (tampered_task["branch_task_id"],),
+        )
+
+    assert adapter.claim(
+        tampered_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    ) is None
 
 
 def test_claim_uses_transaction_time_for_descriptor_freshness(

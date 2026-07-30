@@ -307,6 +307,49 @@ class AutomationActivationStore:
         except ValueError:
             return False
         with self.connection() as conn:
+            return self.validate_claim_in_transaction(
+                conn,
+                universe_id=clean_universe_id,
+                automation_id=clean_automation_id,
+                epoch=clean_epoch,
+                executor_class=executor_class,
+                immutable_branch_version=clean_version,
+                lease_id=clean_lease_id,
+            )
+
+    @staticmethod
+    def validate_claim_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        universe_id: str,
+        automation_id: str,
+        epoch: int,
+        executor_class: AutomationActivationExecutor | None,
+        immutable_branch_version: str | None,
+        lease_id: str | None,
+    ) -> bool:
+        """Validate an activation on the caller's existing transaction."""
+
+        try:
+            clean_universe_id = _required(universe_id, "universe_id")
+            clean_automation_id = _required(
+                automation_id,
+                "automation_id",
+            )
+            clean_epoch = _epoch(epoch)
+            if not isinstance(
+                executor_class,
+                AutomationActivationExecutor,
+            ):
+                return False
+            clean_version = _required(
+                immutable_branch_version,
+                "immutable_branch_version",
+            )
+            clean_lease_id = _required(lease_id, "lease_id")
+        except ValueError:
+            return False
+        try:
             row = conn.execute(
                 """
                 SELECT 1
@@ -329,6 +372,8 @@ class AutomationActivationStore:
                     clean_lease_id,
                 ),
             ).fetchone()
+        except sqlite3.OperationalError:
+            return False
         return row is not None
 
     def _transition(

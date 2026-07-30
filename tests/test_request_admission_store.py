@@ -10,6 +10,10 @@ import pytest
 
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage import db_path
+from tinyassets.storage.automation_activations import (
+    AutomationActivationExecutor,
+    AutomationActivationStore,
+)
 from tinyassets.storage.request_admissions import (
     COMMIT_STEPS,
     IdempotencyKeyBodyConflict,
@@ -155,6 +159,68 @@ def test_commit_links_request_admission_task_and_event(tmp_path):
         assert event["branch_task_id"] == result["branch_task_id"]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
+
+def test_commit_persists_only_the_exact_current_automation_activation(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    stopped = activations.create_stopped(
+        universe_id="universe-a",
+        automation_id="automation-a",
+    )
+    active = activations.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        immutable_branch_version="branch-version-a",
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    store = RequestAdmissionStore(tmp_path)
+
+    committed = store.commit_admission(
+        **_commit_kwargs(),
+        automation_activation=active,
+    )
+
+    with _connect(tmp_path) as conn:
+        row = conn.execute(
+            """
+            SELECT automation_id, automation_activation_epoch,
+                   automation_executor_class, automation_branch_version,
+                   automation_lease_id
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (committed["branch_task_id"],),
+        ).fetchone()
+    assert row is not None
+    assert dict(row) == {
+        "automation_id": "automation-a",
+        "automation_activation_epoch": 1,
+        "automation_executor_class": "cloud",
+        "automation_branch_version": "branch-version-a",
+        "automation_lease_id": "activation-lease-a",
+    }
+
+    rebound = activations.rebind(
+        expected=active,
+        immutable_branch_version="branch-version-b",
+        lease_id="activation-lease-b",
+    )
+    assert rebound is not None
+    with pytest.raises(
+        PermissionError,
+        match="automation_activation_not_current",
+    ):
+        store.commit_admission(
+            **_commit_kwargs(
+                idempotency_key_hash="hmac:scope-key-b",
+                body_digest="sha256:body-b",
+            ),
+            automation_activation=active,
+        )
+    assert _table_count(tmp_path, "branch_tasks_v2") == 1
 
 def test_commit_preserves_incentive_and_directed_instruction_privately(
     tmp_path,
