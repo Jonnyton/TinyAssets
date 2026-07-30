@@ -914,3 +914,16 @@ fresh-host rollback edges found later.
 - What surprised me: the repository auto-enroll workflow can merge a non-draft PR within seconds, before an independent review requested in the same session returns.
 - Pattern worth capturing: destination reconciliation needs a complete reserved-marker-family check, not substring presence; creation and reconciliation must share the same ambiguity rule.
 - What I would do differently: open review-gated follow-ups as draft PRs immediately, especially when auto-enroll is active, and keep the adapter credential-blind from the first implementation commit.
+
+## 2026-07-30 - Ringer epoch-2 activation substrate
+
+- **What surprised me:** the existing epoch-2 queue already exposed the atomic
+  claim callback needed for future integration; the missing primitive was the
+  authoritative activation identity, not another scheduler or worker.
+- **Pattern worth capturing:** represent executor cutover as stop-then-activate
+  CAS transitions over one exact record. A direct tray/cloud switch is an
+  invalid state transition, and stale epoch/version/lease tuples are data to
+  reject rather than identities to recover locally.
+- **What I would do differently:** decompose the umbrella blocker into a dark
+  authority-owner slice before discussing runtime wiring. It made one day of
+  work independently reviewable while keeping unsafe activation impossible.
