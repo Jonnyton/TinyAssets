@@ -1068,33 +1068,32 @@ class BackgroundBranchAttempt:
 
 @dataclass(frozen=True)
 class BackgroundBranchBindingFence:
-    """Expected binding generations for one compare-and-swap."""
+    """Exact immutable binding snapshot for one compare-and-swap."""
 
-    generation: int
-    revocation_generation: int
+    expected_record: BackgroundBranchBinding
 
     def __post_init__(self) -> None:
-        _integer(self.generation, "generation", minimum=1)
-        _integer(self.revocation_generation, "revocation_generation", minimum=0)
+        if not isinstance(self.expected_record, BackgroundBranchBinding):
+            raise ValueError("expected_record must be a BackgroundBranchBinding")
+
+    def matches(self, current: BackgroundBranchBinding) -> bool:
+        """Reject any concurrent mutation, including an envelope debit."""
+        return current == self.expected_record
 
 
 @dataclass(frozen=True)
 class BackgroundBranchAttemptFence:
-    """Expected attempt generations and lifecycle for one compare-and-swap."""
+    """Exact immutable attempt snapshot for one compare-and-swap."""
 
-    binding_generation: int
-    source_generation: int
-    claim_generation: int
-    lease_generation: int
-    lifecycle: BackgroundBranchAttemptLifecycle
+    expected_record: BackgroundBranchAttempt
 
     def __post_init__(self) -> None:
-        _integer(self.binding_generation, "binding_generation", minimum=1)
-        _integer(self.source_generation, "source_generation", minimum=0)
-        _integer(self.claim_generation, "claim_generation", minimum=1)
-        _integer(self.lease_generation, "lease_generation", minimum=1)
-        if not isinstance(self.lifecycle, BackgroundBranchAttemptLifecycle):
-            raise ValueError("lifecycle must be typed")
+        if not isinstance(self.expected_record, BackgroundBranchAttempt):
+            raise ValueError("expected_record must be a BackgroundBranchAttempt")
+
+    def matches(self, current: BackgroundBranchAttempt) -> bool:
+        """Reject any concurrent mutation, including a budget or state change."""
+        return current == self.expected_record
 
 
 @dataclass(frozen=True)
@@ -1192,7 +1191,7 @@ class BackgroundBranchAuthorityTransaction(Protocol):
         expected: BackgroundBranchBindingFence,
         replacement: BackgroundBranchBinding,
     ) -> BackgroundBranchBindingWriteResult:
-        """Replace only the exact expected binding generations."""
+        """Replace only when every stored field matches the expected snapshot."""
 
     def compare_and_swap_attempt(
         self,
@@ -1201,7 +1200,7 @@ class BackgroundBranchAuthorityTransaction(Protocol):
         expected: BackgroundBranchAttemptFence,
         replacement: BackgroundBranchAttempt,
     ) -> BackgroundBranchAttemptWriteResult:
-        """Replace only the exact expected attempt generations and lifecycle."""
+        """Replace only when every stored field matches the expected snapshot."""
 
 
 @runtime_checkable

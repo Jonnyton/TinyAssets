@@ -11,6 +11,7 @@ from tinyassets.background_branch_authority import (
     BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE,
     BACKGROUND_BRANCH_AUTHORITY_TRANSACTION_EXCLUSIONS,
     BackgroundBranchAttempt,
+    BackgroundBranchAttemptFence,
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchAttemptPage,
     BackgroundBranchAttemptWriteResult,
@@ -19,6 +20,7 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchAuthorityTransaction,
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
+    BackgroundBranchBindingFence,
     BackgroundBranchBindingPage,
     BackgroundBranchBindingStatus,
     BackgroundBranchBindingWriteResult,
@@ -808,3 +810,31 @@ def test_authority_write_outcomes_are_closed_and_non_authorizing() -> None:
             outcome=BackgroundBranchAuthorityWriteOutcome.MISSING,
             record=attempt,
         )
+
+
+def test_exact_record_fences_reject_stale_budget_and_lifecycle_writers() -> None:
+    parent_payload = _binding_payload()
+    parent_payload["remaining_count"] = 1
+    parent = BackgroundBranchBinding.from_dict(parent_payload)
+    parent_fence = BackgroundBranchBindingFence(expected_record=parent)
+    debited_parent = replace(parent, remaining_count=0)
+
+    assert parent_fence.matches(parent)
+    assert not parent_fence.matches(debited_parent)
+
+    attempt = BackgroundBranchAttempt.from_dict(_attempt_payload())
+    attempt_fence = BackgroundBranchAttemptFence(expected_record=attempt)
+    progressed_attempt = replace(
+        attempt,
+        remaining_cost_microunits=attempt.remaining_cost_microunits - 1,
+    )
+
+    assert attempt_fence.matches(attempt)
+    assert not attempt_fence.matches(progressed_attempt)
+
+
+def test_exact_record_fences_require_their_typed_record() -> None:
+    with pytest.raises(ValueError, match="Binding"):
+        BackgroundBranchBindingFence(expected_record=object())  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="Attempt"):
+        BackgroundBranchAttemptFence(expected_record=object())  # type: ignore[arg-type]

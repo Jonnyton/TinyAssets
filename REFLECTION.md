@@ -815,3 +815,7 @@ fresh-host rollback edges found later.
 - **What I would do differently:** write the cursor-page and non-nesting tests
   alongside the first protocol sketch, rather than relying on docstrings to
   carry safety constraints that callers and adapters need to share.
+- **Review follow-up:** named generation fields are not a complete CAS fence
+  when budgets can mutate without rotating those generations. Fence the exact
+  immutable record (or a revision advanced by every mutation), and test the
+  stale second writer against the mutable envelope itself.
