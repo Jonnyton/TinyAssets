@@ -1914,3 +1914,15 @@ Notes:
 - Purpose: close the durable worktree lifecycle after verified artifact merge
 - Review gate: PR #1943 exact head `4f92071b` independently approved; merged tree contains the reviewed artifact
 - Publish/cleanup: safe to remove after this foldback lands
+## 2026-07-30 - Ringer epoch-2 activation substrate
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-epoch2-activation-20260730`
+- Lane state: Active; exact STATUS claim on current main.
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-epoch2-activation-20260730`
+- Purpose: dark server-authoritative automation activation CAS store; no live
+  queue, provider, tenant-code, or external-effect activation.
+- Review gate: focused TDD/concurrency tests, strict OpenSpec, mirror parity,
+  and independent exact-head approval.
+- Publish/cleanup: draft PR to main; fold back the umbrella activation row
+  after verified merge.
