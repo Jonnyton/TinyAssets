@@ -1938,3 +1938,14 @@ Notes:
 - Verification: 245 reviewer-focused tests, Ruff, strict OpenSpec, mirror
   parity, and required CI passed.
 - Publish/cleanup: safe to remove after this foldback lands.
+## 2026-07-30 - Ringer activation-bound epoch-2 claims
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-activation-claim-20260730`
+- Lane state: Active; exact STATUS claim on current main.
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-activation-claim-20260730`
+- Purpose: persist activation identity with optional epoch-2 work and validate
+  the exact current tuple atomically at claim.
+- Review gate: focused TDD/concurrency/migration tests, strict OpenSpec, mirror
+  parity, independent exact-head approval.
+- Publish/cleanup: draft PR to main; consumer remains disabled.
