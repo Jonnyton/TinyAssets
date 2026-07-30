@@ -10,7 +10,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, ContextManager, Protocol, runtime_checkable
 
 
 class BackgroundBranchBindingStatus(str, Enum):
@@ -74,6 +74,50 @@ class BackgroundBranchHoldReason(str, Enum):
     BINDING_EXHAUSTED = "binding_exhausted"
     TARGET_UNAUTHORIZED = "target_unauthorized"
     EXECUTOR_MISMATCH = "executor_mismatch"
+
+
+class BackgroundBranchAuthorityCoordinationStep(str, Enum):
+    """Cross-domain order; steps are sequential boundaries, not nested locks."""
+
+    QUEUE_SNAPSHOT = "queue_snapshot"
+    TARGET_ATTEMPT_CLAIM = "target_attempt_claim"
+    QUEUE_REVALIDATION = "queue_revalidation"
+    B2_CLAIM = "b2_claim"
+    PROVIDER_WORK_ISSUANCE = "provider_work_issuance"
+    BRANCH_EXECUTION = "branch_execution"
+    INDEPENDENT_SETTLEMENT = "independent_settlement"
+
+
+BACKGROUND_BRANCH_AUTHORITY_LOCK_ORDER = (
+    BackgroundBranchAuthorityCoordinationStep.QUEUE_SNAPSHOT,
+    BackgroundBranchAuthorityCoordinationStep.TARGET_ATTEMPT_CLAIM,
+    BackgroundBranchAuthorityCoordinationStep.QUEUE_REVALIDATION,
+    BackgroundBranchAuthorityCoordinationStep.B2_CLAIM,
+    BackgroundBranchAuthorityCoordinationStep.PROVIDER_WORK_ISSUANCE,
+    BackgroundBranchAuthorityCoordinationStep.BRANCH_EXECUTION,
+    BackgroundBranchAuthorityCoordinationStep.INDEPENDENT_SETTLEMENT,
+)
+
+BACKGROUND_BRANCH_AUTHORITY_TRANSACTION_EXCLUSIONS = frozenset(
+    {
+        "queue_lock",
+        "provider_assignment_lock",
+        "credential_lock",
+        "external_effect_transaction",
+    }
+)
+
+BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE = 200
+
+
+class BackgroundBranchAuthorityWriteOutcome(str, Enum):
+    """Closed, non-authorizing result set for insert and CAS operations."""
+
+    APPLIED = "applied"
+    REPLAYED = "replayed"
+    MISSING = "missing"
+    GENERATION_MISMATCH = "generation_mismatch"
+    CONFLICT = "conflict"
 
 
 _BINDING_SOURCE_KINDS = frozenset(
@@ -1020,3 +1064,182 @@ class BackgroundBranchAttempt:
             "updated_at": self.updated_at,
             "provenance": self.provenance.to_dict(),
         }
+
+
+@dataclass(frozen=True)
+class BackgroundBranchBindingFence:
+    """Exact immutable binding snapshot for one compare-and-swap."""
+
+    expected_record: BackgroundBranchBinding
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expected_record, BackgroundBranchBinding):
+            raise ValueError("expected_record must be a BackgroundBranchBinding")
+
+    def matches(self, current: BackgroundBranchBinding) -> bool:
+        """Reject any concurrent mutation, including an envelope debit."""
+        return current == self.expected_record
+
+
+@dataclass(frozen=True)
+class BackgroundBranchAttemptFence:
+    """Exact immutable attempt snapshot for one compare-and-swap."""
+
+    expected_record: BackgroundBranchAttempt
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.expected_record, BackgroundBranchAttempt):
+            raise ValueError("expected_record must be a BackgroundBranchAttempt")
+
+    def matches(self, current: BackgroundBranchAttempt) -> bool:
+        """Reject any concurrent mutation, including a budget or state change."""
+        return current == self.expected_record
+
+
+@dataclass(frozen=True)
+class BackgroundBranchBindingWriteResult:
+    """Result of a binding insert or CAS; it grants no execution authority."""
+
+    outcome: BackgroundBranchAuthorityWriteOutcome
+    record: BackgroundBranchBinding | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, BackgroundBranchAuthorityWriteOutcome):
+            raise ValueError("outcome must be typed")
+        if self.record is not None and not isinstance(self.record, BackgroundBranchBinding):
+            raise ValueError("record must be a BackgroundBranchBinding")
+        if (self.outcome is BackgroundBranchAuthorityWriteOutcome.MISSING) != (self.record is None):
+            raise ValueError("missing is the only outcome without a current record")
+
+
+@dataclass(frozen=True)
+class BackgroundBranchAttemptWriteResult:
+    """Result of an attempt insert or CAS; it grants no execution authority."""
+
+    outcome: BackgroundBranchAuthorityWriteOutcome
+    record: BackgroundBranchAttempt | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, BackgroundBranchAuthorityWriteOutcome):
+            raise ValueError("outcome must be typed")
+        if self.record is not None and not isinstance(self.record, BackgroundBranchAttempt):
+            raise ValueError("record must be a BackgroundBranchAttempt")
+        if (self.outcome is BackgroundBranchAuthorityWriteOutcome.MISSING) != (self.record is None):
+            raise ValueError("missing is the only outcome without a current record")
+
+
+def _page_items(value: object, item_type: type, field: str) -> None:
+    if not isinstance(value, tuple):
+        raise ValueError(f"{field} must be a tuple")
+    if any(not isinstance(item, item_type) for item in value):
+        raise ValueError(f"{field} contains an invalid record")
+    if len(value) > BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE:
+        raise ValueError(
+            f"{field} exceeds the {BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE}-record limit"
+        )
+
+
+def _page_cursor(value: object) -> None:
+    if value is not None:
+        _reference(value, "next_cursor")
+
+
+@dataclass(frozen=True)
+class BackgroundBranchBindingPage:
+    """One bounded, stable-order page of binding records."""
+
+    items: tuple[BackgroundBranchBinding, ...]
+    next_cursor: str | None
+
+    def __post_init__(self) -> None:
+        _page_items(self.items, BackgroundBranchBinding, "items")
+        _page_cursor(self.next_cursor)
+
+
+@dataclass(frozen=True)
+class BackgroundBranchAttemptPage:
+    """One bounded, stable-order page of attempt records."""
+
+    items: tuple[BackgroundBranchAttempt, ...]
+    next_cursor: str | None
+
+    def __post_init__(self) -> None:
+        _page_items(self.items, BackgroundBranchAttempt, "items")
+        _page_cursor(self.next_cursor)
+
+
+@runtime_checkable
+class BackgroundBranchAuthorityTransaction(Protocol):
+    """Opaque atomic write boundary; callers never receive storage handles."""
+
+    def insert_binding(
+        self,
+        binding: BackgroundBranchBinding,
+    ) -> BackgroundBranchBindingWriteResult:
+        """Insert uniquely by binding ID, replaying only an identical record."""
+
+    def insert_attempt(
+        self,
+        attempt: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        """Insert uniquely by attempt ID and logical-attempt key."""
+
+    def compare_and_swap_binding(
+        self,
+        *,
+        binding_id: str,
+        expected: BackgroundBranchBindingFence,
+        replacement: BackgroundBranchBinding,
+    ) -> BackgroundBranchBindingWriteResult:
+        """Replace only when every stored field matches the expected snapshot."""
+
+    def compare_and_swap_attempt(
+        self,
+        *,
+        attempt_id: str,
+        expected: BackgroundBranchAttemptFence,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        """Replace only when every stored field matches the expected snapshot."""
+
+
+@runtime_checkable
+class BackgroundBranchAuthorityStore(Protocol):
+    """Sole table-agnostic boundary for background Branch authority state."""
+
+    def transaction(
+        self,
+    ) -> ContextManager[BackgroundBranchAuthorityTransaction]:
+        """Open one atomic boundary that commits on success and rolls back on error."""
+
+    def get_binding(self, binding_id: str) -> BackgroundBranchBinding | None:
+        """Read one binding by opaque ID."""
+
+    def get_attempt(self, attempt_id: str) -> BackgroundBranchAttempt | None:
+        """Read one attempt by opaque ID."""
+
+    def get_attempt_by_logical_key(
+        self,
+        logical_attempt_key: str,
+    ) -> BackgroundBranchAttempt | None:
+        """Read the unique attempt attached to one deterministic logical key."""
+
+    def list_bindings(
+        self,
+        *,
+        status: BackgroundBranchBindingStatus | None = None,
+        after: str | None,
+        limit: int,
+    ) -> BackgroundBranchBindingPage:
+        """Read bindings in stable ID order; require ``1 <= limit <= 200``."""
+
+    def list_attempts(
+        self,
+        *,
+        binding_id: str | None = None,
+        lifecycle: BackgroundBranchAttemptLifecycle | None = None,
+        updated_before: str | None = None,
+        after: str | None,
+        limit: int,
+    ) -> BackgroundBranchAttemptPage:
+        """Read attempts in stable ID order; require ``1 <= limit <= 200``."""

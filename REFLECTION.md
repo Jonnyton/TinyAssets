@@ -801,3 +801,21 @@ fresh-host rollback edges found later.
 - **What I would do differently:** model the full GitHub auto-merge state
   machine—including retained enrollment across pushes—before selecting the
   first enforcement point.
+
+## 2026-07-30 - dark authority store boundary
+
+- **What surprised me:** a method named `list_*` with a required `limit` still
+  does not make the result structurally bounded; the returned page also needs
+  an enforced maximum so a future adapter cannot satisfy the type while
+  returning an unbounded collection.
+- **Pattern worth capturing:** keep cross-domain ordering separate from storage
+  transactions. A serial coordination sequence can include several locks and
+  effects while still forbidding any of those locks from nesting inside the
+  authority transaction.
+- **What I would do differently:** write the cursor-page and non-nesting tests
+  alongside the first protocol sketch, rather than relying on docstrings to
+  carry safety constraints that callers and adapters need to share.
+- **Review follow-up:** named generation fields are not a complete CAS fence
+  when budgets can mutate without rotating those generations. Fence the exact
+  immutable record (or a revision advanced by every mutation), and test the
+  stale second writer against the mutable envelope itself.
