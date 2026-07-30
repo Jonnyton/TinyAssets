@@ -1,7 +1,7 @@
 # Ringer Production-Orchestration Implications
 
-Date: 2026-07-30  
-Initial provider: Codex (`codex-gpt5-desktop`)  
+Date: 2026-07-30
+Initial provider: Codex (`codex-gpt5-desktop`)
 Review gate: Claude hit a hard monthly spend limit; host-approved fresh-context
 Codex fallback returned `ADAPT`; blocking findings must be folded and receive
 exact-head independent approval before runtime implementation

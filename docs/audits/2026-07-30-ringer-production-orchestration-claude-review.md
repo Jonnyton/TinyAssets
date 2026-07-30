@@ -1,11 +1,11 @@
 # Ringer Production-Orchestration Independent Review
 
-Date: 2026-07-30  
-Initial provider: Codex (`codex-gpt5-desktop`)  
-Required opposite provider: authenticated Claude Code 2.1.220  
-Fallback reviewer: fresh-context Codex CLI, high reasoning  
-TinyAssets base reviewed: `ef65fdc7f37fb96d7d1be711dda3b34e9de9c0c8`  
-Ringer source reviewed: `a1a91b8b384a90dcca379e1cb9ab91405275ac46`  
+Date: 2026-07-30
+Initial provider: Codex (`codex-gpt5-desktop`)
+Required opposite provider: authenticated Claude Code 2.1.220
+Fallback reviewer: fresh-context Codex CLI, high reasoning
+TinyAssets base reviewed: `ef65fdc7f37fb96d7d1be711dda3b34e9de9c0c8`
+Ringer source reviewed: `a1a91b8b384a90dcca379e1cb9ab91405275ac46`
 Verdict: **ADAPT**
 
 ## Provider-Limit Evidence
