@@ -1518,6 +1518,29 @@ def test_mountinfo_only_flags_foreign_not_same_host_namespace(
         assert risks[0]["mount_namespace"] == "mnt:[2]"
 
 
+def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
+    tmp_path: Path,
+):
+    class RefreshHost:
+        def container_pids(self, names: Any) -> set[int]:
+            assert tuple(names) == EXPECTED_CONTAINERS
+            return {123}
+
+    (tmp_path / "123").mkdir()
+    (tmp_path / "456").mkdir()
+    candidates = [
+        {"pid": 123, "exe": "codex"},
+        {"pid": 456, "exe": "python"},
+        {"pid": 789, "exe": "exited"},
+    ]
+
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        candidates,
+        proc_root=tmp_path,
+    ) == [{"pid": 456, "exe": "python"}]
+
+
 def test_post_canary_failure_includes_final_observation_diagnostic(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1552,6 +1575,46 @@ def test_post_canary_failure_includes_final_observation_diagnostic(
             run_id=RUN_ID,
             state_path=state_path,
         )
+
+
+def test_cli_failure_includes_last_failed_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
+                "phase": "safe_fleet",
+                "last_failed_observation": {
+                    "stray_writer_processes": [{"pid": 123, "exe": "codex"}]
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fence,
+        "_execute",
+        lambda *_args: (_ for _ in ()).throw(FenceError("proved unsafe")),
+    )
+
+    exit_code = fence.main(
+        ["--state-path", str(state_path), "status", "--run-id", RUN_ID],
+        host=host,
+    )
+
+    failure = json.loads(capsys.readouterr().out)
+    assert exit_code == 2
+    assert failure["last_failed_observation"] == {
+        "stray_writer_processes": [{"pid": 123, "exe": "codex"}]
+    }
 
 
 def test_writer_command_classifier_covers_idle_cloud_worker():

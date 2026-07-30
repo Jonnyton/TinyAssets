@@ -1,7 +1,7 @@
 # Status
 Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; durable product work also appears in the MCP brain (`PR-###`/`BUG-###`), while provider coordination without a wiki home stays here; check both.
 ## Concerns
-- **[P0 filed:2026-07-29 verified:2026-07-29]** Deploy fenced production; recovery 30518735998 hit fixed-name sidecar conflict and left an owned partial writer set; `/mcp` is 502.
+- **[P0 filed:2026-07-29 verified:2026-07-29]** Recovery 30519287468 passed MCP/exact-seven then falsely flagged owned Codex child PIDs as stray; re-fenced `/mcp` 502.
 - **[P0 filed:2026-07-27 verified:2026-07-27]** Public-site privacy/deps/CI: private/operator reads; React 1C/1H, Svelte 7H, design 2H; same-repo PRs can request 19 secrets.
 - **[P0 filed:2026-07-28 verified:2026-07-28]** Public `/mcp` forwards an internal Cloudflare Access authorization cookie; credential exposure.
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
