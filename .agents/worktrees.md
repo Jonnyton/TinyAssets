@@ -4,27 +4,27 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/ringer-github-reconcile-hardening-20260730`
-- Lane state: Review-approved exact-head remediation; draft PR #1954 awaiting CI
+- Lane state: Landed in PR #1954; parked
 - Worktree: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-hardening-20260730`
 - STATUS/Issue/PR: existing Ringer activation claim; follow-up after #1951/#1953
 - Purpose: close marker-set ambiguity and dot-segment repository identity findings from independent review
 - Review gate: focused TDD and independent re-review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-hardening-20260730/_PURPOSE.md`
-- Ship/abandon: focused corrective PR to `main`; keep the adapter dark
+- Ship/abandon: PR #1954 landed; adapter remains dark until the automation owner consumes it
 
 ## 2026-07-30 15:20 - create Ringer GitHub reconciliation
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/ringer-github-reconcile-20260730`
-- Lane state: Active Ringer prerequisite implementation
+- Lane state: Landed across PR #1951/#1953/#1954; parked
 - Worktree: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-20260730`
-- STATUS/Issue/PR: claimed outbound-owned exact GitHub PR reconciliation
+- STATUS/Issue/PR: outbound-owned exact GitHub PR reconciliation landed; activation row returned to pending
 - PLAN refs: outbound boundary; daemon platform; full-platform uptime
 - Purpose: add a closed, read-only destination reconciler for one immutable automation effect identity without creating target-local authority
 - Review gate: approved Ringer implications; TDD; independent exact-head review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-20260730/_PURPOSE.md`
 - Related implications: `docs/audits/2026-07-30-ringer-production-orchestration-implications.md`; `openspec/changes/activate-main-universe-spec-drain/`
-- Ship/abandon: focused PR to `main`; keep dark until task 2.1 consumes the adapter through the outbound owner
+- Ship/abandon: PR #1951/#1953/#1954 landed; keep dark until task 2.1 consumes the adapter through the outbound owner
 
 ## 2026-07-30 14:00 - create Ringer production orchestration
 
