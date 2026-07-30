@@ -5,7 +5,7 @@
 
 ## 1. Generic definition and BYOC single-flight cloud slice
 
-- [ ] 1.1 Test-first, define one immutable generic repository-to-accepted-spec work definition and a read-only operational projection over existing authority records; reject user-authored runtime authority and any tenant-code evaluator while confinement is unavailable. Bind Jonathan's values only as an acceptance fixture.
+- [x] 1.1 Test-first, define one immutable generic repository-to-accepted-spec work definition and a read-only operational projection over existing authority records; reject user-authored runtime authority and any tenant-code evaluator while confinement is unavailable. Bind Jonathan's values only as an acceptance fixture. Completed 2026-07-30 at `fed9159d`: closed server-owned deterministic evaluator policy, full canonical `AcceptanceScenario` freeze, exact cross-record identity/source/executor/inherited-envelope projection, 167 focused tests, Ruff/strict OpenSpec/diff clean, independent exact-head `APPROVE`.
 - [ ] 1.2 Test-first, bind that inactive private-universe Branch version to requester-owned cloud-consumable provider authority and an exact destination grant, then persist continuation through the existing activation, epoch-2 task, background-attempt, and provider/effect owners; prove missing/revoked prerequisites fail closed and concurrent triggers or restart never claim a second lane.
 
 ## 2. Reviewable delivery and evidence

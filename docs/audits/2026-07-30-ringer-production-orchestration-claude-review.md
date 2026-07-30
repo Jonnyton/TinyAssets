@@ -90,3 +90,17 @@ review artifact were mutually consistent. Strict OpenSpec validation and
 `git diff --check origin/main...53d44236` passed. No runtime implementation
 blocker remains for task 1.1; activation remains gated by the explicit
 prerequisite owners.
+
+Task 1.1 runtime implementation was separately reviewed through three
+fail-closed rounds. The final exact head
+`fed9159da2c2e510884d523615d1d676ba15941a` received `APPROVE` after proving:
+
+- the closed evaluator policy rejects executable target surfaces and arbitrary
+  evaluator IDs with `sandbox_unavailable`;
+- the complete canonical `AcceptanceScenario` snapshot and its tighter budgets
+  survive nested caller mutation;
+- the read-only projection binds every load-bearing definition, binding,
+  attempt, source, executor, receipt, and inherited count/depth/cost envelope.
+
+Fresh reviewer evidence: 167 focused tests passed, Ruff passed, strict OpenSpec
+validation passed, and `git diff --check` passed.
