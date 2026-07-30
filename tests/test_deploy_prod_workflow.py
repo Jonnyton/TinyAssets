@@ -92,6 +92,21 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
         "${{ inputs.unsafe_fence_source_run_id }}"
     )
     assert "inputs.unsafe_fence_source_run_id" not in script
+    assert " --image-ref " in script
+    assert " --revision " in script
+    resolve = _step_named(
+        {"jobs": {"deploy": recovery}}, "Resolve unsafe recovery image"
+    )
+    resolve_script = str(resolve.get("run", ""))
+    assert "docker buildx imagetools inspect" in resolve_script
+    assert "org.opencontainers.image.revision" in resolve_script
+    assert "35da9d4fc1a1fc51d3db56bf5d1627691f54d894" in resolve_script
+    assert "git merge-base --is-ancestor" in resolve_script
+    refence = _step_named(
+        {"jobs": {"deploy": recovery}}, "Re-fence failed recovery"
+    )
+    assert "refence-recovery --source-run-id" in str(refence.get("run", ""))
+    assert "quiesce-unsafe" not in str(refence.get("run", ""))
     assert "inputs.unsafe_fence_source_run_id == ''" in str(
         wf["jobs"]["deploy"].get("if", "")
     )

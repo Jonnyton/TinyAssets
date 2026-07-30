@@ -27,6 +27,7 @@ from scripts.retire_cheat_loop_deploy_fence import (
     quiesce_unsafe,
     receipt_snapshot,
     recover_unsafe,
+    refence_recovery,
     resolve_receipt_store,
     restore_if_safe,
     safe_fleet_matches,
@@ -360,6 +361,7 @@ class LifecycleHost:
         self.target_revision = "b" * 40
         self.image_identities = {
             "sha256:old": (self.old_image_ref, self.old_revision),
+            self.old_image_ref: (self.old_image_ref, self.old_revision),
             self.target_image_ref: (self.target_image_ref, self.target_revision),
             "sha256:target": (self.target_image_ref, self.target_revision),
         }
@@ -1523,7 +1525,11 @@ def _unsafe_recovery_state(host: LifecycleHost, state_path: Path) -> None:
                 "receipt_snapshot": snapshot,
                 "preliminary_receipt_snapshot": snapshot,
                 "old_container_ids": {
-                    name: info["Id"] for name, info in host.containers.items()
+                    name: f"pre-cutover-{index}"
+                    for index, name in enumerate(EXPECTED_CONTAINERS)
+                },
+                "old_restart_policies": {
+                    name: "always" for name in EXPECTED_CONTAINERS
                 },
                 "restart_racer_state": {
                     unit: {
@@ -1554,6 +1560,8 @@ def test_recover_unsafe_refuses_wrong_source_provenance(
             host,
             source_run_id="wrong-run",
             run_id="recovery-1",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
             state_path=state_path,
         )
     assert not any(call[:2] == ("systemctl", "unmask") for call in host.calls)
@@ -1573,6 +1581,8 @@ def test_recover_unsafe_starts_only_recorded_configured_identity_and_restores(
         host,
         source_run_id="source-run-1",
         run_id="recovery-1",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
         state_path=state_path,
     )
 
@@ -1585,6 +1595,186 @@ def test_recover_unsafe_starts_only_recorded_configured_identity_and_restores(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["source_run_id"] == "source-run-1"
     assert state["recovery_attempts"] == ["recovery-1"]
+
+
+def test_recover_unsafe_accepts_compose_down_zero_container_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.containers = {}
+    host.start_installs_target = True
+
+    evidence = recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-zero",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "restored"
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
+
+
+def test_recover_unsafe_requires_exact_runner_bound_identity_before_wal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    before = state_path.read_bytes()
+
+    with pytest.raises(FenceError, match="runner-bound|recorded"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-wrong-image",
+            image_ref=host.target_image_ref,
+            revision=host.target_revision,
+            state_path=state_path,
+        )
+
+    assert state_path.read_bytes() == before
+    assert host.calls == []
+
+
+def test_recover_unsafe_requires_complete_saved_restart_policies_before_wal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["old_restart_policies"].pop("tinyassets-worker")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = state_path.read_bytes()
+
+    with pytest.raises(FenceError, match="restart polic"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-policy-gap",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+    assert state_path.read_bytes() == before
+    assert host.calls == []
+
+
+def test_recovery_refence_wrong_source_does_not_mutate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+
+    with pytest.raises(FenceError, match="not owned"):
+        refence_recovery(
+            host,
+            source_run_id="wrong-source",
+            run_id="unrelated-run",
+            state_path=state_path,
+        )
+    assert host.calls == []
+
+
+def test_recovery_refence_canary_failure_stops_current_recovered_fleet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-canary",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    evidence = refence_recovery(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-canary",
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "unsafe_fenced"
+    assert not any(info["State"]["Running"] for info in host.containers.values())
+
+
+def test_restore_handles_active_timer_requiring_static_service_to_settle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    state = {
+        "schema_version": 1,
+        "owner": "retire-cheat-loop task 2.1",
+        "run_id": RUN_ID,
+        "phase": "safe_fleet",
+        "old_container_ids": {},
+        "restart_racer_state": {
+            unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
+        },
+        "daemon_service_state": host.unit_state(DAEMON_SERVICE),
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit]["enabled"] = "masked-runtime"
+        host.units[unit]["load"] = "masked"
+    original_run = host.run
+    original_state = host.unit_state
+    service_reads = {"count": 0}
+
+    def timer_requires_service(args: Any, **kwargs: Any) -> str:
+        result = original_run(args, **kwargs)
+        if tuple(args) == ("systemctl", "start", "daemon-watchdog.timer"):
+            host.units["daemon-watchdog.service"]["active"] = "activating"
+        return result
+
+    def settling_state(unit: str) -> dict[str, str]:
+        value = original_state(unit)
+        if (
+            unit == "daemon-watchdog.service"
+            and value["active"] == "activating"
+        ):
+            service_reads["count"] += 1
+            if service_reads["count"] >= 2:
+                host.units[unit]["active"] = "inactive"
+                value["active"] = "inactive"
+        return value
+
+    monkeypatch.setattr(host, "run", timer_requires_service)
+    monkeypatch.setattr(host, "unit_state", settling_state)
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: {"safe": True, "phase": "safe_fleet"},
+    )
+
+    evidence = restore_if_safe(
+        host,
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "restored"
+    assert service_reads["count"] >= 2
 
 
 def test_recover_unsafe_refences_after_mutation_os_error(
@@ -1607,6 +1797,8 @@ def test_recover_unsafe_refences_after_mutation_os_error(
             host,
             source_run_id="source-run-1",
             run_id="recovery-1",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
             state_path=state_path,
         )
     assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "unsafe_fenced"
@@ -1650,6 +1842,8 @@ def test_recover_unsafe_refuses_unproved_fenced_snapshot(
             host,
             source_run_id="source-run-1",
             run_id="recovery-1",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
             state_path=state_path,
         )
     assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == "unsafe_fenced"

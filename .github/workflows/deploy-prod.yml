@@ -88,9 +88,50 @@ jobs:
           echo "$SSH_KEY" > ~/.ssh/do_deploy
           chmod 600 ~/.ssh/do_deploy
           ssh-keyscan -t ed25519,rsa "$DO_DROPLET_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Resolve unsafe recovery image
+        id: recovery-image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          tag="${REQUESTED_IMAGE_TAG}"
+          if [[ ! "${tag}" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::unsafe-fence recovery requires a valid image_tag"
+            exit 1
+          fi
+          owner_lower="$(printf '%s' "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          image="ghcr.io/${owner_lower}/tinyassets-daemon"
+          echo "${GH_TOKEN}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin >/dev/null 2>&1 || true
+          docker manifest inspect "${image}:${tag}" >/dev/null
+          digest="$(docker buildx imagetools inspect "${image}:${tag}" | awk '/^Digest:/ {print $2; exit}')"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::recovery image did not resolve to an immutable digest"
+            exit 1
+          fi
+          image_ref="${image}@${digest}"
+          docker pull "${image_ref}" >/dev/null
+          revision="$(
+            docker image inspect "${image_ref}" \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          )"
+          if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::recovery image has no canonical source revision"
+            exit 1
+          fi
+          git cat-file -e "${revision}^{commit}"
+          STOP_WRITER_SHA=35da9d4fc1a1fc51d3db56bf5d1627691f54d894
+          git merge-base --is-ancestor "${STOP_WRITER_SHA}" "${revision}" || {
+            echo "::error::recovery revision predates filing-only stop-writer floor"
+            exit 1
+          }
+          echo "image_ref=${image_ref}" >> "$GITHUB_OUTPUT"
+          echo "revision=${revision}" >> "$GITHUB_OUTPUT"
       - name: Recover canonical unsafe fence
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
+          RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
         run: |
           set -euo pipefail
           evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
@@ -104,7 +145,7 @@ jobs:
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
             > "$evidence_dir/recovery.json"
       - name: Recovery canonical MCP canary
         run: |
@@ -116,13 +157,15 @@ jobs:
             --url "${CANARY_URL}" --assert-handles --verbose
       - name: Re-fence failed recovery
         if: failure()
+        env:
+          SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
         run: |
           set +e
           evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
           mkdir -p "$evidence_dir"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py quiesce-unsafe --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py refence-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
             > "$evidence_dir/refence.json"
           refence_status=$?
           echo "{\"refence_exit_status\":${refence_status}}" \

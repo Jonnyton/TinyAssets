@@ -1604,6 +1604,8 @@ def _validate_unsafe_recovery_source(
     host: Host,
     *,
     source_run_id: str,
+    image_ref: str,
+    revision: str,
     state_path: Path,
 ) -> tuple[dict[str, Any], str, str]:
     """Validate an immutable unsafe-fence generation before any mutation."""
@@ -1632,30 +1634,52 @@ def _validate_unsafe_recovery_source(
         raise FenceError("unsafe fence lacks complete inherited preflight state")
     if state.get("extra_volume_consumers"):
         raise FenceError("unsafe fence recorded extra production-volume consumers")
-    configured = _configured_image()
-    admitted = {
-        str(state["target_image_ref"]): str(state["target_revision"]),
-        str(state["previous_image_ref"]): str(state["previous_revision"]),
-    }
-    if configured not in admitted or not CANONICAL_IMAGE_RE.fullmatch(configured):
-        raise FenceError("configured image is not an admitted immutable identity")
-    revision = admitted[configured]
+    if not CANONICAL_IMAGE_RE.fullmatch(image_ref):
+        raise FenceError("runner-bound recovery image is not immutable")
     if not REVISION_RE.fullmatch(revision):
-        raise FenceError("configured image has no admitted source revision")
+        raise FenceError("runner-bound recovery revision is not canonical")
+    configured = _configured_image()
+    if configured != image_ref:
+        raise FenceError("runner-bound recovery image disagrees with configured image")
+    recorded = {
+        (
+            str(state["target_image_ref"]),
+            str(state["target_revision"]),
+        ),
+        (
+            str(state["previous_image_ref"]),
+            str(state["previous_revision"]),
+        ),
+    }
+    if (image_ref, revision) not in recorded:
+        raise FenceError("runner-bound recovery identity is not recorded")
+    repository = image_ref.partition("@")[0]
+    if host.image_identity(image_ref, repository) != (image_ref, revision):
+        raise FenceError("local recovery image identity disagrees with runner binding")
+    policies = state.get("old_restart_policies")
+    if not isinstance(policies, dict) or set(policies) != set(EXPECTED_CONTAINERS):
+        raise FenceError("saved restart policy keys are incomplete")
+    if any(
+        policy not in {"always", "unless-stopped", "on-failure", "no"}
+        for policy in policies.values()
+    ):
+        raise FenceError("saved restart policy is invalid")
     names = set(host.volume_container_names())
-    if names != set(EXPECTED_CONTAINERS):
-        raise FenceError("fenced volume does not contain exactly five writers")
-    inspections = _exact_inspections(host)
-    repository = configured.partition("@")[0]
-    for name, info in inspections.items():
-        if info.get("State", {}).get("Running"):
-            raise FenceError(f"fenced writer is still running: {name}")
-        identity = host.image_identity(str(info.get("Image", "")), repository)
-        if identity != (configured, revision):
-            raise FenceError("fenced fleet identity disagrees with configured image")
-        container_id = str(info.get("Id", ""))
-        if host.container_restart_policy(container_id) != "no":
-            raise FenceError("fenced writer restart policy is not no")
+    if names not in (set(), set(EXPECTED_CONTAINERS)):
+        raise FenceError("fenced volume has partial or extra writer containers")
+    if names:
+        inspections = _exact_inspections(host)
+        for name, info in inspections.items():
+            if info.get("State", {}).get("Running"):
+                raise FenceError(f"fenced writer is still running: {name}")
+            identity = host.image_identity(str(info.get("Image", "")), repository)
+            if identity != (image_ref, revision):
+                raise FenceError(
+                    "fenced fleet identity disagrees with runner binding"
+                )
+            container_id = str(info.get("Id", ""))
+            if host.container_restart_policy(container_id) != "no":
+                raise FenceError("fenced writer restart policy is not no")
     volume_dir = Path(str(state["volume_mountpoint"]))
     if volume_dir.resolve() != host.volume_dir().resolve():
         raise FenceError("fenced volume mountpoint changed")
@@ -1687,7 +1711,7 @@ def _validate_unsafe_recovery_source(
             raise FenceError(f"fenced unit load state is not authoritative: {unit}")
         if unit_state["active"] not in {"inactive", "failed"}:
             raise FenceError(f"fenced unit is not inactive: {unit}")
-    return state, configured, revision
+    return state, image_ref, revision
 
 
 def recover_unsafe(
@@ -1695,6 +1719,8 @@ def recover_unsafe(
     *,
     source_run_id: str,
     run_id: str,
+    image_ref: str,
+    revision: str,
     state_path: Path,
 ) -> dict[str, Any]:
     """Recover one exact admitted fleet from a canonical emergency fence."""
@@ -1703,6 +1729,8 @@ def recover_unsafe(
     state, image_ref, revision = _validate_unsafe_recovery_source(
         host,
         source_run_id=source_run_id,
+        image_ref=image_ref,
+        revision=revision,
         state_path=state_path,
     )
     attempts = list(state.get("recovery_attempts") or [])
@@ -1738,9 +1766,7 @@ def recover_unsafe(
                     time.sleep(2)
         if evidence is None:
             raise FenceError(f"exact fleet did not converge: {last_error}")
-        for name, policy in state.get("old_restart_policies", {}).items():
-            if policy not in {"always", "unless-stopped", "on-failure", "no"}:
-                raise FenceError(f"saved restart policy is invalid: {name}")
+        for name, policy in state["old_restart_policies"].items():
             host.run(["docker", "update", f"--restart={policy}", name])
         restored = restore_if_safe(
             host,
@@ -1767,6 +1793,28 @@ def recover_unsafe(
         raise FenceError(
             f"recovery failed and was re-fenced: {recovery_error}"
         ) from recovery_error
+
+
+def refence_recovery(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Re-fence only a generation durably owned by this recovery attempt."""
+
+    _require_run_id(source_run_id)
+    _require_run_id(run_id)
+    state = _load_state(state_path)
+    if not (
+        state.get("source_run_id") == source_run_id
+        and state.get("run_id") == run_id
+        and state.get("recovery_run_id") == run_id
+        and run_id in (state.get("recovery_attempts") or [])
+    ):
+        raise FenceError("canonical fence is not owned by this recovery attempt")
+    return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
 
 def _write_optional(path: str | None, payload: Mapping[str, Any]) -> None:
@@ -1833,6 +1881,11 @@ def _parser() -> argparse.ArgumentParser:
     recover = subparsers.add_parser("recover-unsafe")
     recover.add_argument("--source-run-id", required=True)
     recover.add_argument("--run-id", required=True)
+    recover.add_argument("--image-ref", required=True)
+    recover.add_argument("--revision", required=True)
+    refence = subparsers.add_parser("refence-recovery")
+    refence.add_argument("--source-run-id", required=True)
+    refence.add_argument("--run-id", required=True)
     guard = subparsers.add_parser("guard-host-mutation")
     guard.add_argument(
         "--command-timeout",
@@ -1893,6 +1946,15 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
         )
     if args.command == "recover-unsafe":
         return recover_unsafe(
+            host,
+            source_run_id=args.source_run_id,
+            run_id=args.run_id,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            state_path=args.state_path,
+        )
+    if args.command == "refence-recovery":
+        return refence_recovery(
             host,
             source_run_id=args.source_run_id,
             run_id=args.run_id,
