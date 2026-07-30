@@ -242,14 +242,10 @@ jobs:
       # missing. Preferred is CLAUDE_CODE_OAUTH_TOKEN above (rotation-safe); this
       # is the file path for hosts without a setup-token.
       HAS_CLAUDE_CREDENTIALS_BUNDLE: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 != '' }}
-      # PR-128 — PR-122 Phase 2 capability map sync. When the
-      # TINYASSETS_GITHUB_PR_CAPABILITIES GH Actions secret is set
-      # (JSON object keyed by "<owner>/<repo>" -> "<token>"), the
-      # deploy step installs it into /etc/tinyassets/env so the Phase 2
-      # effector can pass its capability gate. Without this the
-      # effector emits error_kind="missing_capability" and stays in
-      # dry-run for real-PR attempts.
-      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.TINYASSETS_GITHUB_PR_CAPABILITIES != '' }}
+      # Bounded project-rename migration. The existing encrypted repository
+      # secret remains the single revocation source; the deploy narrows its
+      # map to the exact TinyAssets destination before installation.
+      HAS_GITHUB_PR_CAPABILITY: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES != '' }}
       # Founder-identity cutover (PR #1437): WorkOS Resource Server auth is
       # enabled on deploy ONLY when WORKOS_AUTHKIT_DOMAIN is present as a GH
       # Actions secret (fail-closed — WorkOSAuthProvider.from_env() raises
@@ -836,11 +832,9 @@ jobs:
           TINYASSETS_CODEX_AUTH_JSON_B64: ${{ secrets.TINYASSETS_CODEX_AUTH_JSON_B64 }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64: ${{ secrets.TINYASSETS_CLAUDE_CREDENTIALS_JSON_B64 }}
-          # PR-128 — Phase 2 effector capability map. JSON object
-          # mapping "<owner>/<repo>" -> "<token>" (round-2 P1.2
-          # shape). Read by tinyassets.effectors.github_pr at
-          # invocation time; never echoed into branch-visible state.
-          TINYASSETS_GITHUB_PR_CAPABILITIES: ${{ secrets.TINYASSETS_GITHUB_PR_CAPABILITIES }}
+          # Bounded pre-rename migration source. Never install this broad map
+          # directly; the run step validates and narrows it first.
+          GITHUB_PR_CAPABILITIES_SOURCE: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
         run: |
           NEW_IMAGE="${{ steps.tag.outputs.image_ref }}"
           echo "Deploying: ${NEW_IMAGE}"
@@ -974,10 +968,46 @@ jobs:
           # — emit a deploy-time warning so the operator notices
           # before chatbots start filing for real-write attempts.
           if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]; then
-            echo "Deploy-visible TINYASSETS_GITHUB_PR_CAPABILITIES found; syncing GitHub PR capability map."
-            printf '%s' "${TINYASSETS_GITHUB_PR_CAPABILITIES}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            echo "Deploy-visible GitHub PR capability source found; validating exact TinyAssets destination."
+            if ! scoped_github_pr_capabilities="$(
+              python - <<'PY'
+              import json
+              import os
+              import sys
+
+              destination = "Jonnyton/TinyAssets"
+              try:
+                  source = json.loads(
+                      os.environ.get("GITHUB_PR_CAPABILITIES_SOURCE", "")
+                  )
+              except (TypeError, ValueError) as exc:
+                  raise SystemExit(f"invalid capability JSON: {exc}") from exc
+              if not isinstance(source, dict):
+                  raise SystemExit("capability source must be a JSON object")
+              token = source.get(destination)
+              if not isinstance(token, str) or not token.strip():
+                  raise SystemExit(
+                      "missing exact Jonnyton/TinyAssets token"
+                  )
+              print(
+                  json.dumps(
+                      {destination: token},
+                      separators=(",", ":"),
+                      sort_keys=True,
+                  )
+              )
+              PY
+            )"; then
+              echo "::error::GitHub PR capability source is invalid or lacks the exact TinyAssets destination; revoking any installed runtime capability."
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+                  "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                  "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
+              exit 1
+            fi
+            printf '%s' "${scoped_github_pr_capabilities}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
                 "sudo bash /tmp/install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
+            unset scoped_github_pr_capabilities
           else
             # Round-2 fix (Codex round-1 finding on PR #980): the
             # documented contract is "absence -> dry-run". Round-1

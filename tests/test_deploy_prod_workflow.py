@@ -1230,9 +1230,13 @@ def test_deploy_job_env_has_github_pr_capability_flag():
         "Deploy step and summary can branch on capability visibility"
     )
     raw_value = str(job_env["HAS_GITHUB_PR_CAPABILITY"])
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value, (
-        "HAS_GITHUB_PR_CAPABILITY must be derived from the "
-        "TINYASSETS_GITHUB_PR_CAPABILITIES secret presence check"
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value, (
+        "the bounded migration must use the one existing pre-rename secret "
+        "as its unambiguous source of truth"
+    )
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value, (
+        "dual secret precedence makes revocation ambiguous; the migration "
+        "must select exactly one repository secret"
     )
     assert "!= ''" in raw_value, (
         "HAS_GITHUB_PR_CAPABILITY must use a non-empty-string check, "
@@ -1250,12 +1254,13 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
     )
     assert deploy_step is not None, "deploy job must have a deploy step"
     step_env = deploy_step.get("env") or {}
-    assert "TINYASSETS_GITHUB_PR_CAPABILITIES" in step_env, (
-        "Deploy step env must import TINYASSETS_GITHUB_PR_CAPABILITIES "
-        "from secrets so the inline ssh sync can pipe the value"
+    assert "GITHUB_PR_CAPABILITIES_SOURCE" in step_env, (
+        "Deploy step must import the bounded migration source without "
+        "pretending the unvalidated map is already the runtime value"
     )
-    raw_value = str(step_env["TINYASSETS_GITHUB_PR_CAPABILITIES"])
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value
+    raw_value = str(step_env["GITHUB_PR_CAPABILITIES_SOURCE"])
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
@@ -1277,11 +1282,14 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
         "an unbound-variable failure"
     )
-    assert "printf '%s' \"${TINYASSETS_GITHUB_PR_CAPABILITIES}\"" in run_script, (
-        "deploy must pipe the secret via printf '%s' so the value is "
-        "never echoed to the GH Actions log (matches the codex-auth "
-        "pattern)"
+    assert 'destination = "Jonnyton/TinyAssets"' in run_script
+    assert "json.dumps({destination: token}" in run_script
+    assert "GITHUB_PR_CAPABILITIES_SOURCE" in run_script
+    assert "printf '%s' \"${scoped_github_pr_capabilities}\"" in run_script, (
+        "deploy must pipe only the validated exact-destination map and never "
+        "echo the broad source map or token"
     )
+    assert "unset scoped_github_pr_capabilities" in run_script
     assert "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script, (
         "deploy must call the atomic install-tinyassets-env.sh helper "
         "(the same path that enforces root:tinyassets 640 + post-write "
@@ -1292,6 +1300,31 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "absent so the operator notices before chatbots try real-PR "
         "emission and see missing_capability dry-run evidence"
     )
+
+
+def test_deploy_step_invalid_capability_source_revokes_before_failure():
+    """Malformed or wrong-destination migration input must fail closed.
+
+    The deploy must remove any previously installed runtime capability before
+    exiting, instead of retaining stale authority or installing an empty map.
+    """
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    validation = "if ! scoped_github_pr_capabilities="
+    delete = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
+    failure = 'exit 1'
+    validation_idx = run_script.find(validation)
+    delete_idx = run_script.find(delete, validation_idx)
+    failure_idx = run_script.find(failure, delete_idx)
+    assert validation_idx != -1
+    assert delete_idx > validation_idx
+    assert failure_idx > delete_idx
+    assert '"missing exact Jonnyton/TinyAssets token"' in run_script
 
 
 def test_deploy_step_summary_reports_github_pr_capability_visibility():
