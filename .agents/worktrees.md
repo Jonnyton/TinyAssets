@@ -1817,3 +1817,14 @@ Notes:
 - Purpose: record integration of the execution-root/read-owner closure gate
 - Review gate: exact head `2dea7d38` independently approved; 125 focused tests and CI green
 - Publish/cleanup: safe to remove after foldback lands
+
+## 2026-07-30 12:12 - cloud drain binding persistence
+
+- Provider: `codex-cloud-drain-binding-store-20260730`
+- Branch: `codex/cloud-drain-binding-store-20260730`
+- Lane state: Claimed background authority task 2.1
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-binding-store-20260730`
+- STATUS/Issue/PR: exact dark binding-store slice; PR pending
+- Purpose: persist server-owned target bindings before cloud attempt issuance
+- Review gate: focused store/authority tests plus independent exact-head security review
+- Publish/cleanup: one PR to main; no activation or queue integration
