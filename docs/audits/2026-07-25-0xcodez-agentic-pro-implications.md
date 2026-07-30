@@ -19,6 +19,9 @@ review_rounds: >
   re-confirmed 3 of 3 under refute-by-default)
 artifact_kind: external-research-implications
 source_reachability: reachable via public mirrors (X itself login-walled)
+recovery_freshness: >
+  2026-07-30 against origin/main 1c86b073; primary-source links and the four
+  load-bearing current-code findings were rechecked before recovery publication.
 load-bearing-question: >
   Can a hardcore pro agentic engineer express 0xCodez's four taught disciplines
   (loop engineering, graph engineering, self-improving agents, build-your-own-LLM)
@@ -26,6 +29,31 @@ load-bearing-question: >
 ---
 
 # 0xCodez agentic-pro patterns — TinyAssets implications
+
+## Recovery freshness note — 2026-07-30
+
+This artifact was recovered from the stranded
+`claude/o5-agentic-pro-research` branch onto `origin/main`
+`1c86b073c86903a771fbcc4f7c3e3bcb1e03c6e7`. Its original analysis is dated
+2026-07-25 and is preserved as the reviewed historical record. Current-main
+verification changes one load-bearing classification:
+
+| Finding | 2026-07-30 current-main classification |
+|---|---|
+| GAP-1 Half A — `control_station` described hidden legacy tools | **Resolved by PR #1794** (`46ff5c5c`). `tinyassets/api/prompts.py` now enumerates exactly the seven canonical handles, explicitly refuses hidden legacy calls, and states unsupported creation honestly. `tests/test_goals_discoverability.py` and `tests/test_mcp_instruction_surfaces.py` carry drift coverage. |
+| GAP-1 Half B — no canonical workflow-create route | **Still current.** `write_graph target="branch"` still dispatches only `patch_branch` for an existing `branch_id`; the reconciled prompt now exposes this limitation instead of contradicting `tools/list`. |
+| GAP-9 — ordinary prompt nodes lack model-directed tool use | **Still current.** `NodeDefinition.tools_allowed` remains wired only through `_build_node_mcp_invoker` inside approved `source_code`; opaque nodes/effects remain author-wired composition, not model-selected tool calls. The no-candidate/security-review boundary still applies. |
+| GAP-2 prerequisite — schedule ownership is client-supplied | **Still current.** `tinyassets/api/runtime_ops.py` still reads `owner_actor` from request kwargs for create/list/remove/pause paths. Do not canonically expose it before server-bound authority lands. |
+| GAP-8 residual — in-process full-builtins execution | **Still current.** `graph_compiler.py` still executes approved source in process; the upstream `tinyassets.extensions.admin` gate also remains. The withdrawn self-approval claim stays withdrawn. |
+
+The official Anthropic articles and arXiv records cited in §§2/5 were
+re-reached on 2026-07-30. The 0xCodez/X material remains mirror-dependent, so
+it remains a demand-language sample with zero technical authority. Statements
+below such as “today,” “still owed,” and line-number citations describe the
+2026-07-25 checkout unless this recovery note overrides them.
+
+This recovery creates no new implementation authority. Section 9 remains
+per-candidate, except that the Half-A prompt-reconciliation row is now resolved.
 
 > **BUILD AUTHORITY IS PER-CANDIDATE — read §9's Status column before acting.**
 > The skill §8 opposite-provider review ran on 2026-07-25 and returned
@@ -425,11 +453,11 @@ is composition by the author, not tool use by the model. See GAP-9.
 
 ## 5. Adjacent research
 
-- **Loop engineering is a converged term, not one person's coinage** — surfaced
-  independently by Steinberger, Cherny, and Osmani in June 2026
-  ([hyper.ai](https://hyper.ai/en/papers/Loop-Engineering-IEEE)). The market is
-  standardizing on this vocabulary; we should read STATUS/PLAN against it rather
-  than invent parallel terms.
+- **Loop engineering is independently corroborated, not one person's coinage**
+  — attributed by the cited mirror to Steinberger, Cherny, and Osmani in June
+  2026 ([hyper.ai](https://hyper.ai/en/papers/Loop-Engineering-IEEE)). This is
+  enough to treat the phrase as recognizable adjacent vocabulary, not enough to
+  claim market-wide standardization.
 - **Harness auto-evolution is now benchmarked.** *Agentic Harness Engineering*
   reports 84.7% pass@1 on Terminal-Bench 2 and lifts a fixed model 69.7 → 77.0%
   over 10 iterations purely by evolving the harness, with the frozen harness
@@ -1130,7 +1158,7 @@ decision rather than an oversight.
 
 | Candidate | Status after review | Scope (one para) |
 |---|---|---|
-| `canonical-surface-prompt-reconciliation` | **FOLD-IN — do not create a competing change.** Belongs to the reserved `repair-first-contact-onboarding` lane, which already owns the "stale commands" symptom. | **Highest urgency, lowest cost, no runtime change.** Rewrite the `control_station` prompt's tool catalog and intent→action routing table so it describes the seven canonical handles instead of the five `tools/list`-stripped fat tools it names today (`api/prompts.py:212-298`). The durable artifact is an **invariant test asserting the prompt names only tools present in `tools/list`** — the drift, not the wording, is the defect, and the wording will drift again without it. Closes GAP-1 Half A. |
+| `canonical-surface-prompt-reconciliation` | **RESOLVED — PR #1794 (`46ff5c5c`) landed after this artifact's source branch diverged. Do not create a competing change.** | `control_station` now describes the seven canonical handles, explicitly refuses hidden legacy calls, and has instruction-surface drift coverage. This closes GAP-1 Half A; it does not add the missing workflow-create route in Half B. |
 | `canonical-surface-graph-authoring` | **ADAPT — creation semantics must be specified before scoping.** Approve the problem statement, not the scope as written. | Make `write_graph target=branch` with an empty `branch_id` create a branch from an ordered `changes_json` patch-op list. **The correction (§11.2 R6): create does *not* inherit patch's pre/post-snapshot and author-gate behavior "for free"** — patch operates on a branch that already exists and already has an owner, so every one of those properties must be *established*, not *inherited*. The change must specify, explicitly: (i) **blank-branch staging** — what object the ops apply to before the branch exists; (ii) **author binding** — the created branch's author bound server-side from the authenticated actor, never from a client field; (iii) **idempotency** — what a retried create does, so a client that times out mid-create does not produce two branches; (iv) **visibility and storage** — created private-by-default, host-resident private data preserved, and public/publish/remix semantics stated rather than assumed from "visibility exists"; (v) **validation** — whether a create may land structurally invalid and be repaired by later patches, or must validate atomically; (vi) **first version** — whether create publishes v1 or leaves the branch unversioned; (vii) **publication** — the explicit act that moves it into the commons. Covers node defs, edges, conditional edges, state fields with reducers, entry point, and `skills`. Explicitly does not un-hide the legacy fat tools and does not change `CANONICAL_HANDLES`. Closes GAP-1 Half B and GAP-6. Requires `--assert-handles` canary + rendered `ui-test` before acceptance. |
 | ~~`source-code-approval-authority`~~ | **WITHDRAWN — premise refuted (§11.2 R1).** Not "deferred": the thing it proposed to add already exists. | Withdrawn in full. It proposed requiring a host/owner role in `_ext_branch_approve_source_code`; the `tinyassets.extensions.admin` action scope already supplies exactly that authority one frame upstream (`api/extensions.py:399` → `auth/provider.py:410-418`), and production founders do not hold it (`auth/workos_provider.py:29-40`). Building it would have duplicated an existing authority boundary and, worse, implied that boundary was absent. |
 | `source-code-approval-gate-regression-coverage` | **REPLACEMENT for the withdrawn row — small, and the only thing GAP-8 actually owes.** Needs a proposal; needs no design round. | The reviewer's residual. Add regression coverage asserting that **every** dispatch path to `approve_source_code` passes `_dispatch_scope_error` before reaching the handler. The action→scope mapping is already tested (`tests/test_source_code_approval_action.py:118-124`); the *funnel* is not. It holds today — `_BRANCH_ACTIONS` (`api/branches.py:3331`) has exactly one runtime dispatch consumer, `api/extensions.py:458`, which sits 59 lines after the `_dispatch_scope_error` call at `:399` — which is precisely the kind of property a newly added route breaks silently, with nothing going red. Does not touch the OS-sandbox residual, which stays with the standing P1. |
@@ -1180,10 +1208,10 @@ and none of them is a licence to implement the others as originally scoped.
 
 **Still owed:**
 
-1. **GAP-1 Half A (`control_station` reconciliation) is a prompt fix**, not a
-   research-derived design, and per §9 it is a **fold-in** to
-   `repair-first-contact-onboarding` — not a new lane. Do not open a competing
-   change.
+1. ~~**GAP-1 Half A (`control_station` reconciliation) is still owed.**~~
+   **Discharged by PR #1794 (`46ff5c5c`).** The current prompt names the seven
+   canonical handles and carries drift coverage. Do not open a competing lane;
+   GAP-1 Half B (workflow creation) remains separate.
 2. **GAP-9 (node tool access) needs its own review round — a SECURITY review**
    (§11.3 R8) — before any candidate is named for it. It arrived from the
    review, so it has never been through T1/T2/T3 with a verdict on the result;
@@ -1376,9 +1404,10 @@ the dispatcher that could supply it, not just the one you were reading.*
 
 1. **Was the narrow `write_graph` target set a deliberate product decision or an
    incomplete PR-178 fold?** This determines whether GAP-1 Half B is a bug or a
-   direction change. `universe_server.py:402-412` reads like a migration in
-   progress — and `control_station` was evidently never updated with it, which
-   is evidence for "incomplete." **Host decision.**
+   direction change. PR #1794 has since reconciled `control_station` with the
+   narrow canonical target set and now states that workflow creation is not
+   exposed. That removes the stale-prompt evidence for “incomplete” but does not
+   decide whether creation should exist. **Host decision remains.**
 2. **Does GAP-1 duplicate `repair-first-contact-onboarding`?** Must be answered
    before any lane opens. Strong suspicion: the "stale commands" symptom in that
    row *is* the `control_station` drift.
