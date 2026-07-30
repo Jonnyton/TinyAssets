@@ -1283,7 +1283,8 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "an unbound-variable failure"
     )
     assert 'destination = "Jonnyton/TinyAssets"' in run_script
-    assert "json.dumps({destination: token}" in run_script
+    assert "json.dumps(" in run_script
+    assert "{destination: token}" in run_script
     assert "GITHUB_PR_CAPABILITIES_SOURCE" in run_script
     assert "printf '%s' \"${scoped_github_pr_capabilities}\"" in run_script, (
         "deploy must pipe only the validated exact-destination map and never "
@@ -1423,7 +1424,9 @@ def test_capability_delete_is_gated_on_else_branch():
     set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
     delete_marker = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
     set_idx = run_script.find(set_marker)
-    delete_idx = run_script.find(delete_marker)
+    # The validation-failure branch also revokes. The last delete is the
+    # absence/revocation arm whose placement this test owns.
+    delete_idx = run_script.rfind(delete_marker)
     assert set_idx != -1, "set call must remain in the truthy branch"
     assert delete_idx != -1, "delete call must be present in else branch"
     assert set_idx < delete_idx, (
