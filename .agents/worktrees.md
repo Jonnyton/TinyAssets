@@ -1,5 +1,19 @@
 # Worktree Inventory
 
+## 2026-07-30 14:15 - create partial-target recovery
+
+- Provider: `codex-gpt5-p0-recovery`
+- Branch: `codex/partial-target-recovery-20260730`
+- Lane state: Active P0 outage-recovery lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-partial-target-recovery-20260730`
+- STATUS/Issue/PR: claimed strict-subset canonical target recovery
+- PLAN refs: existing transitional stop-writer fence and emergency-recovery contract
+- Purpose: safely retire only the proved stopped partial target generation so the prior admitted image can recover public `/mcp`
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-partial-target-recovery-20260730/_PURPOSE.md`
+- Memory refs: deploy 30581439569; failed recovery 30582599465
+- Related implications: `repair-recovery-deploy-handoff`; Ringer lane paused, not superseded
+- Ship/abandon: focused emergency PR; recover and canary before resuming Ringer implementation
+
 ## 2026-07-30 13:35 - recovery-to-normal deploy handoff
 
 - Provider: `codex-gpt5-desktop`

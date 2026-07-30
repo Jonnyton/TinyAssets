@@ -77,6 +77,26 @@ avoids recreating removed recovery containers merely to remove them again while
 making the non-transactional Docker operation replayable inside the
 write-ahead boundary.
 
+### 4. Admit only a proved partial canonical target into unsafe recovery
+
+A canonical service start may fail after creating fewer than the expected five
+target containers. The unsafe fence then has complete preflight provenance but
+the existing recovery path refuses the strict subset before it can restore the
+previous admitted image.
+
+Recovery may plan removal of this subset only when every production-volume
+consumer has an expected canonical name, exact recorded target image and
+revision, canonical `tinyassets` Compose project label, stopped state, and
+`restart=no`. It also proves that every missing expected canonical name is
+absent across all container states. The exact observed IDs are written before
+removal. Replay accepts only the remaining recorded subset, proves removed IDs
+absent, removes without `-v`, and converges to an empty volume inventory before
+starting recovery.
+
+An extra name, foreign project/image/revision, running or restart-enabled
+container, same-name off-volume container, or identity substitution fails
+before removal. This is not general Docker garbage collection.
+
 ## Risks / Trade-offs
 
 - [Prior recovery state is incomplete or stale] → refuse before preflight
@@ -90,6 +110,9 @@ write-ahead boundary.
   restored-recovery state plus exact IDs and exact recovery project labels.
 - [Data loss from container removal] → use exact `docker rm` IDs with no volume
   flag; the named data volume is never a command target.
+- [Partial target is not the failed canonical generation] → require exact
+  target image/revision, canonical project label, expected-name subset,
+  stopped/restart-fenced state, and absent-name proof before write-ahead intent.
 
 ## Migration Plan
 
