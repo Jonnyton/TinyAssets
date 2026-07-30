@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
+import time
 from typing import Any
 
 import jwt
@@ -46,6 +48,64 @@ _ALGORITHMS = ("RS256",)
 # binding. Production MUST register the MCP URL as a WorkOS Resource Indicator
 # and set ``WORKOS_MCP_RESOURCE`` so tokens are bound to this server.
 _ALLOW_NO_AUDIENCE_TRUTHY = ("1", "true", "yes", "on")
+_TOKEN_REJECTION_LOG_WINDOW_SECONDS = 60.0
+_TOKEN_REJECTION_CATEGORIES = frozenset({
+    "algorithm",
+    "audience",
+    "expired",
+    "invalid_subject",
+    "invalid_token",
+    "issuer",
+    "malformed",
+    "required_claim",
+    "signature",
+    "signing_key",
+})
+_token_rejection_log_lock = threading.Lock()
+_token_rejection_log_state: dict[str, tuple[float, int]] = {}
+_rejection_log_now = time.monotonic
+
+
+def _validation_failure_category(error: jwt.PyJWTError) -> str:
+    """Map PyJWT failures to a bounded category without exposing details."""
+    categories = (
+        (jwt.ExpiredSignatureError, "expired"),
+        (jwt.InvalidAudienceError, "audience"),
+        (jwt.InvalidIssuerError, "issuer"),
+        (jwt.MissingRequiredClaimError, "required_claim"),
+        (jwt.InvalidSignatureError, "signature"),
+        (jwt.InvalidAlgorithmError, "algorithm"),
+        (jwt.DecodeError, "malformed"),
+    )
+    for error_type, category in categories:
+        if isinstance(error, error_type):
+            return category
+    return "invalid_token"
+
+
+def _log_token_rejection(category: str) -> None:
+    """Log a bounded safe reason, never token or exception material."""
+    safe_category = (
+        category if category in _TOKEN_REJECTION_CATEGORIES else "invalid_token"
+    )
+    now = _rejection_log_now()
+    with _token_rejection_log_lock:
+        last_logged, suppressed = _token_rejection_log_state.get(
+            safe_category,
+            (float("-inf"), 0),
+        )
+        if now - last_logged < _TOKEN_REJECTION_LOG_WINDOW_SECONDS:
+            _token_rejection_log_state[safe_category] = (
+                last_logged,
+                suppressed + 1,
+            )
+            return
+        _token_rejection_log_state[safe_category] = (now, 0)
+    logger.warning(
+        "WorkOS bearer token rejected category=%s suppressed=%d",
+        safe_category,
+        suppressed,
+    )
 
 
 def derive_endpoints(authkit_domain: str) -> tuple[str, str]:
@@ -127,9 +187,12 @@ class WorkOSAuthProvider(AuthProvider):
             return None
         try:
             signing_key = self._jwks_client.get_signing_key_from_jwt(token)
+        except jwt.DecodeError:
+            _log_token_rejection("malformed")
+            return None
         except Exception:
-            # kid mismatch, malformed token, or JWKS fetch failure.
-            logger.debug("WorkOS token: no signing key", exc_info=True)
+            # kid mismatch or JWKS lookup/fetch failure.
+            _log_token_rejection("signing_key")
             return None
 
         options: dict[str, Any] = {"require": ["exp", "sub"]}
@@ -146,12 +209,13 @@ class WorkOSAuthProvider(AuthProvider):
 
         try:
             claims = jwt.decode(token, signing_key.key, **decode_kwargs)
-        except jwt.PyJWTError:
-            logger.debug("WorkOS token failed validation", exc_info=True)
+        except jwt.PyJWTError as error:
+            _log_token_rejection(_validation_failure_category(error))
             return None
 
         sub = str(claims.get("sub", "")).strip()
         if not sub or sub == "anonymous":
+            _log_token_rejection("invalid_subject")
             return None
 
         email = str(claims.get("email", "")).strip()

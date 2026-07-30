@@ -4,7 +4,7 @@
 
 ## 1. Evidence before correction
 
-- [ ] 1.1 Test-first, add the exact finite WorkOS token-validation categories (`algorithm`, `audience`, `expired`, `invalid_subject`, `invalid_token`, `issuer`, `malformed`, `required_claim`, `signature`, `signing_key`); classify malformed input before JWKS lookup; bound each category to one emission per 60-second process window with the next emission carrying only a numeric suppression count; and prove logs/responses exclude bearer tokens, JWT material, exception messages, claim values, and user-identifying data while the caller still receives standard `401 invalid_token`.
+- [x] 1.1 Test-first, add the exact finite WorkOS token-validation categories (`algorithm`, `audience`, `expired`, `invalid_subject`, `invalid_token`, `issuer`, `malformed`, `required_claim`, `signature`, `signing_key`); classify malformed input before JWKS lookup; bound each category to one emission per 60-second process window with the next emission carrying only a numeric suppression count; and prove logs/responses exclude bearer tokens, JWT material, exception messages, claim values, and user-identifying data while the caller still receives standard `401 invalid_token`. Completed 2026-07-30 on Windows/Python 3.13: 10 initial red tests plus 2 independent-review red tests failed before implementation, then passed; all 53 focused tests and Ruff passed. Token acceptance and the caller response were unchanged.
 - [ ] 1.2 Deploy diagnostics without changing token acceptance, reproduce one post-reconnect authenticated call, and record the safe failure category plus public metadata/deployed-resource configuration parity.
 
 ## 2. Exact continuity repair
