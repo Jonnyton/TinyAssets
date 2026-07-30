@@ -16,10 +16,12 @@ Covers:
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -1284,6 +1286,9 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
         "an unbound-variable failure"
     )
     assert 'destination = "Jonnyton/TinyAssets"' in run_script
+    assert 'historical_destination = "Jonnyton/Workflow"' in run_script
+    assert "set(source) == {destination}" in run_script
+    assert "set(source) == {historical_destination}" in run_script
     assert "json.dumps(" in run_script
     assert "{destination: token}" in run_script
     assert "GITHUB_PR_CAPABILITIES_SOURCE" in run_script
@@ -1339,7 +1344,72 @@ def test_deploy_step_invalid_capability_source_revokes_before_failure():
         "TINYASSETS_GITHUB_PR_CAPABILITIES && "
         "sudo systemctl restart tinyassets-daemon"
     ) in run_script
-    assert '"missing exact Jonnyton/TinyAssets token"' in run_script
+    assert (
+        '"capability source must contain exactly one supported "'
+        in run_script
+    )
+
+
+def _github_capability_validator() -> str:
+    wf = _load()
+    deploy_step = next(s for s in _steps(wf) if s.get("id") == "deploy")
+    run_script = deploy_step.get("run", "") or ""
+    segment = run_script[run_script.index("if ! scoped_github_pr_capabilities=") :]
+    match = re.search(r"python -c '\n(?P<code>.*?)\n\s*'", segment, re.DOTALL)
+    assert match is not None
+    return textwrap.dedent(match.group("code"))
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"Jonnyton/TinyAssets": "current-token"},
+        {"Jonnyton/Workflow": "historical-token"},
+    ],
+)
+def test_github_capability_validator_emits_only_current_destination(source: dict):
+    result = subprocess.run(
+        [sys.executable, "-c", _github_capability_validator()],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "GITHUB_PR_CAPABILITIES_SOURCE": json.dumps(source),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "Jonnyton/TinyAssets": next(iter(source.values()))
+    }
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"Jonnyton/Workflow": "old", "Jonnyton/TinyAssets": "new"},
+        {"Jonnyton/Elsewhere": "token"},
+        {"Jonnyton/Workflow": "token", "extra": "authority"},
+        {"Jonnyton/Workflow": ""},
+    ],
+)
+def test_github_capability_validator_rejects_ambiguous_or_invalid_maps(
+    source: dict,
+):
+    result = subprocess.run(
+        [sys.executable, "-c", _github_capability_validator()],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "GITHUB_PR_CAPABILITIES_SOURCE": json.dumps(source),
+        },
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
 
 
 def test_deploy_step_is_valid_bash_after_actions_expression_substitution():
