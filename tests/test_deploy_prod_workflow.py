@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1230,9 +1231,13 @@ def test_deploy_job_env_has_github_pr_capability_flag():
         "Deploy step and summary can branch on capability visibility"
     )
     raw_value = str(job_env["HAS_GITHUB_PR_CAPABILITY"])
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value, (
-        "HAS_GITHUB_PR_CAPABILITY must be derived from the "
-        "TINYASSETS_GITHUB_PR_CAPABILITIES secret presence check"
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value, (
+        "the bounded migration must use the one existing pre-rename secret "
+        "as its unambiguous source of truth"
+    )
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value, (
+        "dual secret precedence makes revocation ambiguous; the migration "
+        "must select exactly one repository secret"
     )
     assert "!= ''" in raw_value, (
         "HAS_GITHUB_PR_CAPABILITY must use a non-empty-string check, "
@@ -1250,12 +1255,13 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
     )
     assert deploy_step is not None, "deploy job must have a deploy step"
     step_env = deploy_step.get("env") or {}
-    assert "TINYASSETS_GITHUB_PR_CAPABILITIES" in step_env, (
-        "Deploy step env must import TINYASSETS_GITHUB_PR_CAPABILITIES "
-        "from secrets so the inline ssh sync can pipe the value"
+    assert "GITHUB_PR_CAPABILITIES_SOURCE" in step_env, (
+        "Deploy step must import the bounded migration source without "
+        "pretending the unvalidated map is already the runtime value"
     )
-    raw_value = str(step_env["TINYASSETS_GITHUB_PR_CAPABILITIES"])
-    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" in raw_value
+    raw_value = str(step_env["GITHUB_PR_CAPABILITIES_SOURCE"])
+    assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
+    assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
@@ -1273,25 +1279,99 @@ def test_deploy_step_syncs_github_pr_capabilities_when_set():
     # Required-shape assertions: the conditional, the pipe, the helper
     # invocation, and the warning surface for the missing-secret case.
     assert 'if [ "${HAS_GITHUB_PR_CAPABILITY}" = "true" ]' in run_script, (
-        "deploy must gate the TINYASSETS_GITHUB_PR_CAPABILITIES sync on "
+        "deploy must gate the exact GitHub push-capability sync on "
         "HAS_GITHUB_PR_CAPABILITY=true so absence is a warning, not "
         "an unbound-variable failure"
     )
-    assert "printf '%s' \"${TINYASSETS_GITHUB_PR_CAPABILITIES}\"" in run_script, (
-        "deploy must pipe the secret via printf '%s' so the value is "
-        "never echoed to the GH Actions log (matches the codex-auth "
-        "pattern)"
+    assert 'destination = "Jonnyton/TinyAssets"' in run_script
+    assert "json.dumps(" in run_script
+    assert "{destination: token}" in run_script
+    assert "GITHUB_PR_CAPABILITIES_SOURCE" in run_script
+    assert "printf '%s' \"${scoped_github_pr_capabilities}\"" in run_script, (
+        "deploy must pipe only the validated exact-destination map and never "
+        "echo the broad source map or token"
     )
-    assert "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script, (
+    assert "unset scoped_github_pr_capabilities" in run_script
+    assert "install-tinyassets-env.sh set TINYASSETS_GITHUB_PUSH_CAPABILITIES" in run_script, (
         "deploy must call the atomic install-tinyassets-env.sh helper "
         "(the same path that enforces root:tinyassets 640 + post-write "
         "readability) to write the capability map"
     )
-    assert "TINYASSETS_GITHUB_PR_CAPABILITIES is not visible to deploy" in run_script, (
+    assert "GitHub PR capability source is not visible to deploy" in run_script, (
         "deploy must emit a structured ::warning:: when the secret is "
         "absent so the operator notices before chatbots try real-PR "
         "emission and see missing_capability dry-run evidence"
     )
+
+
+def test_deploy_step_invalid_capability_source_revokes_before_failure():
+    """Malformed or wrong-destination migration input must fail closed.
+
+    The deploy must remove any previously installed runtime capability before
+    exiting, instead of retaining stale authority or installing an empty map.
+    """
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = deploy_step.get("run", "") or ""
+    validation = "if ! scoped_github_pr_capabilities="
+    delete = (
+        "install-tinyassets-env.sh delete "
+        "TINYASSETS_GITHUB_PUSH_CAPABILITIES "
+        "TINYASSETS_GITHUB_PR_CAPABILITIES"
+    )
+    failure = 'exit 1'
+    validation_idx = run_script.find(validation)
+    delete_idx = run_script.find(delete, validation_idx)
+    restart_idx = run_script.find(
+        "systemctl restart tinyassets-daemon",
+        delete_idx,
+    )
+    failure_idx = run_script.find(failure, delete_idx)
+    assert validation_idx != -1
+    assert delete_idx > validation_idx
+    assert restart_idx > delete_idx
+    assert failure_idx > restart_idx
+    assert (
+        "TINYASSETS_GITHUB_PR_CAPABILITIES && "
+        "sudo systemctl restart tinyassets-daemon"
+    ) in run_script
+    assert '"missing exact Jonnyton/TinyAssets token"' in run_script
+
+
+def test_deploy_step_is_valid_bash_after_actions_expression_substitution():
+    """Guard the executable script shape, including inline validators."""
+    wf = _load()
+    deploy_step = next(
+        (s for s in _steps(wf) if s.get("id") == "deploy"),
+        None,
+    )
+    assert deploy_step is not None
+    run_script = re.sub(
+        r"\$\{\{.*?\}\}",
+        "github-actions-value",
+        deploy_step.get("run", "") or "",
+    )
+    bash = None
+    if sys.platform == "win32":
+        git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+        if git_bash.exists():
+            bash = str(git_bash)
+    if bash is None:
+        bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is unavailable")
+    result = subprocess.run(
+        [bash, "-n"],
+        input=run_script,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_deploy_step_summary_reports_github_pr_capability_visibility():
@@ -1304,7 +1384,7 @@ def test_deploy_step_summary_reports_github_pr_capability_visibility():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    assert "TINYASSETS_GITHUB_PR_CAPABILITIES visible to deploy" in run_script, (
+    assert "Exact TinyAssets GitHub push capability source visible to deploy" in run_script, (
         "deploy step summary must report the capability-map visibility "
         "alongside the codex-auth visibility line so the operator can "
         "verify both auth surfaces from one place"
@@ -1324,7 +1404,7 @@ def test_github_pr_capability_sync_runs_after_codex_auth_sync():
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
     codex_marker = "set TINYASSETS_CODEX_AUTH_JSON_B64"
-    cap_marker = "set TINYASSETS_GITHUB_PR_CAPABILITIES"
+    cap_marker = "set TINYASSETS_GITHUB_PUSH_CAPABILITIES"
     codex_idx = run_script.find(codex_marker)
     cap_idx = run_script.find(cap_marker)
     assert codex_idx != -1, "codex-auth sync block must be present"
@@ -1362,9 +1442,9 @@ def test_deploy_step_deletes_github_pr_capability_when_secret_absent():
     )
     assert deploy_step is not None
     run_script = deploy_step.get("run", "") or ""
-    assert "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES" in run_script, (
+    assert "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES" in run_script, (
         "Deploy step must issue an explicit `install-tinyassets-env.sh "
-        "delete TINYASSETS_GITHUB_PR_CAPABILITIES` call when the secret "
+        "delete TINYASSETS_GITHUB_PUSH_CAPABILITIES ...` call when the secret "
         "is absent so revoking the GH Actions secret actually "
         "revokes capability on the droplet (round-2 fix for PR #980 "
         "Codex finding)."
@@ -1387,10 +1467,12 @@ def test_capability_delete_is_gated_on_else_branch():
 
     # Anchor the conditional. The set call must come before the
     # else+delete tail.
-    set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PR_CAPABILITIES"
-    delete_marker = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PR_CAPABILITIES"
+    set_marker = "install-tinyassets-env.sh set TINYASSETS_GITHUB_PUSH_CAPABILITIES"
+    delete_marker = "install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES"
     set_idx = run_script.find(set_marker)
-    delete_idx = run_script.find(delete_marker)
+    # The validation-failure branch also revokes. The last delete is the
+    # absence/revocation arm whose placement this test owns.
+    delete_idx = run_script.rfind(delete_marker)
     assert set_idx != -1, "set call must remain in the truthy branch"
     assert delete_idx != -1, "delete call must be present in else branch"
     assert set_idx < delete_idx, (
