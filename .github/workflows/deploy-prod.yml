@@ -72,6 +72,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -143,9 +145,17 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
             scripts/retire_cheat_loop_deploy_fence.py \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+            deploy/recovery-restart-no.yml \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/recovery-restart-no.yml"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
+            "sudo install -d -m 0755 -o root -g root /opt/tinyassets/deploy; \
+             sudo install -m 0755 -o root -g root /tmp/retire-cheat-loop-deploy-fence.py /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py; \
+             sudo install -m 0644 -o root -g root /tmp/recovery-restart-no.yml /opt/tinyassets/deploy/recovery-restart-no.yml"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
             > "$evidence_dir/recovery.json"
       - name: Recovery canonical MCP canary
         run: |
@@ -155,8 +165,19 @@ jobs:
         run: |
           python scripts/mcp_public_canary.py \
             --url "${CANARY_URL}" --assert-handles --verbose
+      - name: Finalize canonical unsafe-fence recovery
+        env:
+          SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
+          RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
+          RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
+        run: |
+          evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-finalize-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py finalize-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
+            > "$evidence_dir/finalize.json"
       - name: Re-fence failed recovery
-        if: failure()
+        if: ${{ failure() || cancelled() }}
         env:
           SOURCE_RUN_ID: ${{ inputs.unsafe_fence_source_run_id }}
         run: |
@@ -165,7 +186,7 @@ jobs:
           mkdir -p "$evidence_dir"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /tmp/retire-cheat-loop-deploy-fence.py refence-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py refence-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
             > "$evidence_dir/refence.json"
           refence_status=$?
           echo "{\"refence_exit_status\":${refence_status}}" \

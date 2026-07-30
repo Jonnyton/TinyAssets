@@ -17,6 +17,22 @@ Cloudflare Access HTTP 403.
 This is not task-2.1 completion evidence. It is outage and recovery-design
 evidence.
 
+## Proven recovery identity
+
+The durable cleanup identity and fresh registry inspection bind the prior
+post-stop-writer image to:
+
+- tag: `35da9d4fc1a1`
+- immutable image:
+  `ghcr.io/jonnyton/tinyassets-daemon@sha256:a9526b71030edcec0b4b112bf4c22f8dcefedc891ab6064d48050545a551d687`
+- embedded revision:
+  `35da9d4fc1a1fc51d3db56bf5d1627691f54d894`
+- source fence generation: `30407316207-1`
+
+The later source commit `ce83a44f6ddee32dbbcd9796c7dc3e63e046c821`
+did not produce a distinct image tag and is not a valid recovery dispatch
+identity.
+
 ## Passed evidence before failure
 
 - Immutable image:
@@ -63,6 +79,14 @@ Recovery must:
 - re-prove stopped/restart-fenced writers, zero extra or stray volume writers,
   zero retired queue risk, and the unchanged receipt snapshot before start;
 - start and prove exactly the daemon plus four workers;
+- create those five containers with restart policy `no`, keep systemd boot
+  activators fenced, and arm a bounded host-side expiry before starting them;
+- persist a `recovery_pending_canary` phase, run both public canaries, and only
+  then finalize the same source/recovery generation;
+- restore every saved restart policy with an exact read-back proof before
+  restoring systemd activators;
+- re-fence an unaccepted generation on failure, cancellation, runner loss,
+  lease expiry, or the next reconciliation after reboot;
 - wait boundedly for exact fleet convergence and saved systemd terminal states,
   while retaining the final rejected observation on failure; and
 - return to durable `unsafe_fenced` on any failed or indeterminate recovery.

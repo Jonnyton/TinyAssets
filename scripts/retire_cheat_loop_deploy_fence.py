@@ -55,6 +55,14 @@ DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
 UNIT_RESTORE_TIMEOUT_SECONDS = 120
+RECOVERY_LEASE_SECONDS = 600
+RECOVERY_COMPOSE_PATH = Path("/opt/tinyassets/compose.yml")
+RECOVERY_COMPOSE_OVERRIDE_PATH = Path(
+    "/opt/tinyassets/deploy/recovery-restart-no.yml"
+)
+RECOVERY_SCRIPT_PATH = Path(
+    "/opt/tinyassets/deploy/retire_cheat_loop_deploy_fence.py"
+)
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
 V2_RISK_STATUSES = frozenset({"pending", "running", "cancel_requested"})
@@ -1151,6 +1159,9 @@ def prove(
         "target_installed",
         "safe_fleet",
         "post_canary_proved",
+        "recovery_pending_canary",
+        "canary_accepted",
+        "finalizing",
         "restored",
     }:
         raise FenceError("target was not prepared under the stop-writer fence")
@@ -1181,7 +1192,12 @@ def prove(
         )
     if observation["receipt_snapshot"] != state.get("receipt_snapshot"):
         raise FenceError("post-deploy receipt snapshot mismatch")
-    state["phase"] = "safe_fleet"
+    if state.get("phase") not in {
+        "recovery_pending_canary",
+        "canary_accepted",
+        "finalizing",
+    }:
+        state["phase"] = "safe_fleet"
     _atomic_json(state_path, state)
     return {
         "schema_version": 1,
@@ -1714,6 +1730,87 @@ def _validate_unsafe_recovery_source(
     return state, image_ref, revision
 
 
+def _recovery_unit_name(run_id: str) -> str:
+    suffix = hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+    return f"tinyassets-recovery-expiry-{suffix}"
+
+
+def _arm_recovery_expiry(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    state_path: Path,
+) -> str:
+    unit = _recovery_unit_name(run_id)
+    host.run(
+        [
+            "systemd-run",
+            "--quiet",
+            "--collect",
+            f"--unit={unit}",
+            f"--on-active={RECOVERY_LEASE_SECONDS}s",
+            "--timer-property=AccuracySec=1s",
+            "/usr/bin/python3",
+            str(RECOVERY_SCRIPT_PATH),
+            "--state-path",
+            str(state_path),
+            "expire-recovery",
+            "--source-run-id",
+            source_run_id,
+            "--run-id",
+            run_id,
+        ]
+    )
+    return unit
+
+
+def _cancel_recovery_expiry(host: Host, unit: str) -> None:
+    if unit:
+        host.run(
+            ["systemctl", "stop", f"{unit}.timer", f"{unit}.service"],
+            check=False,
+        )
+
+
+def _require_recovery_owner(
+    state: Mapping[str, Any],
+    *,
+    source_run_id: str,
+    run_id: str,
+) -> None:
+    if not (
+        state.get("source_run_id") == source_run_id
+        and state.get("run_id") == run_id
+        and state.get("recovery_run_id") == run_id
+        and run_id in (state.get("recovery_attempts") or [])
+    ):
+        raise FenceError("canonical fence is not owned by this recovery attempt")
+
+
+def _reconcile_orphaned_recovery(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    state_path: Path,
+) -> None:
+    state = _load_state(state_path)
+    if state.get("phase") == "unsafe_fenced":
+        return
+    if state.get("source_run_id") != source_run_id:
+        raise FenceError("unsafe fence belongs to another source run")
+    if state.get("phase") == "restored":
+        raise FenceError("restored recovery cannot be replaced")
+    deadline = float(state.get("recovery_deadline_epoch") or 0)
+    controlled = set(host.volume_container_names())
+    if time.time() < deadline and (
+        controlled or state.get("phase") in {"canary_accepted", "finalizing"}
+    ):
+        raise FenceError("another recovery attempt still owns an active lease")
+    quiesce_unsafe(host, run_id=run_id, state_path=state_path)
+
+
 def recover_unsafe(
     host: Host,
     *,
@@ -1723,9 +1820,15 @@ def recover_unsafe(
     revision: str,
     state_path: Path,
 ) -> dict[str, Any]:
-    """Recover one exact admitted fleet from a canonical emergency fence."""
+    """Start one exact admitted fleet in a restart-fenced canary phase."""
 
     _require_run_id(run_id)
+    _reconcile_orphaned_recovery(
+        host,
+        source_run_id=source_run_id,
+        run_id=run_id,
+        state_path=state_path,
+    )
     state, image_ref, revision = _validate_unsafe_recovery_source(
         host,
         source_run_id=source_run_id,
@@ -1741,13 +1844,40 @@ def recover_unsafe(
     state["run_id"] = run_id
     state["recovery_run_id"] = run_id
     state["recovery_attempts"] = attempts
+    state["recovery_deadline_epoch"] = time.time() + RECOVERY_LEASE_SECONDS
     state["phase"] = "recovery_planned"
     _atomic_json(state_path, state)
     try:
-        host.run(["systemctl", "unmask", "--runtime", DAEMON_SERVICE])
-        state["phase"] = "target_installed"
+        expiry_unit = _arm_recovery_expiry(
+            host,
+            source_run_id=source_run_id,
+            run_id=run_id,
+            state_path=state_path,
+        )
+        state["recovery_expiry_unit"] = expiry_unit
+        state["phase"] = "recovery_starting"
         _atomic_json(state_path, state)
-        host.run(["systemctl", "start", DAEMON_SERVICE])
+        host.run(
+            [
+                "docker",
+                "compose",
+                "--env-file",
+                "/etc/tinyassets/env",
+                "-f",
+                str(RECOVERY_COMPOSE_PATH),
+                "-f",
+                str(RECOVERY_COMPOSE_OVERRIDE_PATH),
+                "up",
+                "-d",
+            ]
+        )
+        inspections = _exact_inspections(host)
+        state["recovery_restart_policy_proof"] = _set_restart_no(
+            host,
+            inspections,
+        )
+        state["phase"] = "recovery_pending_canary"
+        _atomic_json(state_path, state)
         evidence: dict[str, Any] | None = None
         last_error = ""
         for attempt in range(30):
@@ -1766,22 +1896,18 @@ def recover_unsafe(
                     time.sleep(2)
         if evidence is None:
             raise FenceError(f"exact fleet did not converge: {last_error}")
-        for name, policy in state["old_restart_policies"].items():
-            host.run(["docker", "update", f"--restart={policy}", name])
-        restored = restore_if_safe(
-            host,
-            image_ref=image_ref,
-            revision=revision,
-            run_id=run_id,
-            state_path=state_path,
-        )
-        restored.update(
+        evidence.update(
             {
+                "phase": "recovery_pending_canary",
                 "source_run_id": source_run_id,
                 "recovery_run_id": run_id,
+                "recovery_deadline_epoch": state["recovery_deadline_epoch"],
+                "restart_policy_proof": state[
+                    "recovery_restart_policy_proof"
+                ],
             }
         )
-        return restored
+        return evidence
     except (FenceError, OSError) as recovery_error:
         try:
             quiesce_unsafe(host, run_id=run_id, state_path=state_path)
@@ -1793,6 +1919,117 @@ def recover_unsafe(
         raise FenceError(
             f"recovery failed and was re-fenced: {recovery_error}"
         ) from recovery_error
+
+
+def _restore_restart_policies(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> dict[str, str]:
+    proof = dict(state.get("restart_policy_restore_proof") or {})
+    for name, policy in state["old_restart_policies"].items():
+        info = host.container_info(name)
+        identity = str(info.get("Id", ""))
+        if not identity:
+            raise FenceError(f"container identity is unavailable: {name}")
+        host.run(["docker", "update", f"--restart={policy}", identity])
+        actual = host.container_restart_policy(identity)
+        if actual != policy:
+            raise FenceError(
+                f"restart policy restoration did not persist: "
+                f"{name}={actual}, expected={policy}"
+            )
+        proof[name] = actual
+        state["restart_policy_restore_proof"] = proof
+        _atomic_json(state_path, state)
+    return proof
+
+
+def finalize_recovery(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    image_ref: str,
+    revision: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Commit a canary-accepted recovery and restore its saved boot posture."""
+
+    state = _load_state(state_path)
+    _require_recovery_owner(
+        state,
+        source_run_id=source_run_id,
+        run_id=run_id,
+    )
+    if state.get("phase") == "restored":
+        return prove(
+            host,
+            image_ref=image_ref,
+            revision=revision,
+            run_id=run_id,
+            state_path=state_path,
+        )
+    if state.get("phase") not in {
+        "recovery_pending_canary",
+        "canary_accepted",
+        "finalizing",
+    }:
+        raise FenceError("recovery is not ready for canary finalization")
+    try:
+        evidence = prove(
+            host,
+            image_ref=image_ref,
+            revision=revision,
+            run_id=run_id,
+            state_path=state_path,
+        )
+        state = _load_state(state_path)
+        state["canary_accepted_epoch"] = state.get(
+            "canary_accepted_epoch"
+        ) or time.time()
+        state["phase"] = "canary_accepted"
+        _atomic_json(state_path, state)
+        state["phase"] = "finalizing"
+        _atomic_json(state_path, state)
+        restart_proof = _restore_restart_policies(
+            host,
+            state,
+            state_path=state_path,
+        )
+        restored = restore_if_safe(
+            host,
+            image_ref=image_ref,
+            revision=revision,
+            run_id=run_id,
+            state_path=state_path,
+        )
+        _cancel_recovery_expiry(
+            host,
+            str(state.get("recovery_expiry_unit", "")),
+        )
+        restored.update(
+            {
+                "source_run_id": source_run_id,
+                "recovery_run_id": run_id,
+                "canary_accepted_epoch": state["canary_accepted_epoch"],
+                "restart_policy_restore_proof": restart_proof,
+                "pre_finalize_evidence": evidence,
+            }
+        )
+        return restored
+    except (FenceError, OSError) as finalize_error:
+        try:
+            quiesce_unsafe(host, run_id=run_id, state_path=state_path)
+        except (FenceError, OSError) as refence_error:
+            raise FenceError(
+                f"recovery finalization failed: {finalize_error}; "
+                f"re-fence also failed: {refence_error}"
+            ) from finalize_error
+        raise FenceError(
+            f"recovery finalization failed and was re-fenced: {finalize_error}"
+        ) from finalize_error
 
 
 def refence_recovery(
@@ -1807,14 +2044,49 @@ def refence_recovery(
     _require_run_id(source_run_id)
     _require_run_id(run_id)
     state = _load_state(state_path)
-    if not (
-        state.get("source_run_id") == source_run_id
-        and state.get("run_id") == run_id
-        and state.get("recovery_run_id") == run_id
-        and run_id in (state.get("recovery_attempts") or [])
-    ):
-        raise FenceError("canonical fence is not owned by this recovery attempt")
+    _require_recovery_owner(
+        state,
+        source_run_id=source_run_id,
+        run_id=run_id,
+    )
+    if state.get("phase") == "restored":
+        raise FenceError("restored recovery cannot be re-fenced")
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
+
+
+def expire_recovery(
+    host: Host,
+    *,
+    source_run_id: str,
+    run_id: str,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Re-fence an unaccepted recovery after its durable lease expires."""
+
+    state = _load_state(state_path)
+    _require_recovery_owner(
+        state,
+        source_run_id=source_run_id,
+        run_id=run_id,
+    )
+    if state.get("phase") == "restored":
+        return {
+            "owner": TASK_OWNER,
+            "phase": state.get("phase"),
+            "expired": False,
+            "safe": True,
+        }
+    deadline = float(state.get("recovery_deadline_epoch") or 0)
+    if time.time() < deadline:
+        raise FenceError("recovery lease has not expired")
+    evidence = refence_recovery(
+        host,
+        source_run_id=source_run_id,
+        run_id=run_id,
+        state_path=state_path,
+    )
+    evidence["expired"] = True
+    return evidence
 
 
 def _write_optional(path: str | None, payload: Mapping[str, Any]) -> None:
@@ -1883,9 +2155,17 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--run-id", required=True)
     recover.add_argument("--image-ref", required=True)
     recover.add_argument("--revision", required=True)
+    finalize = subparsers.add_parser("finalize-recovery")
+    finalize.add_argument("--source-run-id", required=True)
+    finalize.add_argument("--run-id", required=True)
+    finalize.add_argument("--image-ref", required=True)
+    finalize.add_argument("--revision", required=True)
     refence = subparsers.add_parser("refence-recovery")
     refence.add_argument("--source-run-id", required=True)
     refence.add_argument("--run-id", required=True)
+    expire = subparsers.add_parser("expire-recovery")
+    expire.add_argument("--source-run-id", required=True)
+    expire.add_argument("--run-id", required=True)
     guard = subparsers.add_parser("guard-host-mutation")
     guard.add_argument(
         "--command-timeout",
@@ -1953,8 +2233,24 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             revision=args.revision,
             state_path=args.state_path,
         )
+    if args.command == "finalize-recovery":
+        return finalize_recovery(
+            host,
+            source_run_id=args.source_run_id,
+            run_id=args.run_id,
+            image_ref=args.image_ref,
+            revision=args.revision,
+            state_path=args.state_path,
+        )
     if args.command == "refence-recovery":
         return refence_recovery(
+            host,
+            source_run_id=args.source_run_id,
+            run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "expire-recovery":
+        return expire_recovery(
             host,
             source_run_id=args.source_run_id,
             run_id=args.run_id,
