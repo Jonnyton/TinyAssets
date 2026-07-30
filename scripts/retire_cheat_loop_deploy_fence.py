@@ -61,7 +61,7 @@ RECOVERY_COMPOSE_OVERRIDE_PATH = Path(
     "/opt/tinyassets/deploy/recovery-restart-no.yml"
 )
 RECOVERY_SCRIPT_PATH = Path(
-    "/opt/tinyassets/deploy/retire_cheat_loop_deploy_fence.py"
+    "/opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py"
 )
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
@@ -1735,6 +1735,25 @@ def _recovery_unit_name(run_id: str) -> str:
     return f"tinyassets-recovery-expiry-{suffix}"
 
 
+def _prove_recovery_entrypoint() -> str:
+    """Prove the expiry timer will invoke this exact installed script."""
+
+    try:
+        running_path = Path(__file__).resolve(strict=True)
+        timer_path = RECOVERY_SCRIPT_PATH.resolve(strict=True)
+    except OSError as exc:
+        raise FenceError(
+            f"recovery timer entrypoint is unavailable: {exc}"
+        ) from exc
+    if not running_path.samefile(timer_path):
+        raise FenceError(
+            "recovery timer entrypoint does not match the running script"
+        )
+    if not os.access(timer_path, os.X_OK):
+        raise FenceError("recovery timer entrypoint is not executable")
+    return hashlib.sha256(timer_path.read_bytes()).hexdigest()
+
+
 def _arm_recovery_expiry(
     host: Host,
     *,
@@ -1823,6 +1842,7 @@ def recover_unsafe(
     image_ref: str,
     revision: str,
     state_path: Path,
+    recovery_script_sha256: str = "",
 ) -> dict[str, Any]:
     """Start one exact admitted fleet in a restart-fenced canary phase."""
 
@@ -1849,6 +1869,8 @@ def recover_unsafe(
     state["recovery_run_id"] = run_id
     state["recovery_attempts"] = attempts
     state["recovery_deadline_epoch"] = time.time() + RECOVERY_LEASE_SECONDS
+    if recovery_script_sha256:
+        state["recovery_script_sha256"] = recovery_script_sha256
     state["phase"] = "recovery_planned"
     _atomic_json(state_path, state)
     try:
@@ -2229,6 +2251,7 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             state_path=args.state_path,
         )
     if args.command == "recover-unsafe":
+        recovery_script_sha256 = _prove_recovery_entrypoint()
         return recover_unsafe(
             host,
             source_run_id=args.source_run_id,
@@ -2236,6 +2259,7 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             image_ref=args.image_ref,
             revision=args.revision,
             state_path=args.state_path,
+            recovery_script_sha256=recovery_script_sha256,
         )
     if args.command == "finalize-recovery":
         return finalize_recovery(

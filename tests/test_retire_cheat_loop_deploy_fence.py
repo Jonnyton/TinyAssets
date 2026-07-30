@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -1711,6 +1712,40 @@ def test_recovery_arms_expiry_before_starting_any_container(
         if call[:2] == ("docker", "compose")
     )
     assert timer_index < compose_index
+    timer_call = host.calls[timer_index]
+    assert str(fence.RECOVERY_SCRIPT_PATH) in timer_call
+
+
+def test_recovery_entrypoint_proof_binds_timer_to_running_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    installed = tmp_path / "retire-cheat-loop-deploy-fence.py"
+    installed.write_bytes(Path(fence.__file__).read_bytes())
+    installed.chmod(0o755)
+    monkeypatch.setattr(fence, "RECOVERY_SCRIPT_PATH", installed)
+    monkeypatch.setattr(fence, "__file__", str(installed))
+
+    assert fence._prove_recovery_entrypoint() == hashlib.sha256(
+        installed.read_bytes()
+    ).hexdigest()
+
+
+def test_recovery_entrypoint_proof_rejects_different_timer_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    running = tmp_path / "running.py"
+    timer = tmp_path / "timer.py"
+    running.write_text("print('running')\n", encoding="utf-8")
+    timer.write_text("print('timer')\n", encoding="utf-8")
+    timer.chmod(0o755)
+    monkeypatch.setattr(fence, "RECOVERY_SCRIPT_PATH", timer)
+    monkeypatch.setattr(fence, "__file__", str(running))
+
+    with pytest.raises(
+        FenceError,
+        match="does not match the running script",
+    ):
+        fence._prove_recovery_entrypoint()
 
 
 def test_expired_recovery_refences_orphaned_runner_loss(

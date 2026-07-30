@@ -23,6 +23,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.retire_cheat_loop_deploy_fence import RECOVERY_SCRIPT_PATH
+
 try:
     import yaml
 
@@ -99,7 +101,12 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     assert " --image-ref " in script
     assert " --revision " in script
     assert "deploy/recovery-restart-no.yml" in script
-    assert "/opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py" in script
+    recovery_script_path = RECOVERY_SCRIPT_PATH.as_posix()
+    assert recovery_script_path in script
+    assert (
+        f"/tmp/retire-cheat-loop-deploy-fence.py {recovery_script_path}"
+        in script
+    )
     assert "recovery_pending_canary" not in script
     resolve = _step_named(
         {"jobs": {"deploy": recovery}}, "Resolve unsafe recovery image"
