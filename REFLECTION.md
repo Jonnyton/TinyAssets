@@ -762,3 +762,14 @@ fresh-host rollback edges found later.
   serially, with a clean-tree check after the probe restores its mutations.
 - **What I would do differently:** run each long verification as its own
   bounded command and confirm no probe process remains before the green rerun.
+
+## 2026-07-29 - drain review-before-merge gate
+
+- **What surprised me:** disabling stale auto-merge on `synchronize` still left
+  a merge race because cancellation was not itself a required check.
+- **Pattern worth capturing:** reactionary cleanup is defense in depth, not an
+  authorization gate; bind the current head to an already-required check so a
+  new head is pending or red before it can merge.
+- **What I would do differently:** model the full GitHub auto-merge state
+  machine—including retained enrollment across pushes—before selecting the
+  first enforcement point.

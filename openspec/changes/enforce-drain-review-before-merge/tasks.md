@@ -10,5 +10,5 @@
 
 ## 3. Verification and foldback
 
-- [ ] 3.1 Run Ruff, focused/full drain tests, workflow parsing, strict OpenSpec validation, and obtain independent exact-head review with all blocking findings resolved.
+- [x] 3.1 Run Ruff, focused/full drain tests, workflow parsing, strict OpenSpec validation, and obtain independent exact-head review with all blocking findings resolved.
 - [ ] 3.2 Sync the delta idempotently, archive the completed change, retire the STATUS concern/work row, record lane/reflection metadata, and publish one draft-first PR through verified CI/merge.
