@@ -894,6 +894,27 @@ def _stray_writer_processes(
     return risks[:100]
 
 
+def _confirm_stray_writer_processes(
+    host: Host,
+    candidates: Sequence[Mapping[str, Any]],
+    container_identities: Sequence[str],
+    *,
+    proc_root: Path = Path("/proc"),
+) -> list[dict[str, Any]]:
+    """Reconcile scan candidates against a fresh Docker process snapshot."""
+
+    owned_pids = host.container_pids(container_identities)
+    confirmed: list[dict[str, Any]] = []
+    for candidate in candidates:
+        pid = int(candidate.get("pid") or 0)
+        if pid <= 0 or pid in owned_pids:
+            continue
+        if not (proc_root / str(pid)).is_dir():
+            continue
+        confirmed.append(dict(candidate))
+    return confirmed
+
+
 def observe_fleet(
     host: Host,
     *,
@@ -919,7 +940,15 @@ def observe_fleet(
             "image_ref": image_ref,
             "revision": revision,
         }
-    excluded_pids = host.container_pids(EXPECTED_CONTAINERS)
+    container_identities = tuple(
+        str(info.get("Id", "")) for info in inspections.values()
+    )
+    excluded_pids = host.container_pids(container_identities)
+    stray_candidates = _stray_writer_processes(
+        receipt.host_path,
+        excluded_pids,
+        volume_dir,
+    )
     return {
         "containers": containers,
         "volume_container_names": host.volume_container_names(),
@@ -927,10 +956,10 @@ def observe_fleet(
         "receipt_host_path": str(receipt.host_path),
         "receipt_snapshot": receipt_snapshot(receipt.host_path),
         "queue_risk": inventory_queue_risk(volume_dir),
-        "stray_writer_processes": _stray_writer_processes(
-            receipt.host_path,
-            excluded_pids,
-            volume_dir,
+        "stray_writer_processes": _confirm_stray_writer_processes(
+            host,
+            stray_candidates,
+            container_identities,
         ),
     }
 
@@ -2683,6 +2712,9 @@ def main(argv: Sequence[str] | None = None, *, host: Host | None = None) -> int:
                             ),
                             "old_container_ids": state.get(
                                 "old_container_ids", {}
+                            ),
+                            "last_failed_observation": state.get(
+                                "last_failed_observation", {}
                             ),
                         }
                     )
