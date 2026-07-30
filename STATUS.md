@@ -1,7 +1,6 @@
 # Status
 Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = one line each; landed rows are deleted; Forever rule = 24/7 uptime with zero hosts online. **Scope (2026-05-19):** project-folder-access AIs; durable product work also appears in the MCP brain (`PR-###`/`BUG-###`), while provider coordination without a wiki home stays here; check both.
 ## Concerns
-- **[P1 filed:2026-07-29 verified:2026-07-29]** Normal deploy 30520566999 false-red canary despite daemon 200s; recovery 30520787551 passed identical public probes.
 - **[P0 filed:2026-07-27 verified:2026-07-27]** Public-site privacy/deps/CI: private/operator reads; React 1C/1H, Svelte 7H, design 2H; same-repo PRs can request 19 secrets.
 - **[P0 filed:2026-07-28 verified:2026-07-30]** Healthy `/mcp` can forward upstream `CF_Authorization` via `Set-Cookie`; #1934 merged, deployment + sanitized healthy-path/rendered/clean-use proof remain.
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
@@ -12,6 +11,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **[P0 ACTIVE 2026-07-30] Repair recovery-to-normal deploy handoff** — normal run 30578541098 proved stopped recovery-project containers collide with systemd's canonical compose project; recovery 30578968815 restored public `/mcp` | scripts/retire_cheat_loop_deploy_fence.py; tests/test_retire_cheat_loop_deploy_fence.py; openspec/changes/repair-recovery-deploy-handoff/**; docs/audits/2026-07-30-recovery-deploy-handoff.md; STATUS.md; REFLECTION.md; .agents/worktrees.md | exact stopped-fleet ownership/provenance proof; independent review; immutable deploy + public canary | claimed:codex-gpt5-desktop |
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
 | **Implement branch access authority waves 1-3** — authenticated-subject + readable-version helpers; selector-safe reads/reuse/lineage; wiki; ledger; mutation/delete; no authority `force` bypass | tinyassets/api/branches.py, tinyassets/daemon_server.py (search_nodes only), tests/test_branch_read_authority.py, tests/test_related_wiki_visibility.py, tests/test_branch_mutation_authority.py | harden-branch-access-authority; test-identity-and-reset; retire-legacy 4.2/4.4 | pending |
 | **Harden run access/execution authority** — direct live/version/canonical paths execute foreign private branches; synthetic background actors and public universes can expose private-run output | openspec/changes/harden-run-branch-access-authority/, tinyassets/api/runs.py, tinyassets/runs.py (run authority context), tests/test_run_branch_authority.py | branch helper; background receipt contract | pending |

@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 13:35 - recovery-to-normal deploy handoff
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/recovery-deploy-handoff-20260730`
+- Lane state: Active P0 production-recovery lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-deploy-handoff-20260730`
+- STATUS/Issue/PR: claimed recovery-to-normal deploy handoff; PR pending
+- PLAN refs: existing `retire-cheat-loop` task 2.1 and `daemon-runtime-and-dispatch` emergency-recovery scenario
+- Purpose: retire only the exact stopped recovery-owned fleet before canonical systemd Compose starts, preventing container-name collision
+- Review gate: focused TDD, fail-closed/security review, exact-head independent review, immutable deploy, public canary
+- Publish/cleanup: focused PR to main; resume PR #1935 after live proof
+
 Cross-provider append-only log of worktree create/remove events. Run
 `python scripts/worktree_status.py` to see current local state.
 

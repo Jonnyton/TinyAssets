@@ -620,6 +620,8 @@ class LifecycleHost:
             for name, info in self.containers.items():
                 del name
                 if identity == info["Id"]:
+                    if "{{.ID}}" in command:
+                        return identity
                     state = "running" if info["State"]["Running"] else "exited"
                     return f"{identity}|{state}"
             return ""
@@ -653,6 +655,36 @@ def _patch_lifecycle_runtime(
         yield
 
     monkeypatch.setattr(fence, "_operation_lock", test_lock)
+
+
+def _write_restored_recovery_state(
+    host: LifecycleHost,
+    state_path: Path,
+    *,
+    project: str | None = None,
+) -> None:
+    recovery_run_id = "recovery-run-1"
+    project = project or fence._recovery_project_name(recovery_run_id)
+    container_ids = {
+        name: str(info["Id"]) for name, info in host.containers.items()
+    }
+    for info in host.containers.values():
+        info["Config"]["Labels"]["com.docker.compose.project"] = project
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": recovery_run_id,
+                "source_run_id": "source-run-1",
+                "recovery_run_id": recovery_run_id,
+                "phase": "restored",
+                "recovery_project_name": project,
+                "recovery_container_ids": container_ids,
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_full_lifecycle_executes_every_command_and_restores_exact_state(
@@ -738,6 +770,271 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     assert second_run == 2
     assert second_failure["stale_state_ignored"] is True
     assert not second_failure.get("cutover_started", False)
+
+
+def test_finalized_recovery_generation_is_removed_before_canonical_start(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    recovered_ids = {
+        name: str(info["Id"]) for name, info in host.containers.items()
+    }
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured_ref[0] = host.target_image_ref
+    evidence = prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "target_installed"
+    assert host.containers == {}
+    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
+    assert set(remove[2:]) == set(recovered_ids.values())
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_handoff"]["removal_phase"] == "removed"
+    assert state["recovery_handoff"]["container_ids"] == recovered_ids
+
+
+def test_ordinary_canonical_predecessor_is_not_removed_by_recovery_handoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    for info in host.containers.values():
+        info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": "prior-normal-run",
+                "phase": "restored",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured_ref[0] = host.target_image_ref
+    prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+
+
+def test_preflight_refuses_mismatched_restored_recovery_provenance_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.containers["tinyassets-worker"]["Config"]["Labels"][
+        "com.docker.compose.project"
+    ] = "foreign-project"
+
+    with pytest.raises(FenceError, match="recovery provenance"):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2]
+        in {
+            ("docker", "update"),
+            ("docker", "stop"),
+            ("docker", "rm"),
+            ("systemctl", "mask"),
+        }
+        for call in host.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["partial", "foreign_project", "running", "restart_policy"],
+)
+def test_prepare_refuses_recovery_handoff_drift_without_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if drift != "partial":
+        state["recovery_handoff"]["removal_phase"] = "planned"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    if drift == "partial":
+        del host.containers[EXPECTED_CONTAINERS[-1]]
+    elif drift == "foreign_project":
+        host.containers["tinyassets-worker"]["Config"]["Labels"][
+            "com.docker.compose.project"
+        ] = "foreign-project"
+    elif drift == "running":
+        host.containers["tinyassets-worker"]["State"] = {
+            "Running": True,
+            "Pid": 9999,
+        }
+    else:
+        host.containers["tinyassets-worker"]["HostConfig"]["RestartPolicy"][
+            "Name"
+        ] = "always"
+    configured_ref[0] = host.target_image_ref
+
+    with pytest.raises(FenceError):
+        prepare_deploy(
+            host,
+            image_ref=host.target_image_ref,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+
+
+def test_prepare_replays_partial_recovery_removal_after_durable_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured_ref[0] = host.target_image_ref
+    original_run = host.run
+    injected = False
+
+    def interrupt_after_partial_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal injected
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not injected:
+            injected = True
+            original_run(
+                ["docker", "rm", *command[2:4]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated interruption after partial docker rm")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_partial_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated interruption"):
+        prepare_deploy(
+            host,
+            image_ref=host.target_image_ref,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert interrupted_state["recovery_handoff"]["removal_phase"] == "planned"
+    assert 0 < len(host.containers) < len(EXPECTED_CONTAINERS)
+
+    host.run = original_run  # type: ignore[method-assign]
+    evidence = prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "target_installed"
+    assert host.containers == {}
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_handoff"]["removal_phase"] == "removed"
+
+
+def test_prepare_replays_durable_recovery_removal_intent_after_exact_absence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["recovery_handoff"]["removal_phase"] = "planned"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    configured_ref[0] = host.target_image_ref
+
+    evidence = prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "target_installed"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_handoff"]["removal_phase"] == "removed"
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
 
 
 def test_new_run_preflight_failure_ignores_stale_restored_generation(
@@ -1788,6 +2085,57 @@ def test_recover_unsafe_starts_restart_fenced_then_finalizes_exact_identity(
         info["HostConfig"]["RestartPolicy"]["Name"] == "always"
         for info in host.containers.values()
     )
+
+
+def test_real_finalized_recovery_state_hands_off_to_next_normal_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-handoff",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    finalize_recovery(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-handoff",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    recovered_ids = {
+        name: str(info["Id"]) for name, info in host.containers.items()
+    }
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured[0] = host.target_image_ref
+    prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert host.containers == {}
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_handoff"]["container_ids"] == recovered_ids
+    assert state["recovery_handoff"]["removal_phase"] == "removed"
 
 
 def test_recover_unsafe_accepts_compose_down_zero_container_fence(

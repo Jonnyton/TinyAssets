@@ -665,6 +665,29 @@ def _container_running_exact(host: Host, identity: str) -> bool:
     raise FenceError(f"container state is not authoritative: {identity}={state!r}")
 
 
+def _container_absent_exact(host: Host, identity: str) -> bool:
+    """Prove that one exact container ID no longer exists in any state."""
+
+    output = host.run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--filter",
+            f"id={identity}",
+            "--format",
+            "{{.ID}}",
+        ]
+    )
+    if not output:
+        return True
+    rows = output.splitlines()
+    if len(rows) != 1 or rows[0] != identity:
+        raise FenceError(f"container absence is not authoritative: {identity}")
+    return False
+
+
 def _named_container_running(host: Host, name: str) -> bool:
     output = host.run(
         [
@@ -984,6 +1007,64 @@ def _old_identity(
     return image_ref, revision
 
 
+def _restored_recovery_handoff(
+    state: Mapping[str, Any] | None,
+    inspections: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any] | None:
+    """Bind a restored recovery generation to the next preflight."""
+
+    if not state:
+        return None
+    project = str(state.get("recovery_project_name", ""))
+    recovery_run_id = str(state.get("recovery_run_id", ""))
+    raw_recorded = state.get("recovery_container_ids")
+    has_recovery_marker = any(
+        key in state
+        for key in (
+            "recovery_project_name",
+            "recovery_run_id",
+            "recovery_container_ids",
+        )
+    )
+    if not has_recovery_marker:
+        return None
+    if not isinstance(raw_recorded, Mapping):
+        raise FenceError("restored recovery provenance is incomplete")
+    recorded = {
+        str(name): str(identity)
+        for name, identity in raw_recorded.items()
+    }
+    if (
+        not project
+        or not recovery_run_id
+        or project != _recovery_project_name(recovery_run_id)
+        or set(recorded) != set(EXPECTED_CONTAINERS)
+    ):
+        raise FenceError("restored recovery provenance is incomplete")
+    actual = {
+        name: str(info.get("Id", ""))
+        for name, info in inspections.items()
+    }
+    projects = {
+        str(
+            (info.get("Config", {}).get("Labels", {}) or {}).get(
+                "com.docker.compose.project",
+                "",
+            )
+        )
+        for info in inspections.values()
+    }
+    if actual != recorded or projects != {project}:
+        raise FenceError("restored recovery provenance disagrees with live fleet")
+    return {
+        "source_run_id": str(state.get("source_run_id", "")),
+        "recovery_run_id": recovery_run_id,
+        "project_name": project,
+        "container_ids": recorded,
+        "removal_phase": "pending",
+    }
+
+
 def preflight(
     host: Host,
     *,
@@ -993,9 +1074,10 @@ def preflight(
     state_path: Path,
 ) -> dict[str, Any]:
     _require_run_id(run_id)
+    restored_state: dict[str, Any] | None = None
     if state_path.is_file():
-        existing = _load_state(state_path)
-        if existing.get("phase") != "restored" or _masked_units(host):
+        restored_state = _load_state(state_path)
+        if restored_state.get("phase") != "restored" or _masked_units(host):
             raise FenceError("an earlier stop-writer fence requires reconciliation")
     if not CANONICAL_IMAGE_RE.fullmatch(image_ref):
         raise FenceError("target image is not an immutable digest")
@@ -1031,6 +1113,10 @@ def preflight(
     }
     old_image_ref, old_revision = _old_identity(host, inspections)
     old_ids = {name: str(info.get("Id", "")) for name, info in inspections.items()}
+    recovery_handoff = _restored_recovery_handoff(
+        restored_state,
+        inspections,
+    )
     controlled_pids = host.container_pids((*EXPECTED_CONTAINERS, *extra_names))
     preliminary_risk = inventory_queue_risk(volume_dir)
     preliminary_processes = _stray_writer_processes(
@@ -1078,6 +1164,8 @@ def preflight(
             "boot_activators_disabled": False,
         },
     }
+    if recovery_handoff:
+        state["recovery_handoff"] = recovery_handoff
 
     # Write-ahead invariant: canonical current-run state is durable before the
     # first mutation. Every later failure is therefore visible to guards and
@@ -1154,6 +1242,106 @@ def preflight(
     }
 
 
+def _remove_restored_recovery_handoff(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> dict[str, str]:
+    """Remove only the exact stopped recovery fleet bound by this preflight."""
+
+    if "recovery_handoff" not in state:
+        return {}
+    raw_handoff = state["recovery_handoff"]
+    if not isinstance(raw_handoff, dict) or not raw_handoff:
+        raise FenceError("recovery handoff provenance is invalid")
+    project = str(raw_handoff.get("project_name", ""))
+    recovery_run_id = str(raw_handoff.get("recovery_run_id", ""))
+    raw_recorded = raw_handoff.get("container_ids")
+    if not isinstance(raw_recorded, Mapping):
+        raise FenceError("recovery handoff provenance is invalid")
+    recorded = {
+        str(name): str(identity)
+        for name, identity in raw_recorded.items()
+    }
+    phase = str(raw_handoff.get("removal_phase", ""))
+    if (
+        not project
+        or not recovery_run_id
+        or project != _recovery_project_name(recovery_run_id)
+        or set(recorded) != set(EXPECTED_CONTAINERS)
+        or phase not in {"pending", "planned", "removed"}
+    ):
+        raise FenceError("recovery handoff provenance is invalid")
+
+    names = set(host.volume_container_names())
+    if not names:
+        if phase not in {"planned", "removed"}:
+            raise FenceError("recovery handoff fleet disappeared before removal intent")
+        if phase == "planned":
+            for name in EXPECTED_CONTAINERS:
+                if not _container_absent_exact(host, recorded[name]):
+                    raise FenceError(
+                        f"removed recovery handoff writer still exists: {name}"
+                    )
+        if phase != "removed":
+            raw_handoff["removal_phase"] = "removed"
+            raw_handoff["removed_container_ids"] = dict(recorded)
+            _atomic_json(state_path, state)
+        return recorded
+    expected_names = set(EXPECTED_CONTAINERS)
+    if names - expected_names:
+        raise FenceError("recovery handoff fleet has extra writers")
+    if phase == "pending" and names != expected_names:
+        raise FenceError("recovery handoff fleet changed before removal intent")
+    if phase == "removed":
+        raise FenceError("removed recovery handoff fleet unexpectedly reappeared")
+
+    inspections = {
+        name: host.container_info(name)
+        for name in EXPECTED_CONTAINERS
+        if name in names
+    }
+    actual = {
+        name: str(info.get("Id", ""))
+        for name, info in inspections.items()
+    }
+    if actual != {name: recorded[name] for name in names}:
+        raise FenceError("recovery handoff container identities changed")
+    for name in expected_names - names:
+        if not _container_absent_exact(host, recorded[name]):
+            raise FenceError(
+                f"removed recovery handoff writer still exists: {name}"
+            )
+    for name, info in inspections.items():
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if labels.get("com.docker.compose.project") != project:
+            raise FenceError(
+                f"recovery handoff writer belongs to another project: {name}"
+            )
+        if info.get("State", {}).get("Running"):
+            raise FenceError(f"recovery handoff writer is still running: {name}")
+        if host.container_restart_policy(recorded[name]) != "no":
+            raise FenceError("recovery handoff writer restart policy is not no")
+
+    if phase == "pending":
+        raw_handoff["removal_phase"] = "planned"
+        _atomic_json(state_path, state)
+    host.run(
+        [
+            "docker",
+            "rm",
+            *(recorded[name] for name in EXPECTED_CONTAINERS if name in names),
+        ]
+    )
+    if host.volume_container_names():
+        raise FenceError("recovery handoff fleet removal did not converge")
+    raw_handoff["removal_phase"] = "removed"
+    raw_handoff["removed_container_ids"] = dict(recorded)
+    _atomic_json(state_path, state)
+    return recorded
+
+
 def prepare_deploy(
     host: Host,
     *,
@@ -1176,10 +1364,20 @@ def prepare_deploy(
     for old_id in state["old_container_ids"].values():
         if _container_running_exact(host, old_id):
             raise FenceError("old container restarted before target start")
+    removed_recovery_ids = _remove_restored_recovery_handoff(
+        host,
+        state,
+        state_path=state_path,
+    )
     host.run(["systemctl", "unmask", "--runtime", DAEMON_SERVICE])
     state["phase"] = "target_installed"
     _atomic_json(state_path, state)
-    return {"owner": TASK_OWNER, "phase": state["phase"], "safe": True}
+    return {
+        "owner": TASK_OWNER,
+        "phase": state["phase"],
+        "safe": True,
+        "removed_recovery_container_ids": removed_recovery_ids,
+    }
 
 
 def prove(
