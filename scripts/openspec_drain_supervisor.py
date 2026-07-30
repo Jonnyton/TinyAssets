@@ -907,11 +907,18 @@ Delivery contract:
 5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
    Work inside the existing change; do not mechanically fan out child changes.
-6. Implement test-first and obtain required independent review. Use shell `git` and `gh`
-   commands from the assigned worktree to stage, commit, push, create the PR,
-   and wait for required CI/auto-merge. Do not treat an unavailable
-   provider-specific GitHub action as proof that repository publication is
-   unavailable.
+6. Implement test-first and create the PR as a draft with `gh pr create --draft`.
+   Obtain required independent review of the exact head, then add exactly one
+   receipt to the PR body before marking it ready:
+   `Drain-Review-Verdict: APPROVE`,
+   `Drain-Review-Head: <40-character lowercase head SHA>`, and
+   `Drain-Review-Artifact: <docs path or GitHub URL>`.
+   Any later commit invalidates the receipt and requires a fresh exact-head
+   review. Do not invoke `gh pr merge` directly; the trusted repository workflow
+   owns auto-merge enrollment. Use shell `git` and `gh` commands from the
+   assigned worktree to stage, commit, push, create the PR, and wait for required
+   CI/auto-merge. Do not treat an unavailable provider-specific GitHub action as
+   proof that repository publication is unavailable.
 7. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
    retire the STATUS row. If merge succeeded but foldback remains, report
    PARTIAL so the next fresh worker resumes it.
