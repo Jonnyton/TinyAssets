@@ -6,7 +6,9 @@ Required opposite provider: authenticated Claude Code 2.1.220
 Fallback reviewer: fresh-context Codex CLI, high reasoning
 TinyAssets base reviewed: `ef65fdc7f37fb96d7d1be711dda3b34e9de9c0c8`
 Ringer source reviewed: `a1a91b8b384a90dcca379e1cb9ab91405275ac46`
-Verdict: **ADAPT**
+Initial verdict: **ADAPT**
+Folded exact-head verdict: **APPROVE** at
+`53d44236c76a9e3c8b66070988ab6778f9f631c0`
 
 ## Provider-Limit Evidence
 
@@ -79,3 +81,12 @@ acceptance fixture. Before runtime implementation:
 - remove reprioritization and dependency waves from the first slice.
 
 No Ringer implementation code was copied or adapted.
+
+## Folded Exact-Head Approval
+
+After every required adaptation was folded, an independent read-only reviewer
+confirmed that the proposal, design, tasks, delta spec, implications, and this
+review artifact were mutually consistent. Strict OpenSpec validation and
+`git diff --check origin/main...53d44236` passed. No runtime implementation
+blocker remains for task 1.1; activation remains gated by the explicit
+prerequisite owners.
