@@ -1759,3 +1759,4 @@ Notes:
 - Purpose: verify current-main dependency labels against GitHub and worktrees, retiring only disproved blockers
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: one draft PR; preserve the lane until merge and foldback
+- Update 2026-07-30: audit found no current-main in-flight or stale claims; removed ten disproved broad-test-claim qualifiers while preserving every substantive gate
