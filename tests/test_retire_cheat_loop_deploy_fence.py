@@ -382,6 +382,11 @@ class LifecycleHost:
             "enabled": "enabled",
             "load": "loaded",
         }
+        self.units[fence.RECOVERY_RECONCILE_SERVICE] = {
+            "active": "inactive",
+            "enabled": "enabled",
+            "load": "loaded",
+        }
         self.calls: list[tuple[str, ...]] = []
         self.stubborn_unit: str | None = None
         self.unmask_noop = False
@@ -529,6 +534,21 @@ class LifecycleHost:
                         info["HostConfig"]["RestartPolicy"]["Name"] = "no"
             return ""
         if command[0] == "systemd-run":
+            unit = next(
+                value.partition("=")[2]
+                for value in command
+                if value.startswith("--unit=")
+            )
+            self.units[f"{unit}.timer"] = {
+                "active": "active",
+                "enabled": "transient",
+                "load": "loaded",
+            }
+            self.units[f"{unit}.service"] = {
+                "active": "inactive",
+                "enabled": "transient",
+                "load": "loaded",
+            }
             return ""
         if command[:2] == ("docker", "compose"):
             if self.start_installs_target:
@@ -1746,6 +1766,198 @@ def test_recovery_entrypoint_proof_rejects_different_timer_script(
         match="does not match the running script",
     ):
         fence._prove_recovery_entrypoint()
+
+
+def test_finalize_refences_when_restart_policies_drift_after_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-policy-drift",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    for info in host.containers.values():
+        info["HostConfig"]["RestartPolicy"]["Name"] = "always"
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        finalize_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-policy-drift",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
+        "unsafe_fenced"
+    )
+
+
+def test_finalize_refences_when_boot_fence_drifts_after_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-unit-drift",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    host.units[DAEMON_SERVICE].update(active="active", enabled="enabled")
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        finalize_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-unit-drift",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
+        "unsafe_fenced"
+    )
+
+
+def test_finalize_refences_when_expiry_timer_disappears(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-timer-drift",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    host.units[f"{state['recovery_expiry_unit']}.timer"]["active"] = "inactive"
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        finalize_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-timer-drift",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
+        "unsafe_fenced"
+    )
+
+
+def test_boot_reconciler_refences_interrupted_recovery_after_timer_loss(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-reboot",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    host.units.pop(f"{state['recovery_expiry_unit']}.timer")
+    host.units.pop(f"{state['recovery_expiry_unit']}.service")
+    for info in host.containers.values():
+        info["State"].update(Running=False, Pid=0)
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit].update(
+            active="inactive",
+            enabled="disabled",
+            load="loaded",
+        )
+
+    evidence = fence.reconcile_recovery_on_boot(
+        host,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "unsafe_fenced"
+    assert json.loads(state_path.read_text(encoding="utf-8"))["phase"] == (
+        "unsafe_fenced"
+    )
+
+
+def test_cli_recovery_persists_installed_script_digest_before_compose(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    digest = "c" * 64
+    monkeypatch.setattr(fence, "_prove_recovery_entrypoint", lambda: digest)
+    original_run = host.run
+
+    def run_with_digest_check(
+        command: list[str] | tuple[str, ...],
+        **kwargs: Any,
+    ) -> str:
+        if tuple(command)[:2] == ("docker", "compose"):
+            pre_compose = json.loads(state_path.read_text(encoding="utf-8"))
+            assert pre_compose["recovery_script_sha256"] == digest
+            assert pre_compose["phase"] == "recovery_starting"
+        return original_run(command, **kwargs)
+
+    monkeypatch.setattr(host, "run", run_with_digest_check)
+    args = fence._parser().parse_args(
+        [
+            "--state-path",
+            str(state_path),
+            "recover-unsafe",
+            "--source-run-id",
+            "source-run-1",
+            "--run-id",
+            "recovery-cli",
+            "--image-ref",
+            host.old_image_ref,
+            "--revision",
+            host.old_revision,
+        ]
+    )
+
+    fence._execute(args, host)
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_script_sha256"] == digest
+    compose_index = next(
+        index
+        for index, call in enumerate(host.calls)
+        if call[:2] == ("docker", "compose")
+    )
+    assert state["phase"] == "recovery_pending_canary"
+    assert compose_index > 0
 
 
 def test_expired_recovery_refences_orphaned_runner_loss(

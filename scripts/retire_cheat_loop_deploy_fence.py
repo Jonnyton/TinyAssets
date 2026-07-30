@@ -63,6 +63,7 @@ RECOVERY_COMPOSE_OVERRIDE_PATH = Path(
 RECOVERY_SCRIPT_PATH = Path(
     "/opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py"
 )
+RECOVERY_RECONCILE_SERVICE = "tinyassets-recovery-reconcile.service"
 TASK_OWNER = "retire-cheat-loop task 2.1"
 V1_RISK_STATUSES = frozenset({"pending", "running"})
 V2_RISK_STATUSES = frozenset({"pending", "running", "cancel_requested"})
@@ -1792,6 +1793,63 @@ def _cancel_recovery_expiry(host: Host, unit: str) -> None:
         )
 
 
+def _prove_recovery_fences(
+    host: Host,
+    state: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Require every temporary recovery fence immediately before restore."""
+
+    inspections = _exact_inspections(host)
+    policies = {
+        name: host.container_restart_policy(str(info.get("Id", "")))
+        for name, info in inspections.items()
+    }
+    if set(policies.values()) != {"no"}:
+        raise FenceError(
+            f"recovery restart fence drifted before finalization: {policies}"
+        )
+    unit_proof: dict[str, dict[str, str]] = {}
+    for unit in (
+        *tuple(state.get("present_restart_racer_units") or ()),
+        DAEMON_SERVICE,
+    ):
+        unit_state = _validated_unit_state(host, unit)
+        if unit_state["active"] not in {"inactive", "failed"}:
+            raise FenceError(f"recovery boot fence became active: {unit}")
+        permitted = {"disabled", "masked", "masked-runtime"}
+        if unit.endswith(".service") and unit != DAEMON_SERVICE:
+            permitted.add("static")
+        if unit_state["enabled"] not in permitted:
+            raise FenceError(f"recovery boot fence became enabled: {unit}")
+        unit_proof[unit] = unit_state
+    expiry = str(state.get("recovery_expiry_unit", ""))
+    if not expiry:
+        raise FenceError("recovery expiry ownership is missing")
+    timer = f"{expiry}.timer"
+    timer_state = _validated_unit_state(host, timer)
+    if (
+        timer_state["active"] != "active"
+        or timer_state["enabled"] not in {"transient", "enabled-runtime"}
+    ):
+        raise FenceError(
+            f"recovery expiry timer is not armed: {timer}={timer_state}"
+        )
+    reconciler_state = _validated_unit_state(
+        host,
+        RECOVERY_RECONCILE_SERVICE,
+    )
+    if reconciler_state["enabled"] != "enabled":
+        raise FenceError("boot recovery reconciler is not enabled")
+    return {
+        "restart_policies": policies,
+        "boot_units": unit_proof,
+        "expiry_timer": {timer: timer_state},
+        "boot_reconciler": {
+            RECOVERY_RECONCILE_SERVICE: reconciler_state,
+        },
+    }
+
+
 def _require_recovery_owner(
     state: Mapping[str, Any],
     *,
@@ -2012,6 +2070,9 @@ def finalize_recovery(
             state_path=state_path,
         )
         state = _load_state(state_path)
+        fence_proof = _prove_recovery_fences(host, state)
+        state["pre_finalize_fence_proof"] = fence_proof
+        _atomic_json(state_path, state)
         state["canary_accepted_epoch"] = state.get(
             "canary_accepted_epoch"
         ) or time.time()
@@ -2042,6 +2103,7 @@ def finalize_recovery(
                 "canary_accepted_epoch": state["canary_accepted_epoch"],
                 "restart_policy_restore_proof": restart_proof,
                 "pre_finalize_evidence": evidence,
+                "pre_finalize_fence_proof": fence_proof,
             }
         )
         return restored
@@ -2077,6 +2139,33 @@ def refence_recovery(
     )
     if state.get("phase") == "restored":
         raise FenceError("restored recovery cannot be re-fenced")
+    return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
+
+
+def reconcile_recovery_on_boot(
+    host: Host,
+    *,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Automatically close an interrupted recovery after a host reboot."""
+
+    if not state_path.is_file():
+        return {"phase": "not_applicable", "safe": True}
+    state = _load_state(state_path)
+    phase = str(state.get("phase", ""))
+    if phase in {"restored", "unsafe_fenced"}:
+        return {
+            "phase": phase,
+            "safe": phase == "restored",
+            "writers_fenced": phase == "unsafe_fenced",
+        }
+    source_run_id = str(state.get("source_run_id", ""))
+    run_id = str(state.get("recovery_run_id") or state.get("run_id") or "")
+    _require_recovery_owner(
+        state,
+        source_run_id=source_run_id,
+        run_id=run_id,
+    )
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
 
@@ -2192,6 +2281,7 @@ def _parser() -> argparse.ArgumentParser:
     expire = subparsers.add_parser("expire-recovery")
     expire.add_argument("--source-run-id", required=True)
     expire.add_argument("--run-id", required=True)
+    subparsers.add_parser("reconcile-recovery-on-boot")
     guard = subparsers.add_parser("guard-host-mutation")
     guard.add_argument(
         "--command-timeout",
@@ -2282,6 +2372,11 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             host,
             source_run_id=args.source_run_id,
             run_id=args.run_id,
+            state_path=args.state_path,
+        )
+    if args.command == "reconcile-recovery-on-boot":
+        return reconcile_recovery_on_boot(
+            host,
             state_path=args.state_path,
         )
     if args.command == "guard-host-mutation":

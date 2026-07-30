@@ -1,0 +1,12 @@
+[Unit]
+Description=Re-fence interrupted TinyAssets production recovery on boot
+Requires=docker.service
+After=docker.service
+Before=tinyassets-daemon.service daemon-watchdog.timer daemon-watchdog.service tinyassets-watchdog.timer tinyassets-watchdog.service tinyassets-autoheal.timer tinyassets-autoheal.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py --state-path /var/lib/tinyassets-deploy/retire-cheat-loop-task-2-1-fence.json reconcile-recovery-on-boot
+
+[Install]
+WantedBy=multi-user.target

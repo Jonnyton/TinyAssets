@@ -101,6 +101,21 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     assert " --image-ref " in script
     assert " --revision " in script
     assert "deploy/recovery-restart-no.yml" in script
+    assert "deploy/tinyassets-recovery-reconcile.service" in script
+    assert "systemctl enable tinyassets-recovery-reconcile.service" in script
+    reconcile_unit = (
+        Path("deploy/tinyassets-recovery-reconcile.service")
+        .read_text(encoding="utf-8")
+    )
+    assert "reconcile-recovery-on-boot" in reconcile_unit
+    assert "After=docker.service" in reconcile_unit
+    for unit in (
+        "daemon-watchdog.timer",
+        "tinyassets-watchdog.timer",
+        "tinyassets-autoheal.timer",
+        "tinyassets-daemon.service",
+    ):
+        assert unit in reconcile_unit
     recovery_script_path = RECOVERY_SCRIPT_PATH.as_posix()
     assert recovery_script_path in script
     assert (

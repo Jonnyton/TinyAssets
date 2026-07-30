@@ -148,11 +148,17 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
             deploy/recovery-restart-no.yml \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/recovery-restart-no.yml"
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+            deploy/tinyassets-recovery-reconcile.service \
+            "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo install -d -m 0755 -o root -g root /opt/tinyassets/deploy; \
              sudo install -m 0755 -o root -g root /tmp/retire-cheat-loop-deploy-fence.py /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py; \
-             sudo install -m 0644 -o root -g root /tmp/recovery-restart-no.yml /opt/tinyassets/deploy/recovery-restart-no.yml"
+             sudo install -m 0644 -o root -g root /tmp/recovery-restart-no.yml /opt/tinyassets/deploy/recovery-restart-no.yml; \
+             sudo install -m 0644 -o root -g root /tmp/tinyassets-recovery-reconcile.service /etc/systemd/system/tinyassets-recovery-reconcile.service; \
+             sudo systemctl daemon-reload; \
+             sudo systemctl enable tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
