@@ -1779,7 +1779,7 @@ Notes:
 - Lane state: Parked draft lane; audit complete and STATUS claim retired in branch pending PR merge
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
 - STATUS/Issue/PR: completed `Reconcile current-main OpenSpec finish-first debt after #1918/#1924`; one draft PR expected
-- Purpose: publish a bounded current-main recovery map without touching the live `codex-cloud-drain-20260730` claim
+- Purpose: publish a bounded current-main recovery map without touching the live `codex-cloud-drain-store-20260730` claim
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: preserve the lane until merge verification and foldback
-- Update 2026-07-30: canonical audit found 0 complete-unarchived, one exact live WIP owner, 18 untracked changes, and 29 oversized changes; no live claim was touched
+- Update 2026-07-30: post-restack audit found 0 complete-unarchived, one exact live WIP owner (`codex-cloud-drain-store-20260730`), 18 untracked changes, and 29 oversized changes; no live claim was touched
