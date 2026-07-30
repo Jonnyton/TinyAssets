@@ -1771,3 +1771,14 @@ Notes:
 - Purpose: define transaction/CAS/lock-order/bounded-query seams without tables, persistence, or activation
 - Review gate: focused tests plus fresh-context independent exact-head review
 - Publish/cleanup: one draft PR; retain worktree until merge and foldback
+
+## 2026-07-30 10:58 - background authority logical-attempt keys
+
+- Provider: `codex-cloud-drain-logical-keys-20260730`
+- Branch: `codex/background-logical-keys-20260730`
+- Lane state: Claimed OpenSpec task 1.5
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-logical-keys-20260730`
+- STATUS/Issue/PR: deterministic source-specific attempt keys; PR pending
+- Purpose: close duplicate-fire/replay races for every approved background source without a wiki-filing key
+- Review gate: focused tests plus fresh-context independent exact-head review
+- Publish/cleanup: one draft PR; retain worktree until merge and foldback
