@@ -1772,13 +1772,14 @@ Notes:
 - Review gate: focused tests plus fresh-context independent exact-head review
 - Publish/cleanup: one draft PR; retain worktree until merge and foldback
 
-## 2026-07-30 10:58 - open OpenSpec finish-first recovery audit
+## 2026-07-30 10:54 - open OpenSpec finish-first recovery audit
 
 - Provider: `drain-20260730-104801-7e8f53`
 - Branch: `chore/drain-20260730-104801-7e8f53-blocker-refresh`
-- Lane state: Active lane; exact STATUS claim committed before broad audit
+- Lane state: Parked draft lane; audit complete and STATUS claim retired in branch pending PR merge
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
-- STATUS/Issue/PR: `Reconcile current-main OpenSpec finish-first debt after #1918/#1924`; one draft PR expected
+- STATUS/Issue/PR: completed `Reconcile current-main OpenSpec finish-first debt after #1918/#1924`; one draft PR expected
 - Purpose: publish a bounded current-main recovery map without touching the live `codex-cloud-drain-20260730` claim
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: preserve the lane until merge verification and foldback
+- Update 2026-07-30: canonical audit found 0 complete-unarchived, one exact live WIP owner, 18 untracked changes, and 29 oversized changes; no live claim was touched
