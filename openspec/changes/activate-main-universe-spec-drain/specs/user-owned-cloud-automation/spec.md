@@ -1,21 +1,25 @@
 ## ADDED Requirements
 
 ### Requirement: Cloud automation is an ordinary user-owned composition
-The system SHALL represent the OpenSpec drain as a private, versioned Branch composition in Jonathan's main universe using existing Branch, Trigger, Goal, Gate, Run, effect, and cloud-executor primitives, with no privileged drain service or new top-level MCP handle.
+The system SHALL let an ordinary user bind an authorized GitHub repository and their selected delivery spec to a private, versioned Branch composition in their cloud universe using existing Branch, Trigger, Goal, Gate, Run, effect, and cloud-executor primitives, with no privileged drain service, repository-specific product code, or new top-level MCP handle. Jonathan's TinyAssets/OpenSpec drain SHALL be the first production conformance instance of this user-neutral composition.
+
+#### Scenario: Owner binds a repository and spec
+- **WHEN** an owner configures the composition with an authorized GitHub repository and a delivery spec
+- **THEN** the resulting private Branch uses those owner-selected bindings without new product code
 
 #### Scenario: Owner inspects the automation definition
-- **WHEN** Jonathan inspects the active OpenSpec drain through the live connector
-- **THEN** the response identifies the private universe, Branch, immutable version, Trigger, Goal, gates, effects, and cloud executor that compose it
+- **WHEN** the owner inspects the active production loop through the live connector
+- **THEN** the response identifies the private universe, Branch, immutable version, Trigger, Goal, gates, effects, cloud executor, repository destination, and delivery spec that compose it
 
 #### Scenario: Privileged drain substrate is absent
 - **WHEN** the cloud automation is activated
 - **THEN** no drain-specific scheduler, maintainer task loop, or repository-specific GitHub Actions controller is required to continue it
 
 ### Requirement: Cloud execution uses only explicit user-owned authority
-The cloud executor MUST resolve Jonathan's bound provider authority and exact TinyAssets GitHub repository grant before executing a slice, MUST record the resolved non-secret authority source in run and effect evidence, and MUST fail closed without substituting maintainer, host, market, or ambient credentials.
+The cloud executor MUST resolve the owner's bound provider authority and exact owner-selected GitHub repository grant before executing a slice, MUST record the resolved non-secret authority source in run and effect evidence, and MUST fail closed without substituting maintainer, host, market, or ambient credentials.
 
 #### Scenario: Bound provider is available
-- **WHEN** a slice starts with a valid Jonathan-owned provider binding and exact repository grant
+- **WHEN** a slice starts with a valid owner-bound provider binding and exact repository grant
 - **THEN** execution evidence names those authority sources without exposing their secret values
 
 #### Scenario: User-owned provider is unavailable
@@ -38,7 +42,7 @@ The automation SHALL persist its activation, Trigger, checkpoint, retry state, a
 - **THEN** the invocation records an idle terminal receipt and schedules only the next bounded continuation
 
 ### Requirement: Each invocation delivers one bounded reviewable slice
-The automation SHALL enforce declared time, model, and effect budgets; work within one isolated branch and worktree; publish at most one pull request; require independent opposite-provider review and repository CI; verify GitHub merge state before foldback; and never bypass branch protection or OpenSpec sync/archive policy. When the opposite provider reports a hard account, subscription, spend, or usage limit, the automation MUST persist dated evidence of that limit and use a fresh-context independent reviewer running on separately authorized Jonathan-owned compute; the author MUST NOT review their own slice, and every blocking finding MUST be resolved before delivery advances.
+The automation SHALL enforce declared time, model, and effect budgets; work within one isolated branch and worktree; publish at most one pull request; require independent opposite-provider review and repository CI; verify GitHub merge state before foldback; and never bypass branch protection or OpenSpec sync/archive policy. When the opposite provider reports a hard account, subscription, spend, or usage limit, the automation MUST persist dated evidence of that limit and use a fresh-context independent reviewer running on separately authorized owner-bound compute; the author MUST NOT review their own slice, and every blocking finding MUST be resolved before delivery advances.
 
 #### Scenario: A candidate is admitted
 - **WHEN** one current-main lane is mechanically claimed
@@ -54,10 +58,10 @@ The automation SHALL enforce declared time, model, and effect budgets; work with
 
 #### Scenario: Opposite review provider reaches a hard limit
 - **WHEN** the required opposite provider reports a hard account, subscription, spend, or usage limit
-- **THEN** the invocation records dated limit evidence and obtains a fresh-context independent review on separately authorized Jonathan-owned compute before delivery advances
+- **THEN** the invocation records dated limit evidence and obtains a fresh-context independent review on separately authorized owner-bound compute before delivery advances
 
 ### Requirement: GitHub effects are destination-scoped and reconcilable
-The automation MUST restrict GitHub writes to the exact TinyAssets repository and declared pull-request purpose and MUST reserve the system-derived tuple `(universe_id, automation_id, claim_id, repository, intended_head_sha, effect_kind)` as the durable effect identity. After an uncertain effect, reconciliation MUST attach and finalize without mutation when the exact remote effect exists; MUST retry at most once under the same reservation only when authoritative destination inspection conclusively proves absence and that reservation is retry-eligible; and MUST record a blocker without mutation when remote state is ambiguous, mismatched, or unavailable.
+The automation MUST restrict GitHub writes to the exact owner-authorized repository and declared pull-request purpose and MUST reserve the system-derived tuple `(universe_id, automation_id, claim_id, repository, intended_head_sha, effect_kind)` as the durable effect identity. After an uncertain effect, reconciliation MUST attach and finalize without mutation when the exact remote effect exists; MUST retry at most once under the same reservation only when authoritative destination inspection conclusively proves absence and that reservation is retry-eligible; and MUST record a blocker without mutation when remote state is ambiguous, mismatched, or unavailable.
 
 #### Scenario: Destination does not match the grant
 - **WHEN** a Branch packet requests a GitHub write outside the exact granted repository or purpose
@@ -68,10 +72,15 @@ The automation MUST restrict GitHub writes to the exact TinyAssets repository an
 - **THEN** the next invocation attaches and finalizes an exact remote match, retries once under the same reservation after conclusive absence, or blocks without mutation when reconciliation is ambiguous or fails
 
 ### Requirement: The owner can inspect and control the loop from a phone chatbot
-The live connector SHALL let Jonathan inspect the active version, current claim, last useful progress, terminal receipts, authority source, budgets, next retry, and blocking reason, and SHALL let him pause, resume, or stop future slices through existing canonical handles without a desktop, filesystem, CLI, or host login.
+The authenticated live connector SHALL let the owner inspect the active version, current claim, last useful progress, terminal receipts, authority source, budgets, next retry, and blocking reason, and SHALL let the owner pause, resume, or stop future slices through existing canonical handles without a desktop, filesystem, CLI, host login, or local credential broker. Runtime implementation SHALL remain gated while a successful connector authorization or reconnect does not continue into authenticated calls for the same owner and universe.
+
+#### Scenario: Connector identity continuity is unavailable
+- **WHEN** authorization or reconnect completes but a subsequent authenticated connector call fails
+- **THEN** the cloud production loop remains blocked from runtime activation
+- **AND** direct MCP probes or local CLI access do not clear the implementation gate
 
 #### Scenario: Owner pauses future work
-- **WHEN** Jonathan pauses the automation through a phone chatbot
+- **WHEN** the owner pauses the automation through a phone chatbot
 - **THEN** no new slice starts after the pause is durably recorded, while any already committed external effect is reported rather than represented as cancelled
 
 #### Scenario: Non-owner attempts control
@@ -79,14 +88,14 @@ The live connector SHALL let Jonathan inspect the active version, current claim,
 - **THEN** the canonical owner-authorization boundary denies the request without disclosing private state
 
 ### Requirement: The owner can repair and evolve immutable automation versions
-The live connector SHALL let Jonathan edit the ordinary Branch definition, inspect its complete diff, dry-test it without external writes, publish a new immutable version, bind that version for future slices, and roll back by rebinding a prior immutable version.
+The authenticated live connector SHALL let the owner edit the ordinary Branch definition and its repository/spec bindings, inspect the complete diff, dry-test it without external writes, publish a new immutable version, bind that version for future slices, and roll back by rebinding a prior immutable version.
 
 #### Scenario: Owner publishes an update
-- **WHEN** Jonathan accepts a reviewed definition diff after a successful dry test
+- **WHEN** the owner accepts a reviewed definition diff after a successful dry test
 - **THEN** the system publishes a new immutable Branch version and changes activation only after an explicit owner-authorized bind
 
 #### Scenario: Owner rolls back
-- **WHEN** Jonathan selects a previously published version
+- **WHEN** the owner selects a previously published version
 - **THEN** future slices bind to that immutable version without altering either version's history
 
 ### Requirement: Tray-to-cloud cutover is single-active
@@ -97,7 +106,7 @@ The system MUST store one server-authoritative activation record keyed by `(univ
 - **THEN** cloud activation fails closed and neither executor is accepted as the sole active drain
 
 #### Scenario: Rollback restores the tray
-- **WHEN** Jonathan rolls back from cloud execution to the temporary tray bridge
+- **WHEN** the owner rolls back from cloud execution to the temporary tray bridge
 - **THEN** the cloud activation is durably stopped before the tray is allowed to claim
 
 #### Scenario: Stale executor retains cached activation state
@@ -120,12 +129,12 @@ The automation SHALL persist typed receipts and checkpoints that report last use
 - **THEN** one typed terminal receipt records the claim, immutable Branch version, authority source, budgets, evidence handles, and next action
 
 ### Requirement: Acceptance proves PC-off continuity and owner operability
-Final acceptance MUST keep Jonathan's computer off for at least 24 continuous hours, MUST include cloud-worker restart recovery and collision checks, and MUST use rendered phone-chatbot conversations through the live connector to prove inspection, control, repair, immutable-version activation, and rollback.
+Final acceptance MUST keep every personal computer used by the first conformance owner off for at least 24 continuous hours, MUST include cloud-worker restart recovery and collision checks, and MUST use rendered phone-chatbot conversations through the authenticated live connector to prove inspection, control, repair, immutable-version activation, and rollback.
 
 #### Scenario: Twenty-four-hour cloud proof passes
 - **WHEN** the cloud automation completes its acceptance window
-- **THEN** evidence shows at least 24 hours of useful cloud progress, recovery from a worker restart, no duplicate claims, only Jonathan-owned provider authority, and no tray activity
+- **THEN** evidence shows at least 24 hours of useful cloud progress, recovery from a worker restart, no duplicate claims, only owner-bound provider authority, and no tray activity
 
 #### Scenario: Phone-only evolution proof passes
-- **WHEN** Jonathan uses a rendered phone-chatbot session with every computer offline
-- **THEN** he can inspect, pause, resume, edit, diff, dry-test, publish, activate, and roll back the automation without maintainer intervention
+- **WHEN** the owner uses a rendered phone-chatbot session with every personal computer offline
+- **THEN** the owner can inspect, pause, resume, edit repository/spec bindings, diff, dry-test, publish, activate, and roll back the automation without maintainer intervention

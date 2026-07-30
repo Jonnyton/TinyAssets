@@ -1,23 +1,29 @@
 ## Why
 
 The current OpenSpec drain stops when Jonathan's PC is off, so it cannot satisfy
-the platform's zero-host uptime contract or prove that an ordinary user-owned
-cloud universe can sustain a useful workflow. The approved design moves that
-loop into Jonathan's private main universe without creating a privileged
-TinyAssets-only scheduler or consuming maintainer compute.
+the platform's zero-host uptime contract or prove that an ordinary user can
+turn their own repository and spec into a continuously operated cloud
+production loop. The approved design makes Jonathan's private main-universe
+drain the first conformance instance of that generic, user-buildable pattern
+without creating a privileged TinyAssets-only scheduler or consuming
+maintainer compute.
 
 ## What Changes
 
 - Define an ordinary, versioned, user-authored Branch composition for bounded
   OpenSpec delivery slices using existing Branch, Trigger, Goal, Gate, Run,
   effect, and cloud-executor primitives.
-- Establish the shortest deployable BYOC-first slice: Jonathan-owned provider
+- Establish the shortest deployable BYOC-first slice: owner-bound provider
   authority, one persisted trigger, one cloud-authoritative activation epoch,
   one collision-safe active claim, one destination-scoped GitHub pull-request
-  effect, normal review/CI, and a typed terminal receipt.
+  effect, normal review/CI, and a typed terminal receipt. Jonathan's
+  TinyAssets/OpenSpec binding is the first production instance, not a
+  hard-coded product special case.
 - Expose inspection, pause/resume/stop, repair, immutable-version publication,
-  activation, and rollback through existing canonical chatbot handles so the
-  loop remains operable from a phone while every user device is off.
+  activation, and rollback through an authenticated canonical chatbot
+  connector so any owner can operate the loop from a phone while every
+  personal device is off. Authenticated connector continuity is an
+  implementation prerequisite, not only final acceptance evidence.
 - Require a single-active cutover: the local tray drain stops before cloud
   acceptance and cannot drain concurrently with the cloud Branch.
 - Gate final acceptance on cloud-worker restart recovery, at least 24 hours of

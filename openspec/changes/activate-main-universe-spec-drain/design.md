@@ -8,10 +8,14 @@ market compute, and forbids a privileged product-specific automation loop.
 
 This change turns the host-approved design in
 `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md` into an
-end-to-end delivery contract. It does not claim that all prerequisites already
-exist. Background authority, requester-owned provider resolution, schedule
-continuation, Branch access/versioning, and GitHub effect authority remain with
-their owning OpenSpec lanes and must be current-main behavior before activation.
+end-to-end reference and conformance contract for a generic user-authored
+GitHub-to-spec production loop. Jonathan's private main universe and
+TinyAssets/OpenSpec binding are the first production instance, not product
+special cases. It does not claim that all prerequisites already exist.
+Background authority, requester-owned provider resolution, authenticated
+connector continuity, schedule continuation, Branch access/versioning, and
+GitHub effect authority remain with their owning OpenSpec lanes and must be
+current-main behavior before activation.
 
 The custody assumption is explicit: the private universe may hold this
 automation's definition, activation, checkpoints, coordination metadata,
@@ -22,13 +26,17 @@ in GitHub, and this change does not decide custody for unrelated user content.
 
 **Goals:**
 
-- Run one bounded OpenSpec delivery slice at a time from Jonathan's private
-  cloud universe while every user device is off.
-- Use only Jonathan-owned provider and destination-scoped GitHub authority.
+- Prove that an ordinary owner can bind their GitHub repository and delivery
+  spec to an ordinary private cloud Branch, using Jonathan's OpenSpec drain as
+  the first production conformance instance.
+- Run one bounded delivery slice at a time from the owner's private cloud
+  universe while every personal device is off.
+- Use only owner-bound provider and destination-scoped GitHub authority.
 - Preserve current-main admission, isolated branch/worktree, independent
   review, CI, merge verification, and OpenSpec foldback.
-- Make ownership complete from a phone chatbot: inspect, control, repair,
-  version, activate, and roll back the ordinary Branch composition.
+- Make ownership complete from an authenticated phone chatbot: inspect,
+  control, repair, version, activate, and roll back the ordinary Branch
+  composition.
 - Prove restart recovery, no duplicate claims, useful 24-hour progress, and
   single-active tray-to-cloud cutover.
 
@@ -36,8 +44,9 @@ in GitHub, and this change does not decide custody for unrelated user content.
 
 - A new scheduler service, top-level MCP handle, drain-specific server
   subsystem, or privileged maintainer automation path.
-- Market-compute fallback, parallel lane execution, or multi-repository
-  generalization in the MVP.
+- Market-compute fallback, parallel lane execution, or multiple simultaneous
+  repositories per automation in the MVP. The single-repository binding
+  remains user-selectable and MUST NOT be hard-coded to TinyAssets.
 - Bypassing GitHub review, CI, branch protection, or OpenSpec sync/archive.
 - Depositing raw provider or GitHub secrets through chat.
 - Treating the local tray, a local test, or a mocked cloud run as cloud
@@ -47,10 +56,13 @@ in GitHub, and this change does not decide custody for unrelated user content.
 
 ### 1. The drain is an ordinary private Branch composition
 
-The durable definition is a versioned Branch in Jonathan's main universe,
+The durable definition is a versioned Branch in the owner's private universe,
 bound to a standing Goal and persisted Trigger. Its graph composes selection,
 claim, build, verification, review, publication, merge verification, foldback,
-receipt, and continuation nodes from existing primitives.
+receipt, and continuation nodes from existing primitives. Jonathan's main
+universe binds the first instance to TinyAssets and OpenSpec; another owner can
+bind the same pattern to their authorized repository and spec without a new
+platform implementation.
 
 This keeps policy user-owned and remixable. Moving the current supervisor
 script to GitHub Actions was rejected because that would create a second,
@@ -59,7 +71,7 @@ host shutdown remains an outage.
 
 ### 2. The first deployable slice is BYOC, single-flight, and PR-only
 
-The minimum useful vertical slice resolves Jonathan-owned provider authority in
+The minimum useful vertical slice resolves owner-bound provider authority in
 the cloud, fires one persisted invocation, admits and leases one current-main
 candidate, produces at most one PR, and writes one terminal receipt. It has no
 market fallback and no direct merge effect.
@@ -75,6 +87,9 @@ Activation is gated on current-main prerequisites:
   and immutable version authority;
 - the cloud executor resolves a user-owned provider binding and fails closed
   without maintainer, host, or market substitution;
+- the live chatbot connector preserves authenticated owner/universe identity
+  after authorization or reconnect, so inspection, control, repair, and
+  evolution require no desktop or local credential broker;
 - persisted trigger/continuation and collision-safe claim leasing survive
   worker restart;
 - Branch access and immutable version operations enforce owner authority;
@@ -139,7 +154,7 @@ matches PLAN's rule that human control belongs at irreversible boundaries.
 
 ### 5. Repair and evolution publish immutable versions
 
-Jonathan edits the ordinary Branch definition, inspects the complete diff,
+The owner edits the ordinary Branch definition, inspects the complete diff,
 dry-tests it without external writes, publishes a new immutable version, and
 explicitly rebinds activation. Rollback rebinds a previously published version;
 it never mutates history in place.
@@ -174,8 +189,9 @@ retries without a useful state transition remain unhealthy.
 - **[Pause races an irreversible effect]** → Fence future slices and surface the
   committed boundary; do not claim retroactive cancellation.
 - **[A broad GitHub grant escapes the repository]** → Require an exact
-  TinyAssets repository destination, purpose, and effect class, with no raw
-  credential in Branch-visible state.
+  owner-authorized repository destination, purpose, and effect class, with no
+  raw credential in Branch-visible state. Jonathan's first conformance binding
+  selects TinyAssets but does not hard-code that destination into the pattern.
 - **[A green loop makes no useful progress]** → Separate liveness from useful
   progress and alarm on the latter.
 - **[Twenty-four-hour proof is slow]** → Use focused restart/concurrency tests
@@ -185,7 +201,8 @@ retries without a useful state transition remain unhealthy.
 ## Migration Plan
 
 1. Obtain independent opposite-provider review of this change and verify every
-   prerequisite against current main.
+   prerequisite against current main, including rendered authenticated
+   connector continuity.
 2. Implement and test the BYOC single-flight PR-only slice behind an inactive
    private Branch version.
 3. Dry-test through the live connector with external effects disabled, then
