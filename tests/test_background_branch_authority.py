@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -9,7 +10,9 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchBinding,
     BackgroundBranchBindingStatus,
+    BackgroundBranchExecutorClass,
     BackgroundBranchHoldReason,
+    BackgroundBranchOperation,
     BackgroundBranchProvenance,
     BackgroundBranchSourceKind,
     BackgroundBranchTargetMode,
@@ -45,6 +48,9 @@ def _binding_payload() -> dict[str, object]:
         "child_delegation": {
             "allowed_branch_def_ids": ["branch_review"],
             "allowed_operations": ["invoke_branch_version"],
+            "max_depth": 2,
+            "max_count": 4,
+            "max_cost_microunits": 1_000_000,
         },
     }
 
@@ -62,8 +68,11 @@ def _provenance_payload() -> dict[str, object]:
         "origin_attempt_id": "att_01",
         "audit_correlation_ids": ["request:17", "trace:abc"],
         "receipt_refs": {
-            "provider_work": "pwr_01",
-            "provider_attempt": "pat_01",
+            "b2_execution_grant_id": None,
+            "provider_work_receipt_id": "pwr_01",
+            "provider_attempt_receipt_id": "pat_01",
+            "payment_receipt_id": None,
+            "effect_receipt_id": None,
         },
     }
 
@@ -85,7 +94,12 @@ def _attempt_payload() -> dict[str, object]:
         "source_kind": "request_admission",
         "source_id": "request_17",
         "source_generation": 4,
-        "executor_audience": "cloud:worker_codex",
+        "executor_audience": {
+            "executor_class": "cloud",
+            "daemon_id": "daemon_spec_drain",
+            "runtime_id": "runtime_cloud_1",
+            "worker_id": "worker_codex_1",
+        },
         "claim_generation": 2,
         "lease_generation": 5,
         "lease_expires_at": "2026-07-30T08:00:00Z",
@@ -109,6 +123,8 @@ def test_binding_round_trip_is_lossless_and_typed() -> None:
     assert binding.status is BackgroundBranchBindingStatus.ACTIVE
     assert binding.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION
     assert binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION
+    assert binding.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION
+    assert binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,)
     assert binding.to_dict() == payload
     assert BackgroundBranchBinding.from_dict(binding.to_dict()) == binding
 
@@ -119,6 +135,7 @@ def test_attempt_round_trip_is_lossless_and_keeps_authorizer_separate() -> None:
     attempt = BackgroundBranchAttempt.from_dict(payload)
 
     assert attempt.lifecycle is BackgroundBranchAttemptLifecycle.CLAIMED
+    assert attempt.executor_audience.executor_class is (BackgroundBranchExecutorClass.CLOUD)
     assert attempt.provenance.authorizing_principal_id == "acct_jonathan"
     assert attempt.provenance.worker_id == "worker_codex_1"
     assert attempt.to_dict() == payload
@@ -236,15 +253,13 @@ def test_terminal_lifecycle_requires_reason_and_active_forbids_it() -> None:
 
 def test_provenance_is_strict_and_receipts_are_non_bearer_references() -> None:
     provenance = BackgroundBranchProvenance.from_dict(_provenance_payload())
-    assert provenance.receipt_refs == {
-        "provider_work": "pwr_01",
-        "provider_attempt": "pat_01",
-    }
+    assert provenance.receipt_refs.provider_work_receipt_id == "pwr_01"
+    assert provenance.receipt_refs.provider_attempt_receipt_id == "pat_01"
 
     unknown = _provenance_payload()
     unknown["credential"] = "secret"
     malformed_receipt = _provenance_payload()
-    malformed_receipt["receipt_refs"] = {"provider_work": ""}
+    malformed_receipt["receipt_refs"]["provider_work_receipt_id"] = "Bearer sk-live-secret"
 
     with pytest.raises(ValueError, match="unknown fields"):
         BackgroundBranchProvenance.from_dict(unknown)
@@ -259,11 +274,83 @@ def test_nested_policy_and_receipt_data_cannot_mutate_records() -> None:
     provenance = BackgroundBranchProvenance.from_dict(provenance_payload)
 
     binding_payload["child_delegation"]["allowed_branch_def_ids"].append("evil")
-    provenance_payload["receipt_refs"]["provider_work"] = "replaced"
+    provenance_payload["receipt_refs"]["provider_work_receipt_id"] = "replaced"
 
     assert binding.to_dict()["child_delegation"]["allowed_branch_def_ids"] == ["branch_review"]
-    assert provenance.to_dict()["receipt_refs"]["provider_work"] == "pwr_01"
-    with pytest.raises(TypeError):
-        binding.child_delegation["new_policy"] = True
-    with pytest.raises(TypeError):
-        provenance.receipt_refs["provider_work"] = "replaced"
+    assert provenance.to_dict()["receipt_refs"]["provider_work_receipt_id"] == "pwr_01"
+    with pytest.raises(FrozenInstanceError):
+        binding.child_delegation.max_count = 99
+    with pytest.raises(FrozenInstanceError):
+        provenance.receipt_refs.provider_work_receipt_id = "replaced"
+
+
+def test_direct_constructors_copy_retained_sequences() -> None:
+    binding = BackgroundBranchBinding.from_dict(_binding_payload())
+    provenance = BackgroundBranchProvenance.from_dict(_provenance_payload())
+    executor_classes = [BackgroundBranchExecutorClass.CLOUD]
+    correlation_ids = ["trace:abc"]
+
+    direct_binding = replace(binding, permitted_executor_classes=executor_classes)
+    direct_provenance = replace(provenance, audit_correlation_ids=correlation_ids)
+    executor_classes.append(BackgroundBranchExecutorClass.HOST)
+    correlation_ids.append("trace:evil")
+
+    assert direct_binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,)
+    assert direct_provenance.audit_correlation_ids == ("trace:abc",)
+
+
+def test_policy_and_receipt_schemas_reject_secret_shaped_material() -> None:
+    binding = _binding_payload()
+    binding["child_delegation"]["api_token"] = "sk-live-secret"
+    receipt = _provenance_payload()
+    receipt["receipt_refs"]["effect_receipt_id"] = "sk-live-secret"
+
+    with pytest.raises(ValueError, match="unknown fields"):
+        BackgroundBranchBinding.from_dict(binding)
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchProvenance.from_dict(receipt)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("operation", "admin_everything"),
+        ("permitted_executor_classes", ["ambient-maintainer"]),
+    ],
+)
+def test_binding_rejects_open_authority_vocabulary(field: str, value: object) -> None:
+    payload = _binding_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+def test_attempt_audience_must_match_provenance_executor() -> None:
+    wrong_class = _attempt_payload()
+    wrong_class["provenance"]["executor_class"] = "host"
+    wrong_worker = _attempt_payload()
+    wrong_worker["provenance"]["worker_id"] = "worker_other"
+
+    with pytest.raises(ValueError, match="executor"):
+        BackgroundBranchAttempt.from_dict(wrong_class)
+    with pytest.raises(ValueError, match="executor"):
+        BackgroundBranchAttempt.from_dict(wrong_worker)
+
+
+def test_lineage_distinguishes_root_and_child_attempts() -> None:
+    bad_root = _attempt_payload()
+    bad_root["provenance"]["origin_attempt_id"] = "att_unrelated"
+    child_without_parent = _attempt_payload()
+    child_without_parent["source_kind"] = "direct_child"
+    child_without_parent["provenance"]["source_kind"] = "direct_child"
+
+    with pytest.raises(ValueError, match="root"):
+        BackgroundBranchAttempt.from_dict(bad_root)
+    with pytest.raises(ValueError, match="parent"):
+        BackgroundBranchAttempt.from_dict(child_without_parent)
+
+    child = copy.deepcopy(child_without_parent)
+    child["provenance"]["parent_attempt_id"] = "att_parent"
+    child["provenance"]["origin_attempt_id"] = "att_root"
+    assert BackgroundBranchAttempt.from_dict(child).provenance.parent_attempt_id == ("att_parent")

@@ -6,12 +6,9 @@ perform no persistence, queue mutation, credential lookup, or Branch run.
 
 from __future__ import annotations
 
-import copy
-import json
-from collections.abc import Mapping
+import re
 from dataclasses import dataclass
 from enum import Enum
-from types import MappingProxyType
 from typing import Any
 
 
@@ -35,6 +32,18 @@ class BackgroundBranchSourceKind(str, Enum):
     CLAIMED_TASK = "claimed_task"
     DIRECT_CHILD = "direct_child"
     PARENT_ATTEMPT = "parent_attempt"
+
+
+class BackgroundBranchOperation(str, Enum):
+    INVOKE_BRANCH = "invoke_branch"
+    INVOKE_BRANCH_VERSION = "invoke_branch_version"
+    RESUME_RUN = "resume_run"
+
+
+class BackgroundBranchExecutorClass(str, Enum):
+    CLOUD = "cloud"
+    HOST = "host"
+    DISTRIBUTED = "distributed"
 
 
 class BackgroundBranchTargetMode(str, Enum):
@@ -94,6 +103,30 @@ def _optional_text(value: Any, field_name: str) -> str | None:
     return _text(value, field_name)
 
 
+_REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}$")
+_SECRET_PREFIXES = (
+    "bearer",
+    "sk-",
+    "ghp_",
+    "github_pat_",
+    "secret:",
+    "token:",
+)
+
+
+def _reference(value: Any, field_name: str) -> str:
+    result = _text(value, field_name)
+    if result.lower().startswith(_SECRET_PREFIXES) or not _REFERENCE_PATTERN.fullmatch(result):
+        raise ValueError(f"{field_name} must be a non-bearer reference")
+    return result
+
+
+def _optional_reference(value: Any, field_name: str) -> str | None:
+    if value is None:
+        return None
+    return _reference(value, field_name)
+
+
 def _integer(value: Any, field_name: str, *, minimum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"{field_name} must be an integer >= {minimum}")
@@ -120,39 +153,162 @@ def _text_tuple(value: Any, field_name: str, *, allow_empty: bool = False) -> tu
     return items
 
 
-def _json_object(
+def _enum_tuple(
+    enum_type: type[Enum],
     value: Any,
     field_name: str,
     *,
-    non_empty_values: bool = False,
-) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        raise ValueError(f"{field_name} must be an object")
-    for key, item in value.items():
-        _text(key, f"{field_name} key")
-        if non_empty_values:
-            _text(item, f"{field_name}.{key}")
-    try:
-        json.dumps(value, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must contain JSON values") from exc
-    return copy.deepcopy(value)
+    allow_empty: bool = False,
+) -> tuple[Any, ...]:
+    if not isinstance(value, list | tuple):
+        raise ValueError(f"{field_name} must be a list")
+    items = tuple(_enum_value(enum_type, item, field_name) for item in value)
+    if not allow_empty and not items:
+        raise ValueError(f"{field_name} must not be empty")
+    if len(set(items)) != len(items):
+        raise ValueError(f"{field_name} must not contain duplicates")
+    return items
 
 
-def _freeze_json(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return MappingProxyType({key: _freeze_json(item) for key, item in value.items()})
-    if isinstance(value, list | tuple):
-        return tuple(_freeze_json(item) for item in value)
-    return value
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchChildDelegation:
+    allowed_branch_def_ids: tuple[str, ...]
+    allowed_operations: tuple[BackgroundBranchOperation, ...]
+    max_depth: int
+    max_count: int
+    max_cost_microunits: int
+
+    _FIELDS = frozenset(
+        {
+            "allowed_branch_def_ids",
+            "allowed_operations",
+            "max_depth",
+            "max_count",
+            "max_cost_microunits",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        branch_ids = tuple(
+            _reference(item, "allowed_branch_def_ids") for item in self.allowed_branch_def_ids
+        )
+        operations = tuple(self.allowed_operations)
+        if any(not isinstance(item, BackgroundBranchOperation) for item in operations):
+            raise ValueError("allowed_operations must be typed")
+        if len(set(branch_ids)) != len(branch_ids):
+            raise ValueError("allowed_branch_def_ids must not contain duplicates")
+        if len(set(operations)) != len(operations):
+            raise ValueError("allowed_operations must not contain duplicates")
+        object.__setattr__(self, "allowed_branch_def_ids", branch_ids)
+        object.__setattr__(self, "allowed_operations", operations)
+        _integer(self.max_depth, "max_depth", minimum=0)
+        _integer(self.max_count, "max_count", minimum=0)
+        _integer(self.max_cost_microunits, "max_cost_microunits", minimum=0)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchChildDelegation:
+        _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
+        return cls(
+            allowed_branch_def_ids=tuple(
+                _reference(item, "allowed_branch_def_ids")
+                for item in _text_tuple(
+                    data["allowed_branch_def_ids"],
+                    "allowed_branch_def_ids",
+                    allow_empty=True,
+                )
+            ),
+            allowed_operations=_enum_tuple(
+                BackgroundBranchOperation,
+                data["allowed_operations"],
+                "allowed_operations",
+                allow_empty=True,
+            ),
+            max_depth=_integer(data["max_depth"], "max_depth", minimum=0),
+            max_count=_integer(data["max_count"], "max_count", minimum=0),
+            max_cost_microunits=_integer(
+                data["max_cost_microunits"],
+                "max_cost_microunits",
+                minimum=0,
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "allowed_branch_def_ids": list(self.allowed_branch_def_ids),
+            "allowed_operations": [item.value for item in self.allowed_operations],
+            "max_depth": self.max_depth,
+            "max_count": self.max_count,
+            "max_cost_microunits": self.max_cost_microunits,
+        }
 
 
-def _thaw_json(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _thaw_json(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_thaw_json(item) for item in value]
-    return value
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchReceiptRefs:
+    b2_execution_grant_id: str | None
+    provider_work_receipt_id: str | None
+    provider_attempt_receipt_id: str | None
+    payment_receipt_id: str | None
+    effect_receipt_id: str | None
+
+    _FIELD_ORDER = (
+        "b2_execution_grant_id",
+        "provider_work_receipt_id",
+        "provider_attempt_receipt_id",
+        "payment_receipt_id",
+        "effect_receipt_id",
+    )
+    _FIELDS = frozenset(_FIELD_ORDER)
+
+    def __post_init__(self) -> None:
+        for name in self._FIELD_ORDER:
+            _optional_reference(getattr(self, name), name)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchReceiptRefs:
+        _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
+        return cls(**{name: _optional_reference(data[name], name) for name in cls._FIELD_ORDER})
+
+    def to_dict(self) -> dict[str, Any]:
+        return {name: getattr(self, name) for name in self._FIELD_ORDER}
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchExecutorAudience:
+    executor_class: BackgroundBranchExecutorClass
+    daemon_id: str | None
+    runtime_id: str | None
+    worker_id: str
+
+    _FIELDS = frozenset({"executor_class", "daemon_id", "runtime_id", "worker_id"})
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.executor_class, BackgroundBranchExecutorClass):
+            raise ValueError("executor_class must be typed")
+        _optional_reference(self.daemon_id, "daemon_id")
+        _optional_reference(self.runtime_id, "runtime_id")
+        _reference(self.worker_id, "worker_id")
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchExecutorAudience:
+        _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
+        return cls(
+            executor_class=_enum_value(
+                BackgroundBranchExecutorClass,
+                data["executor_class"],
+                "executor_class",
+            ),
+            daemon_id=_optional_reference(data["daemon_id"], "daemon_id"),
+            runtime_id=_optional_reference(data["runtime_id"], "runtime_id"),
+            worker_id=_reference(data["worker_id"], "worker_id"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "executor_class": self.executor_class.value,
+            "daemon_id": self.daemon_id,
+            "runtime_id": self.runtime_id,
+            "worker_id": self.worker_id,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,14 +316,14 @@ class BackgroundBranchProvenance:
     authorizing_principal_id: str
     source_kind: BackgroundBranchSourceKind
     source_id: str
-    executor_class: str
+    executor_class: BackgroundBranchExecutorClass
     daemon_id: str | None
     runtime_id: str | None
     worker_id: str | None
     parent_attempt_id: str | None
     origin_attempt_id: str
     audit_correlation_ids: tuple[str, ...]
-    receipt_refs: Mapping[str, str]
+    receipt_refs: BackgroundBranchReceiptRefs
 
     _FIELDS = frozenset(
         {
@@ -190,18 +346,21 @@ class BackgroundBranchProvenance:
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
         _text(self.source_id, "source_id")
-        _text(self.executor_class, "executor_class")
+        if not isinstance(self.executor_class, BackgroundBranchExecutorClass):
+            raise ValueError("executor_class must be typed")
         for name in ("daemon_id", "runtime_id", "worker_id", "parent_attempt_id"):
-            _optional_text(getattr(self, name), name)
-        _text(self.origin_attempt_id, "origin_attempt_id")
-        if not self.audit_correlation_ids:
+            _optional_reference(getattr(self, name), name)
+        _reference(self.origin_attempt_id, "origin_attempt_id")
+        correlation_ids = tuple(
+            _reference(value, "audit_correlation_ids") for value in self.audit_correlation_ids
+        )
+        if not correlation_ids:
             raise ValueError("audit_correlation_ids must not be empty")
-        for value in self.audit_correlation_ids:
-            _text(value, "audit_correlation_ids")
-        if len(set(self.audit_correlation_ids)) != len(self.audit_correlation_ids):
+        if len(set(correlation_ids)) != len(correlation_ids):
             raise ValueError("audit_correlation_ids must not contain duplicates")
-        receipt_refs = _json_object(dict(self.receipt_refs), "receipt_refs", non_empty_values=True)
-        object.__setattr__(self, "receipt_refs", _freeze_json(receipt_refs))
+        object.__setattr__(self, "audit_correlation_ids", correlation_ids)
+        if not isinstance(self.receipt_refs, BackgroundBranchReceiptRefs):
+            raise ValueError("receipt_refs must be typed")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchProvenance:
@@ -212,16 +371,20 @@ class BackgroundBranchProvenance:
             ),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
             source_id=_text(data["source_id"], "source_id"),
-            executor_class=_text(data["executor_class"], "executor_class"),
-            daemon_id=_optional_text(data["daemon_id"], "daemon_id"),
-            runtime_id=_optional_text(data["runtime_id"], "runtime_id"),
-            worker_id=_optional_text(data["worker_id"], "worker_id"),
-            parent_attempt_id=_optional_text(data["parent_attempt_id"], "parent_attempt_id"),
-            origin_attempt_id=_text(data["origin_attempt_id"], "origin_attempt_id"),
+            executor_class=_enum_value(
+                BackgroundBranchExecutorClass,
+                data["executor_class"],
+                "executor_class",
+            ),
+            daemon_id=_optional_reference(data["daemon_id"], "daemon_id"),
+            runtime_id=_optional_reference(data["runtime_id"], "runtime_id"),
+            worker_id=_optional_reference(data["worker_id"], "worker_id"),
+            parent_attempt_id=_optional_reference(data["parent_attempt_id"], "parent_attempt_id"),
+            origin_attempt_id=_reference(data["origin_attempt_id"], "origin_attempt_id"),
             audit_correlation_ids=_text_tuple(
                 data["audit_correlation_ids"], "audit_correlation_ids"
             ),
-            receipt_refs=_json_object(data["receipt_refs"], "receipt_refs", non_empty_values=True),
+            receipt_refs=BackgroundBranchReceiptRefs.from_dict(data["receipt_refs"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -229,14 +392,14 @@ class BackgroundBranchProvenance:
             "authorizing_principal_id": self.authorizing_principal_id,
             "source_kind": self.source_kind.value,
             "source_id": self.source_id,
-            "executor_class": self.executor_class,
+            "executor_class": self.executor_class.value,
             "daemon_id": self.daemon_id,
             "runtime_id": self.runtime_id,
             "worker_id": self.worker_id,
             "parent_attempt_id": self.parent_attempt_id,
             "origin_attempt_id": self.origin_attempt_id,
             "audit_correlation_ids": list(self.audit_correlation_ids),
-            "receipt_refs": _thaw_json(self.receipt_refs),
+            "receipt_refs": self.receipt_refs.to_dict(),
         }
 
 
@@ -250,7 +413,7 @@ class BackgroundBranchBinding:
     authorizing_principal_id: str
     universe_id: str
     branch_def_id: str
-    operation: str
+    operation: BackgroundBranchOperation
     source_kind: BackgroundBranchSourceKind
     source_id: str
     source_revision: str
@@ -258,7 +421,7 @@ class BackgroundBranchBinding:
     revocation_generation: int
     target_mode: BackgroundBranchTargetMode
     pinned_branch_version_id: str | None
-    permitted_executor_classes: tuple[str, ...]
+    permitted_executor_classes: tuple[BackgroundBranchExecutorClass, ...]
     daemon_id: str | None
     runtime_id: str | None
     expires_at: str | None
@@ -266,7 +429,7 @@ class BackgroundBranchBinding:
     remaining_depth: int
     remaining_count: int
     remaining_cost_microunits: int
-    child_delegation: Mapping[str, Any]
+    child_delegation: BackgroundBranchChildDelegation
 
     _FIELDS = frozenset(
         {
@@ -308,7 +471,6 @@ class BackgroundBranchBinding:
             "authorizing_principal_id",
             "universe_id",
             "branch_def_id",
-            "operation",
             "source_id",
             "source_revision",
             "source_digest",
@@ -318,6 +480,8 @@ class BackgroundBranchBinding:
             raise ValueError("status must be typed")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
+        if not isinstance(self.operation, BackgroundBranchOperation):
+            raise ValueError("operation must be typed")
         if not isinstance(self.target_mode, BackgroundBranchTargetMode):
             raise ValueError("target_mode must be typed")
         _integer(self.generation, "generation", minimum=1)
@@ -328,14 +492,16 @@ class BackgroundBranchBinding:
                 raise ValueError("pinned_version requires pinned_branch_version_id")
         elif self.pinned_branch_version_id is not None:
             raise ValueError("live_at_attempt forbids pinned_branch_version_id")
-        if not self.permitted_executor_classes:
+        executor_classes = tuple(self.permitted_executor_classes)
+        if not executor_classes:
             raise ValueError("permitted_executor_classes must not be empty")
-        for value in self.permitted_executor_classes:
-            _text(value, "permitted_executor_classes")
-        if len(set(self.permitted_executor_classes)) != len(self.permitted_executor_classes):
+        if any(not isinstance(value, BackgroundBranchExecutorClass) for value in executor_classes):
+            raise ValueError("permitted_executor_classes must be typed")
+        if len(set(executor_classes)) != len(executor_classes):
             raise ValueError("permitted_executor_classes must not contain duplicates")
-        _optional_text(self.daemon_id, "daemon_id")
-        _optional_text(self.runtime_id, "runtime_id")
+        object.__setattr__(self, "permitted_executor_classes", executor_classes)
+        _optional_reference(self.daemon_id, "daemon_id")
+        _optional_reference(self.runtime_id, "runtime_id")
         _optional_text(self.expires_at, "expires_at")
         _integer(self.max_attempts, "max_attempts", minimum=1)
         _integer(self.remaining_depth, "remaining_depth", minimum=0)
@@ -345,8 +511,10 @@ class BackgroundBranchBinding:
             "remaining_cost_microunits",
             minimum=0,
         )
-        child_delegation = _json_object(_thaw_json(self.child_delegation), "child_delegation")
-        object.__setattr__(self, "child_delegation", _freeze_json(child_delegation))
+        if not isinstance(self.child_delegation, BackgroundBranchChildDelegation):
+            raise ValueError("child_delegation must be typed")
+        if self.remaining_count > self.max_attempts:
+            raise ValueError("remaining_count exceeds max_attempts")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchBinding:
@@ -362,7 +530,7 @@ class BackgroundBranchBinding:
             ),
             universe_id=_text(data["universe_id"], "universe_id"),
             branch_def_id=_text(data["branch_def_id"], "branch_def_id"),
-            operation=_text(data["operation"], "operation"),
+            operation=_enum_value(BackgroundBranchOperation, data["operation"], "operation"),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
             source_id=_text(data["source_id"], "source_id"),
             source_revision=_text(data["source_revision"], "source_revision"),
@@ -374,11 +542,13 @@ class BackgroundBranchBinding:
             pinned_branch_version_id=_optional_text(
                 data["pinned_branch_version_id"], "pinned_branch_version_id"
             ),
-            permitted_executor_classes=_text_tuple(
-                data["permitted_executor_classes"], "permitted_executor_classes"
+            permitted_executor_classes=_enum_tuple(
+                BackgroundBranchExecutorClass,
+                data["permitted_executor_classes"],
+                "permitted_executor_classes",
             ),
-            daemon_id=_optional_text(data["daemon_id"], "daemon_id"),
-            runtime_id=_optional_text(data["runtime_id"], "runtime_id"),
+            daemon_id=_optional_reference(data["daemon_id"], "daemon_id"),
+            runtime_id=_optional_reference(data["runtime_id"], "runtime_id"),
             expires_at=_optional_text(data["expires_at"], "expires_at"),
             max_attempts=_integer(data["max_attempts"], "max_attempts", minimum=1),
             remaining_depth=_integer(data["remaining_depth"], "remaining_depth", minimum=0),
@@ -388,7 +558,7 @@ class BackgroundBranchBinding:
                 "remaining_cost_microunits",
                 minimum=0,
             ),
-            child_delegation=_json_object(data["child_delegation"], "child_delegation"),
+            child_delegation=BackgroundBranchChildDelegation.from_dict(data["child_delegation"]),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -401,7 +571,7 @@ class BackgroundBranchBinding:
             "authorizing_principal_id": self.authorizing_principal_id,
             "universe_id": self.universe_id,
             "branch_def_id": self.branch_def_id,
-            "operation": self.operation,
+            "operation": self.operation.value,
             "source_kind": self.source_kind.value,
             "source_id": self.source_id,
             "source_revision": self.source_revision,
@@ -409,7 +579,7 @@ class BackgroundBranchBinding:
             "revocation_generation": self.revocation_generation,
             "target_mode": self.target_mode.value,
             "pinned_branch_version_id": self.pinned_branch_version_id,
-            "permitted_executor_classes": list(self.permitted_executor_classes),
+            "permitted_executor_classes": [item.value for item in self.permitted_executor_classes],
             "daemon_id": self.daemon_id,
             "runtime_id": self.runtime_id,
             "expires_at": self.expires_at,
@@ -417,7 +587,7 @@ class BackgroundBranchBinding:
             "remaining_depth": self.remaining_depth,
             "remaining_count": self.remaining_count,
             "remaining_cost_microunits": self.remaining_cost_microunits,
-            "child_delegation": _thaw_json(self.child_delegation),
+            "child_delegation": self.child_delegation.to_dict(),
         }
 
 
@@ -434,11 +604,11 @@ class BackgroundBranchAttempt:
     branch_def_id: str
     branch_version_id: str
     branch_content_digest: str
-    operation: str
+    operation: BackgroundBranchOperation
     source_kind: BackgroundBranchSourceKind
     source_id: str
     source_generation: int
-    executor_audience: str
+    executor_audience: BackgroundBranchExecutorAudience
     claim_generation: int
     lease_generation: int
     lease_expires_at: str | None
@@ -506,15 +676,17 @@ class BackgroundBranchAttempt:
             "branch_def_id",
             "branch_version_id",
             "branch_content_digest",
-            "operation",
             "source_id",
-            "executor_audience",
             "created_at",
             "updated_at",
         ):
             _text(getattr(self, name), name)
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
+        if not isinstance(self.operation, BackgroundBranchOperation):
+            raise ValueError("operation must be typed")
+        if not isinstance(self.executor_audience, BackgroundBranchExecutorAudience):
+            raise ValueError("executor_audience must be typed")
         if not isinstance(self.lifecycle, BackgroundBranchAttemptLifecycle):
             raise ValueError("lifecycle must be typed")
         if self.hold_reason is not None and not isinstance(
@@ -559,6 +731,28 @@ class BackgroundBranchAttempt:
             raise ValueError("provenance source_kind must match attempt source_kind")
         if self.provenance.source_id != self.source_id:
             raise ValueError("provenance source_id must match attempt source_id")
+        if (
+            self.provenance.executor_class is not self.executor_audience.executor_class
+            or self.provenance.daemon_id != self.executor_audience.daemon_id
+            or self.provenance.runtime_id != self.executor_audience.runtime_id
+            or self.provenance.worker_id != self.executor_audience.worker_id
+        ):
+            raise ValueError("provenance executor must match attempt audience")
+        child_source = self.source_kind in {
+            BackgroundBranchSourceKind.DIRECT_CHILD,
+            BackgroundBranchSourceKind.PARENT_ATTEMPT,
+        }
+        if child_source:
+            if self.provenance.parent_attempt_id is None:
+                raise ValueError("child attempt requires parent lineage")
+            if self.provenance.parent_attempt_id == self.attempt_id:
+                raise ValueError("child attempt cannot parent itself")
+            if self.provenance.origin_attempt_id == self.attempt_id:
+                raise ValueError("child attempt requires root origin lineage")
+        elif self.provenance.parent_attempt_id is not None:
+            raise ValueError("root attempt cannot have parent lineage")
+        elif self.provenance.origin_attempt_id != self.attempt_id:
+            raise ValueError("root attempt must originate from itself")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchAttempt:
@@ -580,11 +774,11 @@ class BackgroundBranchAttempt:
             branch_def_id=_text(data["branch_def_id"], "branch_def_id"),
             branch_version_id=_text(data["branch_version_id"], "branch_version_id"),
             branch_content_digest=_text(data["branch_content_digest"], "branch_content_digest"),
-            operation=_text(data["operation"], "operation"),
+            operation=_enum_value(BackgroundBranchOperation, data["operation"], "operation"),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
             source_id=_text(data["source_id"], "source_id"),
             source_generation=_integer(data["source_generation"], "source_generation", minimum=0),
-            executor_audience=_text(data["executor_audience"], "executor_audience"),
+            executor_audience=BackgroundBranchExecutorAudience.from_dict(data["executor_audience"]),
             claim_generation=_integer(data["claim_generation"], "claim_generation", minimum=1),
             lease_generation=_integer(data["lease_generation"], "lease_generation", minimum=1),
             lease_expires_at=_optional_text(data["lease_expires_at"], "lease_expires_at"),
@@ -595,7 +789,11 @@ class BackgroundBranchAttempt:
                 "remaining_cost_microunits",
                 minimum=0,
             ),
-            lifecycle=_enum_value(BackgroundBranchAttemptLifecycle, data["lifecycle"], "lifecycle"),
+            lifecycle=_enum_value(
+                BackgroundBranchAttemptLifecycle,
+                data["lifecycle"],
+                "lifecycle",
+            ),
             hold_reason=(
                 None
                 if raw_hold_reason is None
@@ -620,11 +818,11 @@ class BackgroundBranchAttempt:
             "branch_def_id": self.branch_def_id,
             "branch_version_id": self.branch_version_id,
             "branch_content_digest": self.branch_content_digest,
-            "operation": self.operation,
+            "operation": self.operation.value,
             "source_kind": self.source_kind.value,
             "source_id": self.source_id,
             "source_generation": self.source_generation,
-            "executor_audience": self.executor_audience,
+            "executor_audience": self.executor_audience.to_dict(),
             "claim_generation": self.claim_generation,
             "lease_generation": self.lease_generation,
             "lease_expires_at": self.lease_expires_at,
