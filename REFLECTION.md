@@ -1,3 +1,13 @@
+## 2026-07-29 — OpenSpec drain progress hardening
+
+What surprised me: the controller's reported slice count was not evidence of delivery. Raw PR-string equality, fixed receipt eviction, private blockers, lossy task identities, and ambiguous restart audits could each manufacture progress independently.
+
+Pattern worth capturing: autonomous drains need durable external truth for every terminal state, idempotent canonical receipts for the full bounded run, and fail-open retry whenever legacy evidence cannot identify which work truly succeeded. Independent review is valuable when each finding becomes executable regression coverage.
+
+One thing I would do differently: model restart migration and historical audit ambiguity in the first test matrix, alongside the happy-path result parser, before trusting a persisted controller state shape.
+
+## 2026-07-23 — deploy receipt observability
+
 What surprised me: the deploy workflow already had nearly all facts needed for a release receipt; the gap was mostly that none of them were written into a machine-readable runtime artifact.
 
 Pattern worth capturing: release observability should be deploy-published and status-read-only. That keeps `get_status` safe while still making live drift checkable by chatbots and local tools.
