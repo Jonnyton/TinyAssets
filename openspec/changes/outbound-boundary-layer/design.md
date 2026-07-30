@@ -72,8 +72,11 @@ credential-blind scoped connection proxy. Opaque internal identifiers never
 appear in the public marker, and the reconciler never receives credential
 material.
 
-Reconciliation is read-only. Exactly one pull request whose repository, head
-SHA, and body marker all match is terminal success. A successful authoritative
+Reconciliation is read-only. Repository owner/name components must be
+dot-segment-free. Exactly one pull request whose repository, head SHA, and
+single well-formed reserved body marker all match is terminal success. A body
+with a duplicate, conflicting, or malformed reserved marker is ambiguous even
+when it also contains the expected marker. A successful authoritative
 commit-association query with no exact match is conclusive absence. Multiple
 exact matches, malformed responses, transport failures, and any partial match
 are indeterminate and MUST NOT authorize a retry. This typed adapter remains

@@ -41,11 +41,14 @@ read-scoped, credential-blind connection proxy. The reconciler SHALL NOT
 receive credential material. Legacy or Branch-authored packet fields SHALL NOT
 create this identity or reconciliation authority.
 
-Exactly one result with the exact repository, head SHA, and marker SHALL be
-terminal success. A successful authoritative query with no exact result SHALL
-be terminal absence. Multiple exact matches, partial matches, malformed
-responses, and destination errors SHALL be indeterminate and SHALL NOT permit
-another write.
+Repository owner/name components SHALL be canonical and SHALL reject `.` and
+`..` path segments. Exactly one result with the exact repository, head SHA, and
+exactly one well-formed reserved marker SHALL be terminal success. A duplicate,
+conflicting, or malformed reserved marker SHALL make the result indeterminate
+even when the expected marker is also present. A successful authoritative query
+with no exact result SHALL be terminal absence. Multiple exact matches, partial
+matches, malformed responses, and destination errors SHALL be indeterminate and
+SHALL NOT permit another write.
 
 #### Scenario: one exact remote pull request is attached
 - **WHEN** reconciliation finds exactly one pull request associated with the intended commit whose head SHA and body marker match the server-authored identity

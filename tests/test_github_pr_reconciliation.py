@@ -81,6 +81,10 @@ def test_effect_identity_is_closed_canonical_and_secret_free():
         ("automation_id", " automation-7"),
         ("claim_id", "x\nclaim"),
         ("repository", "not-a-repository"),
+        ("repository", "../repo"),
+        ("repository", "owner/.."),
+        ("repository", "./repo"),
+        ("repository", "owner/."),
         ("intended_head_sha", "abc"),
         ("effect_kind", "github_issue"),
     ],
@@ -99,6 +103,16 @@ def test_body_marker_append_is_idempotent_and_rejects_conflicting_marker():
     other = _identity(claim_id="claim-other")
     with pytest.raises(ValueError, match="different TinyAssets effect marker"):
         github_pr.with_github_pr_effect_marker(marked, other)
+
+
+def test_body_marker_append_rejects_expected_plus_malformed_reserved_marker():
+    identity = _identity()
+    body = (
+        f"{github_pr.github_pr_effect_marker(identity)}\n"
+        "<!-- tinyassets-github-pr-effect:v1:not-a-digest -->"
+    )
+    with pytest.raises(ValueError, match="malformed TinyAssets effect marker"):
+        github_pr.with_github_pr_effect_marker(body, identity)
 
 
 def test_exact_commit_marker_and_repository_match_reconciles_success():
@@ -170,6 +184,33 @@ def test_full_page_is_indeterminate_without_pagination_proof():
         ],
         lambda identity: [
             _pull(identity, repository="other/repo"),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    f"{github_pr.github_pr_effect_marker(_identity(claim_id='other'))}"
+                ),
+            ),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    f"{github_pr.github_pr_effect_marker(identity)}"
+                ),
+            ),
+        ],
+        lambda identity: [
+            _pull(
+                identity,
+                body=(
+                    f"{github_pr.github_pr_effect_marker(identity)}\n"
+                    "<!-- tinyassets-github-pr-effect:v1:not-a-digest -->"
+                ),
+            ),
         ],
         lambda identity: [
             _pull(identity, number=1),
