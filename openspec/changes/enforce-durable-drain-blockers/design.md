@@ -106,9 +106,11 @@ each unique PR again before trusting it. This prevents a previously failed
 verification that later becomes merged from suppressing its first legitimate
 retry. Legacy recovered/replayed merge audit forms are included only within the
 persisted completed-slice ledger, because the old recovery log did not record
-controller verification separately from the worker marker. `PARTIAL` does not
-consume the receipt, because a later `MERGED` result may legitimately use the
-same PR after foldback.
+controller verification separately from the worker marker. If that ledger
+cannot identify which recovery PRs succeeded, reconstruction trusts none of
+the ambiguous receipts and permits a harmless retry rather than suppressing
+legitimate work. `PARTIAL` does not consume the receipt, because a later
+`MERGED` result may legitimately use the same PR after foldback.
 
 An exact duplicate `MERGED` result records a finite
 `INVALID_DUPLICATE_MERGE`, retains any admission, and never advances slice

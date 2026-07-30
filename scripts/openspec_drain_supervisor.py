@@ -1159,11 +1159,15 @@ def infer_legacy_merged_prs(
     # verification status. The completed-slice ledger bounds how many of those
     # ambiguous recovery events can have succeeded.
     recovery_slots = max(0, completed_slices - len(ordinary_attempts))
-    accepted_attempts = ordinary_attempts | set(
-        recovery_candidates[-recovery_slots:]
-        if recovery_slots
+    # If fewer recovery slots exist than recovery candidates, the legacy
+    # artifacts prove how many succeeded but not which PRs succeeded. Trusting
+    # any candidate could suppress a legitimate retry, so fail open to retry.
+    accepted_recoveries = (
+        recovery_candidates
+        if recovery_slots >= len(recovery_candidates)
         else []
     )
+    accepted_attempts = ordinary_attempts | set(accepted_recoveries)
     receipts: list[str] = []
     for attempt in sorted(accepted_attempts):
         try:

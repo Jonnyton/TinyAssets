@@ -2298,6 +2298,44 @@ def test_legacy_recovery_audit_cannot_exceed_completed_slice_ledger(
     assert receipts == []
 
 
+def test_legacy_recovery_audits_fail_open_when_success_identity_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    first = "https://github.com/o/r/pull/12"
+    second = "https://github.com/o/r/pull/13"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED first {first}\n",
+        encoding="utf-8",
+    )
+    (results_dir / "002.md").write_text(
+        f"DRAIN_RESULT: MERGED second {second}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 replayed newly valid result "
+        "attempt=1 status=MERGED\n"
+        "2026-07-29T00:01:00-07:00 recovered unconsumed terminal result "
+        "attempt=2 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=2,
+            last_consumed_attempt=2,
+            completed_slices=1,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == []
+
+
 def test_apply_partial_resets_failures_and_sets_resume_target() -> None:
     state = _state(consecutive_failures=1)
     result = drain.DrainResult(
