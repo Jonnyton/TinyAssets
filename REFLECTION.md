@@ -882,3 +882,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include response credential egress in the
   first front-door threat model alongside request-secret injection, rather than
   treating generic non-hop-by-hop pass-through as sufficient.
+
+## 2026-07-30 - recovery-to-normal deploy handoff
+
+- **What surprised me:** emergency recovery itself was correct; the outage
+  appeared one deployment later because Docker Compose project identity is
+  lifecycle authority even when fixed container names and images are equal.
+- **Pattern worth capturing:** a temporary recovery owner needs an explicit,
+  durable handoff back to the canonical owner. Carry exact provenance through
+  the next write-ahead record, retire only exact stopped IDs, and make the
+  mutation replayable before releasing the canonical start gate.
+- **What I would do differently:** include “next normal deploy after successful
+  recovery” in the first recovery acceptance matrix, not only recovery canary
+  and finalization.

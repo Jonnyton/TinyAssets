@@ -5,11 +5,11 @@
 
 ## 1. Test-Driven Repair
 
-- [ ] 1.1 Add failing tests for exact finalized-recovery handoff, ordinary
+- [x] 1.1 Add failing tests for exact finalized-recovery handoff, ordinary
   canonical predecessor preservation, and foreign/partial/running refusal.
-- [ ] 1.2 Carry exact recovery provenance through preflight and retire only the
+- [x] 1.2 Carry exact recovery provenance through preflight and retire only the
   recorded stopped recovery generation during target preparation.
-- [ ] 1.3 Add and pass interruption/replay tests proving removal intent is
+- [x] 1.3 Add and pass interruption/replay tests proving removal intent is
   durable, exact-empty replay is idempotent, and partial substitution fails.
 
 ## 2. Verification And Release
