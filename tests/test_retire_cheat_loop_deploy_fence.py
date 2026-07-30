@@ -612,6 +612,14 @@ class LifecycleHost:
                 raise FenceError("docker ps failed")
             if self.container_state_override is not None:
                 return self.container_state_override
+            name_filters = [
+                value.removeprefix("name=^/").removesuffix("$")
+                for value in command
+                if value.startswith("name=^/")
+            ]
+            if name_filters:
+                info = self.containers.get(name_filters[0])
+                return str(info["Id"]) if info else ""
             identity = next(
                 value.removeprefix("id=")
                 for value in command
@@ -2163,6 +2171,156 @@ def test_recover_unsafe_accepts_compose_down_zero_container_fence(
         info["HostConfig"]["RestartPolicy"]["Name"] == "no"
         for info in host.containers.values()
     )
+
+
+def test_recover_unsafe_replaces_proved_partial_canonical_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    partial = host._containers("partial-target", "sha256:target", running=False)
+    host.containers = {"tinyassets-daemon": partial["tinyassets-daemon"]}
+    for info in host.containers.values():
+        info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    partial_id = str(host.containers["tinyassets-daemon"]["Id"])
+    host.start_installs_target = True
+
+    evidence = recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-partial-target",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "recovery_pending_canary"
+    remove = next(call for call in host.calls if call[:2] == ("docker", "rm"))
+    assert remove == ("docker", "rm", partial_id)
+    assert "-v" not in remove
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["partial_target_removal"] == {
+        "container_ids": {"tinyassets-daemon": partial_id},
+        "image_ref": host.target_image_ref,
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+        "revision": host.target_revision,
+    }
+
+
+@pytest.mark.parametrize(
+    "drift",
+    ["foreign_project", "running", "restart_policy", "foreign_image", "off_volume"],
+)
+def test_recover_unsafe_refuses_unproved_partial_canonical_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    partial = host._containers("partial-target", "sha256:target", running=False)
+    host.containers = {"tinyassets-daemon": partial["tinyassets-daemon"]}
+    info = host.containers["tinyassets-daemon"]
+    info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
+    info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    if drift == "foreign_project":
+        info["Config"]["Labels"]["com.docker.compose.project"] = "foreign"
+    elif drift == "running":
+        info["State"] = {"Running": True, "Pid": 9999}
+    elif drift == "restart_policy":
+        info["HostConfig"]["RestartPolicy"]["Name"] = "always"
+    elif drift == "foreign_image":
+        info["Image"] = "sha256:old"
+    else:
+        off_volume = partial["tinyassets-worker"]
+        off_volume["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
+        off_volume["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        host.containers["tinyassets-worker"] = off_volume
+        monkeypatch.setattr(
+            host,
+            "volume_container_names",
+            lambda: ["tinyassets-daemon"],
+        )
+
+    with pytest.raises(FenceError):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id=f"recovery-partial-{drift}",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+
+
+def test_partial_target_removal_replays_after_interrupted_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    partial = host._containers("partial-target", "sha256:target", running=False)
+    host.containers = {
+        name: partial[name]
+        for name in EXPECTED_CONTAINERS[:2]
+    }
+    for info in host.containers.values():
+        info["Config"]["Labels"]["com.docker.compose.project"] = "tinyassets"
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    original_run = host.run
+    interrupted = False
+
+    def interrupt_after_one_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal interrupted
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not interrupted:
+            interrupted = True
+            original_run(
+                ["docker", "rm", command[2]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated partial target removal interruption")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated partial target"):
+        fence._remove_partial_canonical_target_for_recovery(
+            host,
+            json.loads(state_path.read_text(encoding="utf-8")),
+            state_path=state_path,
+        )
+
+    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert interrupted_state["partial_target_removal"]["removal_phase"] == "planned"
+    assert len(host.containers) == 1
+
+    host.run = original_run  # type: ignore[method-assign]
+    removed = fence._remove_partial_canonical_target_for_recovery(
+        host,
+        interrupted_state,
+        state_path=state_path,
+    )
+
+    assert set(removed) == set(EXPECTED_CONTAINERS[:2])
+    assert host.containers == {}
+    final_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert final_state["partial_target_removal"]["removal_phase"] == "removed"
 
 
 def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(

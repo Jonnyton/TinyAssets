@@ -6,6 +6,13 @@ The public MCP surface is recovered on the previously configured immutable
 image. Normal deployment remains paused until the reviewed handoff repair is
 landed and deployed.
 
+Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
+successfully handed off the recovered generation and installed the target, but
+health convergence failed with only stopped `tinyassets-daemon` remaining.
+Cleanup fenced that `restart=no` strict subset. Recovery `30582599465` then
+failed closed because recovery admitted only empty or exact-five volume
+inventories. A fresh public canary returned HTTP 502.
+
 ## Production Evidence
 
 - Diagnostic normal deploy run `30578541098` completed its stop-writer
@@ -61,6 +68,15 @@ Substituted, running, restart-enabled, and foreign-project survivors fail.
 Ordinary canonical predecessors have no recovery handoff record and keep the
 existing systemd lifecycle.
 
+The follow-up recovery repair recognizes only a strict subset of expected
+canonical target names whose exact image/revision equals the durable target,
+whose Compose project is exactly `tinyassets`, and whose containers are
+stopped with `restart=no`. Every missing expected name must be absent across
+all container states. It writes observed IDs before `docker rm`, removes
+without `-v`, and replays only the remaining recorded subset after an
+interruption. Extra, foreign, running, restart-enabled, substituted, and
+same-name off-volume states fail before removal.
+
 ## Verification
 
 TDD red evidence on 2026-07-30:
@@ -97,6 +113,23 @@ needed an explicit sync/archive closeout task. Both findings are addressed in
 head `65a12e1c`. Independent exact-head re-review returned APPROVE after fresh
 evidence of 100 focused tests, clean Ruff and diff checks, and strict OpenSpec
 validation.
+
+Follow-up P0 verification on 2026-07-30 (Windows host):
+
+```text
+py -m pytest tests/test_retire_cheat_loop_deploy_fence.py -q
+107 passed in 3.12s
+
+py -m ruff check scripts/retire_cheat_loop_deploy_fence.py tests/test_retire_cheat_loop_deploy_fence.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict
+Change 'repair-recovery-deploy-handoff' is valid
+```
+
+Seven new tests cover production-shaped partial-target recovery, write-ahead
+replay after interrupted subset removal, and refusal of foreign-project,
+running, restart-enabled, foreign-image, and same-name off-volume states.
 
 ## Release And Rollback
 
