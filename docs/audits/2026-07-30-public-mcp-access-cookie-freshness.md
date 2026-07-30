@@ -31,11 +31,20 @@ Keep the Access-cookie concern at P0 and freshness-stamp it 2026-07-30. Track th
 
 ## Remediation update
 
-Freshness: 2026-07-30 13:18 PDT, Windows, draft PR #1934 head `c1bd65d7`.
+Freshness: 2026-07-30 12:31 PDT, Windows, draft PR #1934 head `a62b867f`,
+public edge `https://tinyassets.io/mcp`.
 
 The implementation now strips every upstream `Set-Cookie` response header at
 the public Worker boundary. The regression test failed before the fix on the
 application cookie and passed afterward; the complete Worker suite passes
 62/62 while the existing SSE stream test remains green. This is code and spec
 evidence only. The P0 remains open pending merge, deployment, a sanitized
-healthy-path probe, rendered chatbot proof, and post-fix clean-use evidence.
+post-fix healthy-path probe, rendered chatbot proof, and post-fix clean-use
+evidence.
+
+A value-free live probe now confirms the pre-fix production exposure on the
+healthy service: GET returned HTTP 400 with `Set-Cookie` present, and a valid
+initialize POST returned HTTP 200 `text/event-stream` with `Set-Cookie`
+present. The probe printed only the header-presence boolean, status, and content
+type; it never read or persisted cookie values. The canonical exact-handle
+canary also exited 0 immediately before these probes.
