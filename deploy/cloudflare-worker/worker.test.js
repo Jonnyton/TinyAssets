@@ -346,6 +346,27 @@ describe('proxyToTunnel — response pass-through', () => {
         assert.equal(res.headers.get('X-Ok'), 'yes');
     });
 
+    it('strips every upstream response cookie at the public boundary', async () => {
+        const upstreamHeaders = new Headers({
+            'Content-Type': 'text/plain',
+            'X-Ok': 'yes',
+        });
+        upstreamHeaders.append('Set-Cookie', 'CF_Authorization=access-token; Secure; HttpOnly');
+        upstreamHeaders.append('Set-Cookie', 'application_session=session-token; Secure; HttpOnly');
+        nextUpstreamResponse = new Response('stream-safe-body', {
+            status: 200,
+            headers: upstreamHeaders,
+        });
+
+        const req = new Request('https://tinyassets.io/mcp', { method: 'GET' });
+        const res = await proxyToTunnel(req);
+
+        assert.equal(res.headers.get('Set-Cookie'), null);
+        assert.equal(res.headers.get('Content-Type'), 'text/plain');
+        assert.equal(res.headers.get('X-Ok'), 'yes');
+        assert.equal(await res.text(), 'stream-safe-body');
+    });
+
     it('preserves SSE streaming Content-Type', async () => {
         nextUpstreamResponse = new Response('event: message\ndata: {"x":1}\n\n', {
             status: 200,
