@@ -5,7 +5,7 @@
 - [ ] 1.3 Define typed `BackgroundBranchBinding`, `BackgroundBranchAttempt`, source-kind, target-mode, lifecycle, hold-reason, and provenance contracts with strict validation and lossless round trips.
 - [ ] 1.4 Define the `BackgroundBranchAuthorityStore` protocol, transaction/CAS primitives, lock order, and bounded query seams without exposing storage tables to callers.
 - [ ] 1.5 Add deterministic logical-attempt-key builders for schedule periods, subscription events, soul cycles, Request/task bodies, producer subscription/contract items, resume checkpoints, claimed task generations, and graph child/retry ordinals; add no wiki-filing key.
-- [ ] 1.6 Obtain host approval for the `PLAN.md` reconciliation that assigns one live scheduling/task-claim mutation authority; block production persistence integration and activation until it lands while allowing model, inventory, dark-mode, and test work.
+- [x] 1.6 Obtain host approval for the `PLAN.md` reconciliation that assigns one live scheduling/task-claim mutation authority; block production persistence integration and activation until it lands while allowing model, inventory, dark-mode, and test work. Completed 2026-07-29: the host approved epoch-2 transactional claiming as the sole live mutation authority, with epoch-1 file locking restricted to a bounded compatibility drain and never dual-active; the decision is recorded in PLAN's Daemon Platform module and Design Decisions index.
 
 ## 2. Authority Store and Recovery Core
 
