@@ -1,8 +1,8 @@
 name: Daemon request policy
 
 on:
-  pull_request:
-    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review, edited, labeled, unlabeled]
 
 permissions:
   contents: read
@@ -13,8 +13,28 @@ jobs:
   policy:
     runs-on: ubuntu-latest
     steps:
+      - name: Check out trusted policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: Require exact-head review for drain PRs
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_OID: ${{ github.event.pull_request.head.sha }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "${PR_BODY:-}" > "$RUNNER_TEMP/pr-body.md"
+          python scripts/drain_review_gate.py \
+            --branch "$HEAD_REF" \
+            --head "$HEAD_OID" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
       - name: Enforce writer/checker family policy
-        uses: actions/github-script@v7
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b
         with:
           script: |
             const prNumber = context.payload.pull_request.number;

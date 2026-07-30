@@ -24,6 +24,12 @@ request head. It MUST disable an existing drain auto-merge request when the
 receipt is missing, malformed, ambiguous, or stale. Non-drain pull requests
 MUST retain their existing enrollment behavior.
 
+The repository's already-required `policy` check SHALL evaluate the same receipt
+against every current drain head from trusted base-branch code and MUST fail
+closed when the receipt is missing, malformed, ambiguous, or stale. The policy
+check MUST remain pending or red for an unapproved current head so branch
+protection prevents merge while enrollment cancellation is still running.
+
 #### Scenario: No safe candidate exists
 
 - **WHEN** every candidate is live-claimed, host-owned, blocked, or lacks a
@@ -55,6 +61,8 @@ MUST retain their existing enrollment behavior.
   a head other than the current pull-request head
 - **THEN** the trusted repository workflow does not enable auto-merge and
   disables any existing auto-merge request
+- **AND** the required current-head policy check fails so branch protection
+  prevents merge before or during cancellation
 
 #### Scenario: Drain pull request has exact-head approval
 
@@ -63,6 +71,8 @@ MUST retain their existing enrollment behavior.
   marker
 - **THEN** the trusted repository workflow may idempotently enable auto-merge
   under the ordinary required CI and branch-protection gates
+- **AND** the required policy check may pass that head through to the existing
+  writer/checker family policy
 
 #### Scenario: Reviewed drain head changes
 

@@ -11,6 +11,12 @@ WORKFLOW = (
     / "workflows"
     / "auto-enroll-merge.yml"
 )
+POLICY_WORKFLOW = (
+    Path(__file__).resolve().parents[1]
+    / ".github"
+    / "workflows"
+    / "daemon-request-policy.yml"
+)
 HEAD = "a" * 40
 
 
@@ -126,3 +132,18 @@ def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
         "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
         in text
     )
+
+
+def test_required_policy_fails_closed_on_unreviewed_drain_head() -> None:
+    text = POLICY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "pull_request_target:" in text
+    assert "edited" in text
+    assert (
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        in text
+    )
+    assert "scripts/drain_review_gate.py" in text
+    assert "--branch \"$HEAD_REF\"" in text
+    assert "--head \"$HEAD_OID\"" in text
+    assert "--body-file \"$RUNNER_TEMP/pr-body.md\"" in text

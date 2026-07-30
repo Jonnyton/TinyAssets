@@ -88,6 +88,21 @@ and enrollment fails atomically. The privileged workflow pins its checkout
 action to the repository's reviewed immutable v4 commit instead of a mutable
 tag.
 
+### Reuse the existing required policy check as the merge-atomic gate
+
+Enrollment cancellation alone is reactionary: a newly pushed head can retain
+its prior auto-merge request until the `synchronize` handler disables it. The
+repository's existing `policy` check is already required by branch protection,
+so it runs the same validator against the current head and fails on `deny`.
+GitHub therefore keeps a new head unmergeable while the check is pending and
+after a stale receipt makes it red.
+
+The policy workflow uses `pull_request_target`, checks out only the immutable
+base SHA, never checks out pull-request code, and pins both third-party actions
+to immutable commits. Its token remains read-only. Ordinary branches receive
+`allow` from the validator and continue through the existing writer/checker
+family policy unchanged.
+
 ### Make draft-first publication explicit in the worker brief
 
 The worker must open its one pull request with `--draft`, obtain independent
@@ -114,7 +129,7 @@ owns enrollment.
 ## Migration Plan
 
 1. Land the validator, focused tests, trusted workflow reconciliation, worker
-   brief, and canonical delta spec in one pull request.
+   brief, required policy gate, and canonical delta spec in one pull request.
 2. Keep this pull request draft until its own exact-head independent review is
    complete, then mark ready under the existing repository policy.
 3. After merge, verify the workflow on a synthetic or next real drain draft:

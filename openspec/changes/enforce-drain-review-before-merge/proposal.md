@@ -12,6 +12,9 @@ follow-up PR #1888.
   merge.
 - Disable an existing drain auto-merge request when a new commit makes the
   recorded review head stale.
+- Make the repository's existing required `policy` check fail for a drain head
+  without a matching approval receipt, closing the merge race while enrollment
+  cancellation is still running.
 - Require drain workers to create draft pull requests, obtain independent
   exact-head approval, record the receipt, and only then mark the pull request
   ready for repository-managed auto-merge.
@@ -30,6 +33,6 @@ None.
 
 ## Impact
 
-The change affects the drain worker brief, the trusted auto-enroll workflow, a
-small review-receipt validator, and focused tests. It adds no dependency,
-product API, production runtime, or public connector behavior.
+The change affects the drain worker brief, the trusted auto-enroll and required
+policy workflows, a small review-receipt validator, and focused tests. It adds
+no dependency, product API, production runtime, or public connector behavior.
