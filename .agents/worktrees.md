@@ -4,11 +4,11 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/ringer-production-orchestration-20260730`
-- Lane state: Active P0 architecture-and-implementation lane
+- Lane state: Parked after task 1.1 landed in PR #1949; activation prerequisites remain pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730`
-- STATUS/Issue/PR: claimed Ringer-informed generic GitHub-to-spec orchestration
+- STATUS/Issue/PR: PR #1949 landed; pending activation row retained in `STATUS.md`
 - PLAN refs: scoping Rule 1/2/5; Daemon Platform; Evolution/Evaluation; Providers; Harness/Coordination; full-platform uptime
-- Purpose: adapt Ringer/Symphony lessons into TinyAssets' generic hostless verified-production substrate, with the main-account drain as first proof
+- Purpose: task 1.1 established the dark generic hostless-production contract; task 1.2 waits on its named authority, reconciliation, and safe-execution prerequisites
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730/_PURPOSE.md`
 - Memory refs: `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`; `ideas/INBOX.md` 2026-07-29 backlog-refinery capture
 - Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/activate-main-universe-spec-drain/`
