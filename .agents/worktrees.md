@@ -1794,3 +1794,26 @@ Notes:
 - Purpose: close duplicate-fire/replay races for every approved background source without a wiki-filing key
 - Review gate: focused tests plus fresh-context independent exact-head review
 - Publish/cleanup: one draft PR; retain worktree until merge and foldback
+
+## 2026-07-30 11:48 - cloud drain authority inventory closure
+
+- Provider: `codex-cloud-drain-critical-path-20260730`
+- Branch: `codex/cloud-drain-critical-path-20260730`
+- Lane state: Claimed OpenSpec tasks 1.1/1.2
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-critical-path-20260730`
+- STATUS/Issue/PR: exact execution-root inventory and canonical read-owner closure; PR pending
+- Purpose: make new background execution/queue roots fail CI and preserve owner-native identity, ACL, B2, queue, and provider truth
+- Review gate: 120 focused tests, strict OpenSpec, Ruff/py_compile, and fresh-context independent exact-head review
+- Publish/cleanup: one PR to main; no persistence or production activation in this lane
+- Runtime context: guarded recovery run 30571039375 restored canonical HTTP 200, exact-seven handles, and finalized the stop-writer fence
+
+## 2026-07-30 12:08 - cloud drain authority inventory landed
+
+- Provider: `codex-cloud-drain-critical-path-20260730`
+- Branch: `codex/cloud-drain-critical-path-20260730`
+- Lane state: Landed as PR #1930 (`406f559b`)
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-critical-path-20260730`
+- STATUS/Issue/PR: tasks 1.1/1.2 completed; claim retired by the foldback lane
+- Purpose: record integration of the execution-root/read-owner closure gate
+- Review gate: exact head `2dea7d38` independently approved; 125 focused tests and CI green
+- Publish/cleanup: safe to remove after foldback lands
