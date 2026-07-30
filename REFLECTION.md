@@ -909,3 +909,8 @@ fresh-host rollback edges found later.
   an authority ownership matrix and an executable-surface inventory before
   proposing a schema. That would have exposed both the duplicate-owner risk and
   the unsafe `AcceptanceScenario` dispatcher boundary in the first draft.
+# 2026-07-30 - Ringer GitHub reconciliation
+
+- What surprised me: the repository auto-enroll workflow can merge a non-draft PR within seconds, before an independent review requested in the same session returns.
+- Pattern worth capturing: destination reconciliation needs a complete reserved-marker-family check, not substring presence; creation and reconciliation must share the same ambiguity rule.
+- What I would do differently: open review-gated follow-ups as draft PRs immediately, especially when auto-enroll is active, and keep the adapter credential-blind from the first implementation commit.

@@ -25,7 +25,7 @@
 - [x] 3.3 Hold a batch as a whole when any item fails admission, effect, or reconciliation, exposing every item and reason; prohibit partial-silent results. Do not claim rollback of already-terminal effects — test that the reported outcome distinguishes "nothing further fired" from "earlier effects reversed".
 - [x] 3.5 Replace time-only pending-row reclamation with destination reconciliation, holding for remediation where the destination exposes no reconciliation interface.
 - [x] 3.4 Migrate existing effectors from caller-hint identity to system-derived identity behind a flag, with dual-write parity proof before the flag flips.
-- [ ] 3.6 Add the dark typed GitHub pull-request identity, digest marker, and read-only commit-association reconciler for repository-to-spec automation; prove exact match, conclusive absence, partial/multiple-match holds, malformed/transport holds, bounded evidence, and zero mutation. Do not let Branch packet fields mint this identity.
+- [x] 3.6 Add the dark typed GitHub pull-request identity, digest marker, and read-only commit-association reconciler for repository-to-spec automation; prove exact match, conclusive absence, partial/multiple-match holds, malformed/transport holds, bounded evidence, and zero mutation. Do not let Branch packet fields mint this identity. Completed 2026-07-30 across #1951/#1953 and reviewed hardening head `6780e271`: the reconciler uses only a destination-matched credential-blind scoped proxy, requires one exact marker/repository/head match, holds every ambiguous or truncated result, rejects dot-segment repositories, and has no live Branch-packet route.
 
 ## 4. Inboxes and typed artifacts
 

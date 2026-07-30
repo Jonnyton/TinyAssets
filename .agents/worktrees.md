@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/ringer-github-reconcile-hardening-20260730`
-- Lane state: Active exact-head review remediation
+- Lane state: Review-approved exact-head remediation; draft PR #1954 awaiting CI
 - Worktree: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-hardening-20260730`
 - STATUS/Issue/PR: existing Ringer activation claim; follow-up after #1951/#1953
 - Purpose: close marker-set ambiguity and dot-segment repository identity findings from independent review
