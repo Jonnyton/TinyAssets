@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any
 
@@ -75,6 +76,28 @@ class BackgroundBranchHoldReason(str, Enum):
     EXECUTOR_MISMATCH = "executor_mismatch"
 
 
+_BINDING_SOURCE_KINDS = frozenset(
+    {
+        BackgroundBranchSourceKind.SCHEDULE,
+        BackgroundBranchSourceKind.SUBSCRIPTION,
+        BackgroundBranchSourceKind.PINNED_SOUL,
+        BackgroundBranchSourceKind.ROOT_RUN,
+        BackgroundBranchSourceKind.REQUEST_ADMISSION,
+        BackgroundBranchSourceKind.PRODUCER_SUBSCRIPTION,
+        BackgroundBranchSourceKind.ACCEPTED_MARKET_CONTRACT,
+        BackgroundBranchSourceKind.RESUMED_RUN,
+        BackgroundBranchSourceKind.DIRECT_CHILD,
+        BackgroundBranchSourceKind.PARENT_ATTEMPT,
+    }
+)
+_CHILD_DELEGATION_OPERATIONS = frozenset(
+    {
+        BackgroundBranchOperation.INVOKE_BRANCH,
+        BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
+    }
+)
+
+
 def _strict_fields(
     data: dict[str, Any],
     expected: frozenset[str],
@@ -104,9 +127,12 @@ def _optional_text(value: Any, field_name: str) -> str | None:
 
 
 _REFERENCE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:@/-]{0,254}$")
+_SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+_RFC3339_UTC_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$")
 _SECRET_PREFIXES = (
     "bearer",
     "sk-",
+    "sk_",
     "ghp_",
     "github_pat_",
     "secret:",
@@ -125,6 +151,37 @@ def _optional_reference(value: Any, field_name: str) -> str | None:
     if value is None:
         return None
     return _reference(value, field_name)
+
+
+def _digest(value: Any, field_name: str) -> str:
+    if not isinstance(value, str) or _SHA256_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a canonical lowercase SHA-256 digest")
+    return value
+
+
+def _timestamp(value: Any, field_name: str) -> datetime:
+    if not isinstance(value, str) or _RFC3339_UTC_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a canonical RFC 3339 UTC timestamp")
+    try:
+        return datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a canonical RFC 3339 UTC timestamp") from exc
+
+
+def _timestamp_text(value: Any, field_name: str) -> str:
+    _timestamp(value, field_name)
+    return value
+
+
+def _optional_timestamp(value: Any, field_name: str) -> datetime | None:
+    if value is None:
+        return None
+    return _timestamp(value, field_name)
+
+
+def _optional_timestamp_text(value: Any, field_name: str) -> str | None:
+    _optional_timestamp(value, field_name)
+    return value
 
 
 def _integer(value: Any, field_name: str, *, minimum: int) -> int:
@@ -209,6 +266,8 @@ class BackgroundBranchChildDelegation:
             raise ValueError("allowed_branch_def_ids must not contain duplicates")
         if len(set(operations)) != len(operations):
             raise ValueError("allowed_operations must not contain duplicates")
+        if not set(operations).issubset(_CHILD_DELEGATION_OPERATIONS):
+            raise ValueError("child delegation cannot grant resume authority")
         object.__setattr__(self, "allowed_branch_def_ids", branch_ids)
         object.__setattr__(self, "allowed_operations", operations)
         _integer(self.max_depth, "max_depth", minimum=0)
@@ -481,19 +540,21 @@ class BackgroundBranchBinding:
             raise ValueError("unsupported schema_version")
         for name in (
             "binding_id",
-            "binding_digest",
             "authorizing_principal_id",
             "universe_id",
             "branch_def_id",
             "source_id",
             "source_revision",
-            "source_digest",
         ):
             _reference(getattr(self, name), name)
+        _digest(self.binding_digest, "binding_digest")
+        _digest(self.source_digest, "source_digest")
         if not isinstance(self.status, BackgroundBranchBindingStatus):
             raise ValueError("status must be typed")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
+        if self.source_kind not in _BINDING_SOURCE_KINDS:
+            raise ValueError("source_kind is not a binding issuance root")
         if not isinstance(self.operation, BackgroundBranchOperation):
             raise ValueError("operation must be typed")
         if not isinstance(self.target_mode, BackgroundBranchTargetMode):
@@ -506,6 +567,13 @@ class BackgroundBranchBinding:
                 raise ValueError("pinned_version requires pinned_branch_version_id")
         elif self.pinned_branch_version_id is not None:
             raise ValueError("live_at_attempt forbids pinned_branch_version_id")
+        if self.operation is BackgroundBranchOperation.RESUME_RUN:
+            if self.source_kind is not BackgroundBranchSourceKind.RESUMED_RUN:
+                raise ValueError("resume_run requires a resumed_run source")
+            if self.target_mode is not BackgroundBranchTargetMode.PINNED_VERSION:
+                raise ValueError("resume_run requires a pinned target")
+        elif self.source_kind is BackgroundBranchSourceKind.RESUMED_RUN:
+            raise ValueError("resumed_run source requires the resume_run operation")
         executor_classes = _retained_sequence(
             self.permitted_executor_classes,
             "permitted_executor_classes",
@@ -519,7 +587,7 @@ class BackgroundBranchBinding:
         object.__setattr__(self, "permitted_executor_classes", executor_classes)
         _optional_reference(self.daemon_id, "daemon_id")
         _optional_reference(self.runtime_id, "runtime_id")
-        _optional_text(self.expires_at, "expires_at")
+        _optional_timestamp(self.expires_at, "expires_at")
         _integer(self.max_attempts, "max_attempts", minimum=1)
         _integer(self.remaining_depth, "remaining_depth", minimum=0)
         _integer(self.remaining_count, "remaining_count", minimum=0)
@@ -539,7 +607,7 @@ class BackgroundBranchBinding:
             binding_id=_reference(data["binding_id"], "binding_id"),
             status=_enum_value(BackgroundBranchBindingStatus, data["status"], "status"),
             generation=_integer(data["generation"], "generation", minimum=1),
-            binding_digest=_reference(data["binding_digest"], "binding_digest"),
+            binding_digest=_digest(data["binding_digest"], "binding_digest"),
             authorizing_principal_id=_reference(
                 data["authorizing_principal_id"], "authorizing_principal_id"
             ),
@@ -549,7 +617,7 @@ class BackgroundBranchBinding:
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
             source_id=_reference(data["source_id"], "source_id"),
             source_revision=_reference(data["source_revision"], "source_revision"),
-            source_digest=_reference(data["source_digest"], "source_digest"),
+            source_digest=_digest(data["source_digest"], "source_digest"),
             revocation_generation=_integer(
                 data["revocation_generation"], "revocation_generation", minimum=0
             ),
@@ -564,7 +632,7 @@ class BackgroundBranchBinding:
             ),
             daemon_id=_optional_reference(data["daemon_id"], "daemon_id"),
             runtime_id=_optional_reference(data["runtime_id"], "runtime_id"),
-            expires_at=_optional_text(data["expires_at"], "expires_at"),
+            expires_at=_optional_timestamp_text(data["expires_at"], "expires_at"),
             max_attempts=_integer(data["max_attempts"], "max_attempts", minimum=1),
             remaining_depth=_integer(data["remaining_depth"], "remaining_depth", minimum=0),
             remaining_count=_integer(data["remaining_count"], "remaining_count", minimum=0),
@@ -685,21 +753,28 @@ class BackgroundBranchAttempt:
             "attempt_id",
             "logical_attempt_key",
             "binding_id",
-            "binding_digest",
             "authorizing_principal_id",
             "universe_id",
             "branch_def_id",
             "branch_version_id",
-            "branch_content_digest",
             "source_id",
         ):
             _reference(getattr(self, name), name)
-        _text(self.created_at, "created_at")
-        _text(self.updated_at, "updated_at")
+        _digest(self.binding_digest, "binding_digest")
+        _digest(self.branch_content_digest, "branch_content_digest")
+        created_at = _timestamp(self.created_at, "created_at")
+        updated_at = _timestamp(self.updated_at, "updated_at")
+        if updated_at < created_at:
+            raise ValueError("updated_at cannot precede created_at")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
         if not isinstance(self.operation, BackgroundBranchOperation):
             raise ValueError("operation must be typed")
+        if self.operation is BackgroundBranchOperation.RESUME_RUN:
+            if self.source_kind is not BackgroundBranchSourceKind.RESUMED_RUN:
+                raise ValueError("resume_run requires a resumed_run source")
+        elif self.source_kind is BackgroundBranchSourceKind.RESUMED_RUN:
+            raise ValueError("resumed_run source requires the resume_run operation")
         if not isinstance(self.executor_audience, BackgroundBranchExecutorAudience):
             raise ValueError("executor_audience must be typed")
         if not isinstance(self.lifecycle, BackgroundBranchAttemptLifecycle):
@@ -712,7 +787,9 @@ class BackgroundBranchAttempt:
         _integer(self.source_generation, "source_generation", minimum=0)
         _integer(self.claim_generation, "claim_generation", minimum=1)
         _integer(self.lease_generation, "lease_generation", minimum=1)
-        _optional_text(self.lease_expires_at, "lease_expires_at")
+        lease_expires_at = _optional_timestamp(self.lease_expires_at, "lease_expires_at")
+        if lease_expires_at is not None and lease_expires_at <= updated_at:
+            raise ValueError("lease expiry must be after updated_at")
         _integer(self.remaining_depth, "remaining_depth", minimum=0)
         _integer(self.remaining_count, "remaining_count", minimum=0)
         _integer(
@@ -786,7 +863,7 @@ class BackgroundBranchAttempt:
                 "logical_attempt_key",
             ),
             binding_id=_reference(data["binding_id"], "binding_id"),
-            binding_digest=_reference(data["binding_digest"], "binding_digest"),
+            binding_digest=_digest(data["binding_digest"], "binding_digest"),
             binding_generation=_integer(
                 data["binding_generation"], "binding_generation", minimum=1
             ),
@@ -796,7 +873,7 @@ class BackgroundBranchAttempt:
             universe_id=_reference(data["universe_id"], "universe_id"),
             branch_def_id=_reference(data["branch_def_id"], "branch_def_id"),
             branch_version_id=_reference(data["branch_version_id"], "branch_version_id"),
-            branch_content_digest=_reference(
+            branch_content_digest=_digest(
                 data["branch_content_digest"],
                 "branch_content_digest",
             ),
@@ -807,7 +884,10 @@ class BackgroundBranchAttempt:
             executor_audience=BackgroundBranchExecutorAudience.from_dict(data["executor_audience"]),
             claim_generation=_integer(data["claim_generation"], "claim_generation", minimum=1),
             lease_generation=_integer(data["lease_generation"], "lease_generation", minimum=1),
-            lease_expires_at=_optional_text(data["lease_expires_at"], "lease_expires_at"),
+            lease_expires_at=_optional_timestamp_text(
+                data["lease_expires_at"],
+                "lease_expires_at",
+            ),
             remaining_depth=_integer(data["remaining_depth"], "remaining_depth", minimum=0),
             remaining_count=_integer(data["remaining_count"], "remaining_count", minimum=0),
             remaining_cost_microunits=_integer(
@@ -826,8 +906,8 @@ class BackgroundBranchAttempt:
                 else _enum_value(BackgroundBranchHoldReason, raw_hold_reason, "hold_reason")
             ),
             terminal_reason=_optional_text(data["terminal_reason"], "terminal_reason"),
-            created_at=_text(data["created_at"], "created_at"),
-            updated_at=_text(data["updated_at"], "updated_at"),
+            created_at=_timestamp_text(data["created_at"], "created_at"),
+            updated_at=_timestamp_text(data["updated_at"], "updated_at"),
             provenance=BackgroundBranchProvenance.from_dict(data["provenance"]),
         )
 

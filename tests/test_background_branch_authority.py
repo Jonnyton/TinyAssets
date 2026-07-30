@@ -18,6 +18,10 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchTargetMode,
 )
 
+_BINDING_DIGEST = f"sha256:{'a' * 64}"
+_SOURCE_DIGEST = f"sha256:{'b' * 64}"
+_BRANCH_CONTENT_DIGEST = f"sha256:{'c' * 64}"
+
 
 def _binding_payload() -> dict[str, object]:
     return {
@@ -25,7 +29,7 @@ def _binding_payload() -> dict[str, object]:
         "binding_id": "bnd_01",
         "status": "active",
         "generation": 3,
-        "binding_digest": "sha256:binding",
+        "binding_digest": _BINDING_DIGEST,
         "authorizing_principal_id": "acct_jonathan",
         "universe_id": "universe_main",
         "branch_def_id": "branch_spec_drain",
@@ -33,7 +37,7 @@ def _binding_payload() -> dict[str, object]:
         "source_kind": "request_admission",
         "source_id": "request_17",
         "source_revision": "4",
-        "source_digest": "sha256:source",
+        "source_digest": _SOURCE_DIGEST,
         "revocation_generation": 0,
         "target_mode": "pinned_version",
         "pinned_branch_version_id": "branch_spec_drain@abc12345",
@@ -83,13 +87,13 @@ def _attempt_payload() -> dict[str, object]:
         "attempt_id": "att_01",
         "logical_attempt_key": "request:17:g4:body-deadbeef",
         "binding_id": "bnd_01",
-        "binding_digest": "sha256:binding",
+        "binding_digest": _BINDING_DIGEST,
         "binding_generation": 3,
         "authorizing_principal_id": "acct_jonathan",
         "universe_id": "universe_main",
         "branch_def_id": "branch_spec_drain",
         "branch_version_id": "branch_spec_drain@abc12345",
-        "branch_content_digest": "sha256:branch",
+        "branch_content_digest": _BRANCH_CONTENT_DIGEST,
         "operation": "invoke_branch_version",
         "source_kind": "request_admission",
         "source_id": "request_17",
@@ -353,7 +357,7 @@ def test_binding_ids_digests_and_source_fields_reject_bearer_material(field: str
     payload = _binding_payload()
     payload[field] = "Bearer sk-live-secret"
 
-    with pytest.raises(ValueError, match="reference"):
+    with pytest.raises(ValueError, match="reference|SHA-256"):
         BackgroundBranchBinding.from_dict(payload)
 
 
@@ -378,7 +382,7 @@ def test_attempt_ids_digests_and_source_fields_reject_bearer_material(field: str
     if field in {"authorizing_principal_id", "source_id"}:
         payload["provenance"][field] = "Bearer sk-live-secret"
 
-    with pytest.raises(ValueError, match="reference"):
+    with pytest.raises(ValueError, match="reference|SHA-256"):
         BackgroundBranchAttempt.from_dict(payload)
 
 
@@ -404,6 +408,134 @@ def test_binding_rejects_open_authority_vocabulary(field: str, value: object) ->
 
     with pytest.raises(ValueError):
         BackgroundBranchBinding.from_dict(payload)
+
+
+def test_binding_rejects_queue_claim_as_issuance_root() -> None:
+    payload = _binding_payload()
+    payload["source_kind"] = "claimed_task"
+
+    with pytest.raises(ValueError, match="issuance root"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+def test_child_delegation_cannot_grant_resume_authority() -> None:
+    payload = _binding_payload()
+    payload["child_delegation"]["allowed_operations"] = ["resume_run"]
+
+    with pytest.raises(ValueError, match="child delegation"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+def test_resume_binding_requires_resumed_run_source_and_pinned_target() -> None:
+    wrong_source = _binding_payload()
+    wrong_source["operation"] = "resume_run"
+    live_resume = _binding_payload()
+    live_resume["operation"] = "resume_run"
+    live_resume["source_kind"] = "resumed_run"
+    live_resume["target_mode"] = "live_at_attempt"
+    live_resume["pinned_branch_version_id"] = None
+    resumed_with_invoke = _binding_payload()
+    resumed_with_invoke["source_kind"] = "resumed_run"
+
+    with pytest.raises(ValueError, match="resumed_run source"):
+        BackgroundBranchBinding.from_dict(wrong_source)
+    with pytest.raises(ValueError, match="pinned"):
+        BackgroundBranchBinding.from_dict(live_resume)
+    with pytest.raises(ValueError, match="resume_run operation"):
+        BackgroundBranchBinding.from_dict(resumed_with_invoke)
+
+    valid = _binding_payload()
+    valid["operation"] = "resume_run"
+    valid["source_kind"] = "resumed_run"
+    assert BackgroundBranchBinding.from_dict(valid).operation is (
+        BackgroundBranchOperation.RESUME_RUN
+    )
+
+
+def test_resume_attempt_requires_resumed_run_source() -> None:
+    wrong_source = _attempt_payload()
+    wrong_source["operation"] = "resume_run"
+    wrong_source["provenance"]["source_kind"] = "request_admission"
+    resumed_with_invoke = _attempt_payload()
+    resumed_with_invoke["source_kind"] = "resumed_run"
+    resumed_with_invoke["provenance"]["source_kind"] = "resumed_run"
+
+    with pytest.raises(ValueError, match="resumed_run source"):
+        BackgroundBranchAttempt.from_dict(wrong_source)
+    with pytest.raises(ValueError, match="resume_run operation"):
+        BackgroundBranchAttempt.from_dict(resumed_with_invoke)
+
+    valid = _attempt_payload()
+    valid["operation"] = "resume_run"
+    valid["source_kind"] = "resumed_run"
+    valid["provenance"]["source_kind"] = "resumed_run"
+    assert (
+        BackgroundBranchAttempt.from_dict(valid).operation is BackgroundBranchOperation.RESUME_RUN
+    )
+
+
+@pytest.mark.parametrize("field", ["binding_digest", "source_digest"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sha256:not-a-digest",
+        "sk_live_raw_secret",
+        f"sha256:{'A' * 64}",
+        f"sha256:{'0' * 63}",
+    ],
+)
+def test_binding_digest_fields_require_canonical_sha256(field: str, value: str) -> None:
+    payload = _binding_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+@pytest.mark.parametrize("field", ["binding_digest", "branch_content_digest"])
+def test_attempt_digest_fields_require_canonical_sha256(field: str) -> None:
+    payload = _attempt_payload()
+    payload[field] = "sk_live_raw_secret"
+
+    with pytest.raises(ValueError, match="SHA-256"):
+        BackgroundBranchAttempt.from_dict(payload)
+
+
+@pytest.mark.parametrize("value", ["never", "2026-07-30", "2026-07-30T08:00:00+00:00"])
+def test_binding_expiry_requires_canonical_utc_timestamp(value: str) -> None:
+    payload = _binding_payload()
+    payload["expires_at"] = value
+
+    with pytest.raises(ValueError, match="UTC timestamp"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("created_at", "not-a-timestamp"),
+        ("updated_at", "2026-07-30T07:01:00+00:00"),
+        ("lease_expires_at", "later"),
+    ],
+)
+def test_attempt_timestamps_require_canonical_utc(field: str, value: str) -> None:
+    payload = _attempt_payload()
+    payload[field] = value
+
+    with pytest.raises(ValueError, match="UTC timestamp"):
+        BackgroundBranchAttempt.from_dict(payload)
+
+
+def test_attempt_timestamps_obey_creation_update_and_lease_order() -> None:
+    update_before_creation = _attempt_payload()
+    update_before_creation["updated_at"] = "2026-07-30T06:59:59Z"
+    expired_lease = _attempt_payload()
+    expired_lease["lease_expires_at"] = expired_lease["updated_at"]
+
+    with pytest.raises(ValueError, match="updated_at"):
+        BackgroundBranchAttempt.from_dict(update_before_creation)
+    with pytest.raises(ValueError, match="lease"):
+        BackgroundBranchAttempt.from_dict(expired_lease)
 
 
 def test_attempt_audience_must_match_provenance_executor() -> None:
