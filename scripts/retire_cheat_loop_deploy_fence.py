@@ -897,12 +897,13 @@ def _stray_writer_processes(
 def _confirm_stray_writer_processes(
     host: Host,
     candidates: Sequence[Mapping[str, Any]],
+    container_identities: Sequence[str],
     *,
     proc_root: Path = Path("/proc"),
 ) -> list[dict[str, Any]]:
     """Reconcile scan candidates against a fresh Docker process snapshot."""
 
-    owned_pids = host.container_pids(EXPECTED_CONTAINERS)
+    owned_pids = host.container_pids(container_identities)
     confirmed: list[dict[str, Any]] = []
     for candidate in candidates:
         pid = int(candidate.get("pid") or 0)
@@ -939,7 +940,10 @@ def observe_fleet(
             "image_ref": image_ref,
             "revision": revision,
         }
-    excluded_pids = host.container_pids(EXPECTED_CONTAINERS)
+    container_identities = tuple(
+        str(info.get("Id", "")) for info in inspections.values()
+    )
+    excluded_pids = host.container_pids(container_identities)
     stray_candidates = _stray_writer_processes(
         receipt.host_path,
         excluded_pids,
@@ -955,6 +959,7 @@ def observe_fleet(
         "stray_writer_processes": _confirm_stray_writer_processes(
             host,
             stray_candidates,
+            container_identities,
         ),
     }
 

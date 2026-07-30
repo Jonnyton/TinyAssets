@@ -443,11 +443,19 @@ class LifecycleHost:
         return sorted(self.containers)
 
     def container_pids(self, names: Any) -> set[int]:
-        return {
-            int(self.containers[name]["State"]["Pid"])
-            for name in names
-            if self.containers[name]["State"]["Running"]
-        }
+        pids: set[int] = set()
+        for identity in names:
+            match = next(
+                (
+                    info
+                    for name, info in self.containers.items()
+                    if identity in {name, info["Id"]}
+                ),
+                None,
+            )
+            if match and match["State"]["Running"]:
+                pids.add(int(match["State"]["Pid"]))
+        return pids
 
     def container_restart_policy(self, identity: str) -> str:
         if self.restart_policy_override is not None:
@@ -1523,7 +1531,7 @@ def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
 ):
     class RefreshHost:
         def container_pids(self, names: Any) -> set[int]:
-            assert tuple(names) == EXPECTED_CONTAINERS
+            assert tuple(names) == ("captured-a", "captured-b")
             return {123}
 
     (tmp_path / "123").mkdir()
@@ -1537,8 +1545,30 @@ def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
     assert fence._confirm_stray_writer_processes(
         RefreshHost(),
         candidates,
+        ("captured-a", "captured-b"),
         proc_root=tmp_path,
     ) == [{"pid": 456, "exe": "python"}]
+
+
+def test_stray_confirmation_does_not_trust_same_name_replacement(
+    tmp_path: Path,
+):
+    class ReplacementHost:
+        def container_pids(self, identities: Any) -> set[int]:
+            if tuple(identities) == ("captured-a", "captured-b"):
+                return set()
+            if tuple(identities) == EXPECTED_CONTAINERS:
+                return {123}
+            raise AssertionError(f"unexpected identities: {identities}")
+
+    (tmp_path / "123").mkdir()
+
+    assert fence._confirm_stray_writer_processes(
+        ReplacementHost(),
+        [{"pid": 123, "exe": "foreign-replacement"}],
+        ("captured-a", "captured-b"),
+        proc_root=tmp_path,
+    ) == [{"pid": 123, "exe": "foreign-replacement"}]
 
 
 def test_post_canary_failure_includes_final_observation_diagnostic(
