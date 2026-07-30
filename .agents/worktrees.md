@@ -1753,9 +1753,9 @@ Notes:
 
 - Provider: `drain-20260730-095018-67aecc`
 - Branch: `chore/drain-blocker-refresh-67aecc`
-- Lane state: Active coordination recovery lane
+- Lane state: Parked draft lane; STATUS claim retired after audit completion
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-blocker-refresh-67aecc`
-- STATUS/Issue/PR: `Freshness-check blocked OpenSpec drain rows`; draft PR pending
+- STATUS/Issue/PR: completed `Freshness-check blocked OpenSpec drain rows`; draft PR #1924
 - Purpose: verify current-main dependency labels against GitHub and worktrees, retiring only disproved blockers
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: one draft PR; preserve the lane until merge and foldback
