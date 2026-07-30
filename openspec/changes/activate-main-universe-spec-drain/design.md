@@ -22,9 +22,10 @@ in GitHub, and this change does not decide custody for unrelated user content.
 
 **Goals:**
 
-- Run one bounded OpenSpec delivery slice at a time from Jonathan's private
-  cloud universe while every user device is off.
-- Use only Jonathan-owned provider and destination-scoped GitHub authority.
+- Run one bounded repository-to-accepted-spec delivery slice at a time from a
+  requester's private cloud universe while every user device is off, with
+  Jonathan's OpenSpec drain as the first acceptance fixture.
+- Use only requester-owned provider and destination-scoped GitHub authority.
 - Preserve current-main admission, isolated branch/worktree, independent
   review, CI, merge verification, and OpenSpec foldback.
 - Make ownership complete from a phone chatbot: inspect, control, repair,
@@ -38,6 +39,10 @@ in GitHub, and this change does not decide custody for unrelated user content.
   subsystem, or privileged maintainer automation path.
 - Market-compute fallback, parallel lane execution, or multi-repository
   generalization in the MVP.
+- Tenant repository commands, shell, CI emulation, or external tool execution
+  before production confinement is available.
+- Dependency-wave scheduling, backlog-refinery automation, or
+  reprioritization in this first change.
 - Bypassing GitHub review, CI, branch protection, or OpenSpec sync/archive.
 - Depositing raw provider or GitHub secrets through chat.
 - Treating the local tray, a local test, or a mocked cloud run as cloud
@@ -47,10 +52,17 @@ in GitHub, and this change does not decide custody for unrelated user content.
 
 ### 1. The drain is an ordinary private Branch composition
 
-The durable definition is a versioned Branch in Jonathan's main universe,
-bound to a standing Goal and persisted Trigger. Its graph composes selection,
-claim, build, verification, review, publication, merge verification, foldback,
-receipt, and continuation nodes from existing primitives.
+The durable definition is a versioned Branch in the requester's universe,
+bound to a standing Goal and persisted Trigger. Principal, universe,
+repository, accepted spec, Branch version, evaluator policy, provider route,
+and destination are data-bound inputs. Jonathan's values instantiate the first
+fixture and do not appear as runtime constants.
+
+The published definition contains immutable references and policy only.
+Activation, epoch-2 task, background attempt, provider invocation, evaluation,
+effect, and GitHub/OpenSpec state remain with their existing owners. A
+chatbot-facing projection reads those records and generations without copying
+them into a second writable packet state or advancing their lifecycle.
 
 This keeps policy user-owned and remixable. Moving the current supervisor
 script to GitHub Actions was rejected because that would create a second,
@@ -59,10 +71,12 @@ host shutdown remains an outage.
 
 ### 2. The first deployable slice is BYOC, single-flight, and PR-only
 
-The minimum useful vertical slice resolves Jonathan-owned provider authority in
-the cloud, fires one persisted invocation, admits and leases one current-main
-candidate, produces at most one PR, and writes one terminal receipt. It has no
-market fallback and no direct merge effect.
+The minimum useful vertical slice freezes one `AcceptanceScenario`, executes a
+typed deterministic baseline containing no tenant code, resolves
+requester-owned provider authority in the cloud, fires one persisted
+invocation, admits and leases one current-head candidate, produces at most one
+PR through the outbound-boundary owner, and writes one terminal receipt. It has
+no market fallback and no direct merge effect.
 
 This is the shortest slice that proves the hard boundaries together. A
 read-only demo would not prove provider authority or useful progress; a
@@ -75,11 +89,15 @@ Activation is gated on current-main prerequisites:
   and immutable version authority;
 - the cloud executor resolves a user-owned provider binding and fails closed
   without maintainer, host, or market substitution;
+- the frozen evaluator chain, input digests, privacy scope, expected evidence,
+  and budgets are immutable for the attempt, while shell/repository commands
+  fail closed with `sandbox_unavailable`;
 - persisted trigger/continuation and collision-safe claim leasing survive
   worker restart;
 - Branch access and immutable version operations enforce owner authority;
-- the GitHub adapter enforces an exact repository destination grant, secret
-  custody, idempotent receipts, and normal PR policy;
+- the outbound-boundary owner enforces an exact repository destination grant,
+  secret custody, idempotent receipts, remote reconciliation, and normal PR
+  policy;
 - canonical connector actions can inspect and control the resulting state.
 
 ### 3. Activation, claims, and external effects use separate durable identities
@@ -93,9 +111,9 @@ afterward epoch 1 is compatibility-reconciliation-only and cannot admit new
 work or mutate this automation. Cutover is fail-closed and the two authorities
 are never dual-active.
 
-Every invocation reads exact current `origin/main`, follows the canonical
-STATUS/OpenSpec admission policy, and acquires one durable task claim before
-building. One server-authoritative activation record is keyed by
+Every invocation reads the exact current destination head, follows the
+canonical repository/spec admission policy, and acquires one durable task
+claim before building. One server-authoritative activation record is keyed by
 `(universe_id, automation_id)` and carries a monotonically increasing epoch,
 active executor class, immutable Branch version, lease identity, and state.
 Activation, version rebind, stop, cutover, and rollback use compare-and-swap
@@ -103,11 +121,13 @@ transitions. Every claim validates the exact current epoch, executor, and
 version. Concurrent cloud versions, alternate activation identities, and stale
 or partitioned tray attempts cannot claim by minting a new local identity.
 
-Concurrent or recovered invocations reuse the automation activation and claim
-identities; they do not mint an alternate provider identity.
+Concurrent or recovered invocations reuse the automation activation and
+logical claim identities; provider invocation authority remains independently
+reserved by its owner and is never inferred from queue possession.
 
-The GitHub effect uses a system-derived idempotency identity tied to the claim,
-repository destination, intended head, and effect kind. The exact tuple is
+The outbound-boundary owner supplies the GitHub effect's system-derived
+idempotency identity tied to the claim, repository destination, intended head,
+and effect kind. The exact tuple is
 `(universe_id, automation_id, claim_id, repository, intended_head_sha,
 effect_kind)`. Recovery has three exhaustive outcomes:
 
@@ -120,18 +140,29 @@ effect_kind)`. Recovery has three exhaustive outcomes:
    blocker and perform no mutation.
 
 A receipt proves what was attempted and observed, but GitHub remains
-authoritative for PR, checks, and merge state. Foldback begins only after
-independently verifying the merged PR on GitHub.
+the fresh external source for PR, checks, protected head, and merge state.
+TinyAssets remains authoritative for activation, budgets, evaluation, and
+receipts. Foldback combines both before it begins.
 
 Using one identity for activation, local admission, and remote effects was
 rejected: the three state machines fail and recover at different boundaries.
 
+One evaluation retry is allowed in the same preserved task workspace. It keeps
+the logical definition and outbound effect identity, receives bounded failure
+context, and mints fresh target-attempt and provider-invocation generations
+with fresh bounded budgets. A second failure terminates with a durable replan
+input. Dependency waves and backlog-refinery admission wait for a later delta.
+
 ### 4. Control is owner-authorized and respects irreversible boundaries
 
-Existing canonical handles expose the automation definition, active immutable
-version, current claim, last useful progress, terminal receipts, provider
-authority source, budgets, retry state, and blocker. Owner-authorized actions
-pause, resume, or stop future slices.
+Existing `read_graph`, `write_graph`, `run_graph`, and `get_status` handles
+expose the automation definition, active immutable version, current claim,
+last useful progress, terminal receipts, provider authority source, budgets,
+retry state, and blocker. The server derives the principal from authenticated
+request context and resolves ownership server-side; caller-supplied
+`owner_actor` is never authority. Owner-authorized actions pause, resume, or
+stop future slices. Reprioritization is deferred to an epoch-2 queue-policy
+delta.
 
 Pause and stop do not pretend to cancel an external effect already committed to
 GitHub. They prevent the next slice and record the in-flight boundary. This
@@ -168,6 +199,13 @@ retries without a useful state transition remain unhealthy.
 - **[A worker crashes after a remote effect but before local finalization]** →
   Attach/finalize an exact match, retry once only after conclusive absence under
   the same reservation, and block without mutation on ambiguous reconciliation.
+- **[Tenant repository code reaches control-plane secrets]** → Admit only typed
+  deterministic no-tenant-code evaluators; fail closed with
+  `sandbox_unavailable` until the distributed-execution owner proves
+  confinement, secret absence, resource limits, cleanup, and fenced evidence.
+- **[GitHub reconciliation is still unsupported]** → Keep activation dark until
+  `outbound-boundary-layer` ships exact remote lookup and crash-after-effect
+  reconciliation or explicitly owns a reviewed narrow adapter.
 - **[Missed schedules create bursts or silent stalls]** → Use one explicitly
   declared bounded continuation policy from the scheduler owner and expose the
   applied policy in health.
@@ -186,17 +224,20 @@ retries without a useful state transition remain unhealthy.
 
 1. Obtain independent opposite-provider review of this change and verify every
    prerequisite against current main.
-2. Implement and test the BYOC single-flight PR-only slice behind an inactive
-   private Branch version.
-3. Dry-test through the live connector with external effects disabled, then
+2. Implement and test the generic immutable definition and read-only
+   operational projection behind an inactive private Branch version.
+3. Land epoch-2 activation, background Branch/provider authority, typed
+   no-tenant-code evaluation, and outbound GitHub reconciliation prerequisites;
+   keep activation dark while any remain unavailable.
+4. Dry-test through the live connector with external effects disabled, then
    publish the immutable version and exact authority bindings.
-4. Stop and fence the local tray drain; activate exactly one cloud version.
-5. Run restart, collision, effect-reconciliation, phone-control, and 24-hour
+5. Stop and fence the local tray drain; activate exactly one cloud version.
+6. Run restart, collision, effect-reconciliation, phone-control, and 24-hour
    PC-off acceptance.
-6. If acceptance fails, stop cloud first and re-enable the tray only after the
+7. If acceptance fails, stop cloud first and re-enable the tray only after the
    cloud fence is observed inactive. Preserve receipts and checkpoints for
    diagnosis.
-7. After acceptance, leave the tray drain disabled and complete OpenSpec
+8. After acceptance, leave the tray drain disabled and complete OpenSpec
    sync/archive foldback.
 
 ## Open Questions

@@ -895,3 +895,17 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include “next normal deploy after successful
   recovery” in the first recovery acceptance matrix, not only recovery canary
   and finalization.
+
+## 2026-07-30 - Ringer-informed repository-to-spec contract
+
+- **What surprised me:** the tempting “work packet” abstraction duplicated
+  authority already owned by activation, background attempts, provider
+  reservations, evaluation, and outbound effects. Ringer's useful lesson was
+  executor boundedness, not a new aggregate state owner.
+- **Pattern worth capturing:** keep the user-authored definition immutable and
+  make operational status an ephemeral projection that revalidates every
+  identity, generation, source, executor, and inherited budget envelope.
+- **What I would do differently:** begin external-orchestrator adaptations with
+  an authority ownership matrix and an executable-surface inventory before
+  proposing a schema. That would have exposed both the duplicate-owner risk and
+  the unsafe `AcceptanceScenario` dispatcher boundary in the first draft.

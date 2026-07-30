@@ -9,12 +9,15 @@ TinyAssets-only scheduler or consuming maintainer compute.
 ## What Changes
 
 - Define an ordinary, versioned, user-authored Branch composition for bounded
-  OpenSpec delivery slices using existing Branch, Trigger, Goal, Gate, Run,
-  effect, and cloud-executor primitives.
-- Establish the shortest deployable BYOC-first slice: Jonathan-owned provider
-  authority, one persisted trigger, one cloud-authoritative activation epoch,
-  one collision-safe active claim, one destination-scoped GitHub pull-request
-  effect, normal review/CI, and a typed terminal receipt.
+  repository-to-accepted-spec delivery slices using existing Branch, Trigger,
+  Goal, Gate, Run, evaluator, effect, and cloud-executor primitives. Jonathan's
+  OpenSpec drain is the first acceptance fixture; runtime inputs are generic.
+- Establish the shortest deployable BYOC-first slice: an immutable work
+  definition, a read-only projection over existing authority owners,
+  requester-owned provider authority, one persisted trigger, one
+  cloud-authoritative activation epoch, one collision-safe active claim, one
+  outbound-owned destination-scoped GitHub pull-request effect, normal
+  review/CI, and a typed terminal receipt.
 - Expose inspection, pause/resume/stop, repair, immutable-version publication,
   activation, and rollback through existing canonical chatbot handles so the
   loop remains operable from a phone while every user device is off.
@@ -44,6 +47,8 @@ Implementation will eventually touch the cloud runtime and scheduler,
 user-bound provider routing, Branch version/control actions, scoped GitHub
 effect authority and receipts, and canonical connector status/control routing.
 It depends on the active requester-BYOC, background authority, cloud scheduler,
-and external-effect lanes rather than replacing them. No new top-level MCP
-handle, maintainer credential path, market-compute prerequisite, desktop-only
-control, or privileged product scheduler is introduced.
+safe distributed-execution, and outbound-boundary lanes rather than replacing
+them. The first evaluator executes no tenant code and all shell/repository
+commands fail closed until confinement ships. No new top-level MCP handle,
+maintainer credential path, market-compute prerequisite, desktop-only control,
+or privileged product scheduler is introduced.

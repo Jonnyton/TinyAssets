@@ -1,18 +1,19 @@
 # Worktree Inventory
 
-## 2026-07-30 14:15 - create partial-target recovery
+## 2026-07-30 14:00 - create Ringer production orchestration
 
-- Provider: `codex-gpt5-p0-recovery`
-- Branch: `codex/partial-target-recovery-20260730`
-- Lane state: Active P0 outage-recovery lane
-- Worktree: `C:/Users/Jonathan/Projects/wf-partial-target-recovery-20260730`
-- STATUS/Issue/PR: claimed strict-subset canonical target recovery
-- PLAN refs: existing transitional stop-writer fence and emergency-recovery contract
-- Purpose: safely retire only the proved stopped partial target generation so the prior admitted image can recover public `/mcp`
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-partial-target-recovery-20260730/_PURPOSE.md`
-- Memory refs: deploy 30581439569; failed recovery 30582599465
-- Related implications: `repair-recovery-deploy-handoff`; Ringer lane paused, not superseded
-- Ship/abandon: focused emergency PR; recover and canary before resuming Ringer implementation
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-production-orchestration-20260730`
+- Lane state: Active P0 architecture-and-implementation lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730`
+- STATUS/Issue/PR: claimed Ringer-informed generic GitHub-to-spec orchestration
+- PLAN refs: scoping Rule 1/2/5; Daemon Platform; Evolution/Evaluation; Providers; Harness/Coordination; full-platform uptime
+- Purpose: adapt Ringer/Symphony lessons into TinyAssets' generic hostless verified-production substrate, with the main-account drain as first proof
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-production-orchestration-20260730/_PURPOSE.md`
+- Memory refs: `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`; `ideas/INBOX.md` 2026-07-29 backlog-refinery capture
+- Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/activate-main-universe-spec-drain/`
+- Idea feed refs: separate backlog refinery from delivery executor; measure claimable-pressure gain
+- Ship/abandon: PR #1949 carries reviewed task 1.1; land after CI. Keep the lane for task 1.2 only after epoch-2/background-provider/outbound-reconciliation prerequisites are available.
 
 ## 2026-07-30 13:35 - recovery-to-normal deploy handoff
 
