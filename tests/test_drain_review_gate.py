@@ -98,9 +98,19 @@ def test_drain_branch_denies_duplicate_or_malformed_receipt(
             "Drain-Review-Artifact: local/private.txt\n"
         ),
     )
+    valid_plus_malformed = _run_gate(
+        tmp_path,
+        branch="drain/run/target-001",
+        body=(
+            _valid_body()
+            + "Drain-Review-Verdict: DENY\n"
+            + "Drain-Review-Head: malformed\n"
+        ),
+    )
 
     assert duplicate.returncode == 2
     assert malformed.returncode == 2
+    assert valid_plus_malformed.returncode == 2
 
 
 def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
@@ -111,3 +121,8 @@ def test_auto_enroll_reconciles_drain_review_on_head_and_body_changes() -> None:
     assert "headRefName" in text
     assert "headRefOid" in text
     assert "gh pr merge \"$PR\" --repo \"$REPO\" --disable-auto" in text
+    assert "--match-head-commit \"$HEAD_OID\"" in text
+    assert (
+        "actions/checkout@11d5960a326750d5838078e36cf38b85af677262"
+        in text
+    )

@@ -64,7 +64,8 @@ Alternatives rejected:
 
 `scripts/drain_review_gate.py` validates the branch, head, and body. Non-drain
 branches return `allow`; drain branches fail closed on missing, duplicate,
-malformed, or stale markers. The workflow supplies GitHub event data to the
+malformed, or stale markers, including a valid marker accompanied by a malformed
+marker with the same prefix. The workflow supplies GitHub event data to the
 validator and treats any validator error as `deny`.
 
 Keeping parsing out of shell avoids quoting ambiguity and makes exact failure
@@ -81,7 +82,11 @@ The trusted workflow listens to `opened`, `reopened`, `ready_for_review`,
 
 The `synchronize` path is load-bearing: GitHub can retain an existing auto-merge
 request across new commits, so merely refusing a second enrollment would not
-close the stale-review race.
+close the stale-review race. Enrollment additionally passes the reviewed
+`headRefOid` through GitHub's matching-head option so a push between validation
+and enrollment fails atomically. The privileged workflow pins its checkout
+action to the repository's reviewed immutable v4 commit instead of a mutable
+tag.
 
 ### Make draft-first publication explicit in the worker brief
 

@@ -48,7 +48,7 @@ jobs:
       github.event.pull_request.base.ref == 'main'
     steps:
       - name: Check out trusted enrollment policy
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
@@ -108,7 +108,8 @@ jobs:
           # `|| true`: enrolment can legitimately fail — e.g. the PR is already
           # mergeable and protection is satisfied, or the branch is behind. Those
           # are not this workflow's problem and must not fail the PR's checks.
-          if gh pr merge "$PR" --repo "$REPO" --auto --squash 2>err.txt; then
+          if gh pr merge "$PR" --repo "$REPO" --auto --squash \
+              --match-head-commit "$HEAD_OID" 2>err.txt; then
             echo "PR #${PR} enrolled for auto-merge (squash)."
             {
               echo "### Auto-merge"

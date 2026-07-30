@@ -8,12 +8,9 @@ import re
 from pathlib import Path
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_VERDICT_RE = re.compile(r"^Drain-Review-Verdict: (APPROVE)$", re.MULTILINE)
-_HEAD_RE = re.compile(r"^Drain-Review-Head: ([0-9a-f]{40})$", re.MULTILINE)
 _ARTIFACT_RE = re.compile(
-    r"^Drain-Review-Artifact: "
-    r"(docs/[A-Za-z0-9_./-]+\.md|https://github\.com/\S+)$",
-    re.MULTILINE,
+    r"Drain-Review-Artifact: "
+    r"(docs/[A-Za-z0-9_./-]+\.md|https://github\.com/\S+)"
 )
 
 
@@ -24,13 +21,15 @@ def review_allows_merge(*, branch: str, head: str, body: str) -> bool:
     if not _SHA_RE.fullmatch(head):
         return False
 
-    verdicts = _VERDICT_RE.findall(body)
-    reviewed_heads = _HEAD_RE.findall(body)
-    artifacts = _ARTIFACT_RE.findall(body)
+    lines = body.splitlines()
+    verdicts = [line for line in lines if line.startswith("Drain-Review-Verdict:")]
+    reviewed_heads = [line for line in lines if line.startswith("Drain-Review-Head:")]
+    artifacts = [line for line in lines if line.startswith("Drain-Review-Artifact:")]
     return (
-        verdicts == ["APPROVE"]
-        and reviewed_heads == [head]
+        verdicts == ["Drain-Review-Verdict: APPROVE"]
+        and reviewed_heads == [f"Drain-Review-Head: {head}"]
         and len(artifacts) == 1
+        and _ARTIFACT_RE.fullmatch(artifacts[0]) is not None
     )
 
 
