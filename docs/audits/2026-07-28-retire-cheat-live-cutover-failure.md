@@ -1,9 +1,9 @@
 # Retire-cheat-loop live cutover failure
 
-Date: 2026-07-28  
-Environment: production (`https://tinyassets.io/mcp`)  
-Workflow: `Deploy prod` run `30407316207`, attempt `1`  
-Source: `0a8b092b06be730af9724d85ed33a643be5f4ea9`  
+Date: 2026-07-28
+Environment: production (`https://tinyassets.io/mcp`)
+Workflow: `Deploy prod` run `30407316207`, attempt `1`
+Source: `0a8b092b06be730af9724d85ed33a643be5f4ea9`
 Terminal incident: GitHub issue `#1840`
 
 ## Outcome

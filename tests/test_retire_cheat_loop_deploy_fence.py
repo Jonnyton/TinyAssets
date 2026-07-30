@@ -1949,6 +1949,39 @@ def test_recovery_failure_rejects_foreign_labels_without_cleanup_mutation(
     )
 
 
+def test_refence_rejects_extra_volume_consumer_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-extra-consumer",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    extra = json.loads(json.dumps(next(iter(host.containers.values()))))
+    extra["Id"] = "foreign-extra"
+    host.containers["foreign-extra"] = extra
+    calls_before = len(host.calls)
+
+    with pytest.raises(FenceError, match="exact owned five"):
+        refence_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-extra-consumer",
+            state_path=state_path,
+        )
+
+    assert len(host.calls) == calls_before
+    assert host.containers["foreign-extra"]["State"]["Running"]
+
+
 def test_finalize_refences_new_writer_activator_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

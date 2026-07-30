@@ -1747,8 +1747,13 @@ def _assert_recovery_container_ownership(
 ) -> dict[str, str]:
     """Reject mutation unless all current writers belong to this generation."""
 
-    if not host.volume_container_names():
+    names = set(host.volume_container_names())
+    if not names:
         return {}
+    if names != set(EXPECTED_CONTAINERS):
+        raise FenceError(
+            "recovery volume inventory is not the exact owned five"
+        )
     project = str(state.get("recovery_project_name", ""))
     if not project:
         raise FenceError("recovery container generation is not durable")
