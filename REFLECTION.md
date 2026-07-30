@@ -827,11 +827,16 @@ fresh-host rollback edges found later.
   generation or retry ordinal can remain invisible behind a valid-looking
   digest.
 - **Pattern worth capturing:** validate nominal IDs, canonical revisions,
-  timestamps, digests, and ordinals before hashing a versioned canonical
-  envelope, and normalize equivalent timestamp spellings to one fixed
-  microsecond form. The resulting key is stable and non-secret while each
-  source boundary remains independently mutation-tested.
+  durable period identities, digests, and ordinals before hashing a versioned
+  canonical envelope. A schedule key follows the nominal period across missed
+  ticks and DST shifts; it must not follow the later wall-clock execution
+  instant. The resulting key is stable and non-secret while each source
+  boundary remains independently mutation-tested.
 - **What I would do differently:** define one golden vector and the
   all-fields-mutate table with the first builder, so later source builders must
   join the same compatibility contract rather than adding ad hoc string
   concatenation.
+- **Review follow-up:** due instant and due-period identity are not
+  interchangeable. Spring-forward recovery can execute at the next valid
+  instant while retaining the skipped nominal period, so only the upstream
+  schedule-period identity belongs in the replay key.

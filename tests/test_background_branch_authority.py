@@ -856,7 +856,7 @@ def _logical_attempt_key_cases() -> list[tuple[str, str]]:
             build_schedule_attempt_key(
                 schedule_id="schedule_nightly",
                 schedule_generation=2,
-                due_at="2026-07-31T08:00:00Z",
+                schedule_period_id="schedule:period:2026-07-31",
             ),
         ),
         (
@@ -953,48 +953,56 @@ def test_schedule_logical_attempt_key_has_a_stable_golden_vector() -> None:
         build_schedule_attempt_key(
             schedule_id="schedule_nightly",
             schedule_generation=2,
-            due_at="2026-07-31T08:00:00Z",
+            schedule_period_id="schedule:period:2026-07-31",
         )
         == "logical_attempt:schedule:"
-        "08c823a0d91201eee9b80715ce4f2da191ae7ae4e04055ba68c56a859f56a304"
+        "5dba4187e26beec9aa8fbac72ed1d21d60dc9e013d6e2eeab222a397ad5736cf"
     )
 
 
-def test_schedule_key_normalizes_equivalent_utc_instant_text() -> None:
-    whole_seconds = build_schedule_attempt_key(
+def test_schedule_key_uses_nominal_period_identity_across_dst_gap_replay() -> None:
+    nominal_gap_period = "schedule:period:2026-03-08T02:30:00-America-Los_Angeles"
+    original = build_schedule_attempt_key(
         schedule_id="schedule_nightly",
         schedule_generation=2,
-        due_at="2026-07-31T08:00:00Z",
+        schedule_period_id=nominal_gap_period,
     )
-    explicit_microseconds = build_schedule_attempt_key(
+    replayed_at_next_valid_instant = build_schedule_attempt_key(
         schedule_id="schedule_nightly",
         schedule_generation=2,
-        due_at="2026-07-31T08:00:00.000000Z",
+        schedule_period_id=nominal_gap_period,
+    )
+    next_nominal_period = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        schedule_period_id="schedule:period:2026-03-09T02:30:00-America-Los_Angeles",
     )
 
-    assert whole_seconds == explicit_microseconds
+    assert original == replayed_at_next_valid_instant
+    assert original != next_nominal_period
+    assert "due_at" not in inspect.signature(build_schedule_attempt_key).parameters
 
 
 def test_logical_attempt_keys_change_when_any_replay_boundary_changes() -> None:
     base_schedule = build_schedule_attempt_key(
         schedule_id="schedule_nightly",
         schedule_generation=2,
-        due_at="2026-07-31T08:00:00Z",
+        schedule_period_id="schedule:period:2026-07-31",
     )
     assert base_schedule != build_schedule_attempt_key(
         schedule_id="schedule_other",
         schedule_generation=2,
-        due_at="2026-07-31T08:00:00Z",
+        schedule_period_id="schedule:period:2026-07-31",
     )
     assert base_schedule != build_schedule_attempt_key(
         schedule_id="schedule_nightly",
         schedule_generation=3,
-        due_at="2026-07-31T08:00:00Z",
+        schedule_period_id="schedule:period:2026-07-31",
     )
     assert base_schedule != build_schedule_attempt_key(
         schedule_id="schedule_nightly",
         schedule_generation=2,
-        due_at="2026-08-01T08:00:00Z",
+        schedule_period_id="schedule:period:2026-08-01",
     )
 
     base_child = build_graph_child_attempt_key(
@@ -1144,7 +1152,7 @@ def test_every_logical_attempt_key_input_is_load_bearing() -> None:
             {
                 "schedule_id": "schedule_nightly",
                 "schedule_generation": 0,
-                "due_at": "2026-07-31T08:00:00Z",
+                "schedule_period_id": "schedule:period:2026-07-31",
             },
         ),
         (

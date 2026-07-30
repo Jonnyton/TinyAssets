@@ -337,24 +337,19 @@ def _logical_attempt_key(kind: str, parts: tuple[object, ...]) -> str:
     return _reference(f"logical_attempt:{kind}:{digest}", "logical_attempt_key")
 
 
-def _logical_attempt_timestamp(value: Any, field_name: str) -> str:
-    parsed = _timestamp(value, field_name)
-    return parsed.isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
 def build_schedule_attempt_key(
     *,
     schedule_id: str,
     schedule_generation: int,
-    due_at: str,
+    schedule_period_id: str,
 ) -> str:
-    """Key one schedule generation and exact due instant."""
+    """Key one schedule generation and durable nominal period."""
     return _logical_attempt_key(
         "schedule",
         (
             _reference(schedule_id, "schedule_id"),
             _integer(schedule_generation, "schedule_generation", minimum=1),
-            _logical_attempt_timestamp(due_at, "due_at"),
+            _reference(schedule_period_id, "schedule_period_id"),
         ),
     )
 
