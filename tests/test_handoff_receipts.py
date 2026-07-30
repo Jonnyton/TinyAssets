@@ -364,19 +364,18 @@ class TestExactlyOnce:
             env.execute()
         monkeypatch.setattr(service, "_settle", original_settle)
 
-        original_list = HandoffStore.list_outcome_evidence
-        empty_read_barrier = threading.Barrier(2)
+        original_record = HandoffStore.record_outcome_evidence
+        concurrent_settle_barrier = threading.Barrier(2)
 
-        def _synchronize_empty_reads(store, **kwargs):
-            outcomes = original_list(store, **kwargs)
-            if kwargs.get("handoff_id") and not outcomes:
-                empty_read_barrier.wait(timeout=5)
-            return outcomes
+        def _synchronize_settlement(store, **kwargs):
+            if kwargs.get("handoff_id"):
+                concurrent_settle_barrier.wait(timeout=5)
+            return original_record(store, **kwargs)
 
         monkeypatch.setattr(
             HandoffStore,
-            "list_outcome_evidence",
-            _synchronize_empty_reads,
+            "record_outcome_evidence",
+            _synchronize_settlement,
         )
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: env.execute(), range(2)))
