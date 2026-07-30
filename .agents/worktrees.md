@@ -1,5 +1,19 @@
 # Worktree Inventory
 
+## 2026-07-30 15:20 - create Ringer GitHub reconciliation
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-github-reconcile-20260730`
+- Lane state: Active Ringer prerequisite implementation
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-20260730`
+- STATUS/Issue/PR: claimed outbound-owned exact GitHub PR reconciliation
+- PLAN refs: outbound boundary; daemon platform; full-platform uptime
+- Purpose: add a closed, read-only destination reconciler for one immutable automation effect identity without creating target-local authority
+- Review gate: approved Ringer implications; TDD; independent exact-head review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-github-reconcile-20260730/_PURPOSE.md`
+- Related implications: `docs/audits/2026-07-30-ringer-production-orchestration-implications.md`; `openspec/changes/activate-main-universe-spec-drain/`
+- Ship/abandon: focused PR to `main`; keep dark until task 2.1 consumes the adapter through the outbound owner
+
 ## 2026-07-30 14:00 - create Ringer production orchestration
 
 - Provider: `codex-gpt5-desktop`
@@ -13,7 +27,7 @@
 - Memory refs: `docs/audits/2026-07-28-openspec-agent-throughput-implications.md`; `ideas/INBOX.md` 2026-07-29 backlog-refinery capture
 - Related implications: `docs/design-notes/2026-07-29-main-account-cloud-spec-drain.md`; `openspec/changes/activate-main-universe-spec-drain/`
 - Idea feed refs: separate backlog refinery from delivery executor; measure claimable-pressure gain
-- Ship/abandon: PR #1949 carries reviewed task 1.1; land after CI. Keep the lane for task 1.2 only after epoch-2/background-provider/outbound-reconciliation prerequisites are available.
+- Ship/abandon: PR #1949 landed task 1.1; keep the lane parked until epoch-2/background-provider/outbound-reconciliation prerequisites are available.
 
 ## 2026-07-30 13:35 - recovery-to-normal deploy handoff
 
