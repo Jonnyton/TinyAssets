@@ -840,3 +840,18 @@ fresh-host rollback edges found later.
   interchangeable. Spring-forward recovery can execute at the next valid
   instant while retaining the skipped nominal period, so only the upstream
   schedule-period identity belongs in the replay key.
+
+## 2026-07-30 - background authority inventory closure
+
+- **What surprised me:** the cloud host, scheduler, queue, immutable Branch
+  snapshots, and GitHub effector already existed; the launch-critical gap was
+  joining them under one authority chain, while a failed deployment fence had
+  independently taken the public control surface down.
+- **Pattern worth capturing:** make authority-root inventory executable. An
+  exact AST callsite manifest catches both newly introduced bypasses and stale
+  inventory entries, while source markers preserve indirect roots such as
+  scheduler callbacks and cloud supervisors.
+- **What I would do differently:** separate the service-recovery path from the
+  implementation dependency graph immediately. That turns “cloud drain is
+  blocked” into two bounded lanes: restore the control surface, then close the
+  dark authority prerequisites.
