@@ -1,7 +1,7 @@
 # OpenSpec drain blocker freshness audit
 
-Date: 2026-07-29 America/Los_Angeles  
-Provider: `drain-20260729-194051-a81d12`  
+Date: 2026-07-29 America/Los_Angeles
+Provider: `drain-20260729-194051-a81d12`
 Base: `origin/main` at `eff97a1e5734bc7166e0381069a713ede0a06743`
 
 ## Scope
