@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import importlib
-from dataclasses import FrozenInstanceError
+import json
+from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
@@ -64,7 +65,7 @@ def _scenario(**overrides: object) -> AcceptanceScenario:
             "multi-tenant cloud execution and preserve exact evidence."
         ),
         "allowed_tools": [],
-        "evaluator_chain": ["evaluator:artifact-digest-v1"],
+        "evaluator_chain": ["evaluator:coding-trajectory-v1"],
         "artifact_requirements": [{"kind": "content_digest", "required": True}],
         "pass_threshold": {"min_score": 1.0},
         "cost_budget": {"max_tokens": 0, "max_wall_time_seconds": 10},
@@ -223,7 +224,6 @@ def test_admission_fails_closed_when_evaluator_can_execute_tenant_code() -> None
         automation.admit_work_definition(
             definition,
             scenario,
-            deterministic_evaluator_ids={"evaluator:artifact-digest-v1"},
         )
 
     assert exc_info.value.code == "sandbox_unavailable"
@@ -241,15 +241,37 @@ def test_admission_freezes_typed_deterministic_scenario() -> None:
     admitted = automation.admit_work_definition(
         definition,
         scenario,
-        deterministic_evaluator_ids={"evaluator:artifact-digest-v1"},
     )
     scenario.evaluator_chain.append("evaluator:mutated")
+    scenario.artifact_requirements[0]["required"] = False
+    scenario.cost_budget["max_tokens"] = 100_000
 
     assert admitted.definition == definition
-    assert admitted.evaluator_chain == ("evaluator:artifact-digest-v1",)
+    assert admitted.evaluator_chain == ("evaluator:coding-trajectory-v1",)
     assert admitted.acceptance_scenario_digest == (
         definition.acceptance_scenario_digest
     )
+    frozen = json.loads(admitted.acceptance_scenario_json)
+    assert frozen["artifact_requirements"][0]["required"] is True
+    assert frozen["cost_budget"]["max_tokens"] == 0
+    assert admitted.scenario_max_tokens == 0
+    assert admitted.scenario_max_wall_time_seconds == 10
+
+
+def test_admission_rejects_executable_scenario_surface_even_when_evaluator_is_known() -> None:
+    automation = _automation()
+    scenario = _scenario(target_surface="mcp_call")
+    payload = _definition_payload()
+    payload["acceptance_scenario_digest"] = automation.acceptance_scenario_digest(
+        scenario
+    )
+    definition = automation.RepositorySpecWorkDefinition.from_dict(payload)
+
+    with pytest.raises(
+        automation.AutomationAdmissionError,
+        match="sandbox_unavailable",
+    ):
+        automation.admit_work_definition(definition, scenario)
 
 
 def test_operational_projection_is_derived_and_read_only() -> None:
@@ -322,3 +344,111 @@ def test_operational_projection_requires_binding_for_attempt() -> None:
         match="binding",
     ):
         automation.project_operational_state(definition, attempt=attempt)
+
+
+@pytest.mark.parametrize(
+    "relation",
+    [
+        "binding_id",
+        "binding_digest",
+        "binding_generation",
+        "universe",
+        "branch_def",
+        "branch_version",
+        "branch_content",
+        "operation",
+        "source_kind",
+        "source_id",
+        "source_generation",
+        "executor",
+        "daemon",
+        "runtime",
+        "binding_attempt_budget",
+        "binding_cost_budget",
+        "attempt_cost_budget",
+    ],
+)
+def test_operational_projection_rejects_cross_record_relation(
+    relation: str,
+) -> None:
+    automation = _automation()
+    definition = automation.RepositorySpecWorkDefinition.from_dict(
+        _definition_payload()
+    )
+    binding, attempt = _binding_and_attempt()
+    if relation == "binding_id":
+        attempt = replace(attempt, binding_id="bnd_other")
+    elif relation == "binding_digest":
+        attempt = replace(attempt, binding_digest=f"sha256:{'9' * 64}")
+    elif relation == "binding_generation":
+        attempt = replace(attempt, binding_generation=4)
+    elif relation == "universe":
+        attempt = replace(attempt, universe_id="universe_other")
+    elif relation == "branch_def":
+        attempt = replace(attempt, branch_def_id="branch_other")
+    elif relation == "branch_version":
+        attempt = replace(attempt, branch_version_id="branch_other@abc12345")
+    elif relation == "branch_content":
+        attempt = replace(attempt, branch_content_digest=f"sha256:{'9' * 64}")
+    elif relation == "operation":
+        attempt = replace(
+            attempt,
+            operation=BackgroundBranchOperation.INVOKE_BRANCH,
+        )
+    elif relation in {"source_kind", "source_id"}:
+        source_kind = (
+            BackgroundBranchSourceKind.SCHEDULE
+            if relation == "source_kind"
+            else attempt.source_kind
+        )
+        source_id = "schedule_other" if relation == "source_id" else attempt.source_id
+        provenance = replace(
+            attempt.provenance,
+            source_kind=source_kind,
+            source_id=source_id,
+        )
+        attempt = replace(
+            attempt,
+            source_kind=source_kind,
+            source_id=source_id,
+            provenance=provenance,
+        )
+    elif relation == "source_generation":
+        attempt = replace(attempt, source_generation=5)
+    elif relation == "executor":
+        audience = replace(
+            attempt.executor_audience,
+            executor_class=BackgroundBranchExecutorClass.HOST,
+        )
+        provenance = replace(
+            attempt.provenance,
+            executor_class=BackgroundBranchExecutorClass.HOST,
+        )
+        attempt = replace(
+            attempt,
+            executor_audience=audience,
+            provenance=provenance,
+        )
+    elif relation == "daemon":
+        binding = replace(binding, daemon_id="daemon_expected")
+    elif relation == "runtime":
+        binding = replace(binding, runtime_id="runtime_expected")
+    elif relation == "binding_attempt_budget":
+        binding = replace(binding, max_attempts=3)
+    elif relation == "binding_cost_budget":
+        binding = replace(
+            binding,
+            remaining_cost_microunits=5_000_001,
+        )
+    else:
+        attempt = replace(
+            attempt,
+            remaining_cost_microunits=5_000_001,
+        )
+
+    with pytest.raises(automation.AutomationProjectionError):
+        automation.project_operational_state(
+            definition,
+            binding=binding,
+            attempt=attempt,
+        )

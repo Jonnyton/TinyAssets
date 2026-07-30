@@ -12,7 +12,8 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass
-from typing import Any, Collection
+from types import MappingProxyType
+from typing import Any
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
@@ -24,15 +25,26 @@ from tinyassets.evaluation.scenario_runner import AcceptanceScenario
 
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+SERVER_DETERMINISTIC_EVALUATOR_POLICY = MappingProxyType(
+    {
+        "session_trace_summary": frozenset(
+            {"evaluator:coding-trajectory-v1"}
+        ),
+    }
+)
 
 
-def _digest(payload: Any) -> str:
-    encoded = json.dumps(
+def _canonical_json(payload: Any) -> str:
+    return json.dumps(
         payload,
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
-    ).encode("utf-8")
+    )
+
+
+def _digest(payload: Any) -> str:
+    encoded = _canonical_json(payload).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
@@ -187,9 +199,13 @@ class AutomationProjectionError(ValueError):
 class AdmittedWorkDefinition:
     definition: RepositorySpecWorkDefinition
     acceptance_scenario_digest: str
+    acceptance_scenario_json: str
+    target_surface: str
     evaluator_chain: tuple[str, ...]
     input_artifact_digests: tuple[str, ...]
     privacy_scope: str
+    scenario_max_tokens: int
+    scenario_max_wall_time_seconds: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,8 +243,6 @@ def acceptance_scenario_digest(scenario: AcceptanceScenario) -> str:
 def admit_work_definition(
     definition: RepositorySpecWorkDefinition,
     scenario: AcceptanceScenario,
-    *,
-    deterministic_evaluator_ids: Collection[str],
 ) -> AdmittedWorkDefinition:
     """Freeze a no-tenant-code evaluation policy before provider spend."""
 
@@ -237,7 +251,10 @@ def admit_work_definition(
     digest = acceptance_scenario_digest(scenario)
     if digest != definition.acceptance_scenario_digest:
         raise AutomationAdmissionError("scenario_mismatch", "scenario digest changed")
-    admitted = frozenset(deterministic_evaluator_ids)
+    admitted = SERVER_DETERMINISTIC_EVALUATOR_POLICY.get(
+        scenario.target_surface,
+        frozenset(),
+    )
     unsafe = (
         bool(scenario.allowed_tools)
         or bool(scenario.setup)
@@ -261,9 +278,15 @@ def admit_work_definition(
     return AdmittedWorkDefinition(
         definition=definition,
         acceptance_scenario_digest=digest,
+        acceptance_scenario_json=_canonical_json(asdict(scenario)),
+        target_surface=scenario.target_surface,
         evaluator_chain=tuple(scenario.evaluator_chain),
         input_artifact_digests=definition.input_artifact_digests,
         privacy_scope=scenario.privacy_scope,
+        scenario_max_tokens=scenario.cost_budget["max_tokens"],
+        scenario_max_wall_time_seconds=(
+            scenario.cost_budget["max_wall_time_seconds"]
+        ),
     )
 
 
@@ -286,6 +309,9 @@ def project_operational_state(
             binding.pinned_branch_version_id == definition.branch_version_id,
             BackgroundBranchExecutorClass.CLOUD
             in binding.permitted_executor_classes,
+            binding.max_attempts <= definition.max_attempts,
+            binding.remaining_cost_microunits
+            <= definition.max_cost_microunits,
         )
         if not expected_binding[0]:
             raise AutomationProjectionError("binding principal does not match definition")
@@ -301,6 +327,20 @@ def project_operational_state(
             attempt.branch_def_id == definition.branch_def_id,
             attempt.branch_version_id == definition.branch_version_id,
             attempt.branch_content_digest == definition.branch_content_digest,
+            attempt.operation is binding.operation,
+            attempt.source_kind is binding.source_kind,
+            attempt.source_id == binding.source_id,
+            str(attempt.source_generation) == binding.source_revision,
+            attempt.executor_audience.executor_class
+            in binding.permitted_executor_classes,
+            binding.daemon_id is None
+            or attempt.executor_audience.daemon_id == binding.daemon_id,
+            binding.runtime_id is None
+            or attempt.executor_audience.runtime_id == binding.runtime_id,
+            attempt.remaining_cost_microunits
+            <= binding.remaining_cost_microunits,
+            attempt.remaining_cost_microunits
+            <= definition.max_cost_microunits,
         )
         if not all(attempt_matches):
             raise AutomationProjectionError("attempt does not match definition and binding")
@@ -351,6 +391,7 @@ __all__ = [
     "AutomationProjectionError",
     "RepositorySpecWorkDefinition",
     "RepositorySpecOperationalProjection",
+    "SERVER_DETERMINISTIC_EVALUATOR_POLICY",
     "acceptance_scenario_digest",
     "admit_work_definition",
     "project_operational_state",
