@@ -317,6 +317,32 @@ class TestExactlyOnce:
         evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
         assert evidence["summary"]["total_claims"] == 1
 
+    def test_receipt_success_replay_repairs_a_missing_outcome(
+        self, env, bind_adapter, monkeypatch
+    ):
+        bind_adapter(_accepting(env))
+        original_settle = service._settle
+        attempts = 0
+
+        def _crash_once(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("crash after receipt success")
+            return original_settle(*args, **kwargs)
+
+        monkeypatch.setattr(service, "_settle", _crash_once)
+        with pytest.raises(RuntimeError, match="crash after receipt success"):
+            env.execute()
+
+        replay = env.execute()
+
+        assert replay["replay"] is True
+        assert replay["status"] == "accepted"
+        assert replay["outcome"]["handoff_id"] == replay["handoff"]["handoff_id"]
+        evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
+        assert evidence["summary"]["total_claims"] == 1
+
 
 # ── Uncertain and rejected replies ────────────────────────────────────────────
 

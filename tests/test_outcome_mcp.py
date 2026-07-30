@@ -10,14 +10,40 @@ import sqlite3
 
 import pytest
 
-from tinyassets.runs import initialize_runs_db
+from tinyassets.runs import create_run, initialize_runs_db
 from tinyassets.universe_server import extensions
 
 
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        "tinyassets.api.permissions.current_request_actor_id",
+        lambda: "account-alice",
+    )
     initialize_runs_db(tmp_path)
+    run_ids = {
+        "run-001", "run-A", "run-B", "run-C", "run-X", "run-Y",
+        *(f"run-{index}" for index in range(3)),
+        *(f"run-{kind}" for kind in (
+            "published_paper", "merged_pr", "deployed_app",
+            "won_competition", "custom",
+        )),
+    }
+    for run_id in run_ids:
+        generated = create_run(
+            tmp_path,
+            branch_def_id="branch-owned",
+            thread_id=f"thread-{run_id}",
+            inputs={},
+            actor="account-alice",
+            owner_user_id="account-alice",
+        )
+        with sqlite3.connect(tmp_path / ".runs.db") as conn:
+            conn.execute(
+                "UPDATE runs SET run_id = ? WHERE run_id = ?",
+                (run_id, generated),
+            )
 
 
 # ── record_outcome ─────────────────────────────────────────────────────────────
@@ -54,6 +80,47 @@ class TestRecordOutcome:
             event_type="merged_pr",
         ))
         assert "error" in result
+
+    def test_record_nonexistent_run_is_refused(self):
+        result = json.loads(extensions(
+            action="record_outcome",
+            run_id="run-does-not-exist",
+            event_type="merged_pr",
+        ))
+        assert result["code"] == "handoff_authority_required"
+
+    def test_record_foreign_run_is_refused(self, tmp_path):
+        create_run(
+            tmp_path,
+            branch_def_id="branch-foreign",
+            thread_id="thread-foreign",
+            inputs={},
+            actor="account-bob",
+            owner_user_id="account-bob",
+        )
+        with sqlite3.connect(tmp_path / ".runs.db") as conn:
+            foreign_run_id = conn.execute(
+                "SELECT run_id FROM runs WHERE owner_user_id = 'account-bob'"
+            ).fetchone()[0]
+
+        result = json.loads(extensions(
+            action="record_outcome",
+            run_id=foreign_run_id,
+            event_type="merged_pr",
+        ))
+        assert result["code"] == "handoff_authority_required"
+
+    def test_record_requires_an_authenticated_subject(self, monkeypatch):
+        monkeypatch.setattr(
+            "tinyassets.api.permissions.current_request_actor_id",
+            lambda: "anonymous",
+        )
+        result = json.loads(extensions(
+            action="record_outcome",
+            run_id="run-001",
+            event_type="merged_pr",
+        ))
+        assert result["code"] == "handoff_authority_required"
 
     def test_record_missing_outcome_type_returns_error(self):
         result = json.loads(extensions(
@@ -107,8 +174,35 @@ class TestRecordOutcome:
                 (result["outcome_id"],),
             ).fetchall()
 
-        assert evidence == ("user_attested", "legacy_outcome_event")
+        assert evidence == ("user_attested", "user_attestation")
         assert transitions == [(1, "", "user_attested")]
+
+    def test_record_attributes_the_authenticated_account_and_attester(self, tmp_path):
+        result = json.loads(extensions(
+            action="record_outcome",
+            run_id="run-001",
+            event_type="deployed_app",
+        ))
+        with sqlite3.connect(tmp_path / ".runs.db") as conn:
+            evidence = conn.execute(
+                """
+                SELECT account_id, attested_by
+                  FROM outcome_evidence
+                 WHERE outcome_id = ?
+                """,
+                (result["outcome_id"],),
+            ).fetchone()
+            actor = conn.execute(
+                """
+                SELECT actor_id
+                  FROM outcome_evidence_transition
+                 WHERE outcome_id = ?
+                """,
+                (result["outcome_id"],),
+            ).fetchone()
+
+        assert evidence == ("account-alice", "account-alice")
+        assert actor == ("account-alice",)
 
     def test_record_with_gate_event_linkage(self):
         result = json.loads(extensions(
@@ -181,6 +275,18 @@ class TestGetOutcome:
         assert fetched["outcome_id"] == recorded["outcome_id"]
         assert fetched["run_id"] == "run-001"
         assert fetched["outcome_type"] == "deployed_app"
+        assert fetched["account_id"] == "account-alice"
+        assert fetched["attested_by"] == "account-alice"
+        assert fetched["evidence_level"] == "user_attested"
+        assert fetched["evidence_transitions"] == [{
+            "seq": 1,
+            "from_level": "",
+            "to_level": "user_attested",
+            "evidence_source": "user_attestation",
+            "actor_id": "account-alice",
+            "evidence": {},
+            "recorded_at": fetched["recorded_at"],
+        }]
 
     def test_get_nonexistent_returns_error(self):
         result = json.loads(extensions(
@@ -212,6 +318,8 @@ class TestListOutcomes:
         ))
         assert result["count"] == 2
         assert all(o["run_id"] == "run-A" for o in result["outcomes"])
+        assert all(o["evidence_level"] == "user_attested" for o in result["outcomes"])
+        assert all(o["attested_by"] == "account-alice" for o in result["outcomes"])
 
     def test_list_by_outcome_type(self):
         extensions(
@@ -283,6 +391,20 @@ class TestListOutcomes:
         ))
         assert result["count"] == 0
         assert result["outcomes"] == []
+
+    @pytest.mark.parametrize(
+        ("limit", "expected_count"),
+        [(0, 2), (-1, 1), ("invalid", 2)],
+    )
+    def test_list_nonpositive_or_invalid_limit_uses_a_positive_bound(
+        self, limit, expected_count
+    ):
+        extensions(action="record_outcome", run_id="run-A", event_type="merged_pr")
+        extensions(action="record_outcome", run_id="run-B", event_type="merged_pr")
+
+        result = json.loads(extensions(action="list_outcomes", limit=limit))
+
+        assert result["count"] == expected_count
 
 
 # ── available_actions listing ──────────────────────────────────────────────────

@@ -224,6 +224,49 @@ def migrate_legacy_outcome_evidence(  # type: ignore[no-untyped-def]
     )
 
 
+def record_user_attested_outcome_evidence(  # type: ignore[no-untyped-def]
+    conn,
+    *,
+    outcome_id: str,
+    account_id: str,
+    actor_id: str,
+) -> None:
+    """Add the authenticated initial evidence head for a new outcome event."""
+    account_id = account_id.strip()
+    actor_id = actor_id.strip()
+    if not account_id or not actor_id:
+        raise ValueError("authenticated account and attesting actor are required")
+    conn.execute(
+        """
+        INSERT INTO outcome_evidence (
+            outcome_id, account_id, run_id, outcome_kind, evidence_source,
+            evidence_level, attested_by, recorded_at, updated_at
+        )
+        SELECT
+            outcome_id, ?, run_id, outcome_type, 'user_attestation',
+            'user_attested', ?, recorded_at, recorded_at
+          FROM outcome_event
+         WHERE outcome_id = ?
+        """,
+        (account_id, actor_id, outcome_id),
+    )
+    conn.execute(
+        """
+        INSERT INTO outcome_evidence_transition (
+            transition_id, outcome_id, seq, from_level, to_level,
+            evidence_source, actor_id, evidence_json, recorded_at
+        )
+        SELECT
+            'attestation:' || outcome_id || ':user_attested',
+            outcome_id, 1, '', 'user_attested', 'user_attestation',
+            ?, '{}', recorded_at
+          FROM outcome_event
+         WHERE outcome_id = ?
+        """,
+        (actor_id, outcome_id),
+    )
+
+
 def migrate_outcome_schema(conn) -> None:  # type: ignore[no-untyped-def]
     """Create the outcome registry and its evidence extension. Idempotent.
 

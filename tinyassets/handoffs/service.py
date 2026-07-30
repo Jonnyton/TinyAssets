@@ -586,7 +586,7 @@ def _settle(
             # row is authoritative.
             fresh = store.get_handoff(fresh.handoff_id, actor_id=actor_id)
 
-    if target == "accepted" and not replay:
+    if target == "accepted":
         existing = store.list_outcome_evidence(
             account_id=actor_id, handoff_id=fresh.handoff_id, limit=1
         )
