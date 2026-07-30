@@ -1326,10 +1326,19 @@ def test_deploy_step_invalid_capability_source_revokes_before_failure():
     failure = 'exit 1'
     validation_idx = run_script.find(validation)
     delete_idx = run_script.find(delete, validation_idx)
+    restart_idx = run_script.find(
+        "systemctl restart tinyassets-daemon",
+        delete_idx,
+    )
     failure_idx = run_script.find(failure, delete_idx)
     assert validation_idx != -1
     assert delete_idx > validation_idx
-    assert failure_idx > delete_idx
+    assert restart_idx > delete_idx
+    assert failure_idx > restart_idx
+    assert (
+        "TINYASSETS_GITHUB_PR_CAPABILITIES && "
+        "sudo systemctl restart tinyassets-daemon"
+    ) in run_script
     assert '"missing exact Jonnyton/TinyAssets token"' in run_script
 
 

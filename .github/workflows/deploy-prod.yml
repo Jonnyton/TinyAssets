@@ -997,7 +997,7 @@ jobs:
               echo "::error::GitHub PR capability source is invalid or lacks the exact TinyAssets destination; revoking any installed runtime capability."
               ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
                   "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                  "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES TINYASSETS_GITHUB_PR_CAPABILITIES"
+                  "sudo bash /tmp/install-tinyassets-env.sh delete TINYASSETS_GITHUB_PUSH_CAPABILITIES TINYASSETS_GITHUB_PR_CAPABILITIES && sudo systemctl restart tinyassets-daemon"
               exit 1
             fi
             printf '%s' "${scoped_github_pr_capabilities}" | ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
