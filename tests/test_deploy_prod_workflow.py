@@ -1412,6 +1412,33 @@ def test_github_capability_validator_rejects_ambiguous_or_invalid_maps(
     assert result.stdout == ""
 
 
+@pytest.mark.parametrize(
+    "source",
+    [
+        '{"Jonnyton/TinyAssets":"first","Jonnyton/TinyAssets":"second"}',
+        '{"Jonnyton/Workflow":"first","Jonnyton/Workflow":"second"}',
+    ],
+)
+def test_github_capability_validator_rejects_duplicate_json_members(
+    source: str,
+):
+    result = subprocess.run(
+        [sys.executable, "-c", _github_capability_validator()],
+        text=True,
+        capture_output=True,
+        check=False,
+        env={
+            **os.environ,
+            "GITHUB_PR_CAPABILITIES_SOURCE": source,
+        },
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert "first" not in result.stderr
+    assert "second" not in result.stderr
+
+
 def test_deploy_step_is_valid_bash_after_actions_expression_substitution():
     """Guard the executable script shape, including inline validators."""
     wf = _load()

@@ -975,9 +975,17 @@ jobs:
 
           destination = "Jonnyton/TinyAssets"
           historical_destination = "Jonnyton/Workflow"
+          def reject_duplicate_members(pairs):
+              result = {}
+              for key, value in pairs:
+                  if key in result:
+                      raise ValueError("duplicate capability destination")
+                  result[key] = value
+              return result
           try:
               source = json.loads(
-                  os.environ.get("GITHUB_PR_CAPABILITIES_SOURCE", "")
+                  os.environ.get("GITHUB_PR_CAPABILITIES_SOURCE", ""),
+                  object_pairs_hook=reject_duplicate_members,
               )
           except (TypeError, ValueError) as exc:
               raise SystemExit(f"invalid capability JSON: {exc}") from exc
