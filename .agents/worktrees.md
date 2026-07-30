@@ -1850,3 +1850,14 @@ Notes:
 - Purpose: publish the completed research and Codex `adapt` review on current main without granting new build authority
 - Review gate: refresh source/code claims, focused artifact validation, and independent exact-head review
 - Publish/cleanup: one PR to main; retire the STATUS row only after merge verification
+
+## 2026-07-30 14:27 - reviewed 0xCodez implications landed
+
+- Provider: `drain-20260730-104801-7e8f53`
+- Branch: `chore/drain-20260730-104801-0xcodez-foldback`
+- Lane state: Artifact landed as PR #1943 (`f9e249c1`); STATUS claim retired in this foldback
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
+- STATUS/Issue/PR: reviewed implications artifact published; no new build authority granted
+- Purpose: close the durable worktree lifecycle after verified artifact merge
+- Review gate: PR #1943 exact head `4f92071b` independently approved; merged tree contains the reviewed artifact
+- Publish/cleanup: safe to remove after this foldback lands
