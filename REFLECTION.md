@@ -828,8 +828,9 @@ fresh-host rollback edges found later.
   digest.
 - **Pattern worth capturing:** validate nominal IDs, canonical revisions,
   timestamps, digests, and ordinals before hashing a versioned canonical
-  envelope. The resulting key is stable and non-secret while each source
-  boundary remains independently mutation-tested.
+  envelope, and normalize equivalent timestamp spellings to one fixed
+  microsecond form. The resulting key is stable and non-secret while each
+  source boundary remains independently mutation-tested.
 - **What I would do differently:** define one golden vector and the
   all-fields-mutate table with the first builder, so later source builders must
   join the same compatibility contract rather than adding ad hoc string

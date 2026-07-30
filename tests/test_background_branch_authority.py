@@ -956,8 +956,23 @@ def test_schedule_logical_attempt_key_has_a_stable_golden_vector() -> None:
             due_at="2026-07-31T08:00:00Z",
         )
         == "logical_attempt:schedule:"
-        "7cc6ce1a346e12894bcd168c3bf86f093d8be77313fc836939f70566b41a91c2"
+        "08c823a0d91201eee9b80715ce4f2da191ae7ae4e04055ba68c56a859f56a304"
     )
+
+
+def test_schedule_key_normalizes_equivalent_utc_instant_text() -> None:
+    whole_seconds = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        due_at="2026-07-31T08:00:00Z",
+    )
+    explicit_microseconds = build_schedule_attempt_key(
+        schedule_id="schedule_nightly",
+        schedule_generation=2,
+        due_at="2026-07-31T08:00:00.000000Z",
+    )
+
+    assert whole_seconds == explicit_microseconds
 
 
 def test_logical_attempt_keys_change_when_any_replay_boundary_changes() -> None:
