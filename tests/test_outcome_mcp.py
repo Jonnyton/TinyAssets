@@ -6,11 +6,14 @@ Covers: record_outcome, list_outcomes, get_outcome.
 from __future__ import annotations
 
 import json
+import sqlite3
 
 import pytest
 
 from tinyassets.runs import initialize_runs_db
 from tinyassets.universe_server import extensions
+
+
 @pytest.fixture(autouse=True)
 def _set_data_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
@@ -76,6 +79,36 @@ class TestRecordOutcome:
             evidence_url="https://example.com/deploy",
         ))
         assert result["status"] == "recorded"
+
+    def test_record_enters_the_user_attested_evidence_lifecycle(self, tmp_path):
+        result = json.loads(extensions(
+            action="record_outcome",
+            run_id="run-001",
+            event_type="deployed_app",
+            evidence_url="https://example.com/deploy",
+        ))
+
+        with sqlite3.connect(tmp_path / ".runs.db") as conn:
+            evidence = conn.execute(
+                """
+                SELECT evidence_level, evidence_source
+                  FROM outcome_evidence
+                 WHERE outcome_id = ?
+                """,
+                (result["outcome_id"],),
+            ).fetchone()
+            transitions = conn.execute(
+                """
+                SELECT seq, from_level, to_level
+                  FROM outcome_evidence_transition
+                 WHERE outcome_id = ?
+                 ORDER BY seq
+                """,
+                (result["outcome_id"],),
+            ).fetchall()
+
+        assert evidence == ("user_attested", "legacy_outcome_event")
+        assert transitions == [(1, "", "user_attested")]
 
     def test_record_with_gate_event_linkage(self):
         result = json.loads(extensions(

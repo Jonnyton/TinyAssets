@@ -187,6 +187,43 @@ class OutcomeEvent:
 
 # ── Migration ─────────────────────────────────────────────────────────────────
 
+def migrate_legacy_outcome_evidence(  # type: ignore[no-untyped-def]
+    conn, outcome_id: str | None = None
+) -> None:
+    """Give legacy outcome rows their append-only ``user_attested`` head."""
+    where = "WHERE outcome_id = ?" if outcome_id else ""
+    params = (outcome_id,) if outcome_id else ()
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO outcome_evidence (
+            outcome_id, account_id, run_id, outcome_kind, evidence_source,
+            evidence_level, attested_by, recorded_at, updated_at
+        )
+        SELECT
+            outcome_id, '', run_id, outcome_type, 'legacy_outcome_event',
+            'user_attested', '', recorded_at, recorded_at
+          FROM outcome_event
+          {where}
+        """,
+        params,
+    )
+    conn.execute(
+        f"""
+        INSERT OR IGNORE INTO outcome_evidence_transition (
+            transition_id, outcome_id, seq, from_level, to_level,
+            evidence_source, actor_id, evidence_json, recorded_at
+        )
+        SELECT
+            'legacy:' || outcome_id || ':user_attested',
+            outcome_id, 1, '', 'user_attested', 'legacy_outcome_event',
+            '', '{{}}', recorded_at
+          FROM outcome_event
+          {where}
+        """,
+        params,
+    )
+
+
 def migrate_outcome_schema(conn) -> None:  # type: ignore[no-untyped-def]
     """Create the outcome registry and its evidence extension. Idempotent.
 
@@ -196,28 +233,4 @@ def migrate_outcome_schema(conn) -> None:  # type: ignore[no-untyped-def]
     repurposed as claimant authority.
     """
     conn.executescript(OUTCOME_SCHEMA + OUTCOME_EVIDENCE_SCHEMA)
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO outcome_evidence (
-            outcome_id, account_id, run_id, outcome_kind, evidence_source,
-            evidence_level, attested_by, recorded_at, updated_at
-        )
-        SELECT
-            outcome_id, '', run_id, outcome_type, 'legacy_outcome_event',
-            'user_attested', '', recorded_at, recorded_at
-          FROM outcome_event
-        """
-    )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO outcome_evidence_transition (
-            transition_id, outcome_id, seq, from_level, to_level,
-            evidence_source, actor_id, evidence_json, recorded_at
-        )
-        SELECT
-            'legacy:' || outcome_id || ':user_attested',
-            outcome_id, 1, '', 'user_attested', 'legacy_outcome_event',
-            '', '{}', recorded_at
-          FROM outcome_event
-        """
-    )
+    migrate_legacy_outcome_evidence(conn)

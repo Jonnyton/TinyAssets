@@ -762,7 +762,7 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
     import uuid as _uuid
     from datetime import datetime, timezone
 
-    from tinyassets.outcomes.schema import OUTCOME_TYPES
+    from tinyassets.outcomes.schema import OUTCOME_TYPES, migrate_legacy_outcome_evidence
 
     run_id = (kwargs.get("run_id") or "").strip()
     outcome_type = (kwargs.get("outcome_type") or "").strip()
@@ -799,6 +799,7 @@ def _action_record_outcome(kwargs: dict[str, Any]) -> str:
             (outcome_id, run_id, outcome_type, evidence_url,
              gate_event_id, payload, recorded_at, note),
         )
+        migrate_legacy_outcome_evidence(conn, outcome_id)
     return json.dumps({
         "status": "recorded",
         "outcome_id": outcome_id,
