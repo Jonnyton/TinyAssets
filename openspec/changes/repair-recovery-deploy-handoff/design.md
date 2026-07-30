@@ -61,26 +61,31 @@ Ordinary canonical-project deployments do not carry a recovery handoff record
 and retain their existing systemd lifecycle. A partial, extra, running,
 identity-changed, foreign-project, or unrecorded fleet fails before removal.
 
-### 3. Treat an empty fleet after durable removal intent as replay
+### 3. Replay exact remaining subsets after durable removal intent
 
-If a process dies after exact `docker rm` succeeds but before completion is
-recorded, a retry may accept an empty production-volume container inventory
-only when the current run already contains the exact durable removal intent.
-It records completion and continues. Any other empty or changed inventory
-fails closed.
+If a process or Docker daemon dies after `docker rm` removes only a strict
+subset, a retry may complete the remaining subset only when the current run
+already contains exact durable removal intent. Every survivor must retain its
+original recorded ID, recovery project label, stopped state, and `restart=no`;
+every missing recorded ID must be proved absent; and no extra or substituted
+volume consumer may exist. The retry removes only the remaining exact IDs and
+proves the inventory empty. Exact empty inventory is the terminal form of the
+same replay and records completion without another remove.
 
-This avoids recreating removed recovery containers merely to remove them again,
-while preserving the write-ahead invariant.
+Before durable intent, partial absence remains an ownership failure. This
+avoids recreating removed recovery containers merely to remove them again while
+making the non-transactional Docker operation replayable inside the
+write-ahead boundary.
 
 ## Risks / Trade-offs
 
 - [Prior recovery state is incomplete or stale] → refuse before preflight
   mutation rather than infer ownership.
-- [Docker removal succeeds partially] → the post-removal exact-empty proof
-  fails; the canonical service remains masked and cleanup/recovery handles the
-  durable nonterminal state.
+- [Docker removal succeeds partially] → the canonical service remains masked;
+  durable intent permits only provenance-bound removal of the exact remaining
+  subset.
 - [Crash after removal] → current-run removal intent permits only the exact
-  empty-fleet replay path.
+  remaining-subset or empty-fleet replay path.
 - [Canonical containers are accidentally targeted] → removal requires prior
   restored-recovery state plus exact IDs and exact recovery project labels.
 - [Data loss from container removal] → use exact `docker rm` IDs with no volume
@@ -99,6 +104,8 @@ while preserving the write-ahead invariant.
    through the repaired fence and prove the exact five canonical containers,
    public MCP canary, and durable restored state.
 6. Resume PR #1935's OAuth diagnostic deployment.
+7. Sync the delta into the main capability spec, archive the change, and retire
+   its live coordination row.
 
 Rollback uses the existing provenance-bound unsafe recovery workflow with the
 previous admitted stop-writer image. No direct host deletion or fence bypass is

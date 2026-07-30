@@ -52,9 +52,11 @@ It carries the bounded handoff into the new run's write-ahead state.
 requires the same exact five IDs, labels, stopped states, and `restart=no`
 policies. It writes removal intent, runs `docker rm` on only those exact IDs
 without `-v`, proves the production-volume container inventory empty, records
-completion, and only then unmasks the canonical service. Exact absence after a
-durable removal intent is replayable; every partial, extra, substituted,
-running, restart-enabled, or foreign-project state fails before removal.
+completion, and only then unmasks the canonical service. After durable intent,
+a strict remaining subset is replayable only when every survivor retains its
+recorded identity and safety posture, every missing recorded ID is proved
+absent, and there are no extra writers. Before intent, partial absence fails.
+Substituted, running, restart-enabled, and foreign-project survivors fail.
 
 Ordinary canonical predecessors have no recovery handoff record and keep the
 existing systemd lifecycle.
@@ -74,7 +76,7 @@ Green evidence on 2026-07-30 (Windows host):
 
 ```text
 py -m pytest -q tests/test_retire_cheat_loop_deploy_fence.py
-99 passed in 2.94s
+100 passed in 2.71s
 
 py -m ruff check scripts/retire_cheat_loop_deploy_fence.py tests/test_retire_cheat_loop_deploy_fence.py
 All checks passed!
@@ -86,7 +88,13 @@ Change 'repair-recovery-deploy-handoff' is valid
 The suite includes a full unsafe-recovery → finalization → next normal
 preflight → exact removal path, ordinary canonical preservation, mismatch
 before first mutation, partial/foreign/running/restart-policy refusal, and
-crash-after-removal replay.
+crash-after-removal replay, including injected strict-subset removal followed
+by successful exact-survivor replay.
+
+Independent review of head `01724e33` returned ADAPT: multi-ID `docker rm` is
+not transactional, so strict-subset success had no replay path, and the change
+needed an explicit sync/archive closeout task. Both findings are addressed in
+the next exact-head revision; final approval remains required before landing.
 
 ## Release And Rollback
 

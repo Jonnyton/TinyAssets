@@ -665,6 +665,29 @@ def _container_running_exact(host: Host, identity: str) -> bool:
     raise FenceError(f"container state is not authoritative: {identity}={state!r}")
 
 
+def _container_absent_exact(host: Host, identity: str) -> bool:
+    """Prove that one exact container ID no longer exists in any state."""
+
+    output = host.run(
+        [
+            "docker",
+            "ps",
+            "-a",
+            "--no-trunc",
+            "--filter",
+            f"id={identity}",
+            "--format",
+            "{{.ID}}",
+        ]
+    )
+    if not output:
+        return True
+    rows = output.splitlines()
+    if len(rows) != 1 or rows[0] != identity:
+        raise FenceError(f"container absence is not authoritative: {identity}")
+    return False
+
+
 def _named_container_running(host: Host, name: str) -> bool:
     output = host.run(
         [
@@ -1255,23 +1278,41 @@ def _remove_restored_recovery_handoff(
     if not names:
         if phase not in {"planned", "removed"}:
             raise FenceError("recovery handoff fleet disappeared before removal intent")
+        if phase == "planned":
+            for name in EXPECTED_CONTAINERS:
+                if not _container_absent_exact(host, recorded[name]):
+                    raise FenceError(
+                        f"removed recovery handoff writer still exists: {name}"
+                    )
         if phase != "removed":
             raw_handoff["removal_phase"] = "removed"
             raw_handoff["removed_container_ids"] = dict(recorded)
             _atomic_json(state_path, state)
         return recorded
-    if names != set(EXPECTED_CONTAINERS):
-        raise FenceError("recovery handoff fleet is partial or has extra writers")
+    expected_names = set(EXPECTED_CONTAINERS)
+    if names - expected_names:
+        raise FenceError("recovery handoff fleet has extra writers")
+    if phase == "pending" and names != expected_names:
+        raise FenceError("recovery handoff fleet changed before removal intent")
     if phase == "removed":
         raise FenceError("removed recovery handoff fleet unexpectedly reappeared")
 
-    inspections = _exact_inspections(host)
+    inspections = {
+        name: host.container_info(name)
+        for name in EXPECTED_CONTAINERS
+        if name in names
+    }
     actual = {
         name: str(info.get("Id", ""))
         for name, info in inspections.items()
     }
-    if actual != recorded:
+    if actual != {name: recorded[name] for name in names}:
         raise FenceError("recovery handoff container identities changed")
+    for name in expected_names - names:
+        if not _container_absent_exact(host, recorded[name]):
+            raise FenceError(
+                f"removed recovery handoff writer still exists: {name}"
+            )
     for name, info in inspections.items():
         labels = info.get("Config", {}).get("Labels", {}) or {}
         if labels.get("com.docker.compose.project") != project:
@@ -1283,13 +1324,14 @@ def _remove_restored_recovery_handoff(
         if host.container_restart_policy(recorded[name]) != "no":
             raise FenceError("recovery handoff writer restart policy is not no")
 
-    raw_handoff["removal_phase"] = "planned"
-    _atomic_json(state_path, state)
+    if phase == "pending":
+        raw_handoff["removal_phase"] = "planned"
+        _atomic_json(state_path, state)
     host.run(
         [
             "docker",
             "rm",
-            *(recorded[name] for name in EXPECTED_CONTAINERS),
+            *(recorded[name] for name in EXPECTED_CONTAINERS if name in names),
         ]
     )
     if host.volume_container_names():

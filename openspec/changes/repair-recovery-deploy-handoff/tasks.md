@@ -20,3 +20,5 @@
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal
   deploy completes from a finalized recovery generation.
+- [ ] 2.4 Sync the delta into `daemon-runtime-and-dispatch`, archive this
+  change, and retire its STATUS row after live acceptance evidence is durable.

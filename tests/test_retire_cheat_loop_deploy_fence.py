@@ -620,6 +620,8 @@ class LifecycleHost:
             for name, info in self.containers.items():
                 del name
                 if identity == info["Id"]:
+                    if "{{.ID}}" in command:
+                        return identity
                     state = "running" if info["State"]["Running"] else "exited"
                     return f"{identity}|{state}"
             return ""
@@ -904,7 +906,8 @@ def test_prepare_refuses_recovery_handoff_drift_without_removal(
         state_path=state_path,
     )
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["recovery_handoff"]["removal_phase"] = "planned"
+    if drift != "partial":
+        state["recovery_handoff"]["removal_phase"] = "planned"
     state_path.write_text(json.dumps(state), encoding="utf-8")
     if drift == "partial":
         del host.containers[EXPECTED_CONTAINERS[-1]]
@@ -932,6 +935,71 @@ def test_prepare_refuses_recovery_handoff_drift_without_removal(
         )
 
     assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+
+
+def test_prepare_replays_partial_recovery_removal_after_durable_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured_ref[0] = host.target_image_ref
+    original_run = host.run
+    injected = False
+
+    def interrupt_after_partial_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal injected
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not injected:
+            injected = True
+            original_run(
+                ["docker", "rm", *command[2:4]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated interruption after partial docker rm")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_partial_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated interruption"):
+        prepare_deploy(
+            host,
+            image_ref=host.target_image_ref,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert interrupted_state["recovery_handoff"]["removal_phase"] == "planned"
+    assert 0 < len(host.containers) < len(EXPECTED_CONTAINERS)
+
+    host.run = original_run  # type: ignore[method-assign]
+    evidence = prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "target_installed"
+    assert host.containers == {}
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_handoff"]["removal_phase"] == "removed"
 
 
 def test_prepare_replays_durable_recovery_removal_intent_after_exact_absence(

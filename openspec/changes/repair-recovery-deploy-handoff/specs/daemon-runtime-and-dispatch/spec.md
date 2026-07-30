@@ -34,10 +34,14 @@ removal intent before container mutation.
 - **THEN** the fence fails before `docker rm` and keeps the canonical service
   from starting
 
-#### Scenario: Removal-intent replay accepts only exact absence
+#### Scenario: Removal-intent replay completes only the exact remaining subset
 
 - **WHEN** the process restarts after durable exact-fleet removal intent and
-  the production-volume container inventory is empty because the exact removal
-  already completed
-- **THEN** the fence records removal completion and may continue
-- **AND** any partial or substituted inventory still fails closed
+  `docker rm` already removed zero or more of the recorded containers
+- **THEN** the fence proves every missing recorded ID absent, proves every
+  survivor has its original ID, recovery project label, stopped state, and
+  `restart=no`, removes only those exact survivors, and records completion only
+  after the production-volume inventory is empty
+- **AND** any pre-intent partial fleet, extra writer, substituted identity,
+  running survivor, restart-enabled survivor, or foreign-project survivor
+  fails closed
