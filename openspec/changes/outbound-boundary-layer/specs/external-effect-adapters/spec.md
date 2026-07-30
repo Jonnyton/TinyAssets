@@ -36,8 +36,10 @@ pull-request effect identity containing the exact universe, automation, claim,
 repository, intended head SHA, and fixed effect kind. It SHALL derive a
 versioned SHA-256 marker from canonical identity bytes, expose only that digest
 marker at the destination, and reconcile read-only through GitHub's pull
-requests associated with the intended commit. Legacy or Branch-authored packet
-fields SHALL NOT create this identity or reconciliation authority.
+requests associated with the intended commit using a destination-matched,
+read-scoped, credential-blind connection proxy. The reconciler SHALL NOT
+receive credential material. Legacy or Branch-authored packet fields SHALL NOT
+create this identity or reconciliation authority.
 
 Exactly one result with the exact repository, head SHA, and marker SHALL be
 terminal success. A successful authoritative query with no exact result SHALL

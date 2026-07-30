@@ -67,8 +67,10 @@ server-authored identity containing `universe_id`, `automation_id`, `claim_id`,
 `repository`, `intended_head_sha`, and the fixed
 `github_pull_request` effect kind. The outbound owner canonicalizes and hashes
 that identity, places only the digest in a GitHub pull-request body marker, and
-looks up pull requests associated with the intended commit. Opaque internal
-identifiers never appear in the public marker.
+looks up pull requests associated with the intended commit through the existing
+credential-blind scoped connection proxy. Opaque internal identifiers never
+appear in the public marker, and the reconciler never receives credential
+material.
 
 Reconciliation is read-only. Exactly one pull request whose repository, head
 SHA, and body marker all match is terminal success. A successful authoritative

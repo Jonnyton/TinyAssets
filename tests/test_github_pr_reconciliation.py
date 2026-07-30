@@ -3,6 +3,10 @@ from __future__ import annotations
 import pytest
 
 from tinyassets.effectors import github_pr
+from tinyassets.storage.outbound_connections import (
+    ProxyRequestError,
+    ScopedConnectionProxy,
+)
 
 _SHA = "a" * 40
 
@@ -30,22 +34,29 @@ def _pull(identity, *, number=17, body=None, head_sha=None, repository=None):
     }
 
 
-def _getter(response, error=None):
-    calls = []
+class _Channel:
+    def __init__(self, response, error=None):
+        self.response = response
+        self.error = error
+        self.calls = []
 
-    def get_json(*, method, path, capability_token, body=None):
-        calls.append(
-            {
-                "method": method,
-                "path": path,
-                "capability_token": capability_token,
-                "body": body,
-            }
-        )
-        return response, error
+    def request(self, verb, request):
+        self.calls.append({"verb": verb, "request": request})
+        if self.error is not None:
+            raise self.error
+        return self.response
 
-    get_json.calls = calls
-    return get_json
+
+def _proxy(response, error=None, *, destination="owner/repo"):
+    channel = _Channel(response, error)
+    proxy = ScopedConnectionProxy(
+        grant_id="grant-secret-free",
+        provider="github",
+        destination=destination,
+        scopes=("pull_requests:read_for_commit",),
+        _channel=channel,
+    )
+    return proxy, channel
 
 
 def test_effect_identity_is_closed_canonical_and_secret_free():
@@ -92,12 +103,11 @@ def test_body_marker_append_is_idempotent_and_rejects_conflicting_marker():
 
 def test_exact_commit_marker_and_repository_match_reconciles_success():
     identity = _identity()
-    getter = _getter([_pull(identity)])
+    proxy, channel = _proxy([_pull(identity)])
 
     result = github_pr.reconcile_github_pull_request_effect(
         identity,
-        capability_token="secret-token",
-        get_json=getter,
+        proxy=proxy,
     )
 
     assert result == {
@@ -111,23 +121,25 @@ def test_exact_commit_marker_and_repository_match_reconciles_success():
             "pr_state": "open",
         },
     }
-    assert getter.calls == [
+    assert channel.calls == [
         {
-            "method": "GET",
-            "path": f"/repos/owner/repo/commits/{_SHA}/pulls?per_page=100",
-            "capability_token": "secret-token",
-            "body": None,
+            "verb": "pull_requests:read_for_commit",
+            "request": {
+                "repository": "owner/repo",
+                "intended_head_sha": _SHA,
+                "per_page": 100,
+            },
         }
     ]
-    assert "secret-token" not in repr(result)
+    assert "grant-secret-free" not in repr(result)
 
 
 def test_authoritative_empty_commit_association_is_terminal_absence():
     identity = _identity()
+    proxy, _channel = _proxy([])
     result = github_pr.reconcile_github_pull_request_effect(
         identity,
-        capability_token="token",
-        get_json=_getter([]),
+        proxy=proxy,
     )
     assert result["status"] == "failed"
     assert result["reason"] == "destination_absent"
@@ -136,10 +148,12 @@ def test_authoritative_empty_commit_association_is_terminal_absence():
 
 def test_full_page_is_indeterminate_without_pagination_proof():
     identity = _identity()
+    proxy, _channel = _proxy(
+        [_pull(identity, number=index + 1) for index in range(100)]
+    )
     result = github_pr.reconcile_github_pull_request_effect(
         identity,
-        capability_token="token",
-        get_json=_getter([_pull(identity, number=index + 1) for index in range(100)]),
+        proxy=proxy,
     )
     assert result["status"] == "unknown"
     assert result["reason"] == "destination_result_truncated"
@@ -165,10 +179,10 @@ def test_full_page_is_indeterminate_without_pagination_proof():
 )
 def test_partial_or_multiple_matches_are_indeterminate(pulls):
     identity = _identity()
+    proxy, _channel = _proxy(pulls(identity))
     result = github_pr.reconcile_github_pull_request_effect(
         identity,
-        capability_token="token",
-        get_json=_getter(pulls(identity)),
+        proxy=proxy,
     )
     assert result["status"] == "unknown"
     assert result["reason"] in {
@@ -180,7 +194,11 @@ def test_partial_or_multiple_matches_are_indeterminate(pulls):
 @pytest.mark.parametrize(
     ("response", "error", "reason"),
     [
-        (None, {"http_status": 503, "detail": "token should not echo"}, "destination_unavailable"),
+        (
+            None,
+            ProxyRequestError("token should not echo"),
+            "destination_unavailable",
+        ),
         ({"unexpected": "shape"}, None, "destination_malformed"),
         ([{"number": 1}], None, "destination_malformed"),
     ],
@@ -191,18 +209,31 @@ def test_destination_failures_and_malformed_results_hold_without_leaking_details
     reason,
 ):
     identity = _identity()
+    proxy, _channel = _proxy(response, error)
     result = github_pr.reconcile_github_pull_request_effect(
         identity,
-        capability_token="secret-token",
-        get_json=_getter(response, error),
+        proxy=proxy,
     )
     assert result["status"] == "unknown"
     assert result["reason"] == reason
-    assert "secret-token" not in repr(result)
+    assert "grant-secret-free" not in repr(result)
     assert "token should not echo" not in repr(result)
 
 
+def test_proxy_destination_must_match_the_server_authored_repository():
+    identity = _identity()
+    proxy, channel = _proxy([], destination="other/repo")
+    result = github_pr.reconcile_github_pull_request_effect(
+        identity,
+        proxy=proxy,
+    )
+    assert result["status"] == "unknown"
+    assert result["reason"] == "destination_authority_mismatch"
+    assert channel.calls == []
+
+
 def test_reconciler_rejects_branch_authored_mapping_instead_of_minting_identity():
+    proxy, _channel = _proxy([])
     with pytest.raises(TypeError, match="server-authored"):
         github_pr.reconcile_github_pull_request_effect(
             {
@@ -212,6 +243,5 @@ def test_reconciler_rejects_branch_authored_mapping_instead_of_minting_identity(
                 "repository": "owner/repo",
                 "intended_head_sha": _SHA,
             },
-            capability_token="token",
-            get_json=_getter([]),
+            proxy=proxy,
         )

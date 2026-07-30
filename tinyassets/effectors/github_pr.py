@@ -103,6 +103,11 @@ from tinyassets.effectors.authority import (
     effect_authority_key,
     resolve_soul_effect_authority,
 )
+from tinyassets.storage.outbound_connections import (
+    AmbiguousProxyOutcome,
+    ProxyRequestError,
+    ScopedConnectionProxy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -280,37 +285,40 @@ def _unknown_reconciliation(
 def reconcile_github_pull_request_effect(
     identity: GitHubPullRequestEffectIdentity,
     *,
-    capability_token: str,
-    get_json: Any | None = None,
+    proxy: ScopedConnectionProxy,
 ) -> dict[str, Any]:
     """Read GitHub's commit-associated PRs and classify exact remote state.
 
-    The function performs one GET and never mutates GitHub. It returns the
-    status vocabulary consumed by the outbound reconciliation journal:
+    The function performs one credential-blind read and never mutates GitHub.
+    It returns the status vocabulary consumed by the outbound journal:
     ``succeeded`` for one exact match, ``failed`` for authoritative absence,
     and ``unknown`` for every ambiguous or unavailable state.
     """
     if not isinstance(identity, GitHubPullRequestEffectIdentity):
         raise TypeError("identity must be a server-authored PR effect identity")
-    if not isinstance(capability_token, str) or not capability_token:
-        raise ValueError("capability_token must be non-empty")
-    request = get_json or _git_data_api
-    response, error = request(
-        method="GET",
-        path=(
-            f"/repos/{identity.repository}/commits/"
-            f"{identity.intended_head_sha}/pulls?per_page=100"
-        ),
-        capability_token=capability_token,
-        body=None,
-    )
-    if error is not None:
-        http_status = error.get("http_status") if isinstance(error, dict) else None
+    if not isinstance(proxy, ScopedConnectionProxy):
+        raise TypeError("proxy must be a credential-blind scoped connection")
+    if proxy.provider != "github" or proxy.destination.lower() != identity.repository:
         return _unknown_reconciliation(
             identity,
-            "destination_unavailable",
-            http_status=http_status if isinstance(http_status, int) else None,
+            "destination_authority_mismatch",
         )
+    try:
+        response = proxy.request(
+            "pull_requests:read_for_commit",
+            {
+                "repository": identity.repository,
+                "intended_head_sha": identity.intended_head_sha,
+                "per_page": 100,
+            },
+        )
+    except (
+        AmbiguousProxyOutcome,
+        PermissionError,
+        ProxyRequestError,
+        RuntimeError,
+    ):
+        return _unknown_reconciliation(identity, "destination_unavailable")
     if not isinstance(response, list) or len(response) > 100:
         return _unknown_reconciliation(identity, "destination_malformed")
     if len(response) == 100:
