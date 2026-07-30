@@ -1760,3 +1760,14 @@ Notes:
 - Review gate: independent exact-head review plus required CI before ready-for-review
 - Publish/cleanup: one draft PR; preserve the lane until merge and foldback
 - Update 2026-07-30: audit found no current-main in-flight or stale claims; removed ten disproved broad-test-claim qualifiers while preserving every substantive gate
+
+## 2026-07-30 10:36 - background authority store contract
+
+- Provider: `codex-cloud-drain-store-20260730`
+- Branch: `codex/background-authority-store-contract-20260730`
+- Lane state: Claimed OpenSpec task 1.4
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-store-contract-20260730`
+- STATUS/Issue/PR: dark `BackgroundBranchAuthorityStore` protocol; PR pending
+- Purpose: define transaction/CAS/lock-order/bounded-query seams without tables, persistence, or activation
+- Review gate: focused tests plus fresh-context independent exact-head review
+- Publish/cleanup: one draft PR; retain worktree until merge and foldback
