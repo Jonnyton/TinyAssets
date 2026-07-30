@@ -1926,3 +1926,15 @@ Notes:
   and independent exact-head approval.
 - Publish/cleanup: draft PR to main; fold back the umbrella activation row
   after verified merge.
+## 2026-07-30 - Ringer epoch-2 activation substrate landed
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-epoch2-activation-20260730`
+- Lane state: PR #1957 merged as `bca67777`; exact head `8eebadf6`
+  independently approved.
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-epoch2-activation-20260730`
+- Purpose: close the activation-store claim while retaining live cutover,
+  provider authority, and sandboxing as explicit pending prerequisites.
+- Verification: 245 reviewer-focused tests, Ruff, strict OpenSpec, mirror
+  parity, and required CI passed.
+- Publish/cleanup: safe to remove after this foldback lands.
