@@ -1,3 +1,17 @@
+## 2026-07-29 - outcome settlement recovery
+
+- **What surprised me:** making sequential receipt replay repair a missing
+  outcome exposed a second race: two repairers could each create their own
+  outcome even though the external effect remained exactly once.
+- **Pattern worth capturing:** exactly-once effects and exactly-once derived
+  evidence need the same transactional identity. A preflight read is not a
+  deduplication boundary; the handoff-keyed get-or-create must happen under the
+  store's write lock, with a two-party replay regression.
+- **What I would do differently:** start the crash-recovery test matrix with
+  simultaneous replacement workers, not only one sequential replay, and review
+  every compatibility write for both authenticated attribution and lifecycle
+  read parity.
+
 ## 2026-07-29 — OpenSpec drain progress hardening
 
 What surprised me: the controller's reported slice count was not evidence of delivery. Raw PR-string equality, fixed receipt eviction, private blockers, lossy task identities, and ambiguous restart audits could each manufacture progress independently.
