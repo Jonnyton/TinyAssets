@@ -3,7 +3,8 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Concerns
 - **[P1 filed:2026-07-29 verified:2026-07-29]** Normal deploy 30520566999 false-red canary despite daemon 200s; recovery 30520787551 passed identical public probes.
 - **[P0 filed:2026-07-27 verified:2026-07-27]** Public-site privacy/deps/CI: private/operator reads; React 1C/1H, Svelte 7H, design 2H; same-repo PRs can request 19 secrets.
-- **[P0 filed:2026-07-28 verified:2026-07-28]** Public `/mcp` forwards an internal Cloudflare Access authorization cookie; credential exposure.
+- **[P0 filed:2026-07-30 verified:2026-07-30]** Public `/mcp` HTTP 502 reproduced locally + uptime run 30560114532; deploy #1919 rollback failed.
+- **[P0 filed:2026-07-28 verified:2026-07-30]** Worker passes upstream `Set-Cookie` unfiltered; healthy-path proof blocked by current 502.
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
 - **[P0 filed:2026-07-22 verified:2026-07-29]** No user-owned cloud execution; BYOC MUST precede market compute, with the main-universe spec drain as first proof. See #1582.
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.
@@ -12,6 +13,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Work
 | Task | Files | Depends | Status |
 |------|-------|---------|--------|
+| **Reverify public `/mcp` Access-cookie exposure** — freshness-check the P0 against current main and sanitized live-edge evidence; no config or production writes | STATUS.md; docs/audits/2026-07-30-public-mcp-access-cookie-freshness.md | - | claimed:drain-20260730-095018-67aecc |
 | **Author harden-canonical-absolute-guarantees change** — the change dir does NOT exist yet (rows citing it as a dep are citing an unwritten spec); money/settlement, Goal attribution, birth, learning, receipts | openspec/changes/harden-canonical-absolute-guarantees/ (new) | full-coverage audit; active paid/universe/relay lanes | pending |
 | **Implement branch access authority waves 1-3** — authenticated-subject + readable-version helpers; selector-safe reads/reuse/lineage; wiki; ledger; mutation/delete; no authority `force` bypass | tinyassets/api/branches.py, tinyassets/daemon_server.py (search_nodes only), tests/test_branch_read_authority.py, tests/test_related_wiki_visibility.py, tests/test_branch_mutation_authority.py | harden-branch-access-authority; test-identity-and-reset; retire-legacy 4.2/4.4; release broad `tests/` claims | pending |
 | **Harden run access/execution authority** — direct live/version/canonical paths execute foreign private branches; synthetic background actors and public universes can expose private-run output | openspec/changes/harden-run-branch-access-authority/, tinyassets/api/runs.py, tinyassets/runs.py (run authority context), tests/test_run_branch_authority.py | branch helper; background receipt contract; release broad `tests/` claims | pending |
