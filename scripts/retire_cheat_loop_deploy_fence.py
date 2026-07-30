@@ -1767,7 +1767,39 @@ def _assert_recovery_container_ownership(
     return actual_ids
 
 
-def _prove_recovery_entrypoint() -> str:
+def _restore_prestart_fence_without_mutation(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> bool:
+    """Return a failed-before-start attempt to unsafe state without touching Docker."""
+
+    expected = dict(state.get("recovery_prestart_container_ids") or {})
+    if state.get("recovery_container_ids") or not expected:
+        return False
+    if set(host.volume_container_names()) != set(EXPECTED_CONTAINERS):
+        return False
+    inspections = _exact_inspections(host)
+    actual = {
+        name: str(info.get("Id", ""))
+        for name, info in inspections.items()
+    }
+    if actual != expected:
+        return False
+    for name, info in inspections.items():
+        if info.get("State", {}).get("Running"):
+            return False
+        if host.container_restart_policy(str(info.get("Id", ""))) != "no":
+            return False
+    state["phase"] = "unsafe_fenced"
+    state.pop("recovery_project_name", None)
+    state.pop("recovery_expiry_unit", None)
+    _atomic_json(state_path, state)
+    return True
+
+
+def _prove_recovery_entrypoint(expected_sha256: str) -> str:
     """Prove the expiry timer will invoke this exact installed script."""
 
     try:
@@ -1783,7 +1815,12 @@ def _prove_recovery_entrypoint() -> str:
         )
     if not os.access(timer_path, os.X_OK):
         raise FenceError("recovery timer entrypoint is not executable")
-    return hashlib.sha256(timer_path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(timer_path.read_bytes()).hexdigest()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise FenceError("expected recovery script digest is invalid")
+    if digest != expected_sha256:
+        raise FenceError("installed recovery script digest disagrees with checkout")
+    return digest
 
 
 def _arm_recovery_expiry(
@@ -1970,6 +2007,15 @@ def recover_unsafe(
     state["recovery_attempts"] = attempts
     state["recovery_deadline_epoch"] = time.time() + RECOVERY_LEASE_SECONDS
     state["recovery_project_name"] = _recovery_project_name(run_id)
+    names_before_start = set(host.volume_container_names())
+    state["recovery_prestart_container_ids"] = (
+        {
+            name: str(info.get("Id", ""))
+            for name, info in _exact_inspections(host).items()
+        }
+        if names_before_start
+        else {}
+    )
     if recovery_script_sha256:
         state["recovery_script_sha256"] = recovery_script_sha256
     state["phase"] = "recovery_planned"
@@ -2045,8 +2091,24 @@ def recover_unsafe(
         return evidence
     except (FenceError, OSError) as recovery_error:
         try:
+            failed_state = _load_state(state_path)
+            try:
+                _assert_recovery_container_ownership(host, failed_state)
+            except FenceError:
+                if _restore_prestart_fence_without_mutation(
+                    host,
+                    failed_state,
+                    state_path=state_path,
+                ):
+                    raise FenceError(
+                        f"recovery failed and was re-fenced without mutation: "
+                        f"{recovery_error}"
+                    ) from recovery_error
+                raise
             quiesce_unsafe(host, run_id=run_id, state_path=state_path)
         except (FenceError, OSError) as refence_error:
+            if "was re-fenced without mutation" in str(refence_error):
+                raise refence_error
             raise FenceError(
                 f"recovery failed: {recovery_error}; "
                 f"re-fence also failed: {refence_error}"
@@ -2327,6 +2389,7 @@ def _parser() -> argparse.ArgumentParser:
     recover.add_argument("--run-id", required=True)
     recover.add_argument("--image-ref", required=True)
     recover.add_argument("--revision", required=True)
+    recover.add_argument("--expected-script-sha256", required=True)
     finalize = subparsers.add_parser("finalize-recovery")
     finalize.add_argument("--source-run-id", required=True)
     finalize.add_argument("--run-id", required=True)
@@ -2398,7 +2461,9 @@ def _execute(args: argparse.Namespace, host: Host) -> dict[str, Any]:
             state_path=args.state_path,
         )
     if args.command == "recover-unsafe":
-        recovery_script_sha256 = _prove_recovery_entrypoint()
+        recovery_script_sha256 = _prove_recovery_entrypoint(
+            args.expected_script_sha256
+        )
         return recover_unsafe(
             host,
             source_run_id=args.source_run_id,

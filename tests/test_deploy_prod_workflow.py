@@ -100,6 +100,10 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     assert "inputs.unsafe_fence_source_run_id" not in script
     assert " --image-ref " in script
     assert " --revision " in script
+    assert " --expected-script-sha256 " in script
+    assert "sha256sum scripts/retire_cheat_loop_deploy_fence.py" in script
+    assert "sha256sum -c -" in script
+    assert "set -euo pipefail" in script
     assert "deploy/recovery-restart-no.yml" in script
     assert "deploy/tinyassets-recovery-reconcile.service" in script
     assert "systemctl enable tinyassets-recovery-reconcile.service" in script
@@ -134,8 +138,10 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     refence = _step_named(
         {"jobs": {"deploy": recovery}}, "Re-fence failed recovery"
     )
-    assert "refence-recovery --source-run-id" in str(refence.get("run", ""))
-    assert "quiesce-unsafe" not in str(refence.get("run", ""))
+    refence_script = str(refence.get("run", ""))
+    assert "refence-recovery --source-run-id" in refence_script
+    assert "[A-Za-z0-9._-]{1,128}" in refence_script
+    assert "quiesce-unsafe" not in refence_script
     assert "cancelled()" in str(refence.get("if", ""))
     finalize = _step_named(
         {"jobs": {"deploy": recovery}},

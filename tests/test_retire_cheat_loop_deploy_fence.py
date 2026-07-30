@@ -1749,9 +1749,8 @@ def test_recovery_entrypoint_proof_binds_timer_to_running_executable(
     monkeypatch.setattr(fence, "RECOVERY_SCRIPT_PATH", installed)
     monkeypatch.setattr(fence, "__file__", str(installed))
 
-    assert fence._prove_recovery_entrypoint() == hashlib.sha256(
-        installed.read_bytes()
-    ).hexdigest()
+    digest = hashlib.sha256(installed.read_bytes()).hexdigest()
+    assert fence._prove_recovery_entrypoint(digest) == digest
 
 
 def test_recovery_entrypoint_proof_rejects_different_timer_script(
@@ -1769,7 +1768,7 @@ def test_recovery_entrypoint_proof_rejects_different_timer_script(
         FenceError,
         match="does not match the running script",
     ):
-        fence._prove_recovery_entrypoint()
+        fence._prove_recovery_entrypoint("a" * 64)
 
 
 def test_finalize_refences_when_restart_policies_drift_after_canary(
@@ -1905,6 +1904,51 @@ def test_refence_rejects_replaced_container_generation_without_mutation(
     assert all(info["State"]["Running"] for info in host.containers.values())
 
 
+def test_recovery_failure_rejects_foreign_labels_without_cleanup_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    original_run = host.run
+
+    def install_foreign_generation(
+        command: list[str] | tuple[str, ...],
+        **kwargs: Any,
+    ) -> str:
+        result = original_run(command, **kwargs)
+        if tuple(command)[:2] == ("docker", "compose"):
+            for info in host.containers.values():
+                info["Config"]["Labels"][
+                    "com.docker.compose.project"
+                ] = "another-generation"
+        return result
+
+    monkeypatch.setattr(host, "run", install_foreign_generation)
+
+    with pytest.raises(FenceError, match="re-fence also failed"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-foreign-label",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    compose_index = next(
+        index
+        for index, call in enumerate(host.calls)
+        if call[:2] == ("docker", "compose")
+    )
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop")}
+        for call in host.calls[compose_index + 1 :]
+    )
+
+
 def test_finalize_refences_new_writer_activator_inventory(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -1996,7 +2040,11 @@ def test_cli_recovery_persists_installed_script_digest_before_compose(
     _unsafe_recovery_state(host, state_path)
     host.start_installs_target = True
     digest = "c" * 64
-    monkeypatch.setattr(fence, "_prove_recovery_entrypoint", lambda: digest)
+    monkeypatch.setattr(
+        fence,
+        "_prove_recovery_entrypoint",
+        lambda expected: digest if expected == digest else "",
+    )
     original_run = host.run
 
     def run_with_digest_check(
@@ -2023,6 +2071,8 @@ def test_cli_recovery_persists_installed_script_digest_before_compose(
             host.old_image_ref,
             "--revision",
             host.old_revision,
+            "--expected-script-sha256",
+            digest,
         ]
     )
 

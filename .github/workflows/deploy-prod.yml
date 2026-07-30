@@ -142,6 +142,9 @@ jobs:
             echo "::error::refusing invalid unsafe fence source run ID"
             exit 1
           fi
+          script_sha="$(sha256sum scripts/retire_cheat_loop_deploy_fence.py | awk '{print $1}')"
+          override_sha="$(sha256sum deploy/recovery-restart-no.yml | awk '{print $1}')"
+          reconcile_sha="$(sha256sum deploy/tinyassets-recovery-reconcile.service | awk '{print $1}')"
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
             scripts/retire_cheat_loop_deploy_fence.py \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/retire-cheat-loop-deploy-fence.py"
@@ -153,15 +156,18 @@ jobs:
             "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo install -d -m 0755 -o root -g root /opt/tinyassets/deploy; \
+            "set -euo pipefail; \
+             printf '%s  %s\n' '${script_sha}' /tmp/retire-cheat-loop-deploy-fence.py '${override_sha}' /tmp/recovery-restart-no.yml '${reconcile_sha}' /tmp/tinyassets-recovery-reconcile.service | sha256sum -c -; \
+             sudo install -d -m 0755 -o root -g root /opt/tinyassets/deploy; \
              sudo install -m 0755 -o root -g root /tmp/retire-cheat-loop-deploy-fence.py /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py; \
              sudo install -m 0644 -o root -g root /tmp/recovery-restart-no.yml /opt/tinyassets/deploy/recovery-restart-no.yml; \
              sudo install -m 0644 -o root -g root /tmp/tinyassets-recovery-reconcile.service /etc/systemd/system/tinyassets-recovery-reconcile.service; \
+             printf '%s  %s\n' '${script_sha}' /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py '${override_sha}' /opt/tinyassets/deploy/recovery-restart-no.yml '${reconcile_sha}' /etc/systemd/system/tinyassets-recovery-reconcile.service | sudo sha256sum -c -; \
              sudo systemctl daemon-reload; \
              sudo systemctl enable tinyassets-recovery-reconcile.service"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
+            "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-recover-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py recover-unsafe --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}' --expected-script-sha256 '${script_sha}'" \
             > "$evidence_dir/recovery.json"
       - name: Recovery canonical MCP canary
         run: |
@@ -177,7 +183,12 @@ jobs:
           RECOVERY_IMAGE_REF: ${{ steps.recovery-image.outputs.image_ref }}
           RECOVERY_REVISION: ${{ steps.recovery-image.outputs.revision }}
         run: |
+          set -euo pipefail
           evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
+          if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::refusing invalid unsafe fence source run ID"
+            exit 1
+          fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=600 --property TimeoutStartSec=600 --unit 'tinyassets-retire-cheat-finalize-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py finalize-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' --image-ref '${RECOVERY_IMAGE_REF}' --revision '${RECOVERY_REVISION}'" \
@@ -190,6 +201,10 @@ jobs:
           set +e
           evidence_dir="$RUNNER_TEMP/stop-writer-recovery-evidence"
           mkdir -p "$evidence_dir"
+          if [[ ! "${SOURCE_RUN_ID}" =~ ^[A-Za-z0-9._-]{1,128}$ ]]; then
+            echo "::error::refusing invalid unsafe fence source run ID"
+            exit 1
+          fi
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
             "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
             "sudo systemd-run --quiet --collect --wait --pipe --property RuntimeMaxSec=300 --property TimeoutStartSec=300 --unit 'tinyassets-retire-cheat-refence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}' /usr/bin/python3 /opt/tinyassets/deploy/retire-cheat-loop-deploy-fence.py refence-recovery --source-run-id '${SOURCE_RUN_ID}' --run-id '${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'" \
