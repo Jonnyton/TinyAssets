@@ -1,15 +1,27 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from dataclasses import FrozenInstanceError, replace
 
 import pytest
 
 from tinyassets.background_branch_authority import (
+    BACKGROUND_BRANCH_AUTHORITY_LOCK_ORDER,
+    BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE,
+    BACKGROUND_BRANCH_AUTHORITY_TRANSACTION_EXCLUSIONS,
     BackgroundBranchAttempt,
     BackgroundBranchAttemptLifecycle,
+    BackgroundBranchAttemptPage,
+    BackgroundBranchAttemptWriteResult,
+    BackgroundBranchAuthorityCoordinationStep,
+    BackgroundBranchAuthorityStore,
+    BackgroundBranchAuthorityTransaction,
+    BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
+    BackgroundBranchBindingPage,
     BackgroundBranchBindingStatus,
+    BackgroundBranchBindingWriteResult,
     BackgroundBranchExecutorClass,
     BackgroundBranchHoldReason,
     BackgroundBranchOperation,
@@ -677,3 +689,122 @@ def test_descendant_count_budget_is_independent_of_max_attempts() -> None:
 
     assert binding.max_attempts == 1
     assert binding.remaining_count == 100
+
+
+def test_authority_lock_order_matches_non_nested_execution_sequence() -> None:
+    assert BACKGROUND_BRANCH_AUTHORITY_LOCK_ORDER == (
+        BackgroundBranchAuthorityCoordinationStep.QUEUE_SNAPSHOT,
+        BackgroundBranchAuthorityCoordinationStep.TARGET_ATTEMPT_CLAIM,
+        BackgroundBranchAuthorityCoordinationStep.QUEUE_REVALIDATION,
+        BackgroundBranchAuthorityCoordinationStep.B2_CLAIM,
+        BackgroundBranchAuthorityCoordinationStep.PROVIDER_WORK_ISSUANCE,
+        BackgroundBranchAuthorityCoordinationStep.BRANCH_EXECUTION,
+        BackgroundBranchAuthorityCoordinationStep.INDEPENDENT_SETTLEMENT,
+    )
+    assert BACKGROUND_BRANCH_AUTHORITY_TRANSACTION_EXCLUSIONS == frozenset(
+        {
+            "queue_lock",
+            "provider_assignment_lock",
+            "credential_lock",
+            "external_effect_transaction",
+        }
+    )
+
+
+def test_authority_store_exposes_only_opaque_transactions_and_bounded_queries() -> None:
+    assert set(BackgroundBranchAuthorityStore.__dict__) >= {
+        "transaction",
+        "get_binding",
+        "get_attempt",
+        "get_attempt_by_logical_key",
+        "list_bindings",
+        "list_attempts",
+    }
+    assert set(BackgroundBranchAuthorityTransaction.__dict__) >= {
+        "insert_binding",
+        "insert_attempt",
+        "compare_and_swap_binding",
+        "compare_and_swap_attempt",
+    }
+
+    for method_name in ("list_bindings", "list_attempts"):
+        signature = inspect.signature(getattr(BackgroundBranchAuthorityStore, method_name))
+        assert "limit" in signature.parameters
+        assert signature.parameters["limit"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert "after" in signature.parameters
+        assert signature.parameters["after"].kind is inspect.Parameter.KEYWORD_ONLY
+
+    assert not any(
+        "table" in name or "connection" in name for name in BackgroundBranchAuthorityStore.__dict__
+    )
+
+
+def test_authority_pages_are_immutable_and_cursor_bounded() -> None:
+    binding = BackgroundBranchBinding.from_dict(_binding_payload())
+    attempt = BackgroundBranchAttempt.from_dict(_attempt_payload())
+    binding_page = BackgroundBranchBindingPage(
+        items=(binding,),
+        next_cursor="bnd_01",
+    )
+    attempt_page = BackgroundBranchAttemptPage(
+        items=(attempt,),
+        next_cursor=None,
+    )
+
+    assert binding_page.items == (binding,)
+    assert attempt_page.items == (attempt,)
+    with pytest.raises(FrozenInstanceError):
+        binding_page.next_cursor = None  # type: ignore[misc]
+    with pytest.raises(ValueError, match="tuple"):
+        BackgroundBranchAttemptPage(
+            items=[attempt],  # type: ignore[arg-type]
+            next_cursor=None,
+        )
+    with pytest.raises(ValueError, match="cursor"):
+        BackgroundBranchBindingPage(items=(), next_cursor="")
+    with pytest.raises(ValueError, match="limit"):
+        BackgroundBranchAttemptPage(
+            items=(attempt,) * (BACKGROUND_BRANCH_AUTHORITY_MAX_PAGE_SIZE + 1),
+            next_cursor=None,
+        )
+
+
+def test_authority_write_outcomes_are_closed_and_non_authorizing() -> None:
+    assert {outcome.value for outcome in BackgroundBranchAuthorityWriteOutcome} == {
+        "applied",
+        "replayed",
+        "missing",
+        "generation_mismatch",
+        "conflict",
+    }
+    assert all(
+        forbidden not in BackgroundBranchAuthorityWriteOutcome.__members__
+        for forbidden in ("AUTHORIZED", "TOKEN", "CREDENTIAL")
+    )
+
+    binding = BackgroundBranchBinding.from_dict(_binding_payload())
+    attempt = BackgroundBranchAttempt.from_dict(_attempt_payload())
+    assert (
+        BackgroundBranchBindingWriteResult(
+            outcome=BackgroundBranchAuthorityWriteOutcome.APPLIED,
+            record=binding,
+        ).record
+        is binding
+    )
+    assert (
+        BackgroundBranchAttemptWriteResult(
+            outcome=BackgroundBranchAuthorityWriteOutcome.MISSING,
+            record=None,
+        ).record
+        is None
+    )
+    with pytest.raises(ValueError, match="only outcome"):
+        BackgroundBranchBindingWriteResult(
+            outcome=BackgroundBranchAuthorityWriteOutcome.APPLIED,
+            record=None,
+        )
+    with pytest.raises(ValueError, match="only outcome"):
+        BackgroundBranchAttemptWriteResult(
+            outcome=BackgroundBranchAuthorityWriteOutcome.MISSING,
+            record=attempt,
+        )
