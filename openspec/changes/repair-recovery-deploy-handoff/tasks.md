@@ -14,7 +14,7 @@
 
 ## 2. Verification And Release
 
-- [ ] 2.1 Pass the focused fence suite, Ruff, strict OpenSpec validation, and
+- [x] 2.1 Pass the focused fence suite, Ruff, strict OpenSpec validation, and
   independent exact-head fail-closed/security review.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.

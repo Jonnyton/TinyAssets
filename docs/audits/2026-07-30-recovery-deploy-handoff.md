@@ -94,7 +94,9 @@ by successful exact-survivor replay.
 Independent review of head `01724e33` returned ADAPT: multi-ID `docker rm` is
 not transactional, so strict-subset success had no replay path, and the change
 needed an explicit sync/archive closeout task. Both findings are addressed in
-the next exact-head revision; final approval remains required before landing.
+head `65a12e1c`. Independent exact-head re-review returned APPROVE after fresh
+evidence of 100 focused tests, clean Ruff and diff checks, and strict OpenSpec
+validation.
 
 ## Release And Rollback
 
