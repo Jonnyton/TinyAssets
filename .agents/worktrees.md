@@ -1818,6 +1818,17 @@ Notes:
 - Review gate: exact head `2dea7d38` independently approved; 125 focused tests and CI green
 - Publish/cleanup: safe to remove after foldback lands
 
+## 2026-07-30 13:01 - public MCP response-cookie boundary
+
+- Provider: `drain-20260730-104801-7e8f53`
+- Branch: `chore/drain-20260730-104801-exhaustion`
+- Lane state: Claimed P0 Worker credential-boundary remediation
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-exhaustion`
+- STATUS/Issue/PR: exact test-first Worker response-cookie slice; PR pending
+- Purpose: strip credential-bearing upstream cookies while preserving SSE streaming and non-credential headers
+- Review gate: Worker tests, public canary after deployment, and independent exact-head security review
+- Publish/cleanup: one PR to main; production proof remains a post-merge gate
+
 ## 2026-07-30 12:11 - OpenSpec finish-first recovery landed
 
 - Provider: `drain-20260730-104801-7e8f53`
