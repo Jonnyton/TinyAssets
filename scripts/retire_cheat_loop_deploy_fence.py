@@ -2043,13 +2043,13 @@ def recover_unsafe(
         revision=revision,
         state_path=state_path,
     )
+    attempts = list(state.get("recovery_attempts") or [])
+    if run_id in attempts:
+        raise FenceError("recovery attempt identity was already used")
     removed_stopped = _remove_recorded_stopped_fleet_for_recovery(host, state)
     if removed_stopped:
         state["recovery_removed_stopped_container_ids"] = removed_stopped
         _atomic_json(state_path, state)
-    attempts = list(state.get("recovery_attempts") or [])
-    if run_id in attempts:
-        raise FenceError("recovery attempt identity was already used")
     attempts.append(run_id)
     state["source_run_id"] = source_run_id
     state["run_id"] = run_id
