@@ -60,6 +60,24 @@ Scope note: this decision is only about not forking a second accounting path. It
 
 An effect fires only under a current, unrevoked, per-universe grant bound to the authenticated owning user. Absent, revoked, or ambiguous grants fail closed. The boundary layer does not inherit host or maintainer authority, and it does not fall back to ambient credentials when a grant is missing — a retired or unresolved connection is an error, not an escalation.
 
+### B8 — Typed GitHub reconciliation uses a digest marker and commit association
+
+The repository-to-spec automation supplies the outbound owner an immutable
+server-authored identity containing `universe_id`, `automation_id`, `claim_id`,
+`repository`, `intended_head_sha`, and the fixed
+`github_pull_request` effect kind. The outbound owner canonicalizes and hashes
+that identity, places only the digest in a GitHub pull-request body marker, and
+looks up pull requests associated with the intended commit. Opaque internal
+identifiers never appear in the public marker.
+
+Reconciliation is read-only. Exactly one pull request whose repository, head
+SHA, and body marker all match is terminal success. A successful authoritative
+commit-association query with no exact match is conclusive absence. Multiple
+exact matches, malformed responses, transport failures, and any partial match
+are indeterminate and MUST NOT authorize a retry. This typed adapter remains
+dark until the automation owner passes the server-authored identity directly;
+legacy Branch packets cannot opt into it by adding fields.
+
 ## Risks / Trade-offs
 
 - [Risk] System-derived idempotency identity breaks existing callers that rely on hint-based dedup. → The implementation lane must migrate existing effectors and keep the caller-hint path working until every effector is converted, then modify the canonical requirement in one lane.
