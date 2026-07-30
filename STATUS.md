@@ -3,7 +3,7 @@ Live steering only. **≤60 lines canonical (~4 KB guidance).** Concerns/Work = 
 ## Concerns
 - **[P1 filed:2026-07-29 verified:2026-07-29]** Normal deploy 30520566999 false-red canary despite daemon 200s; recovery 30520787551 passed identical public probes.
 - **[P0 filed:2026-07-27 verified:2026-07-27]** Public-site privacy/deps/CI: private/operator reads; React 1C/1H, Svelte 7H, design 2H; same-repo PRs can request 19 secrets.
-- **[P0 filed:2026-07-28 verified:2026-07-30]** Healthy `/mcp` still forwards upstream `CF_Authorization` via `Set-Cookie`; audit lane is active.
+- **[P0 filed:2026-07-28 verified:2026-07-30]** Healthy `/mcp` can forward upstream `CF_Authorization` via `Set-Cookie`; fix PR #1934 awaits merge/deploy/live proof.
 - **[P1 filed:2026-07-23 verified:2026-07-26]** No live failure proof: #1645 repair escalation and reconcile fail/cancel cap are CI/structural-only.
 - **[P0 filed:2026-07-22 verified:2026-07-29]** No user-owned cloud execution; BYOC MUST precede market compute, with the main-universe spec drain as first proof. See #1582.
 - **[P0 filed:2026-07-02 verified:2026-07-25]** Graph/provider code can falsely attest or run in-process; router fallback neutralizes isolation refusals. See #1573.

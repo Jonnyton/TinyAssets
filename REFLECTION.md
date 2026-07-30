@@ -869,3 +869,16 @@ fresh-host rollback edges found later.
   implementation dependency graph immediately. That turns “cloud drain is
   blocked” into two bounded lanes: restore the control surface, then close the
   dark authority prerequisites.
+
+## 2026-07-30 - public MCP response-cookie boundary
+
+- **What surprised me:** the proxy correctly denied hop-by-hop headers but
+  still leaked the more sensitive end-to-end class; protocol correctness alone
+  did not encode the public/internal trust boundary.
+- **Pattern worth capturing:** a stateless public proxy should fail closed on
+  every upstream response cookie, not parse credential names. A single
+  case-insensitive header boundary preserves SSE streaming and prevents future
+  cookie variants from bypassing a name-specific filter.
+- **What I would do differently:** include response credential egress in the
+  first front-door threat model alongside request-secret injection, rather than
+  treating generic non-hop-by-hop pass-through as sufficient.

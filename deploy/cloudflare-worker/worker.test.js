@@ -346,6 +346,30 @@ describe('proxyToTunnel — response pass-through', () => {
         assert.equal(res.headers.get('X-Ok'), 'yes');
     });
 
+    it('strips every upstream response cookie at the public boundary', async () => {
+        const upstreamHeaders = new Headers({
+            'Content-Type': 'text/plain',
+            'X-Ok': 'yes',
+        });
+        upstreamHeaders.append('Set-Cookie', 'CF_Authorization=access-token; Secure; HttpOnly');
+        upstreamHeaders.append('Set-Cookie', 'application_session=session-token; Secure; HttpOnly');
+        nextUpstreamResponse = new Response('stream-safe-body', {
+            status: 201,
+            statusText: 'Created by origin',
+            headers: upstreamHeaders,
+        });
+
+        const req = new Request('https://tinyassets.io/mcp', { method: 'GET' });
+        const res = await proxyToTunnel(req);
+
+        assert.equal(res.status, 201);
+        assert.equal(res.statusText, 'Created by origin');
+        assert.equal(res.headers.get('Set-Cookie'), null);
+        assert.equal(res.headers.get('Content-Type'), 'text/plain');
+        assert.equal(res.headers.get('X-Ok'), 'yes');
+        assert.equal(await res.text(), 'stream-safe-body');
+    });
+
     it('preserves SSE streaming Content-Type', async () => {
         nextUpstreamResponse = new Response('event: message\ndata: {"x":1}\n\n', {
             status: 200,
@@ -371,11 +395,11 @@ describe('proxyToTunnel — response pass-through', () => {
             status: 200,
             headers: { 'Content-Type': 'text/event-stream' },
         });
+        const upstreamResponseBody = nextUpstreamResponse.body;
         const req = new Request('https://tinyassets.io/mcp', { method: 'POST' });
         const res = await proxyToTunnel(req);
-        // Response body should be a ReadableStream we can consume, not
-        // pre-buffered. Reading reveals the expected chunk.
-        assert.ok(res.body instanceof ReadableStream);
+        // The exact upstream stream must cross the proxy boundary unchanged.
+        assert.strictEqual(res.body, upstreamResponseBody);
         assert.equal(await res.text(), 'chunk-1');
     });
 });

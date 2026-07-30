@@ -28,3 +28,23 @@ The live healthy-path behavior could not be revalidated because the public MCP e
 ## Coordination implication
 
 Keep the Access-cookie concern at P0 and freshness-stamp it 2026-07-30. Track the independently verified public 502 as a separate P0 outage. A later implementation lane should fail first on an upstream `Set-Cookie: CF_Authorization=...` regression test, strip credential-bearing response cookies without buffering SSE, deploy through normal gates, then repeat sanitized healthy-path and rendered chatbot verification.
+
+## Remediation update
+
+Freshness: 2026-07-30 12:31 PDT, Windows, draft PR #1934 head `a62b867f`,
+public edge `https://tinyassets.io/mcp`.
+
+The implementation now strips every upstream `Set-Cookie` response header at
+the public Worker boundary. The regression test failed before the fix on the
+application cookie and passed afterward; the complete Worker suite passes
+62/62 while the existing SSE stream test remains green. This is code and spec
+evidence only. The P0 remains open pending merge, deployment, a sanitized
+post-fix healthy-path probe, rendered chatbot proof, and post-fix clean-use
+evidence.
+
+A value-free live probe now confirms the pre-fix production exposure on the
+healthy service: GET returned HTTP 400 with `Set-Cookie` present, and a valid
+initialize POST returned HTTP 200 `text/event-stream` with `Set-Cookie`
+present. The probe printed only the header-presence boolean, status, and content
+type; it never read or persisted cookie values. The canonical exact-handle
+canary also exited 0 immediately before these probes.

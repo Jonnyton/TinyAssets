@@ -68,10 +68,16 @@ const HOP_BY_HOP_RESPONSE_HEADERS = new Set([
     'upgrade',
 ]);
 
+const FORBIDDEN_RESPONSE_HEADERS = new Set([
+    ...HOP_BY_HOP_RESPONSE_HEADERS,
+    'set-cookie',
+]);
+
 /**
  * Proxy one request to the tunnel origin.
  *
- * Preserves method, body stream, and all non-hop-by-hop headers.
+ * Preserves method, body stream, and allowed non-hop-by-hop headers.
+ * Upstream response cookies never cross the public boundary.
  * Rewrites Host to `mcp.tinyassets.io` (Cloudflare's edge routes the
  * subrequest to the tunnel based on hostname, so this is load-bearing).
  *
@@ -180,7 +186,7 @@ async function proxyToTunnel(request, env) {
     // on the response — those buffer the whole body and break SSE.
     const responseHeaders = new Headers();
     for (const [name, value] of upstreamResponse.headers) {
-        if (!HOP_BY_HOP_RESPONSE_HEADERS.has(name.toLowerCase())) {
+        if (!FORBIDDEN_RESPONSE_HEADERS.has(name.toLowerCase())) {
             responseHeaders.set(name, value);
         }
     }
