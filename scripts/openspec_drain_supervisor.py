@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -40,6 +41,7 @@ MAX_RECENT_BLOCKED = 12
 MAX_FREE_TRANSIENTS = 3
 MAX_CANDIDATE_HINTS = 5
 DRAIN_CODEX_EFFORT = "medium"
+TARGET_IDENTITY_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class CandidateHint:
 class CandidateSnapshot:
     pressure: CandidatePressure
     hints: tuple[CandidateHint, ...]
+    blocked_targets: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -125,7 +128,7 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
         raise TypeError("candidate files must be a string list")
     return CandidateHint(
         classification=classification,
-        task_label=" ".join(task_label.split())[:240],
+        task_label=" ".join(task_label.split()),
         files=tuple(" ".join(path.split())[:160] for path in files[:4]),
         line_no=int(row.get("line_no", 0)),
         status=str(row.get("status", "")),
@@ -133,8 +136,44 @@ def _candidate_hint(row: dict[str, Any], classification: str) -> CandidateHint:
 
 
 def _slugify(value: str, *, limit: int = 48) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return (slug or "candidate")[:limit].rstrip("-")
+    normalized_label = " ".join(value.split()).casefold()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized_label).strip("-")
+    slug = slug or "candidate"
+    if len(slug) <= limit:
+        return slug
+    # Hash the complete label before its punctuation is folded into the
+    # readable prefix. Distinct labels must not inherit one another's blocker.
+    digest = hashlib.sha256(normalized_label.encode("utf-8")).hexdigest()[:8]
+    if limit <= len(digest):
+        return digest[:limit]
+    prefix = slug[: limit - len(digest) - 1].rstrip("-")
+    return f"{prefix}-{digest}" if prefix else digest[:limit]
+
+
+def migrate_target_identities(state: dict[str, Any]) -> bool:
+    """Rekey pre-hash admission state and release incompatible cooldowns."""
+    try:
+        version = int(state.get("target_identity_version", 1))
+    except (TypeError, ValueError):
+        version = 1
+    if version >= TARGET_IDENTITY_VERSION:
+        return False
+
+    admission = state.get("admission")
+    if isinstance(admission, dict):
+        task_label = admission.get("task_label")
+        old_target = admission.get("target")
+        if isinstance(task_label, str) and isinstance(old_target, str):
+            new_target = _slugify(" ".join(task_label.split()))
+            admission["target"] = new_target
+            if state.get("resume_target") == old_target:
+                state["resume_target"] = new_target
+
+    # Legacy entries contain only the old lossy slug, so they cannot be
+    # rekeyed safely. Releasing them causes a harmless current-main retry.
+    state["recent_blocked"] = []
+    state["target_identity_version"] = TARGET_IDENTITY_VERSION
+    return True
 
 
 def _admission_command(
@@ -464,6 +503,32 @@ def filter_recently_blocked_hints(
     )
 
 
+def reconcile_recent_blocked(
+    recent_blocked: list[str],
+    *,
+    blocked_targets: frozenset[str],
+) -> list[str]:
+    """Drop run-local suppression as soon as current main clears the blocker."""
+    return [target for target in recent_blocked if target in blocked_targets]
+
+
+def should_cooldown_without_worker(
+    *,
+    pressure: CandidatePressure,
+    candidate_hints: tuple[CandidateHint, ...],
+    recent_blocked: list[str],
+    has_admission: bool,
+) -> bool:
+    """Avoid a no-hint worker when only run-local blocker filtering hid work."""
+    return (
+        not has_admission
+        and bool(recent_blocked)
+        and not candidate_hints
+        and pressure.owned == 0
+        and (pressure.claimable > 0 or pressure.stale > 0)
+    )
+
+
 def has_alternative_candidate(
     snapshot: CandidateSnapshot,
     *,
@@ -491,6 +556,24 @@ def admission_result_rejection(
         return f"admitted={admission.target}"
     if result.target != admission.target:
         return f"assigned={admission.target} reported={result.target}"
+    return None
+
+
+def duplicate_merge_rejection(
+    result: DrainResult,
+    state: dict[str, Any],
+) -> str | None:
+    """Reject a previously consumed merge receipt before it counts again."""
+    if result.status != "MERGED":
+        return None
+    receipt = canonical_pr_receipt(result.pr)
+    consumed = {
+        canonical_pr_receipt(pr)
+        for pr in state.get("merged_prs", [])
+        if isinstance(pr, str)
+    }
+    if receipt in consumed:
+        return f"already-consumed={receipt}"
     return None
 
 
@@ -530,18 +613,25 @@ def inspect_candidate_snapshot(
         stale = int(counts["stale"])
         in_flight = payload.get("in_flight", [])
         claimable_rows = payload.get("claimable", [])
+        blocked_rows = payload.get("blocked", [])
         stale_rows = payload.get("stale", [])
         if not all(
             isinstance(rows, list)
-            for rows in (in_flight, claimable_rows, stale_rows)
+            for rows in (in_flight, claimable_rows, blocked_rows, stale_rows)
         ):
             raise TypeError("candidate collections must be lists")
         if not all(
             isinstance(row, dict)
-            for rows in (in_flight, claimable_rows, stale_rows)
+            for rows in (in_flight, claimable_rows, blocked_rows, stale_rows)
             for row in rows
         ):
             raise TypeError("candidate rows must be objects")
+        unwrapped_blocked_rows = []
+        for entry in blocked_rows:
+            row = entry.get("row")
+            if not isinstance(row, dict):
+                raise TypeError("blocked candidate row must be an object")
+            unwrapped_blocked_rows.append(row)
         unwrapped_stale_rows = []
         for entry in stale_rows:
             row = entry.get("row")
@@ -564,6 +654,10 @@ def inspect_candidate_snapshot(
             _candidate_hint(row, classification)
             for row, classification in ordered_rows[:max_hints]
         )
+        blocked_targets = frozenset(
+            _slugify(_candidate_hint(row, "BLOCKED").task_label)
+            for row in unwrapped_blocked_rows
+        )
     except (
         KeyError,
         OSError,
@@ -580,6 +674,7 @@ def inspect_candidate_snapshot(
             owned=owned,
         ),
         hints=hints,
+        blocked_targets=blocked_targets,
     )
 
 
@@ -637,6 +732,40 @@ def no_candidate_rejection(
         f"claimable={pressure.claimable} stale={pressure.stale} "
         f"owned={pressure.owned}"
     )
+
+
+def blocked_result_rejection(
+    result: DrainResult,
+    snapshot: CandidateSnapshot,
+) -> str | None:
+    """Explain why a BLOCKED marker lacks durable current-main proof."""
+    if result.status != "BLOCKED":
+        return None
+    if result.target in snapshot.blocked_targets:
+        return None
+    return f"target={result.target} is not blocked on current origin/main"
+
+
+def current_main_blocked_result_rejection(
+    result: DrainResult,
+    *,
+    repo: Path,
+    provider: str,
+    inspector: Callable[..., CandidateSnapshot] | None = None,
+) -> str | None:
+    """Refresh current main and fail closed when BLOCKED lacks shared proof."""
+    if result.status != "BLOCKED":
+        return None
+    snapshot_inspector = inspector or inspect_current_main_snapshot
+    try:
+        snapshot = snapshot_inspector(
+            repo=repo,
+            provider=provider,
+            max_hints=0,
+        )
+    except RuntimeError as exc:
+        return str(exc)
+    return blocked_result_rejection(result, snapshot)
 
 
 def begin_attempt(state: dict[str, Any]) -> int:
@@ -787,7 +916,10 @@ Delivery contract:
    retire the STATUS row. If merge succeeded but foldback remains, report
    PARTIAL so the next fresh worker resumes it.
 8. Preserve blockers honestly. `BLOCKED` is reserved for a durable task, host,
-   dependency, review, or policy gate. If verified local work exists but
+   dependency, review, or policy gate. Before returning `BLOCKED`, you must
+   first land a sanitized STATUS dependency or blocker through normal review
+   and confirm current `origin/main` classifies the exact target as blocked.
+   Result-file prose alone is invalid. If verified local work exists but
    staging, committing, pushing, or creating the PR fails, preserve the
    worktree and return `FAILED`; the next fresh worker will resume the same
    admission within the finite failure budget. Do not broaden into full-platform
@@ -860,6 +992,17 @@ def _github_repo_slug(remote_url: str) -> str | None:
     return f"{match.group('owner')}/{match.group('repo')}".lower()
 
 
+def canonical_pr_receipt(pr_url: str) -> str:
+    """Return the stable GitHub identity for a parsed pull-request URL."""
+    match = PR_RE.fullmatch(pr_url)
+    if not match:
+        return pr_url
+    owner = match.group("owner").lower()
+    repo = match.group("repo").lower()
+    number = match.group("number").lstrip("0") or "0"
+    return f"https://github.com/{owner}/{repo}/pull/{number}"
+
+
 def _parse_timestamp(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -887,6 +1030,16 @@ def apply_result(
         return
     if result.status == "MERGED":
         state["completed_slices"] += 1
+        receipt = canonical_pr_receipt(result.pr)
+        merged_prs = [
+            canonical_pr_receipt(pr)
+            for pr in state.get("merged_prs", [])
+            if isinstance(pr, str) and canonical_pr_receipt(pr) != receipt
+        ]
+        merged_prs.append(receipt)
+        # A run is already bounded by max_slices. Keep every successful
+        # receipt for that run so an old merge can never become replayable.
+        state["merged_prs"] = merged_prs
         state["consecutive_failures"] = 0
         state["consecutive_partial_target"] = None
         state["consecutive_partials"] = 0
@@ -924,6 +1077,121 @@ def apply_result(
         state["status"] = "failed"
 
 
+def apply_invalid_blocked_result(
+    state: dict[str, Any],
+    result: DrainResult,
+    *,
+    attempt: int,
+    error: str,
+) -> None:
+    """Record a rejected private blocker without releasing its admission."""
+    state["consecutive_transients"] = 0
+    state["consecutive_failures"] += 1
+    state["last_result"] = {
+        "status": "INVALID_BLOCKED_RESULT",
+        "attempt": attempt,
+        "target": result.target,
+        "error": error,
+    }
+    state["status"] = "invalid-blocked-result"
+
+
+def apply_invalid_duplicate_merge(
+    state: dict[str, Any],
+    result: DrainResult,
+    *,
+    attempt: int,
+) -> None:
+    """Record an exact merged-PR replay without advancing delivery."""
+    state["consecutive_transients"] = 0
+    state["consecutive_failures"] += 1
+    state["last_result"] = {
+        "status": "INVALID_DUPLICATE_MERGE",
+        "attempt": attempt,
+        "target": result.target,
+        "pr": result.pr,
+    }
+    state["status"] = "invalid-duplicate-merge"
+
+
+def infer_legacy_merged_prs(
+    *,
+    state: dict[str, Any],
+    results_dir: Path,
+    repo: Path,
+    merge_verifier: Callable[..., bool] = verify_merged,
+) -> list[str]:
+    """Reconstruct accepted verified receipts for pre-field run state."""
+    try:
+        last_consumed = max(0, int(state.get("last_consumed_attempt", 0)))
+        completed_slices = max(0, int(state.get("completed_slices", 0)))
+        started_at = str(state["started_at"])
+    except (KeyError, TypeError, ValueError):
+        return []
+    log_path = results_dir.parent / "supervisor.log"
+    try:
+        log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        # Result text alone cannot prove that merge verification succeeded.
+        return []
+    ordinary_attempts = {
+        int(match.group("attempt"))
+        for match in re.finditer(
+            r"\bresult attempt=(?P<attempt>[1-9][0-9]*) status=merged\b",
+            log_text,
+        )
+        if int(match.group("attempt")) <= last_consumed
+    }
+    recovery_candidates = sorted(
+        {
+            int(match.group("attempt"))
+            for match in re.finditer(
+                r"\b(?:replayed newly valid result|"
+                r"recovered unconsumed terminal result) "
+                r"attempt=(?P<attempt>[1-9][0-9]*) status=MERGED\b",
+                log_text,
+            )
+            if int(match.group("attempt")) <= last_consumed
+        }
+        - ordinary_attempts
+    )
+    # Legacy recovery logs recorded the worker marker but not the controller's
+    # verification status. The completed-slice ledger bounds how many of those
+    # ambiguous recovery events can have succeeded.
+    recovery_slots = max(0, completed_slices - len(ordinary_attempts))
+    # If fewer recovery slots exist than recovery candidates, the legacy
+    # artifacts prove how many succeeded but not which PRs succeeded. Trusting
+    # any candidate could suppress a legitimate retry, so fail open to retry.
+    accepted_recoveries = (
+        recovery_candidates
+        if recovery_slots >= len(recovery_candidates)
+        else []
+    )
+    accepted_attempts = ordinary_attempts | set(accepted_recoveries)
+    receipts: list[str] = []
+    for attempt in sorted(accepted_attempts):
+        try:
+            result = parse_result(
+                (results_dir / f"{attempt:03d}.md").read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                )
+            )
+        except (OSError, ValueError):
+            continue
+        receipt = canonical_pr_receipt(result.pr)
+        if result.status != "MERGED" or receipt in receipts:
+            continue
+        if not merge_verifier(
+            result.pr,
+            repo=repo,
+            started_at=started_at,
+        ):
+            continue
+        receipts.append(receipt)
+    return receipts
+
+
 def _recorded_invalid_result_attempt(state: dict[str, Any]) -> int | None:
     last_result = state.get("last_result")
     if (
@@ -949,6 +1217,7 @@ def recover_invalid_result(
     results_dir: Path,
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
+    blocked_snapshot_inspector: Callable[..., CandidateSnapshot] | None = None,
 ) -> bool:
     """Replay the exact newly valid artifact through ordinary result handling."""
     admission_data = state.get("admission")
@@ -974,6 +1243,39 @@ def recover_invalid_result(
         return False
     if admission_result_rejection(result, admission):
         return False
+
+    if duplicate_merge_rejection(result, state):
+        state["consecutive_failures"] = max(
+            0,
+            int(state.get("consecutive_failures", 0)) - 1,
+        )
+        apply_invalid_duplicate_merge(
+            state,
+            result,
+            attempt=attempt,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
+
+    blocked_rejection = current_main_blocked_result_rejection(
+        result,
+        repo=repo,
+        provider=str(state["identity"]),
+        inspector=blocked_snapshot_inspector,
+    )
+    if blocked_rejection:
+        state["consecutive_failures"] = max(
+            0,
+            int(state.get("consecutive_failures", 0)) - 1,
+        )
+        apply_invalid_blocked_result(
+            state,
+            result,
+            attempt=attempt,
+            error=blocked_rejection,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
 
     verified = (
         merge_verifier(
@@ -1034,6 +1336,7 @@ def recover_unconsumed_result(
     results_dir: Path,
     repo: Path,
     merge_verifier: Callable[..., bool] = verify_merged,
+    blocked_snapshot_inspector: Callable[..., CandidateSnapshot] | None = None,
 ) -> bool:
     """Apply a valid current-attempt artifact left behind by a dead controller."""
     admission_data = state.get("admission")
@@ -1058,6 +1361,31 @@ def recover_unconsumed_result(
         return False
     if admission_result_rejection(result, admission):
         return False
+
+    if duplicate_merge_rejection(result, state):
+        apply_invalid_duplicate_merge(
+            state,
+            result,
+            attempt=attempt,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
+
+    blocked_rejection = current_main_blocked_result_rejection(
+        result,
+        repo=repo,
+        provider=str(state["identity"]),
+        inspector=blocked_snapshot_inspector,
+    )
+    if blocked_rejection:
+        apply_invalid_blocked_result(
+            state,
+            result,
+            attempt=attempt,
+            error=blocked_rejection,
+        )
+        state["last_consumed_attempt"] = attempt
+        return True
 
     verified = (
         merge_verifier(
@@ -1137,6 +1465,8 @@ def exit_code_for_status(status: str) -> int:
     failed = {
         "worker-failed",
         "invalid-result",
+        "invalid-blocked-result",
+        "invalid-duplicate-merge",
         "transient-provider-error",
         "transient-failure",
         "fatal-peer-error",
@@ -1294,6 +1624,8 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "resume_target": None,
         "admission": None,
         "recent_blocked": [],
+        "merged_prs": [],
+        "target_identity_version": TARGET_IDENTITY_VERSION,
         "status": "starting",
     }
 
@@ -1487,6 +1819,14 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
             state.setdefault("admission", None)
+            migrate_target_identities(state)
+            if "merged_prs" not in state:
+                state["merged_prs"] = infer_legacy_merged_prs(
+                    state=state,
+                    results_dir=results_dir,
+                    repo=args.repo,
+                    merge_verifier=verify_merged,
+                )
             if state["provider"] != args.provider or state.get("model") != args.model:
                 print("resume provider/model must match persisted state", file=sys.stderr)
                 return 2
@@ -1556,6 +1896,18 @@ def _run(args: argparse.Namespace) -> int:
                         + len(state.get("recent_blocked", []))
                     ),
                 )
+                previous_blocked = state.get("recent_blocked", [])
+                current_blocked = reconcile_recent_blocked(
+                    previous_blocked,
+                    blocked_targets=snapshot.blocked_targets,
+                )
+                if current_blocked != previous_blocked:
+                    state["recent_blocked"] = current_blocked
+                    _log(
+                        run_dir,
+                        f"released cleared blockers attempt={attempt} "
+                        f"count={len(previous_blocked) - len(current_blocked)}",
+                    )
                 candidate_hints = snapshot.hints
                 candidate_hints = filter_recently_blocked_hints(
                     candidate_hints,
@@ -1610,6 +1962,33 @@ def _run(args: argparse.Namespace) -> int:
                 )
                 if args.once:
                     break
+                continue
+            if should_cooldown_without_worker(
+                pressure=pressure,
+                candidate_hints=candidate_hints,
+                recent_blocked=state.get("recent_blocked", []),
+                has_admission=admission is not None,
+            ):
+                state["last_result"] = {
+                    "status": "BLOCKED_COOLDOWN",
+                    "attempt": attempt,
+                    "claimable": pressure.claimable,
+                    "stale": pressure.stale,
+                }
+                state["status"] = "blocked-cooldown"
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"cooldown attempt={attempt} filtered recent blockers "
+                    f"claimable={pressure.claimable} stale={pressure.stale}",
+                )
+                if args.once:
+                    break
+                wait_interruptibly(
+                    stop_file=stop_file,
+                    seconds=args.idle_minutes * 60,
+                    deadline_monotonic=deadline_monotonic,
+                )
                 continue
             if (
                 admission is None
@@ -1739,6 +2118,44 @@ def _run(args: argparse.Namespace) -> int:
                     _log(
                         run_dir,
                         f"reject attempt={attempt} result {admission_rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
+
+            duplicate_rejection = duplicate_merge_rejection(result, state)
+            if duplicate_rejection:
+                apply_invalid_duplicate_merge(
+                    state,
+                    result,
+                    attempt=attempt,
+                )
+                atomic_write_json(state_path, state)
+                _log(
+                    run_dir,
+                    f"reject attempt={attempt} MERGED {duplicate_rejection}",
+                )
+                if args.once:
+                    break
+                continue
+
+            if result.status == "BLOCKED":
+                blocked_rejection = current_main_blocked_result_rejection(
+                    result,
+                    repo=args.repo,
+                    provider=state["identity"],
+                )
+                if blocked_rejection:
+                    apply_invalid_blocked_result(
+                        state,
+                        result,
+                        attempt=attempt,
+                        error=blocked_rejection,
+                    )
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"reject attempt={attempt} BLOCKED {blocked_rejection}",
                     )
                     if args.once:
                         break

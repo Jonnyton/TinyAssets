@@ -39,6 +39,15 @@ def test_load_status_text_defaults_to_working_tree(
     assert claim_check.parse_status(text)[0].task_label == "current-main task"
 
 
+def test_task_label_preserves_full_bolded_identity() -> None:
+    label = ("same task identity " * 8) + "distinct ending"
+    text = STATUS_TEXT.replace("current-main task", label)
+
+    row = claim_check.parse_status(text)[0]
+
+    assert row.task_label == label
+
+
 def test_load_status_text_reads_explicit_git_ref(tmp_path: Path) -> None:
     commands: list[list[str]] = []
 

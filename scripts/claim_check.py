@@ -91,9 +91,9 @@ class Row:
 
     @property
     def task_label(self) -> str:
-        # First bolded chunk or first 80 chars.
+        # First bolded chunk, preserving the complete coordination identity.
         m = re.search(r"\*\*(.+?)\*\*", self.raw_task)
-        return (m.group(1) if m else self.raw_task)[:80]
+        return m.group(1) if m else self.raw_task
 
     @property
     def task_ids(self) -> list[str]:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -43,10 +44,19 @@ def _state(**overrides: object) -> dict[str, object]:
         "last_result": None,
         "resume_target": None,
         "recent_blocked": [],
+        "merged_prs": [],
         "status": "running",
     }
     state.update(overrides)
     return state
+
+
+def _snapshot_with_blocked(*targets: str) -> drain.CandidateSnapshot:
+    return drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(0, 0, 0),
+        hints=(),
+        blocked_targets=frozenset(targets),
+    )
 
 
 def test_parse_result_accepts_one_literal_final_marker() -> None:
@@ -113,6 +123,8 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     assert "not reliably OS-sandboxed" in prompt
     assert "shell `git` and `gh`" in normalized
     assert "`BLOCKED` is reserved" in normalized
+    assert "must first land a sanitized STATUS dependency or blocker" in normalized
+    assert "current `origin/main` classifies the exact target as blocked" in normalized
     assert "staging, committing, pushing, or creating the PR fails" in normalized
     assert "return `FAILED`" in normalized
     assert prompt.rstrip().endswith(
@@ -287,6 +299,196 @@ def test_candidate_snapshot_unwraps_canonical_stale_rows(
         ("CLAIMABLE", "claimable-first"),
         ("STALE", "stale-second"),
     ]
+
+
+def test_candidate_snapshot_extracts_all_blocked_targets_beyond_hint_limit(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    payload = {
+        "counts": {
+            "claimable": 2,
+            "blocked": 3,
+            "in_flight": 0,
+            "host_owned": 0,
+            "stale": 0,
+        },
+        "claimable": [
+            {"task_label": "candidate one", "files": ["one.py"]},
+            {"task_label": "candidate two", "files": ["two.py"]},
+        ],
+        "blocked": [
+            {
+                "row": {
+                    "task_label": f"blocked target {index}",
+                    "files": [f"blocked-{index}.py"],
+                },
+                "reasons": ["dependency"],
+            }
+            for index in range(3)
+        ],
+        "in_flight": [],
+        "stale": [],
+    }
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+        max_hints=1,
+    )
+
+    assert len(snapshot.hints) == 1
+    assert snapshot.blocked_targets == frozenset(
+        {
+            "blocked-target-0",
+            "blocked-target-1",
+            "blocked-target-2",
+        }
+    )
+
+
+def test_blocked_target_identity_does_not_alias_long_claimable_label(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    shared_prefix = "same long task identity " * 12
+    claimable_label = f"{shared_prefix}alpha/beta"
+    blocked_label = f"{shared_prefix}alpha-beta"
+    payload = {
+        "counts": {
+            "claimable": 1,
+            "blocked": 1,
+            "in_flight": 0,
+            "host_owned": 0,
+            "stale": 0,
+        },
+        "claimable": [
+            {"task_label": claimable_label, "files": ["claimable.py"]},
+        ],
+        "blocked": [
+            {
+                "row": {
+                    "task_label": blocked_label,
+                    "files": ["blocked.py"],
+                },
+                "reasons": ["dependency"],
+            },
+        ],
+        "in_flight": [],
+        "stale": [],
+    }
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_candidate_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+    )
+    claimable_target = drain._slugify(snapshot.hints[0].task_label)
+
+    assert len(claimable_target) <= 48
+    assert claimable_target not in snapshot.blocked_targets
+    assert (
+        drain.blocked_result_rejection(
+            drain.DrainResult("BLOCKED", claimable_target, "-"),
+            snapshot,
+        )
+        == f"target={claimable_target} is not blocked on current origin/main"
+    )
+
+
+def test_legacy_target_identity_migration_rekeys_admission_and_retries_blockers(
+    tmp_path: Path,
+) -> None:
+    task_label = ("legacy long task identity " * 4) + "ending"
+    legacy_target = re.sub(
+        r"[^a-z0-9]+",
+        "-",
+        task_label.lower(),
+    ).strip("-")[:48].rstrip("-")
+    state = _state(
+        admission={
+            "target": legacy_target,
+            "task_label": task_label,
+            "worktree": str(tmp_path),
+            "branch": f"drain/run/{legacy_target}",
+        },
+        resume_target=legacy_target,
+        recent_blocked=[legacy_target, "another-legacy-target"],
+    )
+
+    changed = drain.migrate_target_identities(state)
+
+    expected_target = drain._slugify(task_label)
+    assert changed is True
+    assert state["target_identity_version"] == 3
+    assert state["admission"]["target"] == expected_target
+    assert state["resume_target"] == expected_target
+    assert state["recent_blocked"] == []
+    assert drain.migrate_target_identities(state) is False
+
+
+@pytest.mark.parametrize(
+    "blocked",
+    [
+        {"row": {"task_label": "not-a-list"}},
+        [{}],
+        [{"row": "not-an-object", "reasons": ["dependency"]}],
+    ],
+)
+def test_candidate_snapshot_rejects_malformed_blocked_collection(
+    tmp_path: Path,
+    blocked: object,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1,
+            stdout=json.dumps(
+                {
+                    "counts": {
+                        "claimable": 0,
+                        "blocked": 1,
+                        "in_flight": 0,
+                        "host_owned": 0,
+                        "stale": 0,
+                    },
+                    "claimable": [],
+                    "blocked": blocked,
+                    "in_flight": [],
+                    "stale": [],
+                }
+            ),
+            stderr="",
+        )
+
+    with pytest.raises(RuntimeError, match="claim pressure inspection failed"):
+        drain.inspect_candidate_snapshot(
+            repo=repo,
+            provider="drain-test",
+            runner=runner,
+        )
 
 
 def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
@@ -875,6 +1077,91 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
     ]
 
 
+def test_recent_blockers_are_retained_only_while_current_main_blocks_them() -> None:
+    assert drain.reconcile_recent_blocked(
+        ["still-blocked", "cleared", "deleted"],
+        blocked_targets=frozenset({"still-blocked", "unrelated"}),
+    ) == ["still-blocked"]
+
+
+@pytest.mark.parametrize(
+    (
+        "pressure",
+        "candidate_hints",
+        "recent_blocked",
+        "has_admission",
+        "expected",
+    ),
+    [
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            ["first-target"],
+            False,
+            True,
+        ),
+        (
+            drain.CandidatePressure(0, 1, 0),
+            (),
+            ["first-target"],
+            False,
+            True,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (drain.CandidateHint("CLAIMABLE", "second target", ()),),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            ["first-target"],
+            True,
+            False,
+        ),
+        (
+            drain.CandidatePressure(0, 0, 1),
+            (),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(0, 0, 0),
+            (),
+            ["first-target"],
+            False,
+            False,
+        ),
+        (
+            drain.CandidatePressure(1, 0, 0),
+            (),
+            [],
+            False,
+            False,
+        ),
+    ],
+)
+def test_recent_blocker_cooldown_only_suppresses_filtered_rediscovery(
+    pressure: drain.CandidatePressure,
+    candidate_hints: tuple[drain.CandidateHint, ...],
+    recent_blocked: list[str],
+    has_admission: bool,
+    expected: bool,
+) -> None:
+    assert (
+        drain.should_cooldown_without_worker(
+            pressure=pressure,
+            candidate_hints=candidate_hints,
+            recent_blocked=recent_blocked,
+            has_admission=has_admission,
+        )
+        is expected
+    )
+
+
 def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
     snapshot = drain.CandidateSnapshot(
         pressure=drain.CandidatePressure(claimable=1, stale=0, owned=1),
@@ -932,6 +1219,69 @@ def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     assert rejection == "assigned=assigned-target reported=different-target"
 
 
+@pytest.mark.parametrize(
+    ("blocked_targets", "expected"),
+    [
+        (frozenset({"assigned-target"}), None),
+        (frozenset({"different-target"}), "target=assigned-target"),
+        (frozenset(), "target=assigned-target"),
+    ],
+)
+def test_blocked_result_requires_exact_current_main_blocked_target(
+    blocked_targets: frozenset[str],
+    expected: str | None,
+) -> None:
+    rejection = drain.blocked_result_rejection(
+        drain.DrainResult("BLOCKED", "assigned-target", "-"),
+        drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(1, 0, 0),
+            hints=(),
+            blocked_targets=blocked_targets,
+        ),
+    )
+
+    if expected is None:
+        assert rejection is None
+    else:
+        assert expected in rejection
+
+
+def test_invalid_blocked_result_retains_admission_and_records_failure(
+    tmp_path: Path,
+) -> None:
+    admission = {
+        "target": "assigned-target",
+        "task_label": "assigned target",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/assigned-target",
+    }
+    state = _state(
+        attempts=4,
+        admission=admission,
+        resume_target="assigned-target",
+        recent_blocked=["other-target"],
+    )
+
+    drain.apply_invalid_blocked_result(
+        state,
+        drain.DrainResult("BLOCKED", "assigned-target", "-"),
+        attempt=4,
+        error="origin fetch failed",
+    )
+
+    assert state["admission"] == admission
+    assert state["resume_target"] == "assigned-target"
+    assert state["recent_blocked"] == ["other-target"]
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"] == {
+        "status": "INVALID_BLOCKED_RESULT",
+        "attempt": 4,
+        "target": "assigned-target",
+        "error": "origin fetch failed",
+    }
+    assert state["status"] == "invalid-blocked-result"
+
+
 def test_admitted_prompt_requires_exact_canonical_result_target(
     tmp_path: Path,
 ) -> None:
@@ -986,6 +1336,9 @@ def test_resume_replays_newly_valid_result_and_undoes_parser_strike(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "main-red-round-2"
+        ),
     )
 
     assert recovered is True
@@ -999,6 +1352,48 @@ def test_resume_replays_newly_valid_result_and_undoes_parser_strike(
     assert state["resume_target"] is None
     assert state["admission"] is None
     assert state["status"] == "blocked"
+
+
+def test_resume_rejects_newly_parseable_private_blocker(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "005.md").write_text(
+        "DRAIN_RESULT: BLOCKED main-red round 2 -\n",
+        encoding="utf-8",
+    )
+    admission = {
+        "target": "main-red-round-2",
+        "task_label": "main-red round 2",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/main-red-round-2",
+    }
+    state = _state(
+        attempts=5,
+        consecutive_failures=2,
+        last_result={
+            "status": "INVALID_RESULT",
+            "attempt": 5,
+            "error": "malformed",
+        },
+        admission=admission,
+        resume_target="main-red-round-2",
+    )
+
+    recovered = drain.recover_invalid_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    assert recovered is True
+    assert state["consecutive_failures"] == 2
+    assert state["last_consumed_attempt"] == 5
+    assert state["last_result"]["status"] == "INVALID_BLOCKED_RESULT"
+    assert state["admission"] == admission
+    assert state["recent_blocked"] == []
 
 
 @pytest.mark.parametrize(
@@ -1086,6 +1481,43 @@ def test_resume_consumes_valid_unrecorded_current_attempt(
     assert state["admission"]["target"] == "assigned-target"
 
 
+def test_resume_rejects_unconsumed_private_blocker(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    (results_dir / "001.md").write_text(
+        "DRAIN_RESULT: BLOCKED assigned-target -\n",
+        encoding="utf-8",
+    )
+    admission = {
+        "target": "assigned-target",
+        "task_label": "assigned target",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/assigned-target",
+    }
+    state = _state(
+        attempts=1,
+        last_result=None,
+        admission=admission,
+        resume_target="assigned-target",
+    )
+
+    recovered = drain.recover_unconsumed_result(
+        state,
+        results_dir=results_dir,
+        repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    assert recovered is True
+    assert state["consecutive_failures"] == 1
+    assert state["last_consumed_attempt"] == 1
+    assert state["last_result"]["status"] == "INVALID_BLOCKED_RESULT"
+    assert state["admission"] == admission
+    assert state["recent_blocked"] == []
+
+
 def test_resume_refuses_unrecorded_result_for_different_admission(
     tmp_path: Path,
 ) -> None:
@@ -1144,6 +1576,9 @@ def test_resume_recovers_current_result_after_an_earlier_failed_attempt(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "assigned-target"
+        ),
     )
     assert state["last_consumed_attempt"] == 3
     assert state["status"] == "blocked"
@@ -1182,6 +1617,7 @@ def test_run_recovers_unconsumed_result_before_replacement_dispatch(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"assigned-target"}),
         ),
     )
     dispatched_prompts: list[str] = []
@@ -1289,6 +1725,9 @@ def test_resume_replays_the_recorded_invalid_attempt_not_latest_attempt(
         state,
         results_dir=results_dir,
         repo=tmp_path,
+        blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+            "main-red-round-2"
+        ),
     )
 
     assert recovered is True
@@ -1322,6 +1761,9 @@ def test_legacy_failure_budget_can_replay_its_terminal_current_attempt(
             state,
             results_dir=results_dir,
             repo=tmp_path,
+            blocked_snapshot_inspector=lambda **_kwargs: _snapshot_with_blocked(
+                "main-red-round-2"
+            ),
         )
         is True
     )
@@ -1461,6 +1903,7 @@ def test_run_replays_invalid_result_before_failure_budget(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"main-red-round-2"}),
         ),
     )
 
@@ -1524,6 +1967,7 @@ def test_recovery_log_names_recorded_attempt_not_latest_counter(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(0, 0, 0),
             hints=(),
+            blocked_targets=frozenset({"main-red-round-2"}),
         ),
     )
 
@@ -1608,6 +2052,288 @@ def test_apply_merged_requires_controller_verification() -> None:
     assert state["completed_slices"] == 0
     assert state["consecutive_failures"] == 2
     assert state["status"] == "merge-verification-failed"
+
+
+def test_verified_merge_records_bounded_receipt_and_rejects_exact_replay() -> None:
+    state = _state()
+    result = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/o/r/pull/12",
+    )
+
+    drain.apply_result(state, result, merge_verified=True)
+
+    assert state["completed_slices"] == 1
+    assert state["merged_prs"] == ["https://github.com/o/r/pull/12"]
+    assert (
+        drain.duplicate_merge_rejection(result, state)
+        == "already-consumed=https://github.com/o/r/pull/12"
+    )
+
+
+def test_merge_receipt_rejects_repo_case_and_number_format_replay() -> None:
+    state = _state(
+        completed_slices=1,
+        merged_prs=["https://github.com/o/r/pull/12"],
+    )
+    replay = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/O/R/pull/0012",
+    )
+
+    assert (
+        drain.duplicate_merge_rejection(replay, state)
+        == "already-consumed=https://github.com/o/r/pull/12"
+    )
+
+
+def test_merge_receipts_survive_for_the_whole_bounded_run() -> None:
+    state = _state()
+    first = drain.DrainResult(
+        "MERGED",
+        "target",
+        "https://github.com/o/r/pull/1",
+    )
+
+    for number in range(1, 66):
+        drain.apply_result(
+            state,
+            drain.DrainResult(
+                "MERGED",
+                f"target-{number}",
+                f"https://github.com/o/r/pull/{number}",
+            ),
+            merge_verified=True,
+        )
+
+    assert len(state["merged_prs"]) == 65
+    assert (
+        drain.duplicate_merge_rejection(first, state)
+        == "already-consumed=https://github.com/o/r/pull/1"
+    )
+
+
+def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
+    tmp_path: Path,
+) -> None:
+    admission = {
+        "target": "target",
+        "task_label": "target",
+        "worktree": str(tmp_path),
+        "branch": "drain/run/target",
+    }
+    state = _state(
+        attempts=3,
+        completed_slices=1,
+        admission=admission,
+        resume_target="target",
+        merged_prs=["https://github.com/o/r/pull/12"],
+    )
+
+    drain.apply_invalid_duplicate_merge(
+        state,
+        drain.DrainResult(
+            "MERGED",
+            "target",
+            "https://github.com/o/r/pull/12",
+        ),
+        attempt=3,
+    )
+
+    assert state["completed_slices"] == 1
+    assert state["consecutive_failures"] == 1
+    assert state["admission"] == admission
+    assert state["resume_target"] == "target"
+    assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["status"] == "invalid-duplicate-merge"
+
+
+def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    marker = (
+        "DRAIN_RESULT: MERGED target "
+        "https://github.com/o/r/pull/12\n"
+    )
+    (results_dir / "001.md").write_text(marker, encoding="utf-8")
+    (results_dir / "002.md").write_text(
+        "DRAIN_RESULT: MERGED target "
+        "https://github.com/O/R/pull/0012\n",
+        encoding="utf-8",
+    )
+    (results_dir / "003.md").write_text(
+        "DRAIN_RESULT: BLOCKED target -\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 result attempt=1 status=merged "
+        "target=target pr=https://github.com/o/r/pull/12\n"
+        "2026-07-29T00:01:00-07:00 result attempt=2 status=merged "
+        "target=target pr=https://github.com/O/R/pull/0012\n",
+        encoding="utf-8",
+    )
+    verifier_calls: list[str] = []
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=3,
+            last_consumed_attempt=3,
+            completed_slices=2,
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda pr, **_kwargs: verifier_calls.append(pr) or True,
+    )
+
+    assert receipts == ["https://github.com/o/r/pull/12"]
+    assert verifier_calls == ["https://github.com/o/r/pull/12"]
+
+
+def test_legacy_merge_receipts_exclude_prior_verification_failure(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 result attempt=1 "
+        f"status=merge-verification-failed target=target pr={pr}\n",
+        encoding="utf-8",
+    )
+    verifier_calls: list[str] = []
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=0,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda candidate, **_kwargs: (
+            verifier_calls.append(candidate) or True
+        ),
+    )
+
+    assert receipts == []
+    assert verifier_calls == []
+
+
+@pytest.mark.parametrize(
+    "audit_message",
+    [
+        "replayed newly valid result",
+        "recovered unconsumed terminal result",
+    ],
+)
+def test_legacy_merge_receipts_include_successful_recovery_audits(
+    tmp_path: Path,
+    audit_message: str,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        f"2026-07-29T00:00:00-07:00 {audit_message} "
+        "attempt=1 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=1,
+            status="merged",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == [pr]
+
+
+def test_legacy_recovery_audit_cannot_exceed_completed_slice_ledger(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    pr = "https://github.com/o/r/pull/12"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED target {pr}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 replayed newly valid result "
+        "attempt=1 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=1,
+            last_consumed_attempt=1,
+            completed_slices=0,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == []
+
+
+def test_legacy_recovery_audits_fail_open_when_success_identity_is_ambiguous(
+    tmp_path: Path,
+) -> None:
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    first = "https://github.com/o/r/pull/12"
+    second = "https://github.com/o/r/pull/13"
+    (results_dir / "001.md").write_text(
+        f"DRAIN_RESULT: MERGED first {first}\n",
+        encoding="utf-8",
+    )
+    (results_dir / "002.md").write_text(
+        f"DRAIN_RESULT: MERGED second {second}\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "supervisor.log").write_text(
+        "2026-07-29T00:00:00-07:00 replayed newly valid result "
+        "attempt=1 status=MERGED\n"
+        "2026-07-29T00:01:00-07:00 recovered unconsumed terminal result "
+        "attempt=2 status=MERGED\n",
+        encoding="utf-8",
+    )
+
+    receipts = drain.infer_legacy_merged_prs(
+        state=_state(
+            attempts=2,
+            last_consumed_attempt=2,
+            completed_slices=1,
+            status="merge-verification-failed",
+        ),
+        results_dir=results_dir,
+        repo=tmp_path,
+        merge_verifier=lambda _candidate, **_kwargs: True,
+    )
+
+    assert receipts == []
 
 
 def test_apply_partial_resets_failures_and_sets_resume_target() -> None:
@@ -1891,6 +2617,8 @@ def test_budget_reason_is_terminal() -> None:
         ("idle", 0),
         ("worker-failed", 2),
         ("invalid-result", 2),
+        ("invalid-blocked-result", 2),
+        ("invalid-duplicate-merge", 2),
         ("transient-provider-error", 2),
         ("transient-failure", 2),
         ("fatal-peer-error", 2),
@@ -2040,6 +2768,65 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
     assert state["status"] == "merged"
 
 
+def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    pr = "https://github.com/o/r/pull/12"
+    initial_state = _state(
+        attempts=0,
+        last_consumed_attempt=0,
+        completed_slices=1,
+        merged_prs=[pr],
+    )
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: _snapshot_with_blocked(),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        result_path.write_text(
+            f"DRAIN_RESULT: MERGED old-target {pr}\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+            "--max-slices",
+            "3",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert state["completed_slices"] == 1
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["merged_prs"] == [pr]
+
+
 def test_run_dispatches_inside_mechanically_admitted_lane(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2068,6 +2855,7 @@ def test_run_dispatches_inside_mechanically_admitted_lane(
         lambda **_kwargs: drain.CandidateSnapshot(
             pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
             hints=(hint,),
+            blocked_targets=frozenset({"target"}),
         ),
     )
     monkeypatch.setattr(drain, "admit_candidate", lambda **_kwargs: admission)
@@ -2112,6 +2900,159 @@ def test_run_dispatches_inside_mechanically_admitted_lane(
     assert state["admission"] is None
     assert state["recent_blocked"] == ["target"]
     assert state["status"] == "blocked"
+
+
+def test_run_cools_down_without_dispatch_when_recent_blockers_consume_hints(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        classification="CLAIMABLE",
+        task_label="blocked target",
+        files=("x.py",),
+        line_no=1,
+        status="pending",
+    )
+    initial_state = _state(
+        provider="codex",
+        model=None,
+        attempts=0,
+        last_consumed_attempt=0,
+        consecutive_transients=0,
+        consecutive_partial_target=None,
+        consecutive_partials=0,
+        admission=None,
+        recent_blocked=["blocked-target"],
+    )
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
+            hints=(hint,),
+            blocked_targets=frozenset({"blocked-target"}),
+        ),
+    )
+    monkeypatch.setattr(
+        drain,
+        "_dispatch",
+        lambda **_kwargs: pytest.fail(
+            "filtered recent blocker must not launch a no-hint worker"
+        ),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--once",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert state["status"] == "blocked-cooldown"
+    assert state["last_result"] == {
+        "status": "BLOCKED_COOLDOWN",
+        "attempt": 1,
+        "claimable": 1,
+        "stale": 0,
+    }
+    assert not list((run_dir / "prompts").glob("*.md"))
+
+
+def test_run_rejects_blocked_when_current_main_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    worktree = tmp_path / "wf-drain-fast-target"
+    worktree.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        classification="CLAIMABLE",
+        task_label="target",
+        files=("x.py",),
+        line_no=1,
+        status="pending",
+    )
+    admission = drain.Admission(
+        target="target",
+        task_label="target",
+        worktree=worktree,
+        branch="drain/fast/target",
+    )
+    snapshots = iter(
+        [
+            drain.CandidateSnapshot(
+                pressure=drain.CandidatePressure(claimable=1, stale=0, owned=0),
+                hints=(hint,),
+            ),
+            RuntimeError("origin fetch failed"),
+        ]
+    )
+
+    def inspect(**_kwargs: object) -> drain.CandidateSnapshot:
+        value = next(snapshots)
+        if isinstance(value, RuntimeError):
+            raise value
+        return value
+
+    monkeypatch.setattr(drain, "inspect_current_main_snapshot", inspect)
+    monkeypatch.setattr(drain, "admit_candidate", lambda **_kwargs: admission)
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+        worker_cwd: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        assert worker_cwd == worktree
+        result_path.write_text(
+            "private blocker\nDRAIN_RESULT: BLOCKED target -\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--once",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert state["admission"]["target"] == "target"
+    assert state["resume_target"] == "target"
+    assert state["recent_blocked"] == []
+    assert state["consecutive_failures"] == 1
+    assert state["last_result"]["status"] == "INVALID_BLOCKED_RESULT"
+    assert state["status"] == "invalid-blocked-result"
 
 
 def test_run_does_not_dispatch_when_current_main_snapshot_fails(
