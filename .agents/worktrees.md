@@ -1707,6 +1707,7 @@ Notes:
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260729-171925-6b1b07-recovery`
 - STATUS/Issue/PR: task 5.2 reopened locally after exact-`22bbb0a7` independent review found two High blockers and one Medium gap
 - Pickup: add failing actor/run-authority, receipt-success replay, lifecycle-read, and positive-bound tests before repair; preserve plugin parity
+- Recovery: `d3bcac92` independently approved; 130 focused tests pass, 28 mutations go red, strict OpenSpec 59/59, core/plugin parity clean; PR pending
 
 ## 2026-07-29 17:00 - land repair-synthesis-checklist
 
