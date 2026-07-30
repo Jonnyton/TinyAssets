@@ -2323,6 +2323,102 @@ def test_partial_target_removal_replays_after_interrupted_subset(
     assert final_state["partial_target_removal"]["removal_phase"] == "removed"
 
 
+def test_partial_target_removal_empty_replay_refuses_off_volume_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["partial_target_removal"] = {
+        "container_ids": {"tinyassets-daemon": "removed-target-id"},
+        "image_ref": host.target_image_ref,
+        "project_name": "tinyassets",
+        "removal_phase": "planned",
+        "revision": host.target_revision,
+    }
+    substituted = host._containers(
+        "substituted", "sha256:old", running=False
+    )["tinyassets-worker"]
+    host.containers = {"tinyassets-worker": substituted}
+    monkeypatch.setattr(host, "volume_container_names", lambda: [])
+
+    with pytest.raises(FenceError, match="canonical target name still exists"):
+        fence._remove_partial_canonical_target_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert state["partial_target_removal"]["removal_phase"] == "planned"
+
+
+def test_partial_target_removal_replay_refuses_full_volume_fleet(
+    tmp_path: Path
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["partial_target_removal"] = {
+        "container_ids": {"tinyassets-daemon": "recorded-target-id"},
+        "image_ref": host.target_image_ref,
+        "project_name": "tinyassets",
+        "removal_phase": "planned",
+        "revision": host.target_revision,
+    }
+    host.containers = host._containers(
+        "replacement-target", "sha256:target", running=False
+    )
+
+    with pytest.raises(FenceError, match="removal inventory changed"):
+        fence._remove_partial_canonical_target_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("image_ref", "ghcr.io/jonnyton/tinyassets-daemon@sha256:" + "f" * 64),
+        ("revision", "f" * 40),
+        ("project_name", "foreign"),
+    ],
+)
+def test_partial_target_removal_empty_replay_refuses_metadata_substitution(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["partial_target_removal"] = {
+        "container_ids": {"tinyassets-daemon": "removed-target-id"},
+        "image_ref": host.target_image_ref,
+        "project_name": "tinyassets",
+        "removal_phase": "planned",
+        "revision": host.target_revision,
+    }
+    state["partial_target_removal"][field] = value
+    host.containers = {}
+
+    with pytest.raises(FenceError, match="removal intent is invalid"):
+        fence._remove_partial_canonical_target_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+
+    assert state["partial_target_removal"]["removal_phase"] == "planned"
+
+
 def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

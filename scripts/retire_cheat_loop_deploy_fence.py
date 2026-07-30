@@ -729,6 +729,14 @@ def _named_container_absent_exact(host: Host, name: str) -> bool:
     return False
 
 
+def _prove_expected_container_names_absent(host: Host) -> None:
+    """Fail closed unless every canonical container name is globally absent."""
+
+    for name in EXPECTED_CONTAINERS:
+        if not _named_container_absent_exact(host, name):
+            raise FenceError(f"canonical target name still exists: {name}")
+
+
 def _wait_units_quiesced(
     host: Host,
     units: Sequence[str],
@@ -2069,24 +2077,33 @@ def _remove_partial_canonical_target_for_recovery(
         raise FenceError("partial target removal intent is invalid")
     plan = raw_plan if isinstance(raw_plan, dict) else None
     names = set(host.volume_container_names())
-    if not names:
-        if not plan:
-            return {}
+    recorded: dict[str, str] = {}
+    if plan:
         recorded = {
             str(name): str(identity)
             for name, identity in dict(plan.get("container_ids") or {}).items()
         }
         if (
-            plan.get("removal_phase") not in {"planned", "removed"}
+            plan.get("image_ref") != state.get("target_image_ref")
+            or plan.get("revision") != state.get("target_revision")
+            or plan.get("project_name") != "tinyassets"
+            or plan.get("removal_phase") not in {"planned", "removed"}
             or not recorded
             or not set(recorded) < set(EXPECTED_CONTAINERS)
         ):
             raise FenceError("partial target removal intent is invalid")
+        if not names <= set(recorded):
+            raise FenceError("partial target removal inventory changed")
+
+    if not names:
+        if not plan:
+            return {}
         for name, identity in recorded.items():
             if not _container_absent_exact(host, identity):
                 raise FenceError(
                     f"removed partial target still exists: {name}"
                 )
+        _prove_expected_container_names_absent(host)
         if plan["removal_phase"] != "removed":
             plan["removal_phase"] = "removed"
             _atomic_json(state_path, state)
@@ -2105,10 +2122,7 @@ def _remove_partial_canonical_target_for_recovery(
         }
         state["partial_target_removal"] = plan
         _atomic_json(state_path, state)
-    recorded = {
-        str(name): str(identity)
-        for name, identity in dict(plan.get("container_ids") or {}).items()
-    }
+        recorded = dict(actual)
     if (
         plan.get("image_ref") != state.get("target_image_ref")
         or plan.get("revision") != state.get("target_revision")
@@ -2134,6 +2148,7 @@ def _remove_partial_canonical_target_for_recovery(
     )
     if host.volume_container_names():
         raise FenceError("partial target removal did not converge")
+    _prove_expected_container_names_absent(host)
     plan["removal_phase"] = "removed"
     _atomic_json(state_path, state)
     return recorded

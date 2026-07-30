@@ -118,7 +118,7 @@ Follow-up P0 verification on 2026-07-30 (Windows host):
 
 ```text
 py -m pytest tests/test_retire_cheat_loop_deploy_fence.py -q
-107 passed in 3.12s
+112 passed in 3.81s
 
 py -m ruff check scripts/retire_cheat_loop_deploy_fence.py tests/test_retire_cheat_loop_deploy_fence.py
 All checks passed!
@@ -127,7 +127,18 @@ openspec validate repair-recovery-deploy-handoff --strict
 Change 'repair-recovery-deploy-handoff' is valid
 ```
 
-Seven new tests cover production-shaped partial-target recovery, write-ahead
+Two independent reviews of head `8486ca53` returned ADAPT because an
+empty-inventory replay did not rebind the write-ahead record's
+image/revision/project and did not prove every expected container name
+globally absent. An existing plan could also encounter a full or substituted
+volume fleet and fall through to a different remover. The follow-up binds plan
+metadata before inventory branching, requires the observed volume names to
+remain a subset of the write-ahead names, and proves all expected names absent
+both on empty replay and after exact-ID removal. Five additional regression
+cases cover off-volume name substitution, a full replacement fleet, and each
+plan-metadata substitution. Exact-head independent re-review is pending.
+
+Twelve new tests cover production-shaped partial-target recovery, write-ahead
 replay after interrupted subset removal, and refusal of foreign-project,
 running, restart-enabled, foreign-image, and same-name off-volume states.
 
