@@ -28,3 +28,14 @@ The live healthy-path behavior could not be revalidated because the public MCP e
 ## Coordination implication
 
 Keep the Access-cookie concern at P0 and freshness-stamp it 2026-07-30. Track the independently verified public 502 as a separate P0 outage. A later implementation lane should fail first on an upstream `Set-Cookie: CF_Authorization=...` regression test, strip credential-bearing response cookies without buffering SSE, deploy through normal gates, then repeat sanitized healthy-path and rendered chatbot verification.
+
+## Remediation update
+
+Freshness: 2026-07-30 13:18 PDT, Windows, draft PR #1934 head `c1bd65d7`.
+
+The implementation now strips every upstream `Set-Cookie` response header at
+the public Worker boundary. The regression test failed before the fix on the
+application cookie and passed afterward; the complete Worker suite passes
+62/62 while the existing SSE stream test remains green. This is code and spec
+evidence only. The P0 remains open pending merge, deployment, a sanitized
+healthy-path probe, rendered chatbot proof, and post-fix clean-use evidence.
