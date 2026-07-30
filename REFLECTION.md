@@ -1,3 +1,16 @@
+## 2026-07-29 — dark background authority contracts
+
+- **What surprised me:** the cloud-drain blocker was not another scheduler; it
+  was the absence of a closed, serializable distinction between durable target
+  authorization and one exact execution attempt.
+- **Pattern worth capturing:** security records should reject unknown fields
+  and open-ended enum values at their first dark model boundary. That prevents
+  later stores and queue adapters from accidentally treating legacy actor
+  strings, wiki filings, or arbitrary lifecycle labels as authority.
+- **What I would do differently:** write the as-built/target distinction into
+  the architecture decision before the first merge, then derive the model
+  fixtures directly from the approved minimum-field table.
+
 ## 2026-07-29 - outcome settlement recovery
 
 - **What surprised me:** making sequential receipt replay repair a missing
