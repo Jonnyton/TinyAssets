@@ -1817,3 +1817,14 @@ Notes:
 - Purpose: record integration of the execution-root/read-owner closure gate
 - Review gate: exact head `2dea7d38` independently approved; 125 focused tests and CI green
 - Publish/cleanup: safe to remove after foldback lands
+
+## 2026-07-30 12:11 - OpenSpec finish-first recovery landed
+
+- Provider: `drain-20260730-104801-7e8f53`
+- Branch: `chore/drain-20260730-104801-7e8f53-blocker-refresh`
+- Lane state: Landed as PR #1927 (`74419e56`); STATUS claim retired
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
+- STATUS/Issue/PR: finish-first recovery map published; current-main claim check remains `claimable=0`, `stale=0`, with no owned row
+- Purpose: close the durable worktree lifecycle after merge verification
+- Review gate: PR #1927 exact head `879f6dda` independently approved; merged tree matches that head
+- Publish/cleanup: safe to remove after this ledger foldback lands
