@@ -13,6 +13,9 @@ Covered requirements:
 
 from __future__ import annotations
 
+import concurrent.futures
+import threading
+
 import pytest
 
 from tinyassets.handoffs import adapters as handoff_adapters
@@ -340,6 +343,47 @@ class TestExactlyOnce:
         assert replay["replay"] is True
         assert replay["status"] == "accepted"
         assert replay["outcome"]["handoff_id"] == replay["handoff"]["handoff_id"]
+        evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
+        assert evidence["summary"]["total_claims"] == 1
+
+    def test_concurrent_receipt_replays_create_one_outcome(
+        self, env, bind_adapter, monkeypatch
+    ):
+        from tinyassets.handoffs.store import HandoffStore
+
+        bind_adapter(_accepting(env))
+        original_settle = service._settle
+        monkeypatch.setattr(
+            service,
+            "_settle",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                RuntimeError("crash after receipt success")
+            ),
+        )
+        with pytest.raises(RuntimeError, match="crash after receipt success"):
+            env.execute()
+        monkeypatch.setattr(service, "_settle", original_settle)
+
+        original_list = HandoffStore.list_outcome_evidence
+        empty_read_barrier = threading.Barrier(2)
+
+        def _synchronize_empty_reads(store, **kwargs):
+            outcomes = original_list(store, **kwargs)
+            if kwargs.get("handoff_id") and not outcomes:
+                empty_read_barrier.wait(timeout=5)
+            return outcomes
+
+        monkeypatch.setattr(
+            HandoffStore,
+            "list_outcome_evidence",
+            _synchronize_empty_reads,
+        )
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: env.execute(), range(2)))
+
+        assert len(env.calls) == 1
+        assert {result["outcome"]["outcome_id"] for result in results}
+        assert len({result["outcome"]["outcome_id"] for result in results}) == 1
         evidence = service.outcome_evidence(actor_id=env.owner, base_path=env.base)
         assert evidence["summary"]["total_claims"] == 1
 

@@ -587,28 +587,24 @@ def _settle(
             fresh = store.get_handoff(fresh.handoff_id, actor_id=actor_id)
 
     if target == "accepted":
-        existing = store.list_outcome_evidence(
-            account_id=actor_id, handoff_id=fresh.handoff_id, limit=1
+        outcome = store.record_outcome_evidence(
+            account_id=actor_id,
+            outcome_kind=fresh.outcome_kind,
+            evidence_source="provider",
+            evidence_level="externally_verified",
+            run_id=fresh.run_id,
+            branch_def_id=fresh.branch_def_id,
+            branch_version_id=fresh.branch_version_id,
+            content_hash=fresh.content_hash,
+            output_field=fresh.output_field,
+            output_sha256=fresh.output_sha256,
+            handoff_id=fresh.handoff_id,
+            effect_key=effect_key,
+            sink=sink,
+            external_id=external_id,
+            payload={"provider_evidence": provider_evidence},
+            now=now,
         )
-        if not existing:
-            outcome = store.record_outcome_evidence(
-                account_id=actor_id,
-                outcome_kind=fresh.outcome_kind,
-                evidence_source="provider",
-                evidence_level="externally_verified",
-                run_id=fresh.run_id,
-                branch_def_id=fresh.branch_def_id,
-                branch_version_id=fresh.branch_version_id,
-                content_hash=fresh.content_hash,
-                output_field=fresh.output_field,
-                output_sha256=fresh.output_sha256,
-                handoff_id=fresh.handoff_id,
-                effect_key=effect_key,
-                sink=sink,
-                external_id=external_id,
-                payload={"provider_evidence": provider_evidence},
-                now=now,
-            )
 
     return {
         "status": fresh.state,
