@@ -1,3 +1,17 @@
+## 2026-07-30 — executable authority inventory closure
+
+- **What surprised me:** a green exact-callsite manifest was still materially
+  incomplete because synchronous execution, scheduler callbacks, compiled graph
+  streaming, and the independently shipped plugin runtime sat outside its
+  lexical boundary.
+- **Pattern worth capturing:** authority inventories must count occurrences,
+  resolve aliases, scan every shipped runtime, and separately pin indirect
+  callback/stream edges plus the exact canonical read seams. Function-name
+  markers and a set of call names do not prove closure.
+- **What I would do differently:** enumerate all synchronous and indirect
+  execution primitives and package copies before writing the first expected
+  manifest, then begin with new-file, duplicate-call, and alias mutations.
+
 ## 2026-07-30 — background authority boundary rereview
 
 - **What surprised me:** closed nested records were still porous because generic
