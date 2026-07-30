@@ -299,6 +299,28 @@ def test_direct_constructors_copy_retained_sequences() -> None:
     assert direct_provenance.audit_correlation_ids == ("trace:abc",)
 
 
+def test_serialized_sequence_fields_require_json_lists() -> None:
+    binding = _binding_payload()
+    binding["permitted_executor_classes"] = ("cloud",)
+    child = _binding_payload()
+    child["child_delegation"]["allowed_operations"] = ("invoke_branch_version",)
+
+    with pytest.raises(ValueError, match="list"):
+        BackgroundBranchBinding.from_dict(binding)
+    with pytest.raises(ValueError, match="list"):
+        BackgroundBranchBinding.from_dict(child)
+
+
+def test_direct_constructors_reject_string_sequences() -> None:
+    binding = BackgroundBranchBinding.from_dict(_binding_payload())
+    provenance = BackgroundBranchProvenance.from_dict(_provenance_payload())
+
+    with pytest.raises(ValueError, match="sequence"):
+        replace(binding.child_delegation, allowed_branch_def_ids="ab")
+    with pytest.raises(ValueError, match="sequence"):
+        replace(provenance, audit_correlation_ids="trace")
+
+
 def test_policy_and_receipt_schemas_reject_secret_shaped_material() -> None:
     binding = _binding_payload()
     binding["child_delegation"]["api_token"] = "sk-live-secret"
@@ -309,6 +331,64 @@ def test_policy_and_receipt_schemas_reject_secret_shaped_material() -> None:
         BackgroundBranchBinding.from_dict(binding)
     with pytest.raises(ValueError, match="reference"):
         BackgroundBranchProvenance.from_dict(receipt)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "binding_id",
+        "binding_digest",
+        "authorizing_principal_id",
+        "universe_id",
+        "branch_def_id",
+        "source_id",
+        "source_revision",
+        "source_digest",
+        "pinned_branch_version_id",
+        "daemon_id",
+        "runtime_id",
+    ],
+)
+def test_binding_ids_digests_and_source_fields_reject_bearer_material(field: str) -> None:
+    payload = _binding_payload()
+    payload[field] = "Bearer sk-live-secret"
+
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchBinding.from_dict(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "attempt_id",
+        "logical_attempt_key",
+        "binding_id",
+        "binding_digest",
+        "authorizing_principal_id",
+        "universe_id",
+        "branch_def_id",
+        "branch_version_id",
+        "branch_content_digest",
+        "source_id",
+    ],
+)
+def test_attempt_ids_digests_and_source_fields_reject_bearer_material(field: str) -> None:
+    payload = _attempt_payload()
+    payload[field] = "Bearer sk-live-secret"
+    if field in {"authorizing_principal_id", "source_id"}:
+        payload["provenance"][field] = "Bearer sk-live-secret"
+
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchAttempt.from_dict(payload)
+
+
+@pytest.mark.parametrize("field", ["authorizing_principal_id", "source_id"])
+def test_provenance_identity_fields_reject_bearer_material(field: str) -> None:
+    payload = _provenance_payload()
+    payload[field] = "Bearer sk-live-secret"
+
+    with pytest.raises(ValueError, match="reference"):
+        BackgroundBranchProvenance.from_dict(payload)
 
 
 @pytest.mark.parametrize(
@@ -354,3 +434,31 @@ def test_lineage_distinguishes_root_and_child_attempts() -> None:
     child["provenance"]["parent_attempt_id"] = "att_parent"
     child["provenance"]["origin_attempt_id"] = "att_root"
     assert BackgroundBranchAttempt.from_dict(child).provenance.parent_attempt_id == ("att_parent")
+
+
+def test_parent_attempt_source_is_bound_to_parent_lineage() -> None:
+    child = _attempt_payload()
+    child["source_kind"] = "parent_attempt"
+    child["source_id"] = "att_unrelated"
+    child["provenance"]["source_kind"] = "parent_attempt"
+    child["provenance"]["source_id"] = "att_unrelated"
+    child["provenance"]["parent_attempt_id"] = "att_parent"
+    child["provenance"]["origin_attempt_id"] = "att_root"
+
+    with pytest.raises(ValueError, match="parent source"):
+        BackgroundBranchAttempt.from_dict(child)
+
+    child["source_id"] = "att_parent"
+    child["provenance"]["source_id"] = "att_parent"
+    assert BackgroundBranchAttempt.from_dict(child).provenance.parent_attempt_id == "att_parent"
+
+
+def test_descendant_count_budget_is_independent_of_max_attempts() -> None:
+    payload = _binding_payload()
+    payload["max_attempts"] = 1
+    payload["remaining_count"] = 100
+
+    binding = BackgroundBranchBinding.from_dict(payload)
+
+    assert binding.max_attempts == 1
+    assert binding.remaining_count == 100

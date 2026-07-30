@@ -160,7 +160,7 @@ def _enum_tuple(
     *,
     allow_empty: bool = False,
 ) -> tuple[Any, ...]:
-    if not isinstance(value, list | tuple):
+    if not isinstance(value, list):
         raise ValueError(f"{field_name} must be a list")
     items = tuple(_enum_value(enum_type, item, field_name) for item in value)
     if not allow_empty and not items:
@@ -168,6 +168,12 @@ def _enum_tuple(
     if len(set(items)) != len(items):
         raise ValueError(f"{field_name} must not contain duplicates")
     return items
+
+
+def _retained_sequence(value: Any, field_name: str) -> tuple[Any, ...]:
+    if isinstance(value, str) or not isinstance(value, list | tuple):
+        raise ValueError(f"{field_name} must be a list or tuple sequence")
+    return tuple(value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,9 +196,13 @@ class BackgroundBranchChildDelegation:
 
     def __post_init__(self) -> None:
         branch_ids = tuple(
-            _reference(item, "allowed_branch_def_ids") for item in self.allowed_branch_def_ids
+            _reference(item, "allowed_branch_def_ids")
+            for item in _retained_sequence(
+                self.allowed_branch_def_ids,
+                "allowed_branch_def_ids",
+            )
         )
-        operations = tuple(self.allowed_operations)
+        operations = _retained_sequence(self.allowed_operations, "allowed_operations")
         if any(not isinstance(item, BackgroundBranchOperation) for item in operations):
             raise ValueError("allowed_operations must be typed")
         if len(set(branch_ids)) != len(branch_ids):
@@ -342,17 +352,21 @@ class BackgroundBranchProvenance:
     )
 
     def __post_init__(self) -> None:
-        _text(self.authorizing_principal_id, "authorizing_principal_id")
+        _reference(self.authorizing_principal_id, "authorizing_principal_id")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
-        _text(self.source_id, "source_id")
+        _reference(self.source_id, "source_id")
         if not isinstance(self.executor_class, BackgroundBranchExecutorClass):
             raise ValueError("executor_class must be typed")
         for name in ("daemon_id", "runtime_id", "worker_id", "parent_attempt_id"):
             _optional_reference(getattr(self, name), name)
         _reference(self.origin_attempt_id, "origin_attempt_id")
         correlation_ids = tuple(
-            _reference(value, "audit_correlation_ids") for value in self.audit_correlation_ids
+            _reference(value, "audit_correlation_ids")
+            for value in _retained_sequence(
+                self.audit_correlation_ids,
+                "audit_correlation_ids",
+            )
         )
         if not correlation_ids:
             raise ValueError("audit_correlation_ids must not be empty")
@@ -366,11 +380,11 @@ class BackgroundBranchProvenance:
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchProvenance:
         _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
         return cls(
-            authorizing_principal_id=_text(
+            authorizing_principal_id=_reference(
                 data["authorizing_principal_id"], "authorizing_principal_id"
             ),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
-            source_id=_text(data["source_id"], "source_id"),
+            source_id=_reference(data["source_id"], "source_id"),
             executor_class=_enum_value(
                 BackgroundBranchExecutorClass,
                 data["executor_class"],
@@ -475,7 +489,7 @@ class BackgroundBranchBinding:
             "source_revision",
             "source_digest",
         ):
-            _text(getattr(self, name), name)
+            _reference(getattr(self, name), name)
         if not isinstance(self.status, BackgroundBranchBindingStatus):
             raise ValueError("status must be typed")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
@@ -486,13 +500,16 @@ class BackgroundBranchBinding:
             raise ValueError("target_mode must be typed")
         _integer(self.generation, "generation", minimum=1)
         _integer(self.revocation_generation, "revocation_generation", minimum=0)
-        _optional_text(self.pinned_branch_version_id, "pinned_branch_version_id")
+        _optional_reference(self.pinned_branch_version_id, "pinned_branch_version_id")
         if self.target_mode is BackgroundBranchTargetMode.PINNED_VERSION:
             if self.pinned_branch_version_id is None:
                 raise ValueError("pinned_version requires pinned_branch_version_id")
         elif self.pinned_branch_version_id is not None:
             raise ValueError("live_at_attempt forbids pinned_branch_version_id")
-        executor_classes = tuple(self.permitted_executor_classes)
+        executor_classes = _retained_sequence(
+            self.permitted_executor_classes,
+            "permitted_executor_classes",
+        )
         if not executor_classes:
             raise ValueError("permitted_executor_classes must not be empty")
         if any(not isinstance(value, BackgroundBranchExecutorClass) for value in executor_classes):
@@ -513,33 +530,31 @@ class BackgroundBranchBinding:
         )
         if not isinstance(self.child_delegation, BackgroundBranchChildDelegation):
             raise ValueError("child_delegation must be typed")
-        if self.remaining_count > self.max_attempts:
-            raise ValueError("remaining_count exceeds max_attempts")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchBinding:
         _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
         return cls(
             schema_version=_integer(data["schema_version"], "schema_version", minimum=1),
-            binding_id=_text(data["binding_id"], "binding_id"),
+            binding_id=_reference(data["binding_id"], "binding_id"),
             status=_enum_value(BackgroundBranchBindingStatus, data["status"], "status"),
             generation=_integer(data["generation"], "generation", minimum=1),
-            binding_digest=_text(data["binding_digest"], "binding_digest"),
-            authorizing_principal_id=_text(
+            binding_digest=_reference(data["binding_digest"], "binding_digest"),
+            authorizing_principal_id=_reference(
                 data["authorizing_principal_id"], "authorizing_principal_id"
             ),
-            universe_id=_text(data["universe_id"], "universe_id"),
-            branch_def_id=_text(data["branch_def_id"], "branch_def_id"),
+            universe_id=_reference(data["universe_id"], "universe_id"),
+            branch_def_id=_reference(data["branch_def_id"], "branch_def_id"),
             operation=_enum_value(BackgroundBranchOperation, data["operation"], "operation"),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
-            source_id=_text(data["source_id"], "source_id"),
-            source_revision=_text(data["source_revision"], "source_revision"),
-            source_digest=_text(data["source_digest"], "source_digest"),
+            source_id=_reference(data["source_id"], "source_id"),
+            source_revision=_reference(data["source_revision"], "source_revision"),
+            source_digest=_reference(data["source_digest"], "source_digest"),
             revocation_generation=_integer(
                 data["revocation_generation"], "revocation_generation", minimum=0
             ),
             target_mode=_enum_value(BackgroundBranchTargetMode, data["target_mode"], "target_mode"),
-            pinned_branch_version_id=_optional_text(
+            pinned_branch_version_id=_optional_reference(
                 data["pinned_branch_version_id"], "pinned_branch_version_id"
             ),
             permitted_executor_classes=_enum_tuple(
@@ -677,10 +692,10 @@ class BackgroundBranchAttempt:
             "branch_version_id",
             "branch_content_digest",
             "source_id",
-            "created_at",
-            "updated_at",
         ):
-            _text(getattr(self, name), name)
+            _reference(getattr(self, name), name)
+        _text(self.created_at, "created_at")
+        _text(self.updated_at, "updated_at")
         if not isinstance(self.source_kind, BackgroundBranchSourceKind):
             raise ValueError("source_kind must be typed")
         if not isinstance(self.operation, BackgroundBranchOperation):
@@ -749,6 +764,11 @@ class BackgroundBranchAttempt:
                 raise ValueError("child attempt cannot parent itself")
             if self.provenance.origin_attempt_id == self.attempt_id:
                 raise ValueError("child attempt requires root origin lineage")
+            if (
+                self.source_kind is BackgroundBranchSourceKind.PARENT_ATTEMPT
+                and self.source_id != self.provenance.parent_attempt_id
+            ):
+                raise ValueError("parent source must match parent lineage")
         elif self.provenance.parent_attempt_id is not None:
             raise ValueError("root attempt cannot have parent lineage")
         elif self.provenance.origin_attempt_id != self.attempt_id:
@@ -760,23 +780,29 @@ class BackgroundBranchAttempt:
         raw_hold_reason = data["hold_reason"]
         return cls(
             schema_version=_integer(data["schema_version"], "schema_version", minimum=1),
-            attempt_id=_text(data["attempt_id"], "attempt_id"),
-            logical_attempt_key=_text(data["logical_attempt_key"], "logical_attempt_key"),
-            binding_id=_text(data["binding_id"], "binding_id"),
-            binding_digest=_text(data["binding_digest"], "binding_digest"),
+            attempt_id=_reference(data["attempt_id"], "attempt_id"),
+            logical_attempt_key=_reference(
+                data["logical_attempt_key"],
+                "logical_attempt_key",
+            ),
+            binding_id=_reference(data["binding_id"], "binding_id"),
+            binding_digest=_reference(data["binding_digest"], "binding_digest"),
             binding_generation=_integer(
                 data["binding_generation"], "binding_generation", minimum=1
             ),
-            authorizing_principal_id=_text(
+            authorizing_principal_id=_reference(
                 data["authorizing_principal_id"], "authorizing_principal_id"
             ),
-            universe_id=_text(data["universe_id"], "universe_id"),
-            branch_def_id=_text(data["branch_def_id"], "branch_def_id"),
-            branch_version_id=_text(data["branch_version_id"], "branch_version_id"),
-            branch_content_digest=_text(data["branch_content_digest"], "branch_content_digest"),
+            universe_id=_reference(data["universe_id"], "universe_id"),
+            branch_def_id=_reference(data["branch_def_id"], "branch_def_id"),
+            branch_version_id=_reference(data["branch_version_id"], "branch_version_id"),
+            branch_content_digest=_reference(
+                data["branch_content_digest"],
+                "branch_content_digest",
+            ),
             operation=_enum_value(BackgroundBranchOperation, data["operation"], "operation"),
             source_kind=_enum_value(BackgroundBranchSourceKind, data["source_kind"], "source_kind"),
-            source_id=_text(data["source_id"], "source_id"),
+            source_id=_reference(data["source_id"], "source_id"),
             source_generation=_integer(data["source_generation"], "source_generation", minimum=0),
             executor_audience=BackgroundBranchExecutorAudience.from_dict(data["executor_audience"]),
             claim_generation=_integer(data["claim_generation"], "claim_generation", minimum=1),

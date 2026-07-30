@@ -1,3 +1,16 @@
+## 2026-07-30 — background authority boundary rereview
+
+- **What surprised me:** closed nested records were still porous because generic
+  top-level IDs used free text and direct dataclass construction could treat a
+  string as a sequence of characters.
+- **Pattern worth capturing:** security-record tests must exercise both the JSON
+  parser and direct typed construction, require canonical container shapes, and
+  independently reject bearer-shaped data in every serialized identity/digest
+  field.
+- **What I would do differently:** derive negative tests from every field class
+  in the approved table before implementing the model, including invariants
+  between source identity, parent lineage, and separately named limits.
+
 ## 2026-07-29 — dark background authority contracts
 
 - **What surprised me:** the cloud-drain blocker was not another scheduler; it
