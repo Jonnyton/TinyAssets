@@ -1722,9 +1722,9 @@ Notes:
 
 - Provider: `drain-20260729-194051-a81d12`
 - Branch: `chore/drain-exhaustion-20260729-a81d12`
-- Lane state: Ready for draft PR; STATUS claim retired in the branch pending merge
+- Lane state: Draft PR #1896 open; STATUS claim retired in the branch pending merge
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-exhaustion-20260729-a81d12`
-- STATUS/Issue/PR: resolves the 2026-07-29 P1 review-order concern; PR pending
+- STATUS/Issue/PR: resolves the 2026-07-29 P1 review-order concern; draft PR #1896 awaiting final-head receipt and CI
 - Purpose: require a current exact-head review receipt in both auto-enrollment and the already-required `policy` check
 - Review: fresh-context fallback APPROVE at `9f0e868f`; final foldback-head review still required before ready-for-review
 - Verification: 174 focused/full drain tests, Ruff, workflow parsing, and strict OpenSpec validation passed on Windows, 2026-07-29
