@@ -1839,3 +1839,14 @@ Notes:
 - Purpose: close the durable worktree lifecycle after merge verification
 - Review gate: PR #1927 exact head `879f6dda` independently approved; merged tree matches that head
 - Publish/cleanup: safe to remove after this ledger foldback lands
+
+## 2026-07-30 13:56 - recover reviewed 0xCodez implications
+
+- Provider: `drain-20260730-104801-7e8f53`
+- Branch: `codex/drain-20260730-104801-7e8f53-blocker-refresh`
+- Lane state: Active; exact STATUS claim committed before artifact recovery
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-104801-7e8f53-blocker-refresh`
+- STATUS/Issue/PR: recover the reviewed artifact stranded on `claude/o5-agentic-pro-research`; draft PR pending
+- Purpose: publish the completed research and Codex `adapt` review on current main without granting new build authority
+- Review gate: refresh source/code claims, focused artifact validation, and independent exact-head review
+- Publish/cleanup: one PR to main; retire the STATUS row only after merge verification
