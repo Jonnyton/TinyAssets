@@ -1010,8 +1010,9 @@ fresh-host rollback edges found later.
 
 - What surprised me: an exact claim-generation fence still permits authority
   rotation unless executor audience fields are independently constrained.
-- Pattern worth capturing: prove recovery eligibility before acquiring a queue
-  lock, then revalidate the exact observed row inside the mutation boundary;
-  lease expiry is only a candidate signal, never recovery authority.
+- Pattern worth capturing: obtain executor, predecessor, and boundary evidence
+  from a trusted resolver, then revalidate the exact current binding and
+  observed queue row inside their mutation boundaries; lease expiry is only a
+  candidate signal, never recovery authority.
 - What I would do differently: include cross-audience negative cases in the
   first RED batch instead of finding that gap during the security pass.
