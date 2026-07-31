@@ -4,9 +4,9 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/drain-duplicate-suppression-20260730`
-- Lane state: Claimed; implementation pending
+- Lane state: Landed in PR #1962; controller deployed at `9c440a9c`
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-duplicate-suppression-20260730`
-- STATUS/Issue/PR: live red run `openspec-drain-auto-20260730-104801`; PR pending
+- STATUS/Issue/PR: live red run `openspec-drain-auto-20260730-104801`; PR #1962
 - Purpose: clear and suppress a stale admission after an already-consumed merge result instead of exhausting the failure budget
 - Review gate: focused TDD and independent exact-head review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-duplicate-suppression-20260730/_PURPOSE.md`
