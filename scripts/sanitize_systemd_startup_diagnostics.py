@@ -22,6 +22,24 @@ _STAGE_MARKERS = (
     ("container_started", "container tinyassets-daemon started"),
 )
 
+_CONTAINER_NAME_CONFLICT_MARKERS = (
+    "container name is already in use",
+    "is already in use by container",
+    "conflict. the container name",
+)
+_CANONICAL_CONTAINER_NAMES = (
+    "tinyassets-daemon",
+    "tinyassets-tunnel",
+    "tinyassets-logs",
+    "tinyassets-worker",
+    "tinyassets-worker-codex-2",
+    "tinyassets-worker-claude-1",
+    "tinyassets-worker-claude-2",
+)
+_CONFLICT_NAME_PATTERN = re.compile(
+    r'The container name "([^"\r\n]+)" is already in use by container'
+)
+
 _FAILURE_MARKERS = (
     (
         "port_bind_conflict",
@@ -47,11 +65,7 @@ _FAILURE_MARKERS = (
     ),
     (
         "container_name_conflict",
-        (
-            "container name is already in use",
-            "is already in use by container",
-            "conflict. the container name",
-        ),
+        _CONTAINER_NAME_CONFLICT_MARKERS,
     ),
     (
         "compose_config_failure",
@@ -125,8 +139,9 @@ def sanitize_journal(
     input_truncated = source_truncated or len(raw) > MAX_JOURNAL_BYTES
     bounded = raw[-MAX_JOURNAL_BYTES:]
     decoded = bounded.decode("utf-8", errors="replace")
+    source_lines = decoded.splitlines()
     normalized_lines = [
-        " ".join(line.casefold().split()) for line in decoded.splitlines()
+        " ".join(line.casefold().split()) for line in source_lines
     ]
     attempt_starts = [
         index
@@ -134,8 +149,21 @@ def sanitize_journal(
         if _STAGE_MARKERS[0][1] in line or _STAGE_MARKERS[2][1] in line
     ]
     if attempt_starts:
-        normalized_lines = normalized_lines[attempt_starts[-1] :]
+        terminal_start = attempt_starts[-1]
+        normalized_lines = normalized_lines[terminal_start:]
+        source_lines = source_lines[terminal_start:]
     normalized = " ".join(normalized_lines)
+
+    exact_conflict_names = {
+        operand[1:] if operand.startswith("/") else operand
+        for line in source_lines
+        for operand in _CONFLICT_NAME_PATTERN.findall(line)
+    }
+    conflict_containers = [
+        name
+        for name in _CANONICAL_CONTAINER_NAMES
+        if name in exact_conflict_names
+    ]
 
     stages = [name for name, marker in _STAGE_MARKERS if marker in normalized]
     failure_classes = [
@@ -177,6 +205,7 @@ def sanitize_journal(
         "derived_state": derived_state,
         "stages": stages,
         "failure_classes": failure_classes,
+        "conflict_containers": conflict_containers,
     }
 
 

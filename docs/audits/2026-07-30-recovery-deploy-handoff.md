@@ -404,6 +404,31 @@ tests passed, Ruff and diff checks are clean, the cross-provider drift guard is
 clean, and strict OpenSpec validation passed. Local actionlint is unavailable;
 the repository's pinned CI actionlint workflow remains the authoritative gate.
 
+PR #2006 merged as `994d8f0e` after two exact-head independent APPROVE reviews
+and all required CI checks. Read-only historical run `30662668227` then
+succeeded on the preserved `18:34:00Z`-`18:36:36Z` window and emitted only the
+fixed result: `created_without_start`, stages `container_create` and
+`container_created`, with `container_name_conflict` plus downstream systemd
+exit/restart and unclassified failure signals. No raw journal or production
+mutation occurred. This proves a fixed-name collision but not which canonical
+name collided; a sidecar explanation remains only a hypothesis until an
+allowlisted-name classifier identifies the matching name.
+
+The successor adds only `conflict_containers`, populated from the seven fixed
+canonical names when they occur on a line already classified as a name
+conflict. Token boundaries prevent a base worker name from matching a suffixed
+worker. Arbitrary container IDs/names and all raw lines remain unavailable.
+The first exact-head review returned ADAPT because line-wide case-folded token
+matching could misidentify dot/underscore-embedded private names, Unicode or
+case variants, or an unrelated allowlisted name elsewhere on a conflict line.
+The replacement extracts only Docker's quoted conflicting-name operand from
+the original terminal-attempt line, strips at most one leading slash, and uses
+case-sensitive exact equality. Regressions cover every rejected form, multiple
+conflicts, and terminal-attempt reset. Fresh Windows-host evidence at
+`2026-07-31T20:54Z`: 165 deployment-focused tests passed, Ruff and diff checks
+are clean, strict OpenSpec validation passed, and the cross-provider drift guard
+is clean.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

@@ -1,16 +1,16 @@
 # Worktree Inventory
 
-## 2026-07-31 11:40 - classify preserved systemd startup failure
+## 2026-07-31 13:34 - identify fixed conflicting container
 
 - Provider: `codex-gpt5-desktop`
-- Branch: `fix/startup-journal-time-normalization`
-- Lane state: Active; exit 41 isolated; `@epoch` compatibility probe validated locally, review pending
-- Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
+- Branch: `fix/startup-conflict-identity`
+- Lane state: Active; read-only fixed class is name conflict; allowlisted name classifier in TDD
+- Worktree: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
-- Purpose: safely classify the preserved systemd/Compose journal window without host mutation
+- Purpose: identify only the matching canonical container name before selecting a repair
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing/_PURPOSE.md`
-- Ship/abandon: invoke explicit Bash with distinct remote substage exits, then rerun the same preserved window
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity/_PURPOSE.md`
+- Ship/abandon: merge fixed-name schema after review, then rerun the same preserved window read-only
 
 ## 2026-07-30 22:35 - harden production startup diagnostics
 

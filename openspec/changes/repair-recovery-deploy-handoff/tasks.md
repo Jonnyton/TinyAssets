@@ -33,9 +33,12 @@
 - [x] 2.1c Classify the identity-bound candidate's Docker pre-start error without
   publishing raw daemon or host text; reproduce and independently review the
   exact capture contract before another controlled deploy.
-- [ ] 2.1d Diagnose the preserved systemd/Compose failure window through a
+- [x] 2.1d Diagnose the preserved systemd/Compose failure window through a
   read-only bounded remote classifier; publish fixed signals only, independently
   review the workflow, then run it without another production mutation.
+- [ ] 2.1e Reduce a classified name conflict to only matching allowlisted
+  canonical container names, independently review the additive fixed schema,
+  and rerun the same preserved window without production mutation.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

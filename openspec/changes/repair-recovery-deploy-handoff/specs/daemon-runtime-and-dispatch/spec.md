@@ -94,6 +94,10 @@ fleet.
   daemon `Creating` or `Starting` marker, including a retry with no new create
 - **AND** container-name conflict has a fixed class and an unclassified failure
   remains visible as `other_failure` even when another known class is present
+- **AND** a container-name conflict extracts only Docker's quoted conflicting
+  name operand, strips at most one leading slash, and exposes it only on exact
+  case-sensitive equality with the fixed canonical container allowlist, never
+  arbitrary conflicting-name text or unrelated names from the same line
 - **AND** a failed diagnostic reports only fixed numeric SSH and sanitizer
   statuses before failing, never raw stderr or journal text
 - **AND** the remote pipeline runs as explicit Bash and maps journal versus

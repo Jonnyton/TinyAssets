@@ -122,6 +122,101 @@ def test_journal_sanitizer_preserves_name_conflict_and_mixed_unknown_failure():
     assert token not in json.dumps(result)
 
 
+def test_journal_sanitizer_names_only_the_allowlisted_conflicting_container():
+    token = "private-conflicting-container"
+    result = sanitize_journal(
+        (
+            "Container tinyassets-daemon Creating\n"
+            "Container tinyassets-daemon Created\n"
+            "Container tinyassets-worker-codex-2 Starting\n"
+            'Conflict. The container name "/tinyassets-logs" is already in use '
+            f'by container "{token}".\n'
+        ).encode()
+    )
+
+    assert result["failure_classes"] == ["container_name_conflict"]
+    assert result["conflict_containers"] == ["tinyassets-logs"]
+    assert token not in json.dumps(result)
+
+
+def test_journal_sanitizer_does_not_prefix_match_allowlisted_worker_names():
+    result = sanitize_journal(
+        b"Container tinyassets-daemon Creating\n"
+        b'Conflict. The container name "/tinyassets-worker-codex-2" '
+        b'is already in use by container "opaque"\n'
+    )
+
+    assert result["conflict_containers"] == ["tinyassets-worker-codex-2"]
+
+
+def test_journal_sanitizer_does_not_echo_unallowlisted_conflicting_name():
+    private_name = "private-customer-container"
+    result = sanitize_journal(
+        (
+            "Container tinyassets-daemon Creating\n"
+            f'Conflict. The container name "/{private_name}" is already in use '
+            'by container "opaque"\n'
+        ).encode()
+    )
+
+    assert result["failure_classes"] == ["container_name_conflict"]
+    assert result["conflict_containers"] == []
+    assert private_name not in json.dumps(result)
+
+
+@pytest.mark.parametrize(
+    "private_name",
+    (
+        "private_tinyassets-logs_backup",
+        "private.tinyassets-logs.backup",
+        "αtinyassets-logsβ",
+        "TINYASSETS-LOGS",
+        "tinyaßets-logs",
+        "tinyaſsets-logs",
+        "/tinyassets-logs",
+    ),
+)
+def test_journal_sanitizer_requires_exact_case_sensitive_conflict_operand(
+    private_name: str,
+):
+    result = sanitize_journal(
+        (
+            "Container tinyassets-daemon Creating\n"
+            f'Conflict. The container name "/{private_name}" is already in use '
+            'by container "opaque"\n'
+        ).encode()
+    )
+
+    assert result["failure_classes"] == ["container_name_conflict"]
+    assert result["conflict_containers"] == []
+    assert private_name not in json.dumps(result)
+
+
+def test_journal_sanitizer_ignores_unrelated_allowlisted_name_on_conflict_line():
+    result = sanitize_journal(
+        b"Container tinyassets-daemon Creating\n"
+        b'Conflict. The container name "/private-container" is already in use '
+        b'by container "opaque"; service tinyassets-daemon\n'
+    )
+
+    assert result["conflict_containers"] == []
+
+
+def test_journal_sanitizer_conflict_names_follow_only_the_terminal_attempt():
+    result = sanitize_journal(
+        b"Container tinyassets-daemon Creating\n"
+        b'Conflict. The container name "/tinyassets-worker" is already in use '
+        b'by container "old"\n'
+        b"Container tinyassets-daemon Creating\n"
+        b'Conflict. The container name "/tinyassets-logs" is already in use '
+        b'by container "new-1"\n'
+        b'Conflict. The container name "/tinyassets-tunnel" is already in use '
+        b'by container "new-2"\n'
+    )
+
+    assert result["conflict_containers"] == ["tinyassets-tunnel", "tinyassets-logs"]
+
+
 def test_framed_journal_reports_source_truncation_within_transport_cap():
     payload = b"Container tinyassets-daemon Created\n"
 
