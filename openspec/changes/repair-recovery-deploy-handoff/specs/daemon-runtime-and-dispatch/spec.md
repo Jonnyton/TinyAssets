@@ -74,12 +74,18 @@ fleet.
 
 - **WHEN** the candidate daemon does not reach the public health gate
 - **THEN** the workflow captures only allowlisted daemon state fields and
-  structural Python traceback frames plus fixed exception classifications from
-  at most the final 128 KiB of the last 200 daemon log lines
+  repository-proved public Python source-path identities plus fixed exception
+  classifications from at most the final 128 KiB of the last 200 daemon log
+  lines
 - **AND** neither raw logs, container commands, environment values, arbitrary
-  exception messages, nor unapproved paths enter the artifact
+  exception messages, raw line numbers/functions, nor unapproved paths enter
+  the artifact
 - **AND** local SSH and remote Docker collection have hard deadlines
-- **AND** the manifest identifies the fence-proved candidate revision
+- **AND** raw log collection occurs only when the inspected container's
+  immutable image reference and OCI revision exactly match the fence-proved
+  candidate
+- **AND** cancellation after candidate mutation takes the same bounded capture
+  and post-safety publication path
 - **AND** the workflow publishes the sanitized artifact only after rollback and
   restart-racer cleanup have completed or fenced the fleet
 - **AND** retains the artifact for no more than seven days

@@ -230,6 +230,18 @@ Secret fixtures cover token-bearing Compose command text, bearer credentials,
 arbitrary source lines, unapproved `/data` and traversal paths, and
 attacker-named exception types. None survive the fixed-schema sanitizer.
 
+Exact-head re-review of PR #1992 at `250fc995` returned ADAPT: a forged
+traceback could still place token text in a syntactically valid `/app` path or
+function/line field, the target revision was not independently bound to the
+inspected container, and cancellation was distinct from `failure()`. The
+successor maps frames only to source paths proved present in the public
+checkout, emits neither function nor line, collects raw logs only after both
+the container's immutable image ref and OCI revision equal the fence-proved
+target, and routes cancellation through the same bounded capture and
+post-rollback/cleanup upload conditions. Adversarial fixtures now cover
+valid-looking forged frames and identity mismatch; workflow structure tests
+pin cancellation semantics.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

@@ -443,8 +443,18 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert steps.index(health) < steps.index(capture) < steps.index(rollback)
     assert steps.index(rollback) < steps.index(cleanup) < steps.index(terminal)
     assert steps.index(terminal) < steps.index(upload)
-    assert str(capture.get("if", "")).strip() == "failure()"
-    assert str(upload.get("if", "")).strip() == "failure()"
+    assert health.get("id") == "candidate_health"
+    assert capture.get("id") == "candidate_diagnostics"
+    capture_condition = str(capture.get("if", "")).strip()
+    assert "always()" in capture_condition
+    assert "steps.candidate_health.outcome == 'failure'" in capture_condition
+    assert "cancelled()" in capture_condition
+    assert "steps.deploy.outputs.image_mutation_started == 'true'" in capture_condition
+    upload_condition = str(upload.get("if", "")).strip()
+    assert "always()" in upload_condition
+    assert "steps.candidate_health.outcome == 'failure'" in upload_condition
+    assert "cancelled()" in upload_condition
+    assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
 
     capture_script = str(capture.get("run", ""))
     assert "docker inspect --type container tinyassets-daemon" in capture_script
@@ -458,6 +468,14 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert capture_script.count("timeout 15s sudo docker") >= 2
     assert 'rm -f "${raw_log}"' in capture_script
     assert "TARGET_REVISION" in (capture.get("env") or {})
+    assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
+    assert "org.opencontainers.image.revision" in capture_script
+    assert ".Config.Image" in capture_script
+    assert "candidate_identity_match" in capture_script
+    assert "--state" in capture_script
+    assert '--target-revision "${TARGET_REVISION}"' in capture_script
+    assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
+    assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
     assert "GITHUB_SHA" not in capture_script
     assert "docker compose" not in capture_script
     assert "compose-ps" not in capture_script

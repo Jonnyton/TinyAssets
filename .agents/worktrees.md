@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/prod-shaped-startup-diagnostics-hardening`
-- Lane state: Active; PR #1991 exact-head review ADAPT findings implemented locally
+- Lane state: Active; PR #1992 second re-review ADAPT findings implemented locally
 - Worktree: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics-hardening`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: replace raw public-repo artifacts with allowlisted diagnostics and keep collection/upload outside rollback hazards

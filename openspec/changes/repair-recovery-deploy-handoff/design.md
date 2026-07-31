@@ -123,9 +123,14 @@ before removal. This is not general Docker garbage collection.
 3. Run the focused fence suite, Ruff, strict OpenSpec validation, and
    independent security/fail-closed review.
 4. Before rollback, reduce bounded candidate startup logs and state to
-   allowlisted structural signals under hard deadlines. Publish only sanitized
-   evidence, and only after rollback and restart-racer cleanup have restored or
-   safely fenced the fleet.
+   allowlisted structural signals under hard deadlines. A traceback frame is
+   eligible only when its path names an actual public Python file in the
+   checked-out `tinyassets/` source tree; function names and line values are not
+   emitted. Collect raw logs only after the inspected container's immutable
+   image reference and OCI revision equal the fence-proved target. Failure and
+   cancellation after image mutation take the same bounded capture path.
+   Publish only sanitized evidence, and only after rollback and restart-racer
+   cleanup have restored or safely fenced the fleet.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,

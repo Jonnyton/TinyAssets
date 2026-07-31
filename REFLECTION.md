@@ -11,6 +11,12 @@
   captured field before writing the first workflow step, then write secret
   fixtures alongside the ordering test.
 
+- **Follow-up:** syntax-shaped filtering was still not an allowlist: a forged
+  traceback could put token text in a valid-looking path, function, or line.
+  Public diagnostic values must originate from public source inventory, not
+  merely match a safe character class; container evidence also needs an exact
+  image-and-revision join before raw collection.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container
