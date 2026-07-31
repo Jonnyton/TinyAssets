@@ -23,6 +23,11 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.storage import db_path
+from tinyassets.storage.automation_activations import (
+    AutomationActivation,
+    AutomationActivationState,
+    AutomationActivationStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +195,19 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
             AND priority_weight <= 100
         ),
     directed_daemon_id TEXT NOT NULL DEFAULT '',
+    automation_id TEXT,
+    automation_activation_epoch INTEGER
+        CHECK (
+            automation_activation_epoch IS NULL
+            OR automation_activation_epoch >= 0
+        ),
+    automation_executor_class TEXT
+        CHECK (
+            automation_executor_class IS NULL
+            OR automation_executor_class IN ('tray', 'cloud')
+        ),
+    automation_branch_version TEXT,
+    automation_lease_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
         CHECK (status IN (
             'pending', 'running', 'cancel_requested', 'cancelled',
@@ -207,6 +225,23 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
     detail_json TEXT NOT NULL DEFAULT '{}',
     disabled INTEGER NOT NULL DEFAULT 0 CHECK (disabled IN (0, 1)),
     quarantine_reason TEXT NOT NULL DEFAULT '',
+    CHECK (
+        (
+            automation_id IS NULL
+            AND automation_activation_epoch IS NULL
+            AND automation_executor_class IS NULL
+            AND automation_branch_version IS NULL
+            AND automation_lease_id IS NULL
+        )
+        OR
+        (
+            automation_id IS NOT NULL
+            AND automation_activation_epoch IS NOT NULL
+            AND automation_executor_class IS NOT NULL
+            AND automation_branch_version IS NOT NULL
+            AND automation_lease_id IS NOT NULL
+        )
+    ),
     FOREIGN KEY(admission_id) REFERENCES request_admissions(admission_id)
         ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED,
     FOREIGN KEY(request_id) REFERENCES user_requests(request_id)
@@ -356,6 +391,7 @@ class RequestAdmissionStore:
         created_at: str,
         pickup_incentive: str = "",
         directed_daemon_instruction: str = "",
+        automation_activation: AutomationActivation | None = None,
         access_check: Callable[[sqlite3.Connection], Any] | None = None,
         authority_check: Callable[[sqlite3.Connection], Any] | None = None,
         fault_injector: (
@@ -374,7 +410,52 @@ class RequestAdmissionStore:
         _required(body_digest_version, "body_digest_version")
         clean_branch_def_id = _required(branch_def_id, "branch_def_id")
         _required(created_at, "created_at")
+        activation_values: tuple[object, ...] = (
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        if automation_activation is not None:
+            if not isinstance(
+                automation_activation,
+                AutomationActivation,
+            ):
+                raise ValueError(
+                    "automation_activation must be an AutomationActivation"
+                )
+            if (
+                automation_activation.state
+                is not AutomationActivationState.ACTIVE
+            ):
+                raise ValueError("automation_activation must be active")
+            if automation_activation.universe_id != scope[2]:
+                raise ValueError(
+                    "automation_activation universe does not match admission"
+                )
+            assert automation_activation.executor_class is not None
+            activation_values = (
+                automation_activation.automation_id,
+                automation_activation.epoch,
+                automation_activation.executor_class.value,
+                automation_activation.immutable_branch_version,
+                automation_activation.lease_id,
+            )
         stored_receipt = dict(receipt)
+        stored_receipt.pop("_automation_activation", None)
+        if automation_activation is not None:
+            stored_receipt["_automation_activation"] = {
+                "automation_id": automation_activation.automation_id,
+                "epoch": automation_activation.epoch,
+                "executor_class": (
+                    automation_activation.executor_class.value
+                ),
+                "immutable_branch_version": (
+                    automation_activation.immutable_branch_version
+                ),
+                "lease_id": automation_activation.lease_id,
+            }
         stored_receipt["branch_def_id"] = clean_branch_def_id
         accepted_weight = float(accepted_priority_weight)
         if (
@@ -409,6 +490,29 @@ class RequestAdmissionStore:
                         return replay
                     if authority_check is not None:
                         authority_check(conn)
+                    if (
+                        automation_activation is not None
+                        and not AutomationActivationStore
+                        .validate_claim_in_transaction(
+                            conn,
+                            universe_id=automation_activation.universe_id,
+                            automation_id=(
+                                automation_activation.automation_id
+                            ),
+                            epoch=automation_activation.epoch,
+                            executor_class=(
+                                automation_activation.executor_class
+                            ),
+                            immutable_branch_version=(
+                                automation_activation
+                                .immutable_branch_version
+                            ),
+                            lease_id=automation_activation.lease_id,
+                        )
+                    ):
+                        raise PermissionError(
+                            "automation_activation_not_current"
+                        )
                     _inject(fault_injector, "authority_checked", conn)
 
                     request_id = self._id_factory("req")
@@ -504,10 +608,15 @@ class RequestAdmissionStore:
                             branch_task_id, admission_id, request_id,
                             universe_id, branch_def_id, inputs_json,
                             trigger_source, priority_weight,
-                            directed_daemon_id, status, queue_epoch,
+                            directed_daemon_id, automation_id,
+                            automation_activation_epoch,
+                            automation_executor_class,
+                            automation_branch_version,
+                            automation_lease_id, status, queue_epoch,
                             protocol_version, queued_at
                         ) VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 2, 2, ?
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            'pending', 2, 2, ?
                         )
                         """,
                         (
@@ -528,6 +637,7 @@ class RequestAdmissionStore:
                             trigger_source,
                             accepted_weight,
                             directed_daemon_id,
+                            *activation_values,
                             created_at,
                         ),
                     )
@@ -2042,6 +2152,26 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
         conn.execute(
             "ALTER TABLE branch_tasks_v2 ADD COLUMN lease_expires_at TEXT"
         )
+    for column, declaration in (
+        ("automation_id", "TEXT"),
+        (
+            "automation_activation_epoch",
+            "INTEGER CHECK (automation_activation_epoch IS NULL "
+            "OR automation_activation_epoch >= 0)",
+        ),
+        (
+            "automation_executor_class",
+            "TEXT CHECK (automation_executor_class IS NULL "
+            "OR automation_executor_class IN ('tray', 'cloud'))",
+        ),
+        ("automation_branch_version", "TEXT"),
+        ("automation_lease_id", "TEXT"),
+    ):
+        if column not in task_columns:
+            conn.execute(
+                f"ALTER TABLE branch_tasks_v2 ADD COLUMN {column} "
+                f"{declaration}"
+            )
     maintenance_columns = {
         str(row[1])
         for row in conn.execute(

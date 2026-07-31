@@ -21,6 +21,10 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.branch_tasks import BranchTask
+from tinyassets.storage.automation_activations import (
+    AutomationActivationExecutor,
+    AutomationActivationStore,
+)
 from tinyassets.storage.request_admissions import (
     OPERATOR_CAPABILITY,
     QUEUE_EPOCH,
@@ -53,6 +57,7 @@ class WorkerClaimDescriptor:
     config_hash: str = ""
     universe_id: str = ""
     expires_at: str = ""
+    executor_class: AutomationActivationExecutor | None = None
 
 
 DescriptorReader = Callable[
@@ -265,13 +270,40 @@ class Epoch2BranchTaskAdapter:
             if task["universe_id"] != descriptor.universe_id:
                 return False
             trusted = descriptor_reader(conn, descriptor.worker_id)
-            return bool(
+            if not (
                 trusted == descriptor
                 and trusted is not None
                 and _descriptor_is_live(
                     trusted,
                     transaction_at=transaction_at,
                 )
+            ):
+                return False
+            activation_fields = (
+                task.get("automation_id"),
+                task.get("automation_activation_epoch"),
+                task.get("automation_executor_class"),
+                task.get("automation_branch_version"),
+                task.get("automation_lease_id"),
+            )
+            if not any(value is not None for value in activation_fields):
+                return True
+            if (
+                trusted.executor_class is None
+                or trusted.executor_class.value
+                != task["automation_executor_class"]
+            ):
+                return False
+            return AutomationActivationStore.validate_claim_in_transaction(
+                conn,
+                universe_id=str(task["universe_id"]),
+                automation_id=str(task["automation_id"]),
+                epoch=int(task["automation_activation_epoch"]),
+                executor_class=trusted.executor_class,
+                immutable_branch_version=str(
+                    task["automation_branch_version"]
+                ),
+                lease_id=str(task["automation_lease_id"]),
             )
 
         row = self._store.claim_v2_task(
@@ -608,6 +640,14 @@ def _descriptor_shape_is_valid(
     )
     if not all(str(value or "").strip() for value in required):
         return False
+    if (
+        descriptor.executor_class is not None
+        and not isinstance(
+            descriptor.executor_class,
+            AutomationActivationExecutor,
+        )
+    ):
+        return False
     return _parse_timestamp(descriptor.expires_at) is not None
 
 
@@ -681,6 +721,33 @@ def _classify_epoch2_row(
         "owner_queued",
     }:
         return "incomplete"
+    activation_fields = (
+        row.get("automation_id"),
+        row.get("automation_activation_epoch"),
+        row.get("automation_executor_class"),
+        row.get("automation_branch_version"),
+        row.get("automation_lease_id"),
+    )
+    populated_activation_fields = tuple(
+        value is not None for value in activation_fields
+    )
+    if any(populated_activation_fields) and not all(
+        populated_activation_fields
+    ):
+        return "incomplete"
+    if all(populated_activation_fields):
+        if (
+            not isinstance(row["automation_id"], str)
+            or not row["automation_id"].strip()
+            or type(row["automation_activation_epoch"]) is not int
+            or row["automation_activation_epoch"] < 0
+            or row["automation_executor_class"] not in {"tray", "cloud"}
+            or not isinstance(row["automation_branch_version"], str)
+            or not row["automation_branch_version"].strip()
+            or not isinstance(row["automation_lease_id"], str)
+            or not row["automation_lease_id"].strip()
+        ):
+            return "incomplete"
     if row.get("status") not in {
         "pending",
         "running",
@@ -783,6 +850,25 @@ def _classify_epoch2_row(
         or not receipt
         or not isinstance(result, dict)
         or not isinstance(request_metadata, dict)
+    ):
+        return "invalid_operator_admission"
+    receipt_activation = receipt.get("_automation_activation")
+    if receipt_activation is None:
+        if any(populated_activation_fields):
+            return "invalid_operator_admission"
+    elif (
+        not all(populated_activation_fields)
+        or not isinstance(receipt_activation, dict)
+        or receipt_activation
+        != {
+            "automation_id": row["automation_id"],
+            "epoch": row["automation_activation_epoch"],
+            "executor_class": row["automation_executor_class"],
+            "immutable_branch_version": row[
+                "automation_branch_version"
+            ],
+            "lease_id": row["automation_lease_id"],
+        }
     ):
         return "invalid_operator_admission"
     metadata_matches = (

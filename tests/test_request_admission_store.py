@@ -10,10 +10,15 @@ import pytest
 
 from tinyassets.daemon_server import initialize_author_server
 from tinyassets.storage import db_path
+from tinyassets.storage.automation_activations import (
+    AutomationActivationExecutor,
+    AutomationActivationStore,
+)
 from tinyassets.storage.request_admissions import (
     COMMIT_STEPS,
     IdempotencyKeyBodyConflict,
     RequestAdmissionStore,
+    migrate_request_admission_schema,
 )
 
 
@@ -113,6 +118,60 @@ def test_migrates_prechange_database_without_losing_requests(tmp_path):
         ).fetchone()[0] == 0
 
 
+def test_migrates_populated_pre_activation_task_without_data_loss(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    committed = RequestAdmissionStore(tmp_path).commit_admission(
+        **_commit_kwargs()
+    )
+    activation_columns = {
+        "automation_id",
+        "automation_activation_epoch",
+        "automation_executor_class",
+        "automation_branch_version",
+        "automation_lease_id",
+    }
+
+    with _connect(tmp_path) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        old_columns = [
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")
+            if str(row["name"]) not in activation_columns
+        ]
+        projection = ", ".join(f'"{name}"' for name in old_columns)
+        conn.execute(
+            "CREATE TABLE branch_tasks_v2_pre_activation AS "
+            f"SELECT {projection} FROM branch_tasks_v2"
+        )
+        conn.execute("DROP TABLE branch_tasks_v2")
+        conn.execute(
+            "ALTER TABLE branch_tasks_v2_pre_activation "
+            "RENAME TO branch_tasks_v2"
+        )
+
+        migrate_request_admission_schema(conn)
+
+        migrated_columns = {
+            str(row["name"])
+            for row in conn.execute("PRAGMA table_info(branch_tasks_v2)")
+        }
+        row = conn.execute(
+            """
+            SELECT branch_task_id, automation_id,
+                   automation_activation_epoch,
+                   automation_executor_class,
+                   automation_branch_version, automation_lease_id
+            FROM branch_tasks_v2
+            """
+        ).fetchone()
+    assert activation_columns <= migrated_columns
+    assert row is not None
+    assert row["branch_task_id"] == committed["branch_task_id"]
+    assert all(row[column] is None for column in activation_columns)
+
+
 def test_commit_links_request_admission_task_and_event(tmp_path):
     initialize_author_server(tmp_path)
     store = RequestAdmissionStore(tmp_path)
@@ -155,6 +214,68 @@ def test_commit_links_request_admission_task_and_event(tmp_path):
         assert event["branch_task_id"] == result["branch_task_id"]
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
 
+
+def test_commit_persists_only_the_exact_current_automation_activation(
+    tmp_path: Path,
+) -> None:
+    initialize_author_server(tmp_path)
+    activations = AutomationActivationStore(tmp_path)
+    stopped = activations.create_stopped(
+        universe_id="universe-a",
+        automation_id="automation-a",
+    )
+    active = activations.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        immutable_branch_version="branch-version-a",
+        lease_id="activation-lease-a",
+    )
+    assert active is not None
+    store = RequestAdmissionStore(tmp_path)
+
+    committed = store.commit_admission(
+        **_commit_kwargs(),
+        automation_activation=active,
+    )
+
+    with _connect(tmp_path) as conn:
+        row = conn.execute(
+            """
+            SELECT automation_id, automation_activation_epoch,
+                   automation_executor_class, automation_branch_version,
+                   automation_lease_id
+            FROM branch_tasks_v2
+            WHERE branch_task_id = ?
+            """,
+            (committed["branch_task_id"],),
+        ).fetchone()
+    assert row is not None
+    assert dict(row) == {
+        "automation_id": "automation-a",
+        "automation_activation_epoch": 1,
+        "automation_executor_class": "cloud",
+        "automation_branch_version": "branch-version-a",
+        "automation_lease_id": "activation-lease-a",
+    }
+
+    rebound = activations.rebind(
+        expected=active,
+        immutable_branch_version="branch-version-b",
+        lease_id="activation-lease-b",
+    )
+    assert rebound is not None
+    with pytest.raises(
+        PermissionError,
+        match="automation_activation_not_current",
+    ):
+        store.commit_admission(
+            **_commit_kwargs(
+                idempotency_key_hash="hmac:scope-key-b",
+                body_digest="sha256:body-b",
+            ),
+            automation_activation=active,
+        )
+    assert _table_count(tmp_path, "branch_tasks_v2") == 1
 
 def test_commit_preserves_incentive_and_directed_instruction_privately(
     tmp_path,
