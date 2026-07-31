@@ -675,6 +675,13 @@ successful forward/not-needed rollback tuple; publish separate exact cleanup
 markers; and never derive a running terminal identity from a stopped
 container.
 
+Independent exact-head review approved implementation commit `cb03d95e` on
+2026-07-31: 355/355 focused tests passed, changed-file Ruff was clean, strict
+OpenSpec validation and diff checks passed, and the reviewer confirmed all six
+fail-closed invariants. The unscoped repository test sweep remained CPU-active
+but exceeded its bounded 300-second run without a failure result; unscoped Ruff
+reported only 110 pre-existing errors outside this change.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored

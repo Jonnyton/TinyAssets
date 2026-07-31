@@ -70,7 +70,7 @@
   comparison and refusing inactive, failed, or otherwise drifted units.
 - [x] 2.1k Make cleanup-triggered refencing publish a non-contradictory
   terminal receipt, with focused tests for forward-success/cleanup-failure.
-- [ ] 2.1l Independently review the exact terminal-state repair before another
+- [x] 2.1l Independently review the exact terminal-state repair before another
   production mutation.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
