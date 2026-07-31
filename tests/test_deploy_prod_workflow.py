@@ -496,6 +496,8 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
     assert "org.opencontainers.image.revision" in capture_script
     assert ".Config.Image" in capture_script
+    assert r"\t" not in capture_script
+    assert "}}|{{" in capture_script
     assert "candidate_identity_match" in capture_script
     assert "--state" in capture_script
     assert '--target-revision "${TARGET_REVISION}"' in capture_script

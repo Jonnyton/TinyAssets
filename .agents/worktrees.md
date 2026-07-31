@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 23:42 - repair startup diagnostic state framing
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/startup-diagnostic-state-framing`
+- Lane state: Active; live artifact reproduced literal-tab framing mismatch
+- Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- Purpose: make exact candidate state parseable so sanitized failure signals survive rollback
+- Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing/_PURPOSE.md`
+- Ship/abandon: merge one narrow framing repair, then rerun controlled current-main deploy with guarded recovery ready
+
 ## 2026-07-30 22:35 - harden production startup diagnostics
 
 - Provider: `codex-gpt5-desktop`

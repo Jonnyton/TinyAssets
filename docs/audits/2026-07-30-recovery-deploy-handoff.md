@@ -252,6 +252,15 @@ durable image-mutation marker. Upload requires diagnostic success, explicit
 restored-or-safely-fenced cleanup output, and a published terminal receipt.
 Mismatched observed identities are emitted only as `unavailable`.
 
+Live instrumented deploy `30610115079` at revision `0eec432c` proved capture,
+cleanup fencing, terminal publication, and artifact upload, but the artifact
+reported `candidate_identity_match=false` with no state or signals. The Docker
+format string emitted literal `\t` text while the validator split on actual tab
+characters. Guarded recovery `30610348776` restored the public MCP canary and
+exact-seven surface. The framing repair uses literal `|` between eight fields;
+all accepted field grammars exclude that separator, and focused tests reproduce
+the failed pipe input before proving exact image/revision acceptance.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

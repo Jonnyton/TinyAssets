@@ -81,6 +81,8 @@ fleet.
   exception messages, raw line numbers/functions, nor unapproved paths enter
   the artifact
 - **AND** local SSH and remote Docker collection have hard deadlines
+- **AND** the fixed-field Docker inspection transport uses an unambiguous
+  separator that the validator parses identically
 - **AND** raw log collection occurs only when the inspected container's
   immutable image reference and OCI revision exactly match the fence-proved
   candidate

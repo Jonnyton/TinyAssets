@@ -127,8 +127,10 @@ before removal. This is not general Docker garbage collection.
    eligible only when its path names an actual public Python file in the
    checked-out `tinyassets/` source tree; function names and line values are not
    emitted. Collect raw logs only after the inspected container's immutable
-   image reference and OCI revision equal the fence-proved target. Failure and
-   cancellation after image mutation take the same bounded capture path,
+   image reference and OCI revision equal the fence-proved target; transport
+   those fixed fields with a literal safe separator rather than escape
+   sequences whose rendering depends on Docker's Go template behavior. Failure
+   and cancellation after image mutation take the same bounded capture path,
    including deploy or environment-assert failures that skip the named health
    step. Publish only sanitized evidence, and gate publication on an explicit
    cleanup output proving the fleet was restored or authoritatively

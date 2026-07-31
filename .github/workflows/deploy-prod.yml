@@ -1130,7 +1130,7 @@ jobs:
                 -o ServerAliveInterval=5 \
                 -o ServerAliveCountMax=2 \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.State.ExitCode}}\t{{.State.OOMKilled}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.revision\"}}\t{{.Config.Image}}'" \
+                "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}|{{.State.Running}}|{{.State.Restarting}}|{{.State.ExitCode}}|{{.State.OOMKilled}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{index .Config.Labels \"org.opencontainers.image.revision\"}}|{{.Config.Image}}'" \
                 > "${state_raw}" 2>/dev/null; then
             validate_candidate_identity() {
               python scripts/sanitize_startup_diagnostics.py \

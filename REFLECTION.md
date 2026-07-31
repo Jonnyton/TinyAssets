@@ -1071,3 +1071,8 @@ fresh-host rollback edges found later.
 - Next time: write the negative workflow states first: pre-mutation failure,
   skipped health after mutation, identity mismatch, failed fence proof, and
   failed terminal publication.
+
+- Follow-up: a structurally correct Docker template still produced unusable
+  evidence because `\t` remained literal. Treat cross-process text framing as a
+  protocol: choose a separator excluded by every field grammar and drive a
+  round-trip fixture through the real validator.

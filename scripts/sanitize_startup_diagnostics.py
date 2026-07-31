@@ -150,7 +150,7 @@ def sanitize_candidate_state(
         "capture": "unavailable",
     }
     try:
-        values = raw.decode("utf-8", errors="strict").strip().split("\t")
+        values = raw.decode("utf-8", errors="strict").strip().split("|")
     except UnicodeDecodeError:
         return unavailable
     if len(values) != 8:
