@@ -50,9 +50,16 @@ removal intent before container mutation.
   `tinyassets-logs` holding a fixed name required by the next canonical Compose
   start
 - **THEN** preflight records each present sidecar's exact ID, exact Compose
-  project and service labels, non-writer mounts, and saved restart policy
+  project and service labels, pinned canonical image, exact canonical read-only
+  mounts, and saved restart policy
+- **AND** every mount is a unique mapping with `Type=bind`, no volume name,
+  exact source/destination, and `RW=false`; any named volume,
+  production-volume source alias, non-canonical image, duplicate/non-mapping,
+  or extra/missing/read-write mount fails before mutation
 - **AND** it restart-fences and stops those exact sidecars before recording
   removal intent and removing only the surviving recorded IDs without `-v`
+- **AND** after stopping, preflight re-proves each fixed name still maps to its
+  captured ID; a same-name replacement remains untouched and preflight fails
 - **AND** replay accepts only the exact remaining recorded subset or proved
   absence; foreign, running, restart-enabled, substituted, or unexpected
   sidecars fail before removal
@@ -83,6 +90,9 @@ removal intent before container mutation.
   is treated as the same partial-start failure and receives the bounded retry
 - **AND** if the bounded retry also fails, its newly captured partial IDs remain
   restart-fenced and the writer fleet returns to `unsafe_fenced`
+- **AND** interruption with zero, one, or two recovery sidecars created binds
+  every independently proved recovery-owned sibling before expiry/boot
+  refencing, while a mixed foreign sibling remains untouched
 - **AND** fixed-name substitution after capture cannot preempt writer fencing;
   a still-present captured ID is stopped by exact ID without removal even if
   renamed, while the current fixed-name replacement remains untouched
@@ -93,8 +103,15 @@ removal intent before container mutation.
 - **AND** a foreign fixed-name blocker remains untouched while the proved
   recovery writers are refenced; a recovery-owned sidecar with an unexpected
   data mount is ID-bound and stopped but is not removed
-- **AND** finalization restores the saved sidecar restart policies, while a
-  later normal preflight can hand off the exact recorded recovery sidecars
+- **AND** finalization normalizes every sidecar to canonical
+  `unless-stopped`, and an interruption during policy restoration is refenced
+  on boot before a partial generation can remain live
+- **AND** full stopped predecessor removal writes every exact ID before
+  `docker rm`, proves every missing recorded name globally absent before any
+  replay removal, and replays only the proved remaining subset after
+  interruption
+- **AND** a later normal preflight can hand off the exact recorded recovery
+  sidecars
 
 #### Scenario: Unproved recovery ownership fails without removal
 

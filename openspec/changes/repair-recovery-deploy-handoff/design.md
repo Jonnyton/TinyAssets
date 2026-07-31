@@ -110,6 +110,19 @@ fleet. Target preparation writes exact removal intent, removes only the
 recorded survivors without `-v`, and permits subset/empty replay only after the
 intent is durable.
 
+The non-writer proof is configuration-bound, not label-only: each sidecar must
+use its pinned canonical image and exact canonical read-only mount set. Any
+mount must be a unique mapping with bind type, no volume name, exact source and
+destination, and explicit read-only posture. A named volume, non-mapping or
+duplicate entry, the production host-volume source under another destination,
+or an extra/missing/read-write mount fails before mutation. Preflight and unsafe
+refencing act on inspected exact IDs, then re-prove every fixed name still maps
+to its captured ID before accepting the fence. They reject a same-name
+replacement without stopping it. Full stopped predecessor and restored-handoff
+removal also prove every missing recorded name globally absent before removing
+any survivor, so off-volume substitution cannot be detected only after
+mutation.
+
 An ownership refusal reports only the fixed sidecar name and one bounded
 predicate class: missing identity, invalid project, invalid service, changed
 recorded identity, or failed non-writer proof. Raw IDs, labels, mount names, and
@@ -153,11 +166,14 @@ and stopped by ID without removal when possible, while a replacement fixed-name
 occupant is untouched. Any sidecar refence error is recorded after the writer
 fence is attempted. An absent partial fleet, foreign ownership, or an unexpected
 data mount never enters the retry removal path. Finalization restores the
-preflight-saved sidecar policies;
-a sidecar that was already absent uses the canonical Compose `unless-stopped`
-posture rather than inheriting temporary `restart=no`. The next normal
-preflight accepts recovery sidecars only when their exact recorded IDs and
-recovery project still match.
+canonical Compose `unless-stopped` policy for every sidecar, including saved
+`no`, `on-failure`, or `always` values, so daemon reboot cannot leave a partial
+recovery generation alive. If interruption occurs before the starting phase
+has recorded both IDs, expiry/boot reconciliation independently binds each
+proved recovery-owned sibling, refences that exact subset, and leaves any
+foreign fixed-name sibling untouched. The next normal preflight accepts
+recovery sidecars only when their exact recorded IDs and recovery project still
+match.
 
 ## Risks / Trade-offs
 
