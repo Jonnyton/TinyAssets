@@ -58,8 +58,13 @@
 - [x] 2.1f Hand the two proved recovery sidecar names to canonical Compose with
   write-ahead exact-ID ownership, interruption replay, and failure-path route
   restoration; independently review before controlled production mutation.
-- [ ] 2.1g Independently review the fixed project-category diagnostic and run
+- [x] 2.1g Independently review the fixed project-category diagnostic and run
   it only through the normal preflight before choosing a provenance migration.
+- [x] 2.1h Admit only the audited finite set of recovery project identities
+  whose public workflow revisions predate writer-only recovery; retain exact
+  ID/service/non-writer capture and refuse every other recovery-shaped project.
+- [ ] 2.1i Independently review the finite migration authority and rerun the
+  immutable image through only the normal deployment path.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

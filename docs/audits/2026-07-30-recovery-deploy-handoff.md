@@ -598,6 +598,30 @@ at `2026-07-31T22:34:26Z` on the Windows host: 279 deployment-focused tests
 passed in 9.32 seconds, changed-file Ruff passed, strict OpenSpec validation
 passed, and `git diff --check` was clean.
 
+PR #2015 merged as `bd9522e3`. Its first dispatch, run `30670511483`, never
+received a hosted runner and was canceled before setup. The clean replacement
+run `30670743121` used the same immutable image and failed closed before runtime
+sync or candidate start with fixed category `unrecorded-recovery` for
+`tinyassets-tunnel`. State remained `restored`, no current-run cutover began,
+and unsafe recovery was skipped.
+
+Repository ancestry and GitHub job evidence identify exactly six public
+`recover-unsafe` attempts whose revisions predate writer-only recovery PR
+#1908: `30514843571-1`, `30514946746-1`, `30515026545-1`, `30515117371-1`,
+`30517431860-1`, and `30518735998-1`. At successful run `30515117371`, the
+recovery command invoked full Compose without a service allowlist; PR #1908
+then added `RECOVERY_SERVICES` so later recovery could create only the five
+writers. The migration allowlist is therefore the deterministic project set
+derived from those six exact public attempt IDs, not the
+`tinyassets-recovery-*` prefix. Tests cover all six through real preflight and
+target preparation, exact-ID removal without volumes, mixed-project refusal,
+and arbitrary recovery-shaped refusal.
+
+Fresh migration verification at `2026-07-31T22:50:50Z` on the Windows host:
+287 deployment-focused tests passed in 9.17 seconds, changed-file Ruff passed,
+strict OpenSpec validation passed, and `git diff --check` was clean. Production
+mutation remains blocked on independent exact-head security review.
+
 Fresh diagnostic verification at `2026-07-31T22:21:08Z` (Windows host):
 
 ```text

@@ -121,6 +121,18 @@ well-formed recovery project; a missing label; or `other`. The raw observed
 label is never interpolated. These categories are evidence for a later
 provenance decision, not authority to mutate a sidecar.
 
+Production classified the survivor as a recovery-shaped project not recorded
+by the current writer generation. GitHub run/job evidence and repository
+ancestry bound the only full-Compose recovery attempts to runs
+`30514843571-1`, `30514946746-1`, `30515026545-1`, `30515117371-1`,
+`30517431860-1`, and `30518735998-1`. Their workflow revisions predate
+writer-only recovery PR #1908; later attempts cannot have created sidecars.
+The migration therefore admits only the deterministic project identities
+derived from that finite tuple. It still captures current exact IDs, exact
+service labels, non-writer mounts, and restart posture, requires both present
+sidecars to share one project, and uses the existing write-ahead handoff.
+No prefix or regular expression grants mutation authority.
+
 If both the candidate and ordinary rollback fail, unsafe recovery cannot rely
 on removed sidecars. Before recovery it may retire a newly present fixed-name
 sidecar only after writing its exact ID and proving the canonical or currently
@@ -170,6 +182,9 @@ recovery project still match.
 - [Ownership evidence leaks host state] → publish only the fixed name and fixed
   predicate class/category; keep every observed label, ID, and mount value
   private.
+- [A foreign container spoofs a recovery-shaped project] → regex shape remains
+  diagnostic-only; mutation accepts only six audited deterministic project
+  identities plus exact service, non-writer, ID capture, and same-project proof.
 
 ## Migration Plan
 

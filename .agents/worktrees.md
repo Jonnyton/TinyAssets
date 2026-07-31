@@ -1,10 +1,22 @@
 # Worktree Inventory
 
+## 2026-07-31 15:44 - legacy full-Compose recovery sidecar handoff
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-legacy-project-handoff`
+- Lane state: Active; finite allowlist implemented; 287 focused tests green; exact-head review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-legacy-project-handoff`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- Purpose: admit only audited full-Compose recovery project IDs predating writer-only PR #1908
+- Review gate: TDD, focused recovery/deploy tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-legacy-project-handoff/_PURPOSE.md`
+- Ship/abandon: normal deploy only after exact-head review; never accept arbitrary recovery-shaped projects
+
 ## 2026-07-31 15:18 - recovery sidecar provenance diagnostic
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-provenance-diagnostic`
-- Lane state: PR #2013 merged as `7fdf0cc5`; 279 focused tests green; fixed project-category exact-head review pending
+- Lane state: PR #2015 merged as `bd9522e3`; run 30670743121 classified `unrecorded-recovery`; superseded by the finite handoff lane above
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: classify the tunnel's mismatched project into a fixed historical category without exposing its raw label
