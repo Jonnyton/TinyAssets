@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 21:18 - public MCP 502 recovery
+
+- Provider: `drain-20260730-211134-0ef085`
+- Branch: `chore/drain-20260730-211134-0ef085-exhaustion`
+- Lane state: Active recovery claim
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-211134-0ef085-exhaustion`
+- STATUS/Issue/PR: canonical `/mcp` HTTP 502 recovery; PR pending
+- Purpose: restore the canonical public MCP endpoint and verify upstream cookies are not forwarded
+- Review gate: focused tests, live canary, and independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-20260730-211134-0ef085-exhaustion/_PURPOSE.md`
+- Ship/abandon: merge one reviewed recovery PR, or land a durable blocker through review
+
 ## 2026-07-30 20:28 - Ringer drain hot-path recovery
 
 - Provider: `codex-gpt5-desktop`
