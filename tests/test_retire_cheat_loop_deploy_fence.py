@@ -5554,7 +5554,7 @@ def test_preflight_refuses_nonsettling_transient_unit_before_mutation(
     )
 
 
-def test_restore_converges_saved_activating_disabled_daemon_exactly(
+def test_restore_converges_failed_disabled_recovery_predecessor_to_active(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     host = LifecycleHost(tmp_path)
@@ -5569,7 +5569,7 @@ def test_restore_converges_saved_activating_disabled_daemon_exactly(
             unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
         },
         "daemon_service_state": {
-            "active": "activating",
+            "active": "failed",
             "enabled": "disabled",
         },
     }
@@ -5605,6 +5605,57 @@ def test_restore_converges_saved_activating_disabled_daemon_exactly(
         expected_daemon
     )
     assert evidence["restored_unit_states"][DAEMON_SERVICE] == expected_daemon
+
+
+def test_restore_proof_failure_precedes_all_unit_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
+                "phase": "safe_fleet",
+                "old_container_ids": {},
+                "restart_racer_state": {
+                    unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
+                },
+                "daemon_service_state": {
+                    "active": "failed",
+                    "enabled": "disabled",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit]["enabled"] = "masked-runtime"
+        host.units[unit]["load"] = "masked"
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            FenceError("injected normal-deploy proof failure")
+        ),
+    )
+
+    with pytest.raises(FenceError, match="injected normal-deploy proof failure"):
+        restore_if_safe(
+            host,
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    unit_mutations = {"disable", "stop", "mask", "unmask", "enable", "start"}
+    assert not any(
+        call[0] == "systemctl" and call[1] in unit_mutations
+        for call in host.calls
+    )
 
 
 @pytest.mark.parametrize(
