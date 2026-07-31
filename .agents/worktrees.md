@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 17:06 - suppress consumed drain merge replay
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/drain-duplicate-suppression-20260730`
+- Lane state: Claimed; implementation pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-duplicate-suppression-20260730`
+- STATUS/Issue/PR: live red run `openspec-drain-auto-20260730-104801`; PR pending
+- Purpose: clear and suppress a stale admission after an already-consumed merge result instead of exhausting the failure budget
+- Review gate: focused TDD and independent exact-head review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-duplicate-suppression-20260730/_PURPOSE.md`
+- Ship/abandon: draft PR, ready only after exact-head approval
+
 ## 2026-07-30 15:35 - create Ringer GitHub reconciliation hardening
 
 - Provider: `codex-gpt5-desktop`
