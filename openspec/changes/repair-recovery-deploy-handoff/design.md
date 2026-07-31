@@ -26,6 +26,8 @@ than introducing a second recovery authority.
 - Make interruption between removal intent, removal, and service unmasking
   safely replayable.
 - Preserve the named production data volume and unrelated containers.
+- Preserve recovery's public route and log forwarder after the old fixed-name
+  sidecars have been retired, including partial-start and retry paths.
 
 **Non-Goals:**
 
@@ -97,6 +99,33 @@ An extra name, foreign project/image/revision, running or restart-enabled
 container, same-name off-volume container, or identity substitution fails
 before removal. This is not general Docker garbage collection.
 
+### 5. Transfer fixed-name sidecars as a recovery-owned sub-generation
+
+The tunnel and log forwarder do not mount the production data volume, so they
+are outside the exact-five writer inventory but still block canonical Compose
+by fixed name. A restored recovery preflight therefore binds each present
+sidecar by exact ID, exact Compose project/service labels, non-writer mounts,
+and saved restart policy. It restart-fences and stops those IDs with the writer
+fleet. Target preparation writes exact removal intent, removes only the
+recorded survivors without `-v`, and permits subset/empty replay only after the
+intent is durable.
+
+If both the candidate and ordinary rollback fail, unsafe recovery cannot rely
+on removed sidecars. Before recovery it may retire a newly present fixed-name
+sidecar only after writing its exact ID and proving the canonical or currently
+owned recovery project plus exact service label. Recovery starts the five
+writers first, proves them, then starts both sidecars under the same unique
+recovery project with the restart-no override. Their IDs are durably bound and
+their running/restart-fenced posture is proved before recovery returns.
+
+A partial sidecar Compose start is captured from exact recovery project/service
+labels before cleanup, stopped, and left at `restart=no`. A later recovery may
+remove only those recorded IDs before retrying. Finalization restores the
+preflight-saved sidecar policies; a sidecar that was already absent uses the
+canonical Compose `unless-stopped` posture rather than inheriting temporary
+`restart=no`. The next normal preflight accepts recovery sidecars only when
+their exact recorded IDs and recovery project still match.
+
 ## Risks / Trade-offs
 
 - [Prior recovery state is incomplete or stale] → refuse before preflight
@@ -113,6 +142,9 @@ before removal. This is not general Docker garbage collection.
 - [Partial target is not the failed canonical generation] → require exact
   target image/revision, canonical project label, expected-name subset,
   stopped/restart-fenced state, and absent-name proof before write-ahead intent.
+- [Sidecar removal strands recovery without ingress] → unsafe recovery starts
+  and proves an exact recovery-owned tunnel/log pair; partial creation is
+  durably re-fenced and retryable.
 
 ## Migration Plan
 

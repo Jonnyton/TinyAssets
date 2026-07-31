@@ -16,6 +16,9 @@
   restart-enabled/same-name refusal.
 - [x] 1.5 Write-ahead and replay removal of only the exact proved partial target
   IDs, without `-v`, before unsafe recovery starts.
+- [x] 1.6 Bind fixed-name sidecars by exact ID, Compose project/service labels,
+  non-writer mounts, and `restart=no`; replay exact removal, recreate them in
+  unsafe recovery, and re-fence a partial recovery-sidecar start.
 
 ## 2. Verification And Release
 
@@ -36,9 +39,12 @@
 - [x] 2.1d Diagnose the preserved systemd/Compose failure window through a
   read-only bounded remote classifier; publish fixed signals only, independently
   review the workflow, then run it without another production mutation.
-- [ ] 2.1e Reduce a classified name conflict to only matching allowlisted
+- [x] 2.1e Reduce a classified name conflict to only matching allowlisted
   canonical container names, independently review the additive fixed schema,
   and rerun the same preserved window without production mutation.
+- [ ] 2.1f Hand the two proved recovery sidecar names to canonical Compose with
+  write-ahead exact-ID ownership, interruption replay, and failure-path route
+  restoration; independently review before controlled production mutation.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

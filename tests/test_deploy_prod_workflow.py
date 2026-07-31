@@ -182,7 +182,7 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     )
 
 
-def test_recovery_override_fences_exact_receipt_capable_fleet():
+def test_recovery_override_fences_writers_and_fixed_name_sidecars():
     override = yaml.safe_load(_RECOVERY_OVERRIDE.read_text(encoding="utf-8"))
     services = override["services"]
     assert set(services) == {
@@ -191,6 +191,8 @@ def test_recovery_override_fences_exact_receipt_capable_fleet():
         "worker-codex-2",
         "worker-claude-1",
         "worker-claude-2",
+        "cloudflared",
+        "logs",
     }
     assert all(service.get("restart") == "no" for service in services.values())
 
