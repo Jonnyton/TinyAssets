@@ -26,6 +26,42 @@ removal intent before container mutation.
 - **THEN** target preparation does not remove that predecessor through the
   recovery handoff path
 
+#### Scenario: Fixed-name sidecars hand off without weakening recovery
+
+- **WHEN** a finalized recovery leaves `tinyassets-tunnel` or
+  `tinyassets-logs` holding a fixed name required by the next canonical Compose
+  start
+- **THEN** preflight records each present sidecar's exact ID, exact Compose
+  project and service labels, non-writer mounts, and saved restart policy
+- **AND** it restart-fences and stops those exact sidecars before recording
+  removal intent and removing only the surviving recorded IDs without `-v`
+- **AND** replay accepts only the exact remaining recorded subset or proved
+  absence; foreign, running, restart-enabled, substituted, or unexpected
+  sidecars fail before removal
+- **AND** if forward start and ordinary rollback fail, emergency recovery
+  removes only a newly proved canonical or recovery-owned sidecar generation,
+  recreates both sidecars under its unique recovery project with `restart=no`,
+  and binds their exact IDs before exposing the recovery result
+- **AND** a partial recovery-sidecar start is durably captured by exact ID,
+  stopped with `restart=no`, removed without volumes, and retried once within
+  the same recovery invocation
+- **AND** a zero-exit Compose result with an incomplete exact sidecar inventory
+  is treated as the same partial-start failure and receives the bounded retry
+- **AND** if the bounded retry also fails, its newly captured partial IDs remain
+  restart-fenced and the writer fleet returns to `unsafe_fenced`
+- **AND** fixed-name substitution after capture cannot preempt writer fencing;
+  a still-present captured ID is stopped by exact ID without removal even if
+  renamed, while the current fixed-name replacement remains untouched
+- **AND** a sidecar restart-fence or stop failure is recorded but cannot preempt
+  restart-fencing and stopping every current production-volume writer
+- **AND** absent, foreign, identity-changed, or data-bearing sidecars are not
+  removed or admitted to the retry cleanup path
+- **AND** a foreign fixed-name blocker remains untouched while the proved
+  recovery writers are refenced; a recovery-owned sidecar with an unexpected
+  data mount is ID-bound and stopped but is not removed
+- **AND** finalization restores the saved sidecar restart policies, while a
+  later normal preflight can hand off the exact recorded recovery sidecars
+
 #### Scenario: Unproved recovery ownership fails without removal
 
 - **WHEN** the candidate fleet is partial, extra, running, restart-enabled,

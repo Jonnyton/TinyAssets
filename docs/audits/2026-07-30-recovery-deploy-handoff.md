@@ -3,11 +3,12 @@
 ## Outcome
 
 The public MCP surface is recovered on the previously configured immutable
-image. The handoff and partial-target recovery repairs are landed, but current
-`main` still fails startup against production-shaped state. Normal deployment
-is paused until the PR #1991 diagnostic is hardened after independent review;
-the next single controlled deploy will use only allowlisted, deadline-bounded
-evidence to identify the startup regression.
+image. The writer-fleet handoff and partial-target recovery repairs are landed.
+Read-only diagnostic run `30664801072` has now reduced the remaining
+production-shaped startup failure to exact fixed-name conflicts on both
+`tinyassets-tunnel` and `tinyassets-logs`. A fail-safe sidecar handoff repair is
+under local verification; no further production mutation is permitted until
+its independent exact-head review approves.
 
 Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
 successfully handed off the recovered generation and installed the target, but
@@ -73,6 +74,10 @@ closed and independently re-reviewed.
   host): `python scripts/mcp_public_canary.py --url
   https://tinyassets.io/mcp --assert-name TinyAssets --assert-handles
   --verbose` exited `0`.
+- Read-only bounded journal run `30664801072` at revision `0df587ef` returned
+  only the fixed schema and classified `conflict_containers` as exactly
+  `tinyassets-tunnel` and `tinyassets-logs`; it published no raw journal text
+  and performed no host mutation.
 
 ## Root Cause
 
@@ -84,6 +89,14 @@ the recovered generation and overwrites canonical fence state with the new
 run's exact old IDs. Before this repair it discarded the prior recovery
 project/ID provenance, and `prepare_deploy` only unmasked the service. The
 stopped recovery containers therefore survived into canonical Compose start.
+
+The remaining sidecar collision is the same ownership-boundary defect outside
+the production data volume. Emergency recovery intentionally started only the
+five receipt-capable writer containers, so the canonical-project tunnel and
+log sidecars survived and continued serving ingress/logging. A later normal
+preflight fenced only production-volume consumers. When systemd was already
+inactive, canonical Compose could not tear down those surviving fixed-name
+sidecars and failed while creating the new project.
 
 ## Repair
 
@@ -118,7 +131,128 @@ without `-v`, and replays only the remaining recorded subset after an
 interruption. Extra, foreign, running, restart-enabled, substituted, and
 same-name off-volume states fail before removal.
 
+The sidecar repair binds each present tunnel/log container by exact ID, exact
+Compose project/service labels, non-writer mounts, and saved restart policy.
+Preflight fences and stops them; target preparation records removal intent and
+removes only exact surviving IDs without `-v`, including subset/empty replay.
+If forward start and ordinary rollback both fail, unsafe recovery removes only
+a newly proved canonical or recovery-owned sidecar generation, starts both
+sidecars under the unique recovery project with `restart=no`, and durably binds
+their IDs. A partial sidecar Compose start is captured, stopped, removed by
+exact ID, and retried once within the same recovery invocation. A repeated
+failure is durably captured and refenced. Finalization restores saved policies,
+or canonical `unless-stopped` for a previously absent sidecar.
+
 ## Verification
+
+Fixed-name sidecar repair verification at `2026-07-31T21:32Z` (Windows host):
+
+```text
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+248 passed in 8.19s
+
+python -m ruff check scripts/retire_cheat_loop_deploy_fence.py \
+  tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict --no-interactive
+Change 'repair-recovery-deploy-handoff' is valid
+
+git diff --check
+clean
+```
+
+The new cases cover canonical and recovery-project sidecar ownership, foreign
+and substituted refusal, exact-ID subset replay, emergency recreation,
+partial-start durable refencing and retry, restart-policy finalization, and the
+next normal handoff. Empty/foreign Compose projects and sidecars mounting the
+production data volume also fail before sidecar mutation. Independent
+exact-head review is pending. A foreign fixed-name blocker remains untouched
+while the proved recovery writers are still refenced; a recovery-owned sidecar
+with an unexpected data mount is ID-bound and stopped but never removed.
+
+Autonomous partial-start retry verification at `2026-07-31T21:40:40Z`
+(Windows host):
+
+```text
+RED: python -m pytest \
+  tests/test_retire_cheat_loop_deploy_fence.py::\
+test_partial_recovery_sidecar_start_is_durably_refenced_and_retryable -q
+1 failed: recovery failed and was re-fenced: partial sidecar compose failure
+
+GREEN: python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  -q -k "partial_recovery_sidecar_start"
+2 passed, 128 deselected in 0.51s
+
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+264 passed in 9.27s
+```
+
+The bounded path retries only after durable exact-project/service/ID capture
+and exact-ID removal of a non-writer partial fleet. A second transient failure
+ends the loop at attempt two, leaves the new partial ID restart-fenced, and
+returns the writers to `unsafe_fenced`. Independent exact-head review remains
+required before publish or production mutation.
+
+Independent review of `95cdeca6` returned ADAPT at `2026-07-31T21:48Z`:
+post-capture fixed-name substitution could make cleanup and `quiesce_unsafe`
+repeat the same identity rejection before the five-writer fence began. A
+zero-exit Compose result with one missing sidecar also bypassed the retry. The
+replacement adds a writer-first invariant: name drift is recorded, a captured
+exact ID that still exists is restart-fenced and stopped by ID without removal,
+the current fixed-name replacement is untouched, and the volume-writer fence
+continues independently. Strict inventory capture now occurs inside the bounded
+attempt so zero-exit incomplete creation follows the same exact-ID retry path.
+
+Adaptation evidence at `2026-07-31T22:04:26Z` (Windows host):
+
+```text
+RED replacement-only substitution: 1 failed
+recovery failed ... re-fence also failed: recovery sidecar identity changed
+
+RED rename+replacement and zero-exit incomplete inventory: 2 failed
+
+RED stubborn captured sidecar stop: 1 failed before writer fencing
+
+Re-review of `47bd47a8` found one remaining eager outer-handler restart-fence
+operation that could throw before `quiesce_unsafe`. Its exact regression failed
+with all five writers still running. The duplicate eager sidecar mutation is
+removed; outer recovery now only captures partial ownership evidence and always
+delegates restart/stop handling to the single writer-first quiesce path.
+
+GREEN focused replacement/rename/incomplete/stubborn/restart cases:
+5 passed, 130 deselected in 0.63s
+
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+269 passed in 8.46s
+```
+
+The replacement-only case proves all five writers stop while the substituted
+non-writer receives no update/stop/remove command. The rename-plus-replacement
+case additionally proves the original captured ID is stopped under its new
+name while the fixed-name replacement remains untouched. New exact-head review
+is required before publish or production mutation. The stubborn-sidecar case
+proves its recorded stop error survives as evidence while all five volume
+writers still converge to `unsafe_fenced`.
+
+Independent re-review APPROVED exact code head `a3335dfa`: the outer recovery
+handler performs evidence capture only, every sidecar restart/stop operation is
+centralized behind the writer-first quiesce boundary, all five adversarial
+regressions passed, and the reviewer found no remaining blocking security or
+correctness issue. PR #2010 carries the four-commit repair stack; production
+remains unchanged until CI, merge, and the controlled deploy gate complete.
 
 TDD red evidence on 2026-07-30:
 

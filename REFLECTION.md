@@ -1,3 +1,27 @@
+## 2026-07-31 — autonomous recovery-sidecar retry
+
+- **What surprised me:** durable refencing made a partial sidecar start safe,
+  but still left the 24/7 recovery path dependent on a human issuing a second
+  recovery command after a transient Compose failure.
+- **Pattern worth capturing:** a fail-safe state is not autonomous convergence.
+  Retry only inside the narrow owned stage, only after durable exact-ID capture
+  and cleanup, and bound the attempt count so repeated faults return to the
+  existing fence.
+- **What I would do differently:** write the single-invocation acceptance test
+  alongside the original partial-start fault test, rather than treating a later
+  manually initiated retry as sufficient proof of recovery ownership.
+
+- **Follow-up:** ownership validation or a stop failure for a secondary
+  non-writer must never preempt the primary writer fence. After a fixed-name
+  race, stop only the
+  previously proved immutable ID if it still exists, leave the replacement
+  untouched, and continue fencing every current volume consumer.
+- **Follow-up:** process exit success is not state convergence. Fault tests must
+  cover zero-exit incomplete inventories as well as thrown Compose failures.
+- **Follow-up:** duplicate best-effort safety mutations are extra failure
+  boundaries. Capture ownership once, then funnel every refence through one
+  writer-first path that owns error accumulation and final proof.
+
 ## 2026-07-30 — public-safe production startup evidence
 
 - **What surprised me:** a short-lived Actions artifact is still readable to

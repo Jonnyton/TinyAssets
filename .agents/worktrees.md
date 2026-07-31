@@ -1,12 +1,36 @@
 # Worktree Inventory
 
+## 2026-07-31 14:35 - autonomous recovery-sidecar retry
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-autonomous-retry`
+- Lane state: PR #2010 open; 269 focused tests green; exact-head security APPROVE at `a3335dfa`; CI pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2010
+- Purpose: make one recovery invocation converge after a transient partial tunnel/log start without touching foreign sidecars
+- Review gate: red/green fault injection, focused tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry/_PURPOSE.md`
+- Ship/abandon: stack into the sidecar handoff only after one-shot autonomous recovery proof; otherwise keep production fenced
+
+## 2026-07-31 14:21 - fail-safe fixed-name sidecar handoff
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-handoff-safe`
+- Lane state: Active; exact conflict proved; implementation and focused verification green; independent review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-handoff-safe`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: transfer tunnel/log fixed names without stranding emergency recovery after candidate and rollback failure
+- Review gate: 248 focused tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-handoff-safe/_PURPOSE.md`
+- Ship/abandon: merge only after approval; then one controlled deploy with guarded recovery and public canary
+
 ## 2026-07-31 14:35 - drain current-main revalidation
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/drain-current-main-revalidation`
-- Lane state: Active; red reproduced and one-line implementation green; review pending
+- Lane state: Merged as PR #2009; foldback/cleanup pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation`
-- STATUS/Issue/PR: local tray failure-budget incident; PR pending
+- STATUS/Issue/PR: local tray failure-budget incident; PR #2009 merged
 - Purpose: prevent stale detached STATUS from invalidating current-main exhaustion
 - Review gate: supervisor/watchdog tests, Ruff, strict OpenSpec, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation/_PURPOSE.md`
@@ -16,13 +40,13 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-conflict-identity`
-- Lane state: Active; read-only fixed class is name conflict; allowlisted name classifier in TDD
+- Lane state: Merged as PR #2007; run 306648 proved tunnel + logs; superseded by fail-safe sidecar handoff lane
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2007 merged
 - Purpose: identify only the matching canonical container name before selecting a repair
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity/_PURPOSE.md`
-- Ship/abandon: merge fixed-name schema after review, then rerun the same preserved window read-only
+- Ship/abandon: retain as landed evidence; no further implementation in this worktree
 
 ## 2026-07-30 22:35 - harden production startup diagnostics
 

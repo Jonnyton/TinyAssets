@@ -16,3 +16,7 @@ services:
     restart: "no"
   worker-claude-2:
     restart: "no"
+  cloudflared:
+    restart: "no"
+  logs:
+    restart: "no"
