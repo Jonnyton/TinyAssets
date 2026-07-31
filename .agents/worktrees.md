@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 17:23 - persist dark background Branch authority
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/background-authority-store-20260730`
+- Lane state: Claimed; TDD pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730`
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.1/2.2; PR pending
+- Purpose: durable binding/attempt replay, CAS, bounded read, restart substrate
+- Review gate: focused TDD, mirror parity, strict OpenSpec, independent review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730/_PURPOSE.md`
+- Ship/abandon: draft PR; remains dark
+
 ## 2026-07-30 17:06 - suppress consumed drain merge replay
 
 - Provider: `codex-gpt5-desktop`
