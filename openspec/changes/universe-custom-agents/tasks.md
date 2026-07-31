@@ -19,5 +19,5 @@
 
 ## 5. Verification and Foldback
 
-- [ ] 5.1 Run focused tests, relevant regression suites, strict OpenSpec validation, Ruff, and an independent security/diff review; fix every blocking finding.
+- [x] 5.1 Run focused tests, relevant regression suites, strict OpenSpec validation, Ruff, and an independent security/diff review; fix every blocking finding.
 - [ ] 5.2 After deployment, record public canary, rendered-chatbot custom-agent conversation, and post-fix organic-use evidence before syncing and archiving the change.
