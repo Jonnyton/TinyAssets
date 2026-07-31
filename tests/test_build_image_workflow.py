@@ -15,6 +15,9 @@ except ImportError:
 
 _REPO = Path(__file__).resolve().parent.parent
 _WORKFLOW = _REPO / ".github" / "workflows" / "build-image.yml"
+_RECOVERY_RETAG_WORKFLOW = (
+    _REPO / ".github" / "workflows" / "recovery-retag-image.yml"
+)
 
 pytestmark = pytest.mark.skipif(
     not _YAML_AVAILABLE, reason="pyyaml not installed"
@@ -27,6 +30,16 @@ def _load() -> dict:
 
 def _text() -> str:
     return _WORKFLOW.read_text(encoding="utf-8")
+
+
+def _load_recovery_retag() -> dict:
+    return yaml.safe_load(
+        _RECOVERY_RETAG_WORKFLOW.read_text(encoding="utf-8")
+    )
+
+
+def _recovery_retag_text() -> str:
+    return _RECOVERY_RETAG_WORKFLOW.read_text(encoding="utf-8")
 
 
 def _triggers(wf: dict) -> dict:
@@ -66,11 +79,20 @@ def test_build_image_keeps_manual_dispatch():
     assert "workflow_dispatch" in triggers
 
 
+def test_recovery_retag_is_isolated_from_deploy_trigger():
+    build_workflow = _load()
+    retag_workflow = _load_recovery_retag()
+
+    assert build_workflow["name"] == "Build and publish image"
+    assert retag_workflow["name"] != build_workflow["name"]
+    assert set(_triggers(retag_workflow)) == {"workflow_dispatch"}
+
+
 def test_manual_retag_is_digest_and_revision_bound():
-    workflow = _load()
+    workflow = _load_recovery_retag()
     dispatch = _triggers(workflow).get("workflow_dispatch") or {}
     inputs = dispatch.get("inputs") or {}
-    text = _text()
+    text = _recovery_retag_text()
 
     assert {"source_digest", "source_revision"} <= set(inputs)
     assert "^sha256:[0-9a-f]{64}$" in text
@@ -88,18 +110,12 @@ def test_manual_retag_is_digest_and_revision_bound():
 
 
 def test_manual_retag_skips_image_rebuild():
-    workflow = _load()
-    steps = workflow["jobs"]["build-and-push"]["steps"]
-    by_name = {step.get("name"): step for step in steps}
+    build_text = _text()
+    retag_text = _recovery_retag_text()
 
-    assert (
-        by_name["Build and push image"]["if"]
-        == "inputs.source_digest == '' && inputs.source_revision == ''"
-    )
-    assert (
-        by_name["Retag recorded immutable image"]["if"]
-        == "inputs.source_digest != '' || inputs.source_revision != ''"
-    )
+    assert "Retag recorded immutable image" not in build_text
+    assert "docker/build-push-action@v6" not in retag_text
+    assert "Retag recorded immutable image" in retag_text
 
 
 def test_build_image_publishes_only_short_sha_tag():

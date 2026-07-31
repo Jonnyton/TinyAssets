@@ -88,6 +88,9 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     wf = _load()
     inputs = (_triggers(wf).get("workflow_dispatch") or {}).get("inputs") or {}
     assert "unsafe_fence_source_run_id" in inputs
+    assert "<run_id>-<attempt>" in str(
+        inputs["unsafe_fence_source_run_id"].get("description", "")
+    )
     recovery = wf["jobs"]["recover-unsafe"]
     assert "workflow_dispatch" in str(recovery.get("if", ""))
     checkout = recovery["steps"][0]
@@ -152,6 +155,18 @@ def test_manual_unsafe_fence_recovery_is_separate_and_source_bound():
     )
     assert "finalize-recovery --source-run-id" in str(finalize.get("run", ""))
     step_names = [str(item.get("name", "")) for item in recovery["steps"]]
+    pull_index = step_names.index("Pull recovery image on production host")
+    recover_index = step_names.index("Recover canonical unsafe fence")
+    assert pull_index < recover_index
+    host_pull = _step_named(
+        {"jobs": {"deploy": recovery}},
+        "Pull recovery image on production host",
+    )
+    host_pull_script = str(host_pull.get("run", ""))
+    assert host_pull.get("env", {}).get("RECOVERY_IMAGE_REF") == (
+        "${{ steps.recovery-image.outputs.image_ref }}"
+    )
+    assert "sudo docker pull '${RECOVERY_IMAGE_REF}'" in host_pull_script
     assert step_names.index("Recovery canonical MCP canary") < step_names.index(
         "Finalize canonical unsafe-fence recovery"
     )
