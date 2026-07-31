@@ -470,6 +470,38 @@ def test_transaction_attempt_count_fails_closed_on_binding_index_tamper(
             tx.count_attempts(binding_id="bnd_01")
 
 
+def test_transaction_attempt_count_fails_closed_on_hidden_digest_tamper(
+    tmp_path,
+) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    with store.transaction() as tx:
+        tx.insert_binding(_binding())
+        tx.insert_binding(_binding(binding_id="bnd_02"))
+        tx.insert_attempt(_attempt())
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT record_json
+            FROM background_branch_attempts
+            WHERE attempt_id = 'att_01'
+            """
+        ).fetchone()
+        payload = json.loads(str(row[0]))
+        payload["binding_id"] = "bnd_02"
+        conn.execute(
+            """
+            UPDATE background_branch_attempts
+            SET binding_id = 'bnd_02', record_json = ?
+            WHERE attempt_id = 'att_01'
+            """,
+            (json.dumps(payload),),
+        )
+
+    with store.transaction() as tx:
+        with pytest.raises(sqlite3.DatabaseError, match="index mismatch"):
+            tx.count_attempts(binding_id="bnd_01")
+
+
 def test_bounded_filtered_pages_use_stable_opaque_cursors(tmp_path) -> None:
     store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
     with store.transaction() as tx:
