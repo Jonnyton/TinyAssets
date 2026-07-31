@@ -1985,3 +1985,15 @@ Notes:
 - Review gate: focused TDD/concurrency/migration tests, strict OpenSpec, mirror
   parity, independent exact-head approval.
 - Publish/cleanup: draft PR to main; consumer remains disabled.
+
+## 2026-07-30 - Atomic background-attempt reservation
+
+- Provider: `drain-20260730-182443-ef55a1`
+- Branch: `chore/drain-20260730-182443-ef55a1-exhaustion`
+- Lane state: Active; exact STATUS claim on current main.
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-182443-ef55a1-exhaustion`
+- Purpose: add transaction-local binding/logical-key reads and per-binding
+  attempt count without JIT resolution or live activation.
+- Review gate: focused TDD/concurrency tests, strict OpenSpec, mirror parity,
+  required CI, and independent exact-head approval.
+- Publish/cleanup: one draft PR to main; remove after verified foldback.
