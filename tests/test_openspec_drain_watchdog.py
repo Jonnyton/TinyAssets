@@ -294,6 +294,68 @@ def test_dry_run_writes_health_without_launching(
     assert not (watchdog_dir / "restart.request").exists()
 
 
+def test_graceful_restart_preserves_new_run_decision_after_terminal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    old_run = _run(output, "openspec-drain-failing", pid=42)
+    watchdog_dir = output / "openspec-drain-watchdog"
+    restart_request = watchdog_dir / "restart.request"
+    live_pids = {42}
+    launched: list[tuple[Path, bool]] = []
+    sleeps = 0
+
+    class StopLoop(Exception):
+        pass
+
+    class FakeProcess:
+        pid = 77
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def request_stop(_repo: Path, run_dir: Path) -> None:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state.update(status="failure-budget", ended_at="now")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        live_pids.discard(42)
+
+    def launch_supervisor(**kwargs: object) -> FakeProcess:
+        run_dir = kwargs["run_dir"]
+        assert isinstance(run_dir, Path)
+        launched.append((run_dir, bool(kwargs["resume"])))
+        live_pids.add(77)
+        return FakeProcess()
+
+    def advance_loop(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 1:
+            restart_request.write_text("restart\n", encoding="utf-8")
+        elif launched or sleeps >= 4:
+            raise StopLoop
+
+    monkeypatch.setattr(watchdog, "_pid_is_alive", live_pids.__contains__)
+    monkeypatch.setattr(watchdog, "_request_supervisor_stop", request_stop)
+    monkeypatch.setattr(watchdog, "_launch_supervisor", launch_supervisor)
+    monkeypatch.setattr(watchdog.time, "sleep", advance_loop)
+
+    with pytest.raises(StopLoop):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    assert len(launched) == 1
+    new_run, resume = launched[0]
+    assert new_run.parent == output
+    assert new_run.name.startswith("openspec-drain-auto-")
+    assert resume is False
+    assert new_run != old_run
+
+
 def test_atomic_health_write_retries_windows_sharing_violation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
