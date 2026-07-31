@@ -963,6 +963,46 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     assert not second_failure.get("cutover_started", False)
 
 
+@pytest.mark.parametrize(
+    ("observed", "expected"),
+    [
+        ("activating", "active"),
+        ("active", "active"),
+        ("inactive", "inactive"),
+        ("failed", "failed"),
+        ("deactivating", "deactivating"),
+        ("reloading", "reloading"),
+    ],
+)
+def test_preflight_normalizes_only_activating_daemon_restore_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observed: str,
+    expected: str,
+):
+    host = LifecycleHost(tmp_path)
+    host.units[DAEMON_SERVICE]["active"] = observed
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["daemon_service_state"] == {
+        "active": expected,
+        "enabled": "enabled",
+    }
+    assert state["restart_racer_state"]["daemon-watchdog.service"][
+        "active"
+    ] == "inactive"
+
+
 def test_finalized_recovery_generation_is_removed_before_canonical_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5437,6 +5477,59 @@ def test_restore_handles_active_timer_requiring_static_service_to_settle(
 
     assert evidence["phase"] == "restored"
     assert service_reads["count"] >= 2
+
+
+def test_restore_converges_saved_activating_disabled_daemon_exactly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    state = {
+        "schema_version": 1,
+        "owner": "retire-cheat-loop task 2.1",
+        "run_id": RUN_ID,
+        "phase": "safe_fleet",
+        "old_container_ids": {},
+        "restart_racer_state": {
+            unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
+        },
+        "daemon_service_state": {
+            "active": "activating",
+            "enabled": "disabled",
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit]["enabled"] = "masked-runtime"
+        host.units[unit]["load"] = "masked"
+    original_run = host.run
+
+    def preserve_disabled_daemon(args: Any, **kwargs: Any) -> str:
+        result = original_run(args, **kwargs)
+        if tuple(args)[:3] == ("systemctl", "unmask", "--runtime"):
+            host.units[DAEMON_SERVICE]["enabled"] = "disabled"
+        return result
+
+    monkeypatch.setattr(host, "run", preserve_disabled_daemon)
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: {"safe": True, "phase": "safe_fleet"},
+    )
+
+    evidence = restore_if_safe(
+        host,
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    expected_daemon = {"active": "active", "enabled": "disabled"}
+    assert evidence["expected_restored_unit_states"][DAEMON_SERVICE] == (
+        expected_daemon
+    )
+    assert evidence["restored_unit_states"][DAEMON_SERVICE] == expected_daemon
 
 
 def test_recover_unsafe_refences_after_mutation_os_error(

@@ -1,5 +1,23 @@
 ## ADDED Requirements
 
+### Requirement: Deploy Cleanup Converges Transitional Service State And Publishes Terminal Truth
+
+The production deploy fence SHALL treat a daemon observed as systemd
+`activating` during preflight as an intended healthy `active` restore state.
+It MUST retain the exact saved enablement state and MUST NOT normalize
+`inactive`, `failed`, `deactivating`, `reloading`, an invalid state, or any
+restart-racer state.
+
+#### Scenario: Activating daemon converges to active
+
+- **WHEN** preflight observes `tinyassets-daemon.service` as `activating` with
+  authoritative enablement and the proved target later settles at `active`
+- **THEN** cleanup compares it with the normalized `active` restore expectation
+- **AND** exact enablement, unmasked state, fleet, receipt, queue, process, and
+  image proofs remain required
+- **AND** inactive, failed, or otherwise drifted terminal state still fails
+  closed
+
 ### Requirement: Finalized Recovery Hands Off Only Its Exact Fleet To Canonical Deploy
 
 The transitional production deploy fence SHALL permit a normal deployment to

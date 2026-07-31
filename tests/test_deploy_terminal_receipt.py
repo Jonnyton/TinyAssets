@@ -107,6 +107,9 @@ def _observations(**overrides: Any) -> dict[str, Any]:
     value: dict[str, Any] = {
         "production_mutation_started": True,
         "image_mutation_started": True,
+        "cleanup_mutation_started": False,
+        "cleanup_restored": True,
+        "cleanup_safely_fenced": False,
         "forward_deploy_status": "succeeded",
         "forward_canary_status": "passed",
         "rollback_attempted": False,
@@ -286,6 +289,50 @@ def test_production_mutation_before_image_mutation_publishes_failed_terminal_tru
     assert receipt["rollback_result"] == "not_attempted"
     assert receipt["rollback_canary_status"] == "not_run"
     assert receipt["rollback_reason"] == "image_mutation_not_started"
+
+
+def test_post_forward_cleanup_fence_preserves_forward_and_rollback_truth() -> None:
+    receipt = build_terminal_receipt(
+        _observations(
+            cleanup_mutation_started=True,
+            cleanup_restored=False,
+            cleanup_safely_fenced=True,
+            running_image_ref="",
+        )
+    )
+
+    assert receipt["outcome"] == "failed_without_rollback"
+    assert receipt["forward_deploy_status"] == "succeeded"
+    assert receipt["forward_canary_status"] == "passed"
+    assert receipt["rollback_reason"] == "not_needed"
+    assert receipt["cleanup_mutation_started"] is True
+    assert receipt["cleanup_restored"] is False
+    assert receipt["cleanup_safely_fenced"] is True
+    assert receipt["active_identity_status"] == "running_unknown"
+    assert receipt["canary_bundle_status"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"cleanup_restored": True, "cleanup_safely_fenced": True},
+        {
+            "cleanup_mutation_started": False,
+            "cleanup_restored": False,
+            "cleanup_safely_fenced": True,
+        },
+        {
+            "cleanup_mutation_started": True,
+            "cleanup_restored": False,
+            "cleanup_safely_fenced": False,
+        },
+    ],
+)
+def test_cleanup_terminal_proof_rejects_contradictions(
+    overrides: dict[str, bool],
+) -> None:
+    with pytest.raises(ValueError, match="cleanup proof"):
+        build_terminal_receipt(_observations(**overrides))
 
 
 @pytest.mark.parametrize(

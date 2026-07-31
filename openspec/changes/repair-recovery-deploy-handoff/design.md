@@ -244,6 +244,17 @@ match.
 8. Sync the delta into the main capability spec, archive the change, and retire
    its live coordination row.
 
+The controlled deploy exposed a second terminal edge after all forward gates
+passed: preflight persisted systemd's transient `activating` daemon state, but
+cleanup correctly observed the settled service as `active`. Exact comparison
+could never converge, so cleanup safely re-fenced the proved target. The repair
+normalizes only this preflight daemon transition to an `active` restore
+expectation. It also keeps forward, rollback, and cleanup as separate receipt
+facts: a successful forward/not-needed rollback followed by a proved cleanup
+fence becomes `failed_without_rollback`, never a synthesized contradictory
+rollback tuple. Stopped containers are not eligible as the running terminal
+identity.
+
 Rollback uses the existing provenance-bound unsafe recovery workflow with the
 previous admitted stop-writer image. No direct host deletion or fence bypass is
 an acceptable rollback.

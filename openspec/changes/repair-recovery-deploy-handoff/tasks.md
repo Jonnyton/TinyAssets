@@ -70,11 +70,19 @@
 - [x] 2.1h Admit only the audited finite set of recovery project identities
   whose public workflow revisions predate writer-only recovery; retain exact
   ID/service/non-writer capture and refuse every other recovery-shaped project.
-- [ ] 2.1i Independently review the finite migration authority and rerun the
+- [x] 2.1i Independently review the finite migration authority and rerun the
   immutable image through only the normal deployment path.
-- [ ] 2.1j Re-review the combined finite authority plus stricter configuration,
+- [x] 2.1j Re-review the combined finite authority plus stricter configuration,
   exact-ID, replay, mixed-ownership, and reboot-refence protections on current
   main before any host mutation.
+- [x] 2.1k Normalize a preflight `activating` daemon state to its healthy
+  terminal `active` restore expectation, while retaining exact enabled-state
+  comparison and refusing inactive, failed, or otherwise drifted units.
+- [x] 2.1l Make cleanup-triggered refencing publish a non-contradictory
+  terminal receipt, with focused tests for forward-success/cleanup-failure.
+- [x] 2.1m Independently review the integrated terminal-state and #2020
+  fail-closed repair head before another
+  production mutation.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

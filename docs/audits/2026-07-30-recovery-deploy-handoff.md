@@ -717,6 +717,50 @@ remains unchanged pending combined exact-head review.
 
 ## Release And Rollback
 
+### 2026-07-31 terminal cleanup incident and recovery
+
+Normal deploy
+[30671580199](https://github.com/Jonnyton/TinyAssets/actions/runs/30671580199)
+installed immutable revision `85d40171331fa67ef649632012b505ddfde0f6c4`,
+proved the exact five-container target, unchanged logical receipt, canonical
+public MCP canary, and exact-seven handle surface. Its final cleanup could not
+match the preflight daemon snapshot `active=activating, enabled=disabled` to
+the healthy settled observation `active=active, enabled=disabled`. After the
+120-second bounded comparison it safely stopped and restart-fenced all five
+target writers. A fresh Windows-host canary returned HTTP 502; no receipt
+change or data-loss signal was observed.
+
+Provenance-bound recovery
+[30671967082](https://github.com/Jonnyton/TinyAssets/actions/runs/30671967082)
+used source identity `30671580199-1` and the already-proved target image. It
+passed immutable admission, exact unsafe-source validation, canonical MCP
+canary, exact-seven assertion, and authoritative finalization at
+`2026-07-31T23:08:35Z`. A fresh Windows-host command immediately afterward,
+`python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
+--timeout 15 --assert-handles --assert-handles-retries 2 --verbose`, exited 0
+with canonical handles and identity evidence available.
+
+The follow-up repair is test-first and deliberately narrow: normalize only a
+preflight daemon `activating` state to the intended terminal `active` state;
+retain exact enablement and every other fail-closed comparison; preserve the
+successful forward/not-needed rollback tuple; publish separate exact cleanup
+markers; and never derive a running terminal identity from a stopped
+container.
+
+Independent exact-head review approved implementation commit `cb03d95e` on
+2026-07-31: 355/355 focused tests passed, changed-file Ruff was clean, strict
+OpenSpec validation and diff checks passed, and the reviewer confirmed all six
+fail-closed invariants. The unscoped repository test sweep remained CPU-active
+but exceeded its bounded 300-second run without a failure result; unscoped Ruff
+reported only 110 pre-existing errors outside this change.
+
+After main advanced through fail-closed sidecar PR #2020, the integrated exact
+head `87d0ceef` received a second independent approval on 2026-07-31. The
+reviewer passed 383/383 combined focused tests, changed-file Ruff, strict
+OpenSpec, and diff checks; confirmed both parent lineages are ancestors; and
+found #2020's configuration, exact-ID, replay, mixed-ownership, and
+reboot-refence authority byte-preserved alongside the terminal-state repair.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored
