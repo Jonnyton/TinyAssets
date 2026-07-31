@@ -3,12 +3,51 @@
 ## Outcome
 
 The public MCP surface is recovered on the previously configured immutable
-image. The writer-fleet handoff and partial-target recovery repairs are landed.
-Read-only diagnostic run `30664801072` has now reduced the remaining
-production-shaped startup failure to exact fixed-name conflicts on both
-`tinyassets-tunnel` and `tinyassets-logs`. A fail-safe sidecar handoff repair is
-under local verification; no further production mutation is permitted until
-its independent exact-head review approves.
+image. Writer, partial-target, sidecar, and truthful terminal-receipt repairs
+are landed through PR #2023. The remaining normal-handoff blocker is a
+preflight snapshot that may persist transient watchdog state as restoration
+intent. Its stable-snapshot successor is under exact-head review; no further
+production mutation is permitted until that review approves.
+
+Update at `2026-07-31T23:28Z`: PR #2020's stricter sidecar handoff passed normal
+deploy `30672569902` through target health, exact-five fleet, public MCP,
+exact-seven, access, and receipt proofs. Cleanup then falsely required saved
+transient systemd `activating` states to remain transient for 120 seconds and
+safely fenced the otherwise proved fleet. Durable artifact
+`retire-cheat-loop-task-2-1-30672569902-1` records the mismatch and exact safe
+fence. Audited recovery `30672822369` restored and finalized the same immutable
+image; a fresh Windows-host public handle canary exited 0 at
+`2026-07-31T23:27Z`. The successor repair waits for stable unit snapshots before
+mutation, preserves exact enablement, and retains #2023's daemon
+`activating`-to-`active` convergence rule; another normal deploy remains
+prohibited until exact-head review.
+
+Stable-unit successor verification at `2026-07-31T23:36Z` (Windows host):
+
+```text
+RED transient snapshot: saved watchdog/daemon states remained `activating`
+RED nonsettling states: preflight wrote intent and proceeded toward mutation
+
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py \
+  tests/test_deploy_terminal_receipt.py -q
+428 passed in 11.81s
+
+python -m ruff check scripts/retire_cheat_loop_deploy_fence.py \
+  tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict --no-interactive
+Change 'repair-recovery-deploy-handoff' is valid
+
+python scripts/openspec_flow.py check-change \
+  repair-recovery-deploy-handoff --provider codex-gpt5-desktop
+ALLOWED
+```
 
 Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
 successfully handed off the recovered generation and installed the target, but

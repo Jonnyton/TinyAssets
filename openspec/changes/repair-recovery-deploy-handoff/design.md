@@ -175,6 +175,26 @@ foreign fixed-name sibling untouched. The next normal preflight accepts
 recovery sidecars only when their exact recorded IDs and recovery project still
 match.
 
+### 6. Snapshot stable systemd intent before fencing
+
+Normal deploy run `30672569902` proved the exact fleet, public canary, and
+unchanged receipts, then cleanup compared its restored steady state against
+transient preflight observations. The saved `tinyassets-watchdog.service`
+state was `activating` and later correctly settled to `inactive`; the saved
+daemon state was `activating` and later correctly settled to `active`. Requiring
+those transient observations to remain unchanged for 120 seconds produced a
+false restoration failure and intentionally fenced the healthy fleet.
+
+Preflight therefore waits before any mutation until every present restart
+racer and the daemon reports a stable `active`, `inactive`, or `failed` state.
+It writes only that stable snapshot into the restoration contract. A unit that
+does not settle within the bounded window fails preflight before the fence
+state or host is mutated. Restoration retains exact saved state and enablement
+for watchdog services, timers, and the daemon; the already-reviewed daemon
+startup rule still maps a legacy saved `activating` observation only to its
+healthy terminal `active` expectation. Exact mask absence and exact restored
+unit-state proof remain terminal workflow requirements.
+
 ## Risks / Trade-offs
 
 - [Prior recovery state is incomplete or stale] → refuse before preflight
@@ -201,6 +221,11 @@ match.
 - [A foreign container spoofs a recovery-shaped project] → regex shape remains
   diagnostic-only; mutation accepts only six audited deterministic project
   identities plus exact service, non-writer, ID capture, and same-project proof.
+
+- [A transient systemd observation is mistaken for durable intent] -> wait for
+  a stable active state before write-ahead fencing; timeout fails pre-mutation.
+- [Recovery leaves the daemon with nonstandard enablement] -> preserve and
+  prove the exact authoritative enablement rather than broadening mutation.
 
 ## Migration Plan
 
@@ -247,13 +272,14 @@ match.
 The controlled deploy exposed a second terminal edge after all forward gates
 passed: preflight persisted systemd's transient `activating` daemon state, but
 cleanup correctly observed the settled service as `active`. Exact comparison
-could never converge, so cleanup safely re-fenced the proved target. The repair
-normalizes only this preflight daemon transition to an `active` restore
-expectation. It also keeps forward, rollback, and cleanup as separate receipt
-facts: a successful forward/not-needed rollback followed by a proved cleanup
-fence becomes `failed_without_rollback`, never a synthesized contradictory
-rollback tuple. Stopped containers are not eligible as the running terminal
-identity.
+could never converge, so cleanup safely re-fenced the proved target. The #2023
+compatibility repair normalizes only an already-persisted legacy daemon
+`activating` observation to an `active` restore expectation; the stable-snapshot
+successor above prevents fresh preflight from persisting any transient state.
+The receipt repair also keeps forward, rollback, and cleanup as separate facts:
+a successful forward/not-needed rollback followed by a proved cleanup fence
+becomes `failed_without_rollback`, never a synthesized contradictory rollback
+tuple. Stopped containers are not eligible as the running terminal identity.
 
 Rollback uses the existing provenance-bound unsafe recovery workflow with the
 previous admitted stop-writer image. No direct host deletion or fence bypass is
