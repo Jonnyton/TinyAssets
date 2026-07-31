@@ -96,4 +96,9 @@ fleet.
 - **AND** failed or missing cleanup/fence proof suppresses artifact publication
 - **AND** a mismatched observed image or revision is reported only as
   unavailable, never copied into the artifact
+- **AND** container state transport does not depend on delimiter interpretation:
+  bounded raw Docker inspect JSON remains outside the artifact, the sanitizer
+  emits only the fixed allowlisted state and exact candidate identity fields,
+  and environment, command, mount, arbitrary label, and raw error fields are
+  discarded before the raw temporary file is deleted
 - **AND** retains the artifact for no more than seven days

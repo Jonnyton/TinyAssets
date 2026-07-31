@@ -27,6 +27,10 @@
   deploy/intervening-failure and cancellation coverage, mismatch suppression,
   hard capture deadlines, pinned upload, and publication gated on explicit
   restored-or-safely-fenced cleanup plus terminal-receipt proof.
+- [ ] 2.1b Replace the failed tab-formatted candidate-state transport with
+  bounded raw Docker inspect JSON parsed to fixed allowlisted fields, prove
+  secret-bearing inspect fields cannot enter the artifact, and obtain
+  independent exact-head review before another normal deploy.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

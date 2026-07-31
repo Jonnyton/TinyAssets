@@ -137,35 +137,50 @@ def sanitize_startup_log(raw: bytes) -> dict[str, Any]:
     }
 
 
-def sanitize_candidate_state(
+def sanitize_candidate_inspect(
     raw: bytes,
     *,
     target_revision: str,
     target_image_ref: str,
 ) -> dict[str, Any]:
-    """Validate fixed-field container state and bind it to the candidate."""
+    """Reduce one Docker inspect object and bind it to the exact candidate."""
 
     unavailable: dict[str, Any] = {
         "candidate_identity_match": False,
         "capture": "unavailable",
     }
+    if len(raw) > MAX_RAW_BYTES:
+        return unavailable
     try:
-        values = raw.decode("utf-8", errors="strict").strip().split("\t")
-    except UnicodeDecodeError:
+        payload = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return unavailable
-    if len(values) != 8:
+    if (
+        not isinstance(payload, list)
+        or len(payload) != 1
+        or not isinstance(payload[0], dict)
+    ):
         return unavailable
-    (
-        status,
-        running,
-        restarting,
-        exit_code,
-        oom_killed,
-        health,
-        container_revision,
-        container_image_ref,
-    ) = values
-    if status not in {
+
+    inspected = payload[0]
+    state = inspected.get("State")
+    config = inspected.get("Config")
+    if not isinstance(state, dict) or not isinstance(config, dict):
+        return unavailable
+    labels = config.get("Labels")
+    if not isinstance(labels, dict):
+        return unavailable
+
+    status = state.get("Status")
+    running = state.get("Running")
+    restarting = state.get("Restarting")
+    exit_code = state.get("ExitCode")
+    oom_killed = state.get("OOMKilled")
+    health_payload = state.get("Health")
+    container_revision = labels.get("org.opencontainers.image.revision")
+    container_image_ref = config.get("Image")
+
+    if not isinstance(status, str) or status not in {
         "created",
         "running",
         "paused",
@@ -175,15 +190,27 @@ def sanitize_candidate_state(
         "dead",
     }:
         return unavailable
-    if running not in {"true", "false"} or restarting not in {"true", "false"}:
+    if not isinstance(running, bool) or not isinstance(restarting, bool):
         return unavailable
-    if oom_killed not in {"true", "false"}:
+    if not isinstance(oom_killed, bool):
         return unavailable
-    if health not in {"", "starting", "healthy", "unhealthy"}:
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool):
         return unavailable
-    try:
-        parsed_exit_code = int(exit_code)
-    except ValueError:
+    if health_payload is None:
+        health = None
+    elif isinstance(health_payload, dict):
+        health = health_payload.get("Status")
+        if not isinstance(health, str) or health not in {
+            "starting",
+            "healthy",
+            "unhealthy",
+        }:
+            return unavailable
+    else:
+        return unavailable
+    if not isinstance(container_revision, str) or not isinstance(
+        container_image_ref, str
+    ):
         return unavailable
 
     valid_container_revision = bool(re.fullmatch(r"[0-9a-f]{40}", container_revision))
@@ -198,11 +225,11 @@ def sanitize_candidate_state(
     )
     return {
         "status": status,
-        "running": running == "true",
-        "restarting": restarting == "true",
-        "exit_code": parsed_exit_code,
-        "oom_killed": oom_killed == "true",
-        "health": health or None,
+        "running": running,
+        "restarting": restarting,
+        "exit_code": exit_code,
+        "oom_killed": oom_killed,
+        "health": health,
         "container_revision": (
             container_revision if identity_match else "unavailable"
         ),
@@ -215,12 +242,12 @@ def sanitize_candidate_state(
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--state", action="store_true")
+    parser.add_argument("--inspect-json", action="store_true")
     parser.add_argument("--target-revision", default="")
     parser.add_argument("--target-image-ref", default="")
     args = parser.parse_args()
-    if args.state:
-        result = sanitize_candidate_state(
+    if args.inspect_json:
+        result = sanitize_candidate_inspect(
             sys.stdin.buffer.read(),
             target_revision=args.target_revision,
             target_image_ref=args.target_image_ref,
@@ -229,7 +256,7 @@ def main() -> int:
         result = sanitize_startup_log(sys.stdin.buffer.read())
     json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
     sys.stdout.write("\n")
-    if args.state and result.get("candidate_identity_match") is not True:
+    if args.inspect_json and result.get("candidate_identity_match") is not True:
         return 2
     return 0
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 
 from scripts.sanitize_startup_diagnostics import (
-    sanitize_candidate_state,
+    sanitize_candidate_inspect,
     sanitize_startup_log,
 )
 
@@ -112,12 +112,44 @@ def test_sanitizer_bounds_input_and_signal_count():
     assert len(result["signals"]) == 1
 
 
-def test_candidate_state_requires_exact_image_and_revision_match():
-    raw = (
-        f"exited\tfalse\tfalse\t1\tfalse\tunhealthy\t{_REVISION}\t{_IMAGE}\n"
+def _inspect_payload(
+    *,
+    revision: str = _REVISION,
+    image: str = _IMAGE,
+    secret: str = "secret-inspect-value",
+) -> bytes:
+    return json.dumps(
+        [
+            {
+                "State": {
+                    "Status": "exited",
+                    "Running": False,
+                    "Restarting": False,
+                    "ExitCode": 1,
+                    "OOMKilled": False,
+                    "Health": {"Status": "unhealthy"},
+                    "Error": secret,
+                },
+                "Config": {
+                    "Image": image,
+                    "Labels": {
+                        "org.opencontainers.image.revision": revision,
+                        "tenant-secret-label": secret,
+                    },
+                    "Env": [f"TOKEN={secret}"],
+                    "Cmd": ["daemon", "--token", secret],
+                },
+                "Mounts": [{"Source": f"/data/{secret}", "Destination": "/data"}],
+            }
+        ]
     ).encode()
 
-    result = sanitize_candidate_state(
+
+def test_candidate_inspect_requires_exact_image_and_revision_match():
+    secret = "secret-inspect-value"
+    raw = _inspect_payload(secret=secret)
+
+    result = sanitize_candidate_inspect(
         raw,
         target_revision=_REVISION,
         target_image_ref=_IMAGE,
@@ -127,25 +159,24 @@ def test_candidate_state_requires_exact_image_and_revision_match():
     assert result["container_revision"] == _REVISION
     assert result["container_image_ref"] == _IMAGE
     assert result["exit_code"] == 1
+    assert secret not in json.dumps(result)
 
 
-def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure():
+def test_candidate_inspect_rejects_each_identity_mismatch_without_raw_disclosure():
     token = "token-bearing-forged-state"
-    valid_raw = (
-        f"exited\tfalse\tfalse\t1\tfalse\tunhealthy\t{_REVISION}\t{_IMAGE}\n"
-    ).encode()
+    valid_raw = _inspect_payload(secret=token)
 
-    revision_mismatch = sanitize_candidate_state(
+    revision_mismatch = sanitize_candidate_inspect(
         valid_raw,
         target_revision="c" * 40,
         target_image_ref=_IMAGE,
     )
-    image_mismatch = sanitize_candidate_state(
+    image_mismatch = sanitize_candidate_inspect(
         valid_raw,
         target_revision=_REVISION,
         target_image_ref=f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'d' * 64}",
     )
-    malformed = sanitize_candidate_state(
+    malformed = sanitize_candidate_inspect(
         f"{token}\t{token}".encode(),
         target_revision=_REVISION,
         target_image_ref=_IMAGE,
@@ -162,3 +193,46 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
         "capture": "unavailable",
     }
     assert token not in json.dumps(malformed)
+
+
+def test_candidate_inspect_rejects_non_singleton_and_malformed_shapes():
+    not_an_object = json.dumps([["secret"]]).encode()
+    multiple = json.dumps([{}, {}]).encode()
+    missing = json.dumps([{"State": {}, "Config": {}}]).encode()
+    unhashable_status = _inspect_payload().replace(
+        b'"Status": "exited"', b'"Status": ["secret"]', 1
+    )
+    unhashable_health = _inspect_payload().replace(
+        b'"Status": "unhealthy"', b'"Status": ["secret"]', 1
+    )
+
+    for raw in (
+        not_an_object,
+        multiple,
+        missing,
+        unhashable_status,
+        unhashable_health,
+        b"{not-json",
+    ):
+        result = sanitize_candidate_inspect(
+            raw,
+            target_revision=_REVISION,
+            target_image_ref=_IMAGE,
+        )
+        assert result == {
+            "candidate_identity_match": False,
+            "capture": "unavailable",
+        }
+
+
+def test_candidate_inspect_rejects_oversized_input_before_parsing():
+    result = sanitize_candidate_inspect(
+        b" " * 131_073,
+        target_revision=_REVISION,
+        target_image_ref=_IMAGE,
+    )
+
+    assert result == {
+        "candidate_identity_match": False,
+        "capture": "unavailable",
+    }

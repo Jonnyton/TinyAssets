@@ -483,6 +483,10 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
 
     capture_script = str(capture.get("run", ""))
     assert "docker inspect --type container tinyassets-daemon" in capture_script
+    assert "docker inspect --type container tinyassets-daemon --format" not in (
+        capture_script
+    )
+    assert "head -c 131073" in capture_script
     assert "docker logs --tail 200 tinyassets-daemon" in capture_script
     assert "tail -c 131072" in capture_script
     assert "scripts/sanitize_startup_diagnostics.py" in capture_script
@@ -494,13 +498,12 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert 'rm -f "${raw_log}"' in capture_script
     assert "TARGET_REVISION" in (capture.get("env") or {})
     assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
-    assert "org.opencontainers.image.revision" in capture_script
-    assert ".Config.Image" in capture_script
     assert "candidate_identity_match" in capture_script
-    assert "--state" in capture_script
+    assert "--inspect-json" in capture_script
     assert '--target-revision "${TARGET_REVISION}"' in capture_script
     assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
     assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
+    assert "candidate-daemon-inspect.raw.json" in capture_script
     assert "GITHUB_SHA" not in capture_script
     assert "docker compose" not in capture_script
     assert "compose-ps" not in capture_script

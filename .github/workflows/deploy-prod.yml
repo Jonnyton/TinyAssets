@@ -1116,7 +1116,7 @@ jobs:
         run: |
           set +e
           evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
-          state_raw="${RUNNER_TEMP}/candidate-daemon-state.raw"
+          inspect_raw="${RUNNER_TEMP}/candidate-daemon-inspect.raw.json"
           raw_log="${RUNNER_TEMP}/candidate-daemon.raw.log"
           candidate_identity_match=false
           mkdir -p "${evidence_dir}"
@@ -1130,14 +1130,14 @@ jobs:
                 -o ServerAliveInterval=5 \
                 -o ServerAliveCountMax=2 \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.State.ExitCode}}\t{{.State.OOMKilled}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}\t{{index .Config.Labels \"org.opencontainers.image.revision\"}}\t{{.Config.Image}}'" \
-                > "${state_raw}" 2>/dev/null; then
+                "timeout 15s sudo docker inspect --type container tinyassets-daemon | head -c 131073" \
+                > "${inspect_raw}" 2>/dev/null; then
             validate_candidate_identity() {
               python scripts/sanitize_startup_diagnostics.py \
-                  --state \
+                  --inspect-json \
                   --target-revision "${TARGET_REVISION}" \
                   --target-image-ref "${TARGET_IMAGE_REF}" \
-                  < "${state_raw}" \
+                  < "${inspect_raw}" \
                   > "${evidence_dir}/daemon-state.json" 2>/dev/null
             }
             if validate_candidate_identity; then
@@ -1158,7 +1158,7 @@ jobs:
           python scripts/sanitize_startup_diagnostics.py \
               < "${raw_log}" \
               > "${evidence_dir}/daemon-signals.json"
-          rm -f "${raw_log}" "${state_raw}"
+          rm -f "${raw_log}" "${inspect_raw}"
 
           python - \
               "${evidence_dir}/manifest.json" \

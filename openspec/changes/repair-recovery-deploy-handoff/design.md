@@ -134,6 +134,11 @@ before removal. This is not general Docker garbage collection.
    cleanup output proving the fleet was restored or authoritatively
    restart-fenced plus a published terminal release-state receipt. Mismatched
    observed container identities are reduced to `unavailable`.
+   Container state crosses SSH as bounded raw Docker inspect JSON in runner
+   temporary storage, not a shell-formatted field tuple. The sanitizer parses
+   only fixed state fields, image reference, and revision; environment,
+   command, mounts, labels other than the exact revision, errors, and all other
+   raw inspect fields are discarded before the raw file is deleted.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,
