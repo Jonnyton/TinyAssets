@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 17:48 - dark background binding transitions
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/background-authority-transitions-20260730`
+- Lane state: Claimed OpenSpec task 2.3
+- Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730`
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.3; PR pending
+- Purpose: server-owned create/rotate/pause/revoke/exhaust transitions only
+- Review gate: focused TDD, mirror parity, strict OpenSpec, independent exact-head review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730/_PURPOSE.md`
+- Ship/abandon: dark service only; no attempt issuance or runtime activation
+
 ## 2026-07-30 17:23 - persist dark background Branch authority
 
 - Provider: `codex-gpt5-desktop`
