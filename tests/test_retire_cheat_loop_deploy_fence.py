@@ -964,21 +964,17 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
 
 
 @pytest.mark.parametrize(
-    ("observed", "expected"),
+    "observed",
     [
-        ("activating", "active"),
-        ("active", "active"),
-        ("inactive", "inactive"),
-        ("failed", "failed"),
-        ("deactivating", "deactivating"),
-        ("reloading", "reloading"),
+        "active",
+        "inactive",
+        "failed",
     ],
 )
-def test_preflight_normalizes_only_activating_daemon_restore_state(
+def test_preflight_preserves_stable_daemon_restore_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     observed: str,
-    expected: str,
 ):
     host = LifecycleHost(tmp_path)
     host.units[DAEMON_SERVICE]["active"] = observed
@@ -995,7 +991,7 @@ def test_preflight_normalizes_only_activating_daemon_restore_state(
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["daemon_service_state"] == {
-        "active": expected,
+        "active": observed,
         "enabled": "enabled",
     }
     assert state["restart_racer_state"]["daemon-watchdog.service"][
@@ -5477,6 +5473,85 @@ def test_restore_handles_active_timer_requiring_static_service_to_settle(
 
     assert evidence["phase"] == "restored"
     assert service_reads["count"] >= 2
+
+
+def test_preflight_records_only_settled_unit_states_before_fencing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    host = LifecycleHost(tmp_path)
+    host.units["tinyassets-watchdog.service"]["active"] = "activating"
+    host.units[DAEMON_SERVICE].update(
+        {"active": "activating", "enabled": "disabled"}
+    )
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    state_path = tmp_path / "state.json"
+    original_state = host.unit_state
+    reads = {"tinyassets-watchdog.service": 0, DAEMON_SERVICE: 0}
+
+    def settling_state(unit: str) -> dict[str, str]:
+        value = original_state(unit)
+        if unit in reads and value["active"] == "activating":
+            reads[unit] += 1
+            if reads[unit] >= 2:
+                host.units[unit]["active"] = (
+                    "active" if unit == DAEMON_SERVICE else "inactive"
+                )
+                value["active"] = host.units[unit]["active"]
+        return value
+
+    monkeypatch.setattr(host, "unit_state", settling_state)
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["restart_racer_state"]["tinyassets-watchdog.service"] == {
+        "active": "inactive",
+        "enabled": "static",
+    }
+    assert state["daemon_service_state"] == {
+        "active": "active",
+        "enabled": "disabled",
+    }
+    assert all(count >= 2 for count in reads.values())
+
+
+@pytest.mark.parametrize("transient", ["activating", "deactivating", "reloading"])
+def test_preflight_refuses_nonsettling_transient_unit_before_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transient: str
+):
+    host = LifecycleHost(tmp_path)
+    host.units[DAEMON_SERVICE]["active"] = transient
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    monkeypatch.setattr(fence.time, "sleep", lambda _seconds: None)
+    state_path = tmp_path / "state.json"
+
+    with pytest.raises(FenceError, match="unit snapshot did not settle"):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not state_path.exists()
+    assert not any(
+        call[:2]
+        in {
+            ("systemctl", "disable"),
+            ("systemctl", "stop"),
+            ("systemctl", "mask"),
+            ("docker", "update"),
+        }
+        for call in host.calls
+    )
 
 
 def test_restore_converges_saved_activating_disabled_daemon_exactly(

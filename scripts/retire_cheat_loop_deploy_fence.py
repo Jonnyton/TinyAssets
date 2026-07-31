@@ -835,6 +835,35 @@ def _wait_units_restored(
     )
 
 
+def _wait_units_stable_snapshot(
+    host: Host,
+    units: Sequence[str],
+    *,
+    timeout_seconds: float = UNIT_RESTORE_TIMEOUT_SECONDS,
+    delay_seconds: float = 1.0,
+) -> dict[str, dict[str, str]]:
+    """Capture only stable systemd states before writing restoration intent."""
+
+    states: dict[str, dict[str, str]] = {}
+    transient: dict[str, dict[str, str]] = {}
+    attempts = max(1, int(timeout_seconds / delay_seconds) + 1)
+    for attempt in range(attempts):
+        states = {unit: _validated_unit_state(host, unit) for unit in units}
+        transient = {
+            unit: state
+            for unit, state in states.items()
+            if state["active"] not in {"active", "inactive", "failed"}
+        }
+        if not transient:
+            return states
+        if attempt + 1 < attempts:
+            time.sleep(delay_seconds)
+    raise FenceError(
+        f"unit snapshot did not settle after {timeout_seconds:g}s timeout: "
+        f"transient={transient}"
+    )
+
+
 def _set_restart_no(
     host: Host,
     consumers: Mapping[str, Mapping[str, Any]],
@@ -1381,6 +1410,10 @@ def preflight(
     )
     if not host.unit_present(DAEMON_SERVICE):
         raise FenceError(f"required production unit is missing: {DAEMON_SERVICE}")
+    stable_unit_states = _wait_units_stable_snapshot(
+        host,
+        (*present_racers, DAEMON_SERVICE),
+    )
 
     state: dict[str, Any] = {
         "schema_version": 1,
@@ -1396,10 +1429,10 @@ def preflight(
         "receipt_host_path": str(receipt.host_path),
         "old_container_ids": old_ids,
         "restart_racer_state": {
-            unit: host.unit_state(unit) for unit in present_racers
+            unit: stable_unit_states[unit] for unit in present_racers
         },
         "daemon_service_state": _daemon_restore_expectation(
-            _validated_unit_state(host, DAEMON_SERVICE)
+            stable_unit_states[DAEMON_SERVICE]
         ),
         "old_restart_policies": {
             name: str(info.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", ""))

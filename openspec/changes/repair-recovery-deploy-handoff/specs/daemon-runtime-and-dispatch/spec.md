@@ -1,17 +1,20 @@
 ## ADDED Requirements
 
-### Requirement: Deploy Cleanup Converges Transitional Service State And Publishes Terminal Truth
+### Requirement: Deploy Cleanup Converges Legacy Transitional Service State And Publishes Terminal Truth
 
-The production deploy fence SHALL treat a daemon observed as systemd
-`activating` during preflight as an intended healthy `active` restore state.
-It MUST retain the exact saved enablement state and MUST NOT normalize
-`inactive`, `failed`, `deactivating`, `reloading`, an invalid state, or any
-restart-racer state.
+The production deploy fence SHALL treat a daemon `activating` observation that
+was already persisted by a pre-stable-snapshot generation as an intended
+healthy `active` restore state. Fresh preflight MUST instead wait for every
+transient unit observation to settle before persisting restoration intent. The
+legacy convergence path MUST retain the exact saved enablement state and MUST
+NOT normalize `inactive`, `failed`, `deactivating`, `reloading`, an invalid
+state, or any restart-racer state.
 
 #### Scenario: Activating daemon converges to active
 
-- **WHEN** preflight observes `tinyassets-daemon.service` as `activating` with
-  authoritative enablement and the proved target later settles at `active`
+- **WHEN** cleanup reads legacy durable state that recorded
+  `tinyassets-daemon.service` as `activating` with authoritative enablement and
+  the proved target later settles at `active`
 - **THEN** cleanup compares it with the normalized `active` restore expectation
 - **AND** exact enablement, unmasked state, fleet, receipt, queue, process, and
   image proofs remain required
@@ -43,6 +46,21 @@ removal intent before container mutation.
   recovery handoff record
 - **THEN** target preparation does not remove that predecessor through the
   recovery handoff path
+
+#### Scenario: Normal handoff records stable unit intent
+
+- **WHEN** preflight observes any present restart-racer unit or the canonical
+  daemon in `activating`, `deactivating`, or `reloading`
+- **THEN** it waits within a bounded pre-mutation window and records restoration
+  intent only after every observed unit reaches `active`, `inactive`, or
+  `failed`
+- **AND** a unit that does not settle fails preflight before durable fence state
+  or host mutation
+- **AND** restoration preserves the exact settled watchdog/timer posture and
+  exact daemon enablement, while only a saved daemon startup transition may
+  converge from `activating` to `active`
+- **AND** missing units, residual masks, or any other restored-state drift fail
+  closed
 
 #### Scenario: Fixed-name sidecars hand off without weakening recovery
 

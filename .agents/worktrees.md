@@ -1,16 +1,28 @@
 # Worktree Inventory
 
+## 2026-07-31 16:29 - recovery transient unit-state proof
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-transient-unit-state-proof`
+- Lane state: Active; production recovered by run 30672822369; normal handoff blocked on false transient-state mismatch
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-transient-unit-state-proof`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: restore systemd intent without requiring transient `activating` snapshots to remain frozen for 120 seconds
+- Review gate: production-shaped TDD, focused deployment suite, strict OpenSpec, clean Ruff/diff, and independent exact-head fail-closed approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-transient-unit-state-proof/_PURPOSE.md`
+- Ship/abandon: one controlled normal deploy only after merge; keep audited recovery ready until canonical handoff passes
+
 ## 2026-07-31 16:10 - combined recovery sidecar strict successor
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-review-gaps`
-- Lane state: Active atop #2018; prior stricter findings repaired; combined exact-head review pending
+- Lane state: Merged as PR #2020; run 30672569902 passed sidecar handoff and exposed the transient unit-state successor above
 - Worktree: `C:/Users/Jonathan/Projects/wf-sidecar-main-audit`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2020 merged
 - Purpose: preserve the finite audited-project authority while closing exact configuration, ID, replay, mixed-ownership, and reboot-refence gaps
 - Review gate: focused deployment suite, strict OpenSpec, clean Ruff/diff, and independent exact-head fail-closed/security approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-sidecar-main-audit/_PURPOSE.md`
-- Ship/abandon: merge only after approval; then one controlled normal deploy and public canary
+- Ship/abandon: retain as landed evidence; transient unit-state successor owns the remaining normal handoff
 
 ## 2026-07-31 15:48 - drain watchdog health-write resilience
 

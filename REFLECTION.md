@@ -1158,3 +1158,16 @@ fresh-host rollback edges found later.
 - What I would do differently: production-shaped restore tests should include
   transitional systemd states and should assert container running state—not
   mere container existence—before deriving active image identity.
+
+## 2026-07-31 - Stable intent versus transient systemd observation
+
+- What surprised me: the exact-state cleanup was strict but not truthful; it
+  froze `activating` as durable intent, so a healthy unit settling to its normal
+  state became a safety violation after every fleet and canary proof passed.
+- Pattern worth capturing: write restoration contracts only from stable
+  observations. Bound the settling wait before mutation, preserve exact stable
+  state and enablement, and separately normalize the daemon's startup transition
+  to its healthy active terminal state.
+- What I would do differently: drive the first deploy test with transient
+  systemd states and an active-but-disabled daemon, not only idealized stable
+  unit fixtures.
