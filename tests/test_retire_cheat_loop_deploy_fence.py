@@ -9,7 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import pytest
 
@@ -454,6 +454,7 @@ class LifecycleHost:
         for index, (name, service) in enumerate(fence.CANONICAL_SIDECARS):
             mounts = [
                 {
+                    "Type": "bind",
                     "Source": source,
                     "Destination": destination,
                     "RW": False,
@@ -523,6 +524,7 @@ class LifecycleHost:
             if any(
                 mount.get("Name") == "tinyassets-data"
                 for mount in info.get("Mounts", [])
+                if isinstance(mount, Mapping)
             )
         )
 
@@ -1333,7 +1335,16 @@ def test_preflight_sidecar_refusal_reports_only_fixed_predicate(
     )
 
 
-@pytest.mark.parametrize("drift", ["forged_image", "volume_bind_alias"])
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "forged_image",
+        "volume_bind_alias",
+        "named_volume",
+        "duplicate_mount",
+        "non_mapping_mount",
+    ],
+)
 def test_preflight_refuses_unproved_sidecar_config_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1348,14 +1359,25 @@ def test_preflight_refuses_unproved_sidecar_config_before_mutation(
     name = fence.CANONICAL_SIDECARS[-1][0]
     if drift == "forged_image":
         host.containers[name]["Config"]["Image"] = "attacker/image@sha256:" + "f" * 64
-    else:
+    elif drift == "volume_bind_alias":
         host.containers[name]["Mounts"].append(
             {
+                "Type": "bind",
                 "Source": str(host.volume),
                 "Destination": "/alternate-data",
                 "RW": False,
             }
         )
+    elif drift == "named_volume":
+        mount = host.containers[name]["Mounts"][0]
+        mount["Type"] = "volume"
+        mount["Name"] = "foreign-volume"
+    elif drift == "duplicate_mount":
+        host.containers[name]["Mounts"].append(
+            json.loads(json.dumps(host.containers[name]["Mounts"][0]))
+        )
+    else:
+        host.containers[name]["Mounts"].append("not-a-mount")
 
     with pytest.raises(FenceError, match="sidecar"):
         preflight(
@@ -1409,7 +1431,7 @@ def test_preflight_recorded_sidecar_identity_refusal_hides_ids(
     assert "recovery-sidecar-0" not in str(failure.value)
 
 
-def test_preflight_stops_bound_sidecars_by_exact_id_during_substitution(
+def test_preflight_refuses_sidecar_substitution_after_stopping_bound_ids(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -1425,13 +1447,17 @@ def test_preflight_stops_bound_sidecars_by_exact_id_during_substitution(
     }
     host.substitute_sidecars_before_stop = True
 
-    preflight(
-        host,
-        image_ref=host.target_image_ref,
-        target_revision=host.target_revision,
-        run_id=RUN_ID,
-        state_path=state_path,
-    )
+    with pytest.raises(
+        FenceError,
+        match="restored sidecar recorded identity changed: tinyassets-tunnel",
+    ):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
 
     stop_call = next(call for call in host.calls if call[:2] == ("docker", "stop"))
     assert set(bound_ids.values()) <= set(stop_call[2:])
@@ -1714,6 +1740,76 @@ def test_prepare_replays_partial_recovery_removal_after_durable_intent(
     assert host.containers == {}
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["recovery_handoff"]["removal_phase"] == "removed"
+
+
+def test_prepare_refuses_off_volume_name_substitution_before_replay_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    configured_ref[0] = host.target_image_ref
+    original_run = host.run
+    interrupted = False
+
+    def interrupt_after_one_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal interrupted
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not interrupted:
+            interrupted = True
+            original_run(
+                ["docker", "rm", command[2]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated recovery handoff interruption")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated recovery handoff"):
+        prepare_deploy(
+            host,
+            image_ref=host.target_image_ref,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    missing_name = next(
+        name for name in EXPECTED_CONTAINERS if name not in host.containers
+    )
+    replacement = host._containers(
+        "foreign-off-volume", "sha256:old", running=True
+    )[missing_name]
+    replacement["Mounts"] = []
+    host.containers[missing_name] = replacement
+    host.run = original_run  # type: ignore[method-assign]
+    host.calls.clear()
+
+    with pytest.raises(FenceError, match="substituted"):
+        prepare_deploy(
+            host,
+            image_ref=host.target_image_ref,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert host.containers[missing_name]["State"]["Running"] is True
 
 
 def test_prepare_replays_durable_recovery_removal_intent_after_exact_absence(
@@ -4131,6 +4227,71 @@ def test_stopped_full_fleet_removal_replays_exact_remaining_subset(
     assert host.containers == {}
     final_state = json.loads(state_path.read_text(encoding="utf-8"))
     assert final_state["stopped_fleet_removal"]["removal_phase"] == "removed"
+
+
+def test_stopped_full_fleet_replay_refuses_off_volume_name_substitution_before_removal(
+    tmp_path: Path,
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    for info in host.containers.values():
+        info["State"] = {"Running": False, "Pid": 0}
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    recorded = {name: str(info["Id"]) for name, info in host.containers.items()}
+    state["old_container_ids"] = recorded
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    original_run = host.run
+    interrupted = False
+
+    def interrupt_after_one_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal interrupted
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not interrupted:
+            interrupted = True
+            original_run(
+                ["docker", "rm", command[2]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated stopped fleet interruption")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated stopped fleet"):
+        fence._remove_recorded_stopped_fleet_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+
+    missing_name = next(
+        name for name in EXPECTED_CONTAINERS if name not in host.containers
+    )
+    replacement = host._containers(
+        "foreign-off-volume", "sha256:old", running=True
+    )[missing_name]
+    replacement["Mounts"] = []
+    host.containers[missing_name] = replacement
+    host.run = original_run  # type: ignore[method-assign]
+    host.calls.clear()
+    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+    with pytest.raises(FenceError, match="substituted"):
+        fence._remove_recorded_stopped_fleet_for_recovery(
+            host,
+            interrupted_state,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert host.containers[missing_name]["State"]["Running"] is True
 
 
 def test_recover_unsafe_replays_interrupted_full_stopped_fleet_removal(

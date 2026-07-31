@@ -1151,32 +1151,36 @@ def _assert_sidecar_nonwriter(
     volume_dir: Path,
 ) -> None:
     _assert_sidecar_image(name, info)
-    mounts = [
-        mount
-        for mount in info.get("Mounts", []) or []
-        if isinstance(mount, Mapping)
-    ]
+    raw_mounts = info.get("Mounts", []) or []
+    if not isinstance(raw_mounts, list) or any(
+        not isinstance(mount, Mapping) for mount in raw_mounts
+    ):
+        raise FenceError(f"sidecar mount posture is not canonical: {name}")
+    mounts = list(raw_mounts)
     volume_source = posixpath.normpath(str(volume_dir))
     if any(
-        mount.get("Name") == VOLUME_NAME
+        mount.get("Type") != "bind"
+        or bool(mount.get("Name"))
         or mount.get("Destination") == "/data"
         or posixpath.normpath(str(mount.get("Source", ""))) == volume_source
+        or mount.get("RW") is not False
         for mount in mounts
     ):
         raise FenceError(f"sidecar is not a non-writer: {name}")
-    actual_mounts = {
+    actual_mounts = [
         (
             str(mount.get("Source", "")),
             str(mount.get("Destination", "")),
-            bool(mount.get("RW", False)),
         )
         for mount in mounts
-    }
-    expected_mounts = {
-        (source, destination, False)
+    ]
+    expected_mounts = [
+        (source, destination)
         for source, destination in CANONICAL_SIDECAR_MOUNTS.get(name, ())
-    }
-    if actual_mounts != expected_mounts:
+    ]
+    if len(actual_mounts) != len(expected_mounts) or set(actual_mounts) != set(
+        expected_mounts
+    ):
         raise FenceError(f"sidecar mount posture is not canonical: {name}")
 
 
@@ -1476,6 +1480,17 @@ def preflight(
         raise FenceError("extra production-volume consumer survived quiescence")
     if sidecars_still_running:
         raise FenceError("restored sidecar survived quiescence")
+    for name, info in sidecar_inspections.items():
+        captured_id = str(info.get("Id", ""))
+        if _named_container_absent_exact(host, name):
+            raise FenceError(
+                f"restored sidecar recorded identity changed: {name}"
+            )
+        current = host.container_info(name)
+        if str(current.get("Id", "")) != captured_id:
+            raise FenceError(
+                f"restored sidecar recorded identity changed: {name}"
+            )
     if final_risk:
         raise FenceError("post-quiesce bug_investigation queue risk is nonzero")
     if final_processes:
@@ -1553,6 +1568,10 @@ def _remove_restored_recovery_handoff(
                     raise FenceError(
                         f"removed recovery handoff writer still exists: {name}"
                     )
+                if not _named_container_absent_exact(host, name):
+                    raise FenceError(
+                        f"recovery handoff writer name was substituted: {name}"
+                    )
         if phase != "removed":
             raw_handoff["removal_phase"] = "removed"
             raw_handoff["removed_container_ids"] = dict(recorded)
@@ -1581,6 +1600,10 @@ def _remove_restored_recovery_handoff(
         if not _container_absent_exact(host, recorded[name]):
             raise FenceError(
                 f"removed recovery handoff writer still exists: {name}"
+            )
+        if not _named_container_absent_exact(host, name):
+            raise FenceError(
+                f"recovery handoff writer name was substituted: {name}"
             )
     for name, info in inspections.items():
         labels = info.get("Config", {}).get("Labels", {}) or {}
@@ -2668,8 +2691,13 @@ def _remove_recorded_stopped_fleet_for_recovery(
         raise FenceError("stopped fleet removal identities changed")
 
     for name, identity in recorded.items():
-        if name not in names and not _container_absent_exact(host, identity):
-            raise FenceError(f"removed stopped writer still exists: {name}")
+        if name not in names:
+            if not _container_absent_exact(host, identity):
+                raise FenceError(f"removed stopped writer still exists: {name}")
+            if not _named_container_absent_exact(host, name):
+                raise FenceError(
+                    f"stopped writer name was substituted: {name}"
+                )
     for name, info in inspections.items():
         if info.get("State", {}).get("Running"):
             raise FenceError(f"recovery writer is still running: {name}")

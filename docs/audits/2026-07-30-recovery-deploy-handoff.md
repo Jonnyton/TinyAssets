@@ -690,6 +690,31 @@ clean
 Production remains unchanged. This exact successor still requires independent
 exact-head fail-closed/security approval before publish or host mutation.
 
+The first independent strict-successor review returned ADAPT after reproducing
+three additional fail-closed gaps: a foreign named volume could spoof the mount
+set; interrupted full-fleet and restored-handoff replay could remove survivors
+before detecting a same-name off-volume replacement; and preflight accepted a
+same-name sidecar replacement after stopping only the captured IDs. The repair
+requires bind type plus no volume name and exact unique mappings, re-proves each
+captured fixed name after stop, and proves every missing recorded name globally
+absent before any replay `docker rm`. Replacements remain untouched and errors
+contain only fixed canonical names/predicates.
+
+Fresh adaptation evidence at `2026-07-31T22:55:42Z` (Windows host): the eight
+new targeted cases first failed against the reviewed implementation, then all
+passed after the repair; the complete fence file passed `173` tests. At
+`2026-07-31T22:56:23Z`, the six-file deployment/recovery suite passed `307`
+tests; Ruff, strict OpenSpec, cross-provider drift, and diff checks all passed.
+Independent exact-head re-review remains required before publish or production
+mutation.
+
+After concurrent PR #2018 added the finite audited full-Compose recovery
+project authority, the strict successor was restacked to preserve that exact
+allowlist and its mixed/arbitrary-project refusals. Fresh combined evidence at
+`2026-07-31T23:10:21Z` (Windows host): `315` deployment/recovery tests passed;
+Ruff, strict OpenSpec, cross-provider drift, and diff checks passed. Production
+remains unchanged pending combined exact-head review.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

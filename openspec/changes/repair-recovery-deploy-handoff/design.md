@@ -112,12 +112,16 @@ intent is durable.
 
 The non-writer proof is configuration-bound, not label-only: each sidecar must
 use its pinned canonical image and exact canonical read-only mount set. Any
-named volume, the production host-volume source under another destination, or
-an extra/missing/read-write mount fails before mutation. Preflight and unsafe
-refencing act on inspected exact IDs and reject a same-name replacement rather
-than stopping it. Full stopped predecessor removal also writes the complete ID
-set before `docker rm`, then replays only the proved remaining subset after an
-interruption.
+mount must be a unique mapping with bind type, no volume name, exact source and
+destination, and explicit read-only posture. A named volume, non-mapping or
+duplicate entry, the production host-volume source under another destination,
+or an extra/missing/read-write mount fails before mutation. Preflight and unsafe
+refencing act on inspected exact IDs, then re-prove every fixed name still maps
+to its captured ID before accepting the fence. They reject a same-name
+replacement without stopping it. Full stopped predecessor and restored-handoff
+removal also prove every missing recorded name globally absent before removing
+any survivor, so off-volume substitution cannot be detected only after
+mutation.
 
 An ownership refusal reports only the fixed sidecar name and one bounded
 predicate class: missing identity, invalid project, invalid service, changed

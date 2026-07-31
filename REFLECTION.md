@@ -9,6 +9,12 @@
 - **What I would do differently:** open one current-main successor immediately
   after the first overlap instead of continuing to polish a branch that could
   no longer merge cleanly.
+- **Follow-up:** set equality is not structural equality for security-sensitive
+  mount records; validate type, multiplicity, mapping shape, and explicit
+  read-only posture before comparing source/destination values.
+- **Follow-up:** a post-mutation global absence proof is too late. Replay must
+  prove both the recorded ID absent and its fixed name globally absent before
+  removing any remaining member of the generation.
 
 ## 2026-07-31 — autonomous recovery-sidecar retry
 

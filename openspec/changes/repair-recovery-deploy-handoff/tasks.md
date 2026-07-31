@@ -36,6 +36,9 @@
   inspected IDs, independently bind mixed owned/foreign partial starts,
   replay interrupted full-fleet removal from write-ahead state, normalize all
   restored sidecar policies, and re-fence interruption or name substitution.
+- [x] 1.12 Close stricter review findings: reject volume/duplicate/non-mapping
+  mount spoofing, re-prove captured sidecar names after stop, and refuse
+  off-volume name substitution before any interrupted-replay removal.
 
 ## 2. Verification And Release
 
