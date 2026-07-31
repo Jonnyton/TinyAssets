@@ -967,3 +967,13 @@ fresh-host rollback edges found later.
   normalized integer time key.
 - Next time: write the 16-way logical-key contention test at the same time as
   the uniqueness schema; single-thread replay does not prove the cloud case.
+## 2026-07-30 — dark background binding transitions
+
+- Surprised: exact store CAS is necessary but insufficient for a safe public
+  transition API; accepting a caller-built replacement would still let the
+  caller choose authority fields.
+- Keep: transition methods accept only a closed root lookup or an exact stored
+  fence, then reconstruct every ID, digest, generation, and status server-side
+  from a trusted canonical resolver.
+- Next time: test stale-invalid transitions as well as stale-valid ones; local
+  state-table validation must not hide a newer winning generation.
