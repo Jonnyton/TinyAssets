@@ -427,13 +427,10 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
 
     def count_attempts(self, *, binding_id: str) -> int:
         rows = self._conn.execute(
-            """
-            SELECT * FROM background_branch_attempts
-            WHERE binding_id = ?
-               OR json_extract(record_json, '$.binding_id') = ?
-            """,
-            (binding_id, binding_id),
+            "SELECT * FROM background_branch_attempts",
         ).fetchall()
+        # This adapter remains dark and favors fail-closed integrity over an
+        # aggregate that could hide a tampered query index or canonical record.
         attempts = tuple(_attempt_from_row(row) for row in rows)
         return sum(attempt.binding_id == binding_id for attempt in attempts)
 
