@@ -90,6 +90,7 @@ CANONICAL_IMAGE_RE = re.compile(
 )
 REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+RECOVERY_PROJECT_RE = re.compile(r"^tinyassets-recovery-[0-9a-f]{16}$")
 WRITER_PROCESS_MARKERS = (
     "tinyassets.universe_server",
     "tinyassets.daemon_server",
@@ -1118,6 +1119,27 @@ def _assert_sidecar_nonwriter(
         raise FenceError(f"sidecar is not a non-writer: {name}")
 
 
+def _sidecar_project_class(
+    project: str,
+    state: Mapping[str, Any],
+) -> str:
+    """Reduce an observed Compose project to a fixed, non-secret class."""
+
+    if not project:
+        return "missing"
+    if project == CANONICAL_COMPOSE_PROJECT:
+        return "current-canonical"
+    if project == "workflow":
+        return "legacy-workflow"
+    if project == "deploy":
+        return "legacy-deploy"
+    if project == str(state.get("recovery_project_name", "")):
+        return "recorded-recovery"
+    if RECOVERY_PROJECT_RE.fullmatch(project):
+        return "unrecorded-recovery"
+    return "other"
+
+
 def _restored_sidecar_inspections(
     host: Host,
     state: Mapping[str, Any],
@@ -1153,8 +1175,14 @@ def _restored_sidecar_inspections(
         labels = info.get("Config", {}).get("Labels", {}) or {}
         if not identity:
             raise FenceError(f"restored sidecar identity is missing: {name}")
-        if labels.get("com.docker.compose.project") != expected_project:
-            raise FenceError(f"restored sidecar project is invalid: {name}")
+        observed_project = str(
+            labels.get("com.docker.compose.project", "")
+        )
+        if observed_project != expected_project:
+            project_class = _sidecar_project_class(observed_project, state)
+            raise FenceError(
+                f"restored sidecar project {project_class} is invalid: {name}"
+            )
         if labels.get("com.docker.compose.service") != service:
             raise FenceError(f"restored sidecar service is invalid: {name}")
         if recovery_ids and recovery_ids.get(name) != identity:

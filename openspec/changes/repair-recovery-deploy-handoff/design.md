@@ -114,6 +114,12 @@ An ownership refusal reports only the fixed sidecar name and one bounded
 predicate class: missing identity, invalid project, invalid service, changed
 recorded identity, or failed non-writer proof. Raw IDs, labels, mount names, and
 other host inspection values never enter workflow logs or uploaded evidence.
+If the project predicate fails, a read-before-write diagnostic narrows only to
+one fixed category: the current canonical project; the two known historical
+project literals; the durable state's recorded recovery project; another
+well-formed recovery project; a missing label; or `other`. The raw observed
+label is never interpolated. These categories are evidence for a later
+provenance decision, not authority to mutate a sidecar.
 
 If both the candidate and ordinary rollback fail, unsafe recovery cannot rely
 on removed sidecars. Before recovery it may retire a newly present fixed-name
@@ -162,7 +168,8 @@ recovery project still match.
   partial creation is removed by exact ID and retried in the same invocation,
   while a repeated failure is durably re-fenced.
 - [Ownership evidence leaks host state] → publish only the fixed name and fixed
-  predicate class; keep every observed label, ID, and mount value private.
+  predicate class/category; keep every observed label, ID, and mount value
+  private.
 
 ## Migration Plan
 

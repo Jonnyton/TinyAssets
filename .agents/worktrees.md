@@ -4,19 +4,19 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-provenance-diagnostic`
-- Lane state: Active; 273 focused tests green; fixed-schema diagnostic exact-head review pending
+- Lane state: PR #2013 merged as `7fdf0cc5`; 279 focused tests green; fixed project-category exact-head review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
-- Purpose: reduce tunnel ownership refusal to one fixed predicate without exposing host labels or IDs
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: classify the tunnel's mismatched project into a fixed historical category without exposing its raw label
 - Review gate: TDD, focused recovery/deploy tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic/_PURPOSE.md`
-- Ship/abandon: merge only a fixed-schema diagnostic; retry deploy only after exact-head approval
+- Ship/abandon: merge only a fixed-category diagnostic; retry the normal deploy only after exact-head approval
 
 ## 2026-07-31 14:35 - autonomous recovery-sidecar retry
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-autonomous-retry`
-- Lane state: PR #2010 open; 269 focused tests green; exact-head security APPROVE at `a3335dfa`; CI pending
+- Lane state: Merged as `85d40171`; production deploy failed closed pre-mutation and moved to PR #2013
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2010
 - Purpose: make one recovery invocation converge after a transient partial tunnel/log start without touching foreign sidecars
