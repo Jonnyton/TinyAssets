@@ -93,7 +93,7 @@ fleet.
 - **AND** classification uses only the terminal attempt beginning at the last
   daemon `Creating` or `Starting` marker, including a retry with no new create
 - **AND** container-name conflict has a fixed class and an unclassified failure
-  remains visible as `other` even when another known class is present
+  remains visible as `other_failure` even when another known class is present
 - **AND** raw log collection occurs only when the inspected container's
   immutable image reference and OCI revision exactly match the fence-proved
   candidate

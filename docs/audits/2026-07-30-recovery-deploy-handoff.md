@@ -352,6 +352,11 @@ so it cannot silently discard evidence. Fresh Windows-host evidence at
 `2026-07-31T19:20Z`: 152 focused tests passed, Ruff and diff checks clean, and
 strict OpenSpec validation passed. Exact-head re-review remains pending.
 
+Third review of `2731dbac` closed every runtime/security finding and returned
+ADAPT only because OpenSpec named the additive unknown enum `other` while code
+and tests emit `other_failure`. The requirement now uses the exact implemented
+enum; executable content is unchanged from the reviewed head.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
