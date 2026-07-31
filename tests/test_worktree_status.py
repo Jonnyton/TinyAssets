@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +45,62 @@ detached
     assert entries[0].branch == "main"
     assert entries[1].detached is True
     assert entries[1].branch == "(detached HEAD)"
+
+
+def test_provider_filter_precedes_per_worktree_status_probes(
+    monkeypatch,
+    capsys,
+    tmp_path: Path,
+) -> None:
+    matching = worktree_status.WorktreeEntry(
+        path=str(tmp_path / "wf-drain-abc"),
+        head="abc123",
+        branch_ref="refs/heads/drain/drain-abc/task",
+    )
+    unrelated = worktree_status.WorktreeEntry(
+        path=str(tmp_path / "wf-historical"),
+        head="def456",
+        branch_ref="refs/heads/claude/historical",
+    )
+    probed: list[str] = []
+
+    monkeypatch.setattr(
+        worktree_status,
+        "collect_worktrees",
+        lambda _repo: [unrelated, matching],
+    )
+
+    def fake_build_status(
+        entry: worktree_status.WorktreeEntry,
+        **_: object,
+    ) -> worktree_status.WorktreeStatus:
+        probed.append(entry.path)
+        return worktree_status.WorktreeStatus(
+            slug=entry.slug,
+            path=entry.path,
+            branch=entry.branch,
+            head=entry.head,
+            state="ACTIVE_LANE",
+            age_hours=0.0,
+            upstream="tracking",
+            dirty=False,
+            current=False,
+            live_safety="ISOLATED_UNTIL_MERGED",
+            status_ref=True,
+            purpose_exists=True,
+            purpose_missing_fields=[],
+            purpose="test",
+            memory_refs=[],
+            action="continue",
+        )
+
+    monkeypatch.setattr(worktree_status, "build_status", fake_build_status)
+
+    assert worktree_status.main(["--json", "--provider", "drain-abc"]) == 0
+
+    assert probed == [matching.path]
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["path"] for row in payload] == [matching.path]
 
 
 def test_classify_dirty_overrides_everything() -> None:

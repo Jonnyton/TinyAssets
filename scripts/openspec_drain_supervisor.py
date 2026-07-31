@@ -823,7 +823,11 @@ def build_worker_prompt(
         foldback_text = (
             "\nThe implementation PR is already merged. Before foldback, fetch "
             "origin/main and restack this branch onto current main with a clean "
-            "tree. Do not publish until the diff excludes the merged implementation."
+            "tree. Do not publish until the diff excludes the merged implementation. "
+            "That implementation PR belongs to the previous worker and does not "
+            "consume this worker's PR budget. Create at most one fresh foldback PR "
+            "for the remaining coordination diff, and cite that fresh foldback PR "
+            "in the terminal marker; never repeat the implementation PR."
             if partial_resume
             else ""
         )
@@ -910,10 +914,13 @@ Authority and safety:
   Safety comes from the clean worktree, exact claims, one-PR scope, review, CI,
   finite timeout, and preserved artifacts.
 {worktree_rule}
-- Follow AGENTS.md and the provider lifecycle gates. Cap the global
-  `worktree_status.py` diagnostic at 90 seconds; if it times out, record that and
-  continue only from the clean current-main worktree. Exact `claim_check.py`,
-  `openspec_flow.py`, and provider-context checks still apply.
+- Follow AGENTS.md and the provider lifecycle gates. Run
+  `worktree_status.py --provider {identity}` and cap that exact-identity
+  diagnostic at 15 seconds; if it times out, record that and continue only
+  from the clean exact worktree above. Zero matching rows grant no authority
+  and do not prove a lane is clean. Exact `claim_check.py`,
+  `openspec_flow.py`, prepared-worktree/STATUS verification, and
+  provider-context checks still apply.
 - Use the exact STATUS identity `{identity}`. Never mint a suffix. Resume your
   own existing claim before admitting another.
 
@@ -934,7 +941,8 @@ Delivery contract:
    counts are both zero, no in-flight row is claimed by this drain identity,
    and no safe promotion exists. Never steal a live claim or invent work merely
    to stay busy.
-4. Own one concrete acceptance contract and at most one PR.
+4. Own one concrete acceptance contract and at most one PR per disposable
+   worker attempt.
 5. For a grandfathered oversized change, deliver one recovery slice containing
    at most 12 unchecked tasks and prefer materially fewer within this worker.
    Work inside the existing change; do not mechanically fan out child changes.
