@@ -977,3 +977,16 @@ fresh-host rollback edges found later.
   from a trusted canonical resolver.
 - Next time: test stale-invalid transitions as well as stale-valid ones; local
   state-table validation must not hide a newer winning generation.
+
+## 2026-07-30 — atomic background-attempt reservation seam
+
+- What surprised me: the durable store already enforced logical-key uniqueness,
+  but future issuance still could not safely combine binding revalidation,
+  replay detection, and `max_attempts` counting without transaction-local reads.
+- Pattern worth capturing: expose the smallest reads needed on the opaque
+  transaction protocol, validate denormalized indexes against canonical records
+  on every read (including aggregate counts), and prove count/check/insert with
+  competing writers; keep resolution and activation outside the storage seam.
+- What I would do differently: include the independently shipped model mirror
+  in the first persistence slice so later store extensions do not discover an
+  untracked package dependency during parity verification.

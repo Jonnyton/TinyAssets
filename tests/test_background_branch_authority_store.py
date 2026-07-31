@@ -362,6 +362,30 @@ def test_transaction_rolls_back_both_record_types(tmp_path) -> None:
     assert store.get_attempt("att_01") is None
 
 
+def test_transaction_reads_binding_logical_key_and_attempt_count(tmp_path) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    binding = _binding()
+    first = _attempt()
+    second = _attempt(
+        attempt_id="att_02",
+        logical_key="request:18:g1:body-feedface",
+    )
+
+    with store.transaction() as tx:
+        assert tx.get_binding(binding.binding_id) is None
+        assert tx.get_attempt_by_logical_key(first.logical_attempt_key) is None
+        assert tx.count_attempts(binding_id=binding.binding_id) == 0
+
+        tx.insert_binding(binding)
+        assert tx.get_binding(binding.binding_id) == binding
+        assert tx.count_attempts(binding_id=binding.binding_id) == 0
+
+        tx.insert_attempt(first)
+        tx.insert_attempt(second)
+        assert tx.get_attempt_by_logical_key(first.logical_attempt_key) == first
+        assert tx.count_attempts(binding_id=binding.binding_id) == 2
+
+
 def test_concurrent_identical_insert_has_one_applied_winner(tmp_path) -> None:
     binding = _binding()
 
@@ -396,6 +420,54 @@ def test_concurrent_logical_attempt_key_has_one_applied_winner(
 
     assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.APPLIED) == 1
     assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.CONFLICT) == 15
+
+
+def test_transaction_attempt_count_serializes_bounded_reservation(
+    tmp_path,
+) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    with store.transaction() as tx:
+        tx.insert_binding(_binding())
+
+    def reserve(index: int) -> BackgroundBranchAuthorityWriteOutcome | None:
+        concurrent_store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+        with concurrent_store.transaction() as tx:
+            if tx.count_attempts(binding_id="bnd_01") >= 1:
+                return None
+            return tx.insert_attempt(
+                _attempt(
+                    attempt_id=f"att_{index:02}",
+                    logical_key=f"request:{index}:g1:body-feedface",
+                )
+            ).outcome
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(reserve, range(2)))
+
+    assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.APPLIED) == 1
+    assert outcomes.count(None) == 1
+
+
+def test_transaction_attempt_count_fails_closed_on_binding_index_tamper(
+    tmp_path,
+) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    with store.transaction() as tx:
+        tx.insert_binding(_binding())
+        tx.insert_binding(_binding(binding_id="bnd_02"))
+        tx.insert_attempt(_attempt())
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE background_branch_attempts
+            SET binding_id = 'bnd_02'
+            WHERE attempt_id = 'att_01'
+            """
+        )
+
+    with store.transaction() as tx:
+        with pytest.raises(sqlite3.DatabaseError, match="index mismatch"):
+            tx.count_attempts(binding_id="bnd_01")
 
 
 def test_bounded_filtered_pages_use_stable_opaque_cursors(tmp_path) -> None:
