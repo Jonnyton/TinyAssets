@@ -20,6 +20,15 @@ on:
       - 'scripts/mcp_public_canary.py'
       - 'deploy/**'
   workflow_dispatch:
+    inputs:
+      source_digest:
+        description: 'Existing immutable digest to retag for recovery (requires source_revision)'
+        required: false
+        type: string
+      source_revision:
+        description: 'Exact 40-character source revision recorded on the recovery image'
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -73,7 +82,46 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Retag recorded immutable image
+        if: inputs.source_digest != '' || inputs.source_revision != ''
+        env:
+          SOURCE_DIGEST: ${{ inputs.source_digest }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+        run: |
+          set -euo pipefail
+          digest="${SOURCE_DIGEST}"
+          revision="${SOURCE_REVISION}"
+          if [[ ! "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::source_digest must be a canonical sha256 digest"
+            exit 1
+          fi
+          if [[ ! "${revision}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::source_revision must be a full lowercase commit SHA"
+            exit 1
+          fi
+          image="${REGISTRY}/$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')/${IMAGE_NAME}"
+          docker pull "${image}@${digest}" >/dev/null
+          observed_revision="$(
+            docker image inspect "${image}@${digest}" \
+              --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}'
+          )"
+          [[ "${observed_revision}" == "${revision}" ]] || {
+            echo "::error::source digest revision label disagrees with source_revision"
+            exit 1
+          }
+          git cat-file -e "${revision}^{commit}"
+          docker buildx imagetools create --tag "${image}:${revision:0:12}" "${image}@${digest}"
+          retagged_digest="$(
+            docker buildx imagetools inspect "${image}:${revision:0:12}" |
+              awk '/^Digest:/ {print $2; exit}'
+          )"
+          [[ "${retagged_digest}" == "${digest}" ]] || {
+            echo "::error::retagged digest disagrees with immutable source"
+            exit 1
+          }
+
       - name: Build and push image
+        if: inputs.source_digest == '' && inputs.source_revision == ''
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -88,6 +136,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=tinyassets-daemon
 
       - name: Publish image summary
+        if: inputs.source_digest == '' && inputs.source_revision == ''
         run: |
           {
             echo "Published image:"

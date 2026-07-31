@@ -66,6 +66,38 @@ def test_build_image_keeps_manual_dispatch():
     assert "workflow_dispatch" in triggers
 
 
+def test_manual_retag_is_digest_and_revision_bound():
+    workflow = _load()
+    dispatch = _triggers(workflow).get("workflow_dispatch") or {}
+    inputs = dispatch.get("inputs") or {}
+    text = _text()
+
+    assert {"source_digest", "source_revision"} <= set(inputs)
+    assert "^sha256:[0-9a-f]{64}$" in text
+    assert "^[0-9a-f]{40}$" in text
+    assert "org.opencontainers.image.revision" in text
+    assert '[[ "${observed_revision}" == "${revision}" ]]' in text
+    assert (
+        'docker buildx imagetools create --tag "${image}:${revision:0:12}" '
+        '"${image}@${digest}"'
+    ) in text
+
+
+def test_manual_retag_skips_image_rebuild():
+    workflow = _load()
+    steps = workflow["jobs"]["build-and-push"]["steps"]
+    by_name = {step.get("name"): step for step in steps}
+
+    assert (
+        by_name["Build and push image"]["if"]
+        == "inputs.source_digest == '' && inputs.source_revision == ''"
+    )
+    assert (
+        by_name["Retag recorded immutable image"]["if"]
+        == "inputs.source_digest != '' || inputs.source_revision != ''"
+    )
+
+
 def test_build_image_publishes_only_short_sha_tag():
     text = _text()
     assert "${image}:${short_sha}" in text
