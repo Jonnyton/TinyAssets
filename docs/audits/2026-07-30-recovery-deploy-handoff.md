@@ -362,6 +362,15 @@ returned APPROVE with no findings after confirming the exact enum, unchanged
 runtime/tests, strict OpenSpec validity, and that the production diagnostic
 remains unrun.
 
+Read-only diagnostic run `30659242692` validated its window and SSH setup, then
+failed closed in the classification pipeline before printing any diagnosis.
+Only the fixed error `bounded journal diagnosis failed` entered Actions logs;
+no raw journal, artifact, output, summary, host mutation, or production outage
+occurred. The run did not report which pipeline status failed, so changing the
+remote shell would be speculative. The successor exposes only fixed numeric
+`ssh_status` and `sanitizer_status`, reruns the same historical window, and then
+changes only the proved boundary.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
