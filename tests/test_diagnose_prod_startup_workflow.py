@@ -38,7 +38,9 @@ def test_diagnostic_workflow_is_manual_read_only_and_bounded():
     assert "tail -c" not in diagnosis
     assert "timeout 35s ssh" in diagnosis
     assert "timeout 25s sudo journalctl" in diagnosis
-    assert 'bash -s -- "${SINCE_UTC}" "${UNTIL_UTC}"' in diagnosis
+    assert "--journalctl-window" in diagnosis
+    assert 'bash -s -- "${journal_window[0]}" "${journal_window[1]}"' in diagnosis
+    assert 'bash -s -- "${SINCE_UTC}" "${UNTIL_UTC}"' not in diagnosis
     assert "<<'REMOTE' |" in diagnosis
     assert 'remote_statuses=("${PIPESTATUS[@]}")' in diagnosis
     assert "exit 41" in diagnosis
