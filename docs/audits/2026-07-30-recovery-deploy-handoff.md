@@ -357,6 +357,11 @@ ADAPT only because OpenSpec named the additive unknown enum `other` while code
 and tests emit `other_failure`. The requirement now uses the exact implemented
 enum; executable content is unchanged from the reviewed head.
 
+Final exact-head review of `05a0c6719c8b528f3a592ed71b02ef489c65cc2c`
+returned APPROVE with no findings after confirming the exact enum, unchanged
+runtime/tests, strict OpenSpec validity, and that the production diagnostic
+remains unrun.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
