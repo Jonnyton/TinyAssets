@@ -448,6 +448,28 @@ def test_transaction_attempt_count_serializes_bounded_reservation(
     assert outcomes.count(None) == 1
 
 
+def test_transaction_attempt_count_fails_closed_on_binding_index_tamper(
+    tmp_path,
+) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    with store.transaction() as tx:
+        tx.insert_binding(_binding())
+        tx.insert_binding(_binding(binding_id="bnd_02"))
+        tx.insert_attempt(_attempt())
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE background_branch_attempts
+            SET binding_id = 'bnd_02'
+            WHERE attempt_id = 'att_01'
+            """
+        )
+
+    with store.transaction() as tx:
+        with pytest.raises(sqlite3.DatabaseError, match="index mismatch"):
+            tx.count_attempts(binding_id="bnd_01")
+
+
 def test_bounded_filtered_pages_use_stable_opaque_cursors(tmp_path) -> None:
     store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
     with store.transaction() as tx:

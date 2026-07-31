@@ -984,8 +984,9 @@ fresh-host rollback edges found later.
   but future issuance still could not safely combine binding revalidation,
   replay detection, and `max_attempts` counting without transaction-local reads.
 - Pattern worth capturing: expose the smallest reads needed on the opaque
-  transaction protocol and prove the count/check/insert sequence with competing
-  writers; keep resolution and activation outside the storage seam.
+  transaction protocol, validate denormalized indexes against canonical records
+  on every read (including aggregate counts), and prove count/check/insert with
+  competing writers; keep resolution and activation outside the storage seam.
 - What I would do differently: include the independently shipped model mirror
   in the first persistence slice so later store extensions do not discover an
   untracked package dependency during parity verification.

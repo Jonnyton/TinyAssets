@@ -426,14 +426,16 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
         return _attempt_from_row(row) if row is not None else None
 
     def count_attempts(self, *, binding_id: str) -> int:
-        row = self._conn.execute(
+        rows = self._conn.execute(
             """
-            SELECT COUNT(*) FROM background_branch_attempts
+            SELECT * FROM background_branch_attempts
             WHERE binding_id = ?
+               OR json_extract(record_json, '$.binding_id') = ?
             """,
-            (binding_id,),
-        ).fetchone()
-        return int(row[0])
+            (binding_id, binding_id),
+        ).fetchall()
+        attempts = tuple(_attempt_from_row(row) for row in rows)
+        return sum(attempt.binding_id == binding_id for attempt in attempts)
 
     def insert_binding(
         self,
