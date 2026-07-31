@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-autonomous-retry`
-- Lane state: Active; stacked adaptation; 264 focused tests green; exact-head review pending
+- Lane state: Active; first review ADAPT fixed; 268 focused tests green; exact-head re-review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
 - Purpose: make one recovery invocation converge after a transient partial tunnel/log start without touching foreign sidecars

@@ -202,6 +202,45 @@ ends the loop at attempt two, leaves the new partial ID restart-fenced, and
 returns the writers to `unsafe_fenced`. Independent exact-head review remains
 required before publish or production mutation.
 
+Independent review of `95cdeca6` returned ADAPT at `2026-07-31T21:48Z`:
+post-capture fixed-name substitution could make cleanup and `quiesce_unsafe`
+repeat the same identity rejection before the five-writer fence began. A
+zero-exit Compose result with one missing sidecar also bypassed the retry. The
+replacement adds a writer-first invariant: name drift is recorded, a captured
+exact ID that still exists is restart-fenced and stopped by ID without removal,
+the current fixed-name replacement is untouched, and the volume-writer fence
+continues independently. Strict inventory capture now occurs inside the bounded
+attempt so zero-exit incomplete creation follows the same exact-ID retry path.
+
+Adaptation evidence at `2026-07-31T21:59:42Z` (Windows host):
+
+```text
+RED replacement-only substitution: 1 failed
+recovery failed ... re-fence also failed: recovery sidecar identity changed
+
+RED rename+replacement and zero-exit incomplete inventory: 2 failed
+
+RED stubborn captured sidecar stop: 1 failed before writer fencing
+
+GREEN focused replacement/rename/incomplete/stubborn cases:
+4 passed, 130 deselected in 0.56s
+
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+268 passed in 9.11s
+```
+
+The replacement-only case proves all five writers stop while the substituted
+non-writer receives no update/stop/remove command. The rename-plus-replacement
+case additionally proves the original captured ID is stopped under its new
+name while the fixed-name replacement remains untouched. New exact-head review
+is required before publish or production mutation. The stubborn-sidecar case
+proves its recorded stop error survives as evidence while all five volume
+writers still converge to `unsafe_fenced`.
+
 TDD red evidence on 2026-07-30:
 
 ```text

@@ -22,6 +22,10 @@
 - [x] 1.7 Retry one transient partial recovery-sidecar Compose start within the
   same recovery invocation only after durable exact-ID capture and removal;
   bound the retry and re-fence a repeated failure.
+- [x] 1.8 Treat zero-exit incomplete inventory as a partial start, and make the
+  writer refence independent of post-capture sidecar name/identity drift while
+  stopping a still-present captured sidecar only by exact ID; record but do not
+  let a sidecar stop failure preempt the volume-writer fence.
 
 ## 2. Verification And Release
 

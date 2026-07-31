@@ -121,13 +121,20 @@ their running/restart-fenced posture is proved before recovery returns.
 A partial sidecar Compose start is captured from exact recovery project/service
 labels before cleanup. The same recovery invocation restart-fences, stops, and
 removes only those recorded IDs, then makes one bounded sidecar-only retry. If
-that retry also fails, the new partial IDs remain durably bound and stopped
-under the ordinary unsafe fence. An absent partial fleet, foreign ownership,
-or an unexpected data mount never enters the retry cleanup path. Finalization
-restores the preflight-saved sidecar policies; a sidecar that was already
-absent uses the canonical Compose `unless-stopped` posture rather than
-inheriting temporary `restart=no`. The next normal preflight accepts recovery
-sidecars only when their exact recorded IDs and recovery project still match.
+Compose exits zero but the exact pair is incomplete, the observed subset uses
+that same path. If the bounded retry also fails, the new partial IDs remain
+durably bound and stopped under the ordinary unsafe fence. Fixed-name identity
+drift or a sidecar stop failure after capture cannot preempt the independent
+volume-writer fence: a captured exact ID that still exists is restart-fenced
+and stopped by ID without removal when possible, while a replacement fixed-name
+occupant is untouched. Any sidecar refence error is recorded after the writer
+fence is attempted. An absent partial fleet, foreign ownership, or an unexpected
+data mount never enters the retry removal path. Finalization restores the
+preflight-saved sidecar policies;
+a sidecar that was already absent uses the canonical Compose `unless-stopped`
+posture rather than inheriting temporary `restart=no`. The next normal
+preflight accepts recovery sidecars only when their exact recorded IDs and
+recovery project still match.
 
 ## Risks / Trade-offs
 

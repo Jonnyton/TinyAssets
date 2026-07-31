@@ -11,6 +11,14 @@
   alongside the original partial-start fault test, rather than treating a later
   manually initiated retry as sufficient proof of recovery ownership.
 
+- **Follow-up:** ownership validation or a stop failure for a secondary
+  non-writer must never preempt the primary writer fence. After a fixed-name
+  race, stop only the
+  previously proved immutable ID if it still exists, leave the replacement
+  untouched, and continue fencing every current volume consumer.
+- **Follow-up:** process exit success is not state convergence. Fault tests must
+  cover zero-exit incomplete inventories as well as thrown Compose failures.
+
 ## 2026-07-30 — public-safe production startup evidence
 
 - **What surprised me:** a short-lived Actions artifact is still readable to

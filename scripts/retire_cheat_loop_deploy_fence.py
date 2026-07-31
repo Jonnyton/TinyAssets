@@ -1877,27 +1877,47 @@ def quiesce_unsafe(
             "extra_volume_consumers": {},
         }
 
-    recorded_sidecars = _recorded_recovery_sidecars(host, state)
+    sidecar_refence_error = ""
+    try:
+        recorded_sidecars = _recorded_recovery_sidecars(host, state)
+    except FenceError as exc:
+        sidecar_refence_error = str(exc)
+        try:
+            # The fixed-name occupant is not ours to mutate. A previously
+            # captured exact ID may still exist under another name, however,
+            # and remains safe to restart-fence and stop without removal.
+            recorded_sidecars = _recorded_recovery_sidecars_by_id(host, state)
+        except FenceError as id_exc:
+            sidecar_refence_error = (
+                f"{sidecar_refence_error}; exact-ID refence failed: {id_exc}"
+            )
+            recorded_sidecars = {}
     if recorded_sidecars:
-        state["recovery_sidecar_refence_proof"] = _set_restart_no(
-            host,
-            recorded_sidecars,
-        )
-        _atomic_json(state_path, state)
-        host.run(
-            [
-                "docker",
-                "stop",
-                *(
-                    str(info.get("Id", ""))
-                    for info in recorded_sidecars.values()
-                ),
-            ],
-            check=False,
-        )
-        for name, info in recorded_sidecars.items():
-            if _container_running_exact(host, str(info.get("Id", ""))):
-                raise FenceError(f"recovery sidecar did not stop: {name}")
+        try:
+            state["recovery_sidecar_refence_proof"] = _set_restart_no(
+                host,
+                recorded_sidecars,
+            )
+            _atomic_json(state_path, state)
+            host.run(
+                [
+                    "docker",
+                    "stop",
+                    *(
+                        str(info.get("Id", ""))
+                        for info in recorded_sidecars.values()
+                    ),
+                ],
+                check=False,
+            )
+            for name, info in recorded_sidecars.items():
+                if _container_running_exact(host, str(info.get("Id", ""))):
+                    raise FenceError(f"recovery sidecar did not stop: {name}")
+        except (FenceError, OSError) as exc:
+            detail = f"sidecar refence failed: {exc}"
+            sidecar_refence_error = "; ".join(
+                value for value in (sidecar_refence_error, detail) if value
+            )
 
     volume_dir = host.volume_dir()
     current_volume_names = set(host.volume_container_names())
@@ -1950,6 +1970,7 @@ def quiesce_unsafe(
         elif name not in recorded_extras:
             recorded_extras[name] = {"inspection_error": True}
     state["extra_volume_consumers"] = recorded_extras
+    state["recovery_sidecar_refence_error"] = sidecar_refence_error
     state["source_run_id"] = state.get("source_run_id") or state.get("run_id")
     state["run_id"] = run_id
     state["recovery_run_id"] = run_id
@@ -2035,6 +2056,7 @@ def quiesce_unsafe(
         "old_container_ids_running": old_running,
         "stray_writer_processes": process_risk,
         "restart_policy_proof": restart_policy_proof,
+        "recovery_sidecar_refence_error": sidecar_refence_error,
         "masked_units": _masked_units(host),
         "source_state_error": state_error,
         "archived_corrupt_state": str(archived_state) if archived_state else "",
@@ -3003,6 +3025,44 @@ def _recorded_recovery_sidecars(
     return inspections
 
 
+def _recorded_recovery_sidecars_by_id(
+    host: Host,
+    state: Mapping[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Resolve previously proved recovery sidecars without trusting names."""
+
+    recorded = {
+        str(name): str(identity)
+        for name, identity in dict(
+            state.get("recovery_sidecar_container_ids") or {}
+        ).items()
+    }
+    expected = dict(CANONICAL_SIDECARS)
+    if (
+        not recorded
+        or set(recorded) - set(expected)
+        or any(not identity for identity in recorded.values())
+    ):
+        raise FenceError("recovery sidecar identities are invalid")
+    project = str(state.get("recovery_project_name", ""))
+    if not project:
+        raise FenceError("recovery sidecar project is missing")
+    inspections: dict[str, dict[str, Any]] = {}
+    for name, identity in recorded.items():
+        if _container_absent_exact(host, identity):
+            continue
+        info = host.container_info(identity)
+        labels = info.get("Config", {}).get("Labels", {}) or {}
+        if (
+            str(info.get("Id", "")) != identity
+            or labels.get("com.docker.compose.project") != project
+            or labels.get("com.docker.compose.service") != expected[name]
+        ):
+            raise FenceError(f"recovery sidecar exact ID is invalid: {name}")
+        inspections[name] = info
+    return inspections
+
+
 def _remove_recorded_recovery_sidecars(
     host: Host,
     state: dict[str, Any],
@@ -3081,6 +3141,12 @@ def _start_recovery_sidecars(
                     *RECOVERY_SIDECAR_SERVICES,
                 ]
             )
+            return _capture_recovery_sidecars(
+                host,
+                state,
+                state_path=state_path,
+                require_all=True,
+            )
         except (FenceError, OSError):
             partial_sidecars = _capture_recovery_sidecars(
                 host,
@@ -3099,12 +3165,6 @@ def _start_recovery_sidecars(
                 state_path=state_path,
             )
             continue
-        return _capture_recovery_sidecars(
-            host,
-            state,
-            state_path=state_path,
-            require_all=True,
-        )
     raise FenceError("recovery sidecar start attempts were exhausted")
 
 
