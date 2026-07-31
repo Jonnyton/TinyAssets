@@ -1,3 +1,15 @@
+## 2026-07-31 — reconcile stricter sidecar review after concurrent landings
+
+- **What surprised me:** two independently reviewed sidecar PRs landed while a
+  stricter review was still finding reboot, name-race, and write-ahead gaps;
+  green review of one head did not make the combined current-main state closed.
+- **Pattern worth capturing:** after an overlapping concurrent merge, restack
+  first, preserve its new behavior and tests, then port only still-failing
+  threat cases. Exact-head review must follow the final combined commit.
+- **What I would do differently:** open one current-main successor immediately
+  after the first overlap instead of continuing to polish a branch that could
+  no longer merge cleanly.
+
 ## 2026-07-31 — autonomous recovery-sidecar retry
 
 - **What surprised me:** durable refencing made a partial sidecar start safe,

@@ -1,5 +1,29 @@
 # Worktree Inventory
 
+## 2026-07-31 16:10 - combined recovery sidecar strict successor
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-review-gaps`
+- Lane state: Active atop #2018; prior stricter findings repaired; combined exact-head review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-sidecar-main-audit`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: preserve the finite audited-project authority while closing exact configuration, ID, replay, mixed-ownership, and reboot-refence gaps
+- Review gate: focused deployment suite, strict OpenSpec, clean Ruff/diff, and independent exact-head fail-closed/security approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-sidecar-main-audit/_PURPOSE.md`
+- Ship/abandon: merge only after approval; then one controlled normal deploy and public canary
+
+## 2026-07-31 15:48 - drain watchdog health-write resilience
+
+- Provider: unclaimed; prepared by `codex-gpt5-desktop`
+- Branch: `fix/drain-watchdog-health-write-race`
+- Lane state: Parked; runtime restarted; active sidecar recovery WIP must close first
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-watchdog-health-write-race`
+- STATUS/Issue/PR: local tray false-red incident; PR pending
+- Purpose: keep the watchdog alive when Windows sharing contention exhausts one health-file replace window
+- Review gate: OpenSpec, focused red/green tests, Ruff, clean diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-watchdog-health-write-race/_PURPOSE.md`
+- Ship/abandon: merge, refresh detached controller, and observe durable heartbeat recovery
+
 ## 2026-07-31 15:44 - legacy full-Compose recovery sidecar handoff
 
 - Provider: `codex-gpt5-desktop`

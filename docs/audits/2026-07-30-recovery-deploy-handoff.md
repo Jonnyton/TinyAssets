@@ -643,6 +643,53 @@ git diff --check
 clean
 ```
 
+## Strict successor after concurrent sidecar landings
+
+PR #2010 and its #2013 fixed-schema diagnostic landed while a stricter
+fail-closed review of the original sidecar lane was still running. The
+successor preserves both landings and closes the remaining reviewed gaps: it
+pins each sidecar image and exact read-only mount set, rejects production-volume
+source aliases, stops inspected exact IDs rather than mutable names, and
+records full stopped-fleet removal intent before `docker rm` so interruption
+replays only the proved remaining subset.
+
+Recovery-sidecar capture now binds each proved owned sibling independently.
+Expiry, boot reconciliation, and the outer recovery failure path therefore
+refence zero, one, or two created sidecars without touching a mixed foreign
+fixed-name sibling. Finalization normalizes every sidecar restart policy to
+canonical `unless-stopped`; boot reconciliation refences a generation left
+partially restart-enabled by abrupt host loss. Unsafe writer cleanup also acts
+on exact inspected IDs and records name substitution as unproved instead of
+stopping the replacement.
+
+Fresh successor verification at `2026-07-31T22:38:18Z` (Windows host):
+
+```text
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+296 passed in 10.32s
+
+python -m ruff check scripts/retire_cheat_loop_deploy_fence.py \
+  tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict --no-interactive
+Change 'repair-recovery-deploy-handoff' is valid
+
+python scripts/check_cross_provider_drift.py
+cross-provider drift check: clean
+
+git diff --check
+clean
+```
+
+Production remains unchanged. This exact successor still requires independent
+exact-head fail-closed/security approval before publish or host mutation.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

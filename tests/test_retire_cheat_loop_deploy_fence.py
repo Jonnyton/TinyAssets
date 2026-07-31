@@ -404,7 +404,11 @@ class LifecycleHost:
         self.sidecar_updates_before_failure = -1
         self.missing_container_info_identity: set[str] = set()
         self.foreign_sidecar_compose = False
+        self.mixed_sidecar_compose_owned_index: int | None = None
         self.recovery_sidecar_data_mount = False
+        self.substitute_sidecars_before_stop = False
+        self.interrupt_restart_restore_after = 0
+        self.restart_restore_updates = 0
 
     def _containers(
         self,
@@ -448,6 +452,14 @@ class LifecycleHost:
         prefix: str = "sidecar",
     ) -> None:
         for index, (name, service) in enumerate(fence.CANONICAL_SIDECARS):
+            mounts = [
+                {
+                    "Source": source,
+                    "Destination": destination,
+                    "RW": False,
+                }
+                for source, destination in fence.CANONICAL_SIDECAR_MOUNTS[name]
+            ]
             self.containers[name] = {
                 "Id": f"{prefix}-{index}",
                 "Image": f"sha256:{prefix}-{index}",
@@ -457,13 +469,14 @@ class LifecycleHost:
                 },
                 "HostConfig": {"RestartPolicy": {"Name": restart}},
                 "Config": {
+                    "Image": fence.CANONICAL_SIDECAR_IMAGES[name],
                     "Env": [],
                     "Labels": {
                         "com.docker.compose.project": project,
                         "com.docker.compose.service": service,
                     },
                 },
-                "Mounts": [],
+                "Mounts": mounts,
             }
 
     def container_info(self, name: str) -> dict[str, Any]:
@@ -663,6 +676,21 @@ class LifecycleHost:
                             prefix="foreign-sidecar",
                         )
                         raise FenceError("foreign sidecar blocked compose")
+                    if self.mixed_sidecar_compose_owned_index is not None:
+                        self.install_sidecars(
+                            project=project,
+                            restart="no",
+                            prefix="recovery-sidecar",
+                        )
+                        foreign_index = 1 - self.mixed_sidecar_compose_owned_index
+                        foreign_name = fence.CANONICAL_SIDECARS[foreign_index][0]
+                        foreign = self.containers[foreign_name]
+                        foreign["Id"] = f"foreign-sidecar-{foreign_index}"
+                        foreign["Config"]["Labels"][
+                            "com.docker.compose.project"
+                        ] = "foreign-project"
+                        foreign["HostConfig"]["RestartPolicy"]["Name"] = "always"
+                        raise FenceError("mixed sidecar blocked compose")
                     if (
                         self.fail_sidecar_compose_after
                         and self.sidecar_compose_failures_remaining
@@ -719,11 +747,27 @@ class LifecycleHost:
             for name, info in self.containers.items():
                 if identity in {name, info["Id"]}:
                     info["HostConfig"]["RestartPolicy"]["Name"] = policy
+                    self.restart_restore_updates += 1
+                    if (
+                        self.interrupt_restart_restore_after
+                        and self.restart_restore_updates
+                        == self.interrupt_restart_restore_after
+                    ):
+                        raise KeyboardInterrupt("simulated host loss")
                     break
             else:
                 raise FenceError("docker update failed")
             return ""
         if command[:2] == ("docker", "stop"):
+            if self.substitute_sidecars_before_stop:
+                self.substitute_sidecars_before_stop = False
+                for name, _service in fence.CANONICAL_SIDECARS:
+                    self.containers.pop(name, None)
+                self.install_sidecars(
+                    project="foreign-project",
+                    restart="always",
+                    prefix="substituted-sidecar",
+                )
             for identity in command[2:]:
                 if (
                     identity.startswith("recovery-sidecar-")
@@ -1289,6 +1333,45 @@ def test_preflight_sidecar_refusal_reports_only_fixed_predicate(
     )
 
 
+@pytest.mark.parametrize("drift", ["forged_image", "volume_bind_alias"])
+def test_preflight_refuses_unproved_sidecar_config_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars()
+    name = fence.CANONICAL_SIDECARS[-1][0]
+    if drift == "forged_image":
+        host.containers[name]["Config"]["Image"] = "attacker/image@sha256:" + "f" * 64
+    else:
+        host.containers[name]["Mounts"].append(
+            {
+                "Source": str(host.volume),
+                "Destination": "/alternate-data",
+                "RW": False,
+            }
+        )
+
+    with pytest.raises(FenceError, match="sidecar"):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+
+
 def test_preflight_recorded_sidecar_identity_refusal_hides_ids(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1324,6 +1407,38 @@ def test_preflight_recorded_sidecar_identity_refusal_hides_ids(
 
     assert "private-recorded-id" not in str(failure.value)
     assert "recovery-sidecar-0" not in str(failure.value)
+
+
+def test_preflight_stops_bound_sidecars_by_exact_id_during_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars()
+    bound_ids = {
+        name: str(host.containers[name]["Id"])
+        for name, _service in fence.CANONICAL_SIDECARS
+    }
+    host.substitute_sidecars_before_stop = True
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    stop_call = next(call for call in host.calls if call[:2] == ("docker", "stop"))
+    assert set(bound_ids.values()) <= set(stop_call[2:])
+    assert not set(bound_ids) & set(stop_call[2:])
+    for name, _service in fence.CANONICAL_SIDECARS:
+        assert host.containers[name]["Id"].startswith("substituted-sidecar-")
+        assert host.containers[name]["State"]["Running"] is True
 
 
 @pytest.mark.parametrize("drift", ["foreign_project", "running", "restart", "substitute"])
@@ -2207,6 +2322,60 @@ def test_unsafe_cleanup_stops_all_writers_and_proves_old_ids(
     assert host.unit_state(DAEMON_SERVICE)["enabled"] == "masked-runtime"
 
 
+def test_unsafe_cleanup_stops_exact_ids_and_rejects_name_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "phase": "quiesced",
+                "receipt_host_path": str(tmp_path / "wiki_trigger_attempts.db"),
+                "old_container_ids": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_id = str(host.containers["tinyassets-daemon"]["Id"])
+    original_run = host.run
+    stop_call: tuple[str, ...] | None = None
+
+    def substitute_before_stop(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal stop_call
+        command = tuple(args)
+        if command[:2] == ("docker", "stop") and stop_call is None:
+            stop_call = command
+            replacement = host._containers(
+                "foreign-replacement", "sha256:old", running=True
+            )["tinyassets-daemon"]
+            host.containers["tinyassets-daemon"] = replacement
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = substitute_before_stop  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="could not prove"):
+        quiesce_unsafe(host, run_id=RUN_ID, state_path=state_path)
+
+    assert stop_call is not None
+    assert original_id in stop_call
+    assert "tinyassets-daemon" not in stop_call
+    replacement = host.containers["tinyassets-daemon"]
+    assert replacement["Id"].startswith("foreign-replacement-")
+    assert replacement["State"]["Running"] is True
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "unsafe_fence_unproved"
+    assert state["emergency_identity_drift"] == ["tinyassets-daemon"]
+
+
 def test_unsafe_cleanup_fences_newly_attached_volume_consumer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2763,7 +2932,10 @@ def test_recovery_recreates_removed_sidecars_and_restores_their_restart_posture(
 
     assert finalized["phase"] == "restored"
     for name, _service in fence.CANONICAL_SIDECARS:
-        assert host.containers[name]["HostConfig"]["RestartPolicy"]["Name"] == "always"
+        assert (
+            host.containers[name]["HostConfig"]["RestartPolicy"]["Name"]
+            == "unless-stopped"
+        )
 
 
 def test_recovery_refuses_empty_project_sidecars_without_mutating_them(
@@ -3158,6 +3330,147 @@ def test_partial_sidecar_restart_failure_cannot_block_writer_refence(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["phase"] == "unsafe_fenced"
     assert "restart-fence failure" in state["recovery_sidecar_refence_error"]
+    assert all(
+        not host.containers[name]["State"]["Running"]
+        for name in EXPECTED_CONTAINERS
+    )
+
+
+@pytest.mark.parametrize("entrypoint", ["expiry", "boot"])
+@pytest.mark.parametrize("created_count", [0, 1, 2])
+def test_interrupted_sidecar_start_binds_and_refences_exact_created_subset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    created_count: int,
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="interrupted-sidecar-start",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    expected_names = {
+        name for name, _service in fence.CANONICAL_SIDECARS[:created_count]
+    }
+    for name, _service in fence.CANONICAL_SIDECARS[created_count:]:
+        host.containers.pop(name)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["phase"] = "recovery_sidecars_starting"
+    state["recovery_deadline_epoch"] = 0
+    state.pop("recovery_sidecar_container_ids", None)
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    if entrypoint == "expiry":
+        evidence = expire_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="interrupted-sidecar-start",
+            state_path=state_path,
+        )
+        assert evidence["expired"] is True
+    else:
+        evidence = fence.reconcile_recovery_on_boot(host, state_path=state_path)
+
+    assert evidence["phase"] == "unsafe_fenced"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(state.get("recovery_sidecar_container_ids", {})) == expected_names
+    assert all(not info["State"]["Running"] for info in host.containers.values())
+
+
+@pytest.mark.parametrize("entrypoint", ["failure", "expiry", "boot"])
+@pytest.mark.parametrize("owned_index", [0, 1])
+def test_mixed_owned_foreign_sidecars_bind_and_refence_only_owned_subset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    entrypoint: str,
+    owned_index: int,
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    run_id = f"mixed-sidecar-{entrypoint}-{owned_index}"
+
+    if entrypoint == "failure":
+        host.mixed_sidecar_compose_owned_index = owned_index
+        with pytest.raises(FenceError, match="re-fenced"):
+            recover_unsafe(
+                host,
+                source_run_id="source-run-1",
+                run_id=run_id,
+                image_ref=host.old_image_ref,
+                revision=host.old_revision,
+                state_path=state_path,
+            )
+    else:
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id=run_id,
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+        foreign_index = 1 - owned_index
+        foreign_name = fence.CANONICAL_SIDECARS[foreign_index][0]
+        foreign = host.containers[foreign_name]
+        foreign["Id"] = f"foreign-sidecar-{foreign_index}"
+        foreign["Config"]["Labels"]["com.docker.compose.project"] = (
+            "foreign-project"
+        )
+        foreign["HostConfig"]["RestartPolicy"]["Name"] = "always"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["phase"] = "recovery_sidecars_starting"
+        state["recovery_deadline_epoch"] = 0
+        state.pop("recovery_sidecar_container_ids", None)
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        if entrypoint == "expiry":
+            expire_recovery(
+                host,
+                source_run_id="source-run-1",
+                run_id=run_id,
+                state_path=state_path,
+            )
+        else:
+            fence.reconcile_recovery_on_boot(host, state_path=state_path)
+
+    owned_name = fence.CANONICAL_SIDECARS[owned_index][0]
+    foreign_name = fence.CANONICAL_SIDECARS[1 - owned_index][0]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(state["recovery_sidecar_container_ids"]) == {owned_name}
+    assert host.containers[owned_name]["State"]["Running"] is False
+    assert host.containers[foreign_name]["State"]["Running"] is True
+    assert (
+        host.containers[foreign_name]["HostConfig"]["RestartPolicy"]["Name"]
+        == "always"
+    )
     assert all(
         not host.containers[name]["State"]["Running"]
         for name in EXPECTED_CONTAINERS
@@ -3749,6 +4062,131 @@ def test_recover_unsafe_refuses_unrecorded_stopped_container_generation(
         )
 
     assert not any(call[:2] == ("docker", "rm") for call in host.calls)
+    assert set(host.containers) == set(EXPECTED_CONTAINERS)
+
+
+@pytest.mark.parametrize(
+    "recorded_source",
+    ["old_container_ids", "recovery_container_ids"],
+)
+def test_stopped_full_fleet_removal_replays_exact_remaining_subset(
+    tmp_path: Path,
+    recorded_source: str,
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    for info in host.containers.values():
+        info["State"] = {"Running": False, "Pid": 0}
+        info["HostConfig"]["RestartPolicy"]["Name"] = "no"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    recorded = {name: str(info["Id"]) for name, info in host.containers.items()}
+    state[recorded_source] = recorded
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    original_run = host.run
+    interrupted = False
+
+    def interrupt_after_one_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal interrupted
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not interrupted:
+            interrupted = True
+            original_run(
+                ["docker", "rm", command[2]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated stopped fleet removal interruption")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated stopped fleet"):
+        fence._remove_recorded_stopped_fleet_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+
+    interrupted_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert interrupted_state["stopped_fleet_removal"] == {
+        "container_ids": recorded,
+        "recorded_source": recorded_source,
+        "removal_phase": "planned",
+    }
+    assert len(host.containers) == len(EXPECTED_CONTAINERS) - 1
+
+    host.run = original_run  # type: ignore[method-assign]
+    removed = fence._remove_recorded_stopped_fleet_for_recovery(
+        host,
+        interrupted_state,
+        state_path=state_path,
+    )
+
+    assert removed == recorded
+    assert host.containers == {}
+    final_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert final_state["stopped_fleet_removal"]["removal_phase"] == "removed"
+
+
+def test_recover_unsafe_replays_interrupted_full_stopped_fleet_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    host.start_installs_target = True
+    original_run = host.run
+    interrupted = False
+
+    def interrupt_after_one_remove(
+        args: list[str] | tuple[str, ...],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+    ) -> str:
+        nonlocal interrupted
+        command = tuple(args)
+        if command[:2] == ("docker", "rm") and not interrupted:
+            interrupted = True
+            original_run(
+                ["docker", "rm", command[2]],
+                check=check,
+                input_text=input_text,
+            )
+            raise FenceError("simulated full predecessor interruption")
+        return original_run(args, check=check, input_text=input_text)
+
+    host.run = interrupt_after_one_remove  # type: ignore[method-assign]
+    with pytest.raises(FenceError, match="simulated full predecessor"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="interrupted-full-predecessor",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    host.run = original_run  # type: ignore[method-assign]
+    evidence = recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="replay-full-predecessor",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    assert evidence["phase"] == "recovery_pending_canary"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["stopped_fleet_removal"]["removal_phase"] == "removed"
     assert set(host.containers) == set(EXPECTED_CONTAINERS)
 
 
@@ -4548,6 +4986,102 @@ def test_finalize_recovery_refences_silent_restart_policy_misapplication(
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["phase"] == "unsafe_fenced"
     assert not any(info["State"]["Running"] for info in host.containers.values())
+
+
+@pytest.mark.parametrize("saved_policy", ["no", "on-failure", "always"])
+def test_finalize_normalizes_saved_sidecar_policy_to_canonical_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    saved_policy: str,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state["sidecar_restart_policies"] = {
+        name: saved_policy for name, _service in fence.CANONICAL_SIDECARS
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-saved-no",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    finalize_recovery(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-saved-no",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+
+    for name, _service in fence.CANONICAL_SIDECARS:
+        assert (
+            host.containers[name]["HostConfig"]["RestartPolicy"]["Name"]
+            == "unless-stopped"
+        )
+
+
+def test_boot_reconciliation_refences_mid_policy_restoration_interruption(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    recover_unsafe(
+        host,
+        source_run_id="source-run-1",
+        run_id="recovery-policy-interruption",
+        image_ref=host.old_image_ref,
+        revision=host.old_revision,
+        state_path=state_path,
+    )
+    host.restart_restore_updates = 0
+    host.interrupt_restart_restore_after = 1
+
+    with pytest.raises(KeyboardInterrupt, match="simulated host loss"):
+        finalize_recovery(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-policy-interruption",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    for info in host.containers.values():
+        restarts = info["HostConfig"]["RestartPolicy"]["Name"] != "no"
+        info["State"]["Running"] = restarts
+        info["State"]["Pid"] = 9999 if restarts else 0
+    host.interrupt_restart_restore_after = 0
+    evidence = fence.reconcile_recovery_on_boot(host, state_path=state_path)
+
+    assert evidence["phase"] == "unsafe_fenced"
+    assert all(not info["State"]["Running"] for info in host.containers.values())
 
 
 @pytest.mark.parametrize("phase", ["canary_accepted", "finalizing"])
