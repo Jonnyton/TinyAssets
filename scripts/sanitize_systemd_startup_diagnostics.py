@@ -100,6 +100,21 @@ def validate_window(
         raise ValueError("diagnostic window must be in the past")
 
 
+def journalctl_window(
+    since_utc: str,
+    until_utc: str,
+    *,
+    now: datetime.datetime | None = None,
+) -> tuple[str, str]:
+    """Return an unambiguous, old-systemd-compatible journal window."""
+
+    validate_window(since_utc, until_utc, now=now)
+    return tuple(
+        f"@{int(datetime.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp())}"
+        for value in (since_utc, until_utc)
+    )
+
+
 def sanitize_journal(
     raw: bytes,
     *,
@@ -180,6 +195,11 @@ def main() -> int:
         nargs=2,
         metavar=("SINCE_UTC", "UNTIL_UTC"),
     )
+    parser.add_argument(
+        "--journalctl-window",
+        nargs=2,
+        metavar=("SINCE_UTC", "UNTIL_UTC"),
+    )
     parser.add_argument("--framed-input", action="store_true")
     args = parser.parse_args()
     if args.validate_window:
@@ -187,6 +207,13 @@ def main() -> int:
             validate_window(*args.validate_window)
         except ValueError as exc:
             parser.error(str(exc))
+        return 0
+    if args.journalctl_window:
+        try:
+            normalized = journalctl_window(*args.journalctl_window)
+        except ValueError as exc:
+            parser.error(str(exc))
+        sys.stdout.write("\n".join(normalized) + "\n")
         return 0
     raw = sys.stdin.buffer.read()
     try:

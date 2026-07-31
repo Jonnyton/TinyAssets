@@ -98,6 +98,9 @@ fleet.
   statuses before failing, never raw stderr or journal text
 - **AND** the remote pipeline runs as explicit Bash and maps journal versus
   framing failure to distinct fixed exit codes
+- **AND** strict UTC workflow inputs are validated and normalized to
+  unambiguous Unix-epoch timestamp arguments before crossing SSH, so deployed
+  systemd parser age and host-local timezone cannot change the selected window
 - **AND** raw log collection occurs only when the inspected container's
   immutable image reference and OCI revision exactly match the fence-proved
   candidate

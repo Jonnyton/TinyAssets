@@ -384,8 +384,25 @@ remote two-command `PIPESTATUS`, exits 41 for journal failure and 42 for framing
 failure, and retains the outer SSH/sanitizer fixed numeric report. Raw stderr and
 journal text remain suppressed. Fresh Windows-host evidence at
 `2026-07-31T19:47Z`: extracted Bash syntax passed, 152 focused tests passed,
-Ruff and diff checks are clean, and strict OpenSpec validation passed. Exact-head
-review is pending before another read-only run.
+Ruff and diff checks are clean, and strict OpenSpec validation passed.
+Exact-head review approved the explicit Bash boundary before the read-only run.
+
+Read-only run `30660879761` then returned `ssh_status=41` and
+`sanitizer_status=0`, proving the explicit Bash transport and runner sanitizer
+succeeded while `journalctl` itself returned nonzero. That code does not prove
+why it failed. The leading compatibility hypothesis is the strict RFC-3339
+`T...Z` input spelling: newer systemd accepts it, while older parsers document
+and accept epoch syntax. The successor probes that hypothesis without mutation
+by keeping the strict UTC input contract and converting locally to documented
+`@<Unix-seconds>` arguments before SSH. This is timezone-unambiguous, compatible
+with older systemd parsers, and does not broaden the workflow's read-only or
+fixed-output surface. Exact-head review is required before another read-only
+run.
+
+Fresh Windows-host evidence at `2026-07-31T20:06Z`: 153 deployment-focused
+tests passed, Ruff and diff checks are clean, the cross-provider drift guard is
+clean, and strict OpenSpec validation passed. Local actionlint is unavailable;
+the repository's pinned CI actionlint workflow remains the authoritative gate.
 
 ## Release And Rollback
 

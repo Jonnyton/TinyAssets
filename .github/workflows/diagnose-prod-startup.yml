@@ -63,6 +63,14 @@ jobs:
           SINCE_UTC: ${{ inputs.since_utc }}
           UNTIL_UTC: ${{ inputs.until_utc }}
         run: |
+          set -euo pipefail
+          journal_window_text="$(
+            python scripts/sanitize_systemd_startup_diagnostics.py \
+                --journalctl-window "${SINCE_UTC}" "${UNTIL_UTC}"
+          )"
+          mapfile -t journal_window <<< "${journal_window_text}"
+          unset journal_window_text
+          [ "${#journal_window[@]}" -eq 2 ]
           set +e
           diagnosis="${RUNNER_TEMP}/startup-journal-diagnosis.json"
           timeout 35s ssh -i ~/.ssh/do_deploy \
@@ -71,14 +79,14 @@ jobs:
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=2 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              bash -s -- "${SINCE_UTC}" "${UNTIL_UTC}" \
+              bash -s -- "${journal_window[0]}" "${journal_window[1]}" \
               2>/dev/null <<'REMOTE' | python scripts/sanitize_systemd_startup_diagnostics.py --framed-input > "${diagnosis}"
           set +e
-          since_utc="$1"
-          until_utc="$2"
+          since_epoch="$1"
+          until_epoch="$2"
           timeout 25s sudo journalctl -u tinyassets-daemon \
-              --since "${since_utc}" \
-              --until "${until_utc}" \
+              --since "${since_epoch}" \
+              --until "${until_epoch}" \
               --no-pager \
               --output=cat \
             | python3 -c 'import collections, sys; limit = 262143; chunks = collections.deque(iter(lambda: sys.stdin.buffer.read(65536), b""), maxlen=5); data = b"".join(chunks); sys.stdout.buffer.write((b"1" if len(data) > limit else b"0") + data[-limit:])'

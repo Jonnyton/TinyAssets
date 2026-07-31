@@ -6,6 +6,7 @@ import json
 import pytest
 
 from scripts.sanitize_systemd_startup_diagnostics import (
+    journalctl_window,
     sanitize_framed_journal,
     sanitize_journal,
     validate_window,
@@ -141,6 +142,14 @@ def test_window_validator_accepts_a_strict_bounded_past_window():
     )
 
 
+def test_journalctl_window_normalizes_strict_utc_to_unambiguous_epoch():
+    assert journalctl_window(
+        "2026-07-31T18:34:00Z",
+        "2026-07-31T18:36:36Z",
+        now=datetime.datetime(2026, 7, 31, 19, 0, tzinfo=datetime.UTC),
+    ) == ("@1785522840", "@1785522996")
+
+
 @pytest.mark.parametrize(
     ("since_utc", "until_utc", "message"),
     (
@@ -158,6 +167,12 @@ def test_window_validator_rejects_unsafe_inputs(
 ):
     with pytest.raises(ValueError, match=message):
         validate_window(
+            since_utc,
+            until_utc,
+            now=datetime.datetime(2026, 7, 31, 19, 0, tzinfo=datetime.UTC),
+        )
+    with pytest.raises(ValueError, match=message):
+        journalctl_window(
             since_utc,
             until_utc,
             now=datetime.datetime(2026, 7, 31, 19, 0, tzinfo=datetime.UTC),

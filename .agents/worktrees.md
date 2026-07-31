@@ -3,8 +3,8 @@
 ## 2026-07-31 11:40 - classify preserved systemd startup failure
 
 - Provider: `codex-gpt5-desktop`
-- Branch: `fix/startup-journal-explicit-bash`
-- Lane state: Active; explicit Bash + fixed remote substage exits validated, review pending
+- Branch: `fix/startup-journal-time-normalization`
+- Lane state: Active; exit 41 isolated; `@epoch` compatibility probe validated locally, review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: safely classify the preserved systemd/Compose journal window without host mutation
