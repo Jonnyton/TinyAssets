@@ -12,6 +12,7 @@ from typing import Any
 
 MAX_RAW_BYTES = 131_072
 MAX_SIGNALS = 64
+STATE_SEPARATOR = "|"
 
 _FRAME = re.compile(
     r'^\s*File "/app/(?P<path>[A-Za-z0-9_./-]{1,240})", '
@@ -150,7 +151,9 @@ def sanitize_candidate_state(
         "capture": "unavailable",
     }
     try:
-        values = raw.decode("utf-8", errors="strict").strip().split("\t")
+        values = (
+            raw.decode("utf-8", errors="strict").strip().split(STATE_SEPARATOR)
+        )
     except UnicodeDecodeError:
         return unavailable
     if len(values) != 8:

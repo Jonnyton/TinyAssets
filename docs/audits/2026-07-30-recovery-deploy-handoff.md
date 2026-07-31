@@ -252,6 +252,26 @@ durable image-mutation marker. Upload requires diagnostic success, explicit
 restored-or-safely-fenced cleanup output, and a published terminal receipt.
 Mismatched observed identities are emitted only as `unavailable`.
 
+Live instrumented deploy `30610115079` at revision `0eec432c` proved capture,
+cleanup fencing, terminal publication, and artifact upload, but the artifact
+reported `candidate_identity_match=false` with no state or signals. The Docker
+format string emitted literal `\t` text while the validator split on actual tab
+characters. Guarded recovery `30610348776` restored the public MCP canary and
+exact-seven surface. The framing repair uses literal `|` between eight fields;
+all accepted field grammars exclude that separator, and focused tests reproduce
+the failed pipe input before proving exact image/revision acceptance.
+
+Independent review of PR #1995 head `a5730730` returned ADAPT because the
+workflow test proved only one separator occurrence, so a mutation of any other
+boundary could survive. The successor locks the complete eight-field template,
+asserts exactly seven identical separators, and passes a production-shaped
+rendered record through `sanitize_candidate_state`. Fresh Windows-host evidence
+at `2026-07-31T17:56Z` is 133 focused tests passed, clean Ruff and diff checks,
+and strict OpenSpec validation. Independent exact-head re-review of
+`c6bccf05a29cb5a58fe987fde9682deb0dabdb61` returned APPROVE with no findings
+after additionally mutation-checking all seven delimiter boundaries and pipe
+injection into every accepted field.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

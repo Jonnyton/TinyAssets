@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from scripts.sanitize_startup_diagnostics import (
+    STATE_SEPARATOR,
     sanitize_candidate_state,
     sanitize_startup_log,
 )
@@ -114,7 +115,10 @@ def test_sanitizer_bounds_input_and_signal_count():
 
 def test_candidate_state_requires_exact_image_and_revision_match():
     raw = (
-        f"exited\tfalse\tfalse\t1\tfalse\tunhealthy\t{_REVISION}\t{_IMAGE}\n"
+        STATE_SEPARATOR.join(
+            ("exited", "false", "false", "1", "false", "unhealthy", _REVISION, _IMAGE)
+        )
+        + "\n"
     ).encode()
 
     result = sanitize_candidate_state(
@@ -132,7 +136,10 @@ def test_candidate_state_requires_exact_image_and_revision_match():
 def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure():
     token = "token-bearing-forged-state"
     valid_raw = (
-        f"exited\tfalse\tfalse\t1\tfalse\tunhealthy\t{_REVISION}\t{_IMAGE}\n"
+        STATE_SEPARATOR.join(
+            ("exited", "false", "false", "1", "false", "unhealthy", _REVISION, _IMAGE)
+        )
+        + "\n"
     ).encode()
 
     revision_mismatch = sanitize_candidate_state(
@@ -146,7 +153,7 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
         target_image_ref=f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'d' * 64}",
     )
     malformed = sanitize_candidate_state(
-        f"{token}\t{token}".encode(),
+        STATE_SEPARATOR.join((token, token)).encode(),
         target_revision=_REVISION,
         target_image_ref=_IMAGE,
     )
