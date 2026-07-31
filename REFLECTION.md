@@ -933,10 +933,10 @@ fresh-host rollback edges found later.
 - **What surprised me:** the queue's existing transaction callback was enough
   to validate activation and worker authority without introducing a second
   claim owner or widening the public task model.
-- **Pattern worth capturing:** persist optional authority identity as an
-  all-or-none tuple, reject partial/tampered rows during integrity
-  classification, and re-read the authoritative record inside the mutation
-  transaction.
+- **Pattern worth capturing:** an all-or-none tuple alone permits full erasure
+  to masquerade as a legacy row. Bind optional authority identity into a
+  second existing integrity record, cross-check both representations, and
+  re-read the authoritative record inside the mutation transaction.
 - **What I would do differently:** add the transaction-aware read method to
   each authority store when that store is first introduced; reopening a
   connection during a caller-owned transaction silently weakens atomicity.

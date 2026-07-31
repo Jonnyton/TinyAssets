@@ -572,6 +572,32 @@ def test_stopped_or_tampered_activation_cannot_claim(
         descriptor_reader=lambda _conn, _worker_id: cloud,
     ) is None
 
+    erased_task = _commit(
+        tmp_path,
+        key="activation-erased",
+        created_at="2026-07-24T08:00:02+00:00",
+        automation_activation=reactivated,
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET automation_id = NULL,
+                automation_activation_epoch = NULL,
+                automation_executor_class = NULL,
+                automation_branch_version = NULL,
+                automation_lease_id = NULL
+            WHERE branch_task_id = ?
+            """,
+            (erased_task["branch_task_id"],),
+        )
+
+    assert adapter.claim(
+        erased_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    ) is None
+
 
 def test_claim_uses_transaction_time_for_descriptor_freshness(
     tmp_path: Path,

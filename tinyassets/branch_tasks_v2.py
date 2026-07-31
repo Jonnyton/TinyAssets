@@ -852,6 +852,25 @@ def _classify_epoch2_row(
         or not isinstance(request_metadata, dict)
     ):
         return "invalid_operator_admission"
+    receipt_activation = receipt.get("_automation_activation")
+    if receipt_activation is None:
+        if any(populated_activation_fields):
+            return "invalid_operator_admission"
+    elif (
+        not all(populated_activation_fields)
+        or not isinstance(receipt_activation, dict)
+        or receipt_activation
+        != {
+            "automation_id": row["automation_id"],
+            "epoch": row["automation_activation_epoch"],
+            "executor_class": row["automation_executor_class"],
+            "immutable_branch_version": row[
+                "automation_branch_version"
+            ],
+            "lease_id": row["automation_lease_id"],
+        }
+    ):
+        return "invalid_operator_admission"
     metadata_matches = (
         request_metadata.get("tenant_id")
         == row["linked_admission_tenant_id"]

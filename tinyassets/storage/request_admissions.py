@@ -443,6 +443,19 @@ class RequestAdmissionStore:
                 automation_activation.lease_id,
             )
         stored_receipt = dict(receipt)
+        stored_receipt.pop("_automation_activation", None)
+        if automation_activation is not None:
+            stored_receipt["_automation_activation"] = {
+                "automation_id": automation_activation.automation_id,
+                "epoch": automation_activation.epoch,
+                "executor_class": (
+                    automation_activation.executor_class.value
+                ),
+                "immutable_branch_version": (
+                    automation_activation.immutable_branch_version
+                ),
+                "lease_id": automation_activation.lease_id,
+            }
         stored_receipt["branch_def_id"] = clean_branch_def_id
         accepted_weight = float(accepted_priority_weight)
         if (
