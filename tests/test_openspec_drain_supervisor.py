@@ -2155,6 +2155,7 @@ def test_duplicate_merge_suppresses_stale_admission_without_counting_slice(
     assert state["resume_target"] is None
     assert state["recent_blocked"] == ["target"]
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["last_consumed_attempt"] == 3
     assert state["status"] == "duplicate-merge-suppressed"
 
 
@@ -2861,6 +2862,7 @@ def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
     assert state["completed_slices"] == 1
     assert state["consecutive_failures"] == 0
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
+    assert state["last_consumed_attempt"] == 1
     assert state["merged_prs"] == [pr]
     assert state["admission"] is None
     assert state["resume_target"] is None

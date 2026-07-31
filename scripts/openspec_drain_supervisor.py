@@ -1128,6 +1128,7 @@ def apply_duplicate_merge_suppression(
         "target": result.target,
         "pr": result.pr,
     }
+    state["last_consumed_attempt"] = attempt
     state["status"] = "duplicate-merge-suppressed"
 
 
