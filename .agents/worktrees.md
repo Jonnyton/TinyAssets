@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 19:05 - fold back atomic background-attempt reservation
+
+- Provider: `drain-20260730-182443-ef55a1`
+- Branch: `feature/atomic-background-attempt-reservation-seam`
+- Lane state: Foldback for landed PR #1975; STATUS claim retired in this lane
+- Worktree: `C:/Users/Jonathan/Projects/wf-atomic-background-attempt-reservation`
+- STATUS/Issue/PR: `harden-background-branch-execution-authority` task 2.2; PR #1975
+- Purpose: retire the merged reservation-seam claim without broadening into task 2.4
+- Review gate: coordination checks and independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-atomic-background-attempt-reservation/_PURPOSE.md`
+- Ship/abandon: one draft foldback PR; remove only after verified merge
+
 ## 2026-07-30 17:48 - dark background binding transitions
 
 - Provider: `codex-gpt5-desktop`
