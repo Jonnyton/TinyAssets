@@ -1,7 +1,9 @@
 # OpenSpec drain blocker refresh
 
-Date: 2026-07-30 America/Los_Angeles  
-Provider: `drain-20260730-171757-db5ee6`  
+Date: 2026-07-30 America/Los_Angeles
+
+Provider: `drain-20260730-171757-db5ee6`
+
 Base: `origin/main` at `29ec497d5a4add0e36e27a81ad1a588615a5fdd7`
 
 ## Scope
