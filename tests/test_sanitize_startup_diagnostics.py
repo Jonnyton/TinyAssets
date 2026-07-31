@@ -205,6 +205,10 @@ def test_candidate_inspect_rejects_non_singleton_and_malformed_shapes():
     unhashable_health = _inspect_payload().replace(
         b'"Status": "unhealthy"', b'"Status": ["secret"]', 1
     )
+    oversized_integer = _inspect_payload().replace(
+        b'"ExitCode": 1', b'"ExitCode": ' + (b"9" * 5_000), 1
+    )
+    deeply_nested = (b"[" * 2_000) + (b"]" * 2_000)
 
     for raw in (
         not_an_object,
@@ -212,6 +216,8 @@ def test_candidate_inspect_rejects_non_singleton_and_malformed_shapes():
         missing,
         unhashable_status,
         unhashable_health,
+        oversized_integer,
+        deeply_nested,
         b"{not-json",
     ):
         result = sanitize_candidate_inspect(

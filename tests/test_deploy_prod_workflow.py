@@ -486,6 +486,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert "docker inspect --type container tinyassets-daemon --format" not in (
         capture_script
     )
+    assert "bash -o pipefail -c" in capture_script
     assert "head -c 131073" in capture_script
     assert "docker logs --tail 200 tinyassets-daemon" in capture_script
     assert "tail -c 131072" in capture_script
@@ -504,6 +505,12 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
     assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
     assert "candidate-daemon-inspect.raw.json" in capture_script
+    assert "candidate-daemon-state.next.json" in capture_script
+    assert 'if [ "${state_status}" -eq 0 ]' in capture_script
+    assert 'elif [ "${state_status}" -eq 2 ]' in capture_script
+    assert 'if ! rm -f "${raw_log}" "${inspect_raw}"' in capture_script
+    assert "if ! python - \\" in capture_script
+    assert "\nexit 0\n" not in capture_script
     assert "GITHUB_SHA" not in capture_script
     assert "docker compose" not in capture_script
     assert "compose-ps" not in capture_script

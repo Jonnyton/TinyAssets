@@ -153,7 +153,7 @@ def sanitize_candidate_inspect(
         return unavailable
     try:
         payload = json.loads(raw.decode("utf-8", errors="strict"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         return unavailable
     if (
         not isinstance(payload, list)

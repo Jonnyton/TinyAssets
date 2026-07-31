@@ -1117,12 +1117,26 @@ jobs:
           set +e
           evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
           inspect_raw="${RUNNER_TEMP}/candidate-daemon-inspect.raw.json"
+          state_next="${RUNNER_TEMP}/candidate-daemon-state.next.json"
           raw_log="${RUNNER_TEMP}/candidate-daemon.raw.log"
           candidate_identity_match=false
-          mkdir -p "${evidence_dir}"
-          printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
-              > "${evidence_dir}/daemon-state.json"
-          : > "${raw_log}"
+          cleanup_raw_diagnostics() {
+            rm -f "${raw_log}" "${inspect_raw}" "${state_next}"
+          }
+          fail_diagnostics() {
+            cleanup_raw_diagnostics
+            exit 1
+          }
+          if ! mkdir -p "${evidence_dir}"; then
+            exit 1
+          fi
+          if ! printf '{"candidate_identity_match":false,"capture":"unavailable"}\n' \
+              > "${evidence_dir}/daemon-state.json"; then
+            exit 1
+          fi
+          if ! : > "${raw_log}"; then
+            exit 1
+          fi
 
           if timeout 25s ssh -i ~/.ssh/do_deploy \
                 -o BatchMode=yes \
@@ -1130,18 +1144,26 @@ jobs:
                 -o ServerAliveInterval=5 \
                 -o ServerAliveCountMax=2 \
                 "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-                "timeout 15s sudo docker inspect --type container tinyassets-daemon | head -c 131073" \
+                "bash -o pipefail -c 'timeout 15s sudo docker inspect --type container tinyassets-daemon | head -c 131073'" \
                 > "${inspect_raw}" 2>/dev/null; then
-            validate_candidate_identity() {
-              python scripts/sanitize_startup_diagnostics.py \
-                  --inspect-json \
-                  --target-revision "${TARGET_REVISION}" \
-                  --target-image-ref "${TARGET_IMAGE_REF}" \
-                  < "${inspect_raw}" \
-                  > "${evidence_dir}/daemon-state.json" 2>/dev/null
-            }
-            if validate_candidate_identity; then
+            python scripts/sanitize_startup_diagnostics.py \
+                --inspect-json \
+                --target-revision "${TARGET_REVISION}" \
+                --target-image-ref "${TARGET_IMAGE_REF}" \
+                < "${inspect_raw}" \
+                > "${state_next}" 2>/dev/null
+            state_status=$?
+            if [ "${state_status}" -eq 0 ]; then
+              if ! mv -f "${state_next}" "${evidence_dir}/daemon-state.json"; then
+                fail_diagnostics
+              fi
               candidate_identity_match=true
+            elif [ "${state_status}" -eq 2 ]; then
+              if ! mv -f "${state_next}" "${evidence_dir}/daemon-state.json"; then
+                fail_diagnostics
+              fi
+            else
+              fail_diagnostics
             fi
           fi
 
@@ -1155,12 +1177,16 @@ jobs:
                 "timeout 15s sudo docker logs --tail 200 tinyassets-daemon 2>&1 | tail -c 131072" \
                 > "${raw_log}" 2>/dev/null
           fi
-          python scripts/sanitize_startup_diagnostics.py \
+          if ! python scripts/sanitize_startup_diagnostics.py \
               < "${raw_log}" \
-              > "${evidence_dir}/daemon-signals.json"
-          rm -f "${raw_log}" "${inspect_raw}"
+              > "${evidence_dir}/daemon-signals.json"; then
+            fail_diagnostics
+          fi
+          if ! rm -f "${raw_log}" "${inspect_raw}" "${state_next}"; then
+            exit 1
+          fi
 
-          python - \
+          if ! python - \
               "${evidence_dir}/manifest.json" \
               "${evidence_dir}/daemon-state.json" <<'PY'
           import datetime
@@ -1187,7 +1213,9 @@ jobs:
               encoding="utf-8",
           )
           PY
-          exit 0
+          then
+            exit 1
+          fi
 
       - name: Verify cloud worker is running
         run: |
