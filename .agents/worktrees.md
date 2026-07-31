@@ -6,7 +6,7 @@
 - Branch: `codex/background-authority-store-20260730`
 - Lane state: Claimed; TDD pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730`
-- STATUS/Issue/PR: harden-background-branch-execution-authority 2.1/2.2; PR pending
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.1/2.2; draft PR #1965
 - Purpose: durable binding/attempt replay, CAS, bounded read, restart substrate
 - Review gate: focused TDD, mirror parity, strict OpenSpec, independent review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730/_PURPOSE.md`
