@@ -625,7 +625,7 @@ def test_attempt_claim_has_one_exact_fence_winner(tmp_path) -> None:
     )
     stale = service.claim(
         expected=BackgroundBranchAttemptFence(attempt),
-        executor_audience=replace(_audience(), worker_id="worker_codex_2"),
+        executor_audience=_audience(),
         claimed_at="2026-07-30T19:31:01Z",
         lease_expires_at="2026-07-30T19:36:01Z",
     )
@@ -637,6 +637,27 @@ def test_attempt_claim_has_one_exact_fence_winner(tmp_path) -> None:
     assert claimed.record.lease_generation == attempt.lease_generation + 1
     assert stale.outcome is BackgroundBranchAuthorityWriteOutcome.CONFLICT
     assert stale.record == claimed.record
+
+
+def test_attempt_claim_cannot_change_executor_audience(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+    service = authority_service.BackgroundBranchAttemptClaimService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="executor_mismatch",
+    ):
+        service.claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=replace(
+                _audience(),
+                worker_id="worker_codex_2",
+            ),
+            claimed_at="2026-07-30T19:31:00Z",
+            lease_expires_at="2026-07-30T19:36:00Z",
+        )
 
 
 def test_attempt_renew_and_release_are_generation_fenced(tmp_path) -> None:
@@ -754,3 +775,37 @@ def test_attempt_reclaim_advances_same_attempt_for_conclusive_dead_predecessor(
     assert reclaimed.claim_generation == claimed.claim_generation + 1
     assert reclaimed.lease_generation == claimed.lease_generation + 1
     assert reclaimed.lease_expires_at is None
+
+
+def test_attempt_reclaim_cannot_change_executor_domain(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+    service = authority_service.BackgroundBranchAttemptClaimService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    )
+    claimed = service.claim(
+        expected=BackgroundBranchAttemptFence(attempt),
+        executor_audience=_audience(),
+        claimed_at="2026-07-30T19:31:00Z",
+        lease_expires_at="2026-07-30T19:32:00Z",
+    ).record
+    assert claimed is not None
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAttemptClaimError,
+        match="executor_domain_mismatch",
+    ):
+        service.reclaim(
+            expected=BackgroundBranchAttemptFence(claimed),
+            proof=authority_service.BackgroundBranchAttemptRecoveryProof(
+                predecessor=authority_service.BackgroundBranchAttemptPredecessorState.DEAD,
+                boundary=authority_service.BackgroundBranchAttemptBoundaryState.CLOSED,
+                claim_generation=claimed.claim_generation,
+                lease_generation=claimed.lease_generation,
+            ),
+            replacement_audience=replace(
+                _audience(),
+                runtime_id="runtime_cloud_2",
+                worker_id="worker_codex_2",
+            ),
+            reclaimed_at="2026-07-30T19:34:00Z",
+        )

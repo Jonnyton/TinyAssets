@@ -842,13 +842,15 @@ class BackgroundBranchAttemptClaimService:
             self._fail("attempt_not_reserved", "only a reserved attempt can be claimed")
         if not isinstance(executor_audience, BackgroundBranchExecutorAudience):
             raise ValueError("executor_audience must be typed")
-        claim_generation = current.claim_generation + (
-            executor_audience != current.executor_audience
-        )
+        if executor_audience != current.executor_audience:
+            self._fail(
+                "executor_mismatch",
+                "ordinary claim cannot rotate its reserved audience",
+            )
         replacement = self._replacement(
             current,
             executor_audience=executor_audience,
-            claim_generation=claim_generation,
+            claim_generation=current.claim_generation,
             lease_generation=current.lease_generation + 1,
             lease_expires_at=lease_expires_at,
             lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
@@ -927,6 +929,21 @@ class BackgroundBranchAttemptClaimService:
             self._fail(
                 "attempt_not_reclaimable",
                 "only claimed or running attempts can be reclaimed",
+            )
+        current_domain = (
+            current.executor_audience.executor_class,
+            current.executor_audience.daemon_id,
+            current.executor_audience.runtime_id,
+        )
+        replacement_domain = (
+            replacement_audience.executor_class,
+            replacement_audience.daemon_id,
+            replacement_audience.runtime_id,
+        )
+        if replacement_domain != current_domain:
+            self._fail(
+                "executor_domain_mismatch",
+                "recovery may rotate only the worker inside the reserved executor domain",
             )
         if (
             proof.predecessor
