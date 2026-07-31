@@ -448,6 +448,7 @@ def _watch(args: argparse.Namespace) -> int:
             return 0
 
         while True:
+            launch_decision: Decision | None = None
             wants_stop = stop_request.exists()
             wants_restart = restart_request.exists()
             alive = bool(controller_pid and _pid_is_alive(controller_pid))
@@ -527,7 +528,7 @@ def _watch(args: argparse.Namespace) -> int:
                 if wants_restart or restart_after_stop:
                     restart_request.unlink(missing_ok=True)
                     stop_request.unlink(missing_ok=True)
-                    decision = Decision(
+                    launch_decision = Decision(
                         "new",
                         None,
                         None,
@@ -536,7 +537,7 @@ def _watch(args: argparse.Namespace) -> int:
                     restart_after_stop = False
                     sticky_failure = None
                 else:
-                    decision = discover_decision(output_dir)
+                    launch_decision = discover_decision(output_dir)
                 active_run = None
                 controller_pid = None
                 launched_process = None
@@ -556,10 +557,13 @@ def _watch(args: argparse.Namespace) -> int:
                     return 0
                 if restart_request.exists():
                     restart_request.unlink(missing_ok=True)
-                    decision = Decision("new", None, None, "explicit restart")
+                    launch_decision = Decision(
+                        "new", None, None, "explicit restart"
+                    )
                     sticky_failure = None
-                else:
-                    decision = discover_decision(output_dir)
+                elif launch_decision is None:
+                    launch_decision = discover_decision(output_dir)
+                decision = launch_decision
 
                 if decision.action == "down":
                     state = (
