@@ -99,12 +99,17 @@ class BackgroundBranchBindingSeed:
     child_delegation: BackgroundBranchChildDelegation
 
     def __post_init__(self) -> None:
-        _binding_from_seed(
+        validated = _binding_from_seed(
             self,
             binding_id="bnd_validation",
             status=BackgroundBranchBindingStatus.ACTIVE,
             generation=1,
             revocation_generation=0,
+        )
+        object.__setattr__(
+            self,
+            "permitted_executor_classes",
+            validated.permitted_executor_classes,
         )
 
 

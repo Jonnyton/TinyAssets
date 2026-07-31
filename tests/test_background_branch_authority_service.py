@@ -131,6 +131,20 @@ def test_transition_surfaces_accept_no_caller_authority_fields(
     assert tuple(parameters) == ("self", argument)
 
 
+def test_resolved_seed_retains_immutable_executor_constraints() -> None:
+    executor_classes = [BackgroundBranchExecutorClass.CLOUD]
+
+    seed = replace(  # type: ignore[arg-type]
+        _seed(),
+        permitted_executor_classes=executor_classes,
+    )
+    executor_classes.append(BackgroundBranchExecutorClass.HOST)
+
+    assert seed.permitted_executor_classes == (
+        BackgroundBranchExecutorClass.CLOUD,
+    )
+
+
 def test_create_conflicts_if_canonical_resolution_changes_for_same_root(
     tmp_path,
 ) -> None:
