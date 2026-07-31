@@ -1,16 +1,28 @@
 # Worktree Inventory
 
+## 2026-07-31 14:21 - fail-safe fixed-name sidecar handoff
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-handoff-safe`
+- Lane state: Active; exact conflict proved; implementation and focused verification green; independent review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-handoff-safe`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: transfer tunnel/log fixed names without stranding emergency recovery after candidate and rollback failure
+- Review gate: 248 focused tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-handoff-safe/_PURPOSE.md`
+- Ship/abandon: merge only after approval; then one controlled deploy with guarded recovery and public canary
+
 ## 2026-07-31 13:34 - identify fixed conflicting container
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-conflict-identity`
-- Lane state: Active; read-only fixed class is name conflict; allowlisted name classifier in TDD
+- Lane state: Merged as PR #2007; run 306648 proved tunnel + logs; superseded by fail-safe sidecar handoff lane
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2007 merged
 - Purpose: identify only the matching canonical container name before selecting a repair
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-conflict-identity/_PURPOSE.md`
-- Ship/abandon: merge fixed-name schema after review, then rerun the same preserved window read-only
+- Ship/abandon: retain as landed evidence; no further implementation in this worktree
 
 ## 2026-07-30 22:35 - harden production startup diagnostics
 

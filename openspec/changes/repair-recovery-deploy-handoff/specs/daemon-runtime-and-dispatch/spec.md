@@ -26,6 +26,39 @@ removal intent before container mutation.
 - **THEN** target preparation does not remove that predecessor through the
   recovery handoff path
 
+#### Scenario: Fixed-name sidecars hand off without weakening recovery
+
+- **WHEN** a finalized recovery leaves `tinyassets-tunnel` or
+  `tinyassets-logs` holding a fixed name required by the next canonical Compose
+  start
+- **THEN** preflight records each present sidecar's exact ID, exact Compose
+  project and service labels, pinned image reference, exact read-only mount
+  posture, and saved restart policy
+- **AND** it restart-fences and stops those exact sidecars before recording
+  removal intent and removing only the surviving recorded IDs without `-v`
+- **AND** replay accepts only the exact remaining recorded subset or proved
+  absence; foreign, running, restart-enabled, substituted, or unexpected
+  sidecars fail before removal
+- **AND** if forward start and ordinary rollback fail, emergency recovery
+  removes only a newly proved canonical or recovery-owned sidecar generation,
+  recreates both sidecars under its unique recovery project with `restart=no`,
+  and binds their exact IDs before exposing the recovery result
+- **AND** a partial recovery-sidecar start is durably captured, stopped, and
+  restart-fenced; the next attempt may remove only those recorded IDs
+- **AND** expiry or boot reconciliation interrupted after Compose creation but
+  before ID capture discovers only the recorded unique recovery project/service
+  subset, durably binds zero, one, or both exact IDs, and stops that subset
+- **AND** when one fixed-name sidecar is recovery-owned and its sibling is
+  foreign, each failure, expiry, and boot path durably binds and stops only the
+  independently proved owned ID while leaving the foreign sibling untouched
+- **AND** a foreign fixed-name blocker remains untouched while the proved
+  recovery writers are refenced; a recovery-owned sidecar with an unexpected
+  data mount is ID-bound and stopped but is not removed
+- **AND** every saved sidecar restart policy is normalized to canonical
+  `unless-stopped` at finalization, while interruption during policy restoration
+  remains boot-reconcilable and a later normal preflight can hand off the exact
+  recorded recovery sidecars
+
 #### Scenario: Unproved recovery ownership fails without removal
 
 - **WHEN** the candidate fleet is partial, extra, running, restart-enabled,
@@ -45,6 +78,16 @@ removal intent before container mutation.
 - **AND** any pre-intent partial fleet, extra writer, substituted identity,
   running survivor, restart-enabled survivor, or foreign-project survivor
   fails closed
+
+#### Scenario: Unsafe recovery retires a full stopped predecessor
+
+- **WHEN** unsafe recovery must remove an exact full predecessor recorded in
+  either the prior recovery IDs or old-fleet IDs
+- **THEN** it writes the exact IDs and source field before `docker rm`
+- **AND** interruption replays only the exact remaining recorded subset after
+  proving every missing ID absent
+- **AND** emergency quiescence stops every inspected writer by exact ID, never
+  by mutable name, and reports unproved rather than mutating a substitution
 
 #### Scenario: Unsafe recovery replaces a proved partial canonical target
 

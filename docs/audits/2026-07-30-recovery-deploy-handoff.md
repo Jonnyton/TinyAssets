@@ -3,11 +3,12 @@
 ## Outcome
 
 The public MCP surface is recovered on the previously configured immutable
-image. The handoff and partial-target recovery repairs are landed, but current
-`main` still fails startup against production-shaped state. Normal deployment
-is paused until the PR #1991 diagnostic is hardened after independent review;
-the next single controlled deploy will use only allowlisted, deadline-bounded
-evidence to identify the startup regression.
+image. The writer-fleet handoff and partial-target recovery repairs are landed.
+Read-only diagnostic run `30664801072` has now reduced the remaining
+production-shaped startup failure to exact fixed-name conflicts on both
+`tinyassets-tunnel` and `tinyassets-logs`. A fail-safe sidecar handoff repair is
+under exact-head re-review after adapting two rounds of fail-safe findings; no
+further production mutation is permitted until that re-review approves.
 
 Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
 successfully handed off the recovered generation and installed the target, but
@@ -73,6 +74,10 @@ closed and independently re-reviewed.
   host): `python scripts/mcp_public_canary.py --url
   https://tinyassets.io/mcp --assert-name TinyAssets --assert-handles
   --verbose` exited `0`.
+- Read-only bounded journal run `30664801072` at revision `0df587ef` returned
+  only the fixed schema and classified `conflict_containers` as exactly
+  `tinyassets-tunnel` and `tinyassets-logs`; it published no raw journal text
+  and performed no host mutation.
 
 ## Root Cause
 
@@ -84,6 +89,14 @@ the recovered generation and overwrites canonical fence state with the new
 run's exact old IDs. Before this repair it discarded the prior recovery
 project/ID provenance, and `prepare_deploy` only unmasked the service. The
 stopped recovery containers therefore survived into canonical Compose start.
+
+The remaining sidecar collision is the same ownership-boundary defect outside
+the production data volume. Emergency recovery intentionally started only the
+five receipt-capable writer containers, so the canonical-project tunnel and
+log sidecars survived and continued serving ingress/logging. A later normal
+preflight fenced only production-volume consumers. When systemd was already
+inactive, canonical Compose could not tear down those surviving fixed-name
+sidecars and failed while creating the new project.
 
 ## Repair
 
@@ -118,7 +131,55 @@ without `-v`, and replays only the remaining recorded subset after an
 interruption. Extra, foreign, running, restart-enabled, substituted, and
 same-name off-volume states fail before removal.
 
+The sidecar repair binds each present tunnel/log container by exact ID, exact
+Compose project/service labels, pinned image, exact read-only mount posture,
+and saved restart policy.
+Preflight fences and stops them; target preparation records removal intent and
+removes only exact surviving IDs without `-v`, including subset/empty replay.
+If forward start and ordinary rollback both fail, unsafe recovery removes only
+a newly proved canonical or recovery-owned sidecar generation, starts both
+sidecars under the unique recovery project with `restart=no`, and durably binds
+their IDs. Expiry and boot reconciliation discover and durably bind the exact
+zero/one/two sidecar subset left in the post-Compose/pre-capture interruption
+window before stopping it. A partial sidecar Compose start is captured,
+stopped, refenced, and can be removed by exact ID on retry. Finalization
+normalizes a saved sidecar `restart=no` to canonical `unless-stopped`, and a
+mid-restoration reboot remains refenceable from durable `finalizing` state.
+
 ## Verification
+
+Fixed-name sidecar repair verification at `2026-07-31T22:22Z` (Windows host):
+
+```text
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+271 passed in 9.24s
+
+python -m ruff check scripts/retire_cheat_loop_deploy_fence.py \
+  tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict --no-interactive
+Change 'repair-recovery-deploy-handoff' is valid
+
+git diff --check
+clean
+```
+
+The new cases cover canonical and recovery-project sidecar ownership, pinned
+image and exact mount proof, substitution during exact-ID preflight stop,
+exact-ID subset replay, emergency recreation, zero/one/two interruption binding
+at expiry and boot, mixed owned/foreign sibling handling in both service
+permutations, every-policy canonicalization, WAL replay of a partially removed
+full predecessor, exact-ID emergency substitution refusal, mid-policy-
+restoration reboot, and the next normal handoff. Empty/foreign Compose projects
+and production-volume source aliases fail before sidecar mutation. Exact-head
+re-review is pending. A foreign fixed-name blocker remains untouched while the
+proved recovery writers are still refenced; a recovery-owned sidecar with an
+unexpected data mount is ID-bound and stopped but never removed.
 
 TDD red evidence on 2026-07-30:
 
