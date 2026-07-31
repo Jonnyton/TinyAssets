@@ -30,7 +30,7 @@
 - [x] 2.1b Replace literal `\t` Docker-template framing with a fixed separator;
   regression-lock all seven boundaries through the real candidate-state
   validator and obtain independent exact-head approval.
-- [ ] 2.1c Classify the identity-bound candidate's Docker pre-start error without
+- [x] 2.1c Classify the identity-bound candidate's Docker pre-start error without
   publishing raw daemon or host text; reproduce and independently review the
   exact capture contract before another controlled deploy.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,

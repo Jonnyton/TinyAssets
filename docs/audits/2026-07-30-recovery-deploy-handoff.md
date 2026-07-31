@@ -292,7 +292,10 @@ the image/revision join succeeds; mismatch, malformed JSON, and oversize input
 fail unavailable. Raw error text never enters the artifact. Windows-host
 verification at `2026-07-31T18:24Z`: 136 focused tests passed, Ruff and diff
 checks clean, and strict OpenSpec validation passed. Independent exact-head
-review remains required before another deploy.
+review of `bf81cb284bd58775dd73eae7bb1e48f22b8e77c2` returned APPROVE
+with no findings after hostile shell payloads, every trusted-field pipe
+injection, malformed/non-string JSON, invalid UTF-8, oversize input, and
+identity mismatch all failed without raw-text disclosure.
 
 ## Release And Rollback
 
