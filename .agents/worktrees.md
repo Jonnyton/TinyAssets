@@ -4,13 +4,13 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/background-authority-transitions-20260730`
-- Lane state: Claimed OpenSpec task 2.3
+- Lane state: Landed in PR #1968
 - Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730`
-- STATUS/Issue/PR: harden-background-branch-execution-authority 2.3; draft PR #1968
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.3; PR #1968
 - Purpose: server-owned create/rotate/pause/revoke/exhaust transitions only
-- Review gate: focused TDD, mirror parity, strict OpenSpec, independent exact-head review
+- Review gate: approved at exact head `b27e87ec`; 187 focused tests
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730/_PURPOSE.md`
-- Ship/abandon: dark service only; no attempt issuance or runtime activation
+- Ship/abandon: merged as `487e1a8e`; remains dark
 
 ## 2026-07-30 17:23 - persist dark background Branch authority
 
