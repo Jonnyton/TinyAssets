@@ -437,25 +437,46 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     capture = _step_named(wf, "Capture failed candidate startup diagnostics")
     upload = _step_named(wf, "Upload failed candidate startup diagnostics")
     rollback = _step_named(wf, "Rollback on failure")
+    cleanup = _step_named(wf, "Transitional task 2.1 restore restart racers when safe")
+    terminal = _step_named(wf, "Publish release-state receipt")
 
     assert steps.index(health) < steps.index(capture) < steps.index(rollback)
-    assert steps.index(capture) < steps.index(upload) < steps.index(rollback)
+    assert steps.index(rollback) < steps.index(cleanup) < steps.index(terminal)
+    assert steps.index(terminal) < steps.index(upload)
     assert str(capture.get("if", "")).strip() == "failure()"
     assert str(upload.get("if", "")).strip() == "failure()"
 
     capture_script = str(capture.get("run", ""))
-    assert "docker compose" in capture_script
-    assert "ps --all" in capture_script
     assert "docker inspect --type container tinyassets-daemon" in capture_script
     assert "docker logs --tail 200 tinyassets-daemon" in capture_script
     assert "tail -c 131072" in capture_script
+    assert "scripts/sanitize_startup_diagnostics.py" in capture_script
+    assert "ConnectTimeout=10" in capture_script
+    assert "ServerAliveInterval=5" in capture_script
+    assert "ServerAliveCountMax=2" in capture_script
+    assert capture_script.count("timeout 25s ssh") >= 2
+    assert capture_script.count("timeout 15s sudo docker") >= 2
+    assert 'rm -f "${raw_log}"' in capture_script
+    assert "TARGET_REVISION" in (capture.get("env") or {})
+    assert "GITHUB_SHA" not in capture_script
+    assert "docker compose" not in capture_script
+    assert "compose-ps" not in capture_script
+    assert "daemon.log" not in capture_script
     assert "/etc/tinyassets/env" not in capture_script
     assert ".Config.Env" not in capture_script
+    assert ".State.Error" not in capture_script
 
     upload_with = upload.get("with") or {}
-    assert upload.get("uses") == "actions/upload-artifact@v4"
+    assert (
+        upload.get("uses")
+        == "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    )
+    assert "actions/upload-artifact@v4" not in _text()
+    assert _text().count(
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"
+    ) == 3
     assert upload_with.get("if-no-files-found") == "error"
-    assert int(upload_with.get("retention-days", 0)) <= 7
+    assert 0 < int(upload_with["retention-days"]) <= 7
 
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():

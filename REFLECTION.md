@@ -1,3 +1,16 @@
+## 2026-07-30 — public-safe production startup evidence
+
+- **What surprised me:** a short-lived Actions artifact is still readable to
+  repository readers in a public repository, and even `docker compose ps` can
+  expose a secret because the command column contains the tunnel invocation.
+- **Pattern worth capturing:** treat diagnostic artifacts as public data unless
+  there is a separately proved confidentiality boundary. Reduce raw evidence to
+  a fixed allowlist before publication, put hard deadlines before rollback, and
+  move fallible uploads after the production safety path.
+- **What I would do differently:** threat-model the artifact reader and every
+  captured field before writing the first workflow step, then write secret
+  fixtures alongside the ordering test.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

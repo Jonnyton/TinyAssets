@@ -63,16 +63,23 @@ removal intent before container mutation.
 
 ### Requirement: Failed Candidate Startup Evidence Precedes Rollback
 
-The deploy workflow SHALL preserve bounded candidate startup evidence before
-rollback can replace or remove a normal production candidate that fails before
-health convergence. The evidence MUST exclude production environment values
-and MUST expire automatically.
+The deploy workflow SHALL capture a bounded, allowlisted candidate startup
+diagnosis before rollback can replace or remove a normal production candidate
+that fails before health convergence. Raw logs and commands MUST NOT enter the
+artifact, capture MUST have hard local and remote deadlines, and publication
+MUST occur only after rollback and cleanup have restored or safely fenced the
+fleet.
 
 #### Scenario: Failed candidate is captured without environment disclosure
 
 - **WHEN** the candidate daemon does not reach the public health gate
-- **THEN** the workflow captures Compose container status, daemon runtime
-  state, and at most the final 128 KiB of the last 200 daemon log lines
-- **AND** uploads that evidence as a private workflow artifact before rollback
-- **AND** does not inspect or serialize container environment values
+- **THEN** the workflow captures only allowlisted daemon state fields and
+  structural Python traceback frames plus fixed exception classifications from
+  at most the final 128 KiB of the last 200 daemon log lines
+- **AND** neither raw logs, container commands, environment values, arbitrary
+  exception messages, nor unapproved paths enter the artifact
+- **AND** local SSH and remote Docker collection have hard deadlines
+- **AND** the manifest identifies the fence-proved candidate revision
+- **AND** the workflow publishes the sanitized artifact only after rollback and
+  restart-racer cleanup have completed or fenced the fleet
 - **AND** retains the artifact for no more than seven days

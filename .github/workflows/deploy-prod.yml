@@ -222,7 +222,7 @@ jobs:
           exit 0
       - name: Upload unsafe-fence recovery proof
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: retire-cheat-loop-recovery-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stop-writer-recovery-evidence
@@ -1108,39 +1108,95 @@ jobs:
 
       - name: Capture failed candidate startup diagnostics
         if: failure()
+        env:
+          TARGET_REVISION: ${{ steps.stop-writer.outputs.target_revision }}
         run: |
           set +e
           evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
+          state_raw="${RUNNER_TEMP}/candidate-daemon-state.raw"
+          raw_log="${RUNNER_TEMP}/candidate-daemon.raw.log"
           mkdir -p "${evidence_dir}"
+          printf '{"capture":"unavailable"}\n' > "${evidence_dir}/daemon-state.json"
+          : > "${raw_log}"
 
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+          timeout 25s ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_IMAGE=diagnostic-only docker compose -f /opt/tinyassets/compose.yml ps --all 2>&1" \
-              > "${evidence_dir}/compose-ps.txt"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker inspect --type container tinyassets-daemon --format '{{json .State}}' 2>&1" \
-              > "${evidence_dir}/daemon-state.json"
-          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo docker logs --tail 200 tinyassets-daemon 2>&1 | tail -c 131072" \
-              > "${evidence_dir}/daemon.log"
+              "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.State.ExitCode}}\t{{.State.OOMKilled}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}'" \
+              > "${state_raw}" 2>/dev/null
+          if [ "$?" -eq 0 ]; then
+            python - "${state_raw}" "${evidence_dir}/daemon-state.json" 2>/dev/null <<'PY'
+          import json
+          import pathlib
+          import sys
 
-          {
-            echo "run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            echo "revision=${GITHUB_SHA}"
-            echo "captured_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          } > "${evidence_dir}/manifest.txt"
+          values = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip().split("\t")
+          if len(values) != 6:
+              raise SystemExit(1)
+          status, running, restarting, exit_code, oom_killed, health = values
+          if status not in {"created", "running", "paused", "restarting", "removing", "exited", "dead"}:
+              raise SystemExit(1)
+          if running not in {"true", "false"} or restarting not in {"true", "false"}:
+              raise SystemExit(1)
+          if oom_killed not in {"true", "false"}:
+              raise SystemExit(1)
+          if health not in {"", "starting", "healthy", "unhealthy"}:
+              raise SystemExit(1)
+          state = {
+              "status": status,
+              "running": running == "true",
+              "restarting": restarting == "true",
+              "exit_code": int(exit_code),
+              "oom_killed": oom_killed == "true",
+              "health": health or None,
+          }
+          pathlib.Path(sys.argv[2]).write_text(
+              json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          fi
+
+          timeout 25s ssh -i ~/.ssh/do_deploy \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=2 \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "timeout 15s sudo docker logs --tail 200 tinyassets-daemon 2>&1 | tail -c 131072" \
+              > "${raw_log}" 2>/dev/null
+          python scripts/sanitize_startup_diagnostics.py \
+              < "${raw_log}" \
+              > "${evidence_dir}/daemon-signals.json"
+          rm -f "${raw_log}" "${state_raw}"
+
+          python - "${evidence_dir}/manifest.json" <<'PY'
+          import datetime
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          revision = os.environ["TARGET_REVISION"]
+          if not re.fullmatch(r"[0-9a-f]{40}", revision):
+              revision = "unavailable"
+          manifest = {
+              "schema_version": 1,
+              "run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "target_revision": revision,
+              "captured_utc": datetime.datetime.now(datetime.UTC).isoformat(),
+          }
+          pathlib.Path(sys.argv[1]).write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
           exit 0
-
-      - name: Upload failed candidate startup diagnostics
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-startup-diagnostics
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Verify cloud worker is running
         run: |
@@ -1899,9 +1955,18 @@ jobs:
             fi
           fi
 
+      - name: Upload failed candidate startup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-startup-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload transitional task 2.1 deploy proof
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: retire-cheat-loop-task-2-1-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/stop-writer-evidence/

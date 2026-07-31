@@ -21,8 +21,9 @@
 
 - [x] 2.1 Pass the focused fence suite, Ruff, strict OpenSpec validation, and
   independent exact-head fail-closed/security review.
-- [x] 2.1a Add test-covered, bounded failed-candidate startup diagnostics that
-  upload before rollback without capturing production environment values.
+- [x] 2.1a Harden the failed-candidate diagnostic after independent review:
+  allowlisted signals only, hard capture deadlines, candidate-bound manifest,
+  pinned upload, and publication after rollback/cleanup.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

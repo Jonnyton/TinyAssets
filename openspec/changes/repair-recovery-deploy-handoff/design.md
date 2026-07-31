@@ -122,9 +122,10 @@ before removal. This is not general Docker garbage collection.
 2. Implement provenance capture and exact idempotent retirement.
 3. Run the focused fence suite, Ruff, strict OpenSpec validation, and
    independent security/fail-closed review.
-4. Preserve bounded candidate startup state and logs before rollback so a
-   production-shaped startup failure remains diagnosable without exposing
-   environment values.
+4. Before rollback, reduce bounded candidate startup logs and state to
+   allowlisted structural signals under hard deadlines. Publish only sanitized
+   evidence, and only after rollback and restart-racer cleanup have restored or
+   safely fenced the fleet.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,
