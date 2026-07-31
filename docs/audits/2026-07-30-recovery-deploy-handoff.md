@@ -371,6 +371,22 @@ remote shell would be speculative. The successor exposes only fixed numeric
 `ssh_status` and `sanitizer_status`, reruns the same historical window, and then
 changes only the proved boundary.
 
+Rerun `30659887786` reported `ssh_status=1` and `sanitizer_status=0`, proving
+the runner-side framed sanitizer succeeds and the remote command is the failing
+boundary. No raw text or host mutation occurred. The successor sends a static
+script over SSH stdin to explicit `bash -s` and assigns distinct fixed remote
+exit codes to journal collection and framing, eliminating login-shell ambiguity
+while preserving fail-closed localization.
+
+The successor passes the static remote script through SSH stdin to `bash -s --`
+with the already-validated timestamps as positional arguments. It captures the
+remote two-command `PIPESTATUS`, exits 41 for journal failure and 42 for framing
+failure, and retains the outer SSH/sanitizer fixed numeric report. Raw stderr and
+journal text remain suppressed. Fresh Windows-host evidence at
+`2026-07-31T19:47Z`: extracted Bash syntax passed, 152 focused tests passed,
+Ruff and diff checks are clean, and strict OpenSpec validation passed. Exact-head
+review is pending before another read-only run.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
