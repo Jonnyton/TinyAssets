@@ -1949,7 +1949,7 @@ jobs:
           fi
 
       - name: Upload failed candidate startup diagnostics
-        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' && (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' || steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}
+        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' && steps.terminal.outputs.terminal_receipt_result == 'published' && (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' || steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}

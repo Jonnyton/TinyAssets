@@ -91,6 +91,9 @@ fleet.
   skipped
 - **AND** the workflow publishes the sanitized artifact only after rollback and
   restart-racer cleanup emits an explicit proof that the fleet is restored or
-  authoritatively restart-fenced
+  authoritatively restart-fenced and the terminal release-state receipt is
+  published
 - **AND** failed or missing cleanup/fence proof suppresses artifact publication
+- **AND** a mismatched observed image or revision is reported only as
+  unavailable, never copied into the artifact
 - **AND** retains the artifact for no more than seven days

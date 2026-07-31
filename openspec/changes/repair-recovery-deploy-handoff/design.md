@@ -132,7 +132,8 @@ before removal. This is not general Docker garbage collection.
    including deploy or environment-assert failures that skip the named health
    step. Publish only sanitized evidence, and gate publication on an explicit
    cleanup output proving the fleet was restored or authoritatively
-   restart-fenced.
+   restart-fenced plus a published terminal release-state receipt. Mismatched
+   observed container identities are reduced to `unavailable`.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,

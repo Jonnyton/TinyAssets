@@ -153,6 +153,10 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
 
     assert revision_mismatch["candidate_identity_match"] is False
     assert image_mismatch["candidate_identity_match"] is False
+    assert revision_mismatch["container_revision"] == "unavailable"
+    assert revision_mismatch["container_image_ref"] == "unavailable"
+    assert image_mismatch["container_revision"] == "unavailable"
+    assert image_mismatch["container_image_ref"] == "unavailable"
     assert malformed == {
         "candidate_identity_match": False,
         "capture": "unavailable",

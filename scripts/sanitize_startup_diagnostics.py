@@ -204,10 +204,10 @@ def sanitize_candidate_state(
         "oom_killed": oom_killed == "true",
         "health": health or None,
         "container_revision": (
-            container_revision if valid_container_revision else "unavailable"
+            container_revision if identity_match else "unavailable"
         ),
         "container_image_ref": (
-            container_image_ref if valid_container_image else "unavailable"
+            container_image_ref if identity_match else "unavailable"
         ),
         "candidate_identity_match": identity_match,
     }

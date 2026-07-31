@@ -242,6 +242,16 @@ post-rollback/cleanup upload conditions. Adversarial fixtures now cover
 valid-looking forged frames and identity mismatch; workflow structure tests
 pin cancellation semantics.
 
+The next exact-head review at `809cdb7a` returned ADAPT on three final safety
+edges: a post-mutation deploy/assertion failure could skip the named health step
+and therefore skip capture; upload ordering did not prove cleanup had restored
+or authoritatively fenced the fleet and published terminal truth; and
+syntactically valid mismatched image/revision values were still copied into the
+public artifact. Capture now keys on any `failure() || cancelled()` after the
+durable image-mutation marker. Upload requires diagnostic success, explicit
+restored-or-safely-fenced cleanup output, and a published terminal receipt.
+Mismatched observed identities are emitted only as `unavailable`.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

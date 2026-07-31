@@ -461,11 +461,16 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     upload_condition = str(upload.get("if", "")).strip()
     assert upload_condition == (
         "${{ always() && steps.candidate_diagnostics.outcome == 'success' "
+        "&& steps.terminal.outputs.terminal_receipt_result == 'published' "
         "&& (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' "
         "|| steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}"
     )
     assert "always()" in upload_condition
     assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
+    assert (
+        "steps.terminal.outputs.terminal_receipt_result == 'published'"
+        in upload_condition
+    )
     assert (
         "steps.stop-writer-cleanup.outputs.cleanup_restored == 'true'"
         in upload_condition

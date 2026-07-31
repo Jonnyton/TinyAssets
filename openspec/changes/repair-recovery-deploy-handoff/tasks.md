@@ -24,9 +24,9 @@
 - [ ] 2.1a Close the rejected failed-candidate diagnostic findings and obtain
   independent exact-head re-review: actual public source-file paths only, no
   traceback function/line values, exact container image/revision binding,
-  deploy/intervening-failure and cancellation coverage, hard capture
-  deadlines, pinned upload, and publication gated on explicit
-  restored-or-safely-fenced cleanup proof.
+  deploy/intervening-failure and cancellation coverage, mismatch suppression,
+  hard capture deadlines, pinned upload, and publication gated on explicit
+  restored-or-safely-fenced cleanup plus terminal-receipt proof.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal
