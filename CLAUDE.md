@@ -53,99 +53,45 @@ behavior. Other providers may implement the same invariants differently.
 
 ### Calling Codex via MCP [Claude Code only]
 
-Codex CLI is wired into Claude Code as an MCP tool: `mcp__codex__codex` starts a
-Codex session, `mcp__codex__codex-reply` continues a thread. Treat Codex as a
-**second model family already in the harness** — not something only a human can
-start in a separate session. This is the SDLC research's "harness =
-orchestration + routing between models" and "diverse-perspective verification /
-judge with a different model than the writer" applied directly (basis:
-`docs/audits/2026-06-24-sdlc-vibe-coding-claude-best-practices-adoption.md`). The
-codebase already routes its prose-loop editorial judge to Codex, so the pattern
-has precedent.
+Codex is the second model family already available in this harness. `mcp__codex__codex`
+starts a session and `mcp__codex__codex-reply` continues it; the host need not start one.
+Dispatch is mandatory before a substantive review/completion verdict, a risky or
+surprising change, a recommendation, or after three failed iterations. Ask it to
+re-check sources/code or refute the finding, then log `approve`, `adapt`, or `reject`.
+If skipped, state why; a missing `codex_dispatch_nudge` is not permission to skip.
+Prefer an asynchronous review on Codex's quota:
 
-**Standing reflex — dispatch to Codex proactively; do not wait to be told.**
-You have a second model family in the harness; default to using it like you'd
-use a subagent or a teammate. At each checkpoint below the dispatch is a MUST,
-not an option. If you deliberately skip one, say so in one line and why — don't
-silently default to doing it yourself (that default-to-self bias is exactly what
-makes this reflex fail).
+```bash
+python scripts/codex_review.py --out <file> --prompt "<ask>" \
+  --diff-base origin/main
+```
+Run with `run_in_background: true`, continue other work, then read the result.
+Use inline `mcp__codex__codex` only when blocking is appropriate. Never create a
+Claude "Codex liaison" teammate.
 
-- **Before presenting any review verdict, finding, or "looks correct" claim** —
-  dispatch the opposite-provider review gate to Codex (it re-checks sources +
-  actual code), log the verdict (`approve` / `adapt` / `reject`). AGENTS.md
-  §"Project Skills" already requires this for research-derived findings before
-  build / push / live rollout; do it without a human opening a Codex session.
-- **Before acting on a risky change, a surprising result, or a finding you're
-  about to ship** — get an adversarial second opinion: ask Codex to *refute* it.
-- **Before an evidence-before-completion / "done" claim on non-trivial work, or
-  before presenting a recommendation between options** — cross-check with a
-  diverse-perspective judge (different model than the writer).
-- **When stuck 3+ iterations on the same error** — hand it to Codex for fresh
-  eyes (the stuck-loop reflection rule in AGENTS.md).
-
-**Default to dispatch.** The bar is "would an independent model add
-confidence?", not "is it worth the cost?". When in doubt, dispatch — reserve
-self-only for trivial mechanical edits and pure lookups. The
-`codex_dispatch_nudge` hook fires this reflex at qualifying prompts, but the
-obligation stands whether or not the hook fires; treat a missing nudge as
-silence, not permission to skip.
-
-**How to dispatch — offload to Codex's budget, don't spend Claude's.** Routing a
-review to Codex is what saves Claude tokens / rate-limit: Codex does the reasoning
-on its OWN quota (verified: a `codex exec` run bills Codex, not Claude) and you
-only read back a short verdict. Three mechanisms, ranked:
-- **Background `codex exec` (default — async + offload).** Launch
-  `python scripts/codex_review.py --out <file> --prompt "<ask>"` (add
-  `--diff-base origin/main` for a diff review) via a **background** Bash call
-  (`run_in_background: true`). Keep working; the harness re-invokes you when Codex
-  exits; read `<file>` for the verdict. Zero extra Claude context, and you don't
-  block. Token-cheapest and non-blocking — prefer this whenever you have other
-  work to do meanwhile.
-- **Inline `mcp__codex__codex`** — same offload to Codex, but it *blocks your
-  turn* until Codex returns. Use only for a quick gate where you'd wait anyway and
-  have nothing else to do (parallelism can't help when the review is the whole
-  task).
-- **Never a Claude "liaison" teammate.** A teammate is another Claude context
-  (opus, per `latest_model_guard.py`) that burns Claude tokens to relay — it
-  defeats the offload. If you catch yourself proposing one, stop and use the
-  background `codex exec` path instead.
-
-Discipline:
-- Reviews must be substantive — Codex re-checks sources + actual code, never
-  rubber-stamps. Host may delegate cross-family checker keys
-  (`feedback_host_can_delegate_cross_family_keys`), but the substance review
-  still happens.
-- Default `sandbox: read-only` + `approval-policy: never` for reviews / second
-  opinions. Grant `workspace-write` only when you deliberately want Codex to
-  make changes, and keep it in its own worktree/branch (no destructive git ops).
-- Calling Codex is an *additional* independent path — it does NOT bypass
-  host/navigator gates or the live user-sim proof, and the result is logged like
-  any other review (STATUS row / design note / activity log).
-- Cost is real but secondary: a Codex session is a real agent run, so batch a
-  meaningful review scope into one dispatch rather than many tiny ones — but do
-  not let cost talk you out of a qualifying dispatch. Independence is the goal;
-  the spend is the price of it.
+Reviews must be substantive, normally read-only (`sandbox: read-only`, `approval-policy:
+never`), and batched. Use `workspace-write` only deliberately in a separate lane.
+Codex supplements rather than bypasses host/navigator gates, live user-sim proof,
+or `AGENTS.md` verification rules; log its result in the durable lane artifact.
 
 ### Skills [Claude Code only]
 
-Project workflow skills live in `.claude/skills/`. When the right skill is not obvious, read `.claude/skills/using-agent-skills/SKILL.md` first, then open the matching skill.
-
-Key skills: `/steer`, `/status`, `/premise`, `/progress`, `/team-iterate`, `/idea-refine`. Full list in `.claude/skills/`.
+Project skills live in `.claude/skills/`; start with `using-agent-skills` when
+unsure. Key skills: `/steer`, `/status`, `/premise`, `/progress`, `/team-iterate`, `/idea-refine`.
 
 ### Agent Memory [Claude Code only]
 
-Per-agent persistent memory in `.claude/agent-memory/<name>/`. Loaded automatically when teammates spawn. Agents should consult memory before starting work and update it after completing significant tasks.
+Per-agent memory lives in `.claude/agent-memory/<name>/`; teammates read it on
+startup and update it after significant work.
 
 ### Lead Operations [Claude Code only]
 
-When running user-sim loops, managing the dev team, or optimizing token spend,
-read `CLAUDE_LEAD_OPS.md`. It contains: Recursive Learning From user-sim,
-Name-Collision Awareness, Tool-Use-Limit Hits, Minimum Active-Dev Floor,
-Continuous Live Shipping, Token Efficiency, User-Sim Lifecycle.
+For user-sim loops, team management, or token optimization, read
+`CLAUDE_LEAD_OPS.md`.
 
 ### Site preview loop
 
-Cross-provider — see `AGENTS.md` § *Site preview / ship loop*. Full reference at `WebSite/PREVIEW.md`.
+See `AGENTS.md` § *Site preview / ship loop* and `WebSite/PREVIEW.md`.
 
 ### FUSE truncation rule (Cowork sessions) — STOP-THE-LINE on recurrence
 
@@ -206,11 +152,9 @@ Cross-provider rules remain in `AGENTS.md`.
 
 ### Continuous Learning [Claude Code only]
 
-Standing behavior, not on-demand:
-
-- After every significant learning (bug pattern, team behavior issue, user feedback, architecture decision), immediately update the relevant file: `LAUNCH_PROMPT.md`, `.claude/agents/*.md`, `AGENTS.md`, this file, memory, or skills.
-- Each session should leave these files better than it found them.
-- Guardrail: files get REFINED not BLOATED. Every line earns its place.
+After a significant learning, immediately refine the owning prompt, agent file,
+canonical rule, memory, or skill. Each session should improve these artifacts;
+every retained line must earn its place.
 
 ### FUSE git plumbing rule (Cowork sessions) — STOP-THE-LINE on stale-index regressions
 
