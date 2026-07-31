@@ -31,6 +31,10 @@
   historical journals can answer the next question without repeating an outage,
   provided raw host text is streamed only into a fixed-output sanitizer.
 
+- **Follow-up:** a downstream byte cap limits parsing, not transport. Bound
+  sensitive diagnostics at the source before SSH, and frame retry-aware evidence
+  around the terminal attempt rather than unioning markers across a time window.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

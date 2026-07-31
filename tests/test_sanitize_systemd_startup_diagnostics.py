@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import datetime
 import json
 
-from scripts.sanitize_systemd_startup_diagnostics import sanitize_journal
+import pytest
+
+from scripts.sanitize_systemd_startup_diagnostics import (
+    sanitize_journal,
+    validate_window,
+)
 
 
 def test_journal_sanitizer_emits_fixed_stages_and_classes_only():
@@ -63,3 +69,50 @@ def test_journal_sanitizer_never_echoes_hostile_shell_or_json_text():
     assert result["stages"] == ["container_starting"]
     assert result["failure_classes"] == ["permission_denied"]
     assert token not in json.dumps(result)
+
+
+def test_journal_sanitizer_uses_only_the_terminal_compose_attempt():
+    result = sanitize_journal(
+        b"Container tinyassets-daemon Creating\n"
+        b"Container tinyassets-daemon Created\n"
+        b"Container tinyassets-daemon Starting\n"
+        b"Container tinyassets-daemon Started\n"
+        b"Container tinyassets-daemon Creating\n"
+        b"Container tinyassets-daemon Created\n"
+        b"tinyassets-daemon.service: Scheduled restart job\n"
+    )
+
+    assert result["stages"] == ["container_create", "container_created"]
+    assert result["derived_state"] == "created_without_start"
+    assert result["failure_classes"] == ["unit_restart_scheduled"]
+
+
+def test_window_validator_accepts_a_strict_bounded_past_window():
+    validate_window(
+        "2026-07-31T18:34:00Z",
+        "2026-07-31T18:36:36Z",
+        now=datetime.datetime(2026, 7, 31, 19, 0, tzinfo=datetime.UTC),
+    )
+
+
+@pytest.mark.parametrize(
+    ("since_utc", "until_utc", "message"),
+    (
+        ("$(touch /tmp/pwn)", "2026-07-31T18:36:36Z", "strict UTC"),
+        ("2026-07-31T18:34:00Z", "invalid", "strict UTC"),
+        ("2026-07-31T18:36:36Z", "2026-07-31T18:34:00Z", "must follow"),
+        ("2026-07-31T18:00:00Z", "2026-07-31T18:36:36Z", "10 minutes"),
+        ("2026-07-31T19:00:00Z", "2026-07-31T19:01:00Z", "in the past"),
+    ),
+)
+def test_window_validator_rejects_unsafe_inputs(
+    since_utc: str,
+    until_utc: str,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        validate_window(
+            since_utc,
+            until_utc,
+            now=datetime.datetime(2026, 7, 31, 19, 0, tzinfo=datetime.UTC),
+        )

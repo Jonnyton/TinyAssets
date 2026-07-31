@@ -3,11 +3,17 @@
 
 from __future__ import annotations
 
+import argparse
+import datetime
 import json
+import re
 import sys
 from typing import Any
 
 MAX_JOURNAL_BYTES = 262_144
+_WINDOW_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"
+)
 
 _STAGE_MARKERS = (
     ("container_create", "container tinyassets-daemon creating"),
@@ -62,13 +68,47 @@ _FAILURE_MARKERS = (
 )
 
 
+def validate_window(
+    since_utc: str,
+    until_utc: str,
+    *,
+    now: datetime.datetime | None = None,
+) -> None:
+    """Reject unsafe or ambiguous production journal windows."""
+
+    values = (since_utc, until_utc)
+    if not all(_WINDOW_PATTERN.fullmatch(value) for value in values):
+        raise ValueError("diagnostic timestamps must be strict UTC seconds")
+    start, end = (
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        for value in values
+    )
+    if end <= start:
+        raise ValueError("diagnostic window end must follow start")
+    if end - start > datetime.timedelta(minutes=10):
+        raise ValueError("maximum diagnostic window is 10 minutes")
+    current = now or datetime.datetime.now(datetime.UTC)
+    if end > current:
+        raise ValueError("diagnostic window must be in the past")
+
+
 def sanitize_journal(raw: bytes) -> dict[str, Any]:
     """Return fixed stage/failure names without copying journal text."""
 
     input_truncated = len(raw) > MAX_JOURNAL_BYTES
     bounded = raw[-MAX_JOURNAL_BYTES:]
     decoded = bounded.decode("utf-8", errors="replace")
-    normalized = " ".join(decoded.casefold().split())
+    normalized_lines = [
+        " ".join(line.casefold().split()) for line in decoded.splitlines()
+    ]
+    attempt_starts = [
+        index
+        for index, line in enumerate(normalized_lines)
+        if _STAGE_MARKERS[0][1] in line
+    ]
+    if attempt_starts:
+        normalized_lines = normalized_lines[attempt_starts[-1] :]
+    normalized = " ".join(normalized_lines)
 
     stages = [name for name, marker in _STAGE_MARKERS if marker in normalized]
     failure_classes = [
@@ -107,6 +147,19 @@ def sanitize_journal(raw: bytes) -> dict[str, Any]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--validate-window",
+        nargs=2,
+        metavar=("SINCE_UTC", "UNTIL_UTC"),
+    )
+    args = parser.parse_args()
+    if args.validate_window:
+        try:
+            validate_window(*args.validate_window)
+        except ValueError as exc:
+            parser.error(str(exc))
+        return 0
     result = sanitize_journal(sys.stdin.buffer.read())
     json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
     sys.stdout.write("\n")

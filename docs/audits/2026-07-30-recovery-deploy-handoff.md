@@ -317,6 +317,22 @@ at `2026-07-31T18:48Z`: 142 focused tests passed, Ruff and diff checks clean,
 and strict OpenSpec validation passed. Independent exact-head review remains
 required before reading the preserved production window.
 
+Independent review of PR #2002 head `173941b8` returned ADAPT: the byte cap ran
+after SSH and allowed a 262,145-byte sentinel into the sanitizer; marker union
+across retries could let an earlier `Started` hide a terminal `Created`; and
+workflow tests recognized validation text without executing the validator or
+fully locking publication/PIPESTATUS behavior. No production diagnostic ran.
+
+The successor caps exactly 256 KiB on the production host before SSH, checks
+both remaining pipeline statuses, and classifies only the suffix beginning at
+the final daemon `Creating` marker. Timestamp validation moved into the
+sanitizer module and is behavior-tested against shell payloads, malformed dates,
+future, reversed, and over-ten-minute windows. Workflow tests lock the validator
+invocation, both pipeline statuses, source-side cap, and absence of summary,
+output, `tee`, artifact, GitHub, or host-mutation sinks. Fresh Windows-host
+evidence at `2026-07-31T19:04Z`: 149 focused tests passed, Ruff and diff checks
+clean, and strict OpenSpec validation passed. Exact-head re-review is pending.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

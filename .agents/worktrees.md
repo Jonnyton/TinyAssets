@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-systemd-journal-diagnostic`
-- Lane state: Active; read-only fixed-class journal diagnostic validated, review pending
+- Lane state: Active; PR #2002 ADAPT fixes validated, exact-head re-review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: safely classify the preserved systemd/Compose journal window without host mutation

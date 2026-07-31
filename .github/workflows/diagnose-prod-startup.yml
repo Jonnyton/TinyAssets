@@ -46,26 +46,8 @@ jobs:
           [ -n "${DO_DROPLET_HOST}" ]
           [ -n "${DO_SSH_USER}" ]
           [ -n "${SSH_KEY}" ]
-          python - <<'PY'
-          import datetime
-          import os
-          import re
-
-          pattern = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
-          values = [os.environ["SINCE_UTC"], os.environ["UNTIL_UTC"]]
-          if not all(pattern.fullmatch(value) for value in values):
-              raise SystemExit("diagnostic timestamps must be strict UTC seconds")
-          start, end = (
-              datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-              for value in values
-          )
-          if end <= start:
-              raise SystemExit("diagnostic window end must follow start")
-          if end - start > datetime.timedelta(minutes=10):
-              raise SystemExit("maximum diagnostic window is 10 minutes")
-          if end > datetime.datetime.now(datetime.UTC):
-              raise SystemExit("diagnostic window must be in the past")
-          PY
+          python scripts/sanitize_systemd_startup_diagnostics.py \
+              --validate-window "${SINCE_UTC}" "${UNTIL_UTC}"
 
       - name: Install SSH key
         env:
@@ -89,16 +71,14 @@ jobs:
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=2 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "timeout 25s sudo journalctl -u tinyassets-daemon --since '${SINCE_UTC}' --until '${UNTIL_UTC}' --no-pager --output=cat --lines=500" \
+              "set -o pipefail; timeout 25s sudo journalctl -u tinyassets-daemon --since '${SINCE_UTC}' --until '${UNTIL_UTC}' --no-pager --output=cat --lines=500 | tail -c 262144" \
               2>/dev/null \
-            | tail -c 262145 \
             | python scripts/sanitize_systemd_startup_diagnostics.py \
                 > "${diagnosis}"
           statuses=("${PIPESTATUS[@]}")
           set -e
           if [ "${statuses[0]}" -ne 0 ] \
-              || [ "${statuses[1]}" -ne 0 ] \
-              || [ "${statuses[2]}" -ne 0 ]; then
+              || [ "${statuses[1]}" -ne 0 ]; then
             echo "::error::bounded journal diagnosis failed"
             exit 1
           fi
