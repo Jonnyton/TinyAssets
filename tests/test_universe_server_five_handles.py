@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 
+import tinyassets.universe_server as universe_server
 from tinyassets.universe_server import (
     _DEPRECATED_TOOL_NAMES,
     mcp,
@@ -82,6 +83,216 @@ def test_unknown_target_is_reported() -> None:
     payload = json.loads(read_graph(target="bogus"))
     assert payload["error"] == "unknown_target"
     assert payload["handle"] == "read_graph"
+    assert {
+        "agents",
+        "agent",
+        "agent_bindings",
+        "agent_binding",
+    } <= set(payload["allowed_targets"])
+
+
+def test_custom_agent_reads_route_through_graph_handle(monkeypatch) -> None:
+    observed: list[dict[str, object]] = []
+
+    def fake_custom_agents(**kwargs):
+        observed.append(kwargs)
+        return {"routed": kwargs["action"]}
+
+    monkeypatch.setattr(
+        universe_server,
+        "_custom_agents_impl",
+        fake_custom_agents,
+        raising=False,
+    )
+
+    listed = json.loads(
+        read_graph(target="agents", query="coding", tags="agent,coding", limit=5)
+    )
+    exact = json.loads(
+        read_graph(target="agent", agent_definition_id="agent_123")
+    )
+    bindings = json.loads(
+        read_graph(target="agent_bindings", graph_id="universe-a", limit=7)
+    )
+    binding = json.loads(
+        read_graph(
+            target="agent_binding",
+            graph_id="universe-a",
+            agent_binding_id="agent_binding_123",
+        )
+    )
+
+    assert [listed, exact, bindings, binding] == [
+        {"routed": "list_agents"},
+        {"routed": "get_agent"},
+        {"routed": "list_bindings"},
+        {"routed": "get_binding"},
+    ]
+    assert observed[0]["query"] == "coding"
+    assert observed[1]["definition_id"] == "agent_123"
+    assert observed[2]["universe_id"] == "universe-a"
+    assert observed[3]["binding_id"] == "agent_binding_123"
+
+
+def test_custom_agent_writes_route_through_graph_handle(monkeypatch) -> None:
+    observed: list[dict[str, object]] = []
+
+    def fake_custom_agents(**kwargs):
+        observed.append(kwargs)
+        return {"routed": kwargs["action"]}
+
+    monkeypatch.setattr(
+        universe_server,
+        "_custom_agents_impl",
+        fake_custom_agents,
+        raising=False,
+    )
+    monkeypatch.setattr(universe_server, "write_gate_rejection", lambda name: None)
+
+    published = json.loads(
+        write_graph(
+            target="agent",
+            operation="remix",
+            payload_json='{"schema_version":1}',
+            idempotency_key="agent-publish-request-1",
+        )
+    )
+    imported = json.loads(
+        write_graph(
+            target="agent",
+            operation="import",
+            payload_json='{"schema_version":1}',
+        )
+    )
+    bound = json.loads(
+        write_graph(
+            target="agent_binding",
+            operation="bind",
+            graph_id="universe-a",
+            agent_definition_id="agent_123",
+            payload_json='{"schema_version":1}',
+        )
+    )
+    updated = json.loads(
+        write_graph(
+            target="agent_binding",
+            operation="update",
+            graph_id="universe-a",
+            agent_definition_id="agent_456",
+            agent_binding_id="agent_binding_123",
+            expected_revision=4,
+            payload_json='{"schema_version":1}',
+        )
+    )
+
+    assert [published, imported, bound, updated] == [
+        {"routed": "publish_agent"},
+        {"routed": "import_agent"},
+        {"routed": "create_binding"},
+        {"routed": "update_binding"},
+    ]
+    assert observed[0]["idempotency_key"] == "agent-publish-request-1"
+    assert observed[2]["definition_id"] == "agent_123"
+    assert observed[3]["binding_id"] == "agent_binding_123"
+    assert observed[3]["expected_revision"] == 4
+
+
+def test_unknown_custom_agent_operation_is_reported(monkeypatch) -> None:
+    monkeypatch.setattr(universe_server, "write_gate_rejection", lambda name: None)
+
+    payload = json.loads(
+        write_graph(target="agent", operation="overwrite-in-place")
+    )
+
+    assert payload["error"] == "unknown_agent_operation"
+    assert payload["target"] == "agent"
+    assert payload["allowed_operations"] == ["publish", "remix", "import"]
+
+
+def test_custom_agent_definition_and_binding_round_trip(monkeypatch, tmp_path) -> None:
+    from tinyassets.api import permissions
+    from tinyassets.daemon_server import grant_universe_access
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(universe_server, "write_gate_rejection", lambda name: None)
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "alice")
+
+    definition_payload = {
+        "schema_version": 1,
+        "name": "Connector coding agent",
+        "description": "Creates and tests user-authored branches.",
+        "tags": ["coding", "agent"],
+        "components": {
+            "identity": {
+                "kind": "soul",
+                "config": {"instructions": "Work in small verified steps."},
+            },
+            "workflow": {
+                "kind": "branch_set",
+                "config": {"refs": ["branch-test-and-iterate"]},
+            },
+        },
+    }
+    published = json.loads(
+        write_graph(
+            target="agent",
+            operation="publish",
+            payload_json=json.dumps(definition_payload),
+            idempotency_key="connector-agent-round-trip",
+        )
+    )
+    definition_id = published["agent"]["agent_definition_id"]
+
+    public = json.loads(
+        read_graph(target="agent", agent_definition_id=definition_id)
+    )
+    assert public["agent"]["components"]["workflow"]["kind"] == "branch_set"
+
+    grant_universe_access(
+        tmp_path,
+        universe_id="universe-a",
+        actor_id="alice",
+        permission="admin",
+        granted_by="alice",
+    )
+    binding_payload = {
+        "schema_version": 1,
+        "name": "My connector coding agent",
+        "role": "Maintain the test-and-iterate loop",
+        "resources": {
+            "github": {"resource_binding_id": "resource-github-1"},
+        },
+        "channels": {
+            "slack": {
+                "adapter_ref": "commons:slack",
+                "address_ref": "channel-address-1",
+            }
+        },
+    }
+    bound = json.loads(
+        write_graph(
+            target="agent_binding",
+            operation="bind",
+            graph_id="universe-a",
+            agent_definition_id=definition_id,
+            payload_json=json.dumps(binding_payload),
+        )
+    )
+    binding_id = bound["binding"]["agent_binding_id"]
+
+    private = json.loads(
+        read_graph(
+            target="agent_binding",
+            graph_id="universe-a",
+            agent_binding_id=binding_id,
+        )
+    )
+    assert private["binding"]["status"] == "configured"
+    assert private["binding"]["configuration"]["channels"]["slack"] == {
+        "adapter_ref": "commons:slack",
+        "address_ref": "channel-address-1",
+    }
 
 
 def test_goal_write_and_read_round_trip(monkeypatch, tmp_path) -> None:

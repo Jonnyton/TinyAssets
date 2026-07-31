@@ -40,6 +40,26 @@ Depth: lead memory `project_minimal_primitives_principle.md`.
 
 **Task-automation corollary (host-confirmed 2026-07-26; cloud placement clarified 2026-07-29):** Recurring task loops, schedulers, and similar automations are user-authored designs composed from platform primitives, published to the commons when their authors choose, and copied, remixed, or combined like any other workflow. A recurring automation that is expected to continue while the user's devices are off belongs in the user's cloud universe and runs through ordinary cloud execution using that user's explicitly bound compute/provider authority. A tray or other user device may bridge the period before cloud activation or run an explicitly host-only workflow, but migration uses a single-active cutover: the host executor is stopped before cloud acceptance and is not retained as a simultaneous fallback. TinyAssets does not ship a privileged product-specific automation loop. The historical cheat/community-patch loop is retired and must be absent from runtime, packaging, configuration, and shipped fallback paths; retained uptime canaries and deploy observability are infrastructure checks, not a user-task automation product.
 
+**Custom-agent corollary (host-confirmed 2026-07-30):** Users compose
+agents—not merely fixed workflow templates—from the same public commons.
+An agent definition is a public, immutable composition whose user-named
+components are all replaceable or extensible; an agent binding privately
+connects that definition to one universe's goals, authority, governed
+resources, provider policy, channels, and runtime configuration; a daemon is
+the running instance of that binding. OpenClaw-like operators, Hermes-like
+assistants, coding agents, common presets, and blends of several users' agents
+are examples built on this substrate, not platform-owned archetypes or enum
+values. Agents may create, run, evaluate, and iterate user-authored
+automations only through the same permissioned Branch, Evaluator, provider,
+and effect primitives available to every other actor. TinyAssets must keep the
+composition envelope open enough that power users do not hit a product ceiling:
+unknown component kinds remain portable and remixable, while execution waits
+for a governed adapter instead of silently dropping them or bypassing safety
+boundaries. The platform advantage is the commons, component-level lineage and
+evaluation evidence, host-independent operation, plug-and-play bindings to
+subscriptions the user already controls, and collaboration—not lock-in or a
+privileged built-in agent.
+
 **Why:** TinyAssets' product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
 
 **How to apply:** Imagine the implementation first. Then ask: could the user's chatbot easily compose this from existing primitives (workflow nodes, evaluators, branches, gates, autoresearch, wiki content)? If yes → don't ship as platform primitive; surface the community-build path in the design note + idea triage. If no (structural gap) → identify the gap precisely, ship the smallest primitive that closes it, not the policy. Platform-build is justified only when the gap is structurally impossible to compose around, OR the platform-shipped version unblocks 10x more community evolution than it crowds out.
@@ -262,6 +282,20 @@ _Last audited: 2026-05-19_
 
 **Principles:**
 - *Separate identity from runtime.* Daemons are public, forkable, summonable agent identities defined by soul files; runtime instances are resource allocations bound to providers, models, and executor hosts. Every `(user, daemon, executor)` tuple is independently addressable; today's N=1 is the degenerate case.
+- *Definitions, bindings, and runtimes are distinct.* The public
+  `AgentDefinition` is the complete remixable component composition; the
+  private `AgentBinding` supplies universe-specific role, goals, authority and
+  governed resource/provider/channel references; the daemon runtime executes
+  that binding. Soul identity is one replaceable component, not the ceiling of
+  agent customization. The v1 binding stores control-plane metadata under the
+  universe's already-selected custody mode and excludes credentials,
+  conversations, and effect payloads; it does not settle private-content
+  custody for other use cases.
+- *No power-user ceiling in the composition contract.* Component names and
+  kinds are user-defined, so a common preset and a deeply customized agent use
+  the same artifact shape. Runtime support is capability-gated: the platform
+  preserves unfamiliar components for export/remix but executes only kinds
+  backed by installed, governed adapters.
 - *Daemon-driven.* Let the daemon make creative and structural decisions whenever the model can reliably do so. Hardcoded thresholds and stage gates are scaffolding — test each by removing it. When the daemon decides badly, improve goals/context/tools/evals rather than layering recipes.
 - *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
@@ -273,7 +307,7 @@ _Last audited: 2026-05-19_
 - *Soul-guided dispatch.* A soul-bearing daemon returns to a decision step listing eligible work + soul policy + domain requirements + required capability + offer. The daemon may choose money, interests, reputation, public-good impact, or refusal per its soul. Soulless daemons use the default platform dispatcher.
 - *Two executor classes, one transactional authority after cutover.* Cloud workers and opt-in host trays may execute the same immutable Branch contract. In the target state, only the executor class named by the current server-authoritative activation epoch can claim. Stop/cutover/rollback advance that epoch with compare-and-swap; stale, partitioned, or alternate local identities are fenced rather than trusted.
 
-**Substrate:** As built on 2026-07-30, `tinyassets/branch_tasks.py` / `tinyassets/singleton_lock.py` remain the live epoch-1 bridge and production cloud workers still consume that file-locked queue. `tinyassets/branch_tasks_v2.py` and `tinyassets/storage/request_admissions.py` provide dark transactional successor seams. The server-authoritative activation record/store and activation-bound claim checks are built but dark; the background binding/attempt store and server-owned binding-transition service are also dark, while just-in-time attempt issuance and epoch-2 queue consumption remain unbuilt/disabled. The target also uses `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/runtime/`, and the canonical transactional control plane. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
+**Substrate:** As built on 2026-07-30, `tinyassets/branch_tasks.py` / `tinyassets/singleton_lock.py` remain the live epoch-1 bridge and production cloud workers still consume that file-locked queue. `tinyassets/branch_tasks_v2.py` and `tinyassets/storage/request_admissions.py` provide dark transactional successor seams. The server-authoritative activation record/store and activation-bound claim checks are built but dark; the background binding/attempt store and server-owned binding-transition service are also dark, while just-in-time attempt issuance and epoch-2 queue consumption remain unbuilt/disabled. The target also uses `tinyassets/identity.py`, `tinyassets/discovery.py`, `tinyassets/runtime/`, and the canonical transactional control plane. Soul/fork machinery currently lives in the `author_definitions` substrate transitioning to a domain-agnostic daemon registry (content provenance retains `author_id` + `author_kind` discriminator). The approved custom-agent successor is specified in `openspec/changes/universe-custom-agents/`: immutable public definitions, component lineage, and private universe bindings precede runtime activation. Host pool registry: `docs/design-notes/2026-04-18-full-platform-architecture.md §5`. Soul-guided dispatch read path landed via open-brain v2 slice B 2026-05-19.
 
 **Open evolution:** Cross-host node-execution hopping is not supported (cross-host software donation IS, see Distribution). N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, scientific publication co-signature) is unscoped.
 
