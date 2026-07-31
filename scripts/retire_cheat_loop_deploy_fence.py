@@ -41,6 +41,31 @@ CANONICAL_SIDECARS = (
     ("tinyassets-tunnel", "cloudflared"),
     ("tinyassets-logs", "logs"),
 )
+CANONICAL_SIDECAR_IMAGES = {
+    "tinyassets-tunnel": (
+        "cloudflare/cloudflared:2026.3.0@sha256:"
+        "6b599ca3e974349ead3286d178da61d291961182ec3fe9c505e1dd02c8ac31b0"
+    ),
+    "tinyassets-logs": (
+        "timberio/vector:0.40.0-alpine@sha256:"
+        "7a81fdd62e056321055a9e4bdec4073d752ecf68f4c192e676b85001721523c2"
+    ),
+}
+CANONICAL_SIDECAR_MOUNTS = {
+    "tinyassets-tunnel": (),
+    "tinyassets-logs": (
+        ("/opt/tinyassets/deploy/vector.yaml", "/etc/vector/vector.yaml"),
+        (
+            "/opt/tinyassets/deploy/vector-betterstack.yaml",
+            "/etc/vector/vector-betterstack.yaml",
+        ),
+        (
+            "/opt/tinyassets/deploy/vector-entrypoint.sh",
+            "/etc/vector/vector-entrypoint.sh",
+        ),
+        ("/var/run/docker.sock", "/var/run/docker.sock"),
+    ),
+}
 CANONICAL_COMPOSE_PROJECT = "tinyassets"
 AUDITED_FULL_COMPOSE_RECOVERY_RUN_IDS = (
     "30514843571-1",
@@ -1114,17 +1139,49 @@ def _restored_recovery_handoff(
     }
 
 
+def _assert_sidecar_image(name: str, info: Mapping[str, Any]) -> None:
+    config = info.get("Config", {}) or {}
+    if config.get("Image") != CANONICAL_SIDECAR_IMAGES.get(name):
+        raise FenceError(f"sidecar image is not canonical: {name}")
+
+
 def _assert_sidecar_nonwriter(
     name: str,
     info: Mapping[str, Any],
+    volume_dir: Path,
 ) -> None:
+    _assert_sidecar_image(name, info)
+    raw_mounts = info.get("Mounts", []) or []
+    if not isinstance(raw_mounts, list) or any(
+        not isinstance(mount, Mapping) for mount in raw_mounts
+    ):
+        raise FenceError(f"sidecar mount posture is not canonical: {name}")
+    mounts = list(raw_mounts)
+    volume_source = posixpath.normpath(str(volume_dir))
     if any(
-        mount.get("Name") == VOLUME_NAME
+        mount.get("Type") != "bind"
+        or bool(mount.get("Name"))
         or mount.get("Destination") == "/data"
-        for mount in info.get("Mounts", []) or []
-        if isinstance(mount, Mapping)
+        or posixpath.normpath(str(mount.get("Source", ""))) == volume_source
+        or mount.get("RW") is not False
+        for mount in mounts
     ):
         raise FenceError(f"sidecar is not a non-writer: {name}")
+    actual_mounts = [
+        (
+            str(mount.get("Source", "")),
+            str(mount.get("Destination", "")),
+        )
+        for mount in mounts
+    ]
+    expected_mounts = [
+        (source, destination)
+        for source, destination in CANONICAL_SIDECAR_MOUNTS.get(name, ())
+    ]
+    if len(actual_mounts) != len(expected_mounts) or set(actual_mounts) != set(
+        expected_mounts
+    ):
+        raise FenceError(f"sidecar mount posture is not canonical: {name}")
 
 
 def _sidecar_project_class(
@@ -1220,7 +1277,7 @@ def _restored_sidecar_inspections(
                 f"restored sidecar recorded identity changed: {name}"
             )
         try:
-            _assert_sidecar_nonwriter(name, info)
+            _assert_sidecar_nonwriter(name, info, host.volume_dir())
         except FenceError:
             raise FenceError(
                 f"restored sidecar non-writer proof failed: {name}"
@@ -1388,9 +1445,12 @@ def preflight(
         [
             "docker",
             "stop",
-            *EXPECTED_CONTAINERS,
-            *extra_names,
-            *sidecar_inspections,
+            *old_ids.values(),
+            *(str(info.get("Id", "")) for info in extra_inspections.values()),
+            *(
+                str(info.get("Id", ""))
+                for info in sidecar_inspections.values()
+            ),
         ],
         check=False,
     )
@@ -1403,7 +1463,9 @@ def preflight(
             old_still_running.append({"container": name, "id": old_id})
     final_risk = inventory_queue_risk(volume_dir)
     extra_still_running = [
-        name for name in extra_names if _named_container_running(host, name)
+        name
+        for name, extra in extra_consumers.items()
+        if _container_running_exact(host, str(extra.get("id", "")))
     ]
     sidecars_still_running = [
         name
@@ -1418,6 +1480,17 @@ def preflight(
         raise FenceError("extra production-volume consumer survived quiescence")
     if sidecars_still_running:
         raise FenceError("restored sidecar survived quiescence")
+    for name, info in sidecar_inspections.items():
+        captured_id = str(info.get("Id", ""))
+        if _named_container_absent_exact(host, name):
+            raise FenceError(
+                f"restored sidecar recorded identity changed: {name}"
+            )
+        current = host.container_info(name)
+        if str(current.get("Id", "")) != captured_id:
+            raise FenceError(
+                f"restored sidecar recorded identity changed: {name}"
+            )
     if final_risk:
         raise FenceError("post-quiesce bug_investigation queue risk is nonzero")
     if final_processes:
@@ -1495,6 +1568,10 @@ def _remove_restored_recovery_handoff(
                     raise FenceError(
                         f"removed recovery handoff writer still exists: {name}"
                     )
+                if not _named_container_absent_exact(host, name):
+                    raise FenceError(
+                        f"recovery handoff writer name was substituted: {name}"
+                    )
         if phase != "removed":
             raw_handoff["removal_phase"] = "removed"
             raw_handoff["removed_container_ids"] = dict(recorded)
@@ -1523,6 +1600,10 @@ def _remove_restored_recovery_handoff(
         if not _container_absent_exact(host, recorded[name]):
             raise FenceError(
                 f"removed recovery handoff writer still exists: {name}"
+            )
+        if not _named_container_absent_exact(host, name):
+            raise FenceError(
+                f"recovery handoff writer name was substituted: {name}"
             )
     for name, info in inspections.items():
         labels = info.get("Config", {}).get("Labels", {}) or {}
@@ -1603,7 +1684,7 @@ def _sidecar_handoff_survivors(
         if name_absent:
             raise FenceError(f"sidecar name changed: {name}")
         info = host.container_info(name)
-        _assert_sidecar_nonwriter(name, info)
+        _assert_sidecar_nonwriter(name, info, host.volume_dir())
         labels = info.get("Config", {}).get("Labels", {}) or {}
         if (
             str(info.get("Id", "")) != recorded_id
@@ -2073,12 +2154,31 @@ def quiesce_unsafe(
     )
     if stopped_racers != present_racers:
         raise FenceError("restart racer inventory changed during emergency fence")
-    controlled_names = tuple(sorted(current_volume_names | set(recorded_extras)))
-    host.run(["docker", "stop", *controlled_names], check=False)
+    controlled_ids = {
+        name: str(info.get("Id", ""))
+        for name, info in current_inspections.items()
+        if str(info.get("Id", ""))
+    }
+    for name, recorded in recorded_extras.items():
+        identity = str(recorded.get("id", ""))
+        if identity:
+            controlled_ids.setdefault(name, identity)
+    host.run(
+        ["docker", "stop", *sorted(set(controlled_ids.values()))],
+        check=False,
+    )
 
     names_still_running = [
-        name for name in controlled_names if _named_container_running(host, name)
+        name
+        for name, identity in controlled_ids.items()
+        if _container_running_exact(host, identity)
     ]
+    post_volume_names = set(host.volume_container_names())
+    identity_drift = []
+    for name in sorted(post_volume_names):
+        info = host.container_info(name)
+        if str(info.get("Id", "")) != controlled_ids.get(name):
+            identity_drift.append(name)
     old_running = [
         {"container": name, "id": old_id}
         for name, old_id in state.get("old_container_ids", {}).items()
@@ -2097,6 +2197,7 @@ def quiesce_unsafe(
             process_error = str(exc)
     if (
         names_still_running
+        or identity_drift
         or old_running
         or process_risk
         or receipt_resolution_error
@@ -2105,6 +2206,7 @@ def quiesce_unsafe(
         state["phase"] = "unsafe_fence_unproved"
         state["receipt_resolution_error"] = receipt_resolution_error
         state["process_scan_error"] = process_error
+        state["emergency_identity_drift"] = identity_drift
         _atomic_json(state_path, state)
         raise FenceError(
             "unsafe writer cleanup could not prove all controlled writers stopped"
@@ -2299,7 +2401,31 @@ def _validate_unsafe_recovery_source(
     if names - expected_names:
         raise FenceError("fenced volume has partial or extra writer containers")
     if names and names < expected_names:
-        _partial_canonical_target_ids(host, state, names)
+        raw_plan = state.get("stopped_fleet_removal")
+        if isinstance(raw_plan, Mapping):
+            planned_ids = {
+                str(name): str(identity)
+                for name, identity in dict(
+                    raw_plan.get("container_ids") or {}
+                ).items()
+            }
+            recorded_source = str(raw_plan.get("recorded_source", ""))
+            if (
+                raw_plan.get("removal_phase") != "planned"
+                or recorded_source
+                not in {"recovery_container_ids", "old_container_ids"}
+                or set(planned_ids) != expected_names
+                or dict(state.get(recorded_source) or {}) != planned_ids
+            ):
+                raise FenceError("stopped fleet removal intent is invalid")
+            for name in names:
+                if str(host.container_info(name).get("Id", "")) != planned_ids[name]:
+                    raise FenceError("stopped fleet removal identities changed")
+            for name in expected_names - names:
+                if not _container_absent_exact(host, planned_ids[name]):
+                    raise FenceError(f"removed stopped writer still exists: {name}")
+        else:
+            _partial_canonical_target_ids(host, state, names)
     if names:
         inspections = (
             _exact_inspections(host)
@@ -2504,43 +2630,97 @@ def _remove_partial_canonical_target_for_recovery(
 
 def _remove_recorded_stopped_fleet_for_recovery(
     host: Host,
-    state: Mapping[str, Any],
+    state: dict[str, Any],
+    *,
+    state_path: Path,
 ) -> dict[str, str]:
-    """Remove only the exact recorded, already-fenced container generation."""
+    """WAL-remove only the exact recorded, already-fenced generation."""
 
     names = set(host.volume_container_names())
-    if not names:
+    raw_plan = state.get("stopped_fleet_removal")
+    if raw_plan is not None and not isinstance(raw_plan, dict):
+        raise FenceError("stopped fleet removal intent is invalid")
+    plan = raw_plan if isinstance(raw_plan, dict) else None
+    recorded: dict[str, str] = {}
+    recorded_source = ""
+    if plan:
+        recorded = {
+            str(name): str(identity)
+            for name, identity in dict(plan.get("container_ids") or {}).items()
+        }
+        recorded_source = str(plan.get("recorded_source", ""))
+        if (
+            plan.get("removal_phase") not in {"planned", "removed"}
+            or recorded_source
+            not in {"recovery_container_ids", "old_container_ids"}
+            or set(recorded) != set(EXPECTED_CONTAINERS)
+            or dict(state.get(recorded_source) or {}) != recorded
+            or not names <= set(recorded)
+        ):
+            raise FenceError("stopped fleet removal intent is invalid")
+    elif not names:
         return {}
-    if names != set(EXPECTED_CONTAINERS):
+    elif names != set(EXPECTED_CONTAINERS):
         raise FenceError("recovery cannot replace a partial or extra fleet")
-    inspections = _exact_inspections(host)
+
+    inspections = {name: host.container_info(name) for name in names}
     actual = {
         name: str(info.get("Id", ""))
         for name, info in inspections.items()
     }
-    recorded_source = ""
-    for source in ("recovery_container_ids", "old_container_ids"):
-        recorded = {
-            str(name): str(identity)
-            for name, identity in dict(state.get(source) or {}).items()
+    if not plan:
+        for source in ("recovery_container_ids", "old_container_ids"):
+            candidate = {
+                str(name): str(identity)
+                for name, identity in dict(state.get(source) or {}).items()
+            }
+            if set(candidate) == set(EXPECTED_CONTAINERS) and actual == candidate:
+                recorded_source = source
+                recorded = candidate
+                break
+        if not recorded_source:
+            raise FenceError("stopped fleet is not the recorded fenced generation")
+        plan = {
+            "container_ids": dict(recorded),
+            "recorded_source": recorded_source,
+            "removal_phase": "planned",
         }
-        if set(recorded) == set(EXPECTED_CONTAINERS) and actual == recorded:
-            recorded_source = source
-            break
-    if not recorded_source:
-        raise FenceError(
-            "stopped fleet is not the recorded fenced generation"
-        )
+        state["stopped_fleet_removal"] = plan
+        _atomic_json(state_path, state)
+    elif actual != {name: recorded[name] for name in names}:
+        raise FenceError("stopped fleet removal identities changed")
+
+    for name, identity in recorded.items():
+        if name not in names:
+            if not _container_absent_exact(host, identity):
+                raise FenceError(f"removed stopped writer still exists: {name}")
+            if not _named_container_absent_exact(host, name):
+                raise FenceError(
+                    f"stopped writer name was substituted: {name}"
+                )
     for name, info in inspections.items():
         if info.get("State", {}).get("Running"):
             raise FenceError(f"recovery writer is still running: {name}")
-        identity = actual[name]
+        identity = recorded[name]
         if host.container_restart_policy(identity) != "no":
             raise FenceError("recovery writer restart policy is not no")
-    host.run(["docker", "rm", *actual.values()])
+    if names:
+        host.run(
+            [
+                "docker",
+                "rm",
+                *(recorded[name] for name in EXPECTED_CONTAINERS if name in names),
+            ]
+        )
     if host.volume_container_names():
         raise FenceError("recorded stopped fleet removal did not converge")
-    return actual
+    for name, identity in recorded.items():
+        if not _container_absent_exact(host, identity):
+            raise FenceError(f"removed stopped writer still exists: {name}")
+    _prove_expected_container_names_absent(host)
+    plan["removal_phase"] = "removed"
+    _atomic_json(state_path, state)
+    return recorded
 
 
 def _remove_partial_owned_recovery_generation(
@@ -2852,6 +3032,7 @@ def _reconcile_orphaned_recovery(
     deadline = float(state.get("recovery_deadline_epoch") or 0)
     if time.time() < deadline:
         raise FenceError("another recovery attempt still owns an active lease")
+    state = _bind_starting_recovery_sidecars_for_refence(host, state_path)
     if _remove_partial_owned_recovery_generation(
         host,
         state,
@@ -2918,7 +3099,7 @@ def _remove_fixed_sidecars_for_recovery(
     if recovery_project:
         allowed_projects.add(recovery_project)
     for name, info in inspections.items():
-        _assert_sidecar_nonwriter(name, info)
+        _assert_sidecar_nonwriter(name, info, host.volume_dir())
         labels = info.get("Config", {}).get("Labels", {}) or {}
         project = str(labels.get("com.docker.compose.project", ""))
         identity = str(info.get("Id", ""))
@@ -2989,7 +3170,7 @@ def _recovery_sidecar_inspections(
         if _named_container_absent_exact(host, name):
             raise FenceError(f"recovery sidecar is absent: {name}")
         info = host.container_info(name)
-        _assert_sidecar_nonwriter(name, info)
+        _assert_sidecar_nonwriter(name, info, host.volume_dir())
         labels = info.get("Config", {}).get("Labels", {}) or {}
         if (
             not str(info.get("Id", ""))
@@ -3014,6 +3195,7 @@ def _capture_recovery_sidecars(
     if not project:
         raise FenceError("recovery sidecar project is missing")
     inspections: dict[str, dict[str, Any]] = {}
+    invalid_names: list[str] = []
     for name, service in CANONICAL_SIDECARS:
         if _named_container_absent_exact(host, name):
             continue
@@ -3024,15 +3206,14 @@ def _capture_recovery_sidecars(
             or labels.get("com.docker.compose.project") != project
             or labels.get("com.docker.compose.service") != service
         ):
-            raise FenceError(f"recovery sidecar ownership is invalid: {name}")
+            invalid_names.append(name)
+            continue
+        try:
+            _assert_sidecar_image(name, info)
+        except FenceError:
+            invalid_names.append(name)
+            continue
         inspections[name] = info
-    expected_names = {name for name, _service in CANONICAL_SIDECARS}
-    if require_all and set(inspections) != expected_names:
-        raise FenceError("recovery sidecar inventory is incomplete")
-    if not inspections:
-        if require_all:
-            raise FenceError("recovery sidecar fleet is absent")
-        return {}
     actual = {
         name: str(info.get("Id", ""))
         for name, info in inspections.items()
@@ -3043,13 +3224,52 @@ def _capture_recovery_sidecars(
             state.get("recovery_sidecar_container_ids") or {}
         ).items()
     }
-    if recorded and recorded != actual:
-        raise FenceError("recovery sidecar identities changed")
-    state["recovery_sidecar_container_ids"] = actual
-    _atomic_json(state_path, state)
+    expected_names = {name for name, _service in CANONICAL_SIDECARS}
+    if set(recorded) - expected_names:
+        raise FenceError("recovery sidecar identities are invalid")
+    for name, identity in recorded.items():
+        if name in actual and actual[name] != identity:
+            raise FenceError("recovery sidecar identities changed")
+        if name not in actual and not _container_absent_exact(host, identity):
+            raise FenceError("recovery sidecar identities changed")
+    combined = {**recorded, **actual}
+    if combined:
+        state["recovery_sidecar_container_ids"] = combined
+        _atomic_json(state_path, state)
+    mount_invalid: list[str] = []
     for name, info in inspections.items():
-        _assert_sidecar_nonwriter(name, info)
+        try:
+            _assert_sidecar_nonwriter(name, info, host.volume_dir())
+        except FenceError:
+            mount_invalid.append(name)
+    if invalid_names or mount_invalid:
+        raise FenceError("recovery sidecar ownership or mounts are invalid")
+    if require_all and set(inspections) != expected_names:
+        raise FenceError("recovery sidecar inventory is incomplete")
+    if not inspections and require_all:
+        raise FenceError("recovery sidecar fleet is absent")
     return inspections
+
+
+def _bind_starting_recovery_sidecars_for_refence(
+    host: Host,
+    state_path: Path,
+) -> dict[str, Any]:
+    """Bind the exact created subset after interruption before ID capture."""
+
+    state = _load_state(state_path)
+    if state.get("phase") != "recovery_sidecars_starting":
+        return state
+    try:
+        _capture_recovery_sidecars(
+            host,
+            state,
+            state_path=state_path,
+            require_all=False,
+        )
+    except FenceError:
+        pass
+    return _load_state(state_path)
 
 
 def _recorded_recovery_sidecars(
@@ -3070,9 +3290,10 @@ def _recorded_recovery_sidecars(
     if not project:
         raise FenceError("recovery sidecar project is missing")
     inspections: dict[str, dict[str, Any]] = {}
+    allow_unrecorded = state.get("phase") == "recovery_sidecars_starting"
     for name, service in CANONICAL_SIDECARS:
         if name not in recorded:
-            if not _named_container_absent_exact(host, name):
+            if not allow_unrecorded and not _named_container_absent_exact(host, name):
                 raise FenceError(f"unexpected recovery sidecar appeared: {name}")
             continue
         if _named_container_absent_exact(host, name):
@@ -3146,7 +3367,7 @@ def _remove_recorded_recovery_sidecars(
     inspections = _recorded_recovery_sidecars(host, state)
     if inspections:
         for name, info in inspections.items():
-            _assert_sidecar_nonwriter(name, info)
+            _assert_sidecar_nonwriter(name, info, host.volume_dir())
         _set_restart_no(host, inspections)
         host.run(
             [
@@ -3263,15 +3484,27 @@ def recover_unsafe(
     attempts = list(state.get("recovery_attempts") or [])
     if run_id in attempts:
         raise FenceError("recovery attempt identity was already used")
-    removed_partial_target = _remove_partial_canonical_target_for_recovery(
-        host,
-        state,
-        state_path=state_path,
-    )
-    if removed_partial_target:
-        state["recovery_removed_partial_target_ids"] = removed_partial_target
-        _atomic_json(state_path, state)
-    removed_stopped = _remove_recorded_stopped_fleet_for_recovery(host, state)
+    removed_partial_target: dict[str, str] = {}
+    if state.get("stopped_fleet_removal"):
+        removed_stopped = _remove_recorded_stopped_fleet_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+    else:
+        removed_partial_target = _remove_partial_canonical_target_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
+        if removed_partial_target:
+            state["recovery_removed_partial_target_ids"] = removed_partial_target
+            _atomic_json(state_path, state)
+        removed_stopped = _remove_recorded_stopped_fleet_for_recovery(
+            host,
+            state,
+            state_path=state_path,
+        )
     if removed_stopped:
         state["recovery_removed_stopped_container_ids"] = removed_stopped
         _atomic_json(state_path, state)
@@ -3301,8 +3534,9 @@ def recover_unsafe(
             for policy in sidecar_policies.values()
         ):
             raise FenceError("saved sidecar restart policies are invalid")
-        for name in expected_sidecar_names - set(sidecar_policies):
-            sidecar_policies[name] = "unless-stopped"
+        sidecar_policies = {
+            name: "unless-stopped" for name in expected_sidecar_names
+        }
         state["sidecar_restart_policies"] = sidecar_policies
         _atomic_json(state_path, state)
         removed_sidecars = _remove_fixed_sidecars_for_recovery(
@@ -3633,6 +3867,7 @@ def refence_recovery(
     )
     if state.get("phase") == "restored":
         raise FenceError("restored recovery cannot be re-fenced")
+    state = _bind_starting_recovery_sidecars_for_refence(host, state_path)
     _assert_recovery_container_ownership(host, state)
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 
@@ -3661,6 +3896,7 @@ def reconcile_recovery_on_boot(
         source_run_id=source_run_id,
         run_id=run_id,
     )
+    state = _bind_starting_recovery_sidecars_for_refence(host, state_path)
     _assert_recovery_container_ownership(host, state)
     return quiesce_unsafe(host, run_id=run_id, state_path=state_path)
 

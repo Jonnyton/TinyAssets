@@ -32,6 +32,13 @@
   non-secret category (`current-canonical`, `legacy-workflow`, `legacy-deploy`,
   `recorded-recovery`, `unrecorded-recovery`, `missing`, or `other`) without
   publishing the observed label.
+- [x] 1.11 Prove pinned sidecar images and exact read-only mounts, stop only
+  inspected IDs, independently bind mixed owned/foreign partial starts,
+  replay interrupted full-fleet removal from write-ahead state, normalize all
+  restored sidecar policies, and re-fence interruption or name substitution.
+- [x] 1.12 Close stricter review findings: reject volume/duplicate/non-mapping
+  mount spoofing, re-prove captured sidecar names after stop, and refuse
+  off-volume name substitution before any interrupted-replay removal.
 
 ## 2. Verification And Release
 
@@ -65,6 +72,9 @@
   ID/service/non-writer capture and refuse every other recovery-shaped project.
 - [ ] 2.1i Independently review the finite migration authority and rerun the
   immutable image through only the normal deployment path.
+- [ ] 2.1j Re-review the combined finite authority plus stricter configuration,
+  exact-ID, replay, mixed-ownership, and reboot-refence protections on current
+  main before any host mutation.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal
