@@ -962,5 +962,8 @@ fresh-host rollback edges found later.
 - Keep: store parent bindings and attempts as lossless typed canonical JSON,
   but duplicate query fields with a digest and cross-check both on every read
   so index or payload tamper fails closed.
+- Surprised: RFC3339 text order is not chronological when otherwise-valid
+  values mix `Z`, offsets, or fractional seconds; recovery indexes need one
+  normalized integer time key.
 - Next time: write the 16-way logical-key contention test at the same time as
   the uniqueness schema; single-thread replay does not prove the cloud case.

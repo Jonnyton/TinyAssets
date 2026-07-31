@@ -11,7 +11,7 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS background_branch_attempts (
     binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
     lifecycle TEXT NOT NULL,
     updated_at TEXT NOT NULL,
+    updated_at_utc_micros INTEGER NOT NULL,
     record_digest TEXT NOT NULL,
     record_json TEXT NOT NULL,
     FOREIGN KEY(binding_id)
@@ -66,8 +67,12 @@ CREATE INDEX IF NOT EXISTS idx_background_branch_bindings_status
 CREATE INDEX IF NOT EXISTS idx_background_branch_attempts_binding
     ON background_branch_attempts(binding_id, attempt_id);
 CREATE INDEX IF NOT EXISTS idx_background_branch_attempts_lifecycle_updated
-    ON background_branch_attempts(lifecycle, updated_at, attempt_id);
+    ON background_branch_attempts(
+        lifecycle, updated_at_utc_micros, attempt_id
+    );
 """
+
+_UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 def _canonical_json(record: object) -> str:
@@ -118,6 +123,16 @@ def _optional_timestamp(value: str | None) -> str | None:
     return value
 
 
+def _timestamp_sort_key(value: str) -> int:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    delta = parsed.astimezone(timezone.utc) - _UTC_EPOCH
+    return (
+        delta.days * 86_400_000_000
+        + delta.seconds * 1_000_000
+        + delta.microseconds
+    )
+
+
 def _binding_payload(binding: BackgroundBranchBinding) -> tuple[object, ...]:
     encoded = _canonical_json(binding.to_dict())
     return (
@@ -144,6 +159,7 @@ def _attempt_payload(attempt: BackgroundBranchAttempt) -> tuple[object, ...]:
         attempt.binding_generation,
         attempt.lifecycle.value,
         attempt.updated_at,
+        _timestamp_sort_key(attempt.updated_at),
         _digest(encoded),
         encoded,
     )
@@ -367,6 +383,8 @@ def _attempt_from_row(row: sqlite3.Row) -> BackgroundBranchAttempt:
         row["binding_generation"] == attempt.binding_generation,
         row["lifecycle"] == attempt.lifecycle.value,
         row["updated_at"] == attempt.updated_at,
+        row["updated_at_utc_micros"]
+        == _timestamp_sort_key(attempt.updated_at),
         row["record_digest"] == _digest(encoded),
         encoded == _canonical_json(attempt.to_dict()),
     )
@@ -471,8 +489,8 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             INSERT INTO background_branch_attempts (
                 attempt_id, logical_attempt_key, binding_id,
                 binding_generation, lifecycle, updated_at,
-                record_digest, record_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                updated_at_utc_micros, record_digest, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             _attempt_payload(attempt),
         )
@@ -586,7 +604,8 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
             UPDATE background_branch_attempts
             SET logical_attempt_key = ?, binding_id = ?,
                 binding_generation = ?, lifecycle = ?, updated_at = ?,
-                record_digest = ?, record_json = ?
+                updated_at_utc_micros = ?, record_digest = ?,
+                record_json = ?
             WHERE attempt_id = ?
             """,
             (*_attempt_payload(replacement)[1:], attempt_id),
@@ -757,8 +776,8 @@ class SQLiteBackgroundBranchAuthorityStore:
             clauses.append("lifecycle = ?")
             params.append(lifecycle.value)
         if clean_updated_before is not None:
-            clauses.append("updated_at < ?")
-            params.append(clean_updated_before)
+            clauses.append("updated_at_utc_micros < ?")
+            params.append(_timestamp_sort_key(clean_updated_before))
         params.append(clean_limit + 1)
         with self._connection() as conn:
             rows = conn.execute(

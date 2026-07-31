@@ -448,6 +448,32 @@ def test_bounded_filtered_pages_use_stable_opaque_cursors(tmp_path) -> None:
         store.list_bindings(status=None, after=None, limit=201)
 
 
+@pytest.mark.parametrize(
+    "cutoff",
+    [
+        "2026-07-30T07:01:00.500000Z",
+        "2026-07-30T00:01:00.500000-07:00",
+    ],
+)
+def test_attempt_updated_before_uses_chronological_time(
+    tmp_path,
+    cutoff: str,
+) -> None:
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    attempt = _attempt(updated_at="2026-07-30T07:01:00Z")
+    with store.transaction() as tx:
+        tx.insert_binding(_binding())
+        tx.insert_attempt(attempt)
+
+    page = store.list_attempts(
+        updated_before=cutoff,
+        after=None,
+        limit=10,
+    )
+
+    assert page.items == (attempt,)
+
+
 def test_concrete_store_satisfies_table_agnostic_protocol(tmp_path) -> None:
     store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
 
