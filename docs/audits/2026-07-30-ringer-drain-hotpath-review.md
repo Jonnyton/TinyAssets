@@ -47,3 +47,19 @@ TinyAssets code, the canonical coordination spec, and the strict validation
 result. It confirmed the requirement classification, representable foldback
 grammar, zero-match non-authority, and clean-room boundary are consistent and
 left no planning or research blocker. TDD implementation may begin.
+
+## Exact-head implementation review
+
+**APPROVE** at exact implementation commit
+`9d04ff9edd78d09439f2f0864e900ca64a0cba30`.
+
+The independent reviewer found no correctness, regression, specification, or
+clean-room issue. It confirmed that the provider prefilter is predicate- and
+order-equivalent to the previous post-probe filter, while avoiding every
+nonmatching worktree probe. It also confirmed that a PARTIAL continuation now
+requires a fresh foldback PR from the current disposable worker and cannot
+reuse the preceding implementation PR as its receipt.
+
+Fresh reviewer evidence on 2026-07-30 (Windows): 152 focused tests passed in
+3.22 seconds, Ruff was clean, strict OpenSpec validation passed, and
+`git diff --check` passed.
