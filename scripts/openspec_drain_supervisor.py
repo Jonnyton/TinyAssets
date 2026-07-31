@@ -503,6 +503,21 @@ def filter_recently_blocked_hints(
     )
 
 
+def filter_recently_consumed_hints(
+    hints: tuple[CandidateHint, ...],
+    *,
+    recent_consumed_targets: list[str],
+) -> tuple[CandidateHint, ...]:
+    """Exclude run-local targets whose canonical merge was already consumed."""
+
+    consumed = set(recent_consumed_targets)
+    return tuple(
+        hint
+        for hint in hints
+        if _slugify(hint.task_label) not in consumed
+    )
+
+
 def reconcile_recent_blocked(
     recent_blocked: list[str],
     *,
@@ -517,34 +532,47 @@ def should_cooldown_without_worker(
     pressure: CandidatePressure,
     candidate_hints: tuple[CandidateHint, ...],
     recent_blocked: list[str],
+    recent_consumed_targets: list[str] | tuple[str, ...] = (),
     has_admission: bool,
 ) -> bool:
     """Avoid a no-hint worker when only run-local blocker filtering hid work."""
-    return (
+    consumed_only = (
+        bool(recent_consumed_targets)
+        and not candidate_hints
+        and (pressure.owned > 0 or pressure.claimable > 0 or pressure.stale > 0)
+    )
+    blocked_only = (
         not has_admission
         and bool(recent_blocked)
         and not candidate_hints
         and pressure.owned == 0
         and (pressure.claimable > 0 or pressure.stale > 0)
     )
+    return not has_admission and (consumed_only or blocked_only)
 
 
 def has_alternative_candidate(
     snapshot: CandidateSnapshot,
     *,
     recent_blocked: list[str],
+    recent_consumed_targets: list[str] | tuple[str, ...] = (),
     current_target: str,
 ) -> bool:
     """Return whether a different eligible candidate remains after a block."""
     if current_target == "-":
         return False
+    hints = filter_recently_blocked_hints(
+        snapshot.hints,
+        recent_blocked=recent_blocked,
+    )
+    hints = filter_recently_consumed_hints(
+        hints,
+        recent_consumed_targets=list(recent_consumed_targets),
+    )
     return any(
         hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
         and _slugify(hint.task_label) != current_target
-        for hint in filter_recently_blocked_hints(
-            snapshot.hints,
-            recent_blocked=recent_blocked,
-        )
+        for hint in hints
     )
 
 
@@ -786,6 +814,7 @@ def build_worker_prompt(
     identity = state["identity"]
     resume = state.get("resume_target")
     blocked = state.get("recent_blocked", [])
+    consumed = state.get("recent_consumed_targets", [])
     if admission is not None:
         partial_resume = (
             isinstance(state.get("last_result"), dict)
@@ -821,6 +850,7 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
             )
         )
     blocked_text = ", ".join(blocked) if blocked else "(none)"
+    consumed_text = ", ".join(consumed) if consumed else "(none)"
     candidate_text = (
         "\n".join(
             f"- [{hint.classification}] {hint.task_label}"
@@ -868,6 +898,7 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
 Run identity: `{identity}`
 Objective: {objective}
 Recent blocked targets to avoid unless their blocker visibly cleared: {blocked_text}
+Already-consumed targets to exclude for this entire run: {consumed_text}
 
 {resume_text}
 
@@ -1103,22 +1134,33 @@ def apply_invalid_blocked_result(
     state["status"] = "invalid-blocked-result"
 
 
-def apply_invalid_duplicate_merge(
+def apply_duplicate_merge_suppression(
     state: dict[str, Any],
     result: DrainResult,
     *,
     attempt: int,
 ) -> None:
-    """Record an exact merged-PR replay without advancing delivery."""
+    """Suppress a stale target whose merge receipt was already consumed."""
     state["consecutive_transients"] = 0
-    state["consecutive_failures"] += 1
+    state["consecutive_failures"] = 0
+    consumed = [
+        target
+        for target in state.get("recent_consumed_targets", [])
+        if target != result.target
+    ]
+    if result.target != "-":
+        consumed.append(result.target)
+    state["recent_consumed_targets"] = consumed[-MAX_RECENT_BLOCKED:]
+    state["admission"] = None
+    state["resume_target"] = None
     state["last_result"] = {
         "status": "INVALID_DUPLICATE_MERGE",
         "attempt": attempt,
         "target": result.target,
         "pr": result.pr,
     }
-    state["status"] = "invalid-duplicate-merge"
+    state["last_consumed_attempt"] = attempt
+    state["status"] = "duplicate-merge-suppressed"
 
 
 def infer_legacy_merged_prs(
@@ -1252,11 +1294,7 @@ def recover_invalid_result(
         return False
 
     if duplicate_merge_rejection(result, state):
-        state["consecutive_failures"] = max(
-            0,
-            int(state.get("consecutive_failures", 0)) - 1,
-        )
-        apply_invalid_duplicate_merge(
+        apply_duplicate_merge_suppression(
             state,
             result,
             attempt=attempt,
@@ -1370,7 +1408,7 @@ def recover_unconsumed_result(
         return False
 
     if duplicate_merge_rejection(result, state):
-        apply_invalid_duplicate_merge(
+        apply_duplicate_merge_suppression(
             state,
             result,
             attempt=attempt,
@@ -1631,6 +1669,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "resume_target": None,
         "admission": None,
         "recent_blocked": [],
+        "recent_consumed_targets": [],
         "merged_prs": [],
         "target_identity_version": TARGET_IDENTITY_VERSION,
         "status": "starting",
@@ -1826,6 +1865,7 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
             state.setdefault("admission", None)
+            state.setdefault("recent_consumed_targets", [])
             migrate_target_identities(state)
             if "merged_prs" not in state:
                 state["merged_prs"] = infer_legacy_merged_prs(
@@ -1901,6 +1941,7 @@ def _run(args: argparse.Namespace) -> int:
                     max_hints=(
                         MAX_CANDIDATE_HINTS
                         + len(state.get("recent_blocked", []))
+                        + len(state.get("recent_consumed_targets", []))
                     ),
                 )
                 previous_blocked = state.get("recent_blocked", [])
@@ -1919,6 +1960,13 @@ def _run(args: argparse.Namespace) -> int:
                 candidate_hints = filter_recently_blocked_hints(
                     candidate_hints,
                     recent_blocked=state.get("recent_blocked", []),
+                )
+                candidate_hints = filter_recently_consumed_hints(
+                    candidate_hints,
+                    recent_consumed_targets=state.get(
+                        "recent_consumed_targets",
+                        [],
+                    ),
                 )[:MAX_CANDIDATE_HINTS]
                 pressure = snapshot.pressure
                 _log(
@@ -1974,6 +2022,10 @@ def _run(args: argparse.Namespace) -> int:
                 pressure=pressure,
                 candidate_hints=candidate_hints,
                 recent_blocked=state.get("recent_blocked", []),
+                recent_consumed_targets=state.get(
+                    "recent_consumed_targets",
+                    [],
+                ),
                 has_admission=admission is not None,
             ):
                 state["last_result"] = {
@@ -2132,7 +2184,7 @@ def _run(args: argparse.Namespace) -> int:
 
             duplicate_rejection = duplicate_merge_rejection(result, state)
             if duplicate_rejection:
-                apply_invalid_duplicate_merge(
+                apply_duplicate_merge_suppression(
                     state,
                     result,
                     attempt=attempt,
@@ -2233,11 +2285,18 @@ def _run(args: argparse.Namespace) -> int:
                         max_hints=(
                             MAX_CANDIDATE_HINTS
                             + len(state.get("recent_blocked", []))
+                            + len(
+                                state.get("recent_consumed_targets", [])
+                            )
                         ),
                     )
                     alternative = has_alternative_candidate(
                         next_snapshot,
                         recent_blocked=state.get("recent_blocked", []),
+                        recent_consumed_targets=state.get(
+                            "recent_consumed_targets",
+                            [],
+                        ),
                         current_target=result.target,
                     )
                 except RuntimeError as exc:
