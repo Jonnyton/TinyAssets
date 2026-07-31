@@ -2098,7 +2098,7 @@ Notes:
 
 - Provider: `drain-20260731-144747-706aae`
 - Branch: `codex/drain-20260731-144747-706aae-background-attempt-fencing`
-- Lane state: Admission only; no STATUS claim until a safe recovery target is promoted.
+- Lane state: Active; exact STATUS claim on the Claude harness router cleanup.
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260731-144747-706aae-background-attempt-fencing`
 - Purpose: prove canonical candidate exhaustion and promote at most one safe recovery task.
 - Review gate: exact-head independent approval, focused tests, required CI, and trusted auto-merge.
