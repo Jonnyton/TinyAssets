@@ -426,6 +426,73 @@ def test_binding_rejects_raw_credentials_and_cross_universe_reads(tmp_path) -> N
     )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("conversations", [{"role": "user", "content": "private"}]),
+        ("message_history", ["private turn"]),
+        ("effect_payload", {"destination": "external-system"}),
+        ("runtime_state", {"status": "running"}),
+    ],
+)
+def test_binding_rejects_private_operational_content_on_create_and_update(
+    tmp_path,
+    field,
+    value,
+) -> None:
+    from tinyassets.custom_agents import (
+        AgentValidationError,
+        create_binding,
+        get_binding,
+        list_bindings,
+        publish_definition,
+        update_binding,
+    )
+
+    definition = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload=_definition("Configuration-only binding"),
+    )
+    invalid_create = _binding()
+    invalid_create["nested"] = {field: value}
+    with pytest.raises(AgentValidationError, match=field):
+        create_binding(
+            tmp_path,
+            universe_id="universe-a",
+            definition_id=definition["agent_definition_id"],
+            created_by="alice",
+            payload=invalid_create,
+        )
+    assert list_bindings(tmp_path, universe_id="universe-a") == []
+
+    binding = create_binding(
+        tmp_path,
+        universe_id="universe-a",
+        definition_id=definition["agent_definition_id"],
+        created_by="alice",
+        payload=_binding(),
+    )
+    invalid_update = _binding()
+    invalid_update["nested"] = {field: value}
+    with pytest.raises(AgentValidationError, match=field):
+        update_binding(
+            tmp_path,
+            universe_id="universe-a",
+            binding_id=binding["agent_binding_id"],
+            expected_revision=1,
+            updated_by="alice",
+            payload=invalid_update,
+        )
+    stored = get_binding(
+        tmp_path,
+        universe_id="universe-a",
+        binding_id=binding["agent_binding_id"],
+    )
+    assert stored["revision"] == 1
+    assert "nested" not in stored["configuration"]
+
+
 def test_custom_agent_api_hides_private_bindings_without_universe_access(
     tmp_path,
     monkeypatch,

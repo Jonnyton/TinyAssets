@@ -41,6 +41,22 @@ _SECRET_FIELD_NAMES = frozenset(
         "secret",
     }
 )
+_FORBIDDEN_BINDING_CONTENT_FIELDS = frozenset(
+    {
+        "conversation",
+        "conversation_history",
+        "conversations",
+        "effect_payload",
+        "effect_payloads",
+        "external_write_results",
+        "message_history",
+        "messages",
+        "run_state",
+        "runtime_state",
+        "transcript",
+        "transcripts",
+    }
+)
 _SCHEMA_LOCK = threading.Lock()
 _SCHEMA_INITIALIZED: set[str] = set()
 
@@ -173,6 +189,22 @@ def _check_secret_fields(value: Any, path: str = "") -> None:
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _check_secret_fields(child, f"{path}[{index}]")
+
+
+def _check_binding_content_fields(value: Any, path: str = "") -> None:
+    if isinstance(value, dict):
+        for raw_key, child in value.items():
+            key = str(raw_key)
+            child_path = f"{path}.{key}" if path else key
+            if key.strip().lower() in _FORBIDDEN_BINDING_CONTENT_FIELDS:
+                raise AgentValidationError(
+                    f"{child_path} is private operational content, "
+                    "not binding configuration"
+                )
+            _check_binding_content_fields(child, child_path)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _check_binding_content_fields(child, f"{path}[{index}]")
 
 
 def _normalize_tags(raw: Any) -> list[str]:
@@ -345,6 +377,7 @@ def _normalize_binding_payload(payload: Any) -> dict[str, Any]:
     if collision:
         raise AgentValidationError(f"binding payload contains reserved field {collision[0]}")
     _check_secret_fields(cloned)
+    _check_binding_content_fields(cloned)
     _check_size(cloned)
     return cloned
 
