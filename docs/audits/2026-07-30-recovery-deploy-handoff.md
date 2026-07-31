@@ -754,6 +754,13 @@ fail-closed invariants. The unscoped repository test sweep remained CPU-active
 but exceeded its bounded 300-second run without a failure result; unscoped Ruff
 reported only 110 pre-existing errors outside this change.
 
+After main advanced through fail-closed sidecar PR #2020, the integrated exact
+head `87d0ceef` received a second independent approval on 2026-07-31. The
+reviewer passed 383/383 combined focused tests, changed-file Ruff, strict
+OpenSpec, and diff checks; confirmed both parent lineages are ancestors; and
+found #2020's configuration, exact-ID, replay, mixed-ownership, and
+reboot-refence authority byte-preserved alongside the terminal-state repair.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored
