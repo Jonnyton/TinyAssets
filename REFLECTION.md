@@ -1005,3 +1005,13 @@ fresh-host rollback edges found later.
 - What I would do differently: include the independently shipped model mirror
   in the first persistence slice so later store extensions do not discover an
   untracked package dependency during parity verification.
+
+## 2026-07-30 — dark background-attempt claim fencing
+
+- What surprised me: an exact claim-generation fence still permits authority
+  rotation unless executor audience fields are independently constrained.
+- Pattern worth capturing: prove recovery eligibility before acquiring a queue
+  lock, then revalidate the exact observed row inside the mutation boundary;
+  lease expiry is only a candidate signal, never recovery authority.
+- What I would do differently: include cross-audience negative cases in the
+  first RED batch instead of finding that gap during the security pass.
