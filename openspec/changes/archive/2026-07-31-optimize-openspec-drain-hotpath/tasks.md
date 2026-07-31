@@ -13,4 +13,4 @@
 
 - [x] 3.1 Run focused pytest, Ruff, strict OpenSpec validation, and diff checks. Fresh 2026-07-30 Windows evidence: 152 focused tests passed in 2.96s; Ruff clean; strict change validation and `git diff --check` passed.
 - [x] 3.1a Prove the implementation is clean-room: no Ringer dependency and no copied or adapted Ringer source, tests, fixtures, prompts, formats, command structure, or implementation structure. The implementation diff is limited to existing TinyAssets scripts/tests and contains no Ringer source/dependency reference.
-- [ ] 3.2 Obtain independent exact-head code review, publish one PR, verify merge, sync/archive the change, retire the STATUS claim, and restart the local drain from updated main.
+- [x] 3.2 Obtain independent exact-head code review, publish one PR, verify merge, sync/archive the change, and retire the STATUS claim. Exact-head review approved `9d04ff9edd78d09439f2f0864e900ca64a0cba30`; PR #1982 merged as `9ed81a23c92b037aa73912318b72b3a1aea4972c`. Restarting the stopped local bridge from the merged foldback is the post-merge operator step.
