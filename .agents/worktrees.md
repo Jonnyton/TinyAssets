@@ -4,13 +4,13 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/background-authority-store-20260730`
-- Lane state: Claimed; TDD pending
+- Lane state: Landed in PR #1965
 - Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730`
-- STATUS/Issue/PR: harden-background-branch-execution-authority 2.1/2.2; draft PR #1965
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.1/2.2; PR #1965
 - Purpose: durable binding/attempt replay, CAS, bounded read, restart substrate
-- Review gate: focused TDD, mirror parity, strict OpenSpec, independent review
+- Review gate: approved at exact head `b407e54f`; 138 focused tests
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-store-20260730/_PURPOSE.md`
-- Ship/abandon: draft PR; remains dark
+- Ship/abandon: merged as `1153f159`; remains dark
 
 ## 2026-07-30 17:06 - suppress consumed drain merge replay
 
