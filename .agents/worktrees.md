@@ -6,7 +6,7 @@
 - Branch: `codex/background-authority-transitions-20260730`
 - Lane state: Claimed OpenSpec task 2.3
 - Worktree: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730`
-- STATUS/Issue/PR: harden-background-branch-execution-authority 2.3; PR pending
+- STATUS/Issue/PR: harden-background-branch-execution-authority 2.3; draft PR #1968
 - Purpose: server-owned create/rotate/pause/revoke/exhaust transitions only
 - Review gate: focused TDD, mirror parity, strict OpenSpec, independent exact-head review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-background-authority-transitions-20260730/_PURPOSE.md`
