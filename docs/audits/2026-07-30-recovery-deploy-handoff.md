@@ -5,8 +5,9 @@
 The public MCP surface is recovered on the previously configured immutable
 image. The handoff and partial-target recovery repairs are landed, but current
 `main` still fails startup against production-shaped state. Normal deployment
-is paused until a bounded pre-rollback diagnostic artifact is landed; the next
-single controlled deploy will use it to identify the startup regression.
+is paused until the PR #1991 diagnostic is hardened after independent review;
+the next single controlled deploy will use only allowlisted, deadline-bounded
+evidence to identify the startup regression.
 
 Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
 successfully handed off the recovered generation and installed the target, but
@@ -22,6 +23,17 @@ run `30606140782` passed on `ba87b1dd`, narrowing the fault to
 production-shaped state or environment. The failed candidate's logs were lost
 to rollback, so the next repair preserves bounded private startup evidence
 before any rollback mutation.
+
+Update at `2026-07-31T05:35Z`: delayed deploy `30606095699` failed the same
+health gate and ordinary rollback, returning public `/mcp` to HTTP 502. Guarded
+recovery `30606863154` passed immutable-image admission, host pull, canonical
+canary, exact-seven assertion, fence finalization, and proof upload. Independent
+review of PR #1991 exact head `ca85479e` returned ADAPT: the public-repository
+artifact could expose a tunnel token through Compose command status or arbitrary
+daemon logs, collection had no hard deadlines before rollback, the manifest
+used the workflow rather than candidate revision, and the upload action was
+unpinned. No instrumented deployment is permitted until all four findings are
+closed and independently re-reviewed.
 
 ## Production Evidence
 
@@ -186,9 +198,59 @@ openspec validate repair-recovery-deploy-handoff --strict
 Change 'repair-recovery-deploy-handoff' is valid
 ```
 
-The diagnostic artifact is emitted before rollback, contains Compose status,
-daemon runtime state, and a 128 KiB-bounded tail of the last 200 daemon log
-lines, excludes environment inspection, and expires after seven days.
+This first diagnostic implementation is not approved for deployment.
+Independent exact-head review of `ca85479e` returned ADAPT because artifacts in
+this public repository are not an operator-only confidentiality boundary;
+Compose status can serialize a token-bearing tunnel command, raw logs are not
+secret-free, three SSH operations could consume the remaining job deadline
+before rollback, the manifest could name the wrong revision, and
+`actions/upload-artifact` was not pinned. The hardening successor retains only
+allowlisted daemon state and structural traceback signals, bounds local SSH and
+remote Docker calls, binds the manifest to the fence-proved target revision,
+pins the upload action, and moves artifact publication after rollback and
+restart-racer cleanup.
+
+Hardening verification at `2026-07-31T05:44Z` (Windows host):
+
+```text
+python -m pytest tests/test_deploy_prod_workflow.py \
+  tests/test_build_image_workflow.py tests/test_release_reconcile_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py -q
+130 passed in 23.18s
+
+python -m ruff check scripts/sanitize_startup_diagnostics.py \
+  tests/test_sanitize_startup_diagnostics.py tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict
+Change 'repair-recovery-deploy-handoff' is valid
+```
+
+Secret fixtures cover token-bearing Compose command text, bearer credentials,
+arbitrary source lines, unapproved `/data` and traversal paths, and
+attacker-named exception types. None survive the fixed-schema sanitizer.
+
+Exact-head re-review of PR #1992 at `250fc995` returned ADAPT: a forged
+traceback could still place token text in a syntactically valid `/app` path or
+function/line field, the target revision was not independently bound to the
+inspected container, and cancellation was distinct from `failure()`. The
+successor maps frames only to source paths proved present in the public
+checkout, emits neither function nor line, collects raw logs only after both
+the container's immutable image ref and OCI revision equal the fence-proved
+target, and routes cancellation through the same bounded capture and
+post-rollback/cleanup upload conditions. Adversarial fixtures now cover
+valid-looking forged frames and identity mismatch; workflow structure tests
+pin cancellation semantics.
+
+The next exact-head review at `809cdb7a` returned ADAPT on three final safety
+edges: a post-mutation deploy/assertion failure could skip the named health step
+and therefore skip capture; upload ordering did not prove cleanup had restored
+or authoritatively fenced the fleet and published terminal truth; and
+syntactically valid mismatched image/revision values were still copied into the
+public artifact. Capture now keys on any `failure() || cancelled()` after the
+durable image-mutation marker. Upload requires diagnostic success, explicit
+restored-or-safely-fenced cleanup output, and a published terminal receipt.
+Mismatched observed identities are emitted only as `unavailable`.
 
 ## Release And Rollback
 

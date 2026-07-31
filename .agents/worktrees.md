@@ -1,10 +1,22 @@
 # Worktree Inventory
 
+## 2026-07-30 22:35 - harden production startup diagnostics
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/prod-shaped-startup-diagnostics-hardening`
+- Lane state: Active; PR #1992 third re-review ADAPT findings implemented locally
+- Worktree: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics-hardening`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: replace raw public-repo artifacts with allowlisted diagnostics and keep collection/upload outside rollback hazards
+- Review gate: 130 focused tests, strict OpenSpec, actionlint CI, and independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics-hardening/_PURPOSE.md`
+- Ship/abandon: merge only after approval; then one instrumented main build/deploy with guarded recovery ready
+
 ## 2026-07-30 22:21 - production-shaped startup diagnostics
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/prod-shaped-startup-diagnostics`
-- Lane state: Active; bounded fail-path artifact implementation verified locally
+- Lane state: Merged in PR #1991; exact-head review returned ADAPT; superseded by hardening lane
 - Worktree: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
 - Purpose: preserve failed candidate startup evidence before rollback, then use one controlled deploy to identify and repair the production-shaped regression

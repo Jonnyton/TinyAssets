@@ -1,3 +1,22 @@
+## 2026-07-30 — public-safe production startup evidence
+
+- **What surprised me:** a short-lived Actions artifact is still readable to
+  repository readers in a public repository, and even `docker compose ps` can
+  expose a secret because the command column contains the tunnel invocation.
+- **Pattern worth capturing:** treat diagnostic artifacts as public data unless
+  there is a separately proved confidentiality boundary. Reduce raw evidence to
+  a fixed allowlist before publication, put hard deadlines before rollback, and
+  move fallible uploads after the production safety path.
+- **What I would do differently:** threat-model the artifact reader and every
+  captured field before writing the first workflow step, then write secret
+  fixtures alongside the ordering test.
+
+- **Follow-up:** syntax-shaped filtering was still not an allowlist: a forged
+  traceback could put token text in a valid-looking path, function, or line.
+  Public diagnostic values must originate from public source inventory, not
+  merely match a safe character class; container evidence also needs an exact
+  image-and-revision join before raw collection.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container
@@ -1040,3 +1059,15 @@ fresh-host rollback edges found later.
   delivery artifacts with their own bounded output.
 - Next time: make the foldback PR identity explicit in the first continuation
   contract and test it before an overnight controller can repeat `PARTIAL`.
+
+## 2026-07-30 - Public-safe startup diagnostics
+
+- Surprised: sanitizing log text was not enough; even traceback paths,
+  functions, line numbers, and a mismatched private image identity could carry
+  unapproved information into a public artifact.
+- Keep: reduce diagnostics to repository-proved identities and fixed fields,
+  bind raw collection to the exact candidate, and bind publication to explicit
+  restored-or-authoritatively-fenced plus terminal-receipt outputs.
+- Next time: write the negative workflow states first: pre-mutation failure,
+  skipped health after mutation, identity mismatch, failed fence proof, and
+  failed terminal publication.
