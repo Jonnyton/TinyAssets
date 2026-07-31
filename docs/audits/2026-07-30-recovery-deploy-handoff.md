@@ -581,9 +581,9 @@ Current state remained `restored` for recovery run `30655881616-1`; public MCP
 stayed healthy. The refusal is now reduced to one fixed predicate class
 (`identity missing`, `project invalid`, `service invalid`, `recorded identity
 changed`, or `non-writer proof failed`) plus the fixed sidecar name. Tests prove
-private label, ID, and mount fixture values never enter the error. No further
-deploy mutation is allowed until this diagnostic is independently reviewed and
-merged.
+private label, ID, and mount fixture values never enter the error. Independent
+review approved exact head `e746a12d`; PR #2013 carries the diagnostic. No
+further deploy mutation is allowed until that reviewed change merges.
 
 Fresh diagnostic verification at `2026-07-31T22:21:08Z` (Windows host):
 
