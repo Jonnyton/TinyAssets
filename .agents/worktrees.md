@@ -4,9 +4,9 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-autonomous-retry`
-- Lane state: Active; two review ADAPTs fixed; 269 focused tests green; exact-head re-review pending
+- Lane state: PR #2010 open; 269 focused tests green; exact-head security APPROVE at `a3335dfa`; CI pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2010
 - Purpose: make one recovery invocation converge after a transient partial tunnel/log start without touching foreign sidecars
 - Review gate: red/green fault injection, focused tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry/_PURPOSE.md`

@@ -247,6 +247,13 @@ is required before publish or production mutation. The stubborn-sidecar case
 proves its recorded stop error survives as evidence while all five volume
 writers still converge to `unsafe_fenced`.
 
+Independent re-review APPROVED exact code head `a3335dfa`: the outer recovery
+handler performs evidence capture only, every sidecar restart/stop operation is
+centralized behind the writer-first quiesce boundary, all five adversarial
+regressions passed, and the reviewer found no remaining blocking security or
+correctness issue. PR #2010 carries the four-commit repair stack; production
+remains unchanged until CI, merge, and the controlled deploy gate complete.
+
 TDD red evidence on 2026-07-30:
 
 ```text
