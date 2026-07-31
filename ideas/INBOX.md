@@ -13,6 +13,24 @@ half-formed experiments.
 
 ## Inbox
 
+- [2026-07-30] (source: host, owner: codex-gpt5-desktop, status:
+  promoted-active, priority: uptime-platform, size: large) **Fully
+  customizable agents in each user's universe.** Users publish and remix
+  public component-level agent definitions, bind them privately to their
+  universe and subscriptions, talk to them through Slack or other apps, and
+  let them create, test, evaluate, and iterate user-authored automations.
+  OpenClaw-like operators, Hermes-like assistants, coding agents, common
+  configurations, and multi-user blends are examples rather than fixed
+  platform types. The composition contract must have no power-user ceiling;
+  TinyAssets wins through commons discovery, lineage/eval evidence,
+  host-independent operation, plug-and-play governed bindings, and
+  collaboration. The active first slice builds definitions, component
+  provenance, private bindings, interchange, and canonical graph-handle
+  targets. Live Slack effects wait for the outbound boundary layer; arbitrary
+  managed-cloud code waits for the Engine OS sandbox.
+  Links: `PLAN.md` Custom-agent corollary; `openspec/changes/universe-custom-agents/`;
+  `STATUS.md` custom-agent lane.
+
 - [2026-07-24] (source: host full-product vision + Codex navigator, owner: unassigned, status: captured-review-blocked, priority: post-control-plane, size: large) **Organization-owned shared brains and work through existing company systems.** Define an organization/workforce authority successor before adding Slack/Teams adapters: canonical organization, membership and group binding, scoped roles, offboarding, audit/export, shared-universe ownership, and requester-scoped execution authority bundles with immutable audit receipts and live revocation checks. Slack/Teams remain conformance adapters over the same command/inbox/effect boundary, never a second policy engine. Required order: PostgreSQL tenant authority -> identity/universe visibility -> organization/RBAC lifecycle -> generic connector boundary -> Slack/Teams adapters -> rendered and concurrent acceptance. Opposite-provider review required before promotion.
 
 - [2026-07-24] (source: host regulated-industry vision + Codex navigator, owner: unassigned, status: captured-research-review-blocked, priority: post-authority, size: large) **Regulation-neutral workflow assurance composition, with HIPAA as the first profile.** Candidate successor `compose-regulated-workflow-controls` / capability `regulated-workflow-assurance`: versioned community control profiles map cited requirements to frozen capability gates, scoped evidence references, independent assessments, expiring exceptions, and fail-closed routing. Never add a “HIPAA mode,” infer legal status, copy PHI/PII into public evidence, or claim certification from self-attestation. Extend the same data model to GDPR/SOX without regulation-specific runtime branches or a new MCP action. Requires opposite-provider primary-source review plus organization authority, Postgres tenancy, BYOC isolation, immutable artifacts/evidence, effect receipts, retention/deletion, incident evidence, and counsel/assessor-owned acceptance.
