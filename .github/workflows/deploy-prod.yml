@@ -1106,6 +1106,42 @@ jobs:
             fi
           done
 
+      - name: Capture failed candidate startup diagnostics
+        if: failure()
+        run: |
+          set +e
+          evidence_dir="${RUNNER_TEMP}/candidate-startup-diagnostics"
+          mkdir -p "${evidence_dir}"
+
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_IMAGE=diagnostic-only docker compose -f /opt/tinyassets/compose.yml ps --all 2>&1" \
+              > "${evidence_dir}/compose-ps.txt"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker inspect --type container tinyassets-daemon --format '{{json .State}}' 2>&1" \
+              > "${evidence_dir}/daemon-state.json"
+          ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo docker logs --tail 200 tinyassets-daemon 2>&1 | tail -c 131072" \
+              > "${evidence_dir}/daemon.log"
+
+          {
+            echo "run=${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "revision=${GITHUB_SHA}"
+            echo "captured_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          } > "${evidence_dir}/manifest.txt"
+          exit 0
+
+      - name: Upload failed candidate startup diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-startup-diagnostics
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Verify cloud worker is running
         run: |
           worker_containers="tinyassets-worker tinyassets-worker-codex-2 tinyassets-worker-claude-1 tinyassets-worker-claude-2"

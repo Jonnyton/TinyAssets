@@ -122,12 +122,15 @@ before removal. This is not general Docker garbage collection.
 2. Implement provenance capture and exact idempotent retirement.
 3. Run the focused fence suite, Ruff, strict OpenSpec validation, and
    independent security/fail-closed review.
-4. Merge and build an immutable image.
-5. From the currently restored old-image recovery, execute one normal deploy
+4. Preserve bounded candidate startup state and logs before rollback so a
+   production-shaped startup failure remains diagnosable without exposing
+   environment values.
+5. Merge and build an immutable image.
+6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,
    public MCP canary, and durable restored state.
-6. Resume PR #1935's OAuth diagnostic deployment.
-7. Sync the delta into the main capability spec, archive the change, and retire
+7. Resume PR #1935's OAuth diagnostic deployment.
+8. Sync the delta into the main capability spec, archive the change, and retire
    its live coordination row.
 
 Rollback uses the existing provenance-bound unsafe recovery workflow with the

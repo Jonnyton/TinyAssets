@@ -1,3 +1,16 @@
+## 2026-07-30 — production-shaped startup evidence
+
+- **What surprised me:** the current image passed a fresh-volume container
+  smoke while the same image failed before health convergence on production
+  state, and ordinary rollback removed the only useful candidate logs.
+- **Pattern worth capturing:** a deploy rollback boundary is also an evidence
+  boundary. Capture bounded state and logs before rollback, exclude environment
+  values, and make the artifact short-lived so one controlled failure can
+  produce an actionable diagnosis.
+- **What I would do differently:** add fail-path artifacts when first designing
+  the rollback state machine, rather than relying on live workflow logs that
+  cannot inspect a container after cleanup.
+
 ## 2026-07-30 — dark just-in-time target-attempt issuance
 
 - **What surprised me:** logical-key uniqueness and exact store fences were not
