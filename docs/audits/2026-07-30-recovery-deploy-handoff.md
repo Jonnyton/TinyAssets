@@ -297,6 +297,71 @@ with no findings after hostile shell payloads, every trusted-field pipe
 injection, malformed/non-string JSON, invalid UTF-8, oversize input, and
 identity mismatch all failed without raw-text disclosure.
 
+Controlled deploy `30655656939` reproduced the exact candidate at revision
+`0eec432c` and returned `start_error_class=none`: Docker created the daemon
+container but never attempted its start. This eliminates Docker runtime-start
+failure as the current boundary and points to systemd/Compose orchestration
+between create and start. Exact-source guarded recovery `30655881616` restored
+the canonical canary, exact-seven surface, and finalized successfully. Because
+the relevant unit journal persists, the next diagnostic is read-only: classify
+the bounded `18:34Z`-`18:37Z` journal window on the host and return fixed signals
+only, without another deployment or raw journal publication.
+
+The diagnostic workflow accepts two strict UTC-second timestamps, rejects
+future, reversed, or over-ten-minute windows, and performs only a bounded
+`journalctl` read over SSH. At most 256 KiB flows directly into the runner-side
+sanitizer; SSH stderr and all journal text are suppressed, and there is no host
+write or artifact upload. Output is limited to fixed Compose stages, fixed
+failure classes, a derived stage, and bounded counts. Windows-host verification
+at `2026-07-31T18:48Z`: 142 focused tests passed, Ruff and diff checks clean,
+and strict OpenSpec validation passed. Independent exact-head review remains
+required before reading the preserved production window.
+
+Independent review of PR #2002 head `173941b8` returned ADAPT: the byte cap ran
+after SSH and allowed a 262,145-byte sentinel into the sanitizer; marker union
+across retries could let an earlier `Started` hide a terminal `Created`; and
+workflow tests recognized validation text without executing the validator or
+fully locking publication/PIPESTATUS behavior. No production diagnostic ran.
+
+The successor caps exactly 256 KiB on the production host before SSH, checks
+both remaining pipeline statuses, and classifies only the suffix beginning at
+the final daemon `Creating` marker. Timestamp validation moved into the
+sanitizer module and is behavior-tested against shell payloads, malformed dates,
+future, reversed, and over-ten-minute windows. Workflow tests lock the validator
+invocation, both pipeline statuses, source-side cap, and absence of summary,
+output, `tee`, artifact, GitHub, or host-mutation sinks. Fresh Windows-host
+evidence at `2026-07-31T19:04Z`: 149 focused tests passed, Ruff and diff checks
+clean, and strict OpenSpec validation passed. Exact-head re-review is pending.
+
+Re-review of `fa542a47` remained ADAPT: a retry may begin at `Starting` without
+another `Creating`; a container-name conflict disappeared behind the known
+restart signal; the source-side cap could not report its own truncation; and the
+OpenSpec delta did not state these decision-critical requirements. The next
+successor frames one truncation byte plus a bounded payload within the same
+256 KiB transport ceiling, anchors the terminal phase at the last daemon
+`Creating` or `Starting`, preserves name-conflict and line-level unknown classes,
+and specifies each invariant. No production diagnostic has run.
+
+The successor now treats the later of the last daemon `Creating` or `Starting`
+as the terminal phase boundary, adds an exact container-name-conflict class,
+and detects unclassified failure lines independently of known classes. The
+source stream uses a bounded five-chunk deque: a one-byte truncation flag plus
+at most 262,143 payload bytes crosses SSH, so the complete transport never
+exceeds 256 KiB and truncation remains truthful. The remote line cap was removed
+so it cannot silently discard evidence. Fresh Windows-host evidence at
+`2026-07-31T19:20Z`: 152 focused tests passed, Ruff and diff checks clean, and
+strict OpenSpec validation passed. Exact-head re-review remains pending.
+
+Third review of `2731dbac` closed every runtime/security finding and returned
+ADAPT only because OpenSpec named the additive unknown enum `other` while code
+and tests emit `other_failure`. The requirement now uses the exact implemented
+enum; executable content is unchanged from the reviewed head.
+
+Final exact-head review of `05a0c6719c8b528f3a592ed71b02ef489c65cc2c`
+returned APPROVE with no findings after confirming the exact enum, unchanged
+runtime/tests, strict OpenSpec validity, and that the production diagnostic
+remains unrun.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

@@ -85,6 +85,15 @@ fleet.
   separator that the validator parses identically
 - **AND** an identity-matched Docker pre-start error is reduced to a fixed
   classification while raw error text and host paths remain unpublished
+- **AND** an operator can classify a bounded past systemd/Compose journal
+  window read-only, with raw journal bytes piped only into a fixed-signal
+  sanitizer and never printed, persisted, or uploaded
+- **AND** the journal transport is capped at 256 KiB before SSH while carrying
+  a truthful source-truncation flag inside that same cap
+- **AND** classification uses only the terminal attempt beginning at the last
+  daemon `Creating` or `Starting` marker, including a retry with no new create
+- **AND** container-name conflict has a fixed class and an unclassified failure
+  remains visible as `other_failure` even when another known class is present
 - **AND** raw log collection occurs only when the inspected container's
   immutable image reference and OCI revision exactly match the fence-proved
   candidate
