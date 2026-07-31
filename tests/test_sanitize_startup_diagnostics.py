@@ -116,7 +116,17 @@ def test_sanitizer_bounds_input_and_signal_count():
 def test_candidate_state_requires_exact_image_and_revision_match():
     raw = (
         STATE_SEPARATOR.join(
-            ("exited", "false", "false", "1", "false", "unhealthy", _REVISION, _IMAGE)
+            (
+                "exited",
+                "false",
+                "false",
+                "1",
+                "false",
+                "unhealthy",
+                _REVISION,
+                _IMAGE,
+                json.dumps(""),
+            )
         )
         + "\n"
     ).encode()
@@ -137,7 +147,17 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
     token = "token-bearing-forged-state"
     valid_raw = (
         STATE_SEPARATOR.join(
-            ("exited", "false", "false", "1", "false", "unhealthy", _REVISION, _IMAGE)
+            (
+                "exited",
+                "false",
+                "false",
+                "1",
+                "false",
+                "unhealthy",
+                _REVISION,
+                _IMAGE,
+                json.dumps(""),
+            )
         )
         + "\n"
     ).encode()
@@ -169,3 +189,107 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
         "capture": "unavailable",
     }
     assert token not in json.dumps(malformed)
+
+
+def test_candidate_state_classifies_identity_bound_start_error_without_disclosure():
+    token = "token-bearing-host-path"
+    raw_error = (
+        "driver failed programming external connectivity: "
+        f"Bind for 127.0.0.1:8001 failed: port is already allocated | {token}"
+    )
+    raw = STATE_SEPARATOR.join(
+        (
+            "created",
+            "false",
+            "false",
+            "0",
+            "false",
+            "",
+            _REVISION,
+            _IMAGE,
+            json.dumps(raw_error),
+        )
+    ).encode()
+
+    result = sanitize_candidate_state(
+        raw,
+        target_revision=_REVISION,
+        target_image_ref=_IMAGE,
+    )
+
+    assert result["candidate_identity_match"] is True
+    assert result["start_error_class"] == "port_bind_conflict"
+    assert token not in json.dumps(result)
+    assert raw_error not in json.dumps(result)
+
+
+def test_candidate_state_suppresses_foreign_or_malformed_start_error():
+    token = "foreign-token-bearing-error"
+    valid_error = STATE_SEPARATOR.join(
+        (
+            "created",
+            "false",
+            "false",
+            "0",
+            "false",
+            "",
+            _REVISION,
+            _IMAGE,
+            json.dumps(token),
+        )
+    ).encode()
+    malformed_error = valid_error.rsplit(STATE_SEPARATOR.encode(), 1)[0] + b"|not-json"
+
+    foreign = sanitize_candidate_state(
+        valid_error,
+        target_revision="c" * 40,
+        target_image_ref=_IMAGE,
+    )
+    malformed = sanitize_candidate_state(
+        malformed_error,
+        target_revision=_REVISION,
+        target_image_ref=_IMAGE,
+    )
+
+    assert foreign["start_error_class"] == "unavailable"
+    assert token not in json.dumps(foreign)
+    assert malformed == {
+        "candidate_identity_match": False,
+        "capture": "unavailable",
+    }
+
+
+def test_candidate_state_emits_only_fixed_start_error_classes():
+    cases = {
+        "": "none",
+        "error mounting /secret/host/path": "mount_failure",
+        "open /secret/host/path: permission denied": "permission_denied",
+        "failed to create endpoint on network": "network_failure",
+        "OCI runtime create failed": "runtime_start_failure",
+        "unrecognized token-bearing failure": "other",
+    }
+
+    for raw_error, expected_class in cases.items():
+        raw = STATE_SEPARATOR.join(
+            (
+                "created",
+                "false",
+                "false",
+                "0",
+                "false",
+                "",
+                _REVISION,
+                _IMAGE,
+                json.dumps(raw_error),
+            )
+        ).encode()
+
+        result = sanitize_candidate_state(
+            raw,
+            target_revision=_REVISION,
+            target_image_ref=_IMAGE,
+        )
+
+        assert result["start_error_class"] == expected_class
+        if raw_error:
+            assert raw_error not in json.dumps(result)

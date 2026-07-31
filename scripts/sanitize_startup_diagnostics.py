@@ -12,6 +12,7 @@ from typing import Any
 
 MAX_RAW_BYTES = 131_072
 MAX_SIGNALS = 64
+MAX_STATE_BYTES = 16_384
 STATE_SEPARATOR = "|"
 
 _FRAME = re.compile(
@@ -150,13 +151,16 @@ def sanitize_candidate_state(
         "candidate_identity_match": False,
         "capture": "unavailable",
     }
+    if len(raw) > MAX_STATE_BYTES:
+        return unavailable
     try:
-        values = (
-            raw.decode("utf-8", errors="strict").strip().split(STATE_SEPARATOR)
+        values = raw.decode("utf-8", errors="strict").strip().split(
+            STATE_SEPARATOR,
+            8,
         )
     except UnicodeDecodeError:
         return unavailable
-    if len(values) != 8:
+    if len(values) != 9:
         return unavailable
     (
         status,
@@ -167,7 +171,14 @@ def sanitize_candidate_state(
         health,
         container_revision,
         container_image_ref,
+        start_error_json,
     ) = values
+    try:
+        start_error = json.loads(start_error_json)
+    except json.JSONDecodeError:
+        return unavailable
+    if not isinstance(start_error, str):
+        return unavailable
     if status not in {
         "created",
         "running",
@@ -199,6 +210,53 @@ def sanitize_candidate_state(
         and valid_container_image
         and container_image_ref == target_image_ref
     )
+    start_error_class = "unavailable"
+    if identity_match:
+        normalized_error = start_error.casefold()
+        if not normalized_error:
+            start_error_class = "none"
+        elif any(
+            marker in normalized_error
+            for marker in (
+                "port is already allocated",
+                "address already in use",
+                "failed to bind host port",
+                "bind for ",
+            )
+        ):
+            start_error_class = "port_bind_conflict"
+        elif any(
+            marker in normalized_error
+            for marker in (
+                "error mounting",
+                "mounts denied",
+                "invalid mount config",
+                "mount source path",
+            )
+        ):
+            start_error_class = "mount_failure"
+        elif "permission denied" in normalized_error:
+            start_error_class = "permission_denied"
+        elif any(
+            marker in normalized_error
+            for marker in (
+                "network not found",
+                "failed to create endpoint",
+                "network sandbox",
+            )
+        ):
+            start_error_class = "network_failure"
+        elif any(
+            marker in normalized_error
+            for marker in (
+                "oci runtime",
+                "failed to create task",
+                "failed to start",
+            )
+        ):
+            start_error_class = "runtime_start_failure"
+        else:
+            start_error_class = "other"
     return {
         "status": status,
         "running": running == "true",
@@ -212,6 +270,7 @@ def sanitize_candidate_state(
         "container_image_ref": (
             container_image_ref if identity_match else "unavailable"
         ),
+        "start_error_class": start_error_class,
         "candidate_identity_match": identity_match,
     }
 

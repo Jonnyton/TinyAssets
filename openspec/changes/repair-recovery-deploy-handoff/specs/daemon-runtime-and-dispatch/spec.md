@@ -83,6 +83,8 @@ fleet.
 - **AND** local SSH and remote Docker collection have hard deadlines
 - **AND** the fixed-field Docker inspection transport uses an unambiguous
   separator that the validator parses identically
+- **AND** an identity-matched Docker pre-start error is reduced to a fixed
+  classification while raw error text and host paths remain unpublished
 - **AND** raw log collection occurs only when the inspected container's
   immutable image reference and OCI revision exactly match the fence-proved
   candidate

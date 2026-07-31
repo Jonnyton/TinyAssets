@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-created-state-classification`
-- Lane state: Active; deploy #306539 evidence preserved and recovery #306541 green
+- Lane state: Active; fixed-class start-error capture validated, review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: safely classify why the exact candidate remained `created` before process start

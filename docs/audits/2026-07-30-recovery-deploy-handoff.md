@@ -283,6 +283,17 @@ rollback could not prove a safe fleet, so exact-source guarded recovery
 completed successfully. The next evidence slice must classify Docker's
 identity-bound pre-start error without publishing raw host error text.
 
+The successor capture appends only Docker's JSON-escaped `.State.Error` as the
+final identity record field, caps the complete record at 16 KiB, and splits only
+the eight preceding fixed boundaries so delimiter text inside the error cannot
+change field identity. The sanitizer parses a JSON string and emits one fixed
+class (`none`, port, mount, permission, network, runtime, or `other`) only after
+the image/revision join succeeds; mismatch, malformed JSON, and oversize input
+fail unavailable. Raw error text never enters the artifact. Windows-host
+verification at `2026-07-31T18:24Z`: 136 focused tests passed, Ruff and diff
+checks clean, and strict OpenSpec validation passed. Independent exact-head
+review remains required before another deploy.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
