@@ -42,8 +42,13 @@ removal intent before container mutation.
   removes only a newly proved canonical or recovery-owned sidecar generation,
   recreates both sidecars under its unique recovery project with `restart=no`,
   and binds their exact IDs before exposing the recovery result
-- **AND** a partial recovery-sidecar start is durably captured, stopped, and
-  restart-fenced; the next attempt may remove only those recorded IDs
+- **AND** a partial recovery-sidecar start is durably captured by exact ID,
+  stopped with `restart=no`, removed without volumes, and retried once within
+  the same recovery invocation
+- **AND** if the bounded retry also fails, its newly captured partial IDs remain
+  restart-fenced and the writer fleet returns to `unsafe_fenced`
+- **AND** absent, foreign, identity-changed, or data-bearing sidecars are not
+  removed or admitted to the retry cleanup path
 - **AND** a foreign fixed-name blocker remains untouched while the proved
   recovery writers are refenced; a recovery-owned sidecar with an unexpected
   data mount is ID-bound and stopped but is not removed

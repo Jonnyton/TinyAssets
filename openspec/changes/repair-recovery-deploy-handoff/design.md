@@ -119,12 +119,15 @@ recovery project with the restart-no override. Their IDs are durably bound and
 their running/restart-fenced posture is proved before recovery returns.
 
 A partial sidecar Compose start is captured from exact recovery project/service
-labels before cleanup, stopped, and left at `restart=no`. A later recovery may
-remove only those recorded IDs before retrying. Finalization restores the
-preflight-saved sidecar policies; a sidecar that was already absent uses the
-canonical Compose `unless-stopped` posture rather than inheriting temporary
-`restart=no`. The next normal preflight accepts recovery sidecars only when
-their exact recorded IDs and recovery project still match.
+labels before cleanup. The same recovery invocation restart-fences, stops, and
+removes only those recorded IDs, then makes one bounded sidecar-only retry. If
+that retry also fails, the new partial IDs remain durably bound and stopped
+under the ordinary unsafe fence. An absent partial fleet, foreign ownership,
+or an unexpected data mount never enters the retry cleanup path. Finalization
+restores the preflight-saved sidecar policies; a sidecar that was already
+absent uses the canonical Compose `unless-stopped` posture rather than
+inheriting temporary `restart=no`. The next normal preflight accepts recovery
+sidecars only when their exact recorded IDs and recovery project still match.
 
 ## Risks / Trade-offs
 
@@ -143,8 +146,9 @@ their exact recorded IDs and recovery project still match.
   target image/revision, canonical project label, expected-name subset,
   stopped/restart-fenced state, and absent-name proof before write-ahead intent.
 - [Sidecar removal strands recovery without ingress] → unsafe recovery starts
-  and proves an exact recovery-owned tunnel/log pair; partial creation is
-  durably re-fenced and retryable.
+  and proves an exact recovery-owned tunnel/log pair; one recovery-owned
+  partial creation is removed by exact ID and retried in the same invocation,
+  while a repeated failure is durably re-fenced.
 
 ## Migration Plan
 

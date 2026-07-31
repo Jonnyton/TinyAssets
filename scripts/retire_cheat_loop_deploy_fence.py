@@ -71,6 +71,7 @@ HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
 UNIT_RESTORE_TIMEOUT_SECONDS = 120
 RECOVERY_LEASE_SECONDS = 600
+RECOVERY_SIDECAR_START_ATTEMPTS = 2
 RECOVERY_COMPOSE_PATH = Path("/opt/tinyassets/compose.yml")
 RECOVERY_COMPOSE_OVERRIDE_PATH = Path(
     "/opt/tinyassets/deploy/recovery-restart-no.yml"
@@ -3050,6 +3051,63 @@ def _remove_recorded_recovery_sidecars(
     return recorded
 
 
+def _start_recovery_sidecars(
+    host: Host,
+    state: dict[str, Any],
+    *,
+    state_path: Path,
+) -> dict[str, dict[str, Any]]:
+    """Start recovery-owned sidecars with one exact-ID partial-start retry."""
+
+    for attempt in range(1, RECOVERY_SIDECAR_START_ATTEMPTS + 1):
+        state["recovery_sidecar_start_attempt"] = attempt
+        _atomic_json(state_path, state)
+        try:
+            host.run(
+                [
+                    "docker",
+                    "compose",
+                    "--project-name",
+                    str(state["recovery_project_name"]),
+                    "--env-file",
+                    "/etc/tinyassets/env",
+                    "-f",
+                    str(RECOVERY_COMPOSE_PATH),
+                    "-f",
+                    str(RECOVERY_COMPOSE_OVERRIDE_PATH),
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    *RECOVERY_SIDECAR_SERVICES,
+                ]
+            )
+        except (FenceError, OSError):
+            partial_sidecars = _capture_recovery_sidecars(
+                host,
+                state,
+                state_path=state_path,
+                require_all=False,
+            )
+            if (
+                not partial_sidecars
+                or attempt == RECOVERY_SIDECAR_START_ATTEMPTS
+            ):
+                raise
+            _remove_recorded_recovery_sidecars(
+                host,
+                state,
+                state_path=state_path,
+            )
+            continue
+        return _capture_recovery_sidecars(
+            host,
+            state,
+            state_path=state_path,
+            require_all=True,
+        )
+    raise FenceError("recovery sidecar start attempts were exhausted")
+
+
 def recover_unsafe(
     host: Host,
     *,
@@ -3211,29 +3269,10 @@ def recover_unsafe(
             state = _load_state(state_path)
             state["phase"] = "recovery_sidecars_starting"
             _atomic_json(state_path, state)
-            host.run(
-                [
-                    "docker",
-                    "compose",
-                    "--project-name",
-                    str(state["recovery_project_name"]),
-                    "--env-file",
-                    "/etc/tinyassets/env",
-                    "-f",
-                    str(RECOVERY_COMPOSE_PATH),
-                    "-f",
-                    str(RECOVERY_COMPOSE_OVERRIDE_PATH),
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    *RECOVERY_SIDECAR_SERVICES,
-                ]
-            )
-            sidecars = _capture_recovery_sidecars(
+            sidecars = _start_recovery_sidecars(
                 host,
                 state,
                 state_path=state_path,
-                require_all=True,
             )
             state["recovery_sidecar_restart_policy_proof"] = _set_restart_no(
                 host,

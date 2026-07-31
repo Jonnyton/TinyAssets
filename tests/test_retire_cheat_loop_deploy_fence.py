@@ -396,6 +396,7 @@ class LifecycleHost:
         self.restart_policy_override: str | None = None
         self.start_installs_target = False
         self.fail_sidecar_compose_after = 0
+        self.sidecar_compose_failures_remaining = 0
         self.foreign_sidecar_compose = False
         self.recovery_sidecar_data_mount = False
 
@@ -629,7 +630,11 @@ class LifecycleHost:
                             prefix="foreign-sidecar",
                         )
                         raise FenceError("foreign sidecar blocked compose")
-                    if self.fail_sidecar_compose_after:
+                    if (
+                        self.fail_sidecar_compose_after
+                        and self.sidecar_compose_failures_remaining
+                    ):
+                        self.sidecar_compose_failures_remaining -= 1
                         name, service = fence.CANONICAL_SIDECARS[0]
                         self.install_sidecars(
                             project=project,
@@ -637,7 +642,7 @@ class LifecycleHost:
                             prefix="recovery-sidecar",
                         )
                         for extra_name, _extra_service in fence.CANONICAL_SIDECARS[
-                            self.fail_sidecar_compose_after :
+                            self.fail_sidecar_compose_after:
                         ]:
                             self.containers.pop(extra_name, None)
                         assert name in self.containers and service
@@ -2501,34 +2506,12 @@ def test_partial_recovery_sidecar_start_is_durably_refenced_and_retryable(
     host.containers = {}
     host.start_installs_target = True
     host.fail_sidecar_compose_after = 1
+    host.sidecar_compose_failures_remaining = 1
 
-    with pytest.raises(FenceError, match="re-fenced"):
-        recover_unsafe(
-            host,
-            source_run_id="source-run-1",
-            run_id="recovery-partial-sidecar",
-            image_ref=host.old_image_ref,
-            revision=host.old_revision,
-            state_path=state_path,
-        )
-
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["phase"] == "unsafe_fenced"
-    assert set(state["recovery_sidecar_container_ids"]) == {
-        fence.CANONICAL_SIDECARS[0][0]
-    }
-    partial_name = fence.CANONICAL_SIDECARS[0][0]
-    assert host.containers[partial_name]["State"]["Running"] is False
-    assert (
-        host.containers[partial_name]["HostConfig"]["RestartPolicy"]["Name"]
-        == "no"
-    )
-
-    host.fail_sidecar_compose_after = 0
     evidence = recover_unsafe(
         host,
         source_run_id="source-run-1",
-        run_id="recovery-sidecar-retry",
+        run_id="recovery-partial-sidecar",
         image_ref=host.old_image_ref,
         revision=host.old_revision,
         state_path=state_path,
@@ -2538,6 +2521,60 @@ def test_partial_recovery_sidecar_start_is_durably_refenced_and_retryable(
     assert set(evidence["recovery_sidecar_container_ids"]) == {
         name for name, _service in fence.CANONICAL_SIDECARS
     }
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["recovery_sidecar_start_attempt"] == 2
+    assert host.sidecar_compose_failures_remaining == 0
+    assert any(
+        call[:2] == ("docker", "rm")
+        and "recovery-sidecar-0" in call
+        for call in host.calls
+    )
+
+
+def test_repeated_partial_recovery_sidecar_start_stays_refenced(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state["sidecar_restart_policies"] = {
+        name: "always" for name, _service in fence.CANONICAL_SIDECARS
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    host.fail_sidecar_compose_after = 1
+    host.sidecar_compose_failures_remaining = 2
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-repeated-partial-sidecar",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    partial_name = fence.CANONICAL_SIDECARS[0][0]
+    assert state["phase"] == "unsafe_fenced"
+    assert state["recovery_sidecar_start_attempt"] == 2
+    assert set(state["recovery_sidecar_container_ids"]) == {partial_name}
+    assert host.containers[partial_name]["State"]["Running"] is False
+    assert (
+        host.containers[partial_name]["HostConfig"]["RestartPolicy"]["Name"]
+        == "no"
+    )
 
 
 def test_foreign_sidecar_start_failure_still_refences_owned_writers(

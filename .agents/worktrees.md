@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 14:35 - autonomous recovery-sidecar retry
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-autonomous-retry`
+- Lane state: Active; stacked adaptation; 264 focused tests green; exact-head review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- Purpose: make one recovery invocation converge after a transient partial tunnel/log start without touching foreign sidecars
+- Review gate: red/green fault injection, focused tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-autonomous-retry/_PURPOSE.md`
+- Ship/abandon: stack into the sidecar handoff only after one-shot autonomous recovery proof; otherwise keep production fenced
+
 ## 2026-07-31 14:21 - fail-safe fixed-name sidecar handoff
 
 - Provider: `codex-gpt5-desktop`

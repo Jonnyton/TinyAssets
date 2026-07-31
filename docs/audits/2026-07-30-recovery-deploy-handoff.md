@@ -138,9 +138,10 @@ removes only exact surviving IDs without `-v`, including subset/empty replay.
 If forward start and ordinary rollback both fail, unsafe recovery removes only
 a newly proved canonical or recovery-owned sidecar generation, starts both
 sidecars under the unique recovery project with `restart=no`, and durably binds
-their IDs. A partial sidecar Compose start is captured, stopped, refenced, and
-can be removed by exact ID on retry. Finalization restores saved policies, or
-canonical `unless-stopped` for a previously absent sidecar.
+their IDs. A partial sidecar Compose start is captured, stopped, removed by
+exact ID, and retried once within the same recovery invocation. A repeated
+failure is durably captured and refenced. Finalization restores saved policies,
+or canonical `unless-stopped` for a previously absent sidecar.
 
 ## Verification
 
@@ -173,6 +174,33 @@ production data volume also fail before sidecar mutation. Independent
 exact-head review is pending. A foreign fixed-name blocker remains untouched
 while the proved recovery writers are still refenced; a recovery-owned sidecar
 with an unexpected data mount is ID-bound and stopped but never removed.
+
+Autonomous partial-start retry verification at `2026-07-31T21:40:40Z`
+(Windows host):
+
+```text
+RED: python -m pytest \
+  tests/test_retire_cheat_loop_deploy_fence.py::\
+test_partial_recovery_sidecar_start_is_durably_refenced_and_retryable -q
+1 failed: recovery failed and was re-fenced: partial sidecar compose failure
+
+GREEN: python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  -q -k "partial_recovery_sidecar_start"
+2 passed, 128 deselected in 0.51s
+
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+264 passed in 9.27s
+```
+
+The bounded path retries only after durable exact-project/service/ID capture
+and exact-ID removal of a non-writer partial fleet. A second transient failure
+ends the loop at attempt two, leaves the new partial ID restart-fenced, and
+returns the writers to `unsafe_fenced`. Independent exact-head review remains
+required before publish or production mutation.
 
 TDD red evidence on 2026-07-30:
 

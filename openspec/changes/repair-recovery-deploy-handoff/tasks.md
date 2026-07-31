@@ -19,6 +19,9 @@
 - [x] 1.6 Bind fixed-name sidecars by exact ID, Compose project/service labels,
   non-writer mounts, and `restart=no`; replay exact removal, recreate them in
   unsafe recovery, and re-fence a partial recovery-sidecar start.
+- [x] 1.7 Retry one transient partial recovery-sidecar Compose start within the
+  same recovery invocation only after durable exact-ID capture and removal;
+  bound the retry and re-fence a repeated failure.
 
 ## 2. Verification And Release
 
