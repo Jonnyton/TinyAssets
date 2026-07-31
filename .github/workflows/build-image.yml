@@ -109,8 +109,9 @@ jobs:
             echo "::error::source digest revision label disagrees with source_revision"
             exit 1
           }
+          git fetch --no-tags origin "${revision}"
           git cat-file -e "${revision}^{commit}"
-          docker buildx imagetools create --tag "${image}:${revision:0:12}" "${image}@${digest}"
+          docker buildx imagetools create --prefer-index=false --tag "${image}:${revision:0:12}" "${image}@${digest}"
           retagged_digest="$(
             docker buildx imagetools inspect "${image}:${revision:0:12}" |
               awk '/^Digest:/ {print $2; exit}'

@@ -78,9 +78,13 @@ def test_manual_retag_is_digest_and_revision_bound():
     assert "org.opencontainers.image.revision" in text
     assert '[[ "${observed_revision}" == "${revision}" ]]' in text
     assert (
-        'docker buildx imagetools create --tag "${image}:${revision:0:12}" '
-        '"${image}@${digest}"'
+        "docker buildx imagetools create --prefer-index=false "
+        '--tag "${image}:${revision:0:12}" "${image}@${digest}"'
     ) in text
+    assert 'git fetch --no-tags origin "${revision}"' in text
+    assert text.index('git fetch --no-tags origin "${revision}"') < text.index(
+        'git cat-file -e "${revision}^{commit}"'
+    )
 
 
 def test_manual_retag_skips_image_rebuild():
