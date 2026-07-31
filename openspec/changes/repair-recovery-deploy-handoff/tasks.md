@@ -21,7 +21,7 @@
 
 - [x] 2.1 Pass the focused fence suite, Ruff, strict OpenSpec validation, and
   independent exact-head fail-closed/security review.
-- [ ] 2.1a Close the rejected failed-candidate diagnostic findings and obtain
+- [x] 2.1a Close the rejected failed-candidate diagnostic findings and obtain
   independent exact-head re-review: actual public source-file paths only, no
   traceback function/line values, exact container image/revision binding,
   deploy/intervening-failure and cancellation coverage, mismatch suppression,

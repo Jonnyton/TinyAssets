@@ -1059,3 +1059,15 @@ fresh-host rollback edges found later.
   delivery artifacts with their own bounded output.
 - Next time: make the foldback PR identity explicit in the first continuation
   contract and test it before an overnight controller can repeat `PARTIAL`.
+
+## 2026-07-30 - Public-safe startup diagnostics
+
+- Surprised: sanitizing log text was not enough; even traceback paths,
+  functions, line numbers, and a mismatched private image identity could carry
+  unapproved information into a public artifact.
+- Keep: reduce diagnostics to repository-proved identities and fixed fields,
+  bind raw collection to the exact candidate, and bind publication to explicit
+  restored-or-authoritatively-fenced plus terminal-receipt outputs.
+- Next time: write the negative workflow states first: pre-mutation failure,
+  skipped health after mutation, identity mismatch, failed fence proof, and
+  failed terminal publication.
