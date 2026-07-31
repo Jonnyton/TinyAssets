@@ -358,10 +358,28 @@ class Epoch2BranchTaskAdapter:
             )
         )
 
-    def recover_expired(self) -> list[Epoch2BranchTask]:
+    def recover_expired(
+        self,
+        *,
+        target_recovery_guard: (
+            Callable[[Epoch2BranchTask], bool] | None
+        ) = None,
+    ) -> list[Epoch2BranchTask]:
+        approved_rows = None
+        if target_recovery_guard is not None:
+            snapshots = self._store.list_expired_v2_tasks()
+            approved_rows = {
+                str(row["branch_task_id"]): row
+                for row in snapshots
+                if target_recovery_guard(_as_epoch2_task(row))
+            }
+            if not approved_rows:
+                return []
         return [
             _as_epoch2_task(row)
-            for row in self._store.recover_expired_v2_tasks()
+            for row in self._store.recover_expired_v2_tasks(
+                approved_rows=approved_rows,
+            )
         ]
 
     def maintain_quarantine(

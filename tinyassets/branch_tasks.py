@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import time
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -597,6 +598,7 @@ def reclaim_predecessor_tasks(
     universe_path: Path,
     *,
     worker_id: str,
+    target_recovery_guard: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> int:
     """Startup-only: reset ``running`` rows claimed by a PRIOR incarnation of
     *this same* ``worker_id`` back to ``pending``. Returns the count.
@@ -630,6 +632,15 @@ def reclaim_predecessor_tasks(
     qp = queue_path(universe_path)
     if not qp.exists():
         return 0
+    if target_recovery_guard is not None:
+        return _guarded_reclaim(
+            universe_path,
+            eligible=lambda row: (
+                row.get("status") == "running"
+                and str(row.get("executor_worker_id") or "").strip() == clean
+            ),
+            target_recovery_guard=target_recovery_guard,
+        )
     count = 0
     with _file_lock(universe_path):
         raw = _read_raw(qp)
@@ -662,6 +673,7 @@ def reclaim_expired_leases(
     *,
     now: datetime | None = None,
     reclaim_leaseless: bool = False,
+    target_recovery_guard: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> int:
     """Lease-aware reclaim: reset ``running`` rows whose lease expired.
 
@@ -694,6 +706,21 @@ def reclaim_expired_leases(
     qp = queue_path(universe_path)
     if not qp.exists():
         return 0
+    if target_recovery_guard is not None:
+        def eligible(row: Mapping[str, object]) -> bool:
+            if row.get("status") != "running":
+                return False
+            lease_raw = str(row.get("lease_expires_at") or "")
+            lease_at = _parse_iso_utc(lease_raw) if lease_raw else None
+            if lease_at is not None:
+                return lease_at <= current
+            return reclaim_leaseless
+
+        return _guarded_reclaim(
+            universe_path,
+            eligible=eligible,
+            target_recovery_guard=target_recovery_guard,
+        )
     count = 0
     with _file_lock(universe_path):
         raw = _read_raw(qp)
@@ -718,6 +745,44 @@ def reclaim_expired_leases(
                 row.get("claimed_by"),
                 row.get("heartbeat_at"),
             )
+            row["status"] = "pending"
+            row["claimed_by"] = ""
+            row["worker_owner_id"] = ""
+            row["lease_expires_at"] = ""
+            row["heartbeat_at"] = ""
+            count += 1
+        if count:
+            _write_raw(qp, raw)
+    return count
+
+
+def _guarded_reclaim(
+    universe_path: Path,
+    *,
+    eligible: Callable[[Mapping[str, object]], bool],
+    target_recovery_guard: Callable[[Mapping[str, object]], bool],
+) -> int:
+    """Reconcile target authority outside the queue lock, then exact-CAS rows."""
+    qp = queue_path(universe_path)
+    with _file_lock(universe_path):
+        snapshots = [
+            dict(row)
+            for row in _read_raw(qp)
+            if isinstance(row, dict) and eligible(row)
+        ]
+    approved = [
+        snapshot
+        for snapshot in snapshots
+        if target_recovery_guard(snapshot)
+    ]
+    if not approved:
+        return 0
+    count = 0
+    with _file_lock(universe_path):
+        raw = _read_raw(qp)
+        for row in raw:
+            if not isinstance(row, dict) or row not in approved:
+                continue
             row["status"] = "pending"
             row["claimed_by"] = ""
             row["worker_owner_id"] = ""

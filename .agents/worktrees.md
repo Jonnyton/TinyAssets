@@ -2033,3 +2033,15 @@ Notes:
 - Review gate: focused TDD/concurrency tests, strict OpenSpec, mirror parity,
   required CI, and independent exact-head approval.
 - Publish/cleanup: one draft PR to main; remove after verified foldback.
+
+## 2026-07-30 - Dark background-attempt claim fencing
+
+- Provider: `drain-20260730-202355-05247c`
+- Branch: `chore/drain-20260730-202355-05247c-exhaustion`
+- Lane state: Active; exact STATUS claim on current main.
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-202355-05247c-exhaustion`
+- Purpose: fence dark attempt claim/renew/release/reclaim and guard epoch-1
+  and epoch-2 recovery without activating background execution.
+- Review gate: focused TDD/concurrency tests, strict OpenSpec, mirror parity,
+  required CI, and independent exact-head approval.
+- Publish/cleanup: one draft PR to main; remove after verified foldback.

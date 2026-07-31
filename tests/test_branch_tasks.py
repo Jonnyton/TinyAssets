@@ -174,6 +174,51 @@ def test_reclaim_leaseless_running_row_only_in_startup_mode(tmp_path: Path) -> N
     assert recovered.claimed_by == ""
 
 
+def test_epoch1_recovery_requires_target_guard_when_supplied(
+    tmp_path: Path,
+) -> None:
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")
+
+    assert reclaim_predecessor_tasks(
+        tmp_path,
+        worker_id="daemon-a",
+        target_recovery_guard=lambda _row: False,
+    ) == 0
+    assert reclaim_expired_leases(
+        tmp_path,
+        now=_dt("2099-01-01T00:00:00+00:00"),
+        target_recovery_guard=lambda _row: False,
+    ) == 0
+    assert read_queue(tmp_path)[0].status == "running"
+
+
+def test_epoch1_recovery_revalidates_row_after_target_proof(
+    tmp_path: Path,
+) -> None:
+    task = _task()
+    append_task(tmp_path, task)
+    claim_task(tmp_path, task.branch_task_id, "daemon-a")
+
+    def renew_during_proof(_row) -> bool:
+        mark_task_progress(
+            tmp_path,
+            task.branch_task_id,
+            progress_at="2026-07-30T20:00:00+00:00",
+        )
+        return True
+
+    assert reclaim_expired_leases(
+        tmp_path,
+        now=_dt("2099-01-01T00:00:00+00:00"),
+        target_recovery_guard=renew_during_proof,
+    ) == 0
+    recovered = read_queue(tmp_path)[0]
+    assert recovered.status == "running"
+    assert recovered.last_progress_at == "2026-07-30T20:00:00+00:00"
+
+
 def test_lease_window_exceeds_worst_case_provider_node(tmp_path: Path) -> None:
     """Regression guard: the lease must outlast a long-but-healthy node so it
     is never reclaimed mid-flight (Codex review — lease==provider-timeout race).

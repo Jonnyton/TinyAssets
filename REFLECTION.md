@@ -1006,6 +1006,17 @@ fresh-host rollback edges found later.
   in the first persistence slice so later store extensions do not discover an
   untracked package dependency during parity verification.
 
+## 2026-07-30 — dark background-attempt claim fencing
+
+- What surprised me: an exact claim-generation fence still permits authority
+  rotation unless executor audience fields are independently constrained.
+- Pattern worth capturing: obtain executor, predecessor, and boundary evidence
+  from a trusted resolver, then revalidate the exact current binding and
+  observed queue row inside their mutation boundaries; lease expiry is only a
+  candidate signal, never recovery authority.
+- What I would do differently: include cross-audience negative cases in the
+  first RED batch instead of finding that gap during the security pass.
+
 ## 2026-07-30 - Ringer drain hot-path recovery
 
 - Surprised: the expensive `--provider` inventory filter was applied only after
