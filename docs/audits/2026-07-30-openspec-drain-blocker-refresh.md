@@ -50,18 +50,25 @@ acceptance gate.
   background-transition, requester, secret-custody, branch-access, relay, and
   other named lanes. Their existence is coordination evidence, not proof that
   their acceptance contracts landed.
+- The 2026-07-22 full-coverage audit is complete, so citing the audit itself as
+  a dependency is stale. The canonical-absolute-guarantees row retains its
+  active paid/universe/relay dependencies after that label is removed.
+- `brain-okf-canonical-store` was archived on 2026-07-25 with its unbuilt work
+  explicitly relocated to `build-brain-canonical-store`. The successor remains
+  active at 3/14 tasks, so two STATUS dependency cells must name the live
+  successor rather than the archived predecessor.
 
 ## Row-by-row disposition
 
 | STATUS rows | Disposition |
 |---|---|
-| Canonical absolute guarantees; branch/run/evaluation/adjacent/outcome authority | Keep: their named audits, helpers, sibling runtimes, and retirement gates remain incomplete. |
+| Canonical absolute guarantees; branch/run/evaluation/adjacent/outcome authority | Remove completed `full-coverage audit`; keep the active paid/universe/relay, helper, sibling-runtime, and retirement gates. |
 | Requester-host and connector requester activation | Keep: secret custody, host binding, daemon/desktop identity, and paid/distributed transport remain incomplete. |
 | Cheat-loop retirement, production proof, and alarm sink | Keep: #1819, rendered/organic proof, live receipts, packaging, sync/archive, and retirement prerequisites remain. |
 | Public-read completeness and manifest edge | Keep: remaining substrate, pagination/evidence, manifest, browser, and host gates remain; the manifest edge is still host-owned. |
-| Runtime-fiction, hyperparameter science, and PLAN-gated targets | Keep: their named design/review/owner gates remain unsatisfied. |
+| Runtime-fiction, hyperparameter science, and PLAN-gated targets | Replace archived Brain owner with live `build-brain-canonical-store`; keep the remaining design/review/owner gates. |
 | Provider constraints, receipts, credential custody, and universe integration | Keep: successor, authority, receipt, connector/host, reset/log, and release gates remain. |
-| Wiki backfill and first-contact onboarding | Keep: canonical-store/owner and opposite-provider review gates remain. |
+| Wiki backfill and first-contact onboarding | Replace archived Brain owner with live `build-brain-canonical-store`; keep owner and opposite-provider review gates. |
 | Relay survivors, test identity, and build-forward | Keep: explicit unchecked tasks and live/host/design acceptance remain. |
 | PostgreSQL, market delivery, and universe-root migration | Keep: open #1792, host infrastructure/approval, transactional, domain-owner, and data-loss review gates remain. |
 | OpenAI submission hardening | Keep: the clean rendered ChatGPT proof is still absent. |
@@ -69,15 +76,20 @@ acceptance gate.
 
 ## Result
 
-No dependency label is disproved by current evidence, so no existing STATUS
-row is edited. This is a valid exhaustion result, not a claim that the
-underlying delivery debt is complete. The only promoted recovery task is this
-freshness audit itself; it changes coordination evidence, not product behavior,
-OpenSpec task state, architecture, production state, or host gates.
+Current evidence disproves one completed-audit dependency and two archived
+owner labels. The correction removes `full-coverage audit` once and replaces
+two `brain-okf-canonical-store` references with the active successor
+`build-brain-canonical-store`. Every affected row retains a substantive live
+dependency, so no implementation row becomes claimable. This changes
+coordination truth, not product behavior, OpenSpec task state, architecture,
+production state, or host gates.
 
 ## Verification
 
-The acceptance probe failed before this artifact existed. After the edit it
-must find this exact base SHA plus `claimable=0` and `stale=0`. The exact claim
-check must report this provider as the sole owned in-flight row, with no other
-claimable or stale row, and `git diff --check` must pass.
+The artifact acceptance probe failed before this artifact existed. A second
+probe then failed on the three stale dependency labels before their correction.
+After the edit, the probes must find this exact base SHA plus `claimable=0` and
+`stale=0`, find no stale dependency token in STATUS, and confirm both successor
+labels. The exact claim check must report this provider as the sole owned
+in-flight row, with no other claimable or stale row, and `git diff --check`
+must pass.
