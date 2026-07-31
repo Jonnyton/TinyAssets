@@ -13,12 +13,14 @@ import json
 import math
 import re
 import sqlite3
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from tinyassets.ids import new_ulid
-from tinyassets.storage import _connect
+from tinyassets.storage import db_path
 
 AGENT_SCHEMA_VERSION = 1
 MAX_AGENT_JSON_BYTES = 256 * 1024
@@ -39,6 +41,8 @@ _SECRET_FIELD_NAMES = frozenset(
         "secret",
     }
 )
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_INITIALIZED: set[str] = set()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_definitions (
@@ -345,8 +349,43 @@ def _normalize_binding_payload(payload: Any) -> dict[str, Any]:
     return cloned
 
 
-def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.executescript(_SCHEMA)
+def _ensure_schema(base_path: str | Path) -> Path:
+    path = db_path(base_path)
+    key = str(path)
+    if key in _SCHEMA_INITIALIZED:
+        return path
+    with _SCHEMA_LOCK:
+        if key in _SCHEMA_INITIALIZED:
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path, timeout=30.0)
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout = 30000")
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            with conn:
+                conn.executescript(_SCHEMA)
+        finally:
+            conn.close()
+        _SCHEMA_INITIALIZED.add(key)
+    return path
+
+
+@contextmanager
+def _agent_connect(
+    base_path: str | Path,
+) -> Iterator[sqlite3.Connection]:
+    path = _ensure_schema(base_path)
+    conn = sqlite3.connect(path, timeout=30.0)
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
+        conn.execute("PRAGMA foreign_keys = ON")
+        with conn:
+            yield conn
+    finally:
+        conn.close()
 
 
 def _lineage_rows(
@@ -478,8 +517,7 @@ def publish_definition(
     definition_id = f"agent_{new_ulid()}"
     created_at = time.time()
 
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         if key:
             existing = conn.execute(
                 """
@@ -498,8 +536,7 @@ def publish_definition(
 
         verified_lineage = _verified_lineage(conn, normalized["lineage"])
         portable_json = _canonical_json(normalized)
-        conn.execute(
-            """
+        insert_sql = """
             INSERT INTO agent_definitions (
                 agent_definition_id, author_id, name, description,
                 schema_version, tags_json, components_json,
@@ -507,7 +544,11 @@ def publish_definition(
                 idempotency_key, created_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
+        """
+        if key:
+            insert_sql += " ON CONFLICT DO NOTHING"
+        cursor = conn.execute(
+            insert_sql,
             (
                 definition_id,
                 actor,
@@ -523,6 +564,22 @@ def publish_definition(
                 created_at,
             ),
         )
+        if cursor.rowcount == 0:
+            existing = conn.execute(
+                """
+                SELECT *
+                FROM agent_definitions
+                WHERE author_id = ? AND idempotency_key = ?
+                """,
+                (actor, key),
+            ).fetchone()
+            if existing is None:
+                raise AgentConflictError("definition write conflicted")
+            if existing["content_fingerprint"] != content_fingerprint:
+                raise AgentConflictError(
+                    "idempotency_key was already used for different content"
+                )
+            return _definition_from_row(conn, existing)
         for edge in verified_lineage:
             conn.execute(
                 """
@@ -552,8 +609,7 @@ def get_definition(
     base_path: str | Path,
     definition_id: str,
 ) -> dict[str, Any] | None:
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         row = _read_definition_row(conn, (definition_id or "").strip())
         return _definition_from_row(conn, row) if row is not None else None
 
@@ -571,8 +627,7 @@ def list_definitions(
     wanted_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
     wanted_author = (author_id or "").strip()
 
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         rows = conn.execute(
             """
             SELECT *
@@ -604,8 +659,7 @@ def _partition_import_lineage(
     imported = copy.deepcopy(normalized)
     local_lineage: dict[str, list[dict[str, Any]]] = {}
     external_origins = list(imported["external_origins"])
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         for child_key, sources in imported["lineage"].items():
             for source in sources:
                 parent = _read_definition_row(conn, source["definition_id"])
@@ -717,8 +771,7 @@ def create_binding(
     binding_id = f"agent_binding_{new_ulid()}"
     created_at = time.time()
 
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         _require_definition(conn, did)
         conn.execute(
             """
@@ -755,8 +808,7 @@ def get_binding(
     universe_id: str,
     binding_id: str,
 ) -> dict[str, Any] | None:
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         row = _read_binding_row(
             conn,
             universe_id=(universe_id or "").strip(),
@@ -773,8 +825,7 @@ def list_bindings(
 ) -> list[dict[str, Any]]:
     uid = (universe_id or "").strip()
     bounded_limit = max(1, min(int(limit), 100))
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         rows = conn.execute(
             """
             SELECT *
@@ -817,8 +868,7 @@ def update_binding(
     requested_definition = (definition_id or "").strip()
     updated_at = time.time()
 
-    with _connect(base_path) as conn:
-        _ensure_schema(conn)
+    with _agent_connect(base_path) as conn:
         current = _read_binding_row(
             conn,
             universe_id=uid,
