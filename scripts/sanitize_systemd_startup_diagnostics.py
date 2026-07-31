@@ -46,6 +46,14 @@ _FAILURE_MARKERS = (
         ("dependency failed to start", "dependency failed to complete"),
     ),
     (
+        "container_name_conflict",
+        (
+            "container name is already in use",
+            "is already in use by container",
+            "conflict. the container name",
+        ),
+    ),
+    (
         "compose_config_failure",
         ("invalid compose project", "validating ", "services must be a mapping"),
     ),
@@ -92,10 +100,14 @@ def validate_window(
         raise ValueError("diagnostic window must be in the past")
 
 
-def sanitize_journal(raw: bytes) -> dict[str, Any]:
+def sanitize_journal(
+    raw: bytes,
+    *,
+    source_truncated: bool = False,
+) -> dict[str, Any]:
     """Return fixed stage/failure names without copying journal text."""
 
-    input_truncated = len(raw) > MAX_JOURNAL_BYTES
+    input_truncated = source_truncated or len(raw) > MAX_JOURNAL_BYTES
     bounded = raw[-MAX_JOURNAL_BYTES:]
     decoded = bounded.decode("utf-8", errors="replace")
     normalized_lines = [
@@ -104,7 +116,7 @@ def sanitize_journal(raw: bytes) -> dict[str, Any]:
     attempt_starts = [
         index
         for index, line in enumerate(normalized_lines)
-        if _STAGE_MARKERS[0][1] in line
+        if _STAGE_MARKERS[0][1] in line or _STAGE_MARKERS[2][1] in line
     ]
     if attempt_starts:
         normalized_lines = normalized_lines[attempt_starts[-1] :]
@@ -116,12 +128,19 @@ def sanitize_journal(raw: bytes) -> dict[str, Any]:
         for name, markers in _FAILURE_MARKERS
         if any(marker in normalized for marker in markers)
     ]
-    recognized_failure = bool(failure_classes)
-    generic_failure = any(
-        marker in normalized
-        for marker in ("error", "failed", "failure", "fatal")
+    generic_failure_lines = (
+        line
+        for line in normalized_lines
+        if any(marker in line for marker in ("error", "failed", "failure", "fatal"))
     )
-    if generic_failure and not recognized_failure:
+    if any(
+        not any(
+            marker in line
+            for _name, markers in _FAILURE_MARKERS
+            for marker in markers
+        )
+        for line in generic_failure_lines
+    ):
         failure_classes.append("other_failure")
 
     if "container_started" in stages:
@@ -146,6 +165,14 @@ def sanitize_journal(raw: bytes) -> dict[str, Any]:
     }
 
 
+def sanitize_framed_journal(raw: bytes) -> dict[str, Any]:
+    """Decode a one-byte truncation flag within the 256 KiB transport cap."""
+
+    if not raw or raw[:1] not in {b"0", b"1"}:
+        raise ValueError("journal frame has no valid truncation flag")
+    return sanitize_journal(raw[1:], source_truncated=raw[:1] == b"1")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -153,6 +180,7 @@ def main() -> int:
         nargs=2,
         metavar=("SINCE_UTC", "UNTIL_UTC"),
     )
+    parser.add_argument("--framed-input", action="store_true")
     args = parser.parse_args()
     if args.validate_window:
         try:
@@ -160,7 +188,11 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
         return 0
-    result = sanitize_journal(sys.stdin.buffer.read())
+    raw = sys.stdin.buffer.read()
+    try:
+        result = sanitize_framed_journal(raw) if args.framed_input else sanitize_journal(raw)
+    except ValueError as exc:
+        parser.error(str(exc))
     json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))
     sys.stdout.write("\n")
     return 0

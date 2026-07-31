@@ -27,9 +27,15 @@ def test_diagnostic_workflow_is_manual_read_only_and_bounded():
     assert "--validate-window" in verification
     assert "scripts/sanitize_systemd_startup_diagnostics.py" in verification
     assert "journalctl -u tinyassets-daemon" in diagnosis
-    assert 'tail -c 262144"' in diagnosis
-    assert "262145" not in diagnosis
-    assert diagnosis.count("tail -c") == 1
+    assert "limit = 262143" in diagnosis
+    assert "len(data) > limit" in diagnosis
+    assert "data[-limit:]" in diagnosis
+    assert "collections.deque" in diagnosis
+    assert "read(65536)" in diagnosis
+    assert "maxlen=5" in diagnosis
+    assert "--lines=" not in diagnosis
+    assert "--framed-input" in diagnosis
+    assert "tail -c" not in diagnosis
     assert "timeout 35s ssh" in diagnosis
     assert "timeout 25s sudo journalctl" in diagnosis
     assert "2>/dev/null" in diagnosis

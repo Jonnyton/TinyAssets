@@ -333,6 +333,25 @@ output, `tee`, artifact, GitHub, or host-mutation sinks. Fresh Windows-host
 evidence at `2026-07-31T19:04Z`: 149 focused tests passed, Ruff and diff checks
 clean, and strict OpenSpec validation passed. Exact-head re-review is pending.
 
+Re-review of `fa542a47` remained ADAPT: a retry may begin at `Starting` without
+another `Creating`; a container-name conflict disappeared behind the known
+restart signal; the source-side cap could not report its own truncation; and the
+OpenSpec delta did not state these decision-critical requirements. The next
+successor frames one truncation byte plus a bounded payload within the same
+256 KiB transport ceiling, anchors the terminal phase at the last daemon
+`Creating` or `Starting`, preserves name-conflict and line-level unknown classes,
+and specifies each invariant. No production diagnostic has run.
+
+The successor now treats the later of the last daemon `Creating` or `Starting`
+as the terminal phase boundary, adds an exact container-name-conflict class,
+and detects unclassified failure lines independently of known classes. The
+source stream uses a bounded five-chunk deque: a one-byte truncation flag plus
+at most 262,143 payload bytes crosses SSH, so the complete transport never
+exceeds 256 KiB and truncation remains truthful. The remote line cap was removed
+so it cannot silently discard evidence. Fresh Windows-host evidence at
+`2026-07-31T19:20Z`: 152 focused tests passed, Ruff and diff checks clean, and
+strict OpenSpec validation passed. Exact-head re-review remains pending.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

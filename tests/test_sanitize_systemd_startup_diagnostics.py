@@ -6,6 +6,7 @@ import json
 import pytest
 
 from scripts.sanitize_systemd_startup_diagnostics import (
+    sanitize_framed_journal,
     sanitize_journal,
     validate_window,
 )
@@ -85,6 +86,51 @@ def test_journal_sanitizer_uses_only_the_terminal_compose_attempt():
     assert result["stages"] == ["container_create", "container_created"]
     assert result["derived_state"] == "created_without_start"
     assert result["failure_classes"] == ["unit_restart_scheduled"]
+
+
+def test_journal_sanitizer_resets_on_starting_only_retry():
+    result = sanitize_journal(
+        b"Container tinyassets-daemon Starting\n"
+        b"Container tinyassets-daemon Started\n"
+        b"Container tinyassets-daemon Starting\n"
+        b"tinyassets-daemon.service: Main process exited, code=exited, status=1/FAILURE\n"
+    )
+
+    assert result["stages"] == ["container_starting"]
+    assert result["derived_state"] == "start_attempted"
+    assert result["failure_classes"] == ["process_exit_failure"]
+
+
+def test_journal_sanitizer_preserves_name_conflict_and_mixed_unknown_failure():
+    token = "token-bearing-unknown-detail"
+    result = sanitize_journal(
+        (
+            "Container tinyassets-daemon Creating\n"
+            'Conflict. The container name "/tinyassets-logs" '
+            'is already in use by container "abc".\n'
+            "tinyassets-daemon.service: Scheduled restart job\n"
+            f"fatal unclassified condition: {token}\n"
+        ).encode()
+    )
+
+    assert result["failure_classes"] == [
+        "container_name_conflict",
+        "unit_restart_scheduled",
+        "other_failure",
+    ]
+    assert token not in json.dumps(result)
+
+
+def test_framed_journal_reports_source_truncation_within_transport_cap():
+    payload = b"Container tinyassets-daemon Created\n"
+
+    truncated = sanitize_framed_journal(b"1" + payload)
+    complete = sanitize_framed_journal(b"0" + payload)
+
+    assert truncated["input_truncated"] is True
+    assert complete["input_truncated"] is False
+    with pytest.raises(ValueError, match="truncation flag"):
+        sanitize_framed_journal(b"x" + payload)
 
 
 def test_window_validator_accepts_a_strict_bounded_past_window():

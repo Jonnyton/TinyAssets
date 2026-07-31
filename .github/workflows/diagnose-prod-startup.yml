@@ -71,9 +71,9 @@ jobs:
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=2 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -o pipefail; timeout 25s sudo journalctl -u tinyassets-daemon --since '${SINCE_UTC}' --until '${UNTIL_UTC}' --no-pager --output=cat --lines=500 | tail -c 262144" \
+              "set -o pipefail; timeout 25s sudo journalctl -u tinyassets-daemon --since '${SINCE_UTC}' --until '${UNTIL_UTC}' --no-pager --output=cat | python3 -c 'import collections, sys; limit = 262143; chunks = collections.deque(iter(lambda: sys.stdin.buffer.read(65536), b\"\"), maxlen=5); data = b\"\".join(chunks); sys.stdout.buffer.write((b\"1\" if len(data) > limit else b\"0\") + data[-limit:])'" \
               2>/dev/null \
-            | python scripts/sanitize_systemd_startup_diagnostics.py \
+            | python scripts/sanitize_systemd_startup_diagnostics.py --framed-input \
                 > "${diagnosis}"
           statuses=("${PIPESTATUS[@]}")
           set -e

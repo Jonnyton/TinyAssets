@@ -35,6 +35,10 @@
   sensitive diagnostics at the source before SSH, and frame retry-aware evidence
   around the terminal attempt rather than unioning markers across a time window.
 
+- **Follow-up:** terminal-attempt framing must recognize every phase that can
+  restart independently, not only the earliest create phase. A fixed class also
+  must not suppress a separate unknown failure; diagnostic sets are additive.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

@@ -142,8 +142,12 @@ before removal. This is not general Docker garbage collection.
    When an identity-matched container remains `created` with no Docker start
    error, inspect the already-preserved unit journal through a separate
    read-only workflow. Accept only a strict past UTC window of at most ten
-   minutes, stream at most 256 KiB through the sanitizer, and expose fixed
-   Compose stages/failure classes rather than raw journal text.
+   minutes, frame a one-byte source-truncation flag plus at most 256 KiB total
+   before SSH, and expose fixed Compose stages/failure classes rather than raw
+   journal text. Anchor the terminal phase at the last daemon `Creating` or
+   `Starting` marker so a retry without another create cannot inherit an older
+   success. Preserve container-name conflicts and line-level unclassified
+   failures even when another known class is also present.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,
