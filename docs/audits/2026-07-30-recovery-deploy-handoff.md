@@ -297,6 +297,16 @@ with no findings after hostile shell payloads, every trusted-field pipe
 injection, malformed/non-string JSON, invalid UTF-8, oversize input, and
 identity mismatch all failed without raw-text disclosure.
 
+Controlled deploy `30655656939` reproduced the exact candidate at revision
+`0eec432c` and returned `start_error_class=none`: Docker created the daemon
+container but never attempted its start. This eliminates Docker runtime-start
+failure as the current boundary and points to systemd/Compose orchestration
+between create and start. Exact-source guarded recovery `30655881616` restored
+the canonical canary, exact-seven surface, and finalized successfully. Because
+the relevant unit journal persists, the next diagnostic is read-only: classify
+the bounded `18:34Z`-`18:37Z` journal window on the host and return fixed signals
+only, without another deployment or raw journal publication.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

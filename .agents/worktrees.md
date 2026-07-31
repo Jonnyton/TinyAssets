@@ -1,16 +1,16 @@
 # Worktree Inventory
 
-## 2026-07-31 11:20 - classify candidate Docker pre-start failure
+## 2026-07-31 11:40 - classify preserved systemd startup failure
 
 - Provider: `codex-gpt5-desktop`
-- Branch: `fix/startup-created-state-classification`
-- Lane state: Active; PR #1998 runtime head independently approved, foldback pending
+- Branch: `fix/startup-systemd-journal-diagnostic`
+- Lane state: Active; #306556 proved no Docker start attempt and #306558 recovery green
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
-- Purpose: safely classify why the exact candidate remained `created` before process start
+- Purpose: safely classify the preserved systemd/Compose journal window without host mutation
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing/_PURPOSE.md`
-- Ship/abandon: merge one narrow classifier, then rerun once with guarded recovery ready
+- Ship/abandon: merge one read-only diagnostic and run it against the preserved UTC window
 
 ## 2026-07-30 22:35 - harden production startup diagnostics
 
