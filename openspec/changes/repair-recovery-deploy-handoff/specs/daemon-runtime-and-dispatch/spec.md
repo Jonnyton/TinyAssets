@@ -42,6 +42,10 @@ removal intent before container mutation.
   fixed predicate class (`identity missing`, `project invalid`, `service
   invalid`, `recorded identity changed`, or `non-writer proof failed`), never
   the observed label, ID, mount, or other raw host value
+- **AND** an invalid project predicate may expose only one fixed non-secret
+  subcategory (`current-canonical`, `legacy-workflow`, `legacy-deploy`,
+  `recorded-recovery`, `unrecorded-recovery`, `missing`, or `other`), never the
+  observed project label
 - **AND** if forward start and ordinary rollback fail, emergency recovery
   removes only a newly proved canonical or recovery-owned sidecar generation,
   recreates both sidecars under its unique recovery project with `restart=no`,

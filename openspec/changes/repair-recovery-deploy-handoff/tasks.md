@@ -28,6 +28,10 @@
   let a sidecar stop failure preempt the volume-writer fence.
 - [x] 1.9 Reduce a restored sidecar ownership refusal to a fixed predicate
   class plus fixed name, with raw IDs, labels, mounts, and host values excluded.
+- [x] 1.10 Reduce an invalid restored-sidecar Compose project to a fixed
+  non-secret category (`current-canonical`, `legacy-workflow`, `legacy-deploy`,
+  `recorded-recovery`, `unrecorded-recovery`, `missing`, or `other`) without
+  publishing the observed label.
 
 ## 2. Verification And Release
 
@@ -51,9 +55,11 @@
 - [x] 2.1e Reduce a classified name conflict to only matching allowlisted
   canonical container names, independently review the additive fixed schema,
   and rerun the same preserved window without production mutation.
-- [ ] 2.1f Hand the two proved recovery sidecar names to canonical Compose with
+- [x] 2.1f Hand the two proved recovery sidecar names to canonical Compose with
   write-ahead exact-ID ownership, interruption replay, and failure-path route
   restoration; independently review before controlled production mutation.
+- [ ] 2.1g Independently review the fixed project-category diagnostic and run
+  it only through the normal preflight before choosing a provenance migration.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

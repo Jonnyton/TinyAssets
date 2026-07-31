@@ -998,20 +998,42 @@ def test_recovery_handoff_removes_exact_sidecars_before_canonical_start(
     assert "-v" not in sidecar_remove
 
 
-def test_preflight_refuses_foreign_sidecar_before_mutation(
+@pytest.mark.parametrize(
+    ("project", "expected_class"),
+    [
+        ("workflow", "legacy-workflow"),
+        ("deploy", "legacy-deploy"),
+        ("recorded-recovery", "recorded-recovery"),
+        (
+            "tinyassets-recovery-0123456789abcdef",
+            "unrecorded-recovery",
+        ),
+        ("", "missing"),
+        ("private-foreign-project", "other"),
+    ],
+)
+def test_preflight_classifies_invalid_sidecar_project_before_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    project: str,
+    expected_class: str,
 ):
     host = LifecycleHost(tmp_path)
     configured_ref = [host.old_image_ref]
     _patch_lifecycle_runtime(monkeypatch, configured_ref)
     state_path = tmp_path / "fence-state.json"
     _write_restored_recovery_state(host, state_path)
-    host.install_sidecars(project="foreign-project")
+    if project == "recorded-recovery":
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        project = str(state["recovery_project_name"])
+    host.install_sidecars(project=project)
 
     with pytest.raises(
         FenceError,
-        match="restored sidecar project is invalid: tinyassets-tunnel",
+        match=(
+            f"restored sidecar project {expected_class} is invalid: "
+            "tinyassets-tunnel"
+        ),
     ) as failure:
         preflight(
             host,
@@ -1021,7 +1043,46 @@ def test_preflight_refuses_foreign_sidecar_before_mutation(
             state_path=state_path,
         )
 
-    assert "foreign-project" not in str(failure.value)
+    if expected_class in {"other", "unrecorded-recovery"}:
+        assert project not in str(failure.value)
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+
+
+def test_preflight_classifies_current_project_when_recovery_project_expected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars(project=fence.CANONICAL_COMPOSE_PROJECT)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["recovery_sidecar_container_ids"] = {
+        name: str(host.containers[name]["Id"])
+        for name, _service in fence.CANONICAL_SIDECARS
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        FenceError,
+        match=(
+            "restored sidecar project current-canonical is invalid: "
+            "tinyassets-tunnel"
+        ),
+    ):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
     assert not any(
         call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
         for call in host.calls

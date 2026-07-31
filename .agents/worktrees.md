@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-provenance-diagnostic`
-- Lane state: PR #2013 merged as `7fdf0cc5`; run 30669933553 failed closed pre-mutation with legacy-project class still needed
+- Lane state: PR #2013 merged as `7fdf0cc5`; 279 focused tests green; fixed project-category exact-head review pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: classify the tunnel's mismatched project into a fixed historical category without exposing its raw label

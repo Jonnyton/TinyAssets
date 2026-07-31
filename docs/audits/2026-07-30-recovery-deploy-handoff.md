@@ -589,6 +589,15 @@ Compose project. The next read-before-write diagnostic may classify only fixed
 historical categories; no raw label may enter the public artifact, and no
 further deploy mutation is allowed before exact-head review.
 
+The follow-up classifier recognizes only `current-canonical`,
+`legacy-workflow`, `legacy-deploy`, `recorded-recovery`,
+`unrecorded-recovery`, `missing`, or `other`. All categories run through the
+real preflight before any Docker update, stop, or remove; arbitrary and
+recovery-shaped fixture labels are absent from the error. Fresh verification
+at `2026-07-31T22:34:26Z` on the Windows host: 279 deployment-focused tests
+passed in 9.32 seconds, changed-file Ruff passed, strict OpenSpec validation
+passed, and `git diff --check` was clean.
+
 Fresh diagnostic verification at `2026-07-31T22:21:08Z` (Windows host):
 
 ```text
