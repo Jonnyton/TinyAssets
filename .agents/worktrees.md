@@ -4,13 +4,13 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/recovery-sidecar-provenance-diagnostic`
-- Lane state: PR #2013 open; 273 focused tests green; exact-head security APPROVE at `e746a12d`; CI pending
+- Lane state: PR #2013 merged as `7fdf0cc5`; run 30669933553 failed closed pre-mutation with legacy-project class still needed
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR #2013
-- Purpose: reduce tunnel ownership refusal to one fixed predicate without exposing host labels or IDs
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: classify the tunnel's mismatched project into a fixed historical category without exposing its raw label
 - Review gate: TDD, focused recovery/deploy tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic/_PURPOSE.md`
-- Ship/abandon: merge only the approved fixed-schema diagnostic; retry the normal deploy only after merge
+- Ship/abandon: merge only a fixed-category diagnostic; retry the normal deploy only after exact-head approval
 
 ## 2026-07-31 14:35 - autonomous recovery-sidecar retry
 
