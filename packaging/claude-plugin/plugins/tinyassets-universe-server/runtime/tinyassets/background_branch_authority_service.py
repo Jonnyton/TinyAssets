@@ -13,10 +13,12 @@ import json
 import re
 from dataclasses import dataclass, replace
 from datetime import datetime
+from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
+    BackgroundBranchAttemptFence,
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchAttemptWriteResult,
     BackgroundBranchAuthorityStore,
@@ -251,6 +253,47 @@ class BackgroundBranchAttemptResolver(Protocol):
 
 class BackgroundBranchAttemptIssuanceError(ValueError):
     """Stable fail-closed result for a refused JIT reservation."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {detail}")
+
+
+class BackgroundBranchAttemptPredecessorState(str, Enum):
+    UNKNOWN = "unknown"
+    DEAD = "dead"
+    INVALIDATED = "invalidated"
+
+
+class BackgroundBranchAttemptBoundaryState(str, Enum):
+    NOT_CROSSED = "not_crossed"
+    CLOSED = "closed"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAttemptRecoveryProof:
+    """Exact non-authorizing evidence consumed by one recovery transition."""
+
+    predecessor: BackgroundBranchAttemptPredecessorState
+    boundary: BackgroundBranchAttemptBoundaryState
+    claim_generation: int
+    lease_generation: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.predecessor,
+            BackgroundBranchAttemptPredecessorState,
+        ):
+            raise ValueError("predecessor must be typed")
+        if not isinstance(self.boundary, BackgroundBranchAttemptBoundaryState):
+            raise ValueError("boundary must be typed")
+        _positive_integer(self.claim_generation, "claim_generation")
+        _positive_integer(self.lease_generation, "lease_generation")
+
+
+class BackgroundBranchAttemptClaimError(ValueError):
+    """Stable fail-closed result for an invalid attempt claim transition."""
 
     def __init__(self, code: str, detail: str) -> None:
         self.code = code
@@ -778,11 +821,204 @@ class BackgroundBranchAttemptIssuanceService:
             )
 
 
+class BackgroundBranchAttemptClaimService:
+    """Apply dark, exact-fence attempt claim lifecycle transitions."""
+
+    def __init__(self, store: BackgroundBranchAuthorityStore) -> None:
+        if not isinstance(store, BackgroundBranchAuthorityStore):
+            raise ValueError("store must implement BackgroundBranchAuthorityStore")
+        self._store = store
+
+    def claim(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        executor_audience: BackgroundBranchExecutorAudience,
+        claimed_at: str,
+        lease_expires_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if current.lifecycle is not BackgroundBranchAttemptLifecycle.RESERVED:
+            self._fail("attempt_not_reserved", "only a reserved attempt can be claimed")
+        if not isinstance(executor_audience, BackgroundBranchExecutorAudience):
+            raise ValueError("executor_audience must be typed")
+        claim_generation = current.claim_generation + (
+            executor_audience != current.executor_audience
+        )
+        replacement = self._replacement(
+            current,
+            executor_audience=executor_audience,
+            claim_generation=claim_generation,
+            lease_generation=current.lease_generation + 1,
+            lease_expires_at=lease_expires_at,
+            lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
+            updated_at=claimed_at,
+        )
+        return self._compare_and_swap(expected, replacement)
+
+    def renew(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        renewed_at: str,
+        lease_expires_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if current.lifecycle not in {
+            BackgroundBranchAttemptLifecycle.CLAIMED,
+            BackgroundBranchAttemptLifecycle.RUNNING,
+        }:
+            self._fail("attempt_not_claimed", "only claimed or running attempts renew")
+        replacement = replace(
+            current,
+            lease_generation=current.lease_generation + 1,
+            lease_expires_at=lease_expires_at,
+            updated_at=renewed_at,
+        )
+        return self._compare_and_swap(expected, replacement)
+
+    def release(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        released_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if current.lifecycle is not BackgroundBranchAttemptLifecycle.CLAIMED:
+            self._fail(
+                "attempt_not_releasable",
+                "only a claimed pre-execution attempt can be released",
+            )
+        replacement = replace(
+            current,
+            claim_generation=current.claim_generation + 1,
+            lease_generation=current.lease_generation + 1,
+            lease_expires_at=None,
+            lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+            updated_at=released_at,
+        )
+        return self._compare_and_swap(expected, replacement)
+
+    def reclaim(
+        self,
+        *,
+        expected: BackgroundBranchAttemptFence,
+        proof: BackgroundBranchAttemptRecoveryProof,
+        replacement_audience: BackgroundBranchExecutorAudience,
+        reclaimed_at: str,
+    ) -> BackgroundBranchAttemptWriteResult:
+        current = self._expected(expected)
+        if not isinstance(proof, BackgroundBranchAttemptRecoveryProof):
+            raise ValueError("proof must be typed")
+        if not isinstance(
+            replacement_audience,
+            BackgroundBranchExecutorAudience,
+        ):
+            raise ValueError("replacement_audience must be typed")
+        if (
+            proof.claim_generation != current.claim_generation
+            or proof.lease_generation != current.lease_generation
+        ):
+            self._fail("recovery_generation_mismatch", "recovery proof is stale")
+        if current.lifecycle not in {
+            BackgroundBranchAttemptLifecycle.CLAIMED,
+            BackgroundBranchAttemptLifecycle.RUNNING,
+        }:
+            self._fail(
+                "attempt_not_reclaimable",
+                "only claimed or running attempts can be reclaimed",
+            )
+        if (
+            proof.predecessor
+            not in {
+                BackgroundBranchAttemptPredecessorState.DEAD,
+                BackgroundBranchAttemptPredecessorState.INVALIDATED,
+            }
+            or proof.boundary
+            not in {
+                BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+                BackgroundBranchAttemptBoundaryState.CLOSED,
+            }
+        ):
+            self._fail(
+                "recovery_not_conclusive",
+                "reclaim requires conclusive predecessor and boundary proof",
+            )
+        replacement = self._replacement(
+            current,
+            executor_audience=replacement_audience,
+            claim_generation=current.claim_generation + 1,
+            lease_generation=current.lease_generation + 1,
+            lease_expires_at=None,
+            lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+            updated_at=reclaimed_at,
+        )
+        return self._compare_and_swap(expected, replacement)
+
+    @staticmethod
+    def _expected(
+        expected: BackgroundBranchAttemptFence,
+    ) -> BackgroundBranchAttempt:
+        if not isinstance(expected, BackgroundBranchAttemptFence):
+            raise ValueError("expected must be a BackgroundBranchAttemptFence")
+        return expected.expected_record
+
+    @staticmethod
+    def _replacement(
+        current: BackgroundBranchAttempt,
+        *,
+        executor_audience: BackgroundBranchExecutorAudience,
+        claim_generation: int,
+        lease_generation: int,
+        lease_expires_at: str | None,
+        lifecycle: BackgroundBranchAttemptLifecycle,
+        updated_at: str,
+    ) -> BackgroundBranchAttempt:
+        provenance = replace(
+            current.provenance,
+            executor_class=executor_audience.executor_class,
+            daemon_id=executor_audience.daemon_id,
+            runtime_id=executor_audience.runtime_id,
+            worker_id=executor_audience.worker_id,
+        )
+        return replace(
+            current,
+            executor_audience=executor_audience,
+            claim_generation=claim_generation,
+            lease_generation=lease_generation,
+            lease_expires_at=lease_expires_at,
+            lifecycle=lifecycle,
+            updated_at=updated_at,
+            provenance=provenance,
+        )
+
+    def _compare_and_swap(
+        self,
+        expected: BackgroundBranchAttemptFence,
+        replacement: BackgroundBranchAttempt,
+    ) -> BackgroundBranchAttemptWriteResult:
+        with self._store.transaction() as transaction:
+            return transaction.compare_and_swap_attempt(
+                attempt_id=expected.expected_record.attempt_id,
+                expected=expected,
+                replacement=replacement,
+            )
+
+    @staticmethod
+    def _fail(code: str, detail: str) -> None:
+        raise BackgroundBranchAttemptClaimError(code, detail)
+
+
 __all__ = [
+    "BackgroundBranchAttemptBoundaryState",
+    "BackgroundBranchAttemptClaimError",
+    "BackgroundBranchAttemptClaimService",
     "BackgroundBranchAttemptIssuanceError",
     "BackgroundBranchAttemptIssuanceRequest",
     "BackgroundBranchAttemptIssuanceResolution",
     "BackgroundBranchAttemptIssuanceService",
+    "BackgroundBranchAttemptPredecessorState",
+    "BackgroundBranchAttemptRecoveryProof",
     "BackgroundBranchAttemptResolver",
     "BackgroundBranchBindingResolver",
     "BackgroundBranchBindingRoot",
