@@ -27,6 +27,10 @@ from pathlib import Path
 import pytest
 
 from scripts.retire_cheat_loop_deploy_fence import RECOVERY_SCRIPT_PATH
+from scripts.sanitize_startup_diagnostics import (
+    STATE_SEPARATOR,
+    sanitize_candidate_state,
+)
 
 try:
     import yaml
@@ -497,7 +501,45 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert "org.opencontainers.image.revision" in capture_script
     assert ".Config.Image" in capture_script
     assert r"\t" not in capture_script
-    assert "}}|{{" in capture_script
+    state_template_match = re.search(r"--format '([^']+)'", capture_script)
+    assert state_template_match is not None
+    state_template = state_template_match.group(1)
+    expected_state_template = STATE_SEPARATOR.join(
+        (
+            "{{.State.Status}}",
+            "{{.State.Running}}",
+            "{{.State.Restarting}}",
+            "{{.State.ExitCode}}",
+            "{{.State.OOMKilled}}",
+            "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
+            r'{{index .Config.Labels \"org.opencontainers.image.revision\"}}',
+            "{{.Config.Image}}",
+        )
+    )
+    assert state_template == expected_state_template
+    assert state_template.count(STATE_SEPARATOR) == 7
+    revision = "a" * 40
+    image_ref = f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'b' * 64}"
+    rendered_state = STATE_SEPARATOR.join(
+        (
+            "exited",
+            "false",
+            "false",
+            "1",
+            "false",
+            "unhealthy",
+            revision,
+            image_ref,
+        )
+    ).encode()
+    assert (
+        sanitize_candidate_state(
+            rendered_state,
+            target_revision=revision,
+            target_image_ref=image_ref,
+        )["candidate_identity_match"]
+        is True
+    )
     assert "candidate_identity_match" in capture_script
     assert "--state" in capture_script
     assert '--target-revision "${TARGET_REVISION}"' in capture_script

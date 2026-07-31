@@ -17,6 +17,10 @@
   merely match a safe character class; container evidence also needs an exact
   image-and-revision join before raw collection.
 
+- **Follow-up:** a test that recognizes one framing boundary does not lock a
+  multi-field protocol. Assert the complete template, the exact boundary count,
+  and acceptance by the real consumer so partial delimiter drift cannot pass.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

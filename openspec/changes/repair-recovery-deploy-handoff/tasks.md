@@ -27,8 +27,9 @@
   deploy/intervening-failure and cancellation coverage, mismatch suppression,
   hard capture deadlines, pinned upload, and publication gated on explicit
   restored-or-safely-fenced cleanup plus terminal-receipt proof.
-- [x] 2.1b Replace literal `\t` Docker-template framing with a fixed separator
-  that the exact candidate-state validator parses and regression-tests.
+- [ ] 2.1b Replace literal `\t` Docker-template framing with a fixed separator;
+  regression-lock all seven boundaries through the real candidate-state
+  validator and obtain independent exact-head approval.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

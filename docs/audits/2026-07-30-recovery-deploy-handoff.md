@@ -261,6 +261,15 @@ exact-seven surface. The framing repair uses literal `|` between eight fields;
 all accepted field grammars exclude that separator, and focused tests reproduce
 the failed pipe input before proving exact image/revision acceptance.
 
+Independent review of PR #1995 head `a5730730` returned ADAPT because the
+workflow test proved only one separator occurrence, so a mutation of any other
+boundary could survive. The successor locks the complete eight-field template,
+asserts exactly seven identical separators, and passes a production-shaped
+rendered record through `sanitize_candidate_state`. Fresh Windows-host evidence
+at `2026-07-31T17:56Z` is 133 focused tests passed, clean Ruff and diff checks,
+and strict OpenSpec validation. Exact-head re-review remains required before
+deployment.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

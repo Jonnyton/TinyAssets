@@ -4,9 +4,9 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-diagnostic-state-framing`
-- Lane state: Active; live artifact reproduced literal-tab framing mismatch
+- Lane state: Active; PR #1995 ADAPT test strengthening validated locally
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; draft PR #1995
 - Purpose: make exact candidate state parseable so sanitized failure signals survive rollback
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing/_PURPOSE.md`
