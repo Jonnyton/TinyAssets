@@ -4,18 +4,18 @@
 
 ## 2. Domain and Storage
 
-- [ ] 2.1 Add failing tests for definition validation, secret rejection, immutable publication, idempotent retries, multi-parent lineage, depth/share bounds, and portable interchange.
-- [ ] 2.2 Implement the additive SQLite schema and custom-agent domain service until the domain tests pass.
+- [x] 2.1 Add failing tests for definition validation, secret rejection, immutable publication, idempotent retries, multi-parent lineage, depth/share bounds, and portable interchange.
+- [x] 2.2 Implement the additive SQLite schema and custom-agent domain service until the domain tests pass.
 
 ## 3. Private Universe Bindings
 
-- [ ] 3.1 Add failing tests for binding privacy, universe read/write authorization, credential-reference validation, and compare-and-swap revisions.
-- [ ] 3.2 Implement private binding create/read/list/update behavior until the binding tests pass.
+- [x] 3.1 Add failing tests for binding privacy, universe read/write authorization, credential-reference validation, and compare-and-swap revisions.
+- [x] 3.2 Implement private binding create/read/list/update behavior until the binding tests pass.
 
 ## 4. Canonical Graph Surface
 
-- [ ] 4.1 Add failing router tests for the new agent targets, unknown-target discovery, anonymous public reads, challenged writes, and the unchanged seven-handle set.
-- [ ] 4.2 Implement the custom-agent API adapter and wire it into `read_graph`/`write_graph` until router tests pass.
+- [x] 4.1 Add failing router tests for the new agent targets, unknown-target discovery, anonymous public reads, challenged writes, and the unchanged seven-handle set.
+- [x] 4.2 Implement the custom-agent API adapter and wire it into `read_graph`/`write_graph` until router tests pass.
 
 ## 5. Verification and Foldback
 

@@ -42,6 +42,7 @@ from pydantic import Field
 from starlette.applications import Starlette
 
 from tinyassets.api.branches import _branch_design_guide_prompt
+from tinyassets.api.custom_agents import custom_agents as _custom_agents_impl
 from tinyassets.api.engine_helpers import _warn_if_no_upload_whitelist
 from tinyassets.api.extensions import _extensions_impl
 from tinyassets.api.market import gates as _gates_impl
@@ -443,6 +444,8 @@ def read_graph(
     goal_id: str = "",
     run_id: str = "",
     branch_id: str = "",
+    agent_definition_id: str = "",
+    agent_binding_id: str = "",
     query: str = "",
     tags: str = "",
     author: str = "",
@@ -453,13 +456,17 @@ def read_graph(
 
     Args:
         target: What to read: status, graphs, graph, goals, goal, runs, run,
-            or branch.
+            branch, agents, agent, agent_bindings, or agent_binding.
         graph_id: Optional graph/universe identifier.
         goal_id: Optional shared-goal identifier.
         run_id: Run identifier for target=run (the single-run result read).
             Falls back to graph_id when omitted.
         branch_id: Branch definition identifier for target=branch (read a
             branch's full graph + node configs). Falls back to graph_id.
+        agent_definition_id: Public agent definition identifier for
+            target=agent. Falls back to graph_id.
+        agent_binding_id: Private universe binding identifier for
+            target=agent_binding.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -500,10 +507,56 @@ def read_graph(
         # even confirm existence. get_branch was already callable here via the
         # deprecated 'extensions' tool; this only makes it first-class.
         return _extensions_impl(action="get_branch", branch_def_id=(branch_id or graph_id))
+    if normalized == "agents":
+        return json.dumps(
+            _custom_agents_impl(
+                action="list_agents",
+                query=query,
+                tags=tags,
+                author_id=author,
+                limit=limit,
+            )
+        )
+    if normalized == "agent":
+        return json.dumps(
+            _custom_agents_impl(
+                action="get_agent",
+                definition_id=(agent_definition_id or graph_id),
+            )
+        )
+    if normalized == "agent_bindings":
+        return json.dumps(
+            _custom_agents_impl(
+                action="list_bindings",
+                universe_id=graph_id,
+                limit=limit,
+            )
+        )
+    if normalized == "agent_binding":
+        return json.dumps(
+            _custom_agents_impl(
+                action="get_binding",
+                universe_id=graph_id,
+                binding_id=agent_binding_id,
+            )
+        )
     return _unknown_target(
         "read_graph",
         target,
-        ("status", "graphs", "graph", "goals", "goal", "runs", "run", "branch"),
+        (
+            "status",
+            "graphs",
+            "graph",
+            "goals",
+            "goal",
+            "runs",
+            "run",
+            "branch",
+            "agents",
+            "agent",
+            "agent_bindings",
+            "agent_binding",
+        ),
     )
 
 
@@ -524,6 +577,7 @@ _mcp_read_graph = _register_structured_tool(
 
 def write_graph(
     target: str,
+    operation: str = "",
     name: str = "",
     description: str = "",
     tags: str = "",
@@ -538,14 +592,20 @@ def write_graph(
     directed_daemon_instruction: str = "",
     priority_weight: int | float = 0.0,
     changes_json: str = "",
+    agent_definition_id: str = "",
+    agent_binding_id: str = "",
+    payload_json: str = "",
+    expected_revision: int = 0,
 ) -> str:
     """Create or queue TinyAssets graph state.
 
     Args:
-        target: What to write: goal, request, branch, or universe. The founder's
-            home universe is auto-created on first contact; use target=universe
-            to create an additional universe (or the home when a create-scoped
-            sign-in declined auto-birth).
+        target: What to write: goal, request, branch, universe, agent, or
+            agent_binding. The founder's home universe is auto-created on
+            first contact; use target=universe to create an additional universe
+            (or the home when a create-scoped sign-in declined auto-birth).
+        operation: With target=agent, publish/remix/import. With
+            target=agent_binding, bind/update.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -563,6 +623,12 @@ def write_graph(
         changes_json: With target=branch, an ordered JSON list of patch ops
             (transactional — all ops land or none). The patch is author-gated:
             only the branch's author can edit it.
+        agent_definition_id: Public definition to bind, or successor
+            definition selected by a binding update.
+        agent_binding_id: Existing private binding for operation=update.
+        payload_json: Agent definition, portable import, or private binding
+            configuration as a JSON object.
+        expected_revision: Current binding revision required by update.
     """
     rejection = write_gate_rejection("write_graph")
     if rejection:
@@ -650,8 +716,59 @@ def write_graph(
             branch_def_id=branch_id,
             changes_json=changes_json,
         )
+    if normalized == "agent":
+        agent_operation = (operation or "publish").strip().lower()
+        action = {
+            "publish": "publish_agent",
+            "remix": "publish_agent",
+            "import": "import_agent",
+        }.get(agent_operation)
+        if action is None:
+            return json.dumps(
+                {
+                    "error": "unknown_agent_operation",
+                    "target": "agent",
+                    "operation": operation,
+                    "allowed_operations": ["publish", "remix", "import"],
+                }
+            )
+        return json.dumps(
+            _custom_agents_impl(
+                action=action,
+                payload=payload_json,
+                idempotency_key=idempotency_key,
+            )
+        )
+    if normalized == "agent_binding":
+        binding_operation = (operation or "bind").strip().lower()
+        action = {
+            "bind": "create_binding",
+            "create": "create_binding",
+            "update": "update_binding",
+        }.get(binding_operation)
+        if action is None:
+            return json.dumps(
+                {
+                    "error": "unknown_agent_operation",
+                    "target": "agent_binding",
+                    "operation": operation,
+                    "allowed_operations": ["bind", "update"],
+                }
+            )
+        return json.dumps(
+            _custom_agents_impl(
+                action=action,
+                universe_id=graph_id,
+                definition_id=agent_definition_id,
+                binding_id=agent_binding_id,
+                payload=payload_json,
+                expected_revision=expected_revision,
+            )
+        )
     return _unknown_target(
-        "write_graph", target, ("goal", "request", "branch", "universe")
+        "write_graph",
+        target,
+        ("goal", "request", "branch", "universe", "agent", "agent_binding"),
     )
 
 
