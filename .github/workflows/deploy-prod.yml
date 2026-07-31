@@ -1654,14 +1654,15 @@ jobs:
           import sys
 
           evidence = json.load(open(sys.argv[1], encoding="utf-8"))
-          daemon = evidence.get("restored_unit_states", {}).get(
-              "tinyassets-daemon.service", {}
-          )
+          expected = evidence.get("expected_restored_unit_states", {})
+          restored = evidence.get("restored_unit_states", {})
+          daemon = restored.get("tinyassets-daemon.service", {})
           if (
               evidence.get("phase") != "restored"
               or evidence.get("masked_units_after") != []
+              or not expected
+              or restored != expected
               or daemon.get("active") != "active"
-              or daemon.get("enabled") != "enabled"
           ):
               raise SystemExit("stop-writer cleanup restoration is not exact")
           with open(sys.argv[2], "a", encoding="utf-8") as output:
@@ -1680,6 +1681,7 @@ jobs:
           PRODUCTION_MUTATION_STARTED: ${{ steps.stop-writer.outputs.cutover_started == 'true' || steps.production_mutation.outputs.production_mutation_started == 'true' || steps.stop-writer-cleanup.outputs.cutover_started == 'true' || steps.stop-writer-cleanup.outputs.cleanup_mutation_started == 'true' }}
           STOP_WRITER_CLEANUP_RESTORED: ${{ steps.stop-writer-cleanup.outputs.cleanup_restored }}
           STOP_WRITER_CLEANUP_MUTATION_STARTED: ${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}
+          STOP_WRITER_CLEANUP_SAFELY_FENCED: ${{ steps.stop-writer-cleanup.outputs.cleanup_safely_fenced }}
           IMAGE_MUTATION_STARTED: ${{ steps.deploy.outputs.image_mutation_started }}
           FORWARD_SUCCEEDED: ${{ steps.forward.outputs.forward_succeeded }}
           FORWARD_CANARY_OUTCOME: ${{ steps.canary.outcome }}
@@ -1707,8 +1709,6 @@ jobs:
           echo "terminal_receipt_result=failed" >> "$GITHUB_OUTPUT"
           if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]; then
             echo "::error::stop-writer cleanup was not authoritatively restored"
-            export FORWARD_SUCCEEDED=false
-            export FORWARD_CANARY_OUTCOME=failure
           fi
 
           terminal_observation="$(
@@ -1726,9 +1726,13 @@ jobs:
             docker inspect --type container --format '{{.Image}}' \
               tinyassets-daemon 2>/dev/null || true
           )"
+          container_running="$(
+            docker inspect --type container --format '{{json .State.Running}}' \
+              tinyassets-daemon 2>/dev/null || true
+          )"
           repo_digests_json='[]'
           active_revision_label=''
-          if [ -n "${image_id}" ]; then
+          if [ "${container_running}" = "true" ] && [ -n "${image_id}" ]; then
             repo_digests_json="$(
               docker image inspect "${image_id}" \
                 --format '{{json .RepoDigests}}' 2>/dev/null || printf '[]'
@@ -1826,6 +1830,12 @@ jobs:
               ),
               "cleanup_mutation_started": marker(
                   os.environ.get("STOP_WRITER_CLEANUP_MUTATION_STARTED", "")
+              ),
+              "cleanup_restored": marker(
+                  os.environ.get("STOP_WRITER_CLEANUP_RESTORED", "")
+              ),
+              "cleanup_safely_fenced": marker(
+                  os.environ.get("STOP_WRITER_CLEANUP_SAFELY_FENCED", "")
               ),
               "forward_deploy_status": (
                   "succeeded"

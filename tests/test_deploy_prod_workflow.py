@@ -1971,12 +1971,30 @@ def test_terminal_never_reports_deployed_without_exact_cleanup_restoration():
         terminal.get("env", {}).get("STOP_WRITER_CLEANUP_MUTATION_STARTED")
         == "${{ steps.stop-writer-cleanup.outputs.cleanup_mutation_started }}"
     )
+    assert (
+        terminal.get("env", {}).get("STOP_WRITER_CLEANUP_SAFELY_FENCED")
+        == "${{ steps.stop-writer-cleanup.outputs.cleanup_safely_fenced }}"
+    )
     assert "steps.stop-writer-cleanup.outputs.cleanup_mutation_started" in str(
         terminal.get("env", {}).get("PRODUCTION_MUTATION_STARTED", "")
     )
     script = str(terminal.get("run", ""))
     assert 'if [ "${STOP_WRITER_CLEANUP_RESTORED}" != "true" ]' in script
-    assert "export FORWARD_SUCCEEDED=false" in script
+    assert "export FORWARD_SUCCEEDED=false" not in script
+    assert "export FORWARD_CANARY_OUTCOME=failure" not in script
+    assert '"cleanup_restored": marker(' in script
+    assert '"cleanup_safely_fenced": marker(' in script
+    assert '"cleanup_mutation_started": marker(' in script
+    assert "{{json .State.Running}}" in script
+    cleanup_script = str(
+        _step_named(
+            wf,
+            "Transitional task 2.1 restore restart racers when safe",
+        ).get("run", "")
+    )
+    assert "expected_restored_unit_states" in cleanup_script
+    assert "restored != expected" in cleanup_script
+    assert 'daemon.get("enabled") != "enabled"' not in cleanup_script
 
 
 def test_cleanup_derives_cutover_only_from_current_run_generation():

@@ -288,6 +288,21 @@ def _validate_rollback_tuple(
         raise ValueError("rollback_reason tuple is contradictory")
 
 
+def _validate_cleanup_proof(
+    *,
+    production_started: bool,
+    cleanup_mutation_started: bool,
+    cleanup_restored: bool,
+    cleanup_safely_fenced: bool,
+) -> None:
+    if cleanup_restored and cleanup_safely_fenced:
+        raise ValueError("cleanup proof is contradictory")
+    if cleanup_safely_fenced and not cleanup_mutation_started:
+        raise ValueError("cleanup proof lacks its mutation marker")
+    if production_started and not (cleanup_restored or cleanup_safely_fenced):
+        raise ValueError("cleanup proof is incomplete after production mutation")
+
+
 def _classify_outcome(
     *,
     production_started: bool,
@@ -301,6 +316,8 @@ def _classify_outcome(
     attempted_ref: str,
     previous_ref: str,
     active_ref: str,
+    cleanup_restored: bool,
+    cleanup_safely_fenced: bool,
 ) -> str:
     deployed = (
         production_started
@@ -312,6 +329,7 @@ def _classify_outcome(
         and rollback_canary == "not_run"
         and rollback_reason == "not_needed"
         and active_ref == attempted_ref
+        and cleanup_restored
     )
     if deployed:
         return "deployed"
@@ -326,9 +344,12 @@ def _classify_outcome(
         and rollback_reason == "attempted"
         and bool(previous_ref)
         and active_ref == previous_ref
+        and cleanup_restored
     )
     if rolled_back:
         return "rolled_back"
+    if cleanup_safely_fenced:
+        return "failed_without_rollback"
     if image_started and rollback_reason != "no_valid_target":
         return "rollback_failed"
     return "failed_without_rollback"
@@ -340,7 +361,10 @@ def _applicable_canary(
     forward_canary: str,
     rollback_attempted: bool,
     rollback_canary: str,
+    cleanup_safely_fenced: bool,
 ) -> str:
+    if cleanup_safely_fenced:
+        return "failed"
     if outcome == "deployed":
         status = forward_canary
     elif outcome == "rolled_back" or rollback_attempted:
@@ -360,6 +384,19 @@ def build_terminal_receipt(observations: Mapping[str, Any]) -> dict[str, Any]:
 
     production_started = _bool(observations, "production_mutation_started")
     image_started = _bool(observations, "image_mutation_started")
+    cleanup_mutation_started = _bool(
+        observations, "cleanup_mutation_started"
+    )
+    cleanup_restored = _bool(observations, "cleanup_restored")
+    cleanup_safely_fenced = _bool(
+        observations, "cleanup_safely_fenced"
+    )
+    _validate_cleanup_proof(
+        production_started=production_started,
+        cleanup_mutation_started=cleanup_mutation_started,
+        cleanup_restored=cleanup_restored,
+        cleanup_safely_fenced=cleanup_safely_fenced,
+    )
     forward_status = _enum(observations, "forward_deploy_status", _FORWARD_DEPLOY_STATUSES)
     forward_canary = _enum(observations, "forward_canary_status", _CANARY_STATUSES)
     rollback_attempted = _bool(observations, "rollback_attempted")
@@ -444,6 +481,8 @@ def build_terminal_receipt(observations: Mapping[str, Any]) -> dict[str, Any]:
         attempted_ref=attempted_ref,
         previous_ref=previous_ref,
         active_ref=active_ref,
+        cleanup_restored=cleanup_restored,
+        cleanup_safely_fenced=cleanup_safely_fenced,
     )
     canary_bundle_status = _applicable_canary(
         outcome,
@@ -451,6 +490,7 @@ def build_terminal_receipt(observations: Mapping[str, Any]) -> dict[str, Any]:
         forward_canary,
         rollback_attempted,
         rollback_canary,
+        cleanup_safely_fenced,
     )
 
     terminal_at = _string(observations, "terminal_at", required=True)
@@ -495,6 +535,9 @@ def build_terminal_receipt(observations: Mapping[str, Any]) -> dict[str, Any]:
         "forward_canary_status": forward_canary,
         "production_mutation_started": production_started,
         "image_mutation_started": image_started,
+        "cleanup_mutation_started": cleanup_mutation_started,
+        "cleanup_restored": cleanup_restored,
+        "cleanup_safely_fenced": cleanup_safely_fenced,
         "prior_receipt_match_status": prior_match_status,
         "attempted_source_provenance": attempted_source_provenance,
         "attempted_git_sha": attempted_git_sha,

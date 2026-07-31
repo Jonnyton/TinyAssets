@@ -1129,3 +1129,14 @@ fresh-host rollback edges found later.
   evidence because `\t` remained literal. Treat cross-process text framing as a
   protocol: choose a separator excluded by every field grammar and drive a
   round-trip fixture through the real validator.
+# 2026-07-31 — deploy terminal-state recovery
+
+- What surprised me: every forward deployment proof was green, yet preserving
+  a transient systemd `activating` snapshot made exact cleanup convergence
+  impossible and turned a healthy target into a safe but public outage.
+- Pattern worth capturing: forward, rollback, and cleanup are separate facts.
+  Terminal receipts must model them separately instead of rewriting an earlier
+  valid tuple after a later safety action.
+- What I would do differently: production-shaped restore tests should include
+  transitional systemd states and should assert container running state—not
+  mere container existence—before deriving active image identity.

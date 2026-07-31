@@ -1341,7 +1341,9 @@ def preflight(
         "restart_racer_state": {
             unit: host.unit_state(unit) for unit in present_racers
         },
-        "daemon_service_state": host.unit_state(DAEMON_SERVICE),
+        "daemon_service_state": _daemon_restore_expectation(
+            _validated_unit_state(host, DAEMON_SERVICE)
+        ),
         "old_restart_policies": {
             name: str(info.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", ""))
             for name, info in inspections.items()
@@ -2158,6 +2160,15 @@ def _validated_unit_state(host: Host, unit: str) -> dict[str, str]:
     return state
 
 
+def _daemon_restore_expectation(state: Mapping[str, str]) -> dict[str, str]:
+    """Converge only systemd's startup transition to its healthy terminal state."""
+
+    expected = dict(state)
+    if expected.get("active") == "activating":
+        expected["active"] = "active"
+    return expected
+
+
 def restore_if_safe(
     host: Host,
     *,
@@ -2203,7 +2214,9 @@ def restore_if_safe(
             host.run(["systemctl", "enable", unit])
         if prior.get("active") == "active":
             host.run(["systemctl", "start", unit])
-    daemon_state = state.get("daemon_service_state", {})
+    daemon_state = _daemon_restore_expectation(
+        state.get("daemon_service_state", {})
+    )
     if daemon_state.get("enabled") == "enabled":
         host.run(["systemctl", "enable", DAEMON_SERVICE])
     if daemon_state.get("active") == "active":
@@ -2224,6 +2237,7 @@ def restore_if_safe(
             "phase": "restored",
             "masked_units_before": masked_before,
             "masked_units_after": masks_after,
+            "expected_restored_unit_states": expected_states,
             "restored_unit_states": actual_states,
         }
     )
