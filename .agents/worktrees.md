@@ -1,6 +1,6 @@
 # Worktree Inventory
 
-## 2026-07-30 19:10 - fold back atomic background-attempt reservation
+## 2026-07-30 19:05 - fold back atomic background-attempt reservation
 
 - Provider: `drain-20260730-182443-ef55a1`
 - Branch: `feature/atomic-background-attempt-reservation-seam`
@@ -2002,7 +2002,7 @@ Notes:
 
 - Provider: `drain-20260730-182443-ef55a1`
 - Branch: `chore/drain-20260730-182443-ef55a1-exhaustion`
-- Lane state: Landed in PR #1975; handed to the foldback lane above.
+- Lane state: Active; exact STATUS claim on current main.
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-182443-ef55a1-exhaustion`
 - Purpose: add transaction-local binding/logical-key reads and per-binding
   attempt count without JIT resolution or live activation.
