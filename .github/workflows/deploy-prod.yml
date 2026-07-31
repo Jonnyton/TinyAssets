@@ -1119,15 +1119,14 @@ jobs:
           printf '{"capture":"unavailable"}\n' > "${evidence_dir}/daemon-state.json"
           : > "${raw_log}"
 
-          timeout 25s ssh -i ~/.ssh/do_deploy \
-              -o BatchMode=yes \
-              -o ConnectTimeout=10 \
-              -o ServerAliveInterval=5 \
-              -o ServerAliveCountMax=2 \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.State.ExitCode}}\t{{.State.OOMKilled}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}'" \
-              > "${state_raw}" 2>/dev/null
-          if [ "$?" -eq 0 ]; then
+          if timeout 25s ssh -i ~/.ssh/do_deploy \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o ServerAliveInterval=5 \
+                -o ServerAliveCountMax=2 \
+                "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+                "timeout 15s sudo docker inspect --type container tinyassets-daemon --format '{{.State.Status}}\t{{.State.Running}}\t{{.State.Restarting}}\t{{.State.ExitCode}}\t{{.State.OOMKilled}}\t{{if .State.Health}}{{.State.Health.Status}}{{end}}'" \
+                > "${state_raw}" 2>/dev/null; then
             python - "${state_raw}" "${evidence_dir}/daemon-state.json" 2>/dev/null <<'PY'
           import json
           import pathlib
