@@ -26,6 +26,11 @@
   at the same identity boundary, but reduce it to a fixed class; raw host errors
   are evidence inputs, not safe artifact fields.
 
+- **Follow-up:** `created` plus an empty Docker start error moves the boundary
+  one layer outward again. Prefer a read-only classifier over another deploy:
+  historical journals can answer the next question without repeating an outage,
+  provided raw host text is streamed only into a fixed-output sanitizer.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

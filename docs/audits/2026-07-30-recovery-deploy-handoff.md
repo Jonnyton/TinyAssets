@@ -307,6 +307,16 @@ the relevant unit journal persists, the next diagnostic is read-only: classify
 the bounded `18:34Z`-`18:37Z` journal window on the host and return fixed signals
 only, without another deployment or raw journal publication.
 
+The diagnostic workflow accepts two strict UTC-second timestamps, rejects
+future, reversed, or over-ten-minute windows, and performs only a bounded
+`journalctl` read over SSH. At most 256 KiB flows directly into the runner-side
+sanitizer; SSH stderr and all journal text are suppressed, and there is no host
+write or artifact upload. Output is limited to fixed Compose stages, fixed
+failure classes, a derived stage, and bounded counts. Windows-host verification
+at `2026-07-31T18:48Z`: 142 focused tests passed, Ruff and diff checks clean,
+and strict OpenSpec validation passed. Independent exact-head review remains
+required before reading the preserved production window.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

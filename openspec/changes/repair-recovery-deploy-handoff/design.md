@@ -139,6 +139,11 @@ before removal. This is not general Docker garbage collection.
    cleanup output proving the fleet was restored or authoritatively
    restart-fenced plus a published terminal release-state receipt. Mismatched
    observed container identities are reduced to `unavailable`.
+   When an identity-matched container remains `created` with no Docker start
+   error, inspect the already-preserved unit journal through a separate
+   read-only workflow. Accept only a strict past UTC window of at most ten
+   minutes, stream at most 256 KiB through the sanitizer, and expose fixed
+   Compose stages/failure classes rather than raw journal text.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,
