@@ -272,6 +272,17 @@ and strict OpenSpec validation. Independent exact-head re-review of
 after additionally mutation-checking all seven delimiter boundaries and pipe
 injection into every accepted field.
 
+Controlled deploy `30653950641` then proved the repaired identity join in live
+production: the artifact bound digest `18b97e...d60a` and revision `0eec432c`,
+with Docker state `created`, `running=false`, `restarting=false`, `exit_code=0`,
+no health state, no OOM, and zero log bytes. The candidate process therefore did
+not start; this contradicts the earlier application-startup hypothesis and
+moves investigation to Docker/systemd/Compose start orchestration. Ordinary
+rollback could not prove a safe fleet, so exact-source guarded recovery
+`30654162258` restored the canonical MCP canary and exact-seven assertion and
+completed successfully. The next evidence slice must classify Docker's
+identity-bound pre-start error without publishing raw host error text.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an
