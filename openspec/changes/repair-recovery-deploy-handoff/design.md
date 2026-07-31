@@ -110,6 +110,11 @@ fleet. Target preparation writes exact removal intent, removes only the
 recorded survivors without `-v`, and permits subset/empty replay only after the
 intent is durable.
 
+An ownership refusal reports only the fixed sidecar name and one bounded
+predicate class: missing identity, invalid project, invalid service, changed
+recorded identity, or failed non-writer proof. Raw IDs, labels, mount names, and
+other host inspection values never enter workflow logs or uploaded evidence.
+
 If both the candidate and ordinary rollback fail, unsafe recovery cannot rely
 on removed sidecars. Before recovery it may retire a newly present fixed-name
 sidecar only after writing its exact ID and proving the canonical or currently
@@ -156,6 +161,8 @@ recovery project still match.
   and proves an exact recovery-owned tunnel/log pair; one recovery-owned
   partial creation is removed by exact ID and retried in the same invocation,
   while a repeated failure is durably re-fenced.
+- [Ownership evidence leaks host state] → publish only the fixed name and fixed
+  predicate class; keep every observed label, ID, and mount value private.
 
 ## Migration Plan
 

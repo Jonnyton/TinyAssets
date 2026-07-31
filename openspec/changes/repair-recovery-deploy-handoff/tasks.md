@@ -26,6 +26,8 @@
   writer refence independent of post-capture sidecar name/identity drift while
   stopping a still-present captured sidecar only by exact ID; record but do not
   let a sidecar stop failure preempt the volume-writer fence.
+- [x] 1.9 Reduce a restored sidecar ownership refusal to a fixed predicate
+  class plus fixed name, with raw IDs, labels, mounts, and host values excluded.
 
 ## 2. Verification And Release
 

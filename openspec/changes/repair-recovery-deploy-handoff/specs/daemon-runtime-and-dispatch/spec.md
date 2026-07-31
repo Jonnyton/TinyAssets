@@ -38,6 +38,10 @@ removal intent before container mutation.
 - **AND** replay accepts only the exact remaining recorded subset or proved
   absence; foreign, running, restart-enabled, substituted, or unexpected
   sidecars fail before removal
+- **AND** an ownership refusal exposes only the fixed sidecar name plus one
+  fixed predicate class (`identity missing`, `project invalid`, `service
+  invalid`, `recorded identity changed`, or `non-writer proof failed`), never
+  the observed label, ID, mount, or other raw host value
 - **AND** if forward start and ordinary rollback fail, emergency recovery
   removes only a newly proved canonical or recovery-owned sidecar generation,
   recreates both sidecars under its unique recovery project with `restart=no`,

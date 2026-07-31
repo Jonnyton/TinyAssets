@@ -21,6 +21,9 @@
 - **Follow-up:** duplicate best-effort safety mutations are extra failure
   boundaries. Capture ownership once, then funnel every refence through one
   writer-first path that owns error accumulation and final proof.
+- **Follow-up:** an ownership guard can remain fail-closed while becoming
+  diagnosable. Emit the failed fixed predicate, not the observed private value,
+  so one pre-mutation run can select the next safe action without raw host data.
 
 ## 2026-07-30 — public-safe production startup evidence
 

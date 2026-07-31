@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 15:18 - recovery sidecar provenance diagnostic
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-sidecar-provenance-diagnostic`
+- Lane state: Active; 273 focused tests green; fixed-schema diagnostic exact-head review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- Purpose: reduce tunnel ownership refusal to one fixed predicate without exposing host labels or IDs
+- Review gate: TDD, focused recovery/deploy tests, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-sidecar-provenance-diagnostic/_PURPOSE.md`
+- Ship/abandon: merge only a fixed-schema diagnostic; retry deploy only after exact-head approval
+
 ## 2026-07-31 14:35 - autonomous recovery-sidecar retry
 
 - Provider: `codex-gpt5-desktop`

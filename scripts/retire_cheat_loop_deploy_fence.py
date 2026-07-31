@@ -1151,14 +1151,22 @@ def _restored_sidecar_inspections(
         info = host.container_info(name)
         identity = str(info.get("Id", ""))
         labels = info.get("Config", {}).get("Labels", {}) or {}
-        if (
-            not identity
-            or labels.get("com.docker.compose.project") != expected_project
-            or labels.get("com.docker.compose.service") != service
-            or (recovery_ids and recovery_ids.get(name) != identity)
-        ):
-            raise FenceError(f"restored sidecar ownership is invalid: {name}")
-        _assert_sidecar_nonwriter(name, info)
+        if not identity:
+            raise FenceError(f"restored sidecar identity is missing: {name}")
+        if labels.get("com.docker.compose.project") != expected_project:
+            raise FenceError(f"restored sidecar project is invalid: {name}")
+        if labels.get("com.docker.compose.service") != service:
+            raise FenceError(f"restored sidecar service is invalid: {name}")
+        if recovery_ids and recovery_ids.get(name) != identity:
+            raise FenceError(
+                f"restored sidecar recorded identity changed: {name}"
+            )
+        try:
+            _assert_sidecar_nonwriter(name, info)
+        except FenceError:
+            raise FenceError(
+                f"restored sidecar non-writer proof failed: {name}"
+            ) from None
         inspections[name] = info
     if recovery_ids and set(inspections) != set(recovery_ids):
         raise FenceError("restored recovery sidecar inventory changed")
