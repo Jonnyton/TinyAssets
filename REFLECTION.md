@@ -940,3 +940,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** add the transaction-aware read method to
   each authority store when that store is first introduced; reopening a
   connection during a caller-owned transaction silently weakens atomicity.
+
+## 2026-07-30 - Consumed drain merge suppression
+
+- **What surprised me:** duplicate-receipt detection was already correct; the
+  throughput collapse came from retaining the same admission while counting
+  the correct rejection as a worker failure.
+- **Pattern worth capturing:** classify stale, already-proved work separately
+  from malformed work. Suppress the exact stale candidate in a bounded set and
+  preserve audit evidence without manufacturing progress or spending the
+  failure budget.
+- **What I would do differently:** state-transition tests should assert the
+  next admission decision, not only that counters did not advance. A retained
+  resume target can turn a safe rejection into a deterministic retry loop.

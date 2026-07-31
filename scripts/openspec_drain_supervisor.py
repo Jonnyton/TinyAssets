@@ -1103,22 +1103,32 @@ def apply_invalid_blocked_result(
     state["status"] = "invalid-blocked-result"
 
 
-def apply_invalid_duplicate_merge(
+def apply_duplicate_merge_suppression(
     state: dict[str, Any],
     result: DrainResult,
     *,
     attempt: int,
 ) -> None:
-    """Record an exact merged-PR replay without advancing delivery."""
+    """Suppress a stale target whose merge receipt was already consumed."""
     state["consecutive_transients"] = 0
-    state["consecutive_failures"] += 1
+    state["consecutive_failures"] = 0
+    blocked = [
+        target
+        for target in state.get("recent_blocked", [])
+        if target != result.target
+    ]
+    if result.target != "-":
+        blocked.append(result.target)
+    state["recent_blocked"] = blocked[-MAX_RECENT_BLOCKED:]
+    state["admission"] = None
+    state["resume_target"] = None
     state["last_result"] = {
         "status": "INVALID_DUPLICATE_MERGE",
         "attempt": attempt,
         "target": result.target,
         "pr": result.pr,
     }
-    state["status"] = "invalid-duplicate-merge"
+    state["status"] = "duplicate-merge-suppressed"
 
 
 def infer_legacy_merged_prs(
@@ -1252,11 +1262,7 @@ def recover_invalid_result(
         return False
 
     if duplicate_merge_rejection(result, state):
-        state["consecutive_failures"] = max(
-            0,
-            int(state.get("consecutive_failures", 0)) - 1,
-        )
-        apply_invalid_duplicate_merge(
+        apply_duplicate_merge_suppression(
             state,
             result,
             attempt=attempt,
@@ -1370,7 +1376,7 @@ def recover_unconsumed_result(
         return False
 
     if duplicate_merge_rejection(result, state):
-        apply_invalid_duplicate_merge(
+        apply_duplicate_merge_suppression(
             state,
             result,
             attempt=attempt,
@@ -2132,7 +2138,7 @@ def _run(args: argparse.Namespace) -> int:
 
             duplicate_rejection = duplicate_merge_rejection(result, state)
             if duplicate_rejection:
-                apply_invalid_duplicate_merge(
+                apply_duplicate_merge_suppression(
                     state,
                     result,
                     attempt=attempt,

@@ -2120,7 +2120,7 @@ def test_merge_receipts_survive_for_the_whole_bounded_run() -> None:
     )
 
 
-def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
+def test_duplicate_merge_suppresses_stale_admission_without_counting_slice(
     tmp_path: Path,
 ) -> None:
     admission = {
@@ -2137,7 +2137,7 @@ def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
         merged_prs=["https://github.com/o/r/pull/12"],
     )
 
-    drain.apply_invalid_duplicate_merge(
+    drain.apply_duplicate_merge_suppression(
         state,
         drain.DrainResult(
             "MERGED",
@@ -2148,11 +2148,43 @@ def test_duplicate_merge_failure_retains_admission_and_does_not_count_slice(
     )
 
     assert state["completed_slices"] == 1
-    assert state["consecutive_failures"] == 1
-    assert state["admission"] == admission
-    assert state["resume_target"] == "target"
+    assert state["merged_prs"] == ["https://github.com/o/r/pull/12"]
+    assert state["consecutive_failures"] == 0
+    assert state["consecutive_transients"] == 0
+    assert state["admission"] is None
+    assert state["resume_target"] is None
+    assert state["recent_blocked"] == ["target"]
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
-    assert state["status"] == "invalid-duplicate-merge"
+    assert state["status"] == "duplicate-merge-suppressed"
+
+
+def test_duplicate_merge_suppression_is_bounded_and_deduplicated() -> None:
+    targets = [
+        f"target-{index}"
+        for index in range(drain.MAX_RECENT_BLOCKED + 3)
+    ]
+    state = _state(
+        consecutive_failures=1,
+        recent_blocked=targets,
+        admission={"target": "target-2"},
+        resume_target="target-2",
+        merged_prs=["https://github.com/o/r/pull/12"],
+    )
+
+    drain.apply_duplicate_merge_suppression(
+        state,
+        drain.DrainResult(
+            "MERGED",
+            "target-2",
+            "https://github.com/o/r/pull/12",
+        ),
+        attempt=4,
+    )
+
+    assert len(state["recent_blocked"]) == drain.MAX_RECENT_BLOCKED
+    assert state["recent_blocked"].count("target-2") == 1
+    assert state["recent_blocked"][-1] == "target-2"
+    assert state["consecutive_failures"] == 0
 
 
 def test_legacy_merge_receipts_are_reconstructed_and_deduplicated(
@@ -2825,11 +2857,15 @@ def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
     )
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
-    assert exit_code == 2
+    assert exit_code == 0
     assert state["completed_slices"] == 1
-    assert state["consecutive_failures"] == 1
+    assert state["consecutive_failures"] == 0
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
     assert state["merged_prs"] == [pr]
+    assert state["admission"] is None
+    assert state["resume_target"] is None
+    assert state["recent_blocked"] == ["old-target"]
+    assert state["status"] == "duplicate-merge-suppressed"
 
 
 def test_run_dispatches_inside_mechanically_admitted_lane(
