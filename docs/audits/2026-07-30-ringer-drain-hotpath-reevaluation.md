@@ -72,6 +72,8 @@ Freshness: 2026-07-30, Windows local bridge,
   finish within 59 seconds and was terminated. Code inspection confirmed that
   `--provider` filtering occurs only after `build_status` probes every listed
   worktree.
+- After the prefilter implementation, the same repository's exact prior drain
+  identity produced its scoped JSON inventory in 2.398 seconds with exit 0.
 - The controller was stopped between workers, and PR #1980 retired the exact
   stranded task-2.4 claim before this lane was admitted.
 

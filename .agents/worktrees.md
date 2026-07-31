@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `codex/ringer-drain-hotpath-20260730`
-- Lane state: Active; exact STATUS claim created after PR #1980 retired the stranded drain claim
+- Lane state: Implementation verified; independent exact-head review and PR pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-ringer-drain-hotpath-20260730`
 - STATUS/Issue/PR: Ringer-informed drain hot-path recovery; PR pending
 - Purpose: remove foldback ambiguity, bound per-worker worktree inspection, and make attempt performance measurable
