@@ -816,6 +816,14 @@ exact-seven canary exited 0. This evidence replaces the narrower transitional
 state assumption with the postcondition that every successful normal deploy
 requires daemon `active` while preserving exact saved enablement.
 
+Independent exact-head review approved commit `0ec4efe0` on 2026-07-31. The
+reviewer reproduced 386/386 focused passing tests, changed-file Ruff, strict
+OpenSpec validation, and diff checks. It specifically confirmed the exact
+production predecessor regression (`failed/disabled` to `active/disabled`)
+and the proof-order regression that injects normal-deploy proof failure and
+observes no disable, stop, mask, unmask, enable, or start mutation. No
+release-blocking findings remained.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored
