@@ -1,3 +1,17 @@
+## 2026-07-30 — dark just-in-time target-attempt issuance
+
+- **What surprised me:** logical-key uniqueness and exact store fences were not
+  sufficient by themselves; a replay also had to match the same physical
+  universe and executor audience so a guessed non-bearer key could not disclose
+  or reuse another issuance context.
+- **Pattern worth capturing:** keep fresh canonical resolution inside the same
+  opaque transaction as prior-attempt lookup, limit counting, and reservation,
+  then persist only a `RESERVED` non-authorizing record. Claim, provider, and
+  runtime authority remain later independent gates.
+- **What I would do differently:** define the trusted resolution snapshot while
+  building the store protocol so task 2.4 would need less interface code after
+  the persistence seam landed.
+
 ## 2026-07-30 — executable authority inventory closure
 
 - **What surprised me:** a green exact-callsite manifest was still materially

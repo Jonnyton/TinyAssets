@@ -1,18 +1,24 @@
-"""Dark server-owned lifecycle transitions for background Branch bindings.
+"""Dark server-owned lifecycle transitions and background attempt issuance.
 
 The service resolves canonical authority through a trusted server adapter and
 is the only layer that constructs binding IDs, digests, generations, or status
-replacements. It does not issue attempts or activate background execution.
+replacements. Attempt issuance remains inert: it reserves typed authority state
+but does not claim an attempt or activate background execution.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, replace
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from tinyassets.background_branch_authority import (
+    BackgroundBranchAttempt,
+    BackgroundBranchAttemptLifecycle,
+    BackgroundBranchAttemptWriteResult,
     BackgroundBranchAuthorityStore,
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
@@ -20,8 +26,11 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchBindingStatus,
     BackgroundBranchBindingWriteResult,
     BackgroundBranchChildDelegation,
+    BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
     BackgroundBranchOperation,
+    BackgroundBranchProvenance,
+    BackgroundBranchReceiptRefs,
     BackgroundBranchSourceKind,
     BackgroundBranchTargetMode,
 )
@@ -39,6 +48,7 @@ _BINDING_ROOTS = frozenset({
     BackgroundBranchSourceKind.PARENT_ATTEMPT,
 })
 _PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
+_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def _canonical_json(value: object) -> str:
@@ -59,6 +69,30 @@ def _required(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty reference")
     return value
+
+
+def _positive_integer(value: object, name: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
+def _sha256(value: object, name: str) -> str:
+    if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
+        raise ValueError(f"{name} must be a canonical sha256 digest")
+    return value
+
+
+def _utc_timestamp(value: object, name: str) -> datetime:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        raise ValueError(f"{name} must be a canonical UTC timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.removesuffix("Z") + "+00:00")
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a canonical UTC timestamp") from exc
+    if parsed.isoformat().replace("+00:00", "Z") != value:
+        raise ValueError(f"{name} must be a canonical UTC timestamp")
+    return parsed
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +160,97 @@ class BackgroundBranchBindingResolver(Protocol):
 
 class BackgroundBranchBindingTransitionError(ValueError):
     """Stable fail-closed result for an inadmissible server transition."""
+
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {detail}")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAttemptIssuanceRequest:
+    """Non-authorizing references supplied to one JIT reservation."""
+
+    binding_id: str
+    binding_generation: int
+    binding_digest: str
+    logical_attempt_key: str
+    physical_universe_id: str
+    executor_audience: BackgroundBranchExecutorAudience
+
+    def __post_init__(self) -> None:
+        _required(self.binding_id, "binding_id")
+        _positive_integer(self.binding_generation, "binding_generation")
+        _sha256(self.binding_digest, "binding_digest")
+        _required(self.logical_attempt_key, "logical_attempt_key")
+        _required(self.physical_universe_id, "physical_universe_id")
+        if not isinstance(
+            self.executor_audience,
+            BackgroundBranchExecutorAudience,
+        ):
+            raise ValueError("executor_audience must be typed")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAttemptIssuanceResolution:
+    """Fresh canonical state returned only by a trusted server resolver."""
+
+    binding: BackgroundBranchBinding
+    branch_version_id: str
+    branch_content_digest: str
+    source_generation: int
+    executor_audience: BackgroundBranchExecutorAudience
+    resolved_at: str
+    parent_attempt_id: str | None
+    origin_attempt_id: str | None
+    audit_correlation_ids: tuple[str, ...]
+    receipt_refs: BackgroundBranchReceiptRefs
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, BackgroundBranchBinding):
+            raise ValueError("binding must be typed")
+        _required(self.branch_version_id, "branch_version_id")
+        _sha256(self.branch_content_digest, "branch_content_digest")
+        if (
+            not isinstance(self.source_generation, int)
+            or isinstance(self.source_generation, bool)
+            or self.source_generation < 0
+        ):
+            raise ValueError("source_generation must be a non-negative integer")
+        if not isinstance(
+            self.executor_audience,
+            BackgroundBranchExecutorAudience,
+        ):
+            raise ValueError("executor_audience must be typed")
+        _utc_timestamp(self.resolved_at, "resolved_at")
+        if self.parent_attempt_id is not None:
+            _required(self.parent_attempt_id, "parent_attempt_id")
+        if self.origin_attempt_id is not None:
+            _required(self.origin_attempt_id, "origin_attempt_id")
+        correlations = tuple(self.audit_correlation_ids)
+        if not correlations:
+            raise ValueError("audit_correlation_ids must not be empty")
+        for correlation_id in correlations:
+            _required(correlation_id, "audit_correlation_ids")
+        if len(set(correlations)) != len(correlations):
+            raise ValueError("audit_correlation_ids must not contain duplicates")
+        object.__setattr__(self, "audit_correlation_ids", correlations)
+        if not isinstance(self.receipt_refs, BackgroundBranchReceiptRefs):
+            raise ValueError("receipt_refs must be typed")
+
+
+@runtime_checkable
+class BackgroundBranchAttemptResolver(Protocol):
+    """Trusted adapter that revalidates every canonical issuance fact."""
+
+    def resolve(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+    ) -> BackgroundBranchAttemptIssuanceResolution | None:
+        """Return fresh canonical state, or ``None`` when authority is absent."""
+
+
+class BackgroundBranchAttemptIssuanceError(ValueError):
+    """Stable fail-closed result for a refused JIT reservation."""
 
     def __init__(self, code: str, detail: str) -> None:
         self.code = code
@@ -406,7 +531,259 @@ class BackgroundBranchBindingTransitionService:
             )
 
 
+def _attempt_id(request: BackgroundBranchAttemptIssuanceRequest) -> str:
+    identity = {
+        "schema_version": 1,
+        "binding_id": request.binding_id,
+        "logical_attempt_key": request.logical_attempt_key,
+    }
+    return f"att_{_digest(identity).removeprefix('sha256:')[:32]}"
+
+
+class BackgroundBranchAttemptIssuanceService:
+    """Atomically revalidate and reserve one dark target attempt."""
+
+    def __init__(
+        self,
+        store: BackgroundBranchAuthorityStore,
+        resolver: BackgroundBranchAttemptResolver,
+    ) -> None:
+        if not isinstance(store, BackgroundBranchAuthorityStore):
+            raise ValueError("store must implement BackgroundBranchAuthorityStore")
+        if not isinstance(resolver, BackgroundBranchAttemptResolver):
+            raise ValueError(
+                "resolver must implement BackgroundBranchAttemptResolver"
+            )
+        self._store = store
+        self._resolver = resolver
+
+    def issue(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+    ) -> BackgroundBranchAttemptWriteResult:
+        if not isinstance(request, BackgroundBranchAttemptIssuanceRequest):
+            raise ValueError(
+                "request must be a BackgroundBranchAttemptIssuanceRequest"
+            )
+        with self._store.transaction() as transaction:
+            prior = transaction.get_attempt_by_logical_key(
+                request.logical_attempt_key
+            )
+            if prior is not None:
+                self._validate_replay(request, prior)
+                return BackgroundBranchAttemptWriteResult(
+                    BackgroundBranchAuthorityWriteOutcome.REPLAYED,
+                    prior,
+                )
+
+            binding = transaction.get_binding(request.binding_id)
+            if binding is None:
+                self._fail("binding_missing", "binding does not exist")
+            assert binding is not None
+            self._validate_request_fence(request, binding)
+            self._validate_active_binding(binding)
+
+            resolution = self._resolver.resolve(request)
+            if resolution is None:
+                self._fail(
+                    "attempt_resolution_missing",
+                    "canonical authority is absent",
+                )
+            if not isinstance(
+                resolution,
+                BackgroundBranchAttemptIssuanceResolution,
+            ):
+                self._fail(
+                    "attempt_resolution_invalid",
+                    "resolver returned an invalid resolution",
+                )
+            assert isinstance(
+                resolution,
+                BackgroundBranchAttemptIssuanceResolution,
+            )
+            self._validate_resolution(request, binding, resolution)
+            if transaction.count_attempts(binding_id=binding.binding_id) >= (
+                binding.max_attempts
+            ):
+                self._fail(
+                    "binding_attempt_limit",
+                    "binding has reached its maximum attempt count",
+                )
+
+            attempt_id = _attempt_id(request)
+            child_source = binding.source_kind in {
+                BackgroundBranchSourceKind.DIRECT_CHILD,
+                BackgroundBranchSourceKind.PARENT_ATTEMPT,
+            }
+            if child_source != (
+                resolution.parent_attempt_id is not None
+                and resolution.origin_attempt_id is not None
+            ):
+                self._fail(
+                    "lineage_mismatch",
+                    "canonical lineage does not match the binding source",
+                )
+            origin_attempt_id = (
+                resolution.origin_attempt_id if child_source else attempt_id
+            )
+            attempt = BackgroundBranchAttempt(
+                schema_version=1,
+                attempt_id=attempt_id,
+                logical_attempt_key=request.logical_attempt_key,
+                binding_id=binding.binding_id,
+                binding_digest=binding.binding_digest,
+                binding_generation=binding.generation,
+                authorizing_principal_id=binding.authorizing_principal_id,
+                universe_id=binding.universe_id,
+                branch_def_id=binding.branch_def_id,
+                branch_version_id=resolution.branch_version_id,
+                branch_content_digest=resolution.branch_content_digest,
+                operation=binding.operation,
+                source_kind=binding.source_kind,
+                source_id=binding.source_id,
+                source_generation=resolution.source_generation,
+                executor_audience=resolution.executor_audience,
+                claim_generation=1,
+                lease_generation=1,
+                lease_expires_at=None,
+                remaining_depth=binding.remaining_depth,
+                remaining_count=binding.remaining_count,
+                remaining_cost_microunits=binding.remaining_cost_microunits,
+                lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
+                hold_reason=None,
+                terminal_reason=None,
+                created_at=resolution.resolved_at,
+                updated_at=resolution.resolved_at,
+                provenance=BackgroundBranchProvenance(
+                    authorizing_principal_id=binding.authorizing_principal_id,
+                    source_kind=binding.source_kind,
+                    source_id=binding.source_id,
+                    executor_class=resolution.executor_audience.executor_class,
+                    daemon_id=resolution.executor_audience.daemon_id,
+                    runtime_id=resolution.executor_audience.runtime_id,
+                    worker_id=resolution.executor_audience.worker_id,
+                    parent_attempt_id=resolution.parent_attempt_id,
+                    origin_attempt_id=origin_attempt_id,
+                    audit_correlation_ids=resolution.audit_correlation_ids,
+                    receipt_refs=resolution.receipt_refs,
+                ),
+            )
+            return transaction.insert_attempt(attempt)
+
+    @staticmethod
+    def _fail(code: str, detail: str) -> None:
+        raise BackgroundBranchAttemptIssuanceError(code, detail)
+
+    def _validate_request_fence(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+        binding: BackgroundBranchBinding,
+    ) -> None:
+        if request.binding_generation != binding.generation:
+            self._fail(
+                "binding_generation_mismatch",
+                "binding generation is stale",
+            )
+        if request.binding_digest != binding.binding_digest:
+            self._fail("binding_digest_mismatch", "binding digest is stale")
+
+    def _validate_active_binding(
+        self,
+        binding: BackgroundBranchBinding,
+    ) -> None:
+        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+            self._fail(
+                f"binding_{binding.status.value}",
+                "binding is not active",
+            )
+
+    def _validate_resolution(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+        binding: BackgroundBranchBinding,
+        resolution: BackgroundBranchAttemptIssuanceResolution,
+    ) -> None:
+        if resolution.binding != binding:
+            self._fail(
+                "canonical_binding_mismatch",
+                "fresh canonical state does not match the stored binding",
+            )
+        resolved_at = _utc_timestamp(resolution.resolved_at, "resolved_at")
+        if (
+            binding.expires_at is not None
+            and resolved_at >= _utc_timestamp(binding.expires_at, "expires_at")
+        ):
+            self._fail("binding_expired", "binding has expired")
+        if (
+            request.physical_universe_id != binding.universe_id
+        ):
+            self._fail(
+                "physical_universe_mismatch",
+                "physical universe does not match the binding",
+            )
+        if resolution.executor_audience != request.executor_audience:
+            self._fail(
+                "executor_mismatch",
+                "fresh executor audience does not match the request",
+            )
+        audience = resolution.executor_audience
+        if audience.executor_class not in binding.permitted_executor_classes:
+            self._fail(
+                "executor_mismatch",
+                "executor class is not permitted by the binding",
+            )
+        if binding.daemon_id is not None and audience.daemon_id != binding.daemon_id:
+            self._fail(
+                "executor_mismatch",
+                "daemon does not match the binding",
+            )
+        if (
+            binding.runtime_id is not None
+            and audience.runtime_id != binding.runtime_id
+        ):
+            self._fail(
+                "executor_mismatch",
+                "runtime does not match the binding",
+            )
+        if resolution.source_generation != int(binding.source_revision):
+            self._fail(
+                "source_generation_mismatch",
+                "source generation does not match the binding",
+            )
+        if (
+            binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION
+            and resolution.branch_version_id
+            != binding.pinned_branch_version_id
+        ):
+            self._fail(
+                "pinned_target_mismatch",
+                "resolved target differs from the pinned binding target",
+            )
+
+    def _validate_replay(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+        prior: BackgroundBranchAttempt,
+    ) -> None:
+        if (
+            prior.binding_id != request.binding_id
+            or prior.binding_generation != request.binding_generation
+            or prior.binding_digest != request.binding_digest
+            or prior.universe_id != request.physical_universe_id
+            or prior.executor_audience != request.executor_audience
+        ):
+            self._fail(
+                "prior_attempt_mismatch",
+                "logical key belongs to different issuance context",
+            )
+
+
 __all__ = [
+    "BackgroundBranchAttemptIssuanceError",
+    "BackgroundBranchAttemptIssuanceRequest",
+    "BackgroundBranchAttemptIssuanceResolution",
+    "BackgroundBranchAttemptIssuanceService",
+    "BackgroundBranchAttemptResolver",
     "BackgroundBranchBindingResolver",
     "BackgroundBranchBindingRoot",
     "BackgroundBranchBindingSeed",
