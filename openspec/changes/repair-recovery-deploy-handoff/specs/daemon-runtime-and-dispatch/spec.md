@@ -86,6 +86,11 @@ fleet.
   candidate
 - **AND** cancellation after candidate mutation takes the same bounded capture
   and post-safety publication path
+- **AND** a deploy or intervening assertion failure after image mutation enters
+  the same identity-bound capture path even when the named health step is
+  skipped
 - **AND** the workflow publishes the sanitized artifact only after rollback and
-  restart-racer cleanup have completed or fenced the fleet
+  restart-racer cleanup emits an explicit proof that the fleet is restored or
+  authoritatively restart-fenced
+- **AND** failed or missing cleanup/fence proof suppresses artifact publication
 - **AND** retains the artifact for no more than seven days

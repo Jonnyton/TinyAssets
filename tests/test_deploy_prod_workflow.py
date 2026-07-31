@@ -446,15 +446,35 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert health.get("id") == "candidate_health"
     assert capture.get("id") == "candidate_diagnostics"
     capture_condition = str(capture.get("if", "")).strip()
+    assert capture_condition == (
+        "${{ always() && steps.deploy.outputs.image_mutation_started == 'true' "
+        "&& (failure() || cancelled()) }}"
+    )
     assert "always()" in capture_condition
-    assert "steps.candidate_health.outcome == 'failure'" in capture_condition
+    assert "failure()" in capture_condition
     assert "cancelled()" in capture_condition
     assert "steps.deploy.outputs.image_mutation_started == 'true'" in capture_condition
+    assert "steps.candidate_health.outcome" not in capture_condition, (
+        "post-mutation deploy and env-assert failures skip health but still "
+        "need identity-bound diagnostics"
+    )
     upload_condition = str(upload.get("if", "")).strip()
+    assert upload_condition == (
+        "${{ always() && steps.candidate_diagnostics.outcome == 'success' "
+        "&& (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' "
+        "|| steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}"
+    )
     assert "always()" in upload_condition
-    assert "steps.candidate_health.outcome == 'failure'" in upload_condition
-    assert "cancelled()" in upload_condition
     assert "steps.candidate_diagnostics.outcome == 'success'" in upload_condition
+    assert (
+        "steps.stop-writer-cleanup.outputs.cleanup_restored == 'true'"
+        in upload_condition
+    )
+    assert (
+        "steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true'"
+        in upload_condition
+    )
+    assert "steps.candidate_health.outcome" not in upload_condition
 
     capture_script = str(capture.get("run", ""))
     assert "docker inspect --type container tinyassets-daemon" in capture_script
@@ -1865,6 +1885,11 @@ def test_stop_writer_restores_timers_only_for_safe_fleet_and_uploads_evidence():
     assert "retire-cheat-loop-deploy-fence.py observe" in restore_script
     assert "retire-cheat-loop-deploy-fence.py quiesce-unsafe" in restore_script
     assert "cleanup_mutation_started=true" in restore_script
+    assert "cleanup_safely_fenced=false" in restore_script
+    assert "cleanup_safely_fenced=true" in restore_script
+    assert restore_script.index("cleanup_safely_fenced=true") > restore_script.index(
+        'if [ "$fence_status" -ne 0 ]'
+    )
     assert restore_script.index("cleanup_mutation_started=true") < restore_script.index(
         "retire-cheat-loop-deploy-fence.py quiesce-unsafe"
     )

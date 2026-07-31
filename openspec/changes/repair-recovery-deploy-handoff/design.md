@@ -128,9 +128,11 @@ before removal. This is not general Docker garbage collection.
    checked-out `tinyassets/` source tree; function names and line values are not
    emitted. Collect raw logs only after the inspected container's immutable
    image reference and OCI revision equal the fence-proved target. Failure and
-   cancellation after image mutation take the same bounded capture path.
-   Publish only sanitized evidence, and only after rollback and restart-racer
-   cleanup have restored or safely fenced the fleet.
+   cancellation after image mutation take the same bounded capture path,
+   including deploy or environment-assert failures that skip the named health
+   step. Publish only sanitized evidence, and gate publication on an explicit
+   cleanup output proving the fleet was restored or authoritatively
+   restart-fenced.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,

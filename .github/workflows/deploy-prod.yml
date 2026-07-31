@@ -1109,7 +1109,7 @@ jobs:
 
       - name: Capture failed candidate startup diagnostics
         id: candidate_diagnostics
-        if: ${{ always() && steps.deploy.outputs.image_mutation_started == 'true' && (steps.candidate_health.outcome == 'failure' || cancelled()) }}
+        if: ${{ always() && steps.deploy.outputs.image_mutation_started == 'true' && (failure() || cancelled()) }}
         env:
           TARGET_IMAGE_REF: ${{ steps.tag.outputs.image_ref }}
           TARGET_REVISION: ${{ steps.stop-writer.outputs.target_revision }}
@@ -1528,6 +1528,7 @@ jobs:
           set -euo pipefail
           echo "cleanup_restored=false" >> "$GITHUB_OUTPUT"
           echo "cleanup_mutation_started=false" >> "$GITHUB_OUTPUT"
+          echo "cleanup_safely_fenced=false" >> "$GITHUB_OUTPUT"
           # retire-cheat-loop task 2.1: independently inspect durable masks and
           # host fence state even when the preflight step produced no outputs.
           # Restore only after exact-five fleet, digest, revision, old-ID,
@@ -1551,6 +1552,7 @@ jobs:
             if [ "$fence_status" -ne 0 ]; then
               echo "::error::${reason}; unsafe fleet could not be authoritatively fenced"
             else
+              echo "cleanup_safely_fenced=true" >> "$GITHUB_OUTPUT"
               echo "::error::${reason}; unsafe fleet was stopped and restart-fenced"
             fi
             exit 1
@@ -1947,7 +1949,7 @@ jobs:
           fi
 
       - name: Upload failed candidate startup diagnostics
-        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' && (steps.candidate_health.outcome == 'failure' || cancelled()) }}
+        if: ${{ always() && steps.candidate_diagnostics.outcome == 'success' && (steps.stop-writer-cleanup.outputs.cleanup_restored == 'true' || steps.stop-writer-cleanup.outputs.cleanup_safely_fenced == 'true') }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: candidate-startup-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
