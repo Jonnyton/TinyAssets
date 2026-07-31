@@ -503,8 +503,12 @@ def test_candidate_snapshot_rejects_malformed_blocked_collection(
 def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
+    commands: list[list[str]] = []
 
     def runner(command: list[str], **_: object) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[:2] == ["git", "-C"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
         return subprocess.CompletedProcess(
             command,
             1,
@@ -536,6 +540,15 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
     assert pressure.claimable == 3
     assert pressure.stale == 2
     assert pressure.owned == 1
+    assert commands[0] == [
+        "git",
+        "-C",
+        str(repo),
+        "fetch",
+        "--prune",
+        "origin",
+    ]
+    assert commands[1][commands[1].index("--status-ref") + 1] == "origin/main"
 
 
 def test_current_main_snapshot_fetches_before_ref_classification(

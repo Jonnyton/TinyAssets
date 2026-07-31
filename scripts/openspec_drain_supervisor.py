@@ -734,8 +734,8 @@ def inspect_candidate_pressure(
     provider: str,
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
 ) -> CandidatePressure:
-    """Read canonical claim pressure without mutating coordination state."""
-    return inspect_candidate_snapshot(
+    """Fetch and read canonical claim pressure from exact current main."""
+    return inspect_current_main_snapshot(
         repo=repo,
         provider=provider,
         runner=runner,
