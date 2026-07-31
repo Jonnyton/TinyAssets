@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 14:35 - drain current-main revalidation
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/drain-current-main-revalidation`
+- Lane state: Active; red reproduced and one-line implementation green; review pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation`
+- STATUS/Issue/PR: local tray failure-budget incident; PR pending
+- Purpose: prevent stale detached STATUS from invalidating current-main exhaustion
+- Review gate: supervisor/watchdog tests, Ruff, strict OpenSpec, independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation/_PURPOSE.md`
+- Ship/abandon: merge, refresh detached controller, restart, and observe accepted idle result
+
 ## 2026-07-31 13:34 - identify fixed conflicting container
 
 - Provider: `codex-gpt5-desktop`
