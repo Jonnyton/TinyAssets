@@ -1005,3 +1005,14 @@ fresh-host rollback edges found later.
 - What I would do differently: include the independently shipped model mirror
   in the first persistence slice so later store extensions do not discover an
   untracked package dependency during parity verification.
+
+## 2026-07-30 - Ringer drain hot-path recovery
+
+- Surprised: the expensive `--provider` inventory filter was applied only after
+  every historical worktree had already paid its git-probe cost; an apparently
+  scoped command was still global work.
+- Keep: put selection before expensive observation, and write prompt budgets in
+  terms of one disposable attempt so continuation workers cannot confuse prior
+  delivery artifacts with their own bounded output.
+- Next time: make the foldback PR identity explicit in the first continuation
+  contract and test it before an overnight controller can repeat `PARTIAL`.

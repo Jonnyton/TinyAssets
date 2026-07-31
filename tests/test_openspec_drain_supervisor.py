@@ -119,7 +119,11 @@ def test_worker_prompt_resumes_own_claim_and_carries_governance() -> None:
     assert "at most one PR" in prompt
     assert "at most 12 unchecked tasks" in prompt
     assert "blocked-a" in prompt
-    assert "worktree_status.py" in prompt and "90 seconds" in prompt
+    assert (
+        "worktree_status.py --provider drain-20260728-abc123" in prompt
+        and "15 seconds" in prompt
+    )
+    assert "zero matching rows grant no authority" in normalized.casefold()
     assert "not reliably OS-sandboxed" in prompt
     assert "shell `git` and `gh`" in normalized
     assert "create the PR as a draft" in normalized
@@ -884,6 +888,36 @@ def test_admitted_prompt_forbids_reselection_and_duplicate_worktree(
     assert "Do not create another worktree" in prompt
     assert "Do not select a different lane" in prompt
     assert str(admission.worktree) in prompt
+
+
+def test_partial_resume_requires_one_fresh_foldback_pr_per_worker(
+    tmp_path: Path,
+) -> None:
+    admission = drain.Admission(
+        target="assigned-target",
+        task_label="assigned target",
+        worktree=tmp_path / "wf-drain-assigned-target",
+        branch="drain/run/assigned-target",
+    )
+    prompt = drain.build_worker_prompt(
+        _state(
+            last_result={
+                "status": "PARTIAL",
+                "target": "assigned-target",
+                "pr": "https://github.com/o/r/pull/12",
+            }
+        ),
+        objective="Drain current OpenSpec delivery debt.",
+        admission=admission,
+    )
+    normalized = " ".join(prompt.split())
+
+    assert "implementation PR belongs to the previous worker" in normalized
+    assert "does not consume this worker's PR budget" in normalized
+    assert "create at most one fresh foldback pr" in normalized.casefold()
+    assert "cite that fresh foldback PR" in normalized
+    assert "never repeat the implementation PR" in normalized
+    assert "per disposable worker attempt" in normalized
 
 
 def test_mechanical_admission_never_deletes_preexisting_branch(

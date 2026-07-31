@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 20:28 - Ringer drain hot-path recovery
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/ringer-drain-hotpath-20260730`
+- Lane state: Implementation verified; independent exact-head review and PR pending
+- Worktree: `C:/Users/Jonathan/Projects/wf-ringer-drain-hotpath-20260730`
+- STATUS/Issue/PR: Ringer-informed drain hot-path recovery; PR pending
+- Purpose: remove foldback ambiguity, bound per-worker worktree inspection, and make attempt performance measurable
+- Review gate: research implication review, strict OpenSpec, focused tests, independent exact-head code review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-ringer-drain-hotpath-20260730/_PURPOSE.md`
+- Ship/abandon: one reviewed PR; restart the local bridge from updated main, then resume cloud critical path
+
 ## 2026-07-30 19:30 - dark JIT background-attempt issuance
 
 - Provider: `drain-20260730-182443-ef55a1`
