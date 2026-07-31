@@ -595,8 +595,8 @@ subscription credentials and the notification area belong to that session.
 The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an
 unfinished drain whose recorded controller is dead using the same run directory
 and exact identity, and SHALL start a fresh bounded run only when no unfinished
-run exists. It MUST NOT automatically restart fatal or failure-budget terminal
-outcomes.
+run exists or an explicit restart request has gracefully stopped the prior run.
+It MUST NOT automatically restart fatal or failure-budget terminal outcomes.
 
 #### Scenario: Existing manual drain is alive
 
@@ -619,6 +619,13 @@ outcomes.
 - **THEN** the watchdog reports down
 - **AND** it waits for an explicit restart request instead of spending more
   subscription calls
+
+#### Scenario: Explicit restart gracefully stops a live supervisor
+
+- **WHEN** an explicit restart is requested while a supervisor is live
+- **AND** that supervisor exits with a terminal outcome during graceful stop
+- **THEN** the watchdog preserves the already-authorized fresh-run decision
+- **AND** it starts exactly one fresh bounded supervisor run
 
 #### Scenario: Clean budget ends during the signed-in session
 
@@ -675,8 +682,11 @@ next sign-in, and exit only the indicator.
 The OpenSpec drain supervisor SHALL accept `NO_CANDIDATE` only when the
 canonical claim checker reports zero claimable rows, zero policy-qualified
 stale-claim candidates, and zero in-flight rows owned by the drain's exact
-identity. Every drain-worker brief MUST require the worker to resume its own
-claim, select claimable finish-first work, reap policy-qualified stale claims,
+identity on freshly fetched `origin/main`. Pre-dispatch admission and
+post-result revalidation MUST classify that same explicit current-main ref and
+MUST NOT read coordination state from a stale local or detached checkout.
+Every drain-worker brief MUST require the worker to resume its own claim,
+select claimable finish-first work, reap policy-qualified stale claims,
 freshness-check blocker labels, and consider safe cross-cutting promotion in
 that order before reporting no candidate. Live foreign claims, host-owned
 actions, unresolved decisions, and overlapping write sets MUST remain excluded.
@@ -777,6 +787,20 @@ and MUST NOT repeat selection or create a second worktree.
 - **THEN** the supervisor may accept `NO_CANDIDATE`
 - **AND** it waits the configured idle interval without consuming a failure
   strike
+
+#### Scenario: Detached controller state disagrees with current main
+
+- **WHEN** a worker returns `NO_CANDIDATE`
+- **AND** the controller checkout contains a stale local claim that is absent
+  from freshly fetched `origin/main`
+- **THEN** post-result validation classifies `origin/main`
+- **AND** the stale local-only row does not consume a failure strike
+
+#### Scenario: Current main still contains work
+
+- **WHEN** freshly fetched `origin/main` contains claimable, policy-qualified
+  stale, or exact-identity-owned work
+- **THEN** `NO_CANDIDATE` remains rejected
 
 #### Scenario: A foreign claim is live
 

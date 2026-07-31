@@ -10,6 +10,6 @@
 ## 2. Verification And Release
 
 - [x] 2.1 Run the focused supervisor/watchdog tests, Ruff, and strict OpenSpec.
-- [ ] 2.2 Obtain independent exact-head review.
-- [ ] 2.3 Merge, refresh the detached local controller, restart it, and prove a
-  genuine exhausted result idles without a failure strike.
+- [x] 2.2 Obtain independent exact-head review.
+- [x] 2.3 Merge, refresh the detached local controller, restart it from merged
+  main, and prove a live accepted result plus zero-failure current-main probe.

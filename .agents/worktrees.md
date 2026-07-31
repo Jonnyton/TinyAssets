@@ -1,17 +1,5 @@
 # Worktree Inventory
 
-## 2026-07-31 14:35 - drain current-main revalidation
-
-- Provider: `codex-gpt5-desktop`
-- Branch: `fix/drain-current-main-revalidation`
-- Lane state: Active; red reproduced and one-line implementation green; review pending
-- Worktree: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation`
-- STATUS/Issue/PR: local tray failure-budget incident; PR pending
-- Purpose: prevent stale detached STATUS from invalidating current-main exhaustion
-- Review gate: supervisor/watchdog tests, Ruff, strict OpenSpec, independent exact-head approval
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-current-main-revalidation/_PURPOSE.md`
-- Ship/abandon: merge, refresh detached controller, restart, and observe accepted idle result
-
 ## 2026-07-31 13:34 - identify fixed conflicting container
 
 - Provider: `codex-gpt5-desktop`
@@ -2105,13 +2093,3 @@ Notes:
 - Review gate: focused TDD/concurrency tests, strict OpenSpec, mirror parity,
   required CI, and independent exact-head approval.
 - Publish/cleanup: one draft PR to main; remove after verified foldback.
-
-## 2026-07-31 - Drain candidate exhaustion / recovery
-
-- Provider: `drain-20260731-144747-706aae`
-- Branch: `codex/drain-20260731-144747-706aae-background-attempt-fencing`
-- Lane state: Active; exact STATUS claim on the Claude harness router cleanup.
-- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260731-144747-706aae-background-attempt-fencing`
-- Purpose: prove canonical candidate exhaustion and promote at most one safe recovery task.
-- Review gate: exact-head independent approval, focused tests, required CI, and trusted auto-merge.
-- Publish/cleanup: one draft PR if claimed; otherwise preserve exhaustion evidence and remove after controller handoff.
