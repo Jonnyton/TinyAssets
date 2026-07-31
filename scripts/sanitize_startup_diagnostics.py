@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 MAX_RAW_BYTES = 131_072
+MAX_START_ERROR_BYTES = 8_192
 MAX_SIGNALS = 64
 STATE_SEPARATOR = "|"
 
@@ -216,9 +217,83 @@ def sanitize_candidate_state(
     }
 
 
+def sanitize_start_error(raw: bytes) -> dict[str, Any]:
+    """Reduce a bounded Docker start error to one fixed public category."""
+
+    if len(raw) > MAX_START_ERROR_BYTES:
+        category = "unavailable"
+    else:
+        lowered = raw.decode("utf-8", errors="replace").strip().lower()
+        if not lowered:
+            category = "none"
+        elif any(
+            marker in lowered
+            for marker in (
+                "port is already allocated",
+                "address already in use",
+                "failed to bind port",
+            )
+        ):
+            category = "port_conflict"
+        elif any(
+            marker in lowered
+            for marker in (
+                "failed to mount",
+                "error while mounting",
+                "invalid mount config",
+                "mounts denied",
+                "mount source path",
+            )
+        ):
+            category = "mount_failure"
+        elif "no such network" in lowered or (
+            "network" in lowered and "not found" in lowered
+        ):
+            category = "network_missing"
+        elif any(
+            marker in lowered
+            for marker in (
+                "oci runtime create failed",
+                "failed to create task for container",
+                "failed to start shim",
+                "container init failed",
+            )
+        ):
+            category = "runtime_create_failed"
+        elif any(
+            marker in lowered
+            for marker in (
+                "apparmor",
+                "seccomp",
+                "operation not permitted",
+                "permission denied",
+            )
+        ):
+            category = "security_profile_failure"
+        elif any(
+            marker in lowered
+            for marker in ("no space left on device", "disk quota exceeded")
+        ):
+            category = "storage_exhausted"
+        elif any(
+            marker in lowered
+            for marker in (
+                "cannot allocate memory",
+                "resource temporarily unavailable",
+                "too many open files",
+            )
+        ):
+            category = "resource_exhausted"
+        else:
+            category = "unclassified"
+    return {"schema_version": 1, "category": category}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--state", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--state", action="store_true")
+    mode.add_argument("--start-error", action="store_true")
     parser.add_argument("--target-revision", default="")
     parser.add_argument("--target-image-ref", default="")
     args = parser.parse_args()
@@ -228,6 +303,8 @@ def main() -> int:
             target_revision=args.target_revision,
             target_image_ref=args.target_image_ref,
         )
+    elif args.start_error:
+        result = sanitize_start_error(sys.stdin.buffer.read())
     else:
         result = sanitize_startup_log(sys.stdin.buffer.read())
     json.dump(result, sys.stdout, sort_keys=True, separators=(",", ":"))

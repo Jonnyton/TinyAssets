@@ -98,4 +98,10 @@ fleet.
 - **AND** failed or missing cleanup/fence proof suppresses artifact publication
 - **AND** a mismatched observed image or revision is reported only as
   unavailable, never copied into the artifact
+- **AND** only after exact candidate identity is proved, bounded Docker
+  `.State.Error` input may be reduced to a closed start-failure category
+- **AND** raw start-error text, host/container paths, commands, arbitrary
+  identifiers, and unmatched content never enter the artifact
+- **AND** failed sanitization or failed deletion of either raw temporary input
+  suppresses artifact publication
 - **AND** retains the artifact for no more than seven days

@@ -545,13 +545,26 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert '--target-revision "${TARGET_REVISION}"' in capture_script
     assert '--target-image-ref "${TARGET_IMAGE_REF}"' in capture_script
     assert 'if [ "${candidate_identity_match}" = "true" ]' in capture_script
+    identity_gate = capture_script.index(
+        'if [ "${candidate_identity_match}" = "true" ]'
+    )
+    start_error_capture = capture_script.index(".State.Error")
+    log_capture = capture_script.index("docker logs --tail 200")
+    assert identity_gate < start_error_capture < log_capture
+    assert "head -c 8193" in capture_script
+    assert "--start-error" in capture_script
+    assert "candidate-daemon-start-error.raw" in capture_script
+    assert "daemon-start-error.json" in capture_script
+    assert 'rm -f "${raw_log}" "${state_raw}" "${start_error_raw}"' in (
+        capture_script
+    )
     assert "GITHUB_SHA" not in capture_script
     assert "docker compose" not in capture_script
     assert "compose-ps" not in capture_script
     assert "daemon.log" not in capture_script
     assert "/etc/tinyassets/env" not in capture_script
     assert ".Config.Env" not in capture_script
-    assert ".State.Error" not in capture_script
+    assert capture_script.count(".State.Error") == 1
 
     upload_with = upload.get("with") or {}
     assert (
@@ -564,6 +577,216 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     ) == 3
     assert upload_with.get("if-no-files-found") == "error"
     assert 0 < int(upload_with["retention-days"]) <= 7
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "valid",
+        "identity_mismatch",
+        "inspect_failure",
+        "start_error_probe_failure",
+        "state_sanitizer_failure",
+        "start_error_sanitizer_failure",
+        "log_sanitizer_failure",
+        "manifest_failure",
+        "deletion_failure",
+    ],
+)
+def test_failed_candidate_diagnostic_shell_gates_execute(scenario: str):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to execute the workflow shell harness")
+
+    capture = _step_named(_load(), "Capture failed candidate startup diagnostics")
+    capture_script = str(capture.get("run", ""))
+    prelude = r"""
+set -u
+export RUNNER_TEMP="$(mktemp -d)"
+trap 'command rm -rf "${RUNNER_TEMP}"' EXIT
+export DO_SSH_USER=test-user
+export DO_DROPLET_HOST=test-host
+export TARGET_REVISION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+TARGET_IMAGE_REF=ghcr.io/jonnyton/tinyassets-daemon@sha256:
+TARGET_IMAGE_REF+=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+export TARGET_IMAGE_REF
+export GITHUB_RUN_ID=123
+export GITHUB_RUN_ATTEMPT=1
+
+timeout() {
+  shift
+  "$@"
+}
+
+ssh() {
+  case "$*" in
+    *".State.Error"*)
+      if [ "${HARNESS_SCENARIO}" = "start_error_probe_failure" ]; then
+        return 7
+      fi
+      : > "${RUNNER_TEMP}/start-error-called"
+      printf 'Bind for 127.0.0.1:8001 failed: port is already allocated\n'
+      ;;
+    *"docker inspect"*)
+      if [ "${HARNESS_SCENARIO}" = "inspect_failure" ]; then
+        return 7
+      fi
+      printf 'exited|false|false|1|false||%s|%s\n' \
+        "${TARGET_REVISION}" "${TARGET_IMAGE_REF}"
+      ;;
+    *"docker logs"*)
+      : > "${RUNNER_TEMP}/logs-called"
+      printf 'RuntimeError: redacted\n'
+      ;;
+    *) return 9 ;;
+  esac
+}
+
+python() {
+  if [ "$1" = "scripts/sanitize_startup_diagnostics.py" ]; then
+    shift
+    if [ "${1:-}" = "--state" ]; then
+      if [ "${HARNESS_SCENARIO}" = "state_sanitizer_failure" ]; then
+        return 1
+      fi
+      if [ "${HARNESS_SCENARIO}" = "identity_mismatch" ]; then
+        printf '{"candidate_identity_match":false,"capture":"unavailable"}\n'
+        return 2
+      fi
+      state_json='{"candidate_identity_match":true,"container_image_ref":"%s",'
+      state_json+='"container_revision":"%s","exit_code":1,"health":null,'
+      state_json+='"oom_killed":false,"restarting":false,"running":false,'
+      state_json+='"status":"exited"}\n'
+      printf "${state_json}" "${TARGET_IMAGE_REF}" "${TARGET_REVISION}"
+      return 0
+    fi
+    if [ "${1:-}" = "--start-error" ]; then
+      if [ "${HARNESS_SCENARIO}" = "start_error_sanitizer_failure" ]; then
+        return 1
+      fi
+      printf '{"category":"port_conflict","schema_version":1}\n'
+      return 0
+    fi
+    if [ "${HARNESS_SCENARIO}" = "log_sanitizer_failure" ]; then
+      return 1
+    fi
+    printf '{"input_truncated":false,"raw_bytes":0,"raw_lines":0,"schema_version":1,"signals":[]}\n'
+    return 0
+  fi
+  if [ "$1" = "-" ]; then
+    if [ "${HARNESS_SCENARIO}" = "manifest_failure" ]; then
+      return 1
+    fi
+    printf '{}\n' > "$2"
+    return 0
+  fi
+  return 127
+}
+
+rm() {
+  if [ "${HARNESS_SCENARIO}" = "deletion_failure" ]; then
+    return 1
+  fi
+  command rm "$@"
+}
+
+capture_step() {
+"""
+    postlude = r"""
+}
+
+set +e
+(capture_step)
+capture_status=$?
+set -e
+
+case "${HARNESS_SCENARIO}" in
+  valid)
+    [ "${capture_status}" -eq 0 ]
+    [ -f "${RUNNER_TEMP}/start-error-called" ]
+    [ -f "${RUNNER_TEMP}/logs-called" ]
+    [ -f "${RUNNER_TEMP}/candidate-startup-diagnostics/manifest.json" ]
+    ;;
+  start_error_probe_failure)
+    [ "${capture_status}" -eq 0 ]
+    [ ! -e "${RUNNER_TEMP}/start-error-called" ]
+    [ -f "${RUNNER_TEMP}/logs-called" ]
+    ;;
+  identity_mismatch|inspect_failure)
+    [ "${capture_status}" -eq 0 ]
+    [ ! -e "${RUNNER_TEMP}/start-error-called" ]
+    [ ! -e "${RUNNER_TEMP}/logs-called" ]
+    ;;
+  state_sanitizer_failure|start_error_sanitizer_failure|log_sanitizer_failure)
+    [ "${capture_status}" -ne 0 ]
+    ;;
+  manifest_failure|deletion_failure)
+    [ "${capture_status}" -ne 0 ]
+    ;;
+  *) exit 98 ;;
+esac
+
+if [ "${HARNESS_SCENARIO}" != "deletion_failure" ]; then
+  [ ! -e "${RUNNER_TEMP}/candidate-daemon.raw.log" ]
+  [ ! -e "${RUNNER_TEMP}/candidate-daemon-state.raw" ]
+  [ ! -e "${RUNNER_TEMP}/candidate-daemon-start-error.raw" ]
+  [ ! -e "${RUNNER_TEMP}/candidate-daemon-state.next.json" ]
+fi
+"""
+    harness = f"export HARNESS_SCENARIO={scenario}\n" + prelude + capture_script + postlude
+    result = subprocess.run(
+        [bash],
+        input=harness.encode("utf-8"),
+        capture_output=True,
+        env=os.environ.copy(),
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f"scenario={scenario}\nstdout:\n{result.stdout.decode(errors='replace')}"
+        f"\nstderr:\n{result.stderr.decode(errors='replace')}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("producer", "expected_status"),
+    [
+        ("{ printf x; exit 7; }", 7),
+        ("yes x", 141),
+    ],
+)
+def test_candidate_start_error_pipefail_propagates_producer_failure(
+    producer: str,
+    expected_status: int,
+):
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("bash is required to execute the remote pipeline probe")
+
+    capture = _step_named(_load(), "Capture failed candidate startup diagnostics")
+    capture_script = str(capture.get("run", ""))
+    remote_command = (
+        "bash -o pipefail -c 'timeout 15s sudo docker inspect --type container "
+        'tinyassets-daemon --format \\"{{.State.Error}}\\" | head -c 8193\''
+    )
+    assert remote_command in capture_script
+    probe = re.sub(
+        r"timeout 15s sudo docker inspect --type container tinyassets-daemon "
+        r'--format \\"\{\{\.State\.Error\}\}\\"',
+        producer,
+        remote_command,
+    )
+
+    result = subprocess.run(
+        [bash, "-c", probe],
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == expected_status
+    assert len(result.stdout) <= 8_193
 
 
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():

@@ -136,6 +136,11 @@ before removal. This is not general Docker garbage collection.
    cleanup output proving the fleet was restored or authoritatively
    restart-fenced plus a published terminal release-state receipt. Mismatched
    observed container identities are reduced to `unavailable`.
+   When exact identity is proved but Docker leaves the candidate in `created`
+   state without logs, collect at most 8 KiB of `.State.Error` into runner
+   temporary storage and reduce it to a closed start-failure category. Raw
+   error text, paths, commands, and identifiers never enter the artifact; a
+   sanitizer or raw-deletion failure suppresses artifact publication.
 5. Merge and build an immutable image.
 6. From the currently restored old-image recovery, execute one normal deploy
    through the repaired fence and prove the exact five canonical containers,

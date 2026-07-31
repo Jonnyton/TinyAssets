@@ -5,6 +5,7 @@ import json
 from scripts.sanitize_startup_diagnostics import (
     STATE_SEPARATOR,
     sanitize_candidate_state,
+    sanitize_start_error,
     sanitize_startup_log,
 )
 
@@ -169,3 +170,38 @@ def test_candidate_state_rejects_each_identity_mismatch_without_raw_disclosure()
         "capture": "unavailable",
     }
     assert token not in json.dumps(malformed)
+
+
+def test_start_error_is_reduced_to_closed_categories_without_raw_disclosure():
+    secret = "secret-host-path-and-token"
+    cases = {
+        b"": "none",
+        b"Bind for 127.0.0.1:8001 failed: port is already allocated": "port_conflict",
+        f"failed to mount /srv/{secret}: invalid mount config".encode(): "mount_failure",
+        b"network tinyassets-net not found": "network_missing",
+        b"OCI runtime create failed: failed to create task for container": (
+            "runtime_create_failed"
+        ),
+        b"apparmor profile denied operation": "security_profile_failure",
+        b"write /var/lib/docker: no space left on device": "storage_exhausted",
+        b"cannot allocate memory while creating container": "resource_exhausted",
+        f"opaque engine failure {secret}".encode(): "unclassified",
+        b"\xff\xfe": "unclassified",
+    }
+
+    for raw, expected in cases.items():
+        result = sanitize_start_error(raw)
+        serialized = json.dumps(result)
+        assert result == {"schema_version": 1, "category": expected}
+        assert secret not in serialized
+        decoded_raw = raw.decode("utf-8", errors="ignore")
+        if decoded_raw:
+            assert decoded_raw not in serialized
+
+
+def test_start_error_rejects_input_above_bound_without_disclosure():
+    secret = b"secret-start-error"
+    result = sanitize_start_error((b"x" * 8_193) + secret)
+
+    assert result == {"schema_version": 1, "category": "unavailable"}
+    assert secret.decode() not in json.dumps(result)
