@@ -399,6 +399,42 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
 
+    def get_binding(
+        self,
+        binding_id: str,
+    ) -> BackgroundBranchBinding | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM background_branch_bindings
+            WHERE binding_id = ?
+            """,
+            (binding_id,),
+        ).fetchone()
+        return _binding_from_row(row) if row is not None else None
+
+    def get_attempt_by_logical_key(
+        self,
+        logical_attempt_key: str,
+    ) -> BackgroundBranchAttempt | None:
+        row = self._conn.execute(
+            """
+            SELECT * FROM background_branch_attempts
+            WHERE logical_attempt_key = ?
+            """,
+            (logical_attempt_key,),
+        ).fetchone()
+        return _attempt_from_row(row) if row is not None else None
+
+    def count_attempts(self, *, binding_id: str) -> int:
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) FROM background_branch_attempts
+            WHERE binding_id = ?
+            """,
+            (binding_id,),
+        ).fetchone()
+        return int(row[0])
+
     def insert_binding(
         self,
         binding: BackgroundBranchBinding,
