@@ -4,7 +4,7 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/startup-diagnostic-state-framing`
-- Lane state: Active; PR #1995 ADAPT test strengthening validated locally
+- Lane state: Active; PR #1995 runtime head independently approved; foldback pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; draft PR #1995
 - Purpose: make exact candidate state parseable so sanitized failure signals survive rollback

@@ -267,8 +267,10 @@ boundary could survive. The successor locks the complete eight-field template,
 asserts exactly seven identical separators, and passes a production-shaped
 rendered record through `sanitize_candidate_state`. Fresh Windows-host evidence
 at `2026-07-31T17:56Z` is 133 focused tests passed, clean Ruff and diff checks,
-and strict OpenSpec validation. Exact-head re-review remains required before
-deployment.
+and strict OpenSpec validation. Independent exact-head re-review of
+`c6bccf05a29cb5a58fe987fde9682deb0dabdb61` returned APPROVE with no findings
+after additionally mutation-checking all seven delimiter boundaries and pipe
+injection into every accepted field.
 
 ## Release And Rollback
 
