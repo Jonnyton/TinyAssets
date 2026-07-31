@@ -891,6 +891,61 @@ def test_expired_worker_cannot_heartbeat_or_finish_before_recovery(
     assert [task.status for task in recovered] == ["pending"]
 
 
+def test_epoch2_recovery_requires_target_guard_when_supplied(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, clock = epoch2
+    adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+        lease_seconds=30,
+    )
+    clock.set("2026-07-24T08:01:31+00:00")
+
+    assert adapter.recover_expired(
+        target_recovery_guard=lambda _task: False,
+    ) == []
+    assert adapter.get(committed["branch_task_id"]).status == "running"
+
+
+def test_epoch2_recovery_revalidates_row_after_target_proof(
+    epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
+) -> None:
+    adapter, committed, clock = epoch2
+    adapter.claim(
+        committed["branch_task_id"],
+        descriptor=_descriptor(),
+        descriptor_reader=lambda _conn, _worker_id: _descriptor(),
+        lease_seconds=30,
+    )
+    clock.set("2026-07-24T08:01:31+00:00")
+
+    def renew_during_proof(_task) -> bool:
+        with adapter._store.connection() as conn:
+            conn.execute(
+                """
+                UPDATE branch_tasks_v2
+                SET heartbeat_at = ?, lease_expires_at = ?
+                WHERE branch_task_id = ?
+                """,
+                (
+                    "2026-07-24T08:01:31+00:00",
+                    "2026-07-24T08:03:00+00:00",
+                    committed["branch_task_id"],
+                ),
+            )
+            conn.commit()
+        return True
+
+    assert adapter.recover_expired(
+        target_recovery_guard=renew_during_proof,
+    ) == []
+    task = adapter.get(committed["branch_task_id"])
+    assert task.status == "running"
+    assert task.lease_expires_at == "2026-07-24T08:03:00+00:00"
+
+
 def test_cancel_requested_task_recovers_to_cancelled(
     epoch2: tuple[Epoch2BranchTaskAdapter, dict, _MutableClock],
 ) -> None:

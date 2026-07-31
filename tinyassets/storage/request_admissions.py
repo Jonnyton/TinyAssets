@@ -1404,8 +1404,32 @@ class RequestAdmissionStore:
                 conn.rollback()
                 raise
 
+    def list_expired_v2_tasks(self) -> list[dict[str, Any]]:
+        with self.connection() as conn:
+            if not _table_exists(conn, "branch_tasks_v2"):
+                return []
+            if not _recovery_schema_ready(conn):
+                raise sqlite3.OperationalError(
+                    "branch_tasks_v2 recovery schema incomplete"
+                )
+            now = _clock_iso(self._clock)
+            rows = conn.execute(
+                """
+                SELECT * FROM branch_tasks_v2
+                WHERE status IN ('running', 'cancel_requested')
+                  AND disabled = 0
+                  AND lease_expires_at IS NOT NULL
+                  AND julianday(lease_expires_at) <= julianday(?)
+                ORDER BY queued_at, branch_task_id
+                """,
+                (now,),
+            ).fetchall()
+        return [_task_row(row) for row in rows]
+
     def recover_expired_v2_tasks(
         self,
+        *,
+        approved_rows: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         with self.connection() as conn:
             if not _table_exists(conn, "branch_tasks_v2"):
@@ -1449,6 +1473,12 @@ class RequestAdmissionStore:
                 ).fetchall()
                 recovered: list[dict[str, Any]] = []
                 for row in rows:
+                    if approved_rows is not None:
+                        expected = approved_rows.get(
+                            str(row["branch_task_id"])
+                        )
+                        if expected is None or dict(row) != dict(expected):
+                            continue
                     cancelled = row["status"] == "cancel_requested"
                     new_status = "cancelled" if cancelled else "pending"
                     cursor = conn.execute(
