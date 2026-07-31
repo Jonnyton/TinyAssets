@@ -60,3 +60,19 @@ removal intent before container mutation.
 - **AND** interruption may replay only the exact remaining recorded subset
 - **AND** any extra, substituted, foreign, running, restart-enabled, or
   same-name off-volume container fails before removal
+
+### Requirement: Failed Candidate Startup Evidence Precedes Rollback
+
+The deploy workflow SHALL preserve bounded candidate startup evidence before
+rollback can replace or remove a normal production candidate that fails before
+health convergence. The evidence MUST exclude production environment values
+and MUST expire automatically.
+
+#### Scenario: Failed candidate is captured without environment disclosure
+
+- **WHEN** the candidate daemon does not reach the public health gate
+- **THEN** the workflow captures Compose container status, daemon runtime
+  state, and at most the final 128 KiB of the last 200 daemon log lines
+- **AND** uploads that evidence as a private workflow artifact before rollback
+- **AND** does not inspect or serialize container environment values
+- **AND** retains the artifact for no more than seven days

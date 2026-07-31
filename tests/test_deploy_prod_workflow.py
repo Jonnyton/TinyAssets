@@ -430,6 +430,34 @@ def test_rollback_step_present():
     )
 
 
+def test_failed_candidate_diagnostics_are_preserved_before_rollback():
+    wf = _load()
+    steps = _steps(wf)
+    health = _step_named(wf, "Wait for daemon health")
+    capture = _step_named(wf, "Capture failed candidate startup diagnostics")
+    upload = _step_named(wf, "Upload failed candidate startup diagnostics")
+    rollback = _step_named(wf, "Rollback on failure")
+
+    assert steps.index(health) < steps.index(capture) < steps.index(rollback)
+    assert steps.index(capture) < steps.index(upload) < steps.index(rollback)
+    assert str(capture.get("if", "")).strip() == "failure()"
+    assert str(upload.get("if", "")).strip() == "failure()"
+
+    capture_script = str(capture.get("run", ""))
+    assert "docker compose" in capture_script
+    assert "ps --all" in capture_script
+    assert "docker inspect --type container tinyassets-daemon" in capture_script
+    assert "docker logs --tail 200 tinyassets-daemon" in capture_script
+    assert "tail -c 131072" in capture_script
+    assert "/etc/tinyassets/env" not in capture_script
+    assert ".Config.Env" not in capture_script
+
+    upload_with = upload.get("with") or {}
+    assert upload.get("uses") == "actions/upload-artifact@v4"
+    assert upload_with.get("if-no-files-found") == "error"
+    assert int(upload_with.get("retention-days", 0)) <= 7
+
+
 def test_rollback_runs_always_and_eligibility_keys_to_image_marker():
     wf = _load()
     step = _step_named(wf, "Rollback on failure")

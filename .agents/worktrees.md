@@ -1,10 +1,22 @@
 # Worktree Inventory
 
+## 2026-07-30 22:21 - production-shaped startup diagnostics
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/prod-shaped-startup-diagnostics`
+- Lane state: Active; bounded fail-path artifact implementation verified locally
+- Worktree: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; PR pending
+- Purpose: preserve failed candidate startup evidence before rollback, then use one controlled deploy to identify and repair the production-shaped regression
+- Review gate: focused workflow tests, strict OpenSpec, independent exact-head review, then guarded live deployment
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-prod-shaped-startup-diagnostics/_PURPOSE.md`
+- Ship/abandon: merge diagnostics first; never deploy current main without preserved evidence and a provenance-bound recovery route
+
 ## 2026-07-30 21:18 - public MCP 502 recovery
 
 - Provider: `drain-20260730-211134-0ef085`
 - Branch: `chore/drain-20260730-211134-0ef085-exhaustion`
-- Lane state: Active recovery claim
+- Lane state: Recovery merged and worker exited; follow-up handed to `fix/prod-shaped-startup-diagnostics`
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-211134-0ef085-exhaustion`
 - STATUS/Issue/PR: canonical `/mcp` HTTP 502 recovery; PR pending
 - Purpose: restore the canonical public MCP endpoint and verify upstream cookies are not forwarded

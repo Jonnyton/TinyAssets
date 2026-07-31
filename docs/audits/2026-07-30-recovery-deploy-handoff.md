@@ -3,8 +3,10 @@
 ## Outcome
 
 The public MCP surface is recovered on the previously configured immutable
-image. Normal deployment remains paused until the reviewed handoff repair is
-landed and deployed.
+image. The handoff and partial-target recovery repairs are landed, but current
+`main` still fails startup against production-shaped state. Normal deployment
+is paused until a bounded pre-rollback diagnostic artifact is landed; the next
+single controlled deploy will use it to identify the startup regression.
 
 Update at `2026-07-30T21:01Z`: repaired normal deploy `30581439569`
 successfully handed off the recovered generation and installed the target, but
@@ -12,6 +14,14 @@ health convergence failed with only stopped `tinyassets-daemon` remaining.
 Cleanup fenced that `restart=no` strict subset. Recovery `30582599465` then
 failed closed because recovery admitted only empty or exact-five volume
 inventories. A fresh public canary returned HTTP 502.
+
+Update at `2026-07-31T05:21Z`: isolated recovery workflow run `30605922404`
+restored the public MCP surface after normal deploy `30605692331` failed
+current-main startup and its ordinary rollback. Fresh-volume Docker build smoke
+run `30606140782` passed on `ba87b1dd`, narrowing the fault to
+production-shaped state or environment. The failed candidate's logs were lost
+to rollback, so the next repair preserves bounded private startup evidence
+before any rollback mutation.
 
 ## Production Evidence
 
@@ -32,6 +42,25 @@ inventories. A fresh public canary returned HTTP 502.
 - Fresh local public-canary verification on 2026-07-30 (Windows host):
   `py scripts/mcp_public_canary.py --url https://tinyassets.io/mcp
   --assert-name TinyAssets --assert-handles` exited `0`.
+- Normal deployment
+  [30605692331](https://github.com/Jonnyton/TinyAssets/actions/runs/30605692331)
+  installed immutable current-main digest
+  `38441153394980b49774d1a2469599173e01850b2ee51c958f64eaffc00f953b`
+  at revision `098fdd963e73069a98c15c312231dbc84688a75b`, but the daemon did
+  not become healthy within 90 seconds. Ordinary rollback then failed and the
+  workflow fenced the remaining partial fleet.
+- Provenance-bound recovery
+  [30605922404](https://github.com/Jonnyton/TinyAssets/actions/runs/30605922404)
+  succeeded and restored the previously admitted immutable image.
+- Fresh-volume Docker smoke
+  [30606140782](https://github.com/Jonnyton/TinyAssets/actions/runs/30606140782)
+  passed for current `main` revision `ba87b1dd`, including the local MCP
+  canary. This contradicts a universal image/import failure and points to
+  production-shaped startup inputs.
+- Fresh local public-canary verification at `2026-07-31T05:21Z` (Windows
+  host): `python scripts/mcp_public_canary.py --url
+  https://tinyassets.io/mcp --assert-name TinyAssets --assert-handles
+  --verbose` exited `0`.
 
 ## Root Cause
 
@@ -141,6 +170,25 @@ plan-metadata substitution. Exact-head independent re-review is pending.
 Twelve new tests cover production-shaped partial-target recovery, write-ahead
 replay after interrupted subset removal, and refusal of foreign-project,
 running, restart-enabled, foreign-image, and same-name off-volume states.
+
+Failed-candidate diagnostic verification at `2026-07-31T05:21Z` (Windows
+host):
+
+```text
+python -m pytest tests/test_deploy_prod_workflow.py \
+  tests/test_build_image_workflow.py tests/test_release_reconcile_workflow.py -q
+127 passed in 22.55s
+
+python -m ruff check tests/test_deploy_prod_workflow.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict
+Change 'repair-recovery-deploy-handoff' is valid
+```
+
+The diagnostic artifact is emitted before rollback, contains Compose status,
+daemon runtime state, and a 128 KiB-bounded tail of the last 200 daemon log
+lines, excludes environment inspection, and expires after seven days.
 
 ## Release And Rollback
 
