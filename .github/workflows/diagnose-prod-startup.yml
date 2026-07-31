@@ -71,10 +71,25 @@ jobs:
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=2 \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "set -o pipefail; timeout 25s sudo journalctl -u tinyassets-daemon --since '${SINCE_UTC}' --until '${UNTIL_UTC}' --no-pager --output=cat | python3 -c 'import collections, sys; limit = 262143; chunks = collections.deque(iter(lambda: sys.stdin.buffer.read(65536), b\"\"), maxlen=5); data = b\"\".join(chunks); sys.stdout.buffer.write((b\"1\" if len(data) > limit else b\"0\") + data[-limit:])'" \
-              2>/dev/null \
-            | python scripts/sanitize_systemd_startup_diagnostics.py --framed-input \
-                > "${diagnosis}"
+              bash -s -- "${SINCE_UTC}" "${UNTIL_UTC}" \
+              2>/dev/null <<'REMOTE' | python scripts/sanitize_systemd_startup_diagnostics.py --framed-input > "${diagnosis}"
+          set +e
+          since_utc="$1"
+          until_utc="$2"
+          timeout 25s sudo journalctl -u tinyassets-daemon \
+              --since "${since_utc}" \
+              --until "${until_utc}" \
+              --no-pager \
+              --output=cat \
+            | python3 -c 'import collections, sys; limit = 262143; chunks = collections.deque(iter(lambda: sys.stdin.buffer.read(65536), b""), maxlen=5); data = b"".join(chunks); sys.stdout.buffer.write((b"1" if len(data) > limit else b"0") + data[-limit:])'
+          remote_statuses=("${PIPESTATUS[@]}")
+          if [ "${remote_statuses[0]}" -ne 0 ]; then
+            exit 41
+          fi
+          if [ "${remote_statuses[1]}" -ne 0 ]; then
+            exit 42
+          fi
+          REMOTE
           statuses=("${PIPESTATUS[@]}")
           set -e
           if [ "${statuses[0]}" -ne 0 ] \

@@ -39,6 +39,10 @@
   restart independently, not only the earliest create phase. A fixed class also
   must not suppress a separate unknown failure; diagnostic sets are additive.
 
+- **Follow-up:** when a remote pipeline fails behind suppressed stderr, expose
+  fixed numeric boundaries first. Then remove implicit-shell ambiguity with a
+  static explicit-Bash script and distinct substage exits, never raw diagnostics.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container
