@@ -800,6 +800,22 @@ OpenSpec, and diff checks; confirmed both parent lineages are ancestors; and
 found #2020's configuration, exact-ID, replay, mixed-ownership, and
 reboot-refence authority byte-preserved alongside the terminal-state repair.
 
+Normal deploy
+[30673351448](https://github.com/Jonnyton/TinyAssets/actions/runs/30673351448)
+then passed every forward gate on merged PR #2023, including exact fleet,
+unchanged receipt, canonical canary, exact-seven surface, CF Access, and
+post-canary proof. Cleanup still failed because the finalized recovery
+predecessor had authoritatively saved the daemon as `failed/disabled`, while
+the successful normal target was correctly `active/disabled`. The workflow
+safely re-fenced all writers and published a non-contradictory
+`failed_without_rollback` receipt; a fresh canary observed HTTP 502.
+Source-bound recovery
+[30673590461](https://github.com/Jonnyton/TinyAssets/actions/runs/30673590461)
+restored and finalized the exact target, after which a fresh Windows-host
+exact-seven canary exited 0. This evidence replaces the narrower transitional
+state assumption with the postcondition that every successful normal deploy
+requires daemon `active` while preserving exact saved enablement.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored

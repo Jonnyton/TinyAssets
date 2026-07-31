@@ -971,7 +971,7 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
         "failed",
     ],
 )
-def test_preflight_preserves_stable_daemon_restore_state(
+def test_preflight_requires_active_daemon_after_successful_normal_deploy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     observed: str,
@@ -991,7 +991,7 @@ def test_preflight_preserves_stable_daemon_restore_state(
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["daemon_service_state"] == {
-        "active": observed,
+        "active": "active",
         "enabled": "enabled",
     }
     assert state["restart_racer_state"]["daemon-watchdog.service"][
@@ -5605,6 +5605,61 @@ def test_restore_converges_saved_activating_disabled_daemon_exactly(
         expected_daemon
     )
     assert evidence["restored_unit_states"][DAEMON_SERVICE] == expected_daemon
+
+
+@pytest.mark.parametrize(
+    "daemon_state",
+    [
+        {"active": "unknown", "enabled": "disabled"},
+        {"active": "failed", "enabled": "unknown"},
+    ],
+)
+def test_restore_rejects_invalid_persisted_daemon_state_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    daemon_state: dict[str, str],
+):
+    host = LifecycleHost(tmp_path)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "owner": "retire-cheat-loop task 2.1",
+                "run_id": RUN_ID,
+                "phase": "safe_fleet",
+                "old_container_ids": {},
+                "restart_racer_state": {
+                    unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
+                },
+                "daemon_service_state": daemon_state,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: {"safe": True, "phase": "safe_fleet"},
+    )
+    monkeypatch.setattr(
+        fence,
+        "_wait_units_restored",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("restore wait reached after invalid saved state")
+        ),
+    )
+
+    with pytest.raises(FenceError, match="saved daemon unit state is invalid"):
+        restore_if_safe(
+            host,
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(call[:2] == ("systemctl", "unmask") for call in host.calls)
 
 
 def test_recover_unsafe_refences_after_mutation_os_error(

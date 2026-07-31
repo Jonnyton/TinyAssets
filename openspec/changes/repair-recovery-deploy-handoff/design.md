@@ -273,13 +273,20 @@ The controlled deploy exposed a second terminal edge after all forward gates
 passed: preflight persisted systemd's transient `activating` daemon state, but
 cleanup correctly observed the settled service as `active`. Exact comparison
 could never converge, so cleanup safely re-fenced the proved target. The #2023
-compatibility repair normalizes only an already-persisted legacy daemon
-`activating` observation to an `active` restore expectation; the stable-snapshot
-successor above prevents fresh preflight from persisting any transient state.
-The receipt repair also keeps forward, rollback, and cleanup as separate facts:
-a successful forward/not-needed rollback followed by a proved cleanup fence
-becomes `failed_without_rollback`, never a synthesized contradictory rollback
-tuple. Stopped containers are not eligible as the running terminal identity.
+compatibility repair normalized an already-persisted legacy daemon
+`activating` observation to an `active` restore expectation, and the
+stable-snapshot successor above prevents fresh preflight from persisting any
+transient state. A later production run proved the broader domain rule:
+an emergency-recovery predecessor may legitimately leave the systemd daemon
+`failed` or `inactive` while its recovery Compose generation serves traffic,
+but a successful normal deploy must end with that service `active`. The fence
+therefore normalizes every authoritative predecessor daemon active state to
+the post-deploy `active` requirement, preserves exact enablement, and rejects
+invalid persisted values before restore mutation. The receipt repair also
+keeps forward, rollback, and cleanup as separate facts: a successful
+forward/not-needed rollback followed by a proved cleanup fence becomes
+`failed_without_rollback`, never a synthesized contradictory rollback tuple.
+Stopped containers are not eligible as the running terminal identity.
 
 Rollback uses the existing provenance-bound unsafe recovery workflow with the
 previous admitted stop-writer image. No direct host deletion or fence bypass is

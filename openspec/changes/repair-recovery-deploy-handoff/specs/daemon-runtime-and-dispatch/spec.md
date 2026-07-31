@@ -1,25 +1,33 @@
 ## ADDED Requirements
 
-### Requirement: Deploy Cleanup Converges Legacy Transitional Service State And Publishes Terminal Truth
+### Requirement: Deploy Cleanup Converges Daemon Postcondition And Publishes Terminal Truth
 
-The production deploy fence SHALL treat a daemon `activating` observation that
-was already persisted by a pre-stable-snapshot generation as an intended
-healthy `active` restore state. Fresh preflight MUST instead wait for every
-transient unit observation to settle before persisting restoration intent. The
-legacy convergence path MUST retain the exact saved enablement state and MUST
-NOT normalize `inactive`, `failed`, `deactivating`, `reloading`, an invalid
-state, or any restart-racer state.
+The production deploy fence SHALL require a successful normal deployment to
+end with `tinyassets-daemon.service` converged to systemd `active` regardless
+of its authoritative predecessor active state. Fresh preflight MUST wait for
+every transient unit observation to settle before persisting restoration
+intent. Cleanup MUST retain the exact saved daemon enablement state, MUST keep
+every restart-racer state exact, and MUST reject an invalid persisted daemon
+active or enablement value before unmasking or any other restore mutation.
 
-#### Scenario: Activating daemon converges to active
+#### Scenario: Recovery predecessor daemon converges to active
 
-- **WHEN** cleanup reads legacy durable state that recorded
-  `tinyassets-daemon.service` as `activating` with authoritative enablement and
-  the proved target later settles at `active`
+- **WHEN** preflight observes any authoritative active state for
+  `tinyassets-daemon.service`, including `failed` or `inactive`, with
+  authoritative enablement and the proved normal-deploy target settles at
+  `active`
 - **THEN** cleanup compares it with the normalized `active` restore expectation
 - **AND** exact enablement, unmasked state, fleet, receipt, queue, process, and
   image proofs remain required
-- **AND** inactive, failed, or otherwise drifted terminal state still fails
-  closed
+- **AND** a target daemon that is inactive, failed, transitional, or otherwise
+  non-active still fails closed
+
+#### Scenario: Persisted daemon restore state is invalid
+
+- **WHEN** durable fence state contains an unknown daemon active or enablement
+  value
+- **THEN** cleanup fails before unmasking or changing any restore unit
+- **AND** the workflow retains the existing authoritative safe-fence behavior
 
 ### Requirement: Finalized Recovery Hands Off Only Its Exact Fleet To Canonical Deploy
 
