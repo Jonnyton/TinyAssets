@@ -3365,7 +3365,7 @@ def recover_unsafe(
             failed_state = _load_state(state_path)
             if failed_state.get("phase") == "recovery_sidecars_starting":
                 try:
-                    partial_sidecars = _capture_recovery_sidecars(
+                    _capture_recovery_sidecars(
                         host,
                         failed_state,
                         state_path=state_path,
@@ -3373,23 +3373,10 @@ def recover_unsafe(
                     )
                 except FenceError:
                     # A foreign fixed-name container is not ours to mutate.
-                    # Continue by re-fencing the proved writer generation;
-                    # the recovery call still fails and its expiry remains armed.
-                    partial_sidecars = {}
-                if partial_sidecars:
-                    _set_restart_no(host, partial_sidecars)
-                    host.run(
-                        [
-                            "docker",
-                            "stop",
-                            *(
-                                str(info.get("Id", ""))
-                                for info in partial_sidecars.values()
-                            ),
-                        ],
-                        check=False,
-                    )
-                    failed_state = _load_state(state_path)
+                    # The writer-first quiesce below records sidecar drift
+                    # and never mutates an unproved fixed-name occupant.
+                    pass
+                failed_state = _load_state(state_path)
             refenced = False
             try:
                 _assert_recovery_container_ownership(host, failed_state)

@@ -18,6 +18,9 @@
   untouched, and continue fencing every current volume consumer.
 - **Follow-up:** process exit success is not state convergence. Fault tests must
   cover zero-exit incomplete inventories as well as thrown Compose failures.
+- **Follow-up:** duplicate best-effort safety mutations are extra failure
+  boundaries. Capture ownership once, then funnel every refence through one
+  writer-first path that owns error accumulation and final proof.
 
 ## 2026-07-30 — public-safe production startup evidence
 

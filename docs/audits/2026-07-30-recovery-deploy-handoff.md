@@ -212,7 +212,7 @@ the current fixed-name replacement is untouched, and the volume-writer fence
 continues independently. Strict inventory capture now occurs inside the bounded
 attempt so zero-exit incomplete creation follows the same exact-ID retry path.
 
-Adaptation evidence at `2026-07-31T21:59:42Z` (Windows host):
+Adaptation evidence at `2026-07-31T22:04:26Z` (Windows host):
 
 ```text
 RED replacement-only substitution: 1 failed
@@ -222,15 +222,21 @@ RED rename+replacement and zero-exit incomplete inventory: 2 failed
 
 RED stubborn captured sidecar stop: 1 failed before writer fencing
 
-GREEN focused replacement/rename/incomplete/stubborn cases:
-4 passed, 130 deselected in 0.56s
+Re-review of `47bd47a8` found one remaining eager outer-handler restart-fence
+operation that could throw before `quiesce_unsafe`. Its exact regression failed
+with all five writers still running. The duplicate eager sidecar mutation is
+removed; outer recovery now only captures partial ownership evidence and always
+delegates restart/stop handling to the single writer-first quiesce path.
+
+GREEN focused replacement/rename/incomplete/stubborn/restart cases:
+5 passed, 130 deselected in 0.63s
 
 python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
   tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
   tests/test_diagnose_prod_startup_workflow.py \
   tests/test_sanitize_startup_diagnostics.py \
   tests/test_sanitize_systemd_startup_diagnostics.py -q
-268 passed in 9.11s
+269 passed in 8.46s
 ```
 
 The replacement-only case proves all five writers stop while the substituted

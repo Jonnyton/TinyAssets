@@ -401,6 +401,7 @@ class LifecycleHost:
         self.substitute_sidecar_after_inspections = 0
         self.rename_sidecar_before_substitution = False
         self.sidecar_stop_failures_remaining = 0
+        self.sidecar_updates_before_failure = -1
         self.foreign_sidecar_compose = False
         self.recovery_sidecar_data_mount = False
 
@@ -704,6 +705,13 @@ class LifecycleHost:
                 if value.startswith("--restart=")
             )
             identity = command[-1]
+            if (
+                identity.startswith("recovery-sidecar-")
+                and self.sidecar_updates_before_failure >= 0
+            ):
+                if self.sidecar_updates_before_failure == 0:
+                    raise FenceError("injected sidecar restart-fence failure")
+                self.sidecar_updates_before_failure -= 1
             for name, info in self.containers.items():
                 if identity in {name, info["Id"]}:
                     info["HostConfig"]["RestartPolicy"]["Name"] = policy
@@ -2807,6 +2815,47 @@ def test_stubborn_partial_sidecar_cannot_block_writer_refence(
         for name in EXPECTED_CONTAINERS
     )
     assert host.containers[partial_name]["State"]["Running"] is True
+
+
+def test_partial_sidecar_restart_failure_cannot_block_writer_refence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured)
+    state_path = tmp_path / "state.json"
+    _unsafe_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["sidecar_handoff"] = {
+        "container_ids": {},
+        "project_name": "tinyassets",
+        "removal_phase": "removed",
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    host.containers = {}
+    host.start_installs_target = True
+    host.fail_sidecar_compose_after = 1
+    host.sidecar_compose_failures_remaining = 2
+    host.sidecar_updates_before_failure = 1
+
+    with pytest.raises(FenceError, match="re-fenced"):
+        recover_unsafe(
+            host,
+            source_run_id="source-run-1",
+            run_id="recovery-sidecar-update-failure",
+            image_ref=host.old_image_ref,
+            revision=host.old_revision,
+            state_path=state_path,
+        )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["phase"] == "unsafe_fenced"
+    assert "restart-fence failure" in state["recovery_sidecar_refence_error"]
+    assert all(
+        not host.containers[name]["State"]["Running"]
+        for name in EXPECTED_CONTAINERS
+    )
 
 
 def test_foreign_sidecar_start_failure_still_refences_owned_writers(
