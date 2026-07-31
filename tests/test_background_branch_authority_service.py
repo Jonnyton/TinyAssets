@@ -7,16 +7,23 @@ from dataclasses import replace
 import pytest
 
 from tinyassets.background_branch_authority import (
+    BackgroundBranchAttemptLifecycle,
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBindingFence,
     BackgroundBranchBindingStatus,
     BackgroundBranchChildDelegation,
+    BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
     BackgroundBranchOperation,
+    BackgroundBranchReceiptRefs,
     BackgroundBranchSourceKind,
     BackgroundBranchTargetMode,
 )
 from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAttemptIssuanceError,
+    BackgroundBranchAttemptIssuanceRequest,
+    BackgroundBranchAttemptIssuanceResolution,
+    BackgroundBranchAttemptIssuanceService,
     BackgroundBranchBindingRoot,
     BackgroundBranchBindingSeed,
     BackgroundBranchBindingTransitionError,
@@ -91,6 +98,75 @@ def _service(tmp_path, resolver: _Resolver):
         SQLiteBackgroundBranchAuthorityStore(tmp_path),
         resolver,
     )
+
+
+def _audience() -> BackgroundBranchExecutorAudience:
+    return BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id="daemon_spec_drain",
+        runtime_id="runtime_cloud_1",
+        worker_id="worker_codex_1",
+    )
+
+
+def _attempt_request(
+    binding,
+    *,
+    logical_key: str = "request:17:g4:body-deadbeef",
+    physical_universe_id: str = "universe_main",
+    audience: BackgroundBranchExecutorAudience | None = None,
+) -> BackgroundBranchAttemptIssuanceRequest:
+    return BackgroundBranchAttemptIssuanceRequest(
+        binding_id=binding.binding_id,
+        binding_generation=binding.generation,
+        binding_digest=binding.binding_digest,
+        logical_attempt_key=logical_key,
+        physical_universe_id=physical_universe_id,
+        executor_audience=audience or _audience(),
+    )
+
+
+def _attempt_resolution(
+    binding,
+    *,
+    branch_version_id: str = "branch_spec_drain@abc12345",
+    binding_override=None,
+    audience: BackgroundBranchExecutorAudience | None = None,
+) -> BackgroundBranchAttemptIssuanceResolution:
+    return BackgroundBranchAttemptIssuanceResolution(
+        binding=binding_override or binding,
+        branch_version_id=branch_version_id,
+        branch_content_digest=f"sha256:{'c' * 64}",
+        source_generation=4,
+        executor_audience=audience or _audience(),
+        resolved_at="2026-07-30T19:30:00Z",
+        parent_attempt_id=None,
+        origin_attempt_id=None,
+        audit_correlation_ids=("request:17", "trace:abc"),
+        receipt_refs=BackgroundBranchReceiptRefs(
+            b2_execution_grant_id=None,
+            provider_work_receipt_id=None,
+            provider_attempt_receipt_id=None,
+            payment_receipt_id=None,
+            effect_receipt_id=None,
+        ),
+    )
+
+
+class _AttemptResolver:
+    def __init__(
+        self,
+        resolution: BackgroundBranchAttemptIssuanceResolution | None,
+    ) -> None:
+        self.resolution = resolution
+        self.requests: list[BackgroundBranchAttemptIssuanceRequest] = []
+
+    def resolve(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+    ) -> BackgroundBranchAttemptIssuanceResolution | None:
+        self.requests.append(request)
+        return self.resolution
 
 
 def test_create_derives_server_fields_and_replays_after_restart(tmp_path) -> None:
@@ -325,3 +401,198 @@ def test_concurrent_pause_has_one_applied_transition(tmp_path) -> None:
 
     assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.APPLIED) == 1
     assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.REPLAYED) == 15
+
+
+def test_attempt_issuance_pins_fresh_state_and_replays_after_restart(
+    tmp_path,
+) -> None:
+    binding = _service(tmp_path, _Resolver(_seed())).create(_root()).record
+    assert binding is not None
+    request = _attempt_request(binding)
+    resolver = _AttemptResolver(_attempt_resolution(binding))
+
+    issued = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        resolver,
+    ).issue(request)
+    replayed = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        _AttemptResolver(None),
+    ).issue(request)
+
+    assert issued.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    assert replayed.outcome is BackgroundBranchAuthorityWriteOutcome.REPLAYED
+    assert replayed.record == issued.record
+    assert issued.record is not None
+    assert issued.record.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED
+    assert issued.record.branch_version_id == "branch_spec_drain@abc12345"
+    assert issued.record.branch_content_digest == f"sha256:{'c' * 64}"
+    assert issued.record.binding_generation == binding.generation
+    assert issued.record.binding_digest == binding.binding_digest
+    assert issued.record.executor_audience == _audience()
+    assert issued.record.provenance.authorizing_principal_id == (
+        binding.authorizing_principal_id
+    )
+    assert issued.record.provenance.worker_id == "worker_codex_1"
+    assert issued.record.provenance.receipt_refs == BackgroundBranchReceiptRefs(
+        b2_execution_grant_id=None,
+        provider_work_receipt_id=None,
+        provider_attempt_receipt_id=None,
+        payment_receipt_id=None,
+        effect_receipt_id=None,
+    )
+    assert resolver.requests == [request]
+
+
+def test_attempt_issuance_has_one_atomic_logical_key_winner(tmp_path) -> None:
+    binding = _service(tmp_path, _Resolver(_seed())).create(_root()).record
+    assert binding is not None
+    request = _attempt_request(binding)
+
+    def issue() -> BackgroundBranchAuthorityWriteOutcome:
+        service = BackgroundBranchAttemptIssuanceService(
+            SQLiteBackgroundBranchAuthorityStore(tmp_path),
+            _AttemptResolver(_attempt_resolution(binding)),
+        )
+        return service.issue(request).outcome
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(lambda _index: issue(), range(16)))
+
+    assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.APPLIED) == 1
+    assert outcomes.count(BackgroundBranchAuthorityWriteOutcome.REPLAYED) == 15
+
+
+@pytest.mark.parametrize(
+    ("request_update", "resolution_update", "error_code"),
+    [
+        (
+            {"physical_universe_id": "universe_other"},
+            {},
+            "physical_universe_mismatch",
+        ),
+        (
+            {},
+            {"branch_version_id": "branch_other@def67890"},
+            "pinned_target_mismatch",
+        ),
+        (
+            {},
+            {
+                "audience": BackgroundBranchExecutorAudience(
+                    executor_class=BackgroundBranchExecutorClass.HOST,
+                    daemon_id="daemon_spec_drain",
+                    runtime_id="runtime_cloud_1",
+                    worker_id="worker_codex_1",
+                )
+            },
+            "executor_mismatch",
+        ),
+    ],
+)
+def test_attempt_issuance_fails_closed_on_fresh_state_mismatch(
+    tmp_path,
+    request_update: dict[str, object],
+    resolution_update: dict[str, object],
+    error_code: str,
+) -> None:
+    binding = _service(tmp_path, _Resolver(_seed())).create(_root()).record
+    assert binding is not None
+    request = _attempt_request(binding, **request_update)
+    resolution = _attempt_resolution(binding, **resolution_update)
+    service = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        _AttemptResolver(resolution),
+    )
+
+    with pytest.raises(BackgroundBranchAttemptIssuanceError, match=error_code):
+        service.issue(request)
+
+    assert (
+        SQLiteBackgroundBranchAuthorityStore(tmp_path).get_attempt_by_logical_key(
+            request.logical_attempt_key
+        )
+        is None
+    )
+
+
+def test_attempt_issuance_rejects_stale_binding_and_missing_authority(
+    tmp_path,
+) -> None:
+    transition_service = _service(tmp_path, _Resolver(_seed()))
+    active = transition_service.create(_root()).record
+    assert active is not None
+    paused = transition_service.pause(BackgroundBranchBindingFence(active)).record
+    assert paused is not None
+
+    stale_service = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        _AttemptResolver(_attempt_resolution(active)),
+    )
+    with pytest.raises(
+        BackgroundBranchAttemptIssuanceError,
+        match="binding_generation_mismatch",
+    ):
+        stale_service.issue(_attempt_request(active))
+
+    current = transition_service.rotate(
+        BackgroundBranchBindingFence(paused)
+    ).record
+    assert current is not None
+    missing_service = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        _AttemptResolver(None),
+    )
+    with pytest.raises(
+        BackgroundBranchAttemptIssuanceError,
+        match="attempt_resolution_missing",
+    ):
+        missing_service.issue(_attempt_request(current))
+
+
+def test_attempt_issuance_enforces_binding_attempt_limit(tmp_path) -> None:
+    binding = _service(
+        tmp_path,
+        _Resolver(replace(_seed(), max_attempts=1)),
+    ).create(_root()).record
+    assert binding is not None
+    resolver = _AttemptResolver(_attempt_resolution(binding))
+    service = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        resolver,
+    )
+    service.issue(_attempt_request(binding, logical_key="request:17:attempt:1"))
+
+    with pytest.raises(
+        BackgroundBranchAttemptIssuanceError,
+        match="binding_attempt_limit",
+    ):
+        service.issue(_attempt_request(binding, logical_key="request:17:attempt:2"))
+
+
+def test_attempt_issuance_replay_requires_the_same_non_authorizing_context(
+    tmp_path,
+) -> None:
+    binding = _service(tmp_path, _Resolver(_seed())).create(_root()).record
+    assert binding is not None
+    service = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path),
+        _AttemptResolver(_attempt_resolution(binding)),
+    )
+    service.issue(_attempt_request(binding))
+
+    with pytest.raises(
+        BackgroundBranchAttemptIssuanceError,
+        match="prior_attempt_mismatch",
+    ):
+        service.issue(
+            _attempt_request(
+                binding,
+                audience=BackgroundBranchExecutorAudience(
+                    executor_class=BackgroundBranchExecutorClass.CLOUD,
+                    daemon_id="daemon_spec_drain",
+                    runtime_id="runtime_cloud_1",
+                    worker_id="worker_other",
+                ),
+            )
+        )

@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-30 19:30 - dark JIT background-attempt issuance
+
+- Provider: `drain-20260730-182443-ef55a1`
+- Branch: `drain/drain-20260730-182443-ef55a1`
+- Lane state: Active; exact STATUS claim committed as `74c94087`
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-20260730-182443-ef55a1`
+- STATUS/Issue/PR: `harden-background-branch-execution-authority` task 2.4; draft PR pending
+- Purpose: atomically revalidate and reserve one dark target attempt; no claim or live activation
+- Review gate: 166 focused tests, strict OpenSpec, mirror parity, and independent exact-head approval
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-20260730-182443-ef55a1/_PURPOSE.md`
+- Ship/abandon: one draft PR; preserve lane through verified merge and foldback
+
 ## 2026-07-30 19:05 - fold back atomic background-attempt reservation
 
 - Provider: `drain-20260730-182443-ef55a1`
