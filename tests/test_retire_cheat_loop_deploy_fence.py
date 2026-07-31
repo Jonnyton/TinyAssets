@@ -1090,6 +1090,142 @@ def test_preflight_classifies_current_project_when_recovery_project_expected(
 
 
 @pytest.mark.parametrize(
+    "recovery_run_id",
+    [
+        "30514843571-1",
+        "30514946746-1",
+        "30515026545-1",
+        "30515117371-1",
+        "30517431860-1",
+        "30518735998-1",
+    ],
+)
+def test_preflight_hands_off_audited_full_compose_recovery_sidecars(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recovery_run_id: str,
+):
+    assert fence.AUDITED_FULL_COMPOSE_RECOVERY_RUN_IDS == (
+        "30514843571-1",
+        "30514946746-1",
+        "30515026545-1",
+        "30515117371-1",
+        "30517431860-1",
+        "30518735998-1",
+    )
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    project = fence._recovery_project_name(recovery_run_id)
+    host.install_sidecars(project=project)
+    sidecar_ids = {
+        name: str(host.containers[name]["Id"])
+        for name, _service in fence.CANONICAL_SIDECARS
+    }
+
+    preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["sidecar_handoff"] == {
+        "container_ids": sidecar_ids,
+        "project_name": project,
+        "removal_phase": "pending",
+    }
+    configured_ref[0] = host.target_image_ref
+    evidence = prepare_deploy(
+        host,
+        image_ref=host.target_image_ref,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+    assert evidence["removed_sidecar_container_ids"] == sidecar_ids
+    assert set(host.containers) == set()
+
+
+def test_preflight_does_not_override_recorded_sidecar_project_with_audit_set(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars(
+        project=fence._recovery_project_name("30515117371-1")
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["recovery_sidecar_container_ids"] = {
+        name: str(host.containers[name]["Id"])
+        for name, _service in fence.CANONICAL_SIDECARS
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        FenceError,
+        match=(
+            "restored sidecar project audited-full-compose-recovery "
+            "is invalid: tinyassets-tunnel"
+        ),
+    ):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+
+
+def test_preflight_refuses_mixed_audited_recovery_sidecar_projects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars(
+        project=fence._recovery_project_name("30515117371-1")
+    )
+    logs_name = fence.CANONICAL_SIDECARS[1][0]
+    host.containers[logs_name]["Config"]["Labels"][
+        "com.docker.compose.project"
+    ] = fence._recovery_project_name("30518735998-1")
+
+    with pytest.raises(
+        FenceError,
+        match="restored sidecar projects differ",
+    ):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+
+
+@pytest.mark.parametrize(
     ("drift", "expected", "private_value"),
     [
         (

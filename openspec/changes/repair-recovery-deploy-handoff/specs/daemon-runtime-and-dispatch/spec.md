@@ -44,8 +44,16 @@ removal intent before container mutation.
   the observed label, ID, mount, or other raw host value
 - **AND** an invalid project predicate may expose only one fixed non-secret
   subcategory (`current-canonical`, `legacy-workflow`, `legacy-deploy`,
-  `recorded-recovery`, `unrecorded-recovery`, `missing`, or `other`), never the
-  observed project label
+  `recorded-recovery`, `audited-full-compose-recovery`,
+  `unrecorded-recovery`, `missing`, or `other`), never the observed project
+  label
+- **AND** a sidecar left by recovery before writer-only isolation may enter the
+  handoff only when its project equals the deterministic project identity of
+  one of the finite audited public recovery attempts, every present sidecar
+  shares that same project, and the existing exact service, exact ID,
+  non-writer, restart-fence, and replay requirements remain satisfied
+- **AND** arbitrary recovery-shaped projects and mixed audited projects fail
+  before mutation
 - **AND** if forward start and ordinary rollback fail, emergency recovery
   removes only a newly proved canonical or recovery-owned sidecar generation,
   recreates both sidecars under its unique recovery project with `restart=no`,

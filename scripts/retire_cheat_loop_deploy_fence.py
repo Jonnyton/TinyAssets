@@ -42,6 +42,14 @@ CANONICAL_SIDECARS = (
     ("tinyassets-logs", "logs"),
 )
 CANONICAL_COMPOSE_PROJECT = "tinyassets"
+AUDITED_FULL_COMPOSE_RECOVERY_RUN_IDS = (
+    "30514843571-1",
+    "30514946746-1",
+    "30515026545-1",
+    "30515117371-1",
+    "30517431860-1",
+    "30518735998-1",
+)
 RECOVERY_SERVICES = (
     "daemon",
     "worker",
@@ -1135,9 +1143,21 @@ def _sidecar_project_class(
         return "legacy-deploy"
     if project == str(state.get("recovery_project_name", "")):
         return "recorded-recovery"
+    if project in _audited_full_compose_recovery_projects():
+        return "audited-full-compose-recovery"
     if RECOVERY_PROJECT_RE.fullmatch(project):
         return "unrecorded-recovery"
     return "other"
+
+
+def _audited_full_compose_recovery_projects() -> frozenset[str]:
+    """Projects created by public recovery attempts before writer isolation."""
+
+    return frozenset(
+        "tinyassets-recovery-"
+        + hashlib.sha256(run_id.encode("utf-8")).hexdigest()[:16]
+        for run_id in AUDITED_FULL_COMPOSE_RECOVERY_RUN_IDS
+    )
 
 
 def _restored_sidecar_inspections(
@@ -1163,8 +1183,12 @@ def _restored_sidecar_inspections(
     )
     if not expected_project:
         raise FenceError("restored recovery sidecar project is missing")
+    allowed_projects = {expected_project}
+    if not recovery_ids:
+        allowed_projects.update(_audited_full_compose_recovery_projects())
 
     inspections: dict[str, dict[str, Any]] = {}
+    observed_sidecar_project = ""
     for name, service in CANONICAL_SIDECARS:
         if _named_container_absent_exact(host, name):
             if name in recovery_ids:
@@ -1178,11 +1202,17 @@ def _restored_sidecar_inspections(
         observed_project = str(
             labels.get("com.docker.compose.project", "")
         )
-        if observed_project != expected_project:
+        if observed_project not in allowed_projects:
             project_class = _sidecar_project_class(observed_project, state)
             raise FenceError(
                 f"restored sidecar project {project_class} is invalid: {name}"
             )
+        if (
+            observed_sidecar_project
+            and observed_project != observed_sidecar_project
+        ):
+            raise FenceError("restored sidecar projects differ")
+        observed_sidecar_project = observed_project
         if labels.get("com.docker.compose.service") != service:
             raise FenceError(f"restored sidecar service is invalid: {name}")
         if recovery_ids and recovery_ids.get(name) != identity:
@@ -1198,7 +1228,7 @@ def _restored_sidecar_inspections(
         inspections[name] = info
     if recovery_ids and set(inspections) != set(recovery_ids):
         raise FenceError("restored recovery sidecar inventory changed")
-    return inspections, expected_project
+    return inspections, observed_sidecar_project or expected_project
 
 
 def _sidecar_handoff(
