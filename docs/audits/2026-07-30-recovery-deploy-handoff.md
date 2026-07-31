@@ -563,6 +563,49 @@ conflicts, and terminal-attempt reset. Fresh Windows-host evidence at
 are clean, strict OpenSpec validation passed, and the cross-provider drift guard
 is clean.
 
+## Controlled deploy after sidecar handoff
+
+PR #2010 merged as `85d40171`. Manual main build run `30669318410` successfully
+published immutable image digest
+`sha256:513efdf67cae52498c462bc3aa856adc47f31469ca0a1fb94a601f3fcd7fb753`.
+The automatically triggered normal deploy `30669341874` then failed closed in
+stop-writer preflight before file sync or candidate start. Rollback, restart
+racer restoration, release-state publication, and proof upload all succeeded.
+The bounded artifact reported only:
+
+```json
+{"error":"restored sidecar ownership is invalid: tinyassets-tunnel","safe":false,"stale_state_ignored":true}
+```
+
+Current state remained `restored` for recovery run `30655881616-1`; public MCP
+stayed healthy. The refusal is now reduced to one fixed predicate class
+(`identity missing`, `project invalid`, `service invalid`, `recorded identity
+changed`, or `non-writer proof failed`) plus the fixed sidecar name. Tests prove
+private label, ID, and mount fixture values never enter the error. No further
+deploy mutation is allowed until this diagnostic is independently reviewed and
+merged.
+
+Fresh diagnostic verification at `2026-07-31T22:21:08Z` (Windows host):
+
+```text
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py -q
+273 passed in 8.32s
+
+python -m ruff check scripts/retire_cheat_loop_deploy_fence.py \
+  tests/test_retire_cheat_loop_deploy_fence.py
+All checks passed!
+
+openspec validate repair-recovery-deploy-handoff --strict --no-interactive
+Change 'repair-recovery-deploy-handoff' is valid
+
+git diff --check
+clean
+```
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

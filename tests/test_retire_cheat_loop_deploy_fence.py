@@ -402,6 +402,7 @@ class LifecycleHost:
         self.rename_sidecar_before_substitution = False
         self.sidecar_stop_failures_remaining = 0
         self.sidecar_updates_before_failure = -1
+        self.missing_container_info_identity: set[str] = set()
         self.foreign_sidecar_compose = False
         self.recovery_sidecar_data_mount = False
 
@@ -490,7 +491,10 @@ class LifecycleHost:
                 for candidate in self.containers.values()
                 if candidate["Id"] == name
             )
-        return json.loads(json.dumps(info))
+        result = json.loads(json.dumps(info))
+        if name in self.missing_container_info_identity:
+            result["Id"] = ""
+        return result
 
     def image_identity(self, image: str, expected_repository: str) -> tuple[str, str]:
         del expected_repository
@@ -1005,7 +1009,10 @@ def test_preflight_refuses_foreign_sidecar_before_mutation(
     _write_restored_recovery_state(host, state_path)
     host.install_sidecars(project="foreign-project")
 
-    with pytest.raises(FenceError, match="sidecar"):
+    with pytest.raises(
+        FenceError,
+        match="restored sidecar project is invalid: tinyassets-tunnel",
+    ) as failure:
         preflight(
             host,
             image_ref=host.target_image_ref,
@@ -1014,10 +1021,112 @@ def test_preflight_refuses_foreign_sidecar_before_mutation(
             state_path=state_path,
         )
 
+    assert "foreign-project" not in str(failure.value)
     assert not any(
         call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
         for call in host.calls
     )
+
+
+@pytest.mark.parametrize(
+    ("drift", "expected", "private_value"),
+    [
+        (
+            "missing_identity",
+            "restored sidecar identity is missing: tinyassets-tunnel",
+            "",
+        ),
+        (
+            "wrong_service",
+            "restored sidecar service is invalid: tinyassets-tunnel",
+            "private-service-label",
+        ),
+        (
+            "data_mount",
+            "restored sidecar non-writer proof failed: tinyassets-tunnel",
+            "private-volume-name",
+        ),
+    ],
+)
+def test_preflight_sidecar_refusal_reports_only_fixed_predicate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    drift: str,
+    expected: str,
+    private_value: str,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    host.install_sidecars()
+    tunnel = host.containers[fence.CANONICAL_SIDECARS[0][0]]
+    if drift == "missing_identity":
+        host.missing_container_info_identity.add(
+            fence.CANONICAL_SIDECARS[0][0]
+        )
+    elif drift == "wrong_service":
+        tunnel["Config"]["Labels"][
+            "com.docker.compose.service"
+        ] = private_value
+    else:
+        tunnel["Mounts"] = [
+            {"Name": private_value, "Destination": "/data"}
+        ]
+
+    with pytest.raises(FenceError, match=expected) as failure:
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    if private_value:
+        assert private_value not in str(failure.value)
+    assert not any(
+        call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+        for call in host.calls
+    )
+
+
+def test_preflight_recorded_sidecar_identity_refusal_hides_ids(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    configured_ref = [host.old_image_ref]
+    _patch_lifecycle_runtime(monkeypatch, configured_ref)
+    state_path = tmp_path / "fence-state.json"
+    _write_restored_recovery_state(host, state_path)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    project = str(state["recovery_project_name"])
+    host.install_sidecars(project=project)
+    state["recovery_sidecar_container_ids"] = {
+        name: str(host.containers[name]["Id"])
+        for name, _service in fence.CANONICAL_SIDECARS
+    }
+    state["recovery_sidecar_container_ids"][
+        fence.CANONICAL_SIDECARS[0][0]
+    ] = "private-recorded-id"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(
+        FenceError,
+        match="restored sidecar recorded identity changed: tinyassets-tunnel",
+    ) as failure:
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert "private-recorded-id" not in str(failure.value)
+    assert "recovery-sidecar-0" not in str(failure.value)
 
 
 @pytest.mark.parametrize("drift", ["foreign_project", "running", "restart", "substitute"])
