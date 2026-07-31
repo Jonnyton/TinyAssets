@@ -79,7 +79,7 @@ jobs:
           set -e
           if [ "${statuses[0]}" -ne 0 ] \
               || [ "${statuses[1]}" -ne 0 ]; then
-            echo "::error::bounded journal diagnosis failed"
+            echo "::error::bounded journal diagnosis failed (ssh_status=${statuses[0]}, sanitizer_status=${statuses[1]})"
             exit 1
           fi
           cat "${diagnosis}"

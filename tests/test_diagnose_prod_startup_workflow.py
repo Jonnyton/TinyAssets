@@ -43,6 +43,8 @@ def test_diagnostic_workflow_is_manual_read_only_and_bounded():
     assert '${statuses[0]}' in diagnosis
     assert '${statuses[1]}' in diagnosis
     assert '${statuses[2]}' not in diagnosis
+    assert "ssh_status=${statuses[0]}" in diagnosis
+    assert "sanitizer_status=${statuses[1]}" in diagnosis
 
 
 def test_diagnostic_workflow_cannot_mutate_or_publish_raw_journal():
