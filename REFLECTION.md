@@ -21,6 +21,11 @@
   multi-field protocol. Assert the complete template, the exact boundary count,
   and acceptance by the real consumer so partial delimiter drift cannot pass.
 
+- **Follow-up:** an identity-matched container in `created` state with no logs
+  disproves an application-startup hypothesis. Capture Docker's pre-start error
+  at the same identity boundary, but reduce it to a fixed class; raw host errors
+  are evidence inputs, not safe artifact fields.
+
 ## 2026-07-30 — production-shaped startup evidence
 
 - **What surprised me:** the current image passed a fresh-volume container

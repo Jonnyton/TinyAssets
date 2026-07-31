@@ -272,6 +272,31 @@ and strict OpenSpec validation. Independent exact-head re-review of
 after additionally mutation-checking all seven delimiter boundaries and pipe
 injection into every accepted field.
 
+Controlled deploy `30653950641` then proved the repaired identity join in live
+production: the artifact bound digest `18b97e...d60a` and revision `0eec432c`,
+with Docker state `created`, `running=false`, `restarting=false`, `exit_code=0`,
+no health state, no OOM, and zero log bytes. The candidate process therefore did
+not start; this contradicts the earlier application-startup hypothesis and
+moves investigation to Docker/systemd/Compose start orchestration. Ordinary
+rollback could not prove a safe fleet, so exact-source guarded recovery
+`30654162258` restored the canonical MCP canary and exact-seven assertion and
+completed successfully. The next evidence slice must classify Docker's
+identity-bound pre-start error without publishing raw host error text.
+
+The successor capture appends only Docker's JSON-escaped `.State.Error` as the
+final identity record field, caps the complete record at 16 KiB, and splits only
+the eight preceding fixed boundaries so delimiter text inside the error cannot
+change field identity. The sanitizer parses a JSON string and emits one fixed
+class (`none`, port, mount, permission, network, runtime, or `other`) only after
+the image/revision join succeeds; mismatch, malformed JSON, and oversize input
+fail unavailable. Raw error text never enters the artifact. Windows-host
+verification at `2026-07-31T18:24Z`: 136 focused tests passed, Ruff and diff
+checks clean, and strict OpenSpec validation passed. Independent exact-head
+review of `bf81cb284bd58775dd73eae7bb1e48f22b8e77c2` returned APPROVE
+with no findings after hostile shell payloads, every trusted-field pipe
+injection, malformed/non-string JSON, invalid UTF-8, oversize input, and
+identity mismatch all failed without raw-text disclosure.
+
 ## Release And Rollback
 
 Land only after independent exact-head fail-closed/security review. Build an

@@ -495,6 +495,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert "ServerAliveCountMax=2" in capture_script
     assert capture_script.count("timeout 25s ssh") >= 2
     assert capture_script.count("timeout 15s sudo docker") >= 2
+    assert "head -c 16385" in capture_script
     assert 'rm -f "${raw_log}"' in capture_script
     assert "TARGET_REVISION" in (capture.get("env") or {})
     assert "TARGET_IMAGE_REF" in (capture.get("env") or {})
@@ -514,10 +515,11 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
             "{{if .State.Health}}{{.State.Health.Status}}{{end}}",
             r'{{index .Config.Labels \"org.opencontainers.image.revision\"}}',
             "{{.Config.Image}}",
+            "{{json .State.Error}}",
         )
     )
     assert state_template == expected_state_template
-    assert state_template.count(STATE_SEPARATOR) == 7
+    assert state_template.count(STATE_SEPARATOR) == 8
     revision = "a" * 40
     image_ref = f"ghcr.io/jonnyton/tinyassets-daemon@sha256:{'b' * 64}"
     rendered_state = STATE_SEPARATOR.join(
@@ -530,6 +532,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
             "unhealthy",
             revision,
             image_ref,
+            json.dumps(""),
         )
     ).encode()
     assert (
@@ -551,7 +554,7 @@ def test_failed_candidate_diagnostics_are_preserved_before_rollback():
     assert "daemon.log" not in capture_script
     assert "/etc/tinyassets/env" not in capture_script
     assert ".Config.Env" not in capture_script
-    assert ".State.Error" not in capture_script
+    assert "{{json .State.Error}}" in capture_script
 
     upload_with = upload.get("with") or {}
     assert (

@@ -1,16 +1,16 @@
 # Worktree Inventory
 
-## 2026-07-30 23:42 - repair startup diagnostic state framing
+## 2026-07-31 11:20 - classify candidate Docker pre-start failure
 
 - Provider: `codex-gpt5-desktop`
-- Branch: `fix/startup-diagnostic-state-framing`
-- Lane state: Active; PR #1995 runtime head independently approved; foldback pending
+- Branch: `fix/startup-created-state-classification`
+- Lane state: Active; PR #1998 runtime head independently approved, foldback pending
 - Worktree: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing`
-- STATUS/Issue/PR: current-main startup recovery; issue #1987; draft PR #1995
-- Purpose: make exact candidate state parseable so sanitized failure signals survive rollback
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: safely classify why the exact candidate remained `created` before process start
 - Review gate: focused tests, strict OpenSpec, actionlint CI, independent exact-head approval
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-startup-diagnostic-state-framing/_PURPOSE.md`
-- Ship/abandon: merge one narrow framing repair, then rerun controlled current-main deploy with guarded recovery ready
+- Ship/abandon: merge one narrow classifier, then rerun once with guarded recovery ready
 
 ## 2026-07-30 22:35 - harden production startup diagnostics
 

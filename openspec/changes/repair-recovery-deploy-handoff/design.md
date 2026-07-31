@@ -129,7 +129,10 @@ before removal. This is not general Docker garbage collection.
    emitted. Collect raw logs only after the inspected container's immutable
    image reference and OCI revision equal the fence-proved target; transport
    those fixed fields with a literal safe separator rather than escape
-   sequences whose rendering depends on Docker's Go template behavior. Failure
+   sequences whose rendering depends on Docker's Go template behavior. Append
+   Docker's JSON-escaped pre-start error as the final field, split only the
+   preceding fixed boundaries, and publish only an identity-bound fixed error
+   class. Failure
    and cancellation after image mutation take the same bounded capture path,
    including deploy or environment-assert failures that skip the named health
    step. Publish only sanitized evidence, and gate publication on an explicit
