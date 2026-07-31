@@ -949,7 +949,8 @@ fresh-host rollback edges found later.
 - **Pattern worth capturing:** classify stale, already-proved work separately
   from malformed work. Suppress the exact stale candidate in a bounded set and
   preserve audit evidence without manufacturing progress or spending the
-  failure budget.
+  failure budget. Do not reuse a set whose reconciliation and bypass semantics
+  belong to a different class of suppression.
 - **What I would do differently:** state-transition tests should assert the
   next admission decision, not only that counters did not advance. A retained
   resume target can turn a safe rejection into a deterministic retry loop.

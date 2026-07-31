@@ -16,7 +16,8 @@
 ## 3. Verification
 
 - [x] 3.1 Run focused supervisor tests, Ruff, strict OpenSpec validation, and
-  diff checks. Completed 2026-07-30 on Windows: 129 supervisor tests passed;
+  diff checks. Completed 2026-07-30 on Windows: 131 supervisor tests passed,
+  including a two-iteration `OWNED` replay followed by fresh admission;
   Ruff, strict OpenSpec, and `git diff --check` passed.
 - [ ] 3.2 Obtain independent exact-head review, then publish through a draft PR
   and fold back the STATUS claim after merge.

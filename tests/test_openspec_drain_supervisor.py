@@ -1066,6 +1066,13 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
             "claimed:drain-test",
         ),
         drain.CandidateHint("CLAIMABLE", "first target", (), 1, "pending"),
+        drain.CandidateHint(
+            "STALE",
+            "first target",
+            (),
+            1,
+            "claimed:stale-worker",
+        ),
         drain.CandidateHint("CLAIMABLE", "second target", (), 2, "pending"),
     )
 
@@ -1080,6 +1087,29 @@ def test_blocked_candidates_are_filtered_before_next_admission() -> None:
         ("OWNED", "first target"),
         ("CLAIMABLE", "second target"),
     ]
+
+
+def test_consumed_targets_filter_owned_and_claimable_hints() -> None:
+    hints = (
+        drain.CandidateHint(
+            "OWNED",
+            "first target",
+            (),
+            1,
+            "claimed:drain-test",
+        ),
+        drain.CandidateHint("CLAIMABLE", "first target", (), 1, "pending"),
+        drain.CandidateHint("CLAIMABLE", "second target", (), 2, "pending"),
+    )
+
+    remaining = drain.filter_recently_consumed_hints(
+        hints,
+        recent_consumed_targets=["first-target"],
+    )
+
+    assert [
+        (hint.classification, hint.task_label) for hint in remaining
+    ] == [("CLAIMABLE", "second target")]
 
 
 def test_recent_blockers_are_retained_only_while_current_main_blocks_them() -> None:
@@ -2153,7 +2183,7 @@ def test_duplicate_merge_suppresses_stale_admission_without_counting_slice(
     assert state["consecutive_transients"] == 0
     assert state["admission"] is None
     assert state["resume_target"] is None
-    assert state["recent_blocked"] == ["target"]
+    assert state["recent_consumed_targets"] == ["target"]
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
     assert state["last_consumed_attempt"] == 3
     assert state["status"] == "duplicate-merge-suppressed"
@@ -2166,7 +2196,7 @@ def test_duplicate_merge_suppression_is_bounded_and_deduplicated() -> None:
     ]
     state = _state(
         consecutive_failures=1,
-        recent_blocked=targets,
+        recent_consumed_targets=targets,
         admission={"target": "target-2"},
         resume_target="target-2",
         merged_prs=["https://github.com/o/r/pull/12"],
@@ -2182,9 +2212,12 @@ def test_duplicate_merge_suppression_is_bounded_and_deduplicated() -> None:
         attempt=4,
     )
 
-    assert len(state["recent_blocked"]) == drain.MAX_RECENT_BLOCKED
-    assert state["recent_blocked"].count("target-2") == 1
-    assert state["recent_blocked"][-1] == "target-2"
+    assert (
+        len(state["recent_consumed_targets"])
+        == drain.MAX_RECENT_BLOCKED
+    )
+    assert state["recent_consumed_targets"].count("target-2") == 1
+    assert state["recent_consumed_targets"][-1] == "target-2"
     assert state["consecutive_failures"] == 0
 
 
@@ -2866,8 +2899,115 @@ def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
     assert state["merged_prs"] == [pr]
     assert state["admission"] is None
     assert state["resume_target"] is None
-    assert state["recent_blocked"] == ["old-target"]
+    assert state["recent_consumed_targets"] == ["old-target"]
     assert state["status"] == "duplicate-merge-suppressed"
+
+
+def test_run_excludes_consumed_owned_target_on_next_iteration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    first_pr = "https://github.com/o/r/pull/12"
+    second_pr = "https://github.com/o/r/pull/13"
+    first_target = "first-target"
+    second_target = "second-target"
+    initial_state = _state(
+        attempts=0,
+        last_consumed_attempt=0,
+        completed_slices=1,
+        merged_prs=[first_pr],
+        admission={
+            "target": first_target,
+            "task_label": "first target",
+            "worktree": str(repo),
+            "branch": "drain/run/first-target",
+        },
+        resume_target=first_target,
+    )
+    snapshot = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(1, 0, 1),
+        hints=(
+            drain.CandidateHint(
+                "OWNED",
+                "first target",
+                (),
+                1,
+                "claimed:drain-test",
+            ),
+            drain.CandidateHint(
+                "CLAIMABLE",
+                "second target",
+                (),
+                2,
+                "pending",
+            ),
+        ),
+        blocked_targets=frozenset(),
+    )
+    admitted: list[str] = []
+    monkeypatch.setattr(drain, "_new_state", lambda _args: initial_state)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        drain,
+        "admit_candidate",
+        lambda **kwargs: (
+            admitted.append(kwargs["hint"].task_label)
+            or drain.Admission(
+                target=second_target,
+                task_label="second target",
+                worktree=repo,
+                branch="drain/run/second-target",
+            )
+        ),
+    )
+    monkeypatch.setattr(drain, "verify_merged", lambda *_args, **_kwargs: True)
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        marker = (
+            f"DRAIN_RESULT: MERGED {first_target} {first_pr}\n"
+            if result_path.name == "001.md"
+            else f"DRAIN_RESULT: MERGED {second_target} {second_pr}\n"
+        )
+        result_path.write_text(marker, encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "2",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 0
+    assert admitted == ["second target"]
+    assert state["attempts"] == 2
+    assert state["completed_slices"] == 2
+    assert state["recent_consumed_targets"] == [first_target]
+    assert state["merged_prs"] == [first_pr, second_pr]
 
 
 def test_run_dispatches_inside_mechanically_admitted_lane(
