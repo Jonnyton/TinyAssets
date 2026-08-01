@@ -290,6 +290,7 @@ jobs:
   test-unsigned-windows-install:
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
