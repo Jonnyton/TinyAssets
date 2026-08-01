@@ -76,7 +76,11 @@ not enforced, and same-database background/provider revocation could race the
 continuation insert. Both findings became RED regressions. The implementation
 now requires the sole executor class to be `cloud` and revalidates the exact
 background/provider serialized records inside the activation/continuation
-transaction. Exact-head rereview is required before merge.
+transaction. Fresh-context rereview returned `APPROVE` for exact code head
+`5fca1769dc2764071aecfea41448d74a82eecbf3`: the reviewer confirmed exact
+cloud-only authority, transaction-time state/expiry fencing, interleaved
+revocation rejection, and the inert separate-database destination snapshot,
+with no new blocking security, concurrency, test, or documentation finding.
 
 ## Remaining gate
 
