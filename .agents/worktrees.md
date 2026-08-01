@@ -4,9 +4,9 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/oauth-diagnostic-current-main`
-- Lane state: Active recovery task 2.3 successor after green normal deploy
+- Lane state: OAuth diagnostic on current main after green normal deploy and recovery archive reconciliation
 - Worktree: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack`
-- STATUS/Issue/PR: recovery row broadened; draft PR #1935 is the reviewed source; current-main PR pending
+- STATUS/Issue/PR: OAuth row claimed; draft PR #1935 is source-only; current-main PR pending
 - Purpose: transplant diagnostics-only WorkOS rejection categories without changing token acceptance, then build/deploy a current-main image
 - Review gate: auth TDD/regression, Ruff, strict OpenSpec, mirror parity, independent exact-head security review, immutable normal deploy
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack/_PURPOSE.md`

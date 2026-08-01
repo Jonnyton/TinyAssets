@@ -379,33 +379,45 @@ The epoch-1 dispatcher SHALL derive the trusted enqueue universe from the canoni
 - **WHEN** a claimed row's persisted universe matches the physical queue directory
 - **THEN** graph execution receives that physical universe as its trusted enqueue context
 
-### Requirement: Deploy Cleanup Converges Daemon Postcondition And Publishes Terminal Truth
+### Requirement: Deploy Cleanup Establishes Canonical Active Daemon And Publishes Terminal Truth
 
-The production deploy fence SHALL require a successful normal deployment to
-end with `tinyassets-daemon.service` converged to systemd `active` regardless
-of its authoritative predecessor active state. Fresh preflight MUST wait for
-every transient unit observation to settle before persisting restoration
-intent. Cleanup MUST retain the exact saved daemon enablement state, MUST keep
-every restart-racer state exact, and MUST reject an invalid persisted daemon
-active or enablement value before unmasking or any other restore mutation.
+Fresh preflight MUST wait for every transient unit observation to settle before
+persisting the exact stable predecessor as restoration intent. Only after the
+normal target fleet and public canaries are durably proved SHALL cleanup establish
+`tinyassets-daemon.service` as `active` when the authoritative settled
+predecessor state is `active`, `inactive`, or `failed`, and SHALL treat a
+daemon `activating` observation already persisted by a pre-stable-snapshot
+generation as the same intended healthy terminal state. It MUST retain the
+exact saved enablement state, MUST keep every restart-racer state exact, and
+MUST reject an invalid persisted daemon active or enablement value before
+proof, unmasking, or any other restore mutation. It MUST NOT normalize
+`deactivating`, `reloading`, or any restart-racer state.
 
-#### Scenario: Recovery predecessor daemon converges to active
+#### Scenario: Normal handoff converges daemon ownership to active
 
-- **WHEN** preflight observes any authoritative active state for
-  `tinyassets-daemon.service`, including `failed` or `inactive`, with
-  authoritative enablement and the proved normal-deploy target settles at
-  `active`
+- **WHEN** fresh preflight settles `tinyassets-daemon.service` at `active`,
+  `inactive`, or `failed`, or cleanup reads a legacy durable `activating`
+  observation, with authoritative enablement
+- **AND** the normal target fleet and canaries are proved
 - **THEN** cleanup compares it with the normalized `active` restore expectation
 - **AND** exact enablement, unmasked state, fleet, receipt, queue, process, and
   image proofs remain required
-- **AND** a target daemon that is inactive, failed, transitional, or otherwise
-  non-active still fails closed
+- **AND** any terminal state other than `active` still fails closed
+
+#### Scenario: Failed forward rollback preserves predecessor daemon posture
+
+- **WHEN** the forward target does not reach durable post-canary proof
+- **AND** cleanup proves the admitted previous-image rollback fleet
+- **THEN** cleanup restores the exact stable predecessor daemon active state and
+  enablement recorded by preflight
+- **AND** it MUST NOT establish canonical active ownership on behalf of the
+  failed normal target
 
 #### Scenario: Persisted daemon restore state is invalid
 
 - **WHEN** durable fence state contains an unknown daemon active or enablement
   value
-- **THEN** cleanup fails before unmasking or changing any restore unit
+- **THEN** cleanup fails before proving or changing any restore unit
 - **AND** the workflow retains the existing authoritative safe-fence behavior
 
 ### Requirement: Finalized Recovery Hands Off Only Its Exact Fleet To Canonical Deploy
@@ -444,8 +456,11 @@ removal intent before container mutation.
 - **AND** a unit that does not settle fails preflight before durable fence state
   or host mutation
 - **AND** restoration preserves the exact settled watchdog/timer posture and
-  exact daemon enablement, while only a saved daemon startup transition may
-  converge from `activating` to `active`
+  exact daemon predecessor posture until the normal target and canaries are
+  durably proved
+- **AND** only that successful normal handoff converges an authoritative
+  `active`, `inactive`, or `failed` predecessor to canonical `active`, while
+  retaining legacy `activating` compatibility
 - **AND** missing units, residual masks, or any other restored-state drift fail
   closed
 
