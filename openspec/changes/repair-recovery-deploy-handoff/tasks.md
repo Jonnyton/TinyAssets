@@ -27,7 +27,7 @@
 
 ## 2. Verification And Release
 
-- [ ] 2.1 Pass the combined focused suite, Ruff, strict OpenSpec validation,
+- [x] 2.1 Pass the combined focused suite, Ruff, strict OpenSpec validation,
   clean diff, and independent exact-head fail-closed/security review for the
   integrated rollback-safe active-daemon successor.
 - [x] 2.2 Land the active-daemon repair, deploy one immutable image through the

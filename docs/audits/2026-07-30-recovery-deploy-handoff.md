@@ -6,8 +6,8 @@ The public MCP surface is running the canonical normal deployment after PR
 #2029 and successful deploy `30674978746`. The remaining handoff work is a
 latent rollback-safety correction: successful target cleanup must establish
 daemon `active`, but a failed-forward previous-image rollback must retain the
-exact stable predecessor posture. No further deployment is permitted until
-that successor receives exact-head approval.
+exact stable predecessor posture. Further deployment was held until that
+successor received exact-head approval at `9057025e`.
 
 Update at `2026-07-31T23:28Z`: PR #2020's stricter sidecar handoff passed normal
 deploy `30672569902` through target health, exact-five fleet, public MCP,
@@ -42,7 +42,7 @@ passed). The successor now persists the exact stable predecessor, preserves
 durable `post_canary_proved` state across repeated proofs, establishes active
 only for that exact proved target identity, and writes the resulting terminal
 intent for idempotent cleanup. Focused GREEN evidence: 10 passed. Production
-remains recovery-backed and unchanged pending exact-head re-review.
+was recovery-backed and unchanged at that point, pending exact-head re-review.
 
 Pre-rebase corrected successor verification at `2026-08-01T00:17Z` (Windows host):
 
@@ -80,6 +80,12 @@ OpenSpec flow: ALLOWED (global delivery WIP 1)
 Cross-provider drift: clean
 git diff origin/main...HEAD --check: clean
 ```
+
+Exact-head Codex re-review at `2026-08-01T00:28Z` approved
+`9057025e54e7b0938701615a660a1889cca041f0` with no required findings. It
+explicitly rechecked the prior ADAPT, success, previous-image rollback,
+invalid-state pre-mutation refusal, transient refusal, and crash/retry
+boundaries; its fresh integrated run reported 436 passed.
 
 Stable-unit successor verification at `2026-07-31T23:36Z` (Windows host):
 

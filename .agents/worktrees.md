@@ -20,7 +20,7 @@
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-daemon-owner-state`
 - STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
 - Purpose: make successful normal handoff converge daemon ownership to active while preserving exact enablement
-- Review gate: production-shaped TDD, combined deployment suite, strict OpenSpec, clean Ruff/diff, independent exact-head approval
+- Review gate: APPROVED at `9057025e`; 436 integrated tests, strict OpenSpec, clean Ruff/diff/drift
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-daemon-owner-state/_PURPOSE.md`
 - Ship/abandon: deploy only after merge; keep recovery and local yellow drain until cloud acceptance
 
