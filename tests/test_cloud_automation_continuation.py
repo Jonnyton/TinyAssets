@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -8,24 +9,37 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import rfc8785
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttempt,
+    BackgroundBranchAttemptFence,
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
     BackgroundBranchBindingFence,
+    BackgroundBranchExecutorAudience,
+    BackgroundBranchExecutorClass,
+    build_request_task_attempt_key,
 )
 from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAttemptClaimService,
+    BackgroundBranchAttemptIssuanceRequest,
+    BackgroundBranchAttemptIssuanceService,
     BackgroundBranchBindingTransitionService,
 )
+from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter, WorkerClaimDescriptor
 from tinyassets.cloud_automation_continuation import (
     CloudContinuationPreparationError,
     CloudContinuationState,
     CloudContinuationWriteOutcome,
+    PreparedCloudContinuationAttemptResolver,
+    PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
     prepare_inactive_cloud_continuation,
 )
+from tinyassets.daemon_registry import create_daemon
+from tinyassets.daemon_server import initialize_author_server
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkRoot,
     ProviderWorkBindingFence,
@@ -49,9 +63,15 @@ from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
+from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
 NOW = datetime(2026, 8, 1, 5, 0, tzinfo=timezone.utc)
+BODY_DIGEST = f"sha256:{'e' * 64}"
+REQUEST_ID = f"req_{'1' * 32}"
+ADMISSION_ID = f"adm_{'2' * 32}"
+BRANCH_TASK_ID = f"bt2_{'3' * 32}"
+EVENT_ID = f"evt_{'4' * 32}"
 
 
 def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
@@ -89,6 +109,7 @@ def _background_binding(
     max_attempts: int = 2,
     remaining_count: int = 2,
     remaining_cost_microunits: int = 5_000_000,
+    daemon_id: str = "daemon_spec_drain",
 ) -> BackgroundBranchBinding:
     return BackgroundBranchBinding.from_dict(
         {
@@ -102,14 +123,14 @@ def _background_binding(
             "branch_def_id": "branch_repo_spec_loop",
             "operation": "invoke_branch_version",
             "source_kind": "request_admission",
-            "source_id": "request_cloud_spec_drain",
+            "source_id": REQUEST_ID,
             "source_revision": "4",
             "source_digest": f"sha256:{'6' * 64}",
             "revocation_generation": 0 if status == "active" else 1,
             "target_mode": "pinned_version",
             "pinned_branch_version_id": branch_version_id,
             "permitted_executor_classes": list(executor_classes),
-            "daemon_id": "daemon_spec_drain",
+            "daemon_id": daemon_id,
             "runtime_id": None,
             "expires_at": "2026-08-30T00:00:00Z",
             "max_attempts": max_attempts,
@@ -271,7 +292,7 @@ def _claimed_attempt(
             "branch_content_digest": definition.branch_content_digest,
             "operation": "invoke_branch_version",
             "source_kind": "request_admission",
-            "source_id": "request_cloud_spec_drain",
+            "source_id": REQUEST_ID,
             "source_generation": 4,
             "executor_audience": {
                 "executor_class": "cloud",
@@ -295,7 +316,7 @@ def _claimed_attempt(
             "provenance": {
                 "authorizing_principal_id": definition.principal_id,
                 "source_kind": "request_admission",
-                "source_id": "request_cloud_spec_drain",
+                "source_id": REQUEST_ID,
                 "executor_class": "cloud",
                 "daemon_id": "daemon_spec_drain",
                 "runtime_id": "runtime_cloud_1",
@@ -335,6 +356,555 @@ def _activate_cloud(fixture: tuple[object, ...]):
     )
     assert active is not None
     return active
+
+
+def _audience(
+    daemon_id: str = "daemon_spec_drain",
+) -> BackgroundBranchExecutorAudience:
+    return BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id=daemon_id,
+        runtime_id="runtime_cloud_1",
+        worker_id="worker_codex_1",
+    )
+
+
+class _AudienceResolver:
+    def __init__(
+        self,
+        audience: BackgroundBranchExecutorAudience | None = None,
+    ) -> None:
+        self.audience = audience or _audience()
+
+    def resolve(self, *, continuation, branch_task_id):
+        assert continuation.automation_id == "automation_spec_drain"
+        assert branch_task_id == BRANCH_TASK_ID
+        return self.audience
+
+
+def _admit_cloud_task(
+    fixture: tuple[object, ...],
+    active,
+) -> dict[str, object]:
+    initialize_author_server(fixture[2].base_path)
+    ids = {
+        "req": REQUEST_ID,
+        "adm": ADMISSION_ID,
+        "bt2": BRANCH_TASK_ID,
+        "evt": EVENT_ID,
+    }
+    store = RequestAdmissionStore(
+        fixture[2].base_path,
+        id_factory=lambda prefix: ids[prefix],
+        clock=lambda: NOW,
+    )
+    return store.commit_admission(
+        tenant_id="acct_alice",
+        actor_id="acct_alice",
+        universe_id="universe_alice",
+        idempotency_key_hash="idem_cloud_spec_drain",
+        body_digest=BODY_DIGEST,
+        body_digest_version="sha256-v1",
+        request_type="run_branch",
+        text="Continue the accepted repository specification.",
+        branch_id="branch_repo_spec_loop",
+        branch_def_id="branch_repo_spec_loop",
+        trigger_source="owner_queued",
+        accepted_priority_weight=100,
+        policy_version="cloud-spec-drain-v1",
+        grant_generation=4,
+        receipt={"continuation_id": "cloud-spec-drain"},
+        directed_daemon_id="daemon_spec_drain",
+        created_at="2026-08-01T05:00:00Z",
+        automation_activation=active,
+    )
+
+
+def _admit_claimable_cloud_task(
+    fixture: tuple[object, ...],
+    active,
+    *,
+    daemon_id: str,
+    daemon_soul_hash: str,
+) -> dict[str, object]:
+    initialize_author_server(fixture[2].base_path)
+    text = "Continue the accepted repository specification."
+    body_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            rfc8785.dumps(
+                {
+                    "branch_id": "branch_repo_spec_loop",
+                    "directed_daemon_id": daemon_id,
+                    "directed_daemon_instruction": "",
+                    "pickup_incentive": "",
+                    "priority_weight": 100,
+                    "request_type": "run_branch",
+                    "schema_version": "request-admission-v2",
+                    "text": text,
+                    "universe_id": "universe_alice",
+                }
+            )
+        ).hexdigest()
+    )
+    ids = {
+        "req": REQUEST_ID,
+        "adm": ADMISSION_ID,
+        "bt2": BRANCH_TASK_ID,
+        "evt": EVENT_ID,
+    }
+    committed = RequestAdmissionStore(
+        fixture[2].base_path,
+        id_factory=lambda prefix: ids[prefix],
+        clock=lambda: NOW,
+    ).commit_admission(
+        tenant_id="acct_alice",
+        actor_id="acct_alice",
+        universe_id="universe_alice",
+        idempotency_key_hash=f"hmac-sha256:{'5' * 64}",
+        body_digest=body_digest,
+        body_digest_version="rfc8785-v1",
+        request_type="run_branch",
+        text=text,
+        branch_id="branch_repo_spec_loop",
+        branch_def_id="branch_repo_spec_loop",
+        trigger_source="owner_queued",
+        accepted_priority_weight=100,
+        policy_version="operator-priority-v1",
+        grant_generation=4,
+        receipt={
+            "authority": "request-local",
+            "branch_def_id": "branch_repo_spec_loop",
+            "grant_generation": 4,
+            "priority_policy_version": "operator-priority-v1",
+            "directed_assignment": {
+                "daemon_id": daemon_id,
+                "daemon_soul_hash": daemon_soul_hash,
+                "authority_scope": "owner",
+            },
+        },
+        directed_daemon_id=daemon_id,
+        created_at="2026-08-01T05:00:00Z",
+        automation_activation=active,
+    )
+    return {**committed, "body_digest": body_digest}
+
+
+def _worker_descriptor() -> WorkerClaimDescriptor:
+    return WorkerClaimDescriptor(
+        queue_protocol_version=2,
+        capabilities=frozenset({"operator_request_v1"}),
+        worker_id="worker_codex_1",
+        runtime_instance_id="runtime_cloud_1",
+        boot_id="boot_cloud_1",
+        build_sha="a" * 40,
+        config_hash="b" * 64,
+        universe_id="universe_alice",
+        expires_at="2026-08-01T05:01:15+00:00",
+        executor_class=AutomationActivationExecutor.CLOUD,
+    )
+
+
+def _background_timestamp(value: str) -> str:
+    return datetime.fromisoformat(value).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _issue_epoch2_attempt(
+    tmp_path: Path,
+    fixture: tuple[object, ...],
+    continuation,
+    admission: dict[str, object],
+    *,
+    audience: BackgroundBranchExecutorAudience | None = None,
+) -> BackgroundBranchAttempt:
+    audience = audience or _audience()
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    resolver = PreparedCloudContinuationAttemptResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(audience),
+        clock=lambda: NOW,
+    )
+    result = BackgroundBranchAttemptIssuanceService(fixture[3], resolver).issue(
+        BackgroundBranchAttemptIssuanceRequest(
+            binding_id=binding.binding_id,
+            binding_generation=binding.generation,
+            binding_digest=binding.binding_digest,
+            logical_attempt_key=build_request_task_attempt_key(
+                tenant_id="acct_alice",
+                request_id=str(admission["request_id"]),
+                admission_id=str(admission["admission_id"]),
+                task_id=str(admission["branch_task_id"]),
+                body_digest=str(admission.get("body_digest", BODY_DIGEST)),
+                admission_generation=4,
+            ),
+            physical_universe_id="universe_alice",
+            executor_audience=audience,
+        )
+    )
+    assert result.record is not None
+    return result.record
+
+
+def _claim_epoch2_task(tmp_path: Path):
+    descriptor = _worker_descriptor()
+    adapter = Epoch2BranchTaskAdapter(
+        tmp_path,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    claimed = adapter.claim(
+        BRANCH_TASK_ID,
+        descriptor=descriptor,
+        descriptor_reader=lambda _conn, _worker_id: descriptor,
+    )
+    assert claimed is not None
+    records = adapter.list_live_claimed_requests(
+        universe_id="universe_alice",
+        worker_id=descriptor.worker_id,
+    )
+    assert len(records) == 1
+    return records[0]
+
+
+def _cloud_claim_resolver(
+    tmp_path: Path,
+    fixture: tuple[object, ...],
+    continuation,
+    admission: dict[str, object],
+    *,
+    audience_resolver: _AudienceResolver | None = None,
+):
+    return PreparedCloudContinuationClaimResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=audience_resolver or _AudienceResolver(),
+        clock=lambda: NOW,
+    )
+
+
+def _claimable_cloud_path(
+    tmp_path: Path,
+    *,
+    display_name: str = "Cloud claim test daemon",
+):
+    daemon = create_daemon(
+        tmp_path,
+        display_name=display_name,
+        created_by="acct_alice",
+        soul_mode="soul",
+        soul_text="Own one bounded cloud continuation claim.",
+    )
+    audience = _audience(str(daemon["daemon_id"]))
+    fixture = _fixture(
+        tmp_path,
+        background_binding=_background_binding(daemon_id=audience.daemon_id),
+    )
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+    active = _activate_cloud(fixture)
+    admission = _admit_claimable_cloud_task(
+        fixture,
+        active,
+        daemon_id=audience.daemon_id,
+        daemon_soul_hash=str(daemon["soul_hash"]),
+    )
+    attempt = _issue_epoch2_attempt(
+        tmp_path,
+        fixture,
+        continuation,
+        admission,
+        audience=audience,
+    )
+    task = _claim_epoch2_task(tmp_path)
+    return fixture, continuation, admission, audience, attempt, task
+
+
+def test_claimed_epoch2_task_claims_same_background_attempt(tmp_path: Path) -> None:
+    fixture, continuation, admission, audience, attempt, task = _claimable_cloud_path(tmp_path)
+
+    result = BackgroundBranchAttemptClaimService(
+        fixture[3],
+        _cloud_claim_resolver(
+            tmp_path,
+            fixture,
+            continuation,
+            admission,
+            audience_resolver=_AudienceResolver(audience),
+        ),
+    ).claim(
+        expected=BackgroundBranchAttemptFence(attempt),
+        executor_audience=audience,
+        claimed_at=_background_timestamp(task.claimed_at),
+        lease_expires_at=_background_timestamp(task.lease_expires_at),
+    )
+
+    assert result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    assert result.record is not None
+    assert result.record.lifecycle.value == "claimed"
+    assert result.record.executor_audience == audience
+    assert result.record.lease_expires_at == _background_timestamp(task.lease_expires_at)
+    provider = ProviderWorkReceiptService(
+        fixture[4],
+        PreparedCloudContinuationProviderResolver(
+            fixture[0],
+            continuation=continuation,
+            activation_store=fixture[2],
+            background_store=fixture[3],
+            provider_store=fixture[4],
+            continuation_store=fixture[6],
+            clock=lambda: NOW + timedelta(seconds=1),
+        ),
+    ).issue(
+        ProviderUniverseWorkRoot(
+            work_item_kind="background_attempt",
+            work_item_id=result.record.attempt_id,
+        )
+    )
+    assert provider.record is not None
+    assert provider.record.work_item_id == result.record.attempt_id
+
+
+def test_concurrent_cloud_claims_have_one_task_custody_winner(
+    tmp_path: Path,
+) -> None:
+    fixture, continuation, admission, audience, attempt, task = _claimable_cloud_path(
+        tmp_path,
+        display_name="Concurrent cloud claim test daemon",
+    )
+
+    def claim_attempt(_index: int):
+        return BackgroundBranchAttemptClaimService(
+            SQLiteBackgroundBranchAuthorityStore(tmp_path),
+            _cloud_claim_resolver(
+                tmp_path,
+                fixture,
+                continuation,
+                admission,
+                audience_resolver=_AudienceResolver(audience),
+            ),
+        ).claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=audience,
+            claimed_at=_background_timestamp(task.claimed_at),
+            lease_expires_at=_background_timestamp(task.lease_expires_at),
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(claim_attempt, range(8)))
+
+    assert (
+        sum(result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED for result in results)
+        == 1
+    )
+    assert (
+        sum(result.outcome is BackgroundBranchAuthorityWriteOutcome.REPLAYED for result in results)
+        == 7
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ("activation_stopped", "alternate_worker", "lease_mismatch", "task_renewed"),
+)
+def test_cloud_attempt_claim_fails_closed_when_task_custody_changes(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture, continuation, admission, audience, attempt, task = _claimable_cloud_path(tmp_path)
+    audience_resolver = _AudienceResolver(audience)
+    lease_expires_at = _background_timestamp(task.lease_expires_at)
+    if fault == "activation_stopped":
+        active = fixture[2].get(
+            continuation.universe_id,
+            continuation.automation_id,
+        )
+        assert active is not None
+        assert fixture[2].stop(expected=active) is not None
+    elif fault == "alternate_worker":
+        audience_resolver = _AudienceResolver(
+            BackgroundBranchExecutorAudience(
+                executor_class=BackgroundBranchExecutorClass.CLOUD,
+                daemon_id=audience.daemon_id,
+                runtime_id="runtime_cloud_2",
+                worker_id="worker_other",
+            )
+        )
+    elif fault == "lease_mismatch":
+        lease_expires_at = "2026-08-01T05:03:00Z"
+    else:
+        renewed = Epoch2BranchTaskAdapter(
+            tmp_path,
+            clock=lambda: NOW + timedelta(seconds=30),
+        ).heartbeat(
+            BRANCH_TASK_ID,
+            worker_id="worker_codex_1",
+        )
+        assert renewed is not None
+
+    with pytest.raises(ValueError, match="claim_resolution_missing"):
+        BackgroundBranchAttemptClaimService(
+            fixture[3],
+            _cloud_claim_resolver(
+                tmp_path,
+                fixture,
+                continuation,
+                admission,
+                audience_resolver=audience_resolver,
+            ),
+        ).claim(
+            expected=BackgroundBranchAttemptFence(attempt),
+            executor_audience=audience,
+            claimed_at=_background_timestamp(task.claimed_at),
+            lease_expires_at=lease_expires_at,
+        )
+
+
+def test_active_epoch2_task_issues_one_restart_safe_background_attempt(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+    active = _activate_cloud(fixture)
+    admission = _admit_cloud_task(fixture, active)
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    logical_key = build_request_task_attempt_key(
+        tenant_id="acct_alice",
+        request_id=str(admission["request_id"]),
+        admission_id=str(admission["admission_id"]),
+        task_id=str(admission["branch_task_id"]),
+        body_digest=BODY_DIGEST,
+        admission_generation=4,
+    )
+    request = BackgroundBranchAttemptIssuanceRequest(
+        binding_id=binding.binding_id,
+        binding_generation=binding.generation,
+        binding_digest=binding.binding_digest,
+        logical_attempt_key=logical_key,
+        physical_universe_id="universe_alice",
+        executor_audience=_audience(),
+    )
+    resolver = PreparedCloudContinuationAttemptResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(),
+        clock=lambda: NOW,
+    )
+
+    def issue_attempt():
+        return BackgroundBranchAttemptIssuanceService(
+            SQLiteBackgroundBranchAuthorityStore(tmp_path),
+            resolver,
+        ).issue(request)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        concurrent = list(pool.map(lambda _index: issue_attempt(), range(8)))
+
+    assert (
+        sum(
+            result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED for result in concurrent
+        )
+        == 1
+    )
+    assert (
+        sum(
+            result.outcome is BackgroundBranchAuthorityWriteOutcome.REPLAYED
+            for result in concurrent
+        )
+        == 7
+    )
+    created = next(
+        result
+        for result in concurrent
+        if result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    )
+    replayed = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path), resolver
+    ).issue(request)
+
+    assert created.record is not None
+    assert replayed.record == created.record
+    assert created.record.logical_attempt_key == logical_key
+    assert created.record.branch_version_id == fixture[0].branch_version_id
+    assert created.record.branch_content_digest == fixture[0].branch_content_digest
+    assert created.record.source_id == admission["request_id"]
+    assert created.record.source_generation == 4
+    assert created.record.executor_audience == _audience()
+
+
+@pytest.mark.parametrize("fault", ("activation_stopped", "alternate_worker"))
+def test_epoch2_attempt_resolution_fails_closed_on_stale_assignment(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture = _fixture(tmp_path)
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+    active = _activate_cloud(fixture)
+    admission = _admit_cloud_task(fixture, active)
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    requested_audience = _audience()
+    if fault == "activation_stopped":
+        assert fixture[2].stop(expected=active) is not None
+    else:
+        requested_audience = BackgroundBranchExecutorAudience(
+            executor_class=BackgroundBranchExecutorClass.CLOUD,
+            daemon_id="daemon_spec_drain",
+            runtime_id="runtime_cloud_1",
+            worker_id="worker_other",
+        )
+    logical_key = build_request_task_attempt_key(
+        tenant_id="acct_alice",
+        request_id=str(admission["request_id"]),
+        admission_id=str(admission["admission_id"]),
+        task_id=str(admission["branch_task_id"]),
+        body_digest=BODY_DIGEST,
+        admission_generation=4,
+    )
+    resolver = PreparedCloudContinuationAttemptResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="attempt_resolution_missing",
+    ):
+        BackgroundBranchAttemptIssuanceService(fixture[3], resolver).issue(
+            BackgroundBranchAttemptIssuanceRequest(
+                binding_id=binding.binding_id,
+                binding_generation=binding.generation,
+                binding_digest=binding.binding_digest,
+                logical_attempt_key=logical_key,
+                physical_universe_id="universe_alice",
+                executor_audience=requested_audience,
+            )
+        )
 
 
 def test_claimed_cloud_attempt_resolves_one_restart_safe_provider_receipt(
