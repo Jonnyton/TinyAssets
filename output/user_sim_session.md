@@ -79,3 +79,17 @@ conversation did not retain a usable TinyAssets connector, did not prove a
 bearer-authenticated principal, and did not execute the custom-agent read.
 Neither OAuth continuity nor custom-agent live acceptance is complete. This
 session is acceptance-test activity, not organic post-fix user evidence.
+
+## Bounded production correlation
+
+Manual read-only workflow run
+`https://github.com/Jonnyton/TinyAssets/actions/runs/30679614519` inspected the
+complete 2026-08-01T01:52:00Z–02:02:00Z journal window. It ran at independently
+approved exact head `7a8e1f2fbfc39e38055723e1da23ea34ad9ed612` and returned
+`input_truncated=false`, 812 source lines, and
+`oauth_rejection_categories=[]`. The workflow emitted no raw journal text.
+
+This result means the rendered attempt did not produce an instrumented bearer
+rejection. It does not prove that a token was accepted. The next rendered test
+must explicitly reattach TinyAssets after OAuth returns and force an
+authenticated tool call before validator repair is authorized.
