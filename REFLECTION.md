@@ -1276,3 +1276,12 @@ fresh-host rollback edges found later.
 - **What I would do differently:** identify the missing production assignment
   owner before naming the next slice “provider issuance”; the safe buildable
   dependency was the dark ledger, not a synthetic production root.
+## 2026-08-01 — Drain refinery quarantine
+
+- Surprised: the fresh candidate snapshot correctly counted dozens of refinery
+  lanes, but the post-block predicate used an older three-class eligibility set.
+- Pattern: every scheduler predicate that answers “can I continue?” must share
+  the same dispatchable classification vocabulary as candidate selection.
+- Differently next time: add a table-driven classification parity test whenever
+  a new candidate class is introduced, rather than testing selection and
+  post-result flow independently.

@@ -1501,7 +1501,7 @@ def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
     )
 
 
-def test_blocked_refinery_candidate_does_not_skip_idle() -> None:
+def test_blocked_refinery_candidate_skips_idle_for_a_different_target() -> None:
     snapshot = drain.CandidateSnapshot(
         pressure=drain.CandidatePressure(0, 0, 0, 1),
         hints=(
@@ -1513,10 +1513,15 @@ def test_blocked_refinery_candidate_does_not_skip_idle() -> None:
         ),
     )
 
-    assert not drain.has_alternative_candidate(
+    assert drain.has_alternative_candidate(
         snapshot,
         recent_blocked=["refine-openspec-first-target"],
         current_target="refine-openspec-first-target",
+    )
+    assert not drain.has_alternative_candidate(
+        snapshot,
+        recent_blocked=["refine-openspec-another-target"],
+        current_target="refine-openspec-another-target",
     )
 
 
