@@ -1285,3 +1285,6 @@ fresh-host rollback edges found later.
 - Differently next time: add a table-driven classification parity test whenever
   a new candidate class is introduced, rather than testing selection and
   post-result flow independently.
+- Live follow-up: require the controller log to prove the exact blocked result,
+  alternative decision, and next dispatch timestamps before retiring a
+  scheduler hotfix; repeated ordinary dispatch is useful but not equivalent.
