@@ -48,9 +48,19 @@ Fresh verification on 2026-08-01 America/Los_Angeles:
 on current `origin/main`; the hotfix deliberately does not mix that baseline
 bulk rewrite into this behavioral slice.
 
-Post-merge live proof remains required: restart the watchdog/controller from
-the merged head, then record a verified blocked refinery result followed by a
-distinct refinery dispatch without the configured idle interval.
+Post-merge live proof passed on 2026-08-01 America/Los_Angeles in controller
+run `drain-20260801-113628-6deab6`, rooted at the merged controller:
+
+- `12:50:48` — attempt 7 returned verified `BLOCKED` for
+  `refine-openspec-operator-request-trigge-a4db889e` with PR #2068;
+- `12:50:50` — the supervisor logged `post-block alternative available`;
+- `12:50:52` — attempt 8 dispatched a different refinery worker;
+- the configured idle interval was not entered; controller health remained
+  `running`, with zero consecutive failures.
+
+This is the exact blocked-to-alternative path required by task 2.3. Earlier
+partial-to-next-refinery transitions separately proved ordinary continuous
+dispatch across attempts 1–7.
 
 Host-approved same-provider independent review of exact implementation head
 `d0746029186f58e2633fe3bf1e14af0e792b731c` returned `APPROVE` with no blocking
