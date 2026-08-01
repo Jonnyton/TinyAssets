@@ -14,4 +14,4 @@
 ## 3. Verification And Live Repair
 
 - [x] 3.1 Update PLAN/AGENTS/runbook truth, run Ruff, focused and adjacent tests, strict OpenSpec validation, and record a short `REFLECTION.md`.
-- [ ] 3.2 Obtain independent exact-head review, merge and sync/archive through a separate foldback PR, refresh the detached controller, and prove live health cannot remain idle while a refinery target exists.
+- [x] 3.2 Obtain independent exact-head review, merge and sync/archive through a separate foldback PR, refresh the detached controller, and prove live health cannot remain idle while a refinery target exists.
