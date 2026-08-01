@@ -40,9 +40,9 @@
 
 - Provider: `codex-gpt5-desktop-drain-guard`
 - Branch: `codex/drain-keep-green-20260731`
-- Lane state: Active; recurring watchdog death restored while durable self-heal hooks are built
+- Lane state: Live locally and reviewed; PR publication/land remains
 - Worktree: `C:/Users/Jonathan/Projects/wf-drain-keep-green-20260731`
-- STATUS/Issue/PR: local watchdog keep-alive row claimed; cloud activation lane remains preserved and paused only for this P0 runtime repair
+- STATUS/Issue/PR: local watchdog keep-alive row claimed; reviewed `1de1c58d` live with both kill/recovery proofs; PR pending
 - Purpose: keep the local drain observable and self-healing until the cloud drain passes 24-hour host-off acceptance
 - Review gate: focused Windows/TDD proof, strict OpenSpec, independent exact-head review, live scheduled-task recovery proof
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-keep-green-20260731/_PURPOSE.md`

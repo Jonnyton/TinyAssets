@@ -16,5 +16,5 @@
 
 ## 3. Verification And Activation
 
-- [ ] 3.1 Pass focused tests, Ruff, strict OpenSpec validation, drift checks, and independent exact-head review.
-- [ ] 3.2 Reinstall the task and fault-inject watchdog and tray death, proving recovery without a duplicate supervisor or visible console.
+- [x] 3.1 Pass focused tests, Ruff, strict OpenSpec validation, drift checks, and independent exact-head review.
+- [x] 3.2 Reinstall the task and fault-inject watchdog and tray death, proving recovery without a duplicate supervisor or visible console.
