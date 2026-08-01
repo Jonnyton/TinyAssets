@@ -34,10 +34,15 @@ local/dev use and logs a warning; production must leave it unset.
 
 ### Requirement: Token validation failures expose only a sanitized category
 
-The WorkOS resource server SHALL emit an operationally visible, allowlisted
-validation-failure category for a rejected bearer token while excluding the
-token, JWT headers and payload, exception message, claim values, and
-user-identifying data from logs and responses.
+The WorkOS resource server SHALL reduce every rejected bearer token to exactly
+one of `algorithm`, `audience`, `expired`, `invalid_subject`, `invalid_token`,
+`issuer`, `malformed`, `required_claim`, `signature`, or `signing_key`. It SHALL
+emit a category at most once per 60-second process window and SHALL include only
+the category plus a numeric count of same-category events suppressed since its
+prior emission. It SHALL exclude the token, JWT headers and payload, exception
+message, claim values, and user-identifying data from logs and responses.
+Malformed compact JWTs SHALL be classified before JWKS lookup so they cannot be
+misreported as signing-key failures.
 
 #### Scenario: audience failure is diagnosable without token disclosure
 - **WHEN** a bearer token is rejected for an audience mismatch
@@ -47,4 +52,9 @@ user-identifying data from logs and responses.
 #### Scenario: malformed token remains non-oracular to the caller
 - **WHEN** a malformed bearer token is rejected
 - **THEN** the caller receives the standard `401 invalid_token` response
-- **AND** internal telemetry records only an allowlisted failure category
+- **AND** internal telemetry records only `malformed` before any JWKS lookup
+
+#### Scenario: repeated failures are bounded by category
+- **WHEN** multiple bearer tokens fail with the same safe category inside one 60-second process window
+- **THEN** that category emits at most once in the window
+- **AND** the next eligible emission includes only the numeric suppressed count, never token or claim material

@@ -46,16 +46,21 @@ anonymous-write fallback, raw token logging, or maintainer identity.
 
 ### 1. Diagnose the exact validator boundary before changing acceptance
 
-`WorkOSAuthProvider.resolve_token` will classify validation failures into a
-small allowlisted taxonomy such as `expired`, `audience`, `issuer`,
-`required_claim`, `signature`, `signing_key`, and `malformed`. Production logs
-will include only the category and stable event name. The exception string,
-token, headers, payload, and claim values will never be logged.
+`WorkOSAuthProvider.resolve_token` will classify validation failures into the
+exact finite taxonomy `algorithm`, `audience`, `expired`, `invalid_subject`,
+`invalid_token`, `issuer`, `malformed`, `required_claim`, `signature`, and
+`signing_key`. Production logs will include only the category, stable event
+name, and a numeric count of same-category events suppressed since the prior
+emission. Each category emits at most once per 60-second process window. The
+exception string, token, headers, payload, claim values, and user-identifying
+data will never be logged. Malformed compact JWTs are classified before JWKS
+lookup so malformed input cannot be mislabeled as a signing-key failure.
 
-Tests will first prove that representative PyJWT failures produce the expected
-category and that secrets/claims are absent. This is preferred over changing
-WorkOS dashboard settings or validator parameters speculatively, because the
-observed `401` has several standards-valid causes.
+Tests will first prove that representative PyJWT failures produce the exact
+category, malformed ordering, per-category window, suppression count, and
+absence of secrets/claims. This is preferred over changing WorkOS dashboard
+settings or validator parameters speculatively, because the observed `401` has
+several standards-valid causes.
 
 ### 2. Treat public metadata, AuthKit configuration, and validation as one contract
 
