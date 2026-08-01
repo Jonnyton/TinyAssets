@@ -22,6 +22,11 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchTargetMode,
 )
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
+from tinyassets.provider_work_authority import ProviderWorkBindingState
+from tinyassets.storage.outbound_connections import ConnectionLedger
+from tinyassets.storage.provider_work_authority import (
+    SQLiteProviderWorkAuthorityStore,
+)
 
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -234,6 +239,21 @@ class RepositorySpecOperationalProjection:
     effect_receipt_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class InactiveCloudAuthorityResolution:
+    """Secret-free exact authority references; not a provider receipt."""
+
+    authority_source: str
+    provider_binding_id: str
+    provider_binding_generation: int
+    provider_binding_digest: str
+    provider: str
+    destination_grant_id: str
+    destination_connection_id: str
+    destination: str
+    destination_scope: str
+
+
 def acceptance_scenario_digest(scenario: AcceptanceScenario) -> str:
     if not isinstance(scenario, AcceptanceScenario):
         raise ValueError("scenario must be an AcceptanceScenario")
@@ -287,6 +307,106 @@ def admit_work_definition(
         scenario_max_wall_time_seconds=(
             scenario.cost_budget["max_wall_time_seconds"]
         ),
+    )
+
+
+def resolve_inactive_cloud_authority(
+    definition: RepositorySpecWorkDefinition,
+    *,
+    provider_store: SQLiteProviderWorkAuthorityStore,
+    connection_ledger: ConnectionLedger,
+) -> InactiveCloudAuthorityResolution:
+    """Resolve the two independent authority owners without activating work.
+
+    This preflight neither resolves a credential nor mints provider/effect
+    authority.  Execution must revalidate both owners just in time.
+    """
+
+    if not isinstance(definition, RepositorySpecWorkDefinition):
+        raise ValueError("definition must be a RepositorySpecWorkDefinition")
+    if not isinstance(provider_store, SQLiteProviderWorkAuthorityStore):
+        raise ValueError("provider_store must be a SQLiteProviderWorkAuthorityStore")
+    if not isinstance(connection_ledger, ConnectionLedger):
+        raise ValueError("connection_ledger must be a ConnectionLedger")
+
+    try:
+        binding = provider_store.get(definition.provider_binding_id)
+        if binding is None:
+            raise ValueError("binding missing")
+        with provider_store.connection() as conn:
+            current = provider_store.validate_in_transaction(
+                conn,
+                binding_id=binding.binding_id,
+                binding_generation=binding.generation,
+                binding_digest=binding.binding_digest,
+                owner_user_id=definition.principal_id,
+                universe_id=definition.universe_id,
+                provider=binding.provider,
+                operation="repository_spec_delivery",
+                role="writer",
+            )
+        bounded = (
+            binding.state is ProviderWorkBindingState.ACTIVE,
+            binding.allowed_operations == ("repository_spec_delivery",),
+            binding.allowed_roles == ("writer",),
+            binding.max_invocations == definition.max_attempts,
+            binding.max_tokens == definition.max_tokens,
+            binding.max_cost_microunits == definition.max_cost_microunits,
+        )
+        if not current or not all(bounded):
+            raise ValueError("binding is stale, revoked, expired, or too narrow")
+    except (OSError, ValueError) as exc:
+        raise AutomationAdmissionError(
+            "provider_binding_unavailable",
+            "requester-owned provider binding is not current and sufficient",
+        ) from exc
+
+    try:
+        principal_id = connection_ledger.require_authenticated_principal_id()
+        grant = connection_ledger.require_active_grant(
+            definition.destination_grant_id
+        )
+        connection = connection_ledger.get_connection(grant.connection_id)
+        expected_destination = f"github.com/{definition.repository}"
+        expected_scopes = frozenset(
+            {"pull_requests:write", "pull_requests:read_for_commit"}
+        )
+        cap = grant.unprompted_action_cap
+        exact = (
+            principal_id == definition.principal_id,
+            grant.owner_user_id == definition.principal_id,
+            grant.universe_id == definition.universe_id,
+            connection is not None,
+            connection is not None and connection.owner_user_id == definition.principal_id,
+            connection is not None and connection.connection_class == "pull-request-writer",
+            connection is not None and connection.provider == "github",
+            connection is not None and connection.destination == expected_destination,
+            connection is not None
+            and len(connection.scopes) == len(expected_scopes)
+            and frozenset(connection.scopes) == expected_scopes,
+            cap is not None,
+            cap is not None and cap.maximum == 1,
+            cap is not None and cap.unit == "pull_requests",
+            definition.destination_purpose == "pull_request",
+        )
+        if not all(exact) or connection is None:
+            raise ValueError("destination grant does not match definition")
+    except (LookupError, PermissionError, RuntimeError, ValueError) as exc:
+        raise AutomationAdmissionError(
+            "destination_grant_unavailable",
+            "requester-owned exact repository grant is not current",
+        ) from exc
+
+    return InactiveCloudAuthorityResolution(
+        authority_source="requester_owned",
+        provider_binding_id=binding.binding_id,
+        provider_binding_generation=binding.generation,
+        provider_binding_digest=binding.binding_digest,
+        provider=binding.provider,
+        destination_grant_id=grant.grant_id,
+        destination_connection_id=connection.connection_id,
+        destination=connection.destination,
+        destination_scope="pull_requests:write",
     )
 
 

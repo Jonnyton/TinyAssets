@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import json
 from dataclasses import FrozenInstanceError, replace
+from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -21,10 +23,22 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchTargetMode,
 )
 from tinyassets.evaluation.scenario_runner import AcceptanceScenario
+from tinyassets.provider_work_authority import (
+    ProviderWorkBindingFence,
+    ProviderWorkBindingSeed,
+    ProviderWorkBindingService,
+)
+from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
+from tinyassets.storage.provider_work_authority import (
+    SQLiteProviderWorkAuthorityStore,
+)
 
 
 def _automation():
     return importlib.import_module("tinyassets.user_owned_cloud_automation")
+
+
+_DEFAULT_ACTION_CAP = object()
 
 
 def _definition_payload() -> dict[str, object]:
@@ -75,6 +89,78 @@ def _scenario(**overrides: object) -> AcceptanceScenario:
     }
     payload.update(overrides)
     return AcceptanceScenario(**payload)  # type: ignore[arg-type]
+
+
+def _cloud_authority_fixture(
+    tmp_path: Path,
+    *,
+    provider_overrides: dict[str, object] | None = None,
+    connection_scopes: tuple[str, ...] = (
+        "pull_requests:write",
+        "pull_requests:read_for_commit",
+    ),
+    action_cap: ActionCap | None | object = _DEFAULT_ACTION_CAP,
+) -> tuple[
+    object,
+    SQLiteProviderWorkAuthorityStore,
+    ConnectionLedger,
+]:
+    def clock() -> datetime:
+        return datetime(2026, 7, 31, 20, 0, tzinfo=timezone.utc)
+
+    provider_store = SQLiteProviderWorkAuthorityStore(
+        tmp_path,
+        clock=clock,
+        allow_test_fixtures=True,
+    )
+    seed_values: dict[str, object] = {
+        "owner_user_id": "acct_alice",
+        "universe_id": "universe_alice",
+        "provider": "codex",
+        "credential_reference_digest": f"sha256:{'9' * 64}",
+        "allowed_operations": ("repository_spec_delivery",),
+        "allowed_roles": ("writer",),
+        "assignment_generation": 2,
+        "assignment_digest": f"sha256:{'8' * 64}",
+        "max_invocations": 2,
+        "max_tokens": 100_000,
+        "max_cost_microunits": 5_000_000,
+        "expires_at": "2026-08-02T00:00:00Z",
+    }
+    seed_values.update(provider_overrides or {})
+    seed = ProviderWorkBindingSeed(**seed_values)  # type: ignore[arg-type]
+
+    binding = provider_store.install_test_binding(seed).record
+    assert binding is not None
+    payload = _definition_payload()
+    payload["provider_binding_id"] = binding.binding_id
+    definition = _automation().RepositorySpecWorkDefinition.from_dict(payload)
+    ledger = ConnectionLedger(
+        tmp_path / "outbound.db",
+        verify_authenticated_principal=lambda: "acct_alice",
+    )
+    ledger.create_connection(
+        connection_id="conn_tinyassets",
+        owner_user_id="acct_alice",
+        connection_class="pull-request-writer",
+        scopes=connection_scopes,
+        provider="github",
+        destination="github.com/example/project",
+        credential_ref="vault://github/example-project",
+    )
+    ledger.grant_connection(
+        grant_id="destination_grant_project",
+        connection_id="conn_tinyassets",
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        granted_at=1.0,
+        unprompted_action_cap=(
+            action_cap
+            if action_cap is not _DEFAULT_ACTION_CAP
+            else ActionCap("one_pull_request", 1, "pull_requests")
+        ),  # type: ignore[arg-type]
+    )
+    return definition, provider_store, ledger
 
 
 def _binding_and_attempt() -> tuple[BackgroundBranchBinding, BackgroundBranchAttempt]:
@@ -457,4 +543,227 @@ def test_operational_projection_rejects_cross_record_relation(
             definition,
             binding=binding,
             attempt=attempt,
+        )
+
+
+def test_inactive_cloud_authority_resolves_exact_user_owned_bindings(
+    tmp_path: Path,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(tmp_path)
+
+    resolved = automation.resolve_inactive_cloud_authority(
+        definition,
+        provider_store=provider_store,
+        connection_ledger=ledger,
+    )
+
+    assert resolved.provider_binding_id == definition.provider_binding_id
+    assert resolved.provider == "codex"
+    assert resolved.destination_grant_id == definition.destination_grant_id
+    assert resolved.destination == "github.com/example/project"
+    assert resolved.destination_scope == "pull_requests:write"
+    assert resolved.authority_source == "requester_owned"
+
+
+def test_inactive_cloud_authority_rejects_revoked_provider_binding(
+    tmp_path: Path,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(tmp_path)
+    binding = provider_store.get(definition.provider_binding_id)
+    assert binding is not None
+    ProviderWorkBindingService(provider_store).revoke(
+        ProviderWorkBindingFence(binding)
+    )
+
+    with pytest.raises(
+        automation.AutomationAdmissionError,
+        match="provider_binding_unavailable",
+    ):
+        automation.resolve_inactive_cloud_authority(
+            definition,
+            provider_store=provider_store,
+            connection_ledger=ledger,
+        )
+
+
+@pytest.mark.parametrize(
+    ("provider_overrides", "connection_scopes", "action_cap"),
+    [
+        ({"allowed_operations": ("repository_spec_delivery", "admin")}, None, _DEFAULT_ACTION_CAP),
+        ({"allowed_roles": ("writer", "admin")}, None, _DEFAULT_ACTION_CAP),
+        ({"max_invocations": 3}, None, _DEFAULT_ACTION_CAP),
+        ({"max_tokens": 100_001}, None, _DEFAULT_ACTION_CAP),
+        ({"max_cost_microunits": 5_000_001}, None, _DEFAULT_ACTION_CAP),
+        ({"expires_at": "2026-07-31T19:00:00Z"}, None, _DEFAULT_ACTION_CAP),
+        (
+            {},
+            ("pull_requests:write", "pull_requests:read_for_commit", "secrets:read"),
+            _DEFAULT_ACTION_CAP,
+        ),
+        ({}, None, None),
+        ({}, None, ActionCap("deny", 0, "pull_requests")),
+        ({}, None, ActionCap("broad", 2, "pull_requests")),
+        ({}, None, ActionCap("wrong_unit", 1, "repositories")),
+    ],
+)
+def test_inactive_cloud_authority_rejects_broader_or_unusable_authority(
+    tmp_path: Path,
+    provider_overrides: dict[str, object],
+    connection_scopes: tuple[str, ...] | None,
+    action_cap: ActionCap | None | object,
+) -> None:
+    automation = _automation()
+    kwargs: dict[str, object] = {
+        "provider_overrides": provider_overrides,
+        "action_cap": action_cap,
+    }
+    if connection_scopes is not None:
+        kwargs["connection_scopes"] = connection_scopes
+    definition, provider_store, ledger = _cloud_authority_fixture(
+        tmp_path,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+    with pytest.raises(automation.AutomationAdmissionError):
+        automation.resolve_inactive_cloud_authority(
+            definition,
+            provider_store=provider_store,
+            connection_ledger=ledger,
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "principal_foreign",
+        "principal_missing",
+        "principal_verifier_error",
+        "connection_revoked",
+    ],
+)
+def test_inactive_cloud_authority_rejects_stale_request_or_connection(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(tmp_path)
+    if fault == "principal_foreign":
+        ledger._verify_authenticated_principal = lambda: "acct_mallory"
+    elif fault == "principal_missing":
+        ledger._verify_authenticated_principal = None
+    elif fault == "principal_verifier_error":
+        def unavailable_principal() -> str:
+            raise RuntimeError("request principal unavailable")
+
+        ledger._verify_authenticated_principal = unavailable_principal
+    else:
+        grant = ledger.get_grant(definition.destination_grant_id)
+        assert grant is not None
+        ledger.revoke_connection(grant.connection_id, revoked_at=2.0)
+
+    with pytest.raises(
+        automation.AutomationAdmissionError,
+        match="destination_grant_unavailable",
+    ):
+        automation.resolve_inactive_cloud_authority(
+            definition,
+            provider_store=provider_store,
+            connection_ledger=ledger,
+        )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["grant_revoked", "grant_owner", "grant_universe", "destination"],
+)
+def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    automation = _automation()
+    definition, provider_store, ledger = _cloud_authority_fixture(tmp_path)
+    if fault == "grant_revoked":
+        ledger.revoke_grant(definition.destination_grant_id, revoked_at=2.0)
+    elif fault == "grant_owner":
+        other_ledger = ConnectionLedger(
+            tmp_path / "other-owner-outbound.db",
+            verify_authenticated_principal=lambda: "acct_alice",
+        )
+        other_ledger.create_connection(
+            connection_id="conn_other_owner",
+            owner_user_id="acct_other",
+            connection_class="pull-request-writer",
+            scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+            provider="github",
+            destination="github.com/example/project",
+            credential_ref="vault://github/other-owner",
+        )
+        other_ledger.grant_connection(
+            grant_id=definition.destination_grant_id,
+            connection_id="conn_other_owner",
+            owner_user_id="acct_other",
+            universe_id="universe_alice",
+            granted_at=1.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
+        )
+        ledger = other_ledger
+    elif fault == "grant_universe":
+        grant = ledger.get_grant(definition.destination_grant_id)
+        assert grant is not None
+        ledger.revoke_grant(grant.grant_id, revoked_at=2.0)
+        ledger.grant_connection(
+            grant_id="replacement_grant",
+            connection_id=grant.connection_id,
+            owner_user_id="acct_alice",
+            universe_id="universe_other",
+            granted_at=3.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
+        )
+        definition = replace(definition, destination_grant_id="replacement_grant")
+    else:
+        other_ledger = ConnectionLedger(
+            tmp_path / "other-outbound.db",
+            verify_authenticated_principal=lambda: "acct_alice",
+        )
+        other_ledger.create_connection(
+            connection_id="conn_other",
+            owner_user_id="acct_alice",
+            connection_class="pull-request-writer",
+            scopes=("pull_requests:write", "pull_requests:read_for_commit"),
+            provider="github",
+            destination="github.com/example/other",
+            credential_ref="vault://github/other",
+        )
+        other_ledger.grant_connection(
+            grant_id=definition.destination_grant_id,
+            connection_id="conn_other",
+            owner_user_id="acct_alice",
+            universe_id="universe_alice",
+            granted_at=1.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
+        )
+        ledger = other_ledger
+
+    with pytest.raises(
+        automation.AutomationAdmissionError,
+        match="destination_grant_unavailable",
+    ):
+        automation.resolve_inactive_cloud_authority(
+            definition,
+            provider_store=provider_store,
+            connection_ledger=ledger,
         )

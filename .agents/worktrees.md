@@ -2271,3 +2271,13 @@ Notes:
 - Purpose: prove canonical candidate exhaustion and promote at most one safe recovery task.
 - Review gate: exact-head independent approval, focused tests, required CI, and trusted auto-merge.
 - Publish/cleanup: one draft PR if claimed; otherwise preserve exhaustion evidence and remove after controller handoff.
+
+## 2026-07-31 - Main-universe cloud drain activation
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `codex/cloud-drain-activation-20260731`
+- Lane state: Active; exact STATUS claim on the task 1.2 critical path.
+- Worktree: `C:/Users/Jonathan/Projects/wf-cloud-drain-activation`
+- Purpose: close requester-owned provider authority and bind one inactive, exact-destination cloud continuation without enabling either queue epoch.
+- Review gate: focused TDD/concurrency/restart tests, strict OpenSpec, clean diff, exact-head independent approval, required CI.
+- Publish/cleanup: one PR to main; retain local yellow drain until the later 24-hour cloud acceptance passes.

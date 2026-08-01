@@ -1259,3 +1259,9 @@ fresh-host rollback edges found later.
 - **What I would do differently:** wire the existing OpenSpec flow inspector into
   candidate exhaustion when the supervisor was first built, and model shared
   coordination-row edits separately from product write-set collisions.
+
+## 2026-07-31 — requester-owned cloud provider binding
+
+- **What surprised me:** the exact requester-owned GitHub grant already existed in `ConnectionLedger`; the older effector-consent row was the wrong authority source for cloud activation.
+- **Pattern worth capturing:** distinguish durable non-bearer binding intent from just-in-time execution receipts. That lets activation prerequisites land safely without treating queue identity as provider authority.
+- **What I would do differently:** start each cloud slice by mapping every authority noun in the task to its concrete current-main owner; the stale audit made the missing provider binding look like a wider compute-runtime gap than it was.
