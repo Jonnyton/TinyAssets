@@ -45,6 +45,7 @@ EnvironmentFile=/etc/tinyassets/env
 # SSH shell. ExecStartPre= with a leading `-` would tolerate failure;
 # we do NOT use `-` so systemd refuses to start with the marker logged.
 ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/env || { echo "ENV-UNREADABLE: /etc/tinyassets/env not readable by user tinyassets (uid $$(id -u))" >&2; ls -l /etc/tinyassets/env >&2 || true; exit 1; }'
+ExecStartPre=/bin/sh -c 'test -r /etc/tinyassets/agent-interchange.env || { echo "AGENT-INTERCHANGE-ENV-UNREADABLE: /etc/tinyassets/agent-interchange.env not readable by user tinyassets (uid $$(id -u))" >&2; ls -l /etc/tinyassets/agent-interchange.env >&2 || true; exit 1; }'
 
 # docker compose up runs in foreground; systemd watches the PID.
 # The image's own tini PID-1 handles SIGTERM cleanly (Row A Dockerfile).

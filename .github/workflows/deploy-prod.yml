@@ -450,6 +450,18 @@ jobs:
               output.write(f"prior_receipt_b64={prior_b64}\n")
           PY
 
+      - name: Install daemon-only agent interchange HMAC secret
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          printf '%s' "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}" | \
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-agent-interchange-legacy bash /tmp/install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+
       - name: Preflight droplet disk before image pull
         id: disk-preflight
         run: |
@@ -847,7 +859,6 @@ jobs:
           # Bounded pre-rename migration source. Never install this broad map
           # directly; the run step validates and narrows it first.
           GITHUB_PR_CAPABILITIES_SOURCE: ${{ secrets.WORKFLOW_GITHUB_PR_CAPABILITIES }}
-          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
         run: |
           NEW_IMAGE="${{ steps.tag.outputs.image_ref }}"
           echo "Deploying: ${NEW_IMAGE}"
@@ -862,10 +873,6 @@ jobs:
           scp -i ~/.ssh/do_deploy -o BatchMode=yes \
               deploy/install-tinyassets-env.sh \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
-          printf '%s' "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}" | \
-              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
-              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
-              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-agent-interchange-legacy bash /tmp/install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
           echo "image_mutation_started=true" >> "$GITHUB_OUTPUT"
           ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
               "${DO_SSH_USER}@${DO_DROPLET_HOST}" \

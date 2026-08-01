@@ -99,6 +99,7 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **AND** it transfers the secret through standard input into an atomic protected daemon-only environment file without printing the value
 - **AND** tunnel, logging, and worker processes do not receive the dedicated secret
 - **AND** a self-host template declares the required empty secret placeholder without embedding a default or shared key
+- **AND** clean-host bootstrap installs that protected placeholder and the service refuses startup when either required env file is unreadable
 - **AND** rotation replaces the repository secret and deploys forward without resurrecting a rotated-away key during image rollback
 - **AND** deleting the repository secret blocks deployment but is not represented as runtime revocation
 

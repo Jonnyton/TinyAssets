@@ -1440,6 +1440,7 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     assert validation_step.get("run") == "python scripts/validate_agent_interchange_hmac.py"
 
     mutating_steps = {
+        "Install daemon-only agent interchange HMAC secret",
         "Preflight droplet disk before image pull",
         "Transitional task 2.1 stop-writer preflight",
         "Scrub stale cloud env overrides",
@@ -1454,13 +1455,23 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     assert len(mutation_indexes) == len(mutating_steps)
     assert validation_index < min(mutation_indexes)
 
+    install_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Install daemon-only agent interchange HMAC secret"
+    )
+    install_step = steps[install_index]
+    install_env = install_step.get("env") or {}
+    install_secret = str(
+        install_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in install_secret
+
     deploy_step = next(step for step in steps if step.get("id") == "deploy")
     step_env = deploy_step.get("env") or {}
-    secret = str(step_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""))
-    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in step_env
 
-    script = deploy_step.get("run", "") or ""
-    mutation = script.index('echo "image_mutation_started=true"')
+    script = install_step.get("run", "") or ""
     assert re.search(
         r'printf \'%s\' "\$\{TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY\}" '
         r'\|\s*\\?\s*ssh',
@@ -1469,7 +1480,8 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     install = script.index(
         "install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
     )
-    assert install < mutation
+    assert install > 0
+    assert install_index < steps.index(deploy_step)
     assert "TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env" in script
     assert 'echo "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}"' not in script
     assert "set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY '" not in script

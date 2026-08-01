@@ -219,6 +219,17 @@ else
     log "${ENV_DIR}/env already present; leaving contents alone"
 fi
 
+if [[ ! -f "${ENV_DIR}/agent-interchange.env" ]]; then
+    log "creating ${ENV_DIR}/agent-interchange.env from daemon-only template..."
+    cp "${TINYASSETS_HOME}/deploy/agent-interchange-env.template" \
+        "${ENV_DIR}/agent-interchange.env"
+    chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"
+    chmod 640 "${ENV_DIR}/agent-interchange.env"
+    log "  → fill ${ENV_DIR}/agent-interchange.env with a unique canonical-base64 key before starting the service"
+else
+    log "${ENV_DIR}/agent-interchange.env already present; leaving contents alone"
+fi
+
 # ----- 6. systemd unit install --------------------------------------------
 
 SYSTEMD_UNIT="/etc/systemd/system/tinyassets-daemon.service"
