@@ -36,6 +36,18 @@
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-preflight-stray-writer-reconcile/_PURPOSE.md`
 - Ship/abandon: landed; successor acceptance lane owns OAuth/custom-agent rendered proof
 
+## 2026-07-31 18:36 - local drain keep-green guard
+
+- Provider: `codex-gpt5-desktop-drain-guard`
+- Branch: `codex/drain-keep-green-20260731`
+- Lane state: Active; recurring watchdog death restored while durable self-heal hooks are built
+- Worktree: `C:/Users/Jonathan/Projects/wf-drain-keep-green-20260731`
+- STATUS/Issue/PR: local watchdog keep-alive row claimed; cloud activation lane remains preserved and paused only for this P0 runtime repair
+- Purpose: keep the local drain observable and self-healing until the cloud drain passes 24-hour host-off acceptance
+- Review gate: focused Windows/TDD proof, strict OpenSpec, independent exact-head review, live scheduled-task recovery proof
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-drain-keep-green-20260731/_PURPOSE.md`
+- Ship/abandon: install locally only after tests; retire this guard only after cloud 24-hour acceptance
+
 ## 2026-07-31 17:27 - current-main OAuth diagnostic restack
 
 - Provider: `codex-gpt5-desktop`
