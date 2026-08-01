@@ -1107,6 +1107,56 @@ def test_preflight_initial_snapshot_does_not_trust_same_name_replacement(
     assert set(snapshot_inputs[0]) == captured_ids
 
 
+@pytest.mark.parametrize("missing_kind", ["expected", "extra"])
+def test_preflight_refuses_missing_controlled_identity_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_kind: str,
+):
+    host = LifecycleHost(tmp_path)
+    private_name = "tinyassets-daemon"
+    private_identity = str(host.containers[private_name]["Id"])
+    if missing_kind == "extra":
+        private_name = "private-forgotten-writer"
+        extra = host._containers("extra", "sha256:old", running=False)[
+            "tinyassets-daemon"
+        ]
+        private_identity = "private-extra-identity"
+        extra["Id"] = private_identity
+        host.containers[private_name] = extra
+    host.missing_container_info_identity.add(private_name)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+
+    with pytest.raises(
+        FenceError,
+        match="controlled container identity is unavailable",
+    ) as failure:
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert private_name not in str(failure.value)
+    assert private_identity not in str(failure.value)
+    assert not state_path.exists()
+    assert not any(
+        (
+            call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+            or (
+                call[:1] == ("systemctl",)
+                and len(call) > 1
+                and call[1]
+                in {"disable", "stop", "mask", "unmask", "enable", "start"}
+            )
+        )
+        for call in host.calls
+    )
+
+
 def test_finalized_recovery_generation_is_removed_before_canonical_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2898,6 +2948,34 @@ def test_stray_confirmation_rejects_numeric_pid_reuse(
         ("captured-a",),
         proc_root=tmp_path,
     ) == [{"pid": 123, "exe": "python"}]
+
+
+@pytest.mark.parametrize("stat_contents", [None, "123 malformed\n"])
+def test_stray_confirmation_keeps_owned_pid_when_generation_is_unreadable(
+    tmp_path: Path,
+    stat_contents: str | None,
+):
+    class RefreshHost:
+        def container_pids(self, names: Any) -> set[int]:
+            assert tuple(names) == ("captured-a",)
+            return {123}
+
+    proc = tmp_path / "123"
+    proc.mkdir()
+    if stat_contents is not None:
+        (proc / "stat").write_text(stat_contents, encoding="utf-8")
+    candidate = {
+        "pid": 123,
+        "exe": "private-exe",
+        "_process_start_time_ticks": 100,
+    }
+
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        [candidate],
+        ("captured-a",),
+        proc_root=tmp_path,
+    ) == [{"pid": 123, "exe": "private-exe"}]
 
 
 def test_stray_confirmation_mixed_100_candidate_load_uses_one_snapshot(
