@@ -25,11 +25,7 @@ QUEUED_STATUSES = ("pending", "dev-ready")
 HOST_STATUSES = ("host-action", "host-decision", "host-review", "monitoring")
 TASK_CEILING = 12
 CEILING_REVIEW_DATE = "2026-08-11"
-BROAD_COLLISION_ATOMS = {"STATUS.md", "REFLECTION.md", ".agents/worktrees.md"}
-
-
-def _task_counts(tasks_path: Path) -> tuple[int, int]:
-    return _task_counts_text(tasks_path.read_text(encoding="utf-8"))
+BROAD_COLLISION_ATOMS = {"REFLECTION.md", ".agents/worktrees.md"}
 
 
 def _task_counts_text(text: str) -> tuple[int, int]:

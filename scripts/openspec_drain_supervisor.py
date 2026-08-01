@@ -758,7 +758,7 @@ def inspect_refinery_hints(
             isinstance(change, dict) for change in changes
         ):
             raise TypeError("OpenSpec flow changes must be an object list")
-        eligible: list[tuple[int, int, str, dict[str, Any]]] = []
+        eligible: list[tuple[int, int, str, str]] = []
         order = {"complete-but-unarchived": 0, "untracked": 1}
         for change in changes:
             classification = change.get("classification")
@@ -770,18 +770,16 @@ def inspect_refinery_hints(
                 raise TypeError("refinery change name must be non-empty")
             if not isinstance(remaining, int) or remaining < 0:
                 raise TypeError("refinery remaining_tasks must be non-negative")
-            eligible.append(
-                (order[classification], remaining, name, change)
-            )
+            eligible.append((order[classification], remaining, name, classification))
         eligible.sort(key=lambda item: item[:3])
         return tuple(
             CandidateHint(
                 classification="REFINERY",
                 task_label=f"Refine OpenSpec {name}",
                 files=(f"openspec/changes/{name}/",),
-                status=str(change["classification"]),
+                status=classification,
             )
-            for _order, _remaining, name, change in eligible
+            for _order, _remaining, name, classification in eligible
         )
     except (
         KeyError,
