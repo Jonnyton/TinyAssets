@@ -1,16 +1,28 @@
 # Worktree Inventory
 
+## 2026-07-31 19:20 - OAuth return reattachment acceptance
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/oauth-return-reattach-acceptance`
+- Lane state: claimed from current main after PR #2037 landed the bounded diagnostic
+- Worktree: `C:/Users/Jonathan/Projects/wf-oauth-return-reattach-acceptance`
+- STATUS/Issue/PR: OAuth row claimed; custom-agent acceptance remains pending behind authenticated connector continuity
+- Purpose: explicitly attach TinyAssets after OAuth return, force one authenticated call, and distinguish client attachment failure from a bounded validator category
+- Review gate: ui-test rendered conversation, bounded OAuth evidence, organic-use check, strict specs, and exact-head independent review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-return-reattach-acceptance/_PURPOSE.md`
+- Ship/abandon: normal PR; no speculative validator change or manual production mutation
+
 ## 2026-07-31 18:48 - OAuth and custom-agent live acceptance
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `chore/oauth-custom-agent-live-acceptance`
-- Lane state: claimed after exact current-main deploy 30678500671 passed the complete normal fence
+- Lane state: PR #2037 merged; successor reattachment lane continues the incomplete rendered acceptance
 - Worktree: `C:/Users/Jonathan/Projects/wf-oauth-custom-agent-live-acceptance`
 - STATUS/Issue/PR: OAuth row claimed; custom-agent acceptance remains pending and may share the rendered connector session
 - Purpose: fold back immutable deploy evidence, then prove rendered reconnect diagnostics and live custom-agent conversation behavior
 - Review gate: ui-test rendered conversation, bounded OAuth evidence, organic-use check, strict specs, and exact-head independent review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-custom-agent-live-acceptance/_PURPOSE.md`
-- Ship/abandon: no new runtime behavior or manual production mutation in this coordination lane
+- Ship/abandon: landed as PR #2037; no OAuth acceptance claim
 
 ## 2026-07-31 18:04 - preflight stray-writer reconciliation
 
