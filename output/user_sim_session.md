@@ -122,3 +122,29 @@ GitHub issue searches found no `stage_import` or `convert_export` reports and no
 new deploy-failed issue for image `4c6e020fdb72`. No operation-level production
 trace or support record showed organic use of agent interchange, so clean user
 use remains unproven and the STATUS monitoring row stays open.
+## [2026-08-01 12:15] SYSTEM DIALOG _dismiss_inline_permission_card — detected: "refused Always-allow (not TinyAssets Server card: write graph from tinyassets)" auto-dismiss: skipped
+
+## [2026-08-01 12:06 PDT] USER NOTE repaired schema deployed
+
+PR #2063 merged as `83f2c006`; image run `30713923287` and production run
+`30714055993` passed build, health, canonical MCP, exact-seven surface, access,
+receipt, and release-state gates. An old Claude conversation retained the prior
+tool schema, so acceptance moved to a newly created incognito browser target.
+
+## [2026-08-01 12:12 PDT] USER ACTION fresh connector identity
+
+The new incognito conversation rendered bearer-present status and the same
+non-secret principal fingerprint
+`v1:3bbaa0d62599ff68974cbea0415b40f17b8d53f6dd2bd39dcceb889235fa9898`.
+Tab hygiene remained one tab.
+
+## [2026-08-01 12:15 PDT] USER BUG production commitment key absent
+
+Asked the fresh rendered client to privately stage the disposable Evidence
+Weaver JSON and inspect its report without publication. Using the repaired live
+tool description, Claude constructed a declarative adapter and invoked
+`write_graph stage_import`; this proves the prior envelope-discoverability bug
+is fixed. The server then failed closed with `agent_validation_error` because
+neither `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` nor the master idempotency HMAC
+key contained at least 32 bytes. Nothing was staged or published. Production
+must install a dedicated secret through the protected deploy path before retry.
