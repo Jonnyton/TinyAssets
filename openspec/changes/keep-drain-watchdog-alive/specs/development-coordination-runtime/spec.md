@@ -26,8 +26,13 @@ The development coordination runtime SHALL recover a failed local drain watchdog
 
 #### Scenario: Live observer integration is reinstalled
 - **WHEN** the installer replaces an older running tray/watchdog integration
-- **THEN** it recycles only exact-path tray and watchdog observer processes while preserving the live supervisor
+- **THEN** it recycles only processes matching the exact observer executable-and-argument grammar while preserving the live supervisor and unrelated diagnostics
 - **AND** it returns success only after fresh versioned health and exactly one tray, watchdog, and supervisor prove the new runtime is active
+
+#### Scenario: Integration is reinstalled while session stop is active
+- **WHEN** `stop.request` exists during reinstall
+- **THEN** the installer updates both task definitions without recycling or starting observers
+- **AND** it reports that version activation is deferred until the next real sign-in
 
 #### Scenario: Supervisor is healthy but idle
 - **WHEN** self-healing restores fresh watchdog health for a live idle supervisor

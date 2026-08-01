@@ -480,7 +480,6 @@ def _watch(args: argparse.Namespace) -> int:
 
             if sticky_failure and not wants_restart:
                 if wants_stop:
-                    stop_request.unlink(missing_ok=True)
                     _write_health(
                         health_path,
                         state=state,

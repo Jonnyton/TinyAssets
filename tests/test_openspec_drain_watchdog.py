@@ -484,6 +484,46 @@ def test_watch_loop_continues_after_health_publication_failure(
     assert health["watchdog_version"] == 2
 
 
+def test_stop_marker_survives_sticky_launch_failure_for_session_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    stop_request = (
+        repo / "output" / "openspec-drain-watchdog" / "stop.request"
+    )
+    live_pids = {77}
+
+    class FakeProcess:
+        pid = 77
+
+        @staticmethod
+        def poll() -> int | None:
+            return None if 77 in live_pids else 2
+
+    def launch_supervisor(**_kwargs: object) -> FakeProcess:
+        return FakeProcess()
+
+    def stop_after_first_poll(_seconds: float) -> None:
+        live_pids.discard(77)
+        stop_request.write_text("stop until next sign-in\n", encoding="utf-8")
+
+    monkeypatch.setattr(watchdog, "_launch_supervisor", launch_supervisor)
+    monkeypatch.setattr(watchdog, "_pid_is_alive", live_pids.__contains__)
+    monkeypatch.setattr(watchdog.time, "sleep", stop_after_first_poll)
+
+    assert watchdog.main(["run", "--repo", str(repo)]) == 0
+    assert stop_request.exists()
+    health = json.loads(
+        (
+            repo / "output" / "openspec-drain-watchdog" / "health.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert health["health"] == "down"
+    assert health["message"] == "stopped until next sign-in"
+
+
 def test_dead_fast_launch_is_a_sticky_failure() -> None:
     assert (
         watchdog.dead_launch_message(
@@ -586,6 +626,10 @@ def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
     assert "Register-ScheduledTask" in installer
     assert "$GuardTaskName" in installer
     assert "--preserve-stop" in installer
+    assert "$stopRequested = Test-Path -LiteralPath $stopPath" in installer
+    assert "activation deferred until next sign-in" in installer
+    assert "$trayProcessPattern" in installer
+    assert "$watchdogProcessPattern" in installer
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler integration")
@@ -645,6 +689,83 @@ def test_installer_registers_logon_and_periodic_guard_tasks() -> None:
         assert "--preserve-stop" in registered["GuardArgs"]
         assert "--preserve-stop" not in registered["PrimaryArgs"]
     finally:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+                "-Uninstall",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler integration")
+def test_installer_defers_activation_when_session_stop_is_active() -> None:
+    installer = SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    repo = SCRIPT.parents[1]
+    stop_request = repo / "output" / "openspec-drain-watchdog" / "stop.request"
+    task_name = f"TinyAssets Drain Stop Integration {uuid.uuid4().hex}"
+    guard_name = f"{task_name} Guard"
+    stop_request.parent.mkdir(parents=True, exist_ok=True)
+    stop_request.write_text("stop until next sign-in\n", encoding="utf-8")
+    install = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer),
+            "-Repo",
+            str(repo),
+            "-TaskName",
+            task_name,
+            "-GuardTaskName",
+            guard_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    try:
+        assert install.returncode == 0, install.stderr
+        assert "activation deferred until next sign-in" in install.stdout
+        assert stop_request.exists()
+        inspect = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                (
+                    "@(Get-ScheduledTask -TaskName '"
+                    + task_name
+                    + "','"
+                    + guard_name
+                    + "' | Select-Object -ExpandProperty State)"
+                    "|ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert inspect.returncode == 0, inspect.stderr
+        assert set(json.loads(inspect.stdout)) == {3}  # Ready
+    finally:
+        stop_request.unlink(missing_ok=True)
         subprocess.run(
             [
                 "powershell.exe",
