@@ -22,9 +22,12 @@ from tinyassets.custom_agents import (
     AgentValidationError,
     _author_and_key,
     _canonical_json,
+    _check_secret_fields,
     _definition_from_row,
     _ensure_schema,
     _fingerprint,
+    _is_sensitive_field_name,
+    _looks_sensitive_value,
     _normalize_definition_payload,
     _publish_normalized,
     _read_definition_row,
@@ -47,60 +50,6 @@ _HMAC_ENV = "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
 _MASTER_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
 _HMAC_PURPOSE = b"tinyassets-agent-interchange-source-v1"
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_SECRET_FIELDS = frozenset(
-    {
-        "access_token",
-        "api_key",
-        "apikey",
-        "auth",
-        "authorization",
-        "bearer",
-        "bot_token",
-        "channel_secret",
-        "client_secret",
-        "cookie",
-        "cookies",
-        "credential",
-        "credentials",
-        "password",
-        "private_key",
-        "refresh_token",
-        "secret",
-        "secrets",
-        "session_token",
-        "signing_secret",
-        "token",
-        "webhook_secret",
-    }
-)
-_PRIVATE_FIELDS = frozenset(
-    {
-        "chat_history",
-        "conversation",
-        "conversations",
-        "effect_payload",
-        "effect_payloads",
-        "execution_history",
-        "messages",
-        "run_history",
-        "runtime_state",
-    }
-)
-_SENSITIVE_SUFFIXES = (
-    "_api_key",
-    "_authorization",
-    "_credential",
-    "_credentials",
-    "_password",
-    "_private_key",
-    "_secret",
-    "_token",
-)
-_SECRET_VALUE = re.compile(
-    r"(?i)^(?:bearer\s+\S+|gh[pousr]_[a-z0-9_=-]{12,}|"
-    r"xox[baprs]-[a-z0-9-]{12,}|sk-[a-z0-9_-]{16,}|"
-    r"eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})$"
-)
 _CLASSIFICATIONS = frozenset(
     {
         "preserved",
@@ -741,19 +690,18 @@ def _pointer_set(root: dict[str, Any], pointer: str, value: Any) -> None:
 
 
 def _is_secret_path(pointer: str) -> bool:
-    for raw_part in _pointer_parts(pointer):
-        part = raw_part.casefold().replace("-", "_")
-        if (
-            part in _SECRET_FIELDS
-            or part in _PRIVATE_FIELDS
-            or part.endswith(_SENSITIVE_SUFFIXES)
-        ):
-            return True
-    return False
+    return any(_is_sensitive_field_name(part) for part in _pointer_parts(pointer))
 
 
 def _looks_secret_value(value: Any) -> bool:
-    return isinstance(value, str) and bool(_SECRET_VALUE.fullmatch(value.strip()))
+    return _looks_sensitive_value(value)
+
+
+def _ensure_no_sensitive_content(value: Any, *, label: str) -> None:
+    try:
+        _check_secret_fields(value)
+    except AgentValidationError as exc:
+        raise InterchangeValidationError(f"{label} contains secret/private content: {exc}") from exc
 
 
 def _sanitize(value: Any, pointer: str = "") -> Any:
@@ -830,6 +778,10 @@ def _validate_declarative_rule(rule: Any) -> dict[str, Any]:
                 "adapter rule target_path does not match the canonical grammar"
             )
         _pointer_parts(rule["target_path"])
+        if _is_secret_path(rule["target_path"]):
+            raise InterchangeValidationError(
+                "adapter rule target_path contains secret/private content"
+            )
     if allowed_classifications and rule.get("classification") not in allowed_classifications:
         raise InterchangeValidationError(
             "adapter rule classification does not match the canonical grammar"
@@ -846,6 +798,7 @@ def _validate_declarative_rule(rule: Any) -> dict[str, Any]:
 
 def _adapter_metadata(adapter: dict[str, Any]) -> tuple[dict[str, Any], str]:
     document = _bounded_json(adapter, limit=MAX_MAPPING_BYTES, label="adapter mapping")
+    _ensure_no_sensitive_content(document, label="adapter mapping")
     if document.get("schema_version") != ADAPTER_SCHEMA:
         raise InterchangeValidationError(f"adapter schema_version must equal {ADAPTER_SCHEMA}")
     adapter_ref = str(document.get("adapter_ref") or "").strip()
@@ -875,6 +828,18 @@ def _adapter_metadata(adapter: dict[str, Any]) -> tuple[dict[str, Any], str]:
             "adapter mapping fields do not match the canonical grammar"
         )
     document["rules"] = [_validate_declarative_rule(rule) for rule in rules]
+    target_paths = [
+        _pointer_parts(str(rule["target_path"]))
+        for rule in document["rules"]
+        if "target_path" in rule
+    ]
+    for index, left in enumerate(target_paths):
+        for right in target_paths[index + 1 :]:
+            shorter, longer = (left, right) if len(left) <= len(right) else (right, left)
+            if longer[: len(shorter)] == shorter:
+                raise InterchangeValidationError(
+                    "adapter rule target paths overlap in the canonical grammar"
+                )
     return document, _sha256(document)
 
 
@@ -1001,6 +966,7 @@ def _convert_declarative_export(
             "source_inventory": inventory,
         }
     )
+    sanitized = _sanitize(source)
 
     items: list[dict[str, Any]] = []
     for path in inventory:
@@ -1013,6 +979,18 @@ def _convert_declarative_export(
         classification = str(rule.get("classification") or "")
         if classification not in _CLASSIFICATIONS:
             raise InterchangeValidationError(f"inventory path {path} has invalid classification")
+        secret_path = _is_secret_path(path) or _looks_secret_value(
+            _pointer_get(source, path)
+        )
+        if secret_path and (
+            op != "omit"
+            or classification not in {
+                "omitted_secret",
+                "requires_private_binding",
+                "unsupported",
+            }
+        ):
+            raise InterchangeValidationError(f"secret inventory path {path} must be omitted")
         reason_code = str(rule.get("reason_code") or classification)
         if not _REASON_CODE.fullmatch(reason_code):
             raise InterchangeValidationError(f"inventory path {path} has invalid reason_code")
@@ -1035,7 +1013,7 @@ def _convert_declarative_export(
             _pointer_set(
                 output,
                 str(rule.get("target_path") or ""),
-                _pointer_get(source, str(rule.get("source_path") or "")),
+                _pointer_get(sanitized, str(rule.get("source_path") or "")),
             )
         elif op == "constant":
             _pointer_set(output, str(rule.get("target_path") or ""), rule.get("value"))
@@ -1043,6 +1021,7 @@ def _convert_declarative_export(
             raise InterchangeValidationError("adapter rule uses unsupported operation")
 
     output = _bounded_json(output, limit=MAX_SOURCE_BYTES, label="foreign output")
+    _ensure_no_sensitive_content(output, label="foreign output")
     report = {
         "schema_version": 1,
         "direction": "export",

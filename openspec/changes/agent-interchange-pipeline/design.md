@@ -110,6 +110,14 @@ with it; explicit publish copies the same immutable receipt content into the
 durable receipt ledger inside the publication transaction. Explicit export
 writes its durable sanitized receipt immediately.
 
+Canonical publication, staged imports, and foreign exports share one
+conservative credential/private-runtime classifier. It rejects sensitive key
+segments and suffixes plus embedded provider-token, bearer, and JWT-shaped
+values. Import constants and final candidates are scanned; export inventory
+must explicitly omit sensitive leaves and the final foreign output is scanned
+again. This prevents adapter constants or legacy canonical rows from bypassing
+source-only sanitization.
+
 ### 3. Reports are exhaustive and machine-readable
 
 For JSON import and canonical JSON export, the trusted protocol runner
@@ -171,6 +179,13 @@ result exactly like every adapter. A repository conformance fixture supplies a
 foreign JSON manifest plus the mapping artifact for local and rendered tests;
 it is evidence for the pipeline, not a named product integration or maintained
 format catalog. All more expressive adapters wait for Engine OS admission.
+
+The grammar binds operation to classification: copy/namespace operations may
+only preserve or normalize, omission may only declare explicit loss, private,
+or runtime categories, and constants cannot cover source inventory. Declared
+target paths must be pairwise non-overlapping, including ancestor overlap, so
+one rule cannot silently overwrite another while both claim successful
+coverage.
 
 The platform may ship the protocol runner and canonical native adapter, but
 foreign adapters are ordinary public, remixable, evaluable commons artifacts,

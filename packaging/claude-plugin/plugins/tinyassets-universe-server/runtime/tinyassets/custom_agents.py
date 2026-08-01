@@ -34,13 +34,58 @@ _SECRET_FIELD_NAMES = frozenset(
         "access_token",
         "api_key",
         "apikey",
+        "auth",
+        "authorization",
+        "bearer",
+        "bot_token",
+        "channel_secret",
         "client_secret",
+        "cookie",
+        "cookies",
         "credential",
+        "credentials",
         "password",
         "private_key",
         "refresh_token",
         "secret",
+        "secrets",
+        "session_token",
+        "signing_secret",
+        "token",
+        "webhook_secret",
     }
+)
+_PRIVATE_DEFINITION_FIELDS = frozenset(
+    {
+        "chat_history",
+        "conversation",
+        "conversation_history",
+        "conversations",
+        "effect_payload",
+        "effect_payloads",
+        "execution_history",
+        "external_write_results",
+        "message_history",
+        "messages",
+        "run_history",
+        "run_state",
+        "runtime_state",
+    }
+)
+_SENSITIVE_FIELD_SUFFIXES = (
+    "_api_key",
+    "_authorization",
+    "_credential",
+    "_credentials",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_token",
+)
+_CREDENTIAL_VALUE = re.compile(
+    r"(?i)(?:bearer\s+[a-z0-9._~+/-]{3,}|gh[pousr]_[a-z0-9_=-]{12,}|"
+    r"xox[baprs]-[a-z0-9-]{12,}|sk-[a-z0-9_-]{16,}|"
+    r"eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})"
 )
 _FORBIDDEN_BINDING_CONTENT_FIELDS = frozenset(
     {
@@ -177,19 +222,34 @@ def _check_size(value: Any) -> None:
         )
 
 
+def _is_sensitive_field_name(raw_key: Any) -> bool:
+    key = str(raw_key).strip().casefold().replace("-", "_")
+    return (
+        key in _SECRET_FIELD_NAMES
+        or key in _PRIVATE_DEFINITION_FIELDS
+        or key.endswith(_SENSITIVE_FIELD_SUFFIXES)
+    )
+
+
+def _looks_sensitive_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(_CREDENTIAL_VALUE.search(value))
+
+
 def _check_secret_fields(value: Any, path: str = "") -> None:
     if isinstance(value, dict):
         for raw_key, child in value.items():
             key = str(raw_key)
             child_path = f"{path}.{key}" if path else key
-            if key.strip().lower() in _SECRET_FIELD_NAMES:
+            if _is_sensitive_field_name(key):
                 raise AgentValidationError(
-                    f"{child_path} contains a forbidden secret-bearing field"
+                    f"{child_path} contains forbidden credential/private runtime content"
                 )
             _check_secret_fields(child, child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _check_secret_fields(child, f"{path}[{index}]")
+    elif _looks_sensitive_value(value):
+        raise AgentValidationError(f"{path} contains a credential-shaped value")
 
 
 def _check_binding_content_fields(value: Any, path: str = "") -> None:

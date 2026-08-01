@@ -30,8 +30,8 @@ def _adapter() -> dict[str, object]:
             {"op": "constant", "target_path": "/tags", "value": ["imported"]},
             {
                 "op": "copy",
-                "source_path": "/modules",
-                "target_path": "/components",
+                "source_path": "/modules/identity",
+                "target_path": "/components/identity",
                 "classification": "preserved",
             },
             {
@@ -145,6 +145,25 @@ def test_declarative_rule_operation_cannot_lie_about_loss(
         convert_declarative_json(_source(), adapter)
 
 
+@pytest.mark.parametrize("target_path", ["/name", "/components/imported_extension"])
+def test_declarative_target_writes_cannot_overlap(target_path: str) -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    adapter = _adapter()
+    adapter["rules"] = [
+        {**rule, "target_path": target_path}
+        if rule.get("source_path") == "/extra"
+        else rule
+        for rule in adapter["rules"]  # type: ignore[index]
+    ]
+
+    with pytest.raises(InterchangeValidationError, match="target paths overlap"):
+        convert_declarative_json(_source(), adapter)
+
+
 @pytest.mark.parametrize(
     "credentials",
     [
@@ -176,7 +195,7 @@ def test_credential_paths_and_values_cannot_be_namespace_preserved(
         for rule in adapter["rules"]  # type: ignore[index]
     ]
 
-    with pytest.raises(InterchangeValidationError, match="secret inventory path"):
+    with pytest.raises(InterchangeValidationError, match="secret|private"):
         convert_declarative_json(source, adapter)
 
 
@@ -191,6 +210,54 @@ def test_token_shaped_value_under_benign_key_is_omitted() -> None:
 
     with pytest.raises(InterchangeValidationError, match="secret inventory path"):
         convert_declarative_json(source, _adapter())
+
+
+def test_adapter_constant_cannot_inject_credential_shaped_value() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    adapter = _adapter()
+    adapter["rules"] = [
+        {
+            "op": "constant",
+            "target_path": "/description",
+            "value": "Bearer authority-value",
+        }
+        if rule.get("target_path") == "/description"
+        else rule
+        for rule in adapter["rules"]  # type: ignore[index]
+    ]
+
+    with pytest.raises(InterchangeValidationError, match="secret|credential"):
+        convert_declarative_json(_source(), adapter)
+
+
+def test_foreign_export_requires_credential_paths_to_be_omitted() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        _convert_declarative_export,
+    )
+
+    source = {
+        "schema_version": 1,
+        "name": "Legacy unsafe definition",
+        "description": "",
+        "tags": [],
+        "components": {
+            "provider": {
+                "kind": "provider",
+                "config": {"token": "ghp_sensitive_value_1234567890"},
+            }
+        },
+        "lineage": {},
+        "external_origins": [],
+    }
+    adapter = _export_adapter(source)
+
+    with pytest.raises(InterchangeValidationError, match="secret inventory path"):
+        _convert_declarative_export(source, adapter)
 
 
 def test_public_payload_parser_rejects_duplicate_object_keys() -> None:
@@ -503,7 +570,7 @@ def test_adapter_output_cannot_bypass_canonical_agent_validation() -> None:
             },
         },
     ]
-    with pytest.raises(InterchangeValidationError, match="secret-bearing"):
+    with pytest.raises(InterchangeValidationError, match="secret|private"):
         convert_declarative_json({}, adapter)
 
 

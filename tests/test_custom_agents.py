@@ -98,6 +98,40 @@ def test_publish_is_immutable_extensible_and_idempotent(tmp_path) -> None:
         ),
         (
             _definition(
+                "Token agent",
+                components={
+                    "identity": _component(
+                        "soul",
+                        token="ghp_sensitive_value_1234567890",
+                    )
+                },
+            ),
+            "components.identity.config.token",
+        ),
+        (
+            _definition(
+                "Runtime-state agent",
+                components={
+                    "identity": _component(
+                        "soul",
+                        runtime_state={"messages": ["private"]},
+                    )
+                },
+            ),
+            "components.identity.config.runtime_state",
+        ),
+        (
+            {
+                **_definition("Credential-shaped description"),
+                "description": (
+                    "prefix ghp_sensitive_value_1234567890 suffix; "
+                    "Authorization: Bearer abc"
+                ),
+            },
+            "description",
+        ),
+        (
+            _definition(
                 "Bad component",
                 components={"identity": "not-an-object"},  # type: ignore[dict-item]
             ),
