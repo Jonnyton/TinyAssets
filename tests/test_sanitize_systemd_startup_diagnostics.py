@@ -113,6 +113,27 @@ def test_journal_sanitizer_requires_exact_oauth_diagnostic_shape():
     assert result["oauth_rejection_categories"] == ["signing_key"]
 
 
+def test_journal_sanitizer_reports_safe_noncanonical_oauth_envelope_signals():
+    token = "eyJ-private-token-material"
+    result = sanitize_journal(
+        (
+            "WorkOS bearer token rejected category=malformed suppressed=0\n"
+            "unexpected-prefix WorkOS bearer token rejected "
+            "category=issuer suppressed=3\n"
+            "WorkOS bearer token rejected category=signature "
+            "suppressed=1 trailing\n"
+            f"unrelated detail {token}\n"
+        ).encode()
+    )
+
+    assert result["oauth_rejection_categories"] == []
+    assert result["oauth_rejection_signal_categories"] == ["malformed", "issuer"]
+    assert result["oauth_rejection_envelope_shapes"] == ["bare", "prefixed"]
+    rendered = json.dumps(result)
+    assert token not in rendered
+    assert "unexpected-prefix" not in rendered
+
+
 def test_journal_sanitizer_uses_only_the_terminal_compose_attempt():
     result = sanitize_journal(
         b"Container tinyassets-daemon Creating\n"

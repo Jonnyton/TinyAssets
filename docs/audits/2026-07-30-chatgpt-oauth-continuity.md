@@ -6,15 +6,14 @@ Change: `repair-chatgpt-connector-oauth-continuity`
 
 ## Current conclusion
 
-A successful ChatGPT reconnect does not continue into an accepted
-authenticated TinyAssets tool call. OAuth discovery and MCP initialization
-complete, then the first bearer-authenticated call receives `401
-invalid_token`. This blocks runtime implementation of the generic user-owned
-GitHub-to-spec cloud production loop.
-
-The exact JWT validation boundary is not yet known. No audience, issuer,
-expiry, key, or claim repair is authorized until token-safe production
-telemetry identifies it.
+A successful ChatGPT reconnect does not continue into an authenticated
+TinyAssets tool call. The strongest current reproduction stops before the
+resource server: ChatGPT returns through `link_success=true`, an explicitly
+reattached call never reaches TinyAssets, and a brand-new Temporary Chat
+immediately marks the connection expired. Two complete bounded production
+windows recorded no instrumented bearer rejection, but a later malformed-
+bearer positive control also recorded none, so empty categories do not prove
+the stop point. No audience, issuer, expiry, key, or claim repair is authorized.
 
 A second rendered attempt on 2026-08-01 reached ChatGPT's
 `link_success=true` return but did not retain TinyAssets in the returned
@@ -22,6 +21,13 @@ conversation's plugin picker. A complete, non-truncated production journal
 window for that attempt contained no sanitized token-rejection category. This
 attempt therefore failed before the instrumented bearer validator; it is not
 evidence for relaxing or changing JWT validation.
+
+The client-registration boundary is now concrete. ChatGPT's live Advanced
+OAuth discovery selects Dynamic Client Registration and renders: `CIMD is
+unavailable because the server did not advertise CIMD support.` The installed
+TinyAssets settings surface simultaneously shows `Reconnect` immediately
+after the successful OAuth return. AuthKit's live authorization-server
+metadata indeed omits `client_id_metadata_document_supported`.
 
 ## Rendered reproduction
 
@@ -57,6 +63,14 @@ call nor an assistant response. The custom-agent read therefore did not run.
 Exact prompts, rendered results, and main-pane screenshots are in
 `output/user_sim_session.md`.
 
+A second control explicitly reattached TinyAssets after the OAuth return and
+sent `ok, i reconnected it — use TinyAssets now and tell me which account it
+sees and what universe i'm in`. The rendered call remained in progress without
+a tool result until stopped. A new Temporary Chat then attached the still-
+visible plugin and immediately rendered `Reconnect TinyAssets`. The settings
+page also listed `TinyAssets — Reconnect`. Plugin visibility therefore did not
+mean ChatGPT held a usable OAuth credential.
+
 ## Public and deployed configuration parity
 
 Public metadata fetched 2026-07-30:
@@ -67,6 +81,9 @@ Public metadata fetched 2026-07-30:
 - scopes: `openid`, `profile`, `email`, `offline_access`
 - grants: authorization code, refresh token, device code
 - PKCE: `S256`
+- token endpoint accepts public clients with `none`
+- DCR registration endpoint is present
+- `client_id_metadata_document_supported` is absent
 - JWKS: one RSA key advertising `RS256`
 
 Safe production environment inspection:
@@ -79,6 +96,22 @@ Safe production environment inspection:
 
 This proves visible URL/issuer/algorithm parity, but not the rejected token's
 actual `aud`, expiry, issuer, subject, or signing-key match.
+
+ChatGPT's discovery UI confirms the same resource, AuthKit endpoints, OIDC
+scopes, and `offline_access`, but can only select DCR. The
+[OpenAI authentication guide](https://developers.openai.com/plugins/build/auth)
+states that ChatGPT prioritizes CIMD when advertised, and the
+[WorkOS AuthKit MCP guide](https://workos.com/docs/authkit/mcp) says CIMD is
+off by default and should be enabled under Connect → Configuration while DCR
+can remain enabled for legacy clients. Enabling CIMD is therefore the smallest
+supported control-plane experiment; it is not yet proof that missing CIMD
+caused the old DCR credential to expire.
+
+Test-first `scripts/check_oauth_discovery_contract.py` makes the public
+contract repeatable without secrets. On Windows/Python 3.13, 9 focused tests
+pass. Against production on 2026-07-31 it returns one issue only:
+`cimd_not_advertised` (exit 1). Scoped rendered evidence is
+`output/chatgpt_oauth_discovery_dcr_only_2026-07-31.png`.
 
 ## Diagnostic implementation
 
@@ -159,14 +192,36 @@ Rollback action:
 
 There is no data migration and no persistent-state rollback.
 
+Two follow-up main-revision diagnostic runs corroborate the client-side
+boundary:
+
+- run 30680168689, 2026-08-01T02:25:00Z–02:31:00Z: complete, 198 lines,
+  `input_truncated=false`, `oauth_rejection_categories=[]`;
+- run 30680303470, 2026-08-01T02:31:00Z–02:35:00Z: complete, 54 lines,
+  `input_truncated=false`, `oauth_rejection_categories=[]`.
+
+Both ran exact main `7932b333a5b14be7d25983d85e66f82affd4164a`
+and published no raw journal text.
+
+Claude's opposite-provider review returned `ADAPT` and is preserved in
+`output/claude-oauth-cimd-review.md`. It approved the bounded CIMD experiment
+but required a live positive control for the sanitizer. Fixed non-secret
+malformed bearers sent at 02:56:15Z and 02:57:37Z each returned `401
+invalid_token`; complete runs 30681000676 and 30681046575 nevertheless returned
+`oauth_rejection_categories=[]`. The expected production logging envelope is
+therefore unproven. Earlier empty-category windows must not be described as
+proof that the validator was not reached.
+
 ## Next evidence gate
 
-After the diagnostic lands, start a fresh rendered conversation, explicitly
-attach TinyAssets after the OAuth return, perform one authenticated call, and
-read the bounded category at the correlated timestamp if the server rejects
-it. If ChatGPT still cannot attach TinyAssets and the bounded category remains
-empty, treat the connector-return/attachment seam—not JWT validation—as the
-next repair boundary. Only implement the smallest evidence-backed correction.
+After opposite-provider review, enable AuthKit CIMD while retaining DCR,
+recreate or update the ChatGPT connector registration so ChatGPT selects CIMD,
+and rerun the public discovery check. Then start a fresh rendered conversation
+and perform the immediate plus later authenticated calls. A success changes
+both registration freshness and mechanism, so it does not attribute the old
+failure specifically to missing CIMD. If CIMD does not restore continuity,
+revert that control-plane experiment and diagnose DCR registration/token
+exchange directly; do not modify JWT acceptance.
 
 Final acceptance requires both an immediate authenticated call and a later
 continued/refreshed call to the same owner/universe from a rendered chatbot,

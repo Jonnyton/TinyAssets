@@ -1233,3 +1233,14 @@ fresh-host rollback edges found later.
   predecessor posture.
 - What I would do differently: enumerate every authoritative stable predecessor
   state in the first terminal-state table, not only transitions.
+
+## 2026-07-31 - Empty diagnostics need a positive control
+
+- What surprised me: three complete bounded windows all looked like strong
+  client-seam evidence until a deliberate malformed bearer returned a real
+  production 401 while the sanitizer still reported no category.
+- Pattern worth capturing: an empty production detector result is trustworthy
+  only after the same deployed detector has observed one safe positive control;
+  unit-tested parsing does not prove the live logging envelope.
+- What I would do differently: run the positive control immediately after a
+  diagnostic rollout, before using any empty window to localize a failure.
