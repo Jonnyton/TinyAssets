@@ -74,6 +74,7 @@ services:
       TINYASSETS_MCP_CANARY_URL: ${TINYASSETS_MCP_CANARY_URL:-https://tinyassets.io/mcp}
     env_file:
       - /etc/tinyassets/env
+      - /etc/tinyassets/agent-interchange.env
     volumes:
       - tinyassets-data:/data
     healthcheck:

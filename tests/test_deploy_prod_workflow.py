@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1424,23 +1425,42 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
 
 def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     wf = _load()
-    deploy_job = wf["jobs"]["deploy"]
-    job_env = deploy_job.get("env") or {}
-    flag = str(job_env.get("HAS_AGENT_INTERCHANGE_HMAC_KEY", ""))
-    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in flag
-    assert "!= ''" in flag
+    steps = _steps(wf)
+    validation_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Validate agent interchange HMAC prerequisite"
+    )
+    validation_step = steps[validation_index]
+    validation_env = validation_step.get("env") or {}
+    secret_source = str(
+        validation_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret_source
+    assert validation_step.get("run") == "python scripts/validate_agent_interchange_hmac.py"
 
-    deploy_step = next(step for step in _steps(wf) if step.get("id") == "deploy")
+    mutating_steps = {
+        "Preflight droplet disk before image pull",
+        "Transitional task 2.1 stop-writer preflight",
+        "Scrub stale cloud env overrides",
+        "Sync runtime deploy files",
+        "Prepare codex auth persistent volume",
+        "Retire legacy Workflow service",
+        "Deploy new image",
+    }
+    mutation_indexes = [
+        index for index, step in enumerate(steps) if step.get("name") in mutating_steps
+    ]
+    assert len(mutation_indexes) == len(mutating_steps)
+    assert validation_index < min(mutation_indexes)
+
+    deploy_step = next(step for step in steps if step.get("id") == "deploy")
     step_env = deploy_step.get("env") or {}
     secret = str(step_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""))
     assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret
 
     script = deploy_step.get("run", "") or ""
-    missing_check = script.index('${HAS_AGENT_INTERCHANGE_HMAC_KEY}')
-    length_check = script.index('${#TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}')
     mutation = script.index('echo "image_mutation_started=true"')
-    assert missing_check < mutation
-    assert length_check < mutation
     assert re.search(
         r'printf \'%s\' "\$\{TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY\}" '
         r'\|\s*\\?\s*ssh',
@@ -1449,15 +1469,70 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     install = script.index(
         "install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
     )
-    assert mutation < install
+    assert install < mutation
+    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env" in script
     assert 'echo "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}"' not in script
     assert "set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY '" not in script
 
 
 def test_self_host_template_declares_empty_agent_interchange_hmac_key():
-    template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=" in template
-    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=change" not in template
+    shared = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
+    dedicated = Path("deploy/agent-interchange-env.template").read_text(
+        encoding="utf-8"
+    )
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in shared
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=" in dedicated
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=change" not in dedicated
+
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    dedicated_path = "/etc/tinyassets/agent-interchange.env"
+    assert dedicated_path in services["daemon"]["env_file"]
+    for name, service in services.items():
+        if name != "daemon":
+            assert dedicated_path not in (service.get("env_file") or []), name
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        base64.b64encode(b"x" * 31).decode("ascii"),
+        base64.b64encode(b"x" * 32).decode("ascii") + "\nINJECTED_SETTING=1",
+        "not-base64!",
+        base64.b64encode(b"x" * 32).decode("ascii").rstrip("="),
+    ],
+)
+def test_agent_interchange_hmac_validator_rejects_unsafe_values(value: str):
+    from scripts.validate_agent_interchange_hmac import validate_secret
+
+    with pytest.raises(ValueError):
+        validate_secret(value)
+
+
+def test_agent_interchange_hmac_validator_accepts_32_random_bytes():
+    from scripts.validate_agent_interchange_hmac import validate_secret
+
+    raw = bytes(range(32))
+    encoded = base64.b64encode(raw).decode("ascii")
+    assert validate_secret(encoded) == raw
+
+
+def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
+    secret = base64.b64encode(b"x" * 32).decode("ascii") + "\nINJECTED_SETTING=1"
+    env = {**os.environ, "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": secret}
+    result = subprocess.run(
+        [sys.executable, "scripts/validate_agent_interchange_hmac.py"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert secret not in result.stdout
+    assert "INJECTED_SETTING" not in result.stdout
+    assert secret not in result.stderr
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():

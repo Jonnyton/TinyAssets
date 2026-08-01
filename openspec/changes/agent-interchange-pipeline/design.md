@@ -104,7 +104,15 @@ the secret-bearing bytes. An unkeyed raw-source hash was also rejected because
 small or low-entropy credentials could be guessed offline. The private
 commitment requires `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`, fails closed when
 the key is unavailable, is never returned by public evidence, and expires with
-the stage 24 hours after creation. Durable receipts bind only sanitized
+the stage 24 hours after creation. Production accepts this deploy secret only
+as canonical single-line base64 decoding to at least 32 random bytes, installs
+it in a protected daemon-only env file, and validates it before the first
+remote mutation. Rotation replaces the repository secret and deploys forward;
+image rollback intentionally retains the new key so it cannot resurrect a
+rotated-away authority. Deleting the repository secret only blocks later
+deployments and is not a revocation mechanism: emergency revocation stops the
+daemon before removing the protected file, while normal revocation rotates and
+deploys. Durable receipts bind only sanitized
 content. If the stage expires unpublished, its private receipt view expires
 with it; explicit publish copies the same immutable receipt content into the
 durable receipt ledger inside the publication transaction. Explicit export
