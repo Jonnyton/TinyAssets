@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from collections.abc import Mapping
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,9 +33,12 @@ CREATE TABLE IF NOT EXISTS agent_runtime_manifests (
     agent_definition_id TEXT NOT NULL,
     definition_fingerprint TEXT NOT NULL,
     idempotency_key TEXT NOT NULL,
+    idempotency_key_digest TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
     record_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE (owner_user_id, idempotency_key)
+    UNIQUE (owner_user_id, idempotency_key),
+    UNIQUE (owner_user_id, idempotency_key_digest)
 );
 
 CREATE INDEX IF NOT EXISTS idx_agent_runtime_manifest_owner
@@ -47,9 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_runtime_manifest_binding
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("clock must return a timezone-aware datetime")
-    return value.astimezone(timezone.utc).isoformat(
-        timespec="microseconds"
-    ).replace("+00:00", "Z")
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _required(value: object, name: str, *, maximum: int = 512) -> str:
@@ -61,9 +64,9 @@ def _required(value: object, name: str, *, maximum: int = 512) -> str:
     return clean
 
 
-def _record_json(record: AgentRuntimeManifest) -> str:
+def _canonical_json(value: object) -> str:
     return json.dumps(
-        record.to_dict(),
+        value,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -71,9 +74,41 @@ def _record_json(record: AgentRuntimeManifest) -> str:
     )
 
 
+def _key_digest(key: str) -> str:
+    return f"sha256:{hashlib.sha256(key.encode('utf-8')).hexdigest()}"
+
+
+def _request_digest(record: AgentRuntimeManifest, key: str) -> str:
+    return canonical_content_digest(
+        {
+            "idempotency_key": key,
+            "manifest_digest": record.manifest_digest,
+            "owner_user_id": record.manifest_input.to_dict()["owner_user_id"],
+        }
+    )
+
+
+def _record_json(
+    record: AgentRuntimeManifest,
+    *,
+    idempotency_key: str,
+    request_digest: str,
+) -> str:
+    return _canonical_json(
+        {
+            "idempotency_key": idempotency_key,
+            "manifest": record.to_dict(),
+            "request_digest": request_digest,
+        }
+    )
+
+
 def _record(row: sqlite3.Row) -> AgentRuntimeManifest:
     try:
-        payload = json.loads(str(row["record_json"]))
+        envelope = json.loads(str(row["record_json"]))
+        payload = envelope["manifest"]
+        idempotency_key = str(envelope["idempotency_key"])
+        request_digest = str(envelope["request_digest"])
         manifest_input = AgentRuntimeManifestInput.from_dict(
             {
                 key: value
@@ -88,9 +123,7 @@ def _record(row: sqlite3.Row) -> AgentRuntimeManifest:
             created_at=str(payload["created_at"]),
         )
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise AgentRuntimeManifestIntegrityError(
-            "persisted manifest is invalid"
-        ) from exc
+        raise AgentRuntimeManifestIntegrityError("persisted manifest is invalid") from exc
     content = manifest_input.to_dict()
     exact = (
         record.manifest_id == row["manifest_id"],
@@ -101,13 +134,20 @@ def _record(row: sqlite3.Row) -> AgentRuntimeManifest:
         content["binding_revision"] == row["binding_revision"],
         content["agent_definition_id"] == row["agent_definition_id"],
         content["definition_fingerprint"] == row["definition_fingerprint"],
+        idempotency_key == row["idempotency_key"],
+        _key_digest(idempotency_key) == row["idempotency_key_digest"],
+        request_digest == row["request_digest"],
+        request_digest == _request_digest(record, idempotency_key),
         record.created_at == row["created_at"],
-        _record_json(record) == row["record_json"],
+        _record_json(
+            record,
+            idempotency_key=idempotency_key,
+            request_digest=request_digest,
+        )
+        == row["record_json"],
     )
     if not all(exact):
-        raise AgentRuntimeManifestIntegrityError(
-            "persisted manifest failed integrity checks"
-        )
+        raise AgentRuntimeManifestIntegrityError("persisted manifest failed integrity checks")
     return record
 
 
@@ -158,9 +198,7 @@ class AgentRuntimeManifestStore:
         if not isinstance(manifest_input, AgentRuntimeManifestInput):
             raise ValueError("manifest_input must be an AgentRuntimeManifestInput")
         try:
-            validated_input = AgentRuntimeManifestInput.from_dict(
-                manifest_input.to_dict()
-            )
+            validated_input = AgentRuntimeManifestInput.from_dict(manifest_input.to_dict())
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             if isinstance(exc, AgentRuntimeManifestValidationError):
                 raise
@@ -173,19 +211,29 @@ class AgentRuntimeManifestStore:
             )
         manifest_input = validated_input
         key = _required(idempotency_key, "idempotency_key", maximum=128)
+        key_digest = _key_digest(key)
         content = manifest_input.to_dict()
         owner = str(content["owner_user_id"])
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
-                existing = conn.execute(
+                existing_rows = conn.execute(
                     """
                     SELECT * FROM agent_runtime_manifests
-                    WHERE owner_user_id = ? AND idempotency_key = ?
+                    WHERE owner_user_id = ?
+                      AND (
+                          idempotency_key = ?
+                          OR idempotency_key_digest = ?
+                      )
                     """,
-                    (owner, key),
-                ).fetchone()
-                if existing is not None:
+                    (owner, key, key_digest),
+                ).fetchall()
+                if len(existing_rows) > 1:
+                    raise AgentRuntimeManifestIntegrityError(
+                        "manifest identity constraints disagree"
+                    )
+                if existing_rows:
+                    existing = existing_rows[0]
                     current = _record(existing)
                     if current.manifest_digest != manifest_input.input_digest:
                         raise AgentRuntimeManifestConflict(
@@ -202,14 +250,16 @@ class AgentRuntimeManifestStore:
                     manifest_input=manifest_input,
                     created_at=created_at,
                 )
+                request_digest = _request_digest(record, key)
                 conn.execute(
                     """
                     INSERT INTO agent_runtime_manifests (
                         manifest_id, manifest_digest, owner_user_id, universe_id,
                         agent_binding_id, binding_revision, agent_definition_id,
-                        definition_fingerprint, idempotency_key, record_json,
+                        definition_fingerprint, idempotency_key,
+                        idempotency_key_digest, request_digest, record_json,
                         created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.manifest_id,
@@ -221,7 +271,13 @@ class AgentRuntimeManifestStore:
                         content["agent_definition_id"],
                         content["definition_fingerprint"],
                         key,
-                        _record_json(record),
+                        key_digest,
+                        request_digest,
+                        _record_json(
+                            record,
+                            idempotency_key=key,
+                            request_digest=request_digest,
+                        ),
                         created_at,
                     ),
                 )
@@ -259,8 +315,7 @@ class AgentRuntimeManifestStore:
         owner = _required(owner_user_id, "owner_user_id")
         with self.connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS count FROM agent_runtime_manifests "
-                "WHERE owner_user_id = ?",
+                "SELECT COUNT(*) AS count FROM agent_runtime_manifests WHERE owner_user_id = ?",
                 (owner,),
             ).fetchone()
         assert row is not None
@@ -295,24 +350,116 @@ class AgentRuntimeManifestStore:
             binding["revision"] == content["binding_revision"],
             binding["status"] == "configured",
             binding["created_by"] == content["owner_user_id"],
-            canonical_content_digest(configuration)
-            == content["binding_configuration_digest"],
+            canonical_content_digest(configuration) == content["binding_configuration_digest"],
         )
         if not all(exact_binding):
             raise PermissionError("binding_not_current")
         definition = conn.execute(
             """
-            SELECT content_fingerprint FROM agent_definitions
+            SELECT content_fingerprint, components_json FROM agent_definitions
             WHERE agent_definition_id = ?
             """,
             (content["agent_definition_id"],),
         ).fetchone()
         if (
             definition is None
-            or definition["content_fingerprint"]
-            != content["definition_fingerprint"]
+            or definition["content_fingerprint"] != content["definition_fingerprint"]
         ):
             raise PermissionError("definition_not_current")
+        try:
+            definition_components = json.loads(str(definition["components_json"]))
+        except json.JSONDecodeError as exc:
+            raise AgentRuntimeManifestIntegrityError(
+                "current definition components are invalid"
+            ) from exc
+        if not _matches_source_configuration(
+            content=content,
+            configuration=configuration,
+            definition_components=definition_components,
+        ):
+            raise PermissionError("manifest_sources_not_current")
+
+
+def _string_leaves(value: object) -> list[str]:
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    if isinstance(value, Mapping):
+        return [item for child in value.values() for item in _string_leaves(child)]
+    if isinstance(value, list):
+        return [item for child in value for item in _string_leaves(child)]
+    return []
+
+
+def _source_references(configuration: Mapping[str, object]) -> dict[str, list[str]]:
+    authority = configuration.get("authority", {})
+    resources = configuration.get("resources", {})
+    provider = configuration.get("provider", {})
+    capability_ids = []
+    if isinstance(authority, Mapping):
+        capability_ids = _string_leaves(authority.get("capability_refs", []))
+    provider_policy_ids = []
+    if isinstance(provider, Mapping):
+        provider_policy_ids = _string_leaves(
+            provider.get("provider_policy_ids", provider.get("provider_policy_id", []))
+        )
+    return {
+        "capability_ids": sorted(set(capability_ids)),
+        "provider_policy_ids": sorted(set(provider_policy_ids)),
+        "resource_ids": sorted(set(_string_leaves(resources))),
+    }
+
+
+def _matches_source_configuration(
+    *,
+    content: Mapping[str, object],
+    configuration: object,
+    definition_components: object,
+) -> bool:
+    if not isinstance(configuration, Mapping) or not isinstance(definition_components, Mapping):
+        return False
+    manifest_components = content["components"]
+    private_components = configuration.get("component_configuration", {})
+    runtime = configuration.get("runtime", {})
+    if not all(
+        isinstance(value, Mapping) for value in (manifest_components, private_components, runtime)
+    ):
+        return False
+    runtime_components = runtime.get("components", {})
+    if not isinstance(runtime_components, Mapping):
+        return False
+    component_keys = set(definition_components)
+    if (
+        set(manifest_components) != component_keys
+        or not set(private_components).issubset(component_keys)
+        or not set(runtime_components).issubset(component_keys)
+    ):
+        return False
+    for key in component_keys:
+        manifest_component = manifest_components[key]
+        source_runtime = runtime_components.get(key, {})
+        if not isinstance(manifest_component, Mapping) or not isinstance(source_runtime, Mapping):
+            return False
+        mode = source_runtime.get("mode", "execute")
+        if manifest_component.get("runtime_mode") != mode:
+            return False
+        if manifest_component.get("configuration") != private_components.get(key, {}):
+            return False
+        adapter_ref = source_runtime.get("adapter_ref")
+        manifest_adapter = manifest_component.get("adapter")
+        if adapter_ref is not None and (
+            not isinstance(manifest_adapter, Mapping)
+            or manifest_adapter.get("adapter_ref") != adapter_ref
+        ):
+            return False
+    plan_adapter = content["plan_adapter"]
+    return all(
+        (
+            isinstance(plan_adapter, Mapping),
+            plan_adapter.get("adapter_ref") == runtime.get("plan_adapter_ref"),
+            content["budgets"] == runtime.get("budgets", {}),
+            content["requested_references"] == _source_references(configuration),
+        )
+    )
 
 
 __all__ = ["AgentRuntimeManifestStore"]

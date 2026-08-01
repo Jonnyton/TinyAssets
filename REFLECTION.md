@@ -11,6 +11,11 @@
 - **What I would do differently:** include packaged-runtime importability in the
   initial red test matrix, alongside idempotency, privacy, tamper, and race
   cases, before choosing any canonicalization implementation.
+- **Follow-up:** an aggregate source digest proves which binding was named, not
+  that compiler output was derived from it. The persistence boundary must also
+  compare exhaustive component coverage, private component configuration,
+  runtime selections, requested references, and budgets; replay keys belong in
+  the same integrity envelope as the content digest.
 
 ## 2026-07-31 — local drain observer self-heal
 

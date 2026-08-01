@@ -100,9 +100,7 @@ _TOP_LEVEL_FIELDS = frozenset(
         "compiler_contract_version",
     }
 )
-_REFERENCE_FIELDS = frozenset(
-    {"capability_ids", "resource_ids", "provider_policy_ids"}
-)
+_REFERENCE_FIELDS = frozenset({"capability_ids", "resource_ids", "provider_policy_ids"})
 
 
 class AgentRuntimeManifestValidationError(ValueError):
@@ -140,9 +138,7 @@ def canonical_content_digest(value: object) -> str:
 
 def _required_text(value: object, path: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise AgentRuntimeManifestValidationError(
-            f"{path} must be a non-empty string"
-        )
+        raise AgentRuntimeManifestValidationError(f"{path} must be a non-empty string")
     clean = value.strip()
     if len(clean) > 512:
         raise AgentRuntimeManifestValidationError(f"{path} exceeds 512 characters")
@@ -152,9 +148,7 @@ def _required_text(value: object, path: str) -> str:
 def _canonical_digest(value: object, path: str) -> str:
     clean = _required_text(value, path)
     if not _SHA256.fullmatch(clean):
-        raise AgentRuntimeManifestValidationError(
-            f"{path} must be a canonical sha256 digest"
-        )
+        raise AgentRuntimeManifestValidationError(f"{path} must be a canonical sha256 digest")
     return clean
 
 
@@ -181,9 +175,7 @@ def _reject_private_content(value: object, path: str = "") -> None:
             _reject_private_content(child, f"{path}[{index}]")
         return
     if isinstance(value, str) and _CREDENTIAL_VALUE.search(value):
-        raise AgentRuntimeManifestValidationError(
-            f"{path} contains a credential-shaped value"
-        )
+        raise AgentRuntimeManifestValidationError(f"{path} contains a credential-shaped value")
 
 
 def _normalize_adapter(
@@ -204,66 +196,44 @@ def _normalize_adapter(
     if include_plan_class:
         fields.add("plan_class")
     if set(value) != fields:
-        raise AgentRuntimeManifestValidationError(
-            f"{path} must contain exactly {sorted(fields)}"
-        )
+        raise AgentRuntimeManifestValidationError(f"{path} must contain exactly {sorted(fields)}")
     kind = _required_text(value["adapter_kind"], f"{path}.adapter_kind")
     if kind != expected_kind:
-        raise AgentRuntimeManifestValidationError(
-            f"{path}.adapter_kind must be {expected_kind!r}"
-        )
+        raise AgentRuntimeManifestValidationError(f"{path}.adapter_kind must be {expected_kind!r}")
     normalized = {
         "adapter_kind": kind,
         "adapter_ref": _required_text(value["adapter_ref"], f"{path}.adapter_ref"),
-        "adapter_version": _required_text(
-            value["adapter_version"], f"{path}.adapter_version"
-        ),
-        "adapter_digest": _canonical_digest(
-            value["adapter_digest"], f"{path}.adapter_digest"
-        ),
+        "adapter_version": _required_text(value["adapter_version"], f"{path}.adapter_version"),
+        "adapter_digest": _canonical_digest(value["adapter_digest"], f"{path}.adapter_digest"),
     }
     if include_plan_class:
-        normalized["plan_class"] = _required_text(
-            value["plan_class"], f"{path}.plan_class"
-        )
+        normalized["plan_class"] = _required_text(value["plan_class"], f"{path}.plan_class")
     return normalized
 
 
 def _normalize_components(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, Mapping) or not value:
-        raise AgentRuntimeManifestValidationError(
-            "components must be a non-empty object"
-        )
+        raise AgentRuntimeManifestValidationError("components must be a non-empty object")
     if len(value) > 64:
-        raise AgentRuntimeManifestValidationError(
-            "components may contain at most 64 entries"
-        )
+        raise AgentRuntimeManifestValidationError("components may contain at most 64 entries")
     normalized: dict[str, dict[str, object]] = {}
     for raw_key, raw_component in value.items():
         key = str(raw_key)
         path = f"components.{key}"
         if not _COMPONENT_KEY.fullmatch(key):
-            raise AgentRuntimeManifestValidationError(
-                f"{path} is not a valid component key"
-            )
+            raise AgentRuntimeManifestValidationError(f"{path} is not a valid component key")
         if not isinstance(raw_component, Mapping):
             raise AgentRuntimeManifestValidationError(f"{path} must be an object")
         if set(raw_component) != {"runtime_mode", "configuration", "adapter"}:
             raise AgentRuntimeManifestValidationError(
                 f"{path} must contain runtime_mode, configuration, and adapter"
             )
-        runtime_mode = _required_text(
-            raw_component["runtime_mode"], f"{path}.runtime_mode"
-        )
+        runtime_mode = _required_text(raw_component["runtime_mode"], f"{path}.runtime_mode")
         if runtime_mode not in {"execute", "descriptive_only"}:
-            raise AgentRuntimeManifestValidationError(
-                f"{path}.runtime_mode is unsupported"
-            )
+            raise AgentRuntimeManifestValidationError(f"{path}.runtime_mode is unsupported")
         configuration = raw_component["configuration"]
         if not isinstance(configuration, Mapping):
-            raise AgentRuntimeManifestValidationError(
-                f"{path}.configuration must be an object"
-            )
+            raise AgentRuntimeManifestValidationError(f"{path}.configuration must be an object")
         configuration = json.loads(_canonical_bytes(configuration))
         adapter_value = raw_component["adapter"]
         if runtime_mode == "descriptive_only":
@@ -300,10 +270,7 @@ def _normalize_references(value: object) -> dict[str, list[str]]:
                 f"requested_references.{field} must be a list"
             )
         normalized[field] = sorted(
-            {
-                _required_text(item, f"requested_references.{field}")
-                for item in raw_values
-            }
+            {_required_text(item, f"requested_references.{field}") for item in raw_values}
         )
     return normalized
 
@@ -315,13 +282,9 @@ def _normalize_budgets(value: object) -> dict[str, int]:
     for raw_key, raw_value in value.items():
         key = str(raw_key)
         if not _BUDGET_KEY.fullmatch(key):
-            raise AgentRuntimeManifestValidationError(
-                f"budgets.{key} is not a valid dimension"
-            )
+            raise AgentRuntimeManifestValidationError(f"budgets.{key} is not a valid dimension")
         if isinstance(raw_value, bool) or not isinstance(raw_value, int) or raw_value < 0:
-            raise AgentRuntimeManifestValidationError(
-                f"budgets.{key} must be an integer >= 0"
-            )
+            raise AgentRuntimeManifestValidationError(f"budgets.{key} must be an integer >= 0")
         normalized[key] = raw_value
     return normalized
 
@@ -344,33 +307,23 @@ class AgentRuntimeManifestInput:
             )
         schema_version = payload["schema_version"]
         if schema_version != AGENT_RUNTIME_MANIFEST_SCHEMA_VERSION:
-            raise AgentRuntimeManifestValidationError(
-                "schema_version is not supported"
-            )
+            raise AgentRuntimeManifestValidationError("schema_version is not supported")
         revision = payload["binding_revision"]
         if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
-            raise AgentRuntimeManifestValidationError(
-                "binding_revision must be an integer >= 1"
-            )
-        fingerprint = _required_text(
-            payload["definition_fingerprint"], "definition_fingerprint"
-        )
+            raise AgentRuntimeManifestValidationError("binding_revision must be an integer >= 1")
+        fingerprint = _required_text(payload["definition_fingerprint"], "definition_fingerprint")
         if not _CONTENT_FINGERPRINT.fullmatch(fingerprint):
             raise AgentRuntimeManifestValidationError(
                 "definition_fingerprint must be 64 lowercase hex characters"
             )
         execution_plan = payload["execution_plan"]
         if not isinstance(execution_plan, Mapping) or not execution_plan:
-            raise AgentRuntimeManifestValidationError(
-                "execution_plan must be a non-empty object"
-            )
+            raise AgentRuntimeManifestValidationError("execution_plan must be a non-empty object")
         normalized: dict[str, object] = {
             "schema_version": AGENT_RUNTIME_MANIFEST_SCHEMA_VERSION,
             "owner_user_id": _required_text(payload["owner_user_id"], "owner_user_id"),
             "universe_id": _required_text(payload["universe_id"], "universe_id"),
-            "agent_binding_id": _required_text(
-                payload["agent_binding_id"], "agent_binding_id"
-            ),
+            "agent_binding_id": _required_text(payload["agent_binding_id"], "agent_binding_id"),
             "binding_revision": revision,
             "binding_configuration_digest": _canonical_digest(
                 payload["binding_configuration_digest"],
@@ -388,21 +341,28 @@ class AgentRuntimeManifestInput:
                 include_plan_class=True,
             ),
             "execution_plan": json.loads(_canonical_bytes(execution_plan)),
-            "requested_references": _normalize_references(
-                payload["requested_references"]
-            ),
+            "requested_references": _normalize_references(payload["requested_references"]),
             "budgets": _normalize_budgets(payload["budgets"]),
             "compiler_contract_version": _required_text(
                 payload["compiler_contract_version"],
                 "compiler_contract_version",
             ),
         }
+        normalized_plan = normalized["execution_plan"]
+        normalized_plan_adapter = normalized["plan_adapter"]
+        if not isinstance(normalized_plan, Mapping) or not isinstance(
+            normalized_plan_adapter, Mapping
+        ):
+            raise AgentRuntimeManifestValidationError("normalized plan is invalid")
+        if normalized_plan.get("plan_class") != normalized_plan_adapter.get("plan_class"):
+            raise AgentRuntimeManifestValidationError(
+                "execution_plan.plan_class must match plan_adapter.plan_class"
+            )
         _reject_private_content(normalized)
         canonical = _canonical_bytes(normalized)
         if len(canonical) > MAX_AGENT_RUNTIME_MANIFEST_BYTES:
             raise AgentRuntimeManifestValidationError(
-                "manifest content exceeds "
-                f"{MAX_AGENT_RUNTIME_MANIFEST_BYTES} bytes"
+                f"manifest content exceeds {MAX_AGENT_RUNTIME_MANIFEST_BYTES} bytes"
             )
         return cls(canonical.decode("utf-8"))
 
@@ -412,6 +372,7 @@ class AgentRuntimeManifestInput:
     @property
     def input_digest(self) -> str:
         return f"sha256:{hashlib.sha256(self._canonical_json.encode('utf-8')).hexdigest()}"
+
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeManifest:

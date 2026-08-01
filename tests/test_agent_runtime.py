@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -28,14 +29,14 @@ def _agent_definition() -> dict[str, object]:
     }
 
 
-def _binding_configuration(*, tone: str = "careful") -> dict[str, object]:
+def _binding_configuration(*, tone: str = "careful", owner: str = "alice") -> dict[str, object]:
     return {
         "schema_version": 1,
         "name": "Alice's coding partner",
         "component_configuration": {"identity": {"tone": tone}},
         "authority": {"capability_refs": ["provider.invoke"]},
-        "resources": {"repository": "resource_repo_alice"},
-        "provider": {"provider_policy_id": "provider_policy_alice"},
+        "resources": {"repository": f"resource_repo_{owner}"},
+        "provider": {"provider_policy_id": f"provider_policy_{owner}"},
         "runtime": {
             "plan_adapter_ref": "builtin:single-provider-turn",
             "components": {
@@ -44,7 +45,11 @@ def _binding_configuration(*, tone: str = "careful") -> dict[str, object]:
                     "adapter_ref": "builtin:prompt-component",
                 }
             },
-            "budgets": {"max_turns": 1, "max_tokens": 2_000},
+            "budgets": {
+                "max_cost_microunits": 50_000,
+                "max_turns": 1,
+                "max_tokens": 2_000,
+            },
         },
     }
 
@@ -78,17 +83,15 @@ def _manifest_input(definition, binding):
             "universe_id": binding["universe_id"],
             "agent_binding_id": binding["agent_binding_id"],
             "binding_revision": binding["revision"],
-            "binding_configuration_digest": canonical_content_digest(
-                binding["configuration"]
-            ),
+            "binding_configuration_digest": canonical_content_digest(binding["configuration"]),
             "agent_definition_id": definition["agent_definition_id"],
             "definition_fingerprint": definition["content_fingerprint"],
             "components": {
                 "identity": {
                     "runtime_mode": "execute",
-                    "configuration": binding["configuration"][
-                        "component_configuration"
-                    ]["identity"],
+                    "configuration": binding["configuration"]["component_configuration"][
+                        "identity"
+                    ],
                     "adapter": {
                         "adapter_kind": "component",
                         "adapter_ref": "builtin:prompt-component",
@@ -138,9 +141,7 @@ def test_manifest_pins_complete_private_input_and_survives_binding_update(tmp_pa
 
     assert original.manifest_id.startswith("agent_manifest_")
     assert original.manifest_digest == original_input.input_digest
-    assert original.to_dict()["components"]["identity"]["configuration"] == {
-        "tone": "careful"
-    }
+    assert original.to_dict()["components"]["identity"]["configuration"] == {"tone": "careful"}
     assert original.to_dict()["requested_references"]["provider_policy_ids"] == [
         "provider_policy_alice"
     ]
@@ -155,14 +156,20 @@ def test_manifest_pins_complete_private_input_and_survives_binding_update(tmp_pa
         payload=_binding_configuration(tone="terse"),
     )
 
-    assert store.get(
-        owner_user_id="alice",
-        manifest_id=original.manifest_id,
-    ) == original
-    assert store.create(
-        manifest_input=original_input,
-        idempotency_key="compile-coding-partner-v1",
-    ) == original
+    assert (
+        store.get(
+            owner_user_id="alice",
+            manifest_id=original.manifest_id,
+        )
+        == original
+    )
+    assert (
+        store.create(
+            manifest_input=original_input,
+            idempotency_key="compile-coding-partner-v1",
+        )
+        == original
+    )
     with pytest.raises(PermissionError, match="binding_not_current"):
         store.create(
             manifest_input=original_input,
@@ -221,16 +228,12 @@ def test_manifest_idempotency_key_namespace_is_per_owner(tmp_path) -> None:
         universe_id="universe_bob",
         definition_id=bob_definition["agent_definition_id"],
         created_by="bob",
-        payload=_binding_configuration(),
+        payload=_binding_configuration(owner="bob"),
     )
     bob_input_payload = _manifest_input(bob_definition, bob_binding).to_dict()
     bob_input_payload["owner_user_id"] = "bob"
-    bob_input_payload["requested_references"]["resource_ids"] = [
-        "resource_repo_bob"
-    ]
-    bob_input_payload["requested_references"]["provider_policy_ids"] = [
-        "provider_policy_bob"
-    ]
+    bob_input_payload["requested_references"]["resource_ids"] = ["resource_repo_bob"]
+    bob_input_payload["requested_references"]["provider_policy_ids"] = ["provider_policy_bob"]
 
     store = AgentRuntimeManifestStore(tmp_path)
     alice = store.create(
@@ -249,6 +252,80 @@ def test_manifest_idempotency_key_namespace_is_per_owner(tmp_path) -> None:
     assert store.count_for_owner("bob") == 1
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda payload: payload["components"]["identity"]["configuration"].update(
+            {"tone": "forged"}
+        ),
+        lambda payload: payload["components"].update(
+            {
+                "phantom": {
+                    "runtime_mode": "descriptive_only",
+                    "configuration": {},
+                    "adapter": None,
+                }
+            }
+        ),
+        lambda payload: payload["components"]["identity"]["adapter"].update(
+            {"adapter_ref": "builtin:unbound-component"}
+        ),
+        lambda payload: payload["plan_adapter"].update({"adapter_ref": "builtin:unbound-plan"}),
+        lambda payload: payload["requested_references"]["capability_ids"].append("effect.invoke"),
+        lambda payload: payload["budgets"].update({"max_tokens": 20_000}),
+    ],
+)
+def test_manifest_source_pins_reject_forged_compiler_output(
+    tmp_path,
+    mutation,
+) -> None:
+    from tinyassets.agent_runtime import AgentRuntimeManifestInput
+    from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
+
+    definition, binding = _bound_agent(tmp_path)
+    payload = _manifest_input(definition, binding).to_dict()
+    mutation(payload)
+
+    with pytest.raises(PermissionError, match="manifest_sources_not_current"):
+        AgentRuntimeManifestStore(tmp_path).create(
+            manifest_input=AgentRuntimeManifestInput.from_dict(payload),
+            idempotency_key="forged-compiler-output",
+        )
+
+
+def test_manifest_must_cover_every_public_definition_component(tmp_path) -> None:
+    from tinyassets.agent_runtime import AgentRuntimeManifestInput
+    from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
+
+    definition_payload = _agent_definition()
+    definition_payload["components"]["memory"] = {
+        "kind": "notes",
+        "config": {"scope": "repository"},
+    }
+    definition = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload=definition_payload,
+    )
+    binding_payload = _binding_configuration()
+    binding_payload["component_configuration"]["memory"] = {"scope": "repository"}
+    binding_payload["runtime"]["components"]["memory"] = {"mode": "descriptive_only"}
+    binding = create_binding(
+        tmp_path,
+        universe_id="universe_alice",
+        definition_id=definition["agent_definition_id"],
+        created_by="alice",
+        payload=binding_payload,
+    )
+    payload = _manifest_input(definition, binding).to_dict()
+
+    with pytest.raises(PermissionError, match="manifest_sources_not_current"):
+        AgentRuntimeManifestStore(tmp_path).create(
+            manifest_input=AgentRuntimeManifestInput.from_dict(payload),
+            idempotency_key="partial-components",
+        )
+
+
 def test_manifest_is_private_and_detects_persisted_tampering(tmp_path) -> None:
     from tinyassets.agent_runtime import AgentRuntimeManifestIntegrityError
     from tinyassets.storage import db_path
@@ -261,18 +338,68 @@ def test_manifest_is_private_and_detects_persisted_tampering(tmp_path) -> None:
         idempotency_key="private-manifest",
     )
 
-    assert store.get(
-        owner_user_id="mallory",
-        manifest_id=manifest.manifest_id,
-    ) is None
+    assert (
+        store.get(
+            owner_user_id="mallory",
+            manifest_id=manifest.manifest_id,
+        )
+        is None
+    )
     with sqlite3.connect(db_path(tmp_path)) as conn:
         conn.execute(
-            "UPDATE agent_runtime_manifests SET manifest_digest = ? "
-            "WHERE manifest_id = ?",
+            "UPDATE agent_runtime_manifests SET manifest_digest = ? WHERE manifest_id = ?",
             (f"sha256:{'f' * 64}", manifest.manifest_id),
         )
     with pytest.raises(AgentRuntimeManifestIntegrityError):
         store.get(owner_user_id="alice", manifest_id=manifest.manifest_id)
+
+
+@pytest.mark.parametrize("tamper_target", ["column", "envelope"])
+def test_idempotency_integrity_tamper_cannot_free_the_original_key(
+    tmp_path,
+    tamper_target,
+) -> None:
+    from tinyassets.agent_runtime import AgentRuntimeManifestIntegrityError
+    from tinyassets.storage import db_path
+    from tinyassets.storage.agent_runtime import AgentRuntimeManifestStore
+
+    definition, binding = _bound_agent(tmp_path)
+    manifest_input = _manifest_input(definition, binding)
+    store = AgentRuntimeManifestStore(tmp_path)
+    manifest = store.create(
+        manifest_input=manifest_input,
+        idempotency_key="integrity-bound-key",
+    )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        if tamper_target == "column":
+            conn.execute(
+                "UPDATE agent_runtime_manifests SET idempotency_key = ? WHERE manifest_id = ?",
+                ("released-key", manifest.manifest_id),
+            )
+        else:
+            row = conn.execute(
+                "SELECT record_json FROM agent_runtime_manifests WHERE manifest_id = ?",
+                (manifest.manifest_id,),
+            ).fetchone()
+            envelope = json.loads(row[0])
+            envelope["idempotency_key"] = "released-key"
+            conn.execute(
+                "UPDATE agent_runtime_manifests SET record_json = ? WHERE manifest_id = ?",
+                (
+                    json.dumps(envelope, sort_keys=True, separators=(",", ":")),
+                    manifest.manifest_id,
+                ),
+            )
+
+    with pytest.raises(AgentRuntimeManifestIntegrityError):
+        store.get(owner_user_id="alice", manifest_id=manifest.manifest_id)
+    with pytest.raises(AgentRuntimeManifestIntegrityError):
+        store.create(
+            manifest_input=manifest_input,
+            idempotency_key="integrity-bound-key",
+        )
+    assert store.count_for_owner("alice") == 1
 
 
 @pytest.mark.parametrize(
@@ -281,9 +408,7 @@ def test_manifest_is_private_and_detects_persisted_tampering(tmp_path) -> None:
         lambda payload: payload["components"]["identity"]["configuration"].update(
             {"api_key": "do-not-store"}
         ),
-        lambda payload: payload["execution_plan"].update(
-            {"conversation_history": ["private"]}
-        ),
+        lambda payload: payload["execution_plan"].update({"conversation_history": ["private"]}),
         lambda payload: payload.update({"provider_output": "not a manifest pin"}),
     ],
 )
@@ -319,9 +444,7 @@ def test_manifest_rejects_oversized_content_without_a_row(tmp_path) -> None:
     definition, binding = _bound_agent(tmp_path)
     store = AgentRuntimeManifestStore(tmp_path)
     payload = _manifest_input(definition, binding).to_dict()
-    payload["execution_plan"]["description"] = "x" * (
-        MAX_AGENT_RUNTIME_MANIFEST_BYTES + 1
-    )
+    payload["execution_plan"]["description"] = "x" * (MAX_AGENT_RUNTIME_MANIFEST_BYTES + 1)
 
     with pytest.raises(AgentRuntimeManifestValidationError, match="exceeds"):
         AgentRuntimeManifestInput.from_dict(payload)
@@ -338,9 +461,7 @@ def test_store_revalidates_a_directly_constructed_manifest_input(tmp_path) -> No
     definition, binding = _bound_agent(tmp_path)
     payload = _manifest_input(definition, binding).to_dict()
     payload["components"]["identity"]["configuration"]["api_key"] = "hidden"
-    forged = AgentRuntimeManifestInput(
-        __import__("json").dumps(payload, sort_keys=True, separators=(",", ":"))
-    )
+    forged = AgentRuntimeManifestInput(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
     with pytest.raises(AgentRuntimeManifestValidationError):
         AgentRuntimeManifestStore(tmp_path).create(
