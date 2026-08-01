@@ -874,7 +874,7 @@ def test_installer_recovers_abandoned_control_mutex_ownership() -> None:
     stop_request = repo / "output" / "openspec-drain-watchdog" / "stop.request"
     task_name = f"TinyAssets Drain Abandoned Lock {uuid.uuid4().hex}"
     guard_name = f"{task_name} Guard"
-    holder = subprocess.run(
+    holder = subprocess.Popen(
         [
             "powershell.exe",
             "-NoProfile",
@@ -883,43 +883,54 @@ def test_installer_recovers_abandoned_control_mutex_ownership() -> None:
                 "$m=New-Object System.Threading.Mutex -ArgumentList "
                 "@($false,'Local\\TinyAssetsOpenSpecDrainControl');"
                 "if(-not $m.WaitOne([TimeSpan]::FromSeconds(5))){exit 2};"
-                "Write-Output 'held'"
+                "Write-Output 'held';[Console]::Out.Flush();"
+                "Start-Sleep -Seconds 30"
             ),
         ],
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        check=False,
-        timeout=10,
     )
-    assert holder.returncode == 0, holder.stderr
-    assert "held" in holder.stdout
-    stop_request.parent.mkdir(parents=True, exist_ok=True)
-    stop_request.write_text("stop after abandoned owner\n", encoding="utf-8")
-    install = subprocess.run(
-        [
-            "powershell.exe",
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            str(installer),
-            "-Repo",
-            str(repo),
-            "-TaskName",
-            task_name,
-            "-GuardTaskName",
-            guard_name,
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=30,
-    )
+    install: subprocess.Popen[str] | None = None
     try:
-        assert install.returncode == 0, install.stderr
-        assert "activation deferred until next sign-in" in install.stdout
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held"
+        install = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-Repo",
+                str(repo),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            install.wait(timeout=1)
+        stop_request.parent.mkdir(parents=True, exist_ok=True)
+        stop_request.write_text("stop after abandoned owner\n", encoding="utf-8")
+        holder.kill()
+        holder.wait(timeout=5)
+        stdout, stderr = install.communicate(timeout=30)
+        assert install.returncode == 0, stderr
+        assert "activation deferred until next sign-in" in stdout
         assert stop_request.exists()
     finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait(timeout=5)
+        if install is not None and install.poll() is None:
+            install.kill()
+            install.wait(timeout=5)
         stop_request.unlink(missing_ok=True)
         subprocess.run(
             [
