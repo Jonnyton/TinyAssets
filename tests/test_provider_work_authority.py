@@ -249,6 +249,8 @@ def test_production_store_has_no_binding_installation_path(tmp_path) -> None:
     assert not hasattr(store, "issue_universe_receipt")
     with store.transaction() as transaction:
         assert not hasattr(transaction, "issue_universe_receipt")
+        assert not hasattr(transaction, "claim_receipt")
+        assert not hasattr(transaction, "reserve_invocation")
 
 
 @pytest.mark.parametrize(

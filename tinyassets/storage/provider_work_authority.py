@@ -717,6 +717,22 @@ class _Transaction:
         )
 
 
+class _BindingTransaction:
+    """Expose only the binding CAS surface to production service callers."""
+
+    __slots__ = ("__transaction",)
+
+    def __init__(self, transaction: _Transaction) -> None:
+        self.__transaction = transaction
+
+    def compare_and_swap(
+        self,
+        expected: ProviderWorkBindingFence,
+        replacement: ProviderWorkBinding,
+    ) -> ProviderWorkBindingWriteResult:
+        return self.__transaction.compare_and_swap(expected, replacement)
+
+
 class SQLiteProviderWorkAuthorityStore:
     def __init__(
         self,
@@ -770,7 +786,7 @@ class SQLiteProviderWorkAuthorityStore:
             conn.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[_Transaction]:
+    def _ledger_transaction(self) -> Iterator[_Transaction]:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -779,6 +795,11 @@ class SQLiteProviderWorkAuthorityStore:
             except Exception:
                 conn.rollback()
                 raise
+
+    @contextmanager
+    def transaction(self) -> Iterator[_BindingTransaction]:
+        with self._ledger_transaction() as transaction:
+            yield _BindingTransaction(transaction)
 
     def get(self, binding_id: str) -> ProviderWorkBinding | None:
         with self.connection() as conn:
@@ -810,7 +831,7 @@ class SQLiteProviderWorkAuthorityStore:
             authority,
             created_at=self._timestamp(now),
         )
-        with self.transaction() as transaction:
+        with self._ledger_transaction() as transaction:
             return transaction._issue_universe_receipt(
                 authority,
                 candidate,
@@ -829,7 +850,7 @@ class SQLiteProviderWorkAuthorityStore:
             created_at=self._timestamp(now),
             lease_expires_at=self._timestamp(now + timedelta(seconds=request.lease_seconds)),
         )
-        with self.transaction() as transaction:
+        with self._ledger_transaction() as transaction:
             return transaction.claim_receipt(request, candidate, now=now)
 
     def reserve(
@@ -839,7 +860,7 @@ class SQLiteProviderWorkAuthorityStore:
         if not isinstance(request, ProviderInvocationReservationRequest):
             raise ValueError("request must be a ProviderInvocationReservationRequest")
         now = self._now()
-        with self.transaction() as transaction:
+        with self._ledger_transaction() as transaction:
             return transaction.reserve_invocation(
                 request,
                 now=now,
@@ -871,7 +892,7 @@ class SQLiteProviderWorkAuthorityStore:
         if not isinstance(seed, ProviderWorkBindingSeed):
             raise ValueError("seed must be a ProviderWorkBindingSeed")
         binding = _from_seed(seed, created_at=self.timestamp())
-        with self.transaction() as transaction:
+        with self._ledger_transaction() as transaction:
             return transaction._insert(binding)
 
     def validate_in_transaction(
