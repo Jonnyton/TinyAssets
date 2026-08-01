@@ -272,7 +272,11 @@ native fast path. Rolling upgrades do require two bounded repairs: schema
 initialization idempotently clears private commitments left on already
 published pre-fix stages, and publication upgrades an unexpired pre-origin
 stage's candidate and receipt atomically from its stored receipt-bound safe
-metadata. No raw source is needed for either repair.
+metadata. An old candidate that already consumes the full 256-KiB bound cannot
+fit the required origin and receives a bounded `restage_required` result with
+no mutation. Already-published retries use their stored legacy candidate
+fingerprint before any staged-only upgrade, preserving their original
+idempotency contract. No raw source is needed for these repairs.
 
 ## Risks / Trade-offs
 

@@ -1626,6 +1626,25 @@ def publish_import_stage(
         if row is None:
             raise InterchangeNotFoundError("import stage is unavailable")
         candidate = json.loads(str(row["candidate_json"]))
+        if row["status"] == "published":
+            request_digest = _sha256(
+                {
+                    "stage_id": normalized_stage_id,
+                    "candidate_fingerprint": _fingerprint(candidate),
+                }
+            )
+            existing_id = _idempotent_resource(
+                conn,
+                actor=actor,
+                operation="publish_stage",
+                key=key,
+                request_digest=request_digest,
+            )
+            definition_id = existing_id or str(row["published_definition_id"])
+            existing = _read_definition_row(conn, definition_id)
+            if existing is None:
+                raise InterchangeNotFoundError("published definition is unavailable")
+            return _definition_from_row(conn, existing)
         report = json.loads(str(row["report_json"]))
         receipt = json.loads(str(row["receipt_json"]))
         verify_conversion_receipt(receipt)
@@ -1648,10 +1667,23 @@ def publish_import_stage(
             "adapter_version": str(row["adapter_version"]),
             "adapter_digest": str(row["adapter_digest"]),
         }
-        _attach_public_import_origin(
-            conversion,
-            sanitized_source_digest=str(row["sanitized_source_digest"]),
+        had_import_origin = any(
+            isinstance(origin, dict)
+            and origin.get("kind") == "agent_interchange_import"
+            for origin in candidate.get("external_origins", [])
         )
+        try:
+            _attach_public_import_origin(
+                conversion,
+                sanitized_source_digest=str(row["sanitized_source_digest"]),
+            )
+        except InterchangeValidationError as exc:
+            if not had_import_origin:
+                raise InterchangeValidationError(
+                    "restage_required: staged candidate cannot fit required "
+                    "import provenance"
+                ) from exc
+            raise
         if conversion["candidate"] != candidate:
             receipt = _receipt(
                 conversion=conversion,
@@ -1675,11 +1707,6 @@ def publish_import_stage(
         )
         if existing_id:
             existing = _read_definition_row(conn, existing_id)
-            if existing is None:
-                raise InterchangeNotFoundError("published definition is unavailable")
-            return _definition_from_row(conn, existing)
-        if row["status"] == "published":
-            existing = _read_definition_row(conn, str(row["published_definition_id"]))
             if existing is None:
                 raise InterchangeNotFoundError("published definition is unavailable")
             return _definition_from_row(conn, existing)

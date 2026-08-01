@@ -94,6 +94,9 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **AND WHEN** an unexpired pre-fix private stage without the safe public origin is published after upgrade
 - **THEN** publication reconstructs the origin from stored receipt-bound sanitized metadata and atomically replaces the candidate and receipt before publishing
 - **AND** it rejects publication if the stored receipt does not match the staged candidate, report, sanitized-source digest, or adapter metadata
+- **AND** if adding the required origin would exceed the canonical candidate bound, publication returns bounded `restage_required` without changing the stage, receipt, definition, lineage, or commitment
+- **AND WHEN** a pre-fix already-published stage is retried with its original idempotency key
+- **THEN** the stored legacy request digest returns the existing immutable definition rather than conflicting with the new origin shape
 
 #### Scenario: Receipt tampering is detected
 - **WHEN** any receipt-bound source, adapter, output, or report field is altered

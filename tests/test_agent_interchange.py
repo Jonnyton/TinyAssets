@@ -1098,6 +1098,91 @@ def test_publish_upgrades_pre_origin_stage_from_receipt_bound_metadata(
     assert "source_commitment" not in upgraded_stage
 
 
+def test_exact_limit_pre_origin_stage_requires_bounded_restage(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sqlite3
+
+    import tinyassets.agent_interchange as interchange
+    from tinyassets.custom_agents import _canonical_json, list_definitions
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = interchange.stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="exact-limit-pre-origin-stage",
+        now=650.0,
+    )
+    legacy_candidate = copy.deepcopy(stage["candidate"])
+    legacy_candidate["external_origins"] = []
+    extension = legacy_candidate["components"]["imported_extension"]["config"][
+        "source"
+    ]
+    extension["boundary_blob"] = ""
+    remaining = interchange.MAX_CANDIDATE_BYTES - len(
+        _canonical_json(legacy_candidate).encode("utf-8")
+    )
+    extension["boundary_blob"] = "x" * remaining
+    assert (
+        len(_canonical_json(legacy_candidate).encode("utf-8"))
+        == interchange.MAX_CANDIDATE_BYTES
+    )
+    legacy_receipt = interchange._receipt(
+        conversion={
+            "candidate": legacy_candidate,
+            "report": stage["report"],
+            "adapter_ref": stage["adapter_ref"],
+            "adapter_version": stage["adapter_version"],
+            "adapter_digest": stage["adapter_digest"],
+        },
+        sanitized_source_digest=stage["sanitized_source_digest"],
+        created_at=stage["created_at"],
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE agent_import_stages
+            SET candidate_json = ?, receipt_json = ?
+            WHERE stage_id = ?
+            """,
+            (
+                _canonical_json(legacy_candidate),
+                _canonical_json(legacy_receipt),
+                stage["stage_id"],
+            ),
+        )
+
+    with pytest.raises(
+        interchange.InterchangeValidationError,
+        match="restage_required",
+    ):
+        interchange.publish_import_stage(
+            tmp_path,
+            actor_id="alice",
+            stage_id=stage["stage_id"],
+            idempotency_key="publish-exact-limit-pre-origin",
+            now=651.0,
+        )
+    assert list_definitions(tmp_path) == []
+    unchanged = interchange.get_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        now=651.0,
+    )
+    assert unchanged is not None
+    assert unchanged["status"] == "staged"
+    assert unchanged["candidate"]["external_origins"] == []
+    assert "source_commitment" in unchanged
+
+
 def test_schema_upgrade_clears_pre_fix_published_commitments(tmp_path, monkeypatch) -> None:
     import sqlite3
 
@@ -1203,6 +1288,111 @@ def test_publish_rejects_stage_content_not_bound_by_stored_receipt(
             now=801.0,
         )
     assert list_definitions(tmp_path) == []
+
+
+def test_pre_fix_published_stage_retry_uses_legacy_request_digest(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sqlite3
+
+    import tinyassets.agent_interchange as interchange
+    from tinyassets.custom_agents import (
+        _canonical_json,
+        _fingerprint,
+        publish_definition,
+    )
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = interchange.stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="pre-fix-published-stage",
+        now=900.0,
+    )
+    legacy_candidate = copy.deepcopy(stage["candidate"])
+    legacy_candidate["external_origins"] = []
+    legacy_receipt = interchange._receipt(
+        conversion={
+            "candidate": legacy_candidate,
+            "report": stage["report"],
+            "adapter_ref": stage["adapter_ref"],
+            "adapter_version": stage["adapter_version"],
+            "adapter_digest": stage["adapter_digest"],
+        },
+        sanitized_source_digest=stage["sanitized_source_digest"],
+        created_at=stage["created_at"],
+    )
+    published = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload=legacy_candidate,
+        idempotency_key="legacy-public-definition",
+    )
+    publish_key = "pre-fix-publish-key"
+    legacy_request_digest = interchange._sha256(
+        {
+            "stage_id": stage["stage_id"],
+            "candidate_fingerprint": _fingerprint(legacy_candidate),
+        }
+    )
+    database = db_path(tmp_path)
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            """
+            UPDATE agent_import_stages
+            SET status = 'published', candidate_json = ?, receipt_json = ?,
+                published_definition_id = ?, source_commitment = ?
+            WHERE stage_id = ?
+            """,
+            (
+                _canonical_json(legacy_candidate),
+                _canonical_json(legacy_receipt),
+                published["agent_definition_id"],
+                "legacy-private-commitment",
+                stage["stage_id"],
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_interchange_idempotency (
+                actor_id, operation, idempotency_key,
+                request_digest, resource_id, created_at
+            ) VALUES (?, 'publish_stage', ?, ?, ?, ?)
+            """,
+            (
+                "alice",
+                publish_key,
+                legacy_request_digest,
+                published["agent_definition_id"],
+                901.0,
+            ),
+        )
+    interchange._SCHEMA_INITIALIZED.discard(str(database))
+
+    retry = interchange.publish_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        idempotency_key=publish_key,
+        now=902.0,
+    )
+
+    assert retry["agent_definition_id"] == published["agent_definition_id"]
+    upgraded_stage = interchange.get_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        now=902.0,
+    )
+    assert upgraded_stage is not None
+    assert "source_commitment" not in upgraded_stage
 
 
 def test_identical_receipt_digest_links_every_published_stage(tmp_path, monkeypatch) -> None:
