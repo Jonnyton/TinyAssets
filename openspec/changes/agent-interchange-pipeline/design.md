@@ -58,6 +58,22 @@ existing custom-agent domain; native import revalidates it and reproduces that
 content and fingerprint. Server-local IDs, timestamps, bindings, credentials,
 conversations, effect payloads, and runtime state are excluded.
 
+Portable lineage declarations are part of that immutable content but are not
+the verified ledger itself. Each declaration carries the original source ID
+for human provenance plus stable parent-definition and parent-component
+content fingerprints. Import never rewrites an unresolved declaration into a
+different field. Instead, publication projects only fingerprint-matched local
+parents into the server-local verified lineage table. This changes the active
+`universe-custom-agents` portability requirement and must archive after that
+capability is canonical.
+
+For a locally authored remix, the server resolves the caller-supplied local
+parent IDs and enriches the portable declarations with both fingerprints
+before calculating the child fingerprint. On cross-install import, a portable
+declaration becomes verified only when exactly one local definition matches
+both fingerprints; zero or multiple matches remain informational so a copier
+cannot capture credit by republishing identical bytes.
+
 Foreign formats are not added to the canonical validator. Keeping one native
 shape avoids a growing format enum and makes every adapter replaceable.
 
@@ -68,10 +84,11 @@ source is bounded and processed without being written to the database or
 application logs. Durable stage content contains only:
 
 - the sanitized canonical candidate;
-- source format/media metadata and a SHA-256 digest of the raw bounded input;
+- source format/media metadata, a SHA-256 digest of sanitized source content,
+  and an actor-private purpose-keyed HMAC commitment to the raw bounded input;
 - adapter identity, semantic version, and immutable artifact digest;
 - a structured `ConversionReport`;
-- a content-bound `ConversionReceipt`;
+- a content-bound private `ConversionReceipt` view;
 - status, actor ownership, timestamps, and optional resulting definition ID.
 
 The stage never contains recovered credential values or an executable runtime
@@ -83,17 +100,27 @@ agent.
 
 Persisting the raw foreign document was rejected because the current control
 plane is not a general secret vault and inspection does not require retaining
-the secret-bearing bytes.
+the secret-bearing bytes. An unkeyed raw-source hash was also rejected because
+small or low-entropy credentials could be guessed offline. The private
+commitment requires `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`, fails closed when
+the key is unavailable, is never returned by public evidence, and expires with
+the stage 24 hours after creation. Durable receipts bind only sanitized
+content. If the stage expires unpublished, its private receipt view expires
+with it; explicit publish copies the same immutable receipt content into the
+durable receipt ledger inside the publication transaction. Explicit export
+writes its durable sanitized receipt immediately.
 
 ### 3. Reports are exhaustive and machine-readable
 
-Each relevant source item receives one terminal classification:
+Each item recognized by the adapter's declared source inventory receives one
+terminal classification:
 `preserved`, `normalized`, `unsupported`, `omitted_secret`,
 `requires_private_binding`, or `requires_runtime`. Entries carry a stable
 source path, optional canonical target path, safe reason code, and bounded
 non-secret detail. The report also declares whether the conversion is
-lossless; that flag is true only when every item is `preserved` and the
-canonical round-trip fingerprint proves equality.
+lossless; that flag is true only when every item is `preserved` and an
+independent format verifier proves equality. Foreign adapter claims alone
+cannot establish completeness or losslessness.
 
 Safe unknown objects are retained under bounded namespaced extension keys.
 Silently discarding an unknown field or collapsing it into prose was rejected
@@ -101,11 +128,13 @@ because it prevents honest round-trip and power-user editing.
 
 ### 4. Receipts bind source, adapter, output, and report
 
-The receipt is canonical JSON containing a schema version, source digest,
-adapter identity/version/digest, direction, canonical candidate fingerprint or
-foreign-output digest, report digest, and creation time. Its receipt digest is
-SHA-256 over all preceding receipt fields. Any adapter revision therefore
-produces distinct provenance even when output happens to match.
+The receipt is canonical JSON containing a schema version, sanitized-source
+digest, adapter identity/version/digest, direction, canonical candidate
+fingerprint or foreign-output digest, report digest, and creation time. Its
+receipt digest is SHA-256 over all preceding receipt fields. Any adapter
+revision therefore produces distinct provenance even when output happens to
+match. The actor-private raw-source HMAC remains on the expiring stage and is
+not copied into the durable receipt.
 
 Receipts contain hashes and safe identifiers only. They are evidence of what
 ran, not an authority token, signature, execution attestation, or proof that a
@@ -118,7 +147,20 @@ foreign project endorses the conversion.
 versions. Where conversion requires executable code, the adapter runs only as
 an admitted Engine OS workload with no ambient credentials, universe
 authority, network entitlement, or provider access. Its output is untrusted
-until the canonical validator and report validator pass.
+until the canonical validator and report validator pass. Source locators that
+require network or repository access are resolved only inside the adapter's
+explicit governed network entitlement; the API process never fetches them with
+ambient authority.
+
+The first end-to-end proof uses a non-executable declarative JSON mapping
+adapter. Its immutable Branch version may contain only bounded JSON Pointer
+copy, rename, constant, namespace-preserve, and classification rules—no
+expressions, templates, code, network, filesystem, or secret lookup. The core
+protocol runner may interpret that closed grammar in-process and validates the
+result exactly like every adapter. A repository conformance fixture supplies a
+foreign JSON manifest plus the mapping artifact for local and rendered tests;
+it is evidence for the pipeline, not a named product integration or maintained
+format catalog. All more expressive adapters wait for Engine OS admission.
 
 The platform may ship the protocol runner and canonical native adapter, but
 foreign adapters are ordinary public, remixable, evaluable commons artifacts,
@@ -127,7 +169,9 @@ named external formats was rejected.
 
 ### 6. Universal remix extends the existing verified lineage transaction
 
-The existing `publish_definition` transaction remains the sole publisher. It
+The existing definition publication logic remains the sole publisher, but its
+transaction body is extracted to accept the stage transaction's existing
+SQLite connection. It
 resolves parent definition/component pairs without comparing parent author to
 child author, validates shares and depth, and writes the child plus lineage
 atomically. Interchange adds tests proving parents from independent actors can
@@ -135,15 +179,17 @@ be selected together, that newly authored residual content is credited to the
 child author, and that unresolved imported origins remain informational.
 
 Import stages do not create verified lineage. Only explicit publication can
-resolve declared origins against the current local commons and write verified
-edges.
+resolve portable fingerprint declarations against the current local commons
+and write verified edges. Stage status, definition publication, local lineage
+projection, receipt link, and resulting definition ID commit in one SQLite
+transaction; a crash cannot leave an unlinked published definition.
 
 ### 7. Existing graph handles carry explicit operations
 
 The public surface continues to use `read_graph` and `write_graph` targets for
-agents. The agent write target gains explicit staged-import, publish-stage,
-remix, and export-conversion operations only where the current payload is
-insufficient; private stage reads require the authenticated stage owner.
+agents. Existing publish/remix/bind/get-agent operations remain unchanged. The
+agent target adds only `stage_import`, `get_import_stage`, `publish_stage`, and
+`convert_export`; private stage reads require the authenticated stage owner.
 Responses are bounded structured documents suitable for chatbot inspection.
 
 A new `agents` tool was rejected because interchange is a graph-artifact
@@ -152,11 +198,18 @@ operation and the canonical live surface must remain exactly seven handles.
 ### 8. Storage is additive and retry-safe
 
 Add SQLite tables for import stages and immutable conversion receipts beside
-the existing custom-agent tables. A non-empty idempotency key is unique per
-actor, operation, source digest, direction, and adapter digest. Repeating an
-identical request returns the original stage/receipt; reuse with different
-content fails. Publish-stage delegates to the existing author-scoped publish
-idempotency transaction.
+the existing custom-agent tables. `(actor_id, operation, idempotency_key)` is
+unique for every non-empty key and the row stores one canonical bound-request
+digest covering direction, private source commitment, adapter digest, and
+candidate fingerprint. Repeating an identical request returns the original
+stage/receipt; reuse with different content fails. Publish-stage uses the
+shared publication transaction described above.
+
+Unpublished stages expire after 24 hours. Expiry deletes the sanitized
+candidate, private raw-source HMAC, and actor-private inspection report; a
+durable receipt is written only for a successful explicit publication or
+export and binds sanitized content. Published definitions and bindings are not
+deleted by stage expiry.
 
 No data migration or compatibility shim is needed. Existing canonical import
 continues as the native fast path, while foreign sources use the staged path.
@@ -169,17 +222,19 @@ continues as the native fast path, while foreign sources use the staged path.
   and prove absence in database rows, reports, receipts, errors, and logs.
 - **[A malicious adapter can lie about preservation]** → treat its report as
   untrusted, independently validate paths/categories/digests, recompute native
-  fingerprints, and reserve `lossless=true` for verifier-proven equality.
+  fingerprints, require a declared source inventory, and reserve
+  `lossless=true` for an independent format verifier. An adapter without such
+  a verifier is always loss-aware/non-lossless even if it reports preservation.
 - **[Namespaced extensions can become an opaque dumping ground]** → bound
   total canonical size, component count, nesting, keys, and per-entry report
   count under the existing definition limits.
-- **[Adapter execution may not yet be available]** → preserve adapter
-  references and return `requires_runtime`; do not fall back to in-process
-  execution or claim conversion succeeded.
-- **[Stages can accumulate private metadata]** → support bounded pagination
-  and a retention policy that deletes sanitized candidates and receipts only
-  after their documented evidence lifetime; never infer deletion of a
-  published immutable definition.
+- **[Adapter execution may not yet be available]** → the closed declarative
+  JSON mapping grammar proves the protocol without executable code; every
+  adapter outside that grammar returns `requires_runtime` until Engine OS is
+  admitted, with no in-process code fallback.
+- **[Stages can accumulate private metadata]** → expire every unpublished
+  stage and its private source commitment after 24 hours, support bounded
+  pagination, and never infer deletion of a published immutable definition.
 - **[Concurrent publish can duplicate work]** → use SQLite transactions,
   uniqueness constraints, and the existing definition idempotency boundary.
 
@@ -189,22 +244,53 @@ continues as the native fast path, while foreign sources use the staged path.
    change archives.
 2. Add red domain tests for native round-trip, cross-user blend, sanitization,
    report/receipt integrity, idempotency, and concurrency.
-3. Add the additive staging/receipt schema and pure validators with foreign
-   adapter execution disabled by default.
-4. Add API and graph-target operations, preserving the seven-handle manifest.
-5. Admit executable adapters only through the Engine OS gate; ship no
-   in-process fallback.
-6. Deploy, run focused/load/security gates and the public canary, then complete
-   a rendered chatbot import → inspect → blend → publish → bind → export flow.
+3. Add the additive staging/receipt schema, shared publication transaction,
+   pure validators, and the closed declarative JSON mapping runner.
+4. Add only the new stage/inspect/publish-stage/convert-export graph operations,
+   preserving existing publish/remix/bind behavior and the seven handles.
+5. Run a deployment-shaped test with 200 concurrent actors across eight
+   processes: 1,000 mixed stage/import/remix/export requests in five minutes,
+   including 256-KiB/64-component maxima and conflicting retries. Require p95
+   below 2 seconds, p99 below 3 seconds, at least 3.33 requests/second, zero
+   unhandled SQLite busy errors, zero partial writes or duplicate stages,
+   zero secret/log leaks, and below 1% unexpected errors; expected idempotency
+   conflicts are reported separately rather than counted as errors.
+6. Admit executable adapters only through the Engine OS gate; ship no
+   in-process code fallback.
+7. Deploy, run focused/load/security gates and the public canary, then complete
+   a rendered chatbot foreign-manifest import → inspect → blend → publish →
+   bind → foreign export flow through the declarative proof adapter.
 
 Rollback removes the new routing operations and adapter admission while
 leaving additive stage/receipt rows inert for forward repair. It never deletes
 published definitions or private bindings.
 
+## Interface Schemas
+
+- `AgentImportStage`: `schema_version`, `stage_id`, `actor_id`, `status`
+  (`staged|published|expired`), `direction`, `source_media_type`,
+  `sanitized_source_digest`, private `source_commitment`, `adapter_ref`,
+  `adapter_version`, `adapter_digest`, `candidate`, `report`, `created_at`,
+  `expires_at`, and optional `published_definition_id`.
+- `ConversionReport`: `schema_version`, `direction`, bounded `items[]` with
+  `source_path`, optional `target_path`, terminal `classification`, safe
+  `reason_code`, optional bounded `detail`, plus `lossless` and verifier ID.
+- `ConversionReceipt`: `schema_version`, `direction`,
+  `sanitized_source_digest`, adapter identity/version/digest, output
+  fingerprint/digest, report digest, creation time, and receipt digest.
+- Adapter request: `schema_version=agent-interchange-adapter/v1`, `direction`,
+  bounded inline JSON source or governed source locator, source media type,
+  desired target media type, and no credentials or ambient authority.
+- Adapter response: `status=converted|requires_runtime|unsupported|invalid`,
+  bounded candidate/output, declared source inventory, report, adapter
+  identity/version/digest, and safe terminal error code. Unknown versions,
+  malformed inventories, over-limit payloads, and ungoverned source locators
+  fail closed before stage or receipt persistence.
+
 ## Open Questions
 
-- What bounded retention duration should apply to sanitized abandoned import
-  stages after production usage data exists?
-- Which first foreign adapter should be used solely as end-to-end proof? The
-  choice does not create a maintained starter or format catalog and requires
-  source-specific review if it targets a named external project.
+- Production usage may justify a retention shorter than the conservative
+  24-hour initial deadline; lengthening it requires a new privacy review.
+- Named external project adapters remain separate source-specific changes with
+  current research and opposite-provider review; the conformance fixture makes
+  no compatibility claim.

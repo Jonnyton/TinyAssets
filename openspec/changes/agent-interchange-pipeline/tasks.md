@@ -4,22 +4,22 @@
 
 ## 1. Test-first domain contract
 
-- [ ] 1.1 Add red tests proving exact canonical export-import-export fingerprints, preservation of unfamiliar bounded components, exclusion of every private/runtime field, and a verified child blend from at least three public definitions authored by other actors.
-- [ ] 1.2 Add red adversarial tests proving raw foreign input is never durably stored or logged, credential/authority values are omitted, unknown safe content is namespaced, reports classify every item, false lossless claims fail, and adapter output cannot bypass canonical validation.
+- [ ] 1.1 Add red cross-installation tests proving a multi-parent child exported into an empty commons retains exact canonical content/fingerprint and immutable parent/component fingerprint declarations without manufacturing verified credit; also prove a child can blend at least three public definitions authored by other actors.
+- [ ] 1.2 Add red adversarial tests proving raw foreign input and unkeyed raw hashes are never stored or logged, low-entropy credentials cannot be guessed from evidence, private source commitments expire after 24 hours, unknown safe content is namespaced, reports classify the declared inventory, false lossless claims fail, and adapter output cannot bypass canonical validation.
 - [ ] 1.3 Add red receipt, idempotency, and concurrency tests proving exact source/adapter/output/report binding, distinct adapter-version provenance, one logical stage per identical retry, conflict on changed inputs, and atomic failure with no partial stage/definition/lineage.
 
 ## 2. Staging and interchange core
 
-- [ ] 2.1 Implement additive SQLite stage/receipt storage plus bounded canonical validators, exhaustive report validation, digest verification, actor-private reads, and sanitized retention behavior; make tasks 1.2-1.3 green without persisting raw sources.
-- [ ] 2.2 Implement the canonical native adapter and `agent-interchange-adapter/v1` protocol boundary, including safe namespaced extensions and explicit `requires_runtime` refusal when executable Engine OS admission is unavailable; make native round-trip and hostile-adapter tests green.
-- [ ] 2.3 Implement explicit stage → publish and cross-user multi-parent remix orchestration by delegating only to the existing immutable `publish_definition` transaction; make task 1.1 green and preserve informational-only unresolved external origins.
+- [ ] 2.1 Implement additive SQLite stage/receipt storage plus purpose-keyed private source commitments, 24-hour expiry, bounded canonical/report/receipt validators, actor-private reads, and sanitized-content receipts; make tasks 1.2-1.3 green without persisting raw sources or unkeyed raw hashes.
+- [ ] 2.2 Implement `agent-interchange-adapter/v1`, the canonical native adapter, and the closed non-executable declarative JSON mapping runner/fixture; validate inventories and outputs independently, preserve safe namespaced extensions, and return `requires_runtime` for every adapter outside the grammar until Engine OS admission exists.
+- [ ] 2.3 Refactor immutable definition publication onto a caller-supplied SQLite transaction, preserve portable fingerprint lineage separately from local verified projections, and commit stage status, definition, lineage, and receipt linkage atomically; make task 1.1 green without changing existing publish/remix/bind results.
 
 ## 3. Public surface and safety proof
 
-- [ ] 3.1 Add bounded `read_graph`/`write_graph` agent operations for stage, inspect, publish, remix, bind, canonical export, and foreign export; prove private authorization, OAuth mutation gating, payload descriptions, and the exact seven-handle manifest.
-- [ ] 3.2 Run focused tests, Ruff, secret/log scans, canonical-handle drift checks, and §14 parallel import/remix/load proof; record dated environment, commands, revision, timing, throughput, error rate, duplicate counts, and results.
+- [ ] 3.1 Add only the new bounded `stage_import`, `get_import_stage`, `publish_stage`, and `convert_export` operations to existing graph agent targets; reuse existing publish/remix/bind/get-agent contracts and prove private authorization, OAuth mutation gating, terminal errors, payload descriptions, and the exact seven-handle manifest.
+- [ ] 3.2 Run focused tests, Ruff, secret/log scans, canonical-handle drift checks, and a deployment-shaped §14 proof: 200 concurrent actors across eight processes, 1,000 mixed requests in five minutes, maximum 256-KiB/64-component payloads, p95 <2s, p99 <3s, throughput ≥3.33/s, zero unhandled busy errors/partial writes/duplicates/leaks, and <1% unexpected errors; record dated environment, commands, revision, topology, distributions, timing, conflicts, and results.
 
 ## 4. Release and foldback
 
-- [ ] 4.1 Independently review the implementation and evidence, deploy through the normal pipeline, run the public canary, and complete one rendered connector conversation: import → inspect report → blend other users' agents → publish → bind privately → export.
+- [ ] 4.1 Independently review the implementation and evidence, deploy through the normal pipeline, run the public canary, and complete one rendered connector conversation using the declarative foreign-manifest proof adapter: import → inspect report → blend other users' agents → publish → bind privately → foreign export.
 - [ ] 4.2 Check production for clean post-fix organic use; if absent, leave a dated monitoring row, then sync `agent-interchange` into canonical specs and archive this change only after `universe-custom-agents` has landed and its dependency truth is canonical.

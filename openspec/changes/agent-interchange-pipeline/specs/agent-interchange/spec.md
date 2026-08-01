@@ -1,17 +1,5 @@
 ## ADDED Requirements
 
-### Requirement: Canonical definitions round-trip without semantic loss
-The platform SHALL export and import `agent-definition/v1` as one normalized portable definition whose public content and content fingerprint are identical after an export-import-export round-trip.
-
-#### Scenario: Native definition round-trips exactly
-- **WHEN** an actor exports a public definition and imports the unchanged canonical document
-- **THEN** the imported portable content normalizes to the same content fingerprint
-- **AND** a second export contains the same components, public metadata, and origin declarations
-
-#### Scenario: Private and runtime state never enters canonical interchange
-- **WHEN** a public definition has one or more private universe bindings and runtime activity
-- **THEN** its canonical export contains no binding ID, universe ID, credential, resource or channel address, conversation, effect payload, execution record, or runtime state
-
 ### Requirement: Foreign imports are privately staged before publication
 The platform SHALL process a bounded foreign source into an authenticated actor-owned sanitized import stage and SHALL require separate explicit operations to publish its candidate definition and bind the published definition to a universe.
 
@@ -24,8 +12,18 @@ The platform SHALL process a bounded foreign source into an authenticated actor-
 - **WHEN** an actor reads an import stage owned by a different actor
 - **THEN** the platform returns the same not-found result as an absent stage
 
+#### Scenario: Publish-stage commits as one transaction
+- **WHEN** an actor explicitly publishes a valid unexpired stage
+- **THEN** stage status, public definition, local verified lineage projections, durable receipt linkage, and resulting definition ID commit in one transaction
+- **AND** any failure leaves all of those records in their prior state
+
+#### Scenario: Unpublished stage expires
+- **WHEN** 24 hours pass without explicit publication
+- **THEN** the sanitized candidate, actor-private report, and raw-source commitment become unavailable
+- **AND** no published definition or binding is deleted
+
 ### Requirement: Conversion reports account for preservation and loss
-The platform SHALL return a bounded structured `ConversionReport` that assigns every relevant source or target item exactly one terminal classification from `preserved`, `normalized`, `unsupported`, `omitted_secret`, `requires_private_binding`, or `requires_runtime` and SHALL never claim losslessness unless verifier-proven native equality holds.
+The platform SHALL return a bounded structured `ConversionReport` that assigns every item in the adapter's declared source or target inventory exactly one terminal classification from `preserved`, `normalized`, `unsupported`, `omitted_secret`, `requires_private_binding`, or `requires_runtime` and SHALL never claim losslessness unless an independent format verifier proves equality.
 
 #### Scenario: Less-capable export reports every loss
 - **WHEN** an actor exports a canonical definition through a target adapter that cannot represent one component and requires private setup for another
@@ -50,7 +48,7 @@ The platform SHALL preserve safe unknown agent data in bounded namespaced extens
 - **AND** safe report entries classify the affected paths as `omitted_secret` or `requires_private_binding`
 
 ### Requirement: Conversion receipts bind exact provenance
-The platform SHALL create an immutable conversion receipt whose digest binds the source digest, direction, adapter identity, adapter semantic version, immutable adapter digest, output fingerprint or digest, and conversion-report digest.
+The platform SHALL create an immutable conversion receipt whose digest binds a digest of sanitized source content, direction, adapter identity, adapter semantic version, immutable adapter digest, output fingerprint or digest, and conversion-report digest, while any exact raw-input commitment remains actor-private, purpose-keyed, and time-bounded.
 
 #### Scenario: Adapter revision has distinct provenance
 - **WHEN** the same source is converted by two adapter versions or immutable adapter digests
@@ -61,13 +59,23 @@ The platform SHALL create an immutable conversion receipt whose digest binds the
 - **THEN** receipt verification fails
 - **AND** the altered receipt cannot authorize publication or be presented as valid conversion evidence
 
+#### Scenario: Raw source cannot be guessed from public evidence
+- **WHEN** a foreign source contains a low-entropy credential or consists only of secret-bearing content
+- **THEN** no public receipt or report contains an unkeyed digest of the raw source or secret value
+- **AND** the private raw-input commitment is unavailable after the stage retention deadline
+
 ### Requirement: Foreign adapters are versioned untrusted commons artifacts
-The platform SHALL accept foreign conversion only from an immutable adapter conforming to `agent-interchange-adapter/v1`, SHALL validate its output independently, and SHALL execute adapter code only through governed Engine OS admission without ambient credentials, universe authority, network entitlement, provider access, or an in-process fallback.
+The platform SHALL accept foreign conversion only from an immutable adapter conforming to `agent-interchange-adapter/v1`, SHALL validate its output independently, SHALL permit in-process interpretation only for bounded non-executable declarative JSON mappings, and SHALL execute adapter code only through governed Engine OS admission without ambient credentials, universe authority, network entitlement, provider access, or an in-process code fallback.
 
 #### Scenario: Runtime-required adapter is unavailable
 - **WHEN** a requested adapter requires executable code but no governed Engine OS admission is available
 - **THEN** the conversion remains unexecuted and reports `requires_runtime`
 - **AND** the platform does not run the adapter in the API or daemon process
+
+#### Scenario: Declarative proof adapter uses the same protocol
+- **WHEN** an immutable adapter contains only bounded JSON-pointer copy, rename, constant, namespace-preserve, and classification rules with no expressions, code, network, or secret access
+- **THEN** the platform may interpret it in-process through `agent-interchange-adapter/v1`
+- **AND** its output, report, receipt, and canonical candidate pass the same validation as every other adapter
 
 #### Scenario: Invalid adapter output cannot bypass canonical validation
 - **WHEN** an adapter returns oversized, malformed, secret-bearing, or fingerprint-inconsistent canonical output
@@ -88,7 +96,7 @@ The platform SHALL let an authenticated actor publish one child definition selec
 - **AND** it writes no verified lineage edge or verified credit for that source
 
 ### Requirement: Interchange writes are idempotent and concurrency safe
-The platform SHALL treat a repeated conversion or publish-stage request with the same actor-scoped idempotency identity and identical bound inputs as one logical operation and SHALL reject reuse of that identity with different source, adapter, direction, or candidate content.
+The platform SHALL make `(actor, operation, idempotency_key)` unique, store a canonical digest of the bound request, treat an identical retry as one logical operation, and reject reuse of that identity with different source, adapter, direction, or candidate content.
 
 #### Scenario: Concurrent identical import creates one stage
 - **WHEN** concurrent requests submit the same source, adapter digest, direction, actor, and idempotency key
@@ -99,6 +107,15 @@ The platform SHALL treat a repeated conversion or publish-stage request with the
 - **WHEN** an actor reuses an interchange idempotency key with different bound input
 - **THEN** the platform returns a conflict
 - **AND** the original stage, receipt, definition, binding, and lineage remain unchanged
+
+### Requirement: Interchange sustains deployment-shaped concurrent use
+The platform SHALL satisfy the §14 interchange load envelope with no partial writes, duplicate logical stages, secret leakage, or unhandled storage-contention failures.
+
+#### Scenario: Mixed maximum-payload load stays within thresholds
+- **WHEN** 200 concurrent actors across eight processes issue 1,000 mixed stage, import, remix, and export requests in five minutes, including 256-KiB definitions, 64-component definitions, identical retries, and conflicting retries
+- **THEN** throughput is at least 3.33 requests per second, p95 latency is below 2 seconds, p99 latency is below 3 seconds, and unexpected errors remain below 1 percent
+- **AND** there are zero unhandled busy errors, partial stage/definition/lineage writes, duplicate logical stages, or secret-bearing report/receipt/log values
+- **AND** expected idempotency conflicts are counted separately from unexpected errors
 
 ### Requirement: Interchange remains on canonical graph handles
 The platform SHALL expose agent staging, inspection, remix, publication, binding, and export operations only through targets and operations of the existing canonical graph handles and SHALL preserve the exact seven-handle public manifest.

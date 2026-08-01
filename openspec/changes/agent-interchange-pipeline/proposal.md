@@ -35,14 +35,15 @@ making conversion loss and provenance explicit.
 
 ### Modified Capabilities
 
-None. The existing `universe-custom-agents` change already owns public
-definitions, bindings, lineage, and canonical graph routing; this change
-depends on that capability landing and specifies the distinct interchange
-pipeline layered on it.
+- `universe-custom-agents`: Separate immutable portable lineage declarations
+  from locally verified ledger projections and add stable parent-definition
+  and component-content fingerprints so a multi-parent definition round-trips
+  unchanged through an empty commons.
 
 ## Impact
 
-The change will affect the custom-agent domain/API and storage boundary,
+The change depends on `universe-custom-agents` landing before archive and will
+affect the custom-agent domain/API and storage boundary,
 canonical `read_graph`/`write_graph` agent target payloads, governed Branch or
 Engine OS adapter execution, public definition validation, provenance reads,
 focused concurrency/security tests, and rendered connector acceptance. It
