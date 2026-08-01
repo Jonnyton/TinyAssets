@@ -64,3 +64,16 @@ No retry of digest `sha256:2b3f2755…feba10`. The repair must land on current
 main, produce a new immutable digest, pass one complete normal-fence deploy,
 and preserve exact fleet, canary, cleanup, and terminal receipt evidence before
 rendered OAuth/custom-agent acceptance resumes.
+
+## Test-Driven Repair Evidence
+
+On Windows/Python 3.13 at exact pre-implementation head `a4613146`, the focused
+matrix produced 8 expected failures and 1 control pass. Failures covered raw
+preflight rejection, mutable-name initial ownership, numeric PID reuse,
+malformed/partial Docker output, failed Docker lookup, and candidate-101
+truncation.
+
+After implementation, the focused security/concurrency matrix passed 10/10,
+including one fresh snapshot across exactly 100 mixed exited, same-generation
+owned, and genuine-unowned candidates plus fixed-class refusal at candidate
+101. The complete fence file passed 207/207. Changed-file Ruff was clean.

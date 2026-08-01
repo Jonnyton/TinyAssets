@@ -7,13 +7,13 @@
 
 ## 1. Test-Driven Repair
 
-- [ ] 1.1 Add red tests for a newly spawned same-generation exact-container
+- [x] 1.1 Add red tests for a newly spawned same-generation exact-container
   PID, same-name substitution before the initial snapshot, nonzero/timeout/
   malformed/partial Docker PID output, PID reuse, and a genuine unowned PID.
-- [ ] 1.2 Use captured nonempty exact IDs in both snapshots, accept ownership
+- [x] 1.2 Use captured nonempty exact IDs in both snapshots, accept ownership
   only from complete per-identity Docker output, bind candidates to `/proc`
   process generation, and preserve fixed private refusal plus later proofs.
-- [ ] 1.3 Add the uptime §14 concurrency/load proof at exactly 100 mixed
+- [x] 1.3 Add the uptime §14 concurrency/load proof at exactly 100 mixed
   candidates and the fail-closed 101st-candidate overflow boundary; prove one
   fresh snapshot and only same-generation exact ownership is excused.
 

@@ -1017,10 +1017,11 @@ def test_preflight_confirms_new_exact_container_child_before_refusal(
         "exe": "python",
         "_process_start_time_ticks": 77,
     }
+    scans = iter(([candidate], []))
     monkeypatch.setattr(
         fence,
         "_stray_writer_processes",
-        lambda *_args: [candidate],
+        lambda *_args: next(scans),
     )
     captured_ids = tuple(
         str(host.containers[name]["Id"]) for name in EXPECTED_CONTAINERS
@@ -2838,12 +2839,24 @@ def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
             assert tuple(names) == ("captured-a", "captured-b")
             return {123}
 
-    (tmp_path / "123").mkdir()
-    (tmp_path / "456").mkdir()
+    _write_process_stat(tmp_path, 123, 100)
+    _write_process_stat(tmp_path, 456, 200)
     candidates = [
-        {"pid": 123, "exe": "codex"},
-        {"pid": 456, "exe": "python"},
-        {"pid": 789, "exe": "exited"},
+        {
+            "pid": 123,
+            "exe": "codex",
+            "_process_start_time_ticks": 100,
+        },
+        {
+            "pid": 456,
+            "exe": "python",
+            "_process_start_time_ticks": 200,
+        },
+        {
+            "pid": 789,
+            "exe": "exited",
+            "_process_start_time_ticks": 300,
+        },
     ]
 
     assert fence._confirm_stray_writer_processes(
@@ -2885,6 +2898,44 @@ def test_stray_confirmation_rejects_numeric_pid_reuse(
         ("captured-a",),
         proc_root=tmp_path,
     ) == [{"pid": 123, "exe": "python"}]
+
+
+def test_stray_confirmation_mixed_100_candidate_load_uses_one_snapshot(
+    tmp_path: Path,
+):
+    owned_pids = set(range(1000, 1050))
+    exited_pids = set(range(1050, 1099))
+    unowned_pid = 1099
+    snapshot_calls: list[tuple[str, ...]] = []
+
+    class RefreshHost:
+        def container_pids(self, identities: Any) -> set[int]:
+            identities = tuple(identities)
+            snapshot_calls.append(identities)
+            assert identities == ("captured-a", "captured-b")
+            return owned_pids
+
+    candidates = []
+    for pid in sorted((*owned_pids, *exited_pids, unowned_pid)):
+        start_time = 10_000 + pid
+        candidates.append(
+            {
+                "pid": pid,
+                "exe": "python",
+                "_process_start_time_ticks": start_time,
+            }
+        )
+        if pid not in exited_pids:
+            _write_process_stat(tmp_path, pid, start_time)
+
+    assert len(candidates) == fence.MAX_STRAY_WRITER_PROCESS_CANDIDATES
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        candidates,
+        ("captured-a", "captured-b"),
+        proc_root=tmp_path,
+    ) == [{"pid": unowned_pid, "exe": "python"}]
+    assert snapshot_calls == [("captured-a", "captured-b")]
 
 
 @pytest.mark.parametrize(
