@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -72,9 +73,7 @@ def _seed(
         remaining_cost_microunits=5_000_000,
         child_delegation=BackgroundBranchChildDelegation(
             allowed_branch_def_ids=("branch_review",),
-            allowed_operations=(
-                BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
-            ),
+            allowed_operations=(BackgroundBranchOperation.INVOKE_BRANCH_VERSION,),
             max_depth=2,
             max_count=4,
             max_cost_microunits=1_000_000,
@@ -218,9 +217,7 @@ def test_resolved_seed_retains_immutable_executor_constraints() -> None:
     )
     executor_classes.append(BackgroundBranchExecutorClass.HOST)
 
-    assert seed.permitted_executor_classes == (
-        BackgroundBranchExecutorClass.CLOUD,
-    )
+    assert seed.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,)
 
 
 def test_create_conflicts_if_canonical_resolution_changes_for_same_root(
@@ -241,9 +238,7 @@ def test_create_conflicts_if_canonical_resolution_changes_for_same_root(
 
     resolver.seed = _seed(universe_id="universe_other")
     universe_conflict = service.create(_root())
-    assert universe_conflict.outcome is (
-        BackgroundBranchAuthorityWriteOutcome.CONFLICT
-    )
+    assert universe_conflict.outcome is (BackgroundBranchAuthorityWriteOutcome.CONFLICT)
     assert universe_conflict.record == created.record
 
 
@@ -288,16 +283,12 @@ def test_server_owned_lifecycle_transitions_are_fenced_and_idempotent(
     assert paused.record.generation == 2
     assert paused.record.binding_digest != active.binding_digest
 
-    exhausted = service.exhaust(
-        BackgroundBranchBindingFence(paused.record)
-    )
+    exhausted = service.exhaust(BackgroundBranchBindingFence(paused.record))
     assert exhausted.record is not None
     assert exhausted.record.status is BackgroundBranchBindingStatus.EXHAUSTED
     assert exhausted.record.generation == 3
 
-    revoked = service.revoke(
-        BackgroundBranchBindingFence(exhausted.record)
-    )
+    revoked = service.revoke(BackgroundBranchBindingFence(exhausted.record))
     assert revoked.record is not None
     assert revoked.record.status is BackgroundBranchBindingStatus.REVOKED
     assert revoked.record.generation == 4
@@ -315,21 +306,15 @@ def test_server_owned_lifecycle_transitions_are_fenced_and_idempotent(
         source_revision="5",
     )
     rotated = service.rotate(BackgroundBranchBindingFence(revoked.record))
-    rotate_replay = service.rotate(
-        BackgroundBranchBindingFence(revoked.record)
-    )
+    rotate_replay = service.rotate(BackgroundBranchBindingFence(revoked.record))
     assert rotated.record is not None
     assert rotated.record.status is BackgroundBranchBindingStatus.ACTIVE
     assert rotated.record.generation == 5
     assert rotated.record.revocation_generation == 1
     assert rotated.record.binding_id == active.binding_id
-    assert rotated.record.authorizing_principal_id == (
-        active.authorizing_principal_id
-    )
+    assert rotated.record.authorizing_principal_id == (active.authorizing_principal_id)
     assert rotated.record.branch_def_id == "branch_spec_drain_v2"
-    assert rotate_replay.outcome is (
-        BackgroundBranchAuthorityWriteOutcome.REPLAYED
-    )
+    assert rotate_replay.outcome is (BackgroundBranchAuthorityWriteOutcome.REPLAYED)
     assert rotate_replay.record == rotated.record
 
 
@@ -357,15 +342,11 @@ def test_stale_generation_cannot_overwrite_a_winner(tmp_path) -> None:
 
     stale = service.exhaust(BackgroundBranchBindingFence(active))
 
-    assert stale.outcome is (
-        BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH
-    )
+    assert stale.outcome is (BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH)
     assert stale.record == paused.record
 
     stale_rotate = service.rotate(BackgroundBranchBindingFence(active))
-    assert stale_rotate.outcome is (
-        BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH
-    )
+    assert stale_rotate.outcome is (BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH)
 
 
 def test_stale_invalid_local_transition_reports_generation_mismatch(
@@ -383,9 +364,7 @@ def test_stale_invalid_local_transition_reports_generation_mismatch(
 
     stale = service.pause(BackgroundBranchBindingFence(revoked))
 
-    assert stale.outcome is (
-        BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH
-    )
+    assert stale.outcome is (BackgroundBranchAuthorityWriteOutcome.GENERATION_MISMATCH)
     assert stale.record == rotated
 
 
@@ -432,9 +411,7 @@ def test_attempt_issuance_pins_fresh_state_and_replays_after_restart(
     assert issued.record.binding_generation == binding.generation
     assert issued.record.binding_digest == binding.binding_digest
     assert issued.record.executor_audience == _audience()
-    assert issued.record.provenance.authorizing_principal_id == (
-        binding.authorizing_principal_id
-    )
+    assert issued.record.provenance.authorizing_principal_id == (binding.authorizing_principal_id)
     assert issued.record.provenance.worker_id == "worker_codex_1"
     assert issued.record.provenance.receipt_refs == BackgroundBranchReceiptRefs(
         b2_execution_grant_id=None,
@@ -537,9 +514,7 @@ def test_attempt_issuance_rejects_stale_binding_and_missing_authority(
     ):
         stale_service.issue(_attempt_request(active))
 
-    current = transition_service.rotate(
-        BackgroundBranchBindingFence(paused)
-    ).record
+    current = transition_service.rotate(BackgroundBranchBindingFence(paused)).record
     assert current is not None
     missing_service = BackgroundBranchAttemptIssuanceService(
         SQLiteBackgroundBranchAuthorityStore(tmp_path),
@@ -553,10 +528,14 @@ def test_attempt_issuance_rejects_stale_binding_and_missing_authority(
 
 
 def test_attempt_issuance_enforces_binding_attempt_limit(tmp_path) -> None:
-    binding = _service(
-        tmp_path,
-        _Resolver(replace(_seed(), max_attempts=1)),
-    ).create(_root()).record
+    binding = (
+        _service(
+            tmp_path,
+            _Resolver(replace(_seed(), max_attempts=1)),
+        )
+        .create(_root())
+        .record
+    )
     assert binding is not None
     resolver = _AttemptResolver(_attempt_resolution(binding))
     service = BackgroundBranchAttemptIssuanceService(
@@ -624,8 +603,10 @@ class _ClaimResolver:
         self.audience = audience or _audience()
         self.predecessor = predecessor
         self.boundary = boundary
+        self.requests = []
 
     def resolve(self, request):
+        self.requests.append(request)
         return authority_service.BackgroundBranchAttemptClaimResolution(
             binding=self.binding,
             executor_audience=self.audience,
@@ -672,6 +653,51 @@ def test_attempt_claim_has_one_exact_fence_winner(tmp_path) -> None:
     assert stale.record == claimed.record
 
 
+def test_attempt_claim_resolves_authority_inside_store_transaction(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    attempt = _issued_attempt(tmp_path)
+    store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
+    binding = store.get_binding(attempt.binding_id)
+    assert binding is not None
+    transaction_open = False
+    original_transaction = store.transaction
+
+    @contextmanager
+    def tracked_transaction():
+        nonlocal transaction_open
+        with original_transaction() as transaction:
+            transaction_open = True
+            try:
+                yield transaction
+            finally:
+                transaction_open = False
+
+    monkeypatch.setattr(store, "transaction", tracked_transaction)
+
+    class TransactionResolver(_ClaimResolver):
+        def resolve(self, request):
+            assert transaction_open
+            return super().resolve(request)
+
+    resolver = TransactionResolver(binding)
+    service = authority_service.BackgroundBranchAttemptClaimService(
+        store,
+        resolver,
+    )
+
+    result = service.claim(
+        expected=BackgroundBranchAttemptFence(attempt),
+        executor_audience=_audience(),
+        claimed_at="2026-07-30T19:31:00Z",
+        lease_expires_at="2026-07-30T19:36:00Z",
+    )
+
+    assert result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    assert resolver.requests[0].requested_lease_expires_at == ("2026-07-30T19:36:00Z")
+
+
 def test_attempt_claim_cannot_change_executor_audience(tmp_path) -> None:
     attempt = _issued_attempt(tmp_path)
     service, _ = _claim_service(tmp_path, attempt)
@@ -699,10 +725,14 @@ def test_attempt_claim_revalidates_binding_revocation_in_same_transaction(
     store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
     binding = store.get_binding(attempt.binding_id)
     assert binding is not None
-    revoked = BackgroundBranchBindingTransitionService(
-        store,
-        _Resolver(None),
-    ).revoke(BackgroundBranchBindingFence(binding)).record
+    revoked = (
+        BackgroundBranchBindingTransitionService(
+            store,
+            _Resolver(None),
+        )
+        .revoke(BackgroundBranchBindingFence(binding))
+        .record
+    )
     assert revoked is not None
     resolver.binding = revoked
 
@@ -720,9 +750,7 @@ def test_attempt_claim_revalidates_binding_revocation_in_same_transaction(
         store,
         _Resolver(_seed(source_revision="5")),
     )
-    rotated = transition_service.rotate(
-        BackgroundBranchBindingFence(revoked)
-    ).record
+    rotated = transition_service.rotate(BackgroundBranchBindingFence(revoked)).record
     assert rotated is not None
     resolver.binding = rotated
 
@@ -818,10 +846,14 @@ def test_attempt_renew_revalidates_binding_revocation(tmp_path) -> None:
     store = SQLiteBackgroundBranchAuthorityStore(tmp_path)
     binding = store.get_binding(attempt.binding_id)
     assert binding is not None
-    revoked = BackgroundBranchBindingTransitionService(
-        store,
-        _Resolver(None),
-    ).revoke(BackgroundBranchBindingFence(binding)).record
+    revoked = (
+        BackgroundBranchBindingTransitionService(
+            store,
+            _Resolver(None),
+        )
+        .revoke(BackgroundBranchBindingFence(binding))
+        .record
+    )
     assert revoked is not None
     resolver.binding = revoked
 
@@ -905,12 +937,8 @@ def test_attempt_reclaim_advances_same_attempt_for_conclusive_dead_predecessor(
     ).record
     assert claimed is not None
     resolver.audience = replacement_audience
-    resolver.predecessor = (
-        authority_service.BackgroundBranchAttemptPredecessorState.DEAD
-    )
-    resolver.boundary = (
-        authority_service.BackgroundBranchAttemptBoundaryState.NOT_CROSSED
-    )
+    resolver.predecessor = authority_service.BackgroundBranchAttemptPredecessorState.DEAD
+    resolver.boundary = authority_service.BackgroundBranchAttemptBoundaryState.NOT_CROSSED
     reclaimed = service.reclaim(
         expected=BackgroundBranchAttemptFence(claimed),
         replacement_audience=replacement_audience,
@@ -941,9 +969,7 @@ def test_attempt_reclaim_cannot_change_executor_domain(tmp_path) -> None:
         runtime_id="runtime_cloud_2",
         worker_id="worker_codex_2",
     )
-    resolver.predecessor = (
-        authority_service.BackgroundBranchAttemptPredecessorState.DEAD
-    )
+    resolver.predecessor = authority_service.BackgroundBranchAttemptPredecessorState.DEAD
     resolver.boundary = authority_service.BackgroundBranchAttemptBoundaryState.CLOSED
 
     with pytest.raises(
