@@ -12,6 +12,18 @@
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback/_PURPOSE.md`
 - Ship/abandon: land evidence now; archive recovery change only after task 2.3 is durably resumed
 
+## 2026-07-31 17:03 - recovery daemon owner-state successor
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/recovery-daemon-owner-state`
+- Lane state: Active; run 30674102573 safely fenced stable failed-to-active daemon mismatch; recovery 30674310326 restored MCP
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-daemon-owner-state`
+- STATUS/Issue/PR: current-main startup recovery; issue #1987; successor PR pending
+- Purpose: make successful normal handoff converge daemon ownership to active while preserving exact enablement
+- Review gate: APPROVED at `9057025e`; 436 integrated tests, strict OpenSpec, clean Ruff/diff/drift
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-daemon-owner-state/_PURPOSE.md`
+- Ship/abandon: deploy only after merge; keep recovery and local yellow drain until cloud acceptance
+
 ## 2026-07-31 16:29 - recovery transient unit-state proof
 
 - Provider: `codex-gpt5-desktop`

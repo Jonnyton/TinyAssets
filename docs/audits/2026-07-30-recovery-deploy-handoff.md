@@ -2,12 +2,12 @@
 
 ## Outcome
 
-The public MCP surface is recovered on the previously configured immutable
-image. Writer, partial-target, sidecar, and truthful terminal-receipt repairs
-are landed through PR #2023. The remaining normal-handoff blocker is a
-preflight snapshot that may persist transient watchdog state as restoration
-intent. Its stable-snapshot successor is under exact-head review; no further
-production mutation is permitted until that review approves.
+The public MCP surface is running the canonical normal deployment after PR
+#2029 and successful deploy `30674978746`. The remaining handoff work is a
+latent rollback-safety correction: successful target cleanup must establish
+daemon `active`, but a failed-forward previous-image rollback must retain the
+exact stable predecessor posture. Further deployment was held until that
+successor received exact-head approval at `9057025e`.
 
 Update at `2026-07-31T23:28Z`: PR #2020's stricter sidecar handoff passed normal
 deploy `30672569902` through target health, exact-five fleet, public MCP,
@@ -21,6 +21,71 @@ image; a fresh Windows-host public handle canary exited 0 at
 mutation, preserves exact enablement, and retains #2023's daemon
 `activating`-to-`active` convergence rule; another normal deploy remains
 prohibited until exact-head review.
+
+Update at `2026-08-01T00:01Z`: stable-snapshot PR #2026 eliminated the watchdog
+transition mismatch. Normal deploy `30674102573` again passed target health,
+exact fleet, public MCP, exact-seven, access, and receipt proofs, then cleanup
+showed the remaining daemon contract defect: preflight authoritatively recorded
+the recovered daemon unit as stable `failed` while its containers were healthy,
+and the normal handoff correctly settled the new unit at `active`. Exact
+comparison safely fenced the fleet. Audited recovery `30674310326` restored and
+finalized public MCP; a fresh Windows-host exact-handle canary exited 0. The
+successor makes normal handoff own daemon `active` from active/inactive/failed
+or legacy activating predecessors while preserving exact enablement.
+
+Update at `2026-08-01T00:13Z`: exact-head Codex review of `4da2afc9` returned
+`ADAPT`. It found preflight normalized the daemon before target success, so a
+failed forward followed by previous-image rollback could incorrectly start a
+previously inactive or failed daemon. RED evidence reproduced both stable
+snapshot corruption and failed-forward rollback activation (4 failed, 5
+passed). The successor now persists the exact stable predecessor, preserves
+durable `post_canary_proved` state across repeated proofs, establishes active
+only for that exact proved target identity, and writes the resulting terminal
+intent for idempotent cleanup. Focused GREEN evidence: 10 passed. Production
+was recovery-backed and unchanged at that point, pending exact-head re-review.
+
+Pre-rebase corrected successor verification at `2026-08-01T00:17Z` (Windows host):
+
+```text
+python -m pytest tests/test_retire_cheat_loop_deploy_fence.py \
+  tests/test_deploy_prod_workflow.py tests/test_build_image_workflow.py \
+  tests/test_diagnose_prod_startup_workflow.py \
+  tests/test_sanitize_startup_diagnostics.py \
+  tests/test_sanitize_systemd_startup_diagnostics.py \
+  tests/test_deploy_terminal_receipt.py -q
+433 passed in 12.75s
+
+Ruff: clean
+OpenSpec strict validation: valid
+OpenSpec flow: ALLOWED (global delivery WIP 1)
+Cross-provider drift: clean
+git diff --check: clean
+```
+
+Update at `2026-08-01T00:16Z`: concurrent PR #2029 landed its unconditional
+active-daemon postcondition and deploy `30674978746` completed successfully in
+2m15s, proving the canonical normal handoff. The rollback issue did not execute
+on that successful path. The reviewed successor is rebased onto #2029 so its
+invalid-state pre-mutation checks remain while preflight again persists the
+exact stable predecessor and cleanup establishes `active` only for the exact
+durably post-canary-proved target identity.
+
+Current-main successor verification at `2026-08-01T00:22Z` (Windows host):
+
+```text
+Integrated deployment suite: 436 passed in 12.92s
+Ruff: clean
+OpenSpec strict validation: valid
+OpenSpec flow: ALLOWED (global delivery WIP 1)
+Cross-provider drift: clean
+git diff origin/main...HEAD --check: clean
+```
+
+Exact-head Codex re-review at `2026-08-01T00:28Z` approved
+`9057025e54e7b0938701615a660a1889cca041f0` with no required findings. It
+explicitly rechecked the prior ADAPT, success, previous-image rollback,
+invalid-state pre-mutation refusal, transient refusal, and crash/retry
+boundaries; its fresh integrated run reported 436 passed.
 
 Stable-unit successor verification at `2026-07-31T23:36Z` (Windows host):
 

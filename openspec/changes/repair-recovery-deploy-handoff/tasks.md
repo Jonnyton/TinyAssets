@@ -20,16 +20,18 @@
 - [x] 1.5 Close review findings for configuration spoofing, same-name
   substitution, interrupted replay, mixed ownership, writer-first fencing,
   finite historical authority, and exact frame parsing.
-- [x] 1.6 Reproduce run `30672569902`'s watchdog and daemon transitions; capture
-  only settled unit state before mutation, refuse a nonsettling unit, normalize
-  daemon startup to active, and preserve exact saved enablement on restore.
+- [x] 1.6 Reproduce runs `30672569902` and `30674102573`; capture only settled
+  unit state before mutation, refuse a nonsettling unit, establish canonical
+  active daemon ownership only after durable target post-canary proof, preserve
+  exact enablement, and retain predecessor posture on failed-forward rollback.
 
 ## 2. Verification And Release
 
 - [x] 2.1 Pass the combined focused suite, Ruff, strict OpenSpec validation,
   clean diff, and independent exact-head fail-closed/security review for the
-  integrated stable-snapshot plus active-daemon postcondition successor.
-- [x] 2.2 Land the repair, deploy one immutable image through the normal fence,
+  integrated rollback-safe active-daemon successor.
+- [x] 2.2 Land the active-daemon repair, deploy one immutable image through the
+  normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal
   deploy completes from a finalized recovery generation.
