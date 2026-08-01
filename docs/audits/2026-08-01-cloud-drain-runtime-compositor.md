@@ -51,6 +51,13 @@ mutate GitHub, activate the queue consumer, or cut over from the tray.
 
 ## Remaining critical path
 
+Current main added `activate-custom-agent-runtime-core` after this slice began.
+Its task 2.1 upgrades the shared activation/continuation/provider owners from a
+bare Branch-version reference to one typed execution-subject
+kind/reference/digest. PR #2082 therefore remains draft and MUST rebase/adapt
+after that owner lands; merging it against the old activation shape would
+violate the newer canonical delta.
+
 The epoch-2 consumer is still dark. The next runtime slice must claim the
 admitted task, launch through the bounded provider receipt/reservation owner,
 and reconcile the exact outbound PR effect. Task 4.1 must then fence epoch 1
