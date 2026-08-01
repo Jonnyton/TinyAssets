@@ -7,6 +7,7 @@ activation, provider call, workflow, app reply, or effect.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from typing import Mapping
@@ -39,6 +40,7 @@ def _strings(value: object, name: str) -> tuple[str, ...]:
 
 
 def _canonical(value: object) -> str:
+    _validate_json_value(value, set())
     try:
         return json.dumps(
             value,
@@ -51,11 +53,60 @@ def _canonical(value: object) -> str:
         raise GovernedDescriptorError(f"content must be canonical JSON: {exc}") from exc
 
 
+def _validate_json_value(value: object, ancestors: set[int]) -> None:
+    if value is None or isinstance(value, (bool, int, str)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise GovernedDescriptorError("content must contain finite JSON numbers")
+        return
+    if isinstance(value, (Mapping, list)):
+        identity = id(value)
+        if identity in ancestors:
+            raise GovernedDescriptorError("content must not contain cycles")
+        ancestors.add(identity)
+        try:
+            if isinstance(value, Mapping):
+                if any(not isinstance(key, str) for key in value):
+                    raise GovernedDescriptorError("JSON object keys must be strings")
+                for item in value.values():
+                    _validate_json_value(item, ancestors)
+            else:
+                for item in value:
+                    _validate_json_value(item, ancestors)
+        finally:
+            ancestors.remove(identity)
+        return
+    raise GovernedDescriptorError("content contains a non-JSON value")
+
+
+def _canonical_tuple(value: object, name: str, *, nonempty: bool = False) -> tuple[str, ...]:
+    if not isinstance(value, tuple):
+        raise GovernedDescriptorError(f"{name} must be a canonical tuple")
+    normalized = tuple(sorted({_text(item, name) for item in value}))
+    if value != normalized:
+        raise GovernedDescriptorError(f"{name} must be sorted and unique")
+    if nonempty and not value:
+        raise GovernedDescriptorError(f"{name} must not be empty")
+    return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class GovernedAdapterPin:
     adapter_ref: str
     adapter_version: str
     adapter_digest: str
+
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        for name in ("adapter_ref", "adapter_version", "adapter_digest"):
+            value = getattr(self, name)
+            if value != _text(value, name):
+                raise GovernedDescriptorError(f"{name} must be canonical text")
+        if not _SHA256.fullmatch(self.adapter_digest):
+            raise GovernedDescriptorError("adapter_digest must be canonical sha256")
 
     def to_dict(self) -> dict[str, str]:
         return {
@@ -77,6 +128,58 @@ class GovernedComponentDescriptor:
     required_provider_classes: tuple[str, ...]
     confinement_class: str
     budget_dimensions: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        self._validate()
+
+    def _validate(self) -> None:
+        if not isinstance(self.pin, GovernedAdapterPin):
+            raise GovernedDescriptorError("pin must be a governed adapter pin")
+        self.pin._validate()
+        _canonical_tuple(self.component_kinds, "component_kinds", nonempty=True)
+        for name in (
+            "typed_inputs",
+            "typed_outputs",
+            "required_capability_classes",
+            "required_resource_classes",
+            "required_provider_classes",
+            "budget_dimensions",
+        ):
+            _canonical_tuple(getattr(self, name), name)
+        if self.confinement_class != _text(self.confinement_class, "confinement_class"):
+            raise GovernedDescriptorError("confinement_class must be canonical text")
+        if not isinstance(self.configuration_schema, tuple):
+            raise GovernedDescriptorError("configuration_schema must be a canonical tuple")
+        normalized_schema: list[tuple[str, str]] = []
+        for item in self.configuration_schema:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise GovernedDescriptorError("configuration_schema entries are invalid")
+            key = _text(item[0], "configuration_schema key")
+            type_name = _text(item[1], f"configuration_schema.{key}")
+            if type_name not in _SCHEMA_TYPES:
+                raise GovernedDescriptorError(f"unsupported schema type {type_name!r}")
+            normalized_schema.append((key, type_name))
+        schema_keys = [key for key, _ in normalized_schema]
+        if len(schema_keys) != len(set(schema_keys)) or self.configuration_schema != tuple(
+            sorted(set(normalized_schema))
+        ):
+            raise GovernedDescriptorError(
+                "configuration_schema must be sorted, canonical, and unique"
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            **self.pin.to_dict(),
+            "component_kinds": list(self.component_kinds),
+            "configuration_schema": dict(self.configuration_schema),
+            "typed_inputs": list(self.typed_inputs),
+            "typed_outputs": list(self.typed_outputs),
+            "required_capability_classes": list(self.required_capability_classes),
+            "required_resource_classes": list(self.required_resource_classes),
+            "required_provider_classes": list(self.required_provider_classes),
+            "confinement_class": self.confinement_class,
+            "budget_dimensions": list(self.budget_dimensions),
+        }
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, object]):
@@ -146,6 +249,8 @@ class GovernedComponentRegistry:
         for descriptor in descriptors:
             if not isinstance(descriptor, GovernedComponentDescriptor):
                 raise GovernedDescriptorError("registry accepts governed descriptors only")
+            descriptor._validate()
+            descriptor = GovernedComponentDescriptor.from_dict(descriptor.to_dict())
             ref = descriptor.pin.adapter_ref
             digest = descriptor.pin.adapter_digest
             if ref in by_ref:
@@ -160,10 +265,19 @@ class GovernedComponentRegistry:
         self._by_kind = {key: tuple(value) for key, value in by_kind.items()}
 
     def resolve(self, *, adapter_ref: str | None, component_kind: str):
+        descriptor, _ = self.resolve_with_status(
+            adapter_ref=adapter_ref, component_kind=component_kind
+        )
+        return descriptor
+
+    def resolve_with_status(self, *, adapter_ref: str | None, component_kind: str):
         if adapter_ref:
-            return self._by_ref.get(adapter_ref)
+            descriptor = self._by_ref.get(adapter_ref)
+            return descriptor, "resolved" if descriptor else "unavailable"
         candidates = self._by_kind.get(component_kind, ())
-        return candidates[0] if len(candidates) == 1 else None
+        if len(candidates) == 1:
+            return candidates[0], "resolved"
+        return None, "ambiguous" if candidates else "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -206,7 +320,39 @@ def _configuration_valid(configuration: object, schema: tuple[tuple[str, str], .
             return False
         if not isinstance(value, expected):
             return False
+        if type_name == "number" and isinstance(value, float) and not math.isfinite(value):
+            return False
     return True
+
+
+def _input_keys(
+    value: object,
+    name: str,
+    diagnostics: list[ComponentCompilationDiagnostic],
+) -> tuple[str, ...]:
+    if not isinstance(value, Mapping):
+        diagnostics.append(
+            ComponentCompilationDiagnostic(
+                f"${name}", "input_invalid", "input must be a component mapping"
+            )
+        )
+        return ()
+    keys: list[str] = []
+    invalid = False
+    for key in value:
+        if not isinstance(key, str) or not key.strip() or key != key.strip():
+            invalid = True
+        else:
+            keys.append(key)
+    if invalid:
+        diagnostics.append(
+            ComponentCompilationDiagnostic(
+                f"${name}",
+                "input_invalid",
+                "component keys must be canonical non-empty strings",
+            )
+        )
+    return tuple(sorted(set(keys)))
 
 
 def compile_agent_components(
@@ -221,8 +367,29 @@ def compile_agent_components(
 
     diagnostics: list[ComponentCompilationDiagnostic] = []
     compiled: list[CompiledAgentComponent] = []
-    public_keys = set(public_components)
-    for extra in sorted((set(runtime_components) | set(component_configuration)) - public_keys):
+    public_keys = set(_input_keys(public_components, "public_components", diagnostics))
+    runtime_keys = set(_input_keys(runtime_components, "runtime_components", diagnostics))
+    configuration_keys = set(
+        _input_keys(component_configuration, "component_configuration", diagnostics)
+    )
+    registry_is_valid = isinstance(registry, GovernedComponentRegistry)
+    if not registry_is_valid:
+        diagnostics.append(
+            ComponentCompilationDiagnostic("$registry", "input_invalid", "registry is not governed")
+        )
+    confinement_is_valid = isinstance(available_confinement_classes, (set, frozenset)) and not any(
+        not isinstance(item, str) or not item.strip() or item != item.strip()
+        for item in available_confinement_classes
+    )
+    if not confinement_is_valid:
+        diagnostics.append(
+            ComponentCompilationDiagnostic(
+                "$available_confinement_classes",
+                "input_invalid",
+                "confinement classes are invalid",
+            )
+        )
+    for extra in sorted((runtime_keys | configuration_keys) - public_keys):
         diagnostics.append(
             ComponentCompilationDiagnostic(
                 extra, "component_unknown", "binding names no public component"
@@ -230,8 +397,12 @@ def compile_agent_components(
         )
     for key in sorted(public_keys):
         public = public_components[key]
-        runtime = runtime_components.get(key, {})
-        configuration = component_configuration.get(key, {})
+        runtime = runtime_components.get(key, {}) if isinstance(runtime_components, Mapping) else {}
+        configuration = (
+            component_configuration.get(key, {})
+            if isinstance(component_configuration, Mapping)
+            else {}
+        )
         if not isinstance(public, Mapping) or not isinstance(runtime, Mapping):
             diagnostics.append(
                 ComponentCompilationDiagnostic(
@@ -239,9 +410,36 @@ def compile_agent_components(
                 )
             )
             continue
+        try:
+            public_json = _canonical(public)
+            _canonical(runtime)
+        except GovernedDescriptorError:
+            diagnostics.append(
+                ComponentCompilationDiagnostic(
+                    key, "component_invalid", "component metadata is not canonical JSON"
+                )
+            )
+            continue
+        try:
+            configuration_json = _canonical(configuration)
+        except GovernedDescriptorError:
+            diagnostics.append(
+                ComponentCompilationDiagnostic(
+                    key,
+                    "configuration_invalid",
+                    "private configuration is not canonical JSON",
+                )
+            )
+            continue
         kind = public.get("kind")
         mode = runtime.get("mode", "execute")
-        if not isinstance(kind, str) or not kind or mode not in {"execute", "descriptive_only"}:
+        if (
+            not isinstance(kind, str)
+            or not kind.strip()
+            or kind != kind.strip()
+            or not isinstance(mode, str)
+            or mode not in {"execute", "descriptive_only"}
+        ):
             diagnostics.append(
                 ComponentCompilationDiagnostic(
                     key, "component_invalid", "kind or runtime mode is invalid"
@@ -263,24 +461,39 @@ def compile_agent_components(
                     component_key=key,
                     component_kind=kind,
                     runtime_mode=mode,
-                    public_component_json=_canonical(public),
-                    configuration_json=_canonical(configuration),
+                    public_component_json=public_json,
+                    configuration_json=configuration_json,
                     adapter=None,
                 )
             )
             continue
         adapter_ref = runtime.get("adapter_ref")
         if adapter_ref is not None and (
-            not isinstance(adapter_ref, str) or not adapter_ref.strip()
+            not isinstance(adapter_ref, str)
+            or not adapter_ref.strip()
+            or adapter_ref != adapter_ref.strip()
         ):
             diagnostics.append(
                 ComponentCompilationDiagnostic(key, "component_invalid", "adapter_ref is invalid")
             )
             continue
-        descriptor = registry.resolve(
-            adapter_ref=adapter_ref if isinstance(adapter_ref, str) else None,
-            component_kind=kind,
+        descriptor, resolution = (
+            registry.resolve_with_status(
+                adapter_ref=adapter_ref if isinstance(adapter_ref, str) else None,
+                component_kind=kind,
+            )
+            if registry_is_valid
+            else (None, "unavailable")
         )
+        if resolution == "ambiguous":
+            diagnostics.append(
+                ComponentCompilationDiagnostic(
+                    key,
+                    "adapter_ambiguous",
+                    "multiple governed adapters match; select one explicitly",
+                )
+            )
+            continue
         if descriptor is None or kind not in descriptor.component_kinds:
             diagnostics.append(
                 ComponentCompilationDiagnostic(
@@ -288,7 +501,9 @@ def compile_agent_components(
                 )
             )
             continue
-        if descriptor.confinement_class not in available_confinement_classes:
+        if not confinement_is_valid or (
+            descriptor.confinement_class not in available_confinement_classes
+        ):
             diagnostics.append(
                 ComponentCompilationDiagnostic(
                     key, "sandbox_unavailable", "required confinement is unavailable"
@@ -307,8 +522,8 @@ def compile_agent_components(
                 component_key=key,
                 component_kind=kind,
                 runtime_mode=mode,
-                public_component_json=_canonical(public),
-                configuration_json=_canonical(configuration),
+                public_component_json=public_json,
+                configuration_json=configuration_json,
                 adapter=descriptor.pin,
                 typed_inputs=descriptor.typed_inputs,
                 typed_outputs=descriptor.typed_outputs,
