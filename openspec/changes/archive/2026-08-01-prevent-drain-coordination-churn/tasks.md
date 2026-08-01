@@ -11,5 +11,5 @@
 
 ## 3. Verification and foldback
 
-- [ ] 3.1 Run focused controller tests, lint/format, strict OpenSpec validation, and independent exact-head review.
-- [ ] 3.2 Sync the delta into the canonical development-coordination spec, archive the change, land through a reviewed PR, restart on merged main, and observe a claimable implementation/prerequisite admission.
+- [x] 3.1 Run focused controller tests, lint/format, strict OpenSpec validation, and independent exact-head review. Completed 2026-08-01 on Windows at exact implementation head `0b35c99b`: 191 focused tests passed, Ruff and strict OpenSpec were clean, and opposite-provider Claude review returned `APPROVE`.
+- [x] 3.2 Sync the delta into the canonical development-coordination spec, archive the change, land through a reviewed PR, restart on merged main, and observe a claimable implementation/prerequisite admission. Operational proof 2026-08-01: merged implementation PR #2099 ran from current main; attempt 33 merged refinery PR #2103, fresh main exposed exactly one claimable overlapping row, and attempt 34 admitted and dispatched that row in an isolated implementation worktree. This foldback branch is the reviewed sync/archive/retirement vehicle.

@@ -1,4 +1,4 @@
-# Drain coordination churn: 24 attempts, zero delivery slices
+# Drain coordination churn: 32 attempts, zero delivery slices
 
 **Freshness:** 2026-08-01, Windows local drain
 `output/openspec-drain-auto-20260801-113628`, inspected from the detached
@@ -60,3 +60,21 @@ semantics, and a structural continuation validator accepts only a claimable row
 with symmetric file-boundary overlap. The local controller must be restarted on
 the merged main head and observed through the first refinery-to-implementation
 handoff before the incident is considered operationally closed.
+
+## Live recovery evidence
+
+**Freshness:** 2026-08-01 16:54 PDT, Windows local drain identity
+`drain-20260801-113628-6deab6`.
+
+PR #2099 merged the corrective contract at `815776e5`. The watchdog restarted
+the existing run on that merged controller without minting a new identity.
+Attempt 33 selected `bind-host-principal-to-account`, inspected its unchecked
+tasks, and merged reviewed refinery PR #2103. Fresh `origin/main` then reported
+exactly one claimable row overlapping that change boundary. At 16:54:21 PDT,
+attempt 34 admitted that row into isolated worktree
+`wf-drain-20260801-113628-6deab6-refine-openspec-bind-host-princi-a034` and
+dispatched a normal implementation worker. Watchdog health returned `running`.
+
+This proves the corrected refinery-to-implementation admission path. It does
+not yet claim that attempt 34 has completed a delivery slice; completion and
+merge remain observable through the continuing drain run.
