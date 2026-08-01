@@ -14,18 +14,25 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
     BackgroundBranchBindingFence,
+    BackgroundBranchExecutorAudience,
+    BackgroundBranchExecutorClass,
+    build_request_task_attempt_key,
 )
 from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAttemptIssuanceRequest,
+    BackgroundBranchAttemptIssuanceService,
     BackgroundBranchBindingTransitionService,
 )
 from tinyassets.cloud_automation_continuation import (
     CloudContinuationPreparationError,
     CloudContinuationState,
     CloudContinuationWriteOutcome,
+    PreparedCloudContinuationAttemptResolver,
     PreparedCloudContinuationProviderResolver,
     PreparedCloudContinuationRequest,
     prepare_inactive_cloud_continuation,
 )
+from tinyassets.daemon_server import initialize_author_server
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkRoot,
     ProviderWorkBindingFence,
@@ -49,9 +56,15 @@ from tinyassets.storage.outbound_connections import ActionCap, ConnectionLedger
 from tinyassets.storage.provider_work_authority import (
     SQLiteProviderWorkAuthorityStore,
 )
+from tinyassets.storage.request_admissions import RequestAdmissionStore
 from tinyassets.user_owned_cloud_automation import RepositorySpecWorkDefinition
 
 NOW = datetime(2026, 8, 1, 5, 0, tzinfo=timezone.utc)
+BODY_DIGEST = f"sha256:{'e' * 64}"
+REQUEST_ID = f"req_{'1' * 32}"
+ADMISSION_ID = f"adm_{'2' * 32}"
+BRANCH_TASK_ID = f"bt2_{'3' * 32}"
+EVENT_ID = f"evt_{'4' * 32}"
 
 
 def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
@@ -102,7 +115,7 @@ def _background_binding(
             "branch_def_id": "branch_repo_spec_loop",
             "operation": "invoke_branch_version",
             "source_kind": "request_admission",
-            "source_id": "request_cloud_spec_drain",
+            "source_id": REQUEST_ID,
             "source_revision": "4",
             "source_digest": f"sha256:{'6' * 64}",
             "revocation_generation": 0 if status == "active" else 1,
@@ -271,7 +284,7 @@ def _claimed_attempt(
             "branch_content_digest": definition.branch_content_digest,
             "operation": "invoke_branch_version",
             "source_kind": "request_admission",
-            "source_id": "request_cloud_spec_drain",
+            "source_id": REQUEST_ID,
             "source_generation": 4,
             "executor_audience": {
                 "executor_class": "cloud",
@@ -295,7 +308,7 @@ def _claimed_attempt(
             "provenance": {
                 "authorizing_principal_id": definition.principal_id,
                 "source_kind": "request_admission",
-                "source_id": "request_cloud_spec_drain",
+                "source_id": REQUEST_ID,
                 "executor_class": "cloud",
                 "daemon_id": "daemon_spec_drain",
                 "runtime_id": "runtime_cloud_1",
@@ -335,6 +348,203 @@ def _activate_cloud(fixture: tuple[object, ...]):
     )
     assert active is not None
     return active
+
+
+def _audience() -> BackgroundBranchExecutorAudience:
+    return BackgroundBranchExecutorAudience(
+        executor_class=BackgroundBranchExecutorClass.CLOUD,
+        daemon_id="daemon_spec_drain",
+        runtime_id="runtime_cloud_1",
+        worker_id="worker_codex_1",
+    )
+
+
+class _AudienceResolver:
+    def __init__(
+        self,
+        audience: BackgroundBranchExecutorAudience | None = None,
+    ) -> None:
+        self.audience = audience or _audience()
+
+    def resolve(self, *, continuation, branch_task_id):
+        assert continuation.automation_id == "automation_spec_drain"
+        assert branch_task_id == BRANCH_TASK_ID
+        return self.audience
+
+
+def _admit_cloud_task(
+    fixture: tuple[object, ...],
+    active,
+) -> dict[str, object]:
+    initialize_author_server(fixture[2].base_path)
+    ids = {
+        "req": REQUEST_ID,
+        "adm": ADMISSION_ID,
+        "bt2": BRANCH_TASK_ID,
+        "evt": EVENT_ID,
+    }
+    store = RequestAdmissionStore(
+        fixture[2].base_path,
+        id_factory=lambda prefix: ids[prefix],
+        clock=lambda: NOW,
+    )
+    return store.commit_admission(
+        tenant_id="acct_alice",
+        actor_id="acct_alice",
+        universe_id="universe_alice",
+        idempotency_key_hash="idem_cloud_spec_drain",
+        body_digest=BODY_DIGEST,
+        body_digest_version="sha256-v1",
+        request_type="run_branch",
+        text="Continue the accepted repository specification.",
+        branch_id="branch_repo_spec_loop",
+        branch_def_id="branch_repo_spec_loop",
+        trigger_source="owner_queued",
+        accepted_priority_weight=100,
+        policy_version="cloud-spec-drain-v1",
+        grant_generation=4,
+        receipt={"continuation_id": "cloud-spec-drain"},
+        directed_daemon_id="daemon_spec_drain",
+        created_at="2026-08-01T05:00:00Z",
+        automation_activation=active,
+    )
+
+
+def test_active_epoch2_task_issues_one_restart_safe_background_attempt(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+    active = _activate_cloud(fixture)
+    admission = _admit_cloud_task(fixture, active)
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    logical_key = build_request_task_attempt_key(
+        tenant_id="acct_alice",
+        request_id=str(admission["request_id"]),
+        admission_id=str(admission["admission_id"]),
+        task_id=str(admission["branch_task_id"]),
+        body_digest=BODY_DIGEST,
+        admission_generation=4,
+    )
+    request = BackgroundBranchAttemptIssuanceRequest(
+        binding_id=binding.binding_id,
+        binding_generation=binding.generation,
+        binding_digest=binding.binding_digest,
+        logical_attempt_key=logical_key,
+        physical_universe_id="universe_alice",
+        executor_audience=_audience(),
+    )
+    resolver = PreparedCloudContinuationAttemptResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(),
+        clock=lambda: NOW,
+    )
+
+    def issue_attempt():
+        return BackgroundBranchAttemptIssuanceService(
+            SQLiteBackgroundBranchAuthorityStore(tmp_path),
+            resolver,
+        ).issue(request)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        concurrent = list(pool.map(lambda _index: issue_attempt(), range(8)))
+
+    assert (
+        sum(
+            result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED for result in concurrent
+        )
+        == 1
+    )
+    assert (
+        sum(
+            result.outcome is BackgroundBranchAuthorityWriteOutcome.REPLAYED
+            for result in concurrent
+        )
+        == 7
+    )
+    created = next(
+        result
+        for result in concurrent
+        if result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    )
+    replayed = BackgroundBranchAttemptIssuanceService(
+        SQLiteBackgroundBranchAuthorityStore(tmp_path), resolver
+    ).issue(request)
+
+    assert created.record is not None
+    assert replayed.record == created.record
+    assert created.record.logical_attempt_key == logical_key
+    assert created.record.branch_version_id == fixture[0].branch_version_id
+    assert created.record.branch_content_digest == fixture[0].branch_content_digest
+    assert created.record.source_id == admission["request_id"]
+    assert created.record.source_generation == 4
+    assert created.record.executor_audience == _audience()
+
+
+@pytest.mark.parametrize("fault", ("activation_stopped", "alternate_worker"))
+def test_epoch2_attempt_resolution_fails_closed_on_stale_assignment(
+    tmp_path: Path,
+    fault: str,
+) -> None:
+    fixture = _fixture(tmp_path)
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+    active = _activate_cloud(fixture)
+    admission = _admit_cloud_task(fixture, active)
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    requested_audience = _audience()
+    if fault == "activation_stopped":
+        assert fixture[2].stop(expected=active) is not None
+    else:
+        requested_audience = BackgroundBranchExecutorAudience(
+            executor_class=BackgroundBranchExecutorClass.CLOUD,
+            daemon_id="daemon_spec_drain",
+            runtime_id="runtime_cloud_1",
+            worker_id="worker_other",
+        )
+    logical_key = build_request_task_attempt_key(
+        tenant_id="acct_alice",
+        request_id=str(admission["request_id"]),
+        admission_id=str(admission["admission_id"]),
+        task_id=str(admission["branch_task_id"]),
+        body_digest=BODY_DIGEST,
+        admission_generation=4,
+    )
+    resolver = PreparedCloudContinuationAttemptResolver(
+        fixture[0],
+        continuation=continuation,
+        admission=admission,
+        activation_store=fixture[2],
+        background_store=fixture[3],
+        continuation_store=fixture[6],
+        request_admission_store=RequestAdmissionStore(tmp_path),
+        audience_resolver=_AudienceResolver(),
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="attempt_resolution_missing",
+    ):
+        BackgroundBranchAttemptIssuanceService(fixture[3], resolver).issue(
+            BackgroundBranchAttemptIssuanceRequest(
+                binding_id=binding.binding_id,
+                binding_generation=binding.generation,
+                binding_digest=binding.binding_digest,
+                logical_attempt_key=logical_key,
+                physical_universe_id="universe_alice",
+                executor_audience=requested_audience,
+            )
+        )
 
 
 def test_claimed_cloud_attempt_resolves_one_restart_safe_provider_receipt(

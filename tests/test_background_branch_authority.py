@@ -934,6 +934,19 @@ def _logical_attempt_key_cases() -> list[tuple[str, str]]:
     ]
 
 
+def test_request_task_key_accepts_canonical_epoch2_admission_ids() -> None:
+    key = build_request_task_attempt_key(
+        tenant_id="acct_jonathan",
+        request_id=f"req_{'1' * 32}",
+        admission_id=f"adm_{'2' * 32}",
+        task_id=f"bt2_{'3' * 32}",
+        body_digest=_SOURCE_DIGEST,
+        admission_generation=4,
+    )
+
+    assert key.startswith("logical_attempt:request_task:")
+
+
 def test_logical_attempt_key_builders_are_deterministic_distinct_and_non_secret() -> None:
     first = _logical_attempt_key_cases()
     second = _logical_attempt_key_cases()
