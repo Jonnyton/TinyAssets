@@ -19,7 +19,7 @@
 
 ## 2. Verification And Release
 
-- [ ] 2.1 Pass the complete recovery/deploy suite, Ruff, strict OpenSpec, flow,
+- [x] 2.1 Pass the complete recovery/deploy suite, Ruff, strict OpenSpec, flow,
   diff checks, and independent exact-head fail-closed/security review.
 - [ ] 2.2 Merge the repair, build a new immutable current-main image, and pass
   one normal production deploy with exact fleet, canonical canary, cleanup,

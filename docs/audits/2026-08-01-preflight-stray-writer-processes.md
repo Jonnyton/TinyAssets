@@ -88,3 +88,8 @@ After adaptation, the focused identity/generation matrix passed 4/4, including
 public generation-stripped risk for missing and malformed `/proc/<pid>/stat`.
 The complete fence file passed 211/211. The complete recovery/deploy matrix
 passed 450/450 in 15.65 seconds. Changed-file Ruff was clean.
+
+Independent exact-head re-review approved implementation head `28f36af2` for
+release after independently passing the 211-test fence file, changed-file
+Ruff, strict OpenSpec, and diff checks. The unrelated untracked
+`user_owned_cloud_automation.py` is outside this lane and remains untouched.
