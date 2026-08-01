@@ -1251,3 +1251,15 @@ fresh-host rollback edges found later.
 - **What surprised me:** the exact requester-owned GitHub grant already existed in `ConnectionLedger`; the older effector-consent row was the wrong authority source for cloud activation.
 - **Pattern worth capturing:** distinguish durable non-bearer binding intent from just-in-time execution receipts. That lets activation prerequisites land safely without treating queue identity as provider authority.
 - **What I would do differently:** start each cloud slice by mapping every authority noun in the task to its concrete current-main owner; the stale audit made the missing provider binding look like a wider compute-runtime gap than it was.
+
+## 2026-07-31 — prepared cloud continuation
+
+- **What surprised me:** a fixed-clock concurrency test hid that an ordinary
+  restart at a later time would conflict with the continuation it had already
+  prepared.
+- **Pattern worth capturing:** idempotency compares immutable request identity,
+  not observational timestamps. Persist the first receipt and replay it on an
+  equivalent retry.
+- **What I would do differently:** make the first restart test advance the
+  clock as well as reconstruct the store, and audit budget comparisons for
+  authority widening before treating equality-shaped fixtures as proof.
