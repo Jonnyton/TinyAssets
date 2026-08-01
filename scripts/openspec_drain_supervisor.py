@@ -1761,6 +1761,7 @@ def exit_code_for_status(status: str) -> int:
         "invalid-result",
         "invalid-blocked-result",
         "invalid-duplicate-merge",
+        "invalid-refinery-continuation",
         "transient-provider-error",
         "transient-failure",
         "fatal-peer-error",

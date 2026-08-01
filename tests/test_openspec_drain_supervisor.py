@@ -3150,6 +3150,7 @@ def test_budget_reason_is_terminal() -> None:
         ("invalid-result", 2),
         ("invalid-blocked-result", 2),
         ("invalid-duplicate-merge", 2),
+        ("invalid-refinery-continuation", 2),
         ("transient-provider-error", 2),
         ("transient-failure", 2),
         ("fatal-peer-error", 2),
