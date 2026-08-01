@@ -395,7 +395,7 @@ class _Transaction:
             replacement,
         )
 
-    def issue_universe_receipt(
+    def _issue_universe_receipt(
         self,
         authority: ProviderUniverseWorkAuthority,
         candidate: ProviderUniverseWorkReceipt,
@@ -811,7 +811,7 @@ class SQLiteProviderWorkAuthorityStore:
             created_at=self._timestamp(now),
         )
         with self.transaction() as transaction:
-            return transaction.issue_universe_receipt(
+            return transaction._issue_universe_receipt(
                 authority,
                 candidate,
                 now=now,
