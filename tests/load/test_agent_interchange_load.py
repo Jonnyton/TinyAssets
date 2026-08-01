@@ -62,6 +62,34 @@ def _maximum_definition() -> dict[str, Any]:
     return payload
 
 
+def _public_import_origin_placeholder() -> dict[str, Any]:
+    return {
+        "kind": "agent_interchange_import",
+        "source_media_type": "application/json",
+        "sanitized_source_digest_algorithm": "sha256",
+        "sanitized_source_digest": "0" * 64,
+        "adapter_ref": "commons:load-proof-import",
+        "adapter_version": "1.0.0",
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": "0" * 64,
+    }
+
+
+def _maximum_import_definition() -> dict[str, Any]:
+    payload = _definition("Exact 256 KiB imported agent")
+    payload["components"]["component_0"]["config"]["opaque_extension"] = ""
+    with_origin = json.loads(_canonical(payload))
+    with_origin["external_origins"] = [_public_import_origin_placeholder()]
+    remaining = MAX_AGENT_BYTES - len(_canonical(with_origin))
+    payload["components"]["component_0"]["config"]["opaque_extension"] = (
+        "x" * remaining
+    )
+    with_origin = json.loads(_canonical(payload))
+    with_origin["external_origins"] = [_public_import_origin_placeholder()]
+    assert len(_canonical(with_origin)) == MAX_AGENT_BYTES
+    return payload
+
+
 def _stage_adapter(source: dict[str, Any]) -> dict[str, Any]:
     rules = []
     for key in sorted(source):
@@ -111,7 +139,7 @@ def _export_adapter(portable: dict[str, Any]) -> dict[str, Any]:
 
 def _stage_source(name: str, *, shape: str = "normal") -> dict[str, Any]:
     if shape == "maximum":
-        source = _maximum_definition()
+        source = _maximum_import_definition()
     elif shape == "components":
         source = _definition("Sixty-four component agent", component_count=64)
     else:
@@ -226,6 +254,9 @@ def test_agent_interchange_deployment_shaped_load(tmp_path, monkeypatch) -> None
     os.environ["TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"] = secret
     maximum = _maximum_definition()
     assert len(_canonical(maximum)) == MAX_AGENT_BYTES
+    maximum_import = _maximum_import_definition()
+    maximum_import["external_origins"] = [_public_import_origin_placeholder()]
+    assert len(_canonical(maximum_import)) == MAX_AGENT_BYTES
     assert len(_definition("64 components", component_count=64)["components"]) == 64
 
     seed = publish_definition(

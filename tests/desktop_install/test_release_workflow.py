@@ -100,6 +100,29 @@ def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> No
     assert "clean-machine-content-marker.txt" in lifecycle
 
 
+def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
+    workflow = _workflow_text()
+    lifecycle = Path(__file__).with_name("windows_lifecycle.ps1").read_text(
+        encoding="utf-8"
+    )
+    install_job = workflow.split("  test-unsigned-windows-install:", 1)[1].split(
+        "  sign-and-verify:", 1
+    )[0]
+
+    assert "timeout-minutes: 15" in install_job
+    assert "PhaseTimeoutSeconds" in lifecycle
+    assert "WaitForExit" in lifecycle
+    assert ".Kill($true)" in lifecycle
+    assert "timed out after" in lifecycle
+    assert "initial install" in lifecycle
+    assert "packaged health probe" in lifecycle
+    assert "same-version repair" in lifecycle
+    assert "uninstall" in lifecycle
+    assert "Start-Process" in lifecycle
+    assert "-Wait" not in lifecycle
+    assert "10_000" not in lifecycle
+
+
 def test_release_workflow_has_no_fake_signature_fallback() -> None:
     workflow = _workflow_text().lower()
 

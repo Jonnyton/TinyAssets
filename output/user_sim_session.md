@@ -148,3 +148,84 @@ is fixed. The server then failed closed with `agent_validation_error` because
 neither `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY` nor the master idempotency HMAC
 key contained at least 32 bytes. Nothing was staged or published. Production
 must install a dedicated secret through the protected deploy path before retry.
+
+## [2026-08-01 13:00 PDT] USER ACTION secure prerequisite deployed
+
+PR #2069 merged as `efda5b404681eaeb4d7d0bcdcd949efcd3ca55fd`.
+Image run `30715868638` and production run `30715891674` passed. The deploy
+validated the dedicated repository secret before remote mutation, installed it
+through the protected daemon-only path, started the exact image, passed daemon
+health, canonical MCP, exact-seven, access, unchanged-receipt, and forward
+canaries, and published a terminal release-state receipt.
+
+## [2026-08-01 13:02 PDT] USER ACTION rendered import and report
+
+In the same fresh identity-checked incognito Claude conversation, the user
+retried the disposable Evidence Weaver foreign JSON. Claude constructed the
+adapter from the rendered TinyAssets tool description, corrected its first
+tags mapping after a bounded validation error, and staged the candidate
+privately as `agent_stage_01kyzematb75t59gp29dhkp4ra`. The rendered response
+showed an exhaustive report: identity fields were preserved and
+`/extra/purpose` was explicitly unsupported and represented as a tag workaround;
+the conversion was correctly labeled non-lossless. Nothing was published by
+the staging operation.
+
+## [2026-08-01 13:04 PDT] USER ACTION commons discovery
+
+Claude searched both the structured public agent registry and broader commons.
+The structured registry returned zero definitions, including an unfiltered
+browse. Wiki results were design/process pages rather than published agents, so
+Claude correctly refused to misrepresent them as other-creators' remix parents.
+A truthful cross-user or multi-parent rendered remix remains blocked by an
+empty live commons.
+
+## [2026-08-01 13:06 PDT] USER BUG publish provenance gap
+
+The authorized standalone continuation published public definition
+`agent_01kyzeqabemcqb0bsnfegfptdr`, created private binding
+`agent_binding_01kyzeqyd010hwever0mfyeyf6` in universe
+`u-01kxm1vszd8hwp7em418asq8h9`, independently read the binding back with
+`configuration.visibility=private`, and exported the package. No workflow was
+created or run and no external effect was triggered. The export preserved the
+agent components and content fingerprint
+`ffd211eacae6d6fafb2a6bf19dd231db9dda5d0339905ce75c2d728780509d21`, but
+`external_origins` and portable lineage were empty: safe receipt-bound source
+digest and adapter metadata did not propagate into the published definition.
+This rendered client finding is now task 3.5 and must be fixed/redeployed before
+interchange acceptance can close.
+
+## [2026-08-01 13:38 PDT] USER ACTION provenance repair deployed
+
+PR #2075 merged as `97f797ee369c6e1833ec28076824a22bc0e77960` after
+independent exact-head approval. Image run `30717175465` and production run
+`30717318784` passed image publication, HMAC validation/install, daemon health,
+canonical MCP, exact-seven surface, access, fleet/receipt, forward canary, and
+terminal release-state gates.
+
+## [2026-08-01 13:39 PDT] USER ACTION rolling-upgrade cleanup and fresh stage
+
+In the same one-tab, identity-checked incognito Claude conversation, a read of
+pre-fix published stage `agent_stage_01kyzematb75t59gp29dhkp4ra` confirmed that
+`source_commitment` and `source_commitment_algorithm` were absent after upgrade,
+while the safe sanitized-source digest remained. Claude then staged a second
+disposable foreign definition as `agent_stage_01kyzgvhdtw52wdgghy63f90qw`.
+The rendered candidate already contained its `agent_interchange_import`
+external origin, and the exhaustive non-lossless report accounted for every
+source path. Nothing was published by staging.
+
+## [2026-08-01 13:40 PDT] USER ACTION post-fix publish, private bind, and export
+
+Claude published definition `agent_01kyzgwbw2gxnhqzdkqmnsg71b`, created binding
+`agent_binding_01kyzgwjgnfb98f1c7wht4kpgm`, and independently read the binding
+back as `configuration.visibility=private`. It then exported the definition.
+The export preserved content fingerprint
+`c53bd308aa26be2ba78222f9e09421f3d511fe89179d7bc9796db6b483ce6a90`
+and the safe external origin: adapter ref `user:disposable-import-2`, adapter
+version `1.0.0`, adapter digest, sanitized-source digest, and both explicit
+`sha256` algorithm fields. A separate rendered read of the public definition
+confirmed `adapter_digest_algorithm=sha256` and no `source_commitment` key.
+No workflow was created or run and no external effect was triggered.
+
+The structured live commons still contained no public definition authored by a
+different creator, so a truthful rendered cross-user blend remains unproven.
+This acceptance traffic is not independent organic-use evidence.
