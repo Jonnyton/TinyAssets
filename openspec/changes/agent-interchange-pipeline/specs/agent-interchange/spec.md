@@ -45,12 +45,22 @@ The platform SHALL independently enumerate every scalar leaf and empty container
 - **AND** the response does not claim that unknown source content was preserved
 
 ### Requirement: Interchange documents have one bounded canonical wire shape
-The platform SHALL enforce UTF-8 canonical JSON with sorted keys, compact separators, finite numbers, no duplicate object keys, nesting depth at most 32, raw source size at most 1 MiB, canonical candidate size at most 256 KiB and 64 components, report size at most 4,096 unique inventory items, JSON Pointer paths at most 512 characters, safe details at most 256 characters, declarative mappings at most 128 KiB and 512 rules, and lowercase 64-hex SHA-256 or HMAC digests with explicit algorithms.
+The platform SHALL enforce UTF-8 canonical JSON with sorted keys, compact separators, finite numbers, no duplicate object keys, nesting depth at most 32, raw or decoded foreign source/output size at most 1 MiB, RFC 4648 padded base64 size at most 1,398,104 characters, canonical candidate size at most 256 KiB and 64 components, complete adapter response size at most 2 MiB, report size at most 4,096 unique inventory items, JSON Pointer paths at most 512 characters, safe details at most 256 characters, declarative mappings at most 128 KiB and 512 rules, and lowercase 64-hex SHA-256 or HMAC digests with explicit algorithm fields.
 
 #### Scenario: Over-limit or ambiguous document fails before persistence
 - **WHEN** a request, adapter mapping, candidate, inventory, report, path, detail, digest, number, nesting level, or duplicate-key object violates the canonical bounds
 - **THEN** validation fails before adapter execution or persistence
 - **AND** the response returns a bounded safe terminal error without reflecting secret-bearing input
+
+#### Scenario: Converted response has exactly one bounded output
+- **WHEN** an adapter returns `status=converted`
+- **THEN** `schema_version` equals `agent-interchange-adapter/v1`, adapter digest fields are explicit, exactly one of bounded `candidate_json` or canonical `output_base64` is present, and `error_code` is absent
+- **AND** the receipt explicitly binds sanitized-source, adapter, output, report, and receipt digests with `sha256` algorithm fields
+
+#### Scenario: Non-converted response cannot smuggle output
+- **WHEN** an adapter returns `requires_runtime`, `unsupported`, or `invalid`
+- **THEN** it supplies a safe terminal `error_code` and contains neither `candidate_json` nor `output_base64`
+- **AND** no successful conversion receipt is written
 
 ### Requirement: Unknown content is preserved safely and secret material is omitted
 The platform SHALL preserve safe unknown agent data in bounded namespaced extensions and SHALL omit suspected credentials, authority-bearing values, conversations, effect payloads, and runtime state from canonical candidates, public definitions, foreign exports, reports, receipts, errors, and logs.

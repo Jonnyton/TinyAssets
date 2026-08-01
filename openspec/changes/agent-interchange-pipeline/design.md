@@ -301,24 +301,37 @@ most 256 characters; semantic versions at most 64; media types at most 127.
   `[a-z][a-z0-9_]{0,63}` reason code, and optional non-secret `detail` of at
   most 256 characters. `lossless` requires `exhaustive=true`, verified
   inventory, and all items `preserved`.
-- `ConversionReceipt` (all required): `schema_version=1`, `direction`,
-  `sanitized_source_digest`, adapter identity/version/digest, output
-  fingerprint/digest, report digest, `created_at`, and receipt digest. It never
-  contains `source_commitment`.
+- `ConversionReceipt` (all required unless conditional):
+  `schema_version=1`, `direction`,
+  `sanitized_source_digest_algorithm=sha256`, `sanitized_source_digest`,
+  `adapter_ref`, `adapter_version`, `adapter_digest_algorithm=sha256`,
+  `adapter_digest`, `output_kind` (`canonical_definition|foreign_bytes`),
+  `output_digest_algorithm=sha256`, `output_digest`, optional
+  `content_fingerprint` required only for `canonical_definition`,
+  `report_digest_algorithm=sha256`, `report_digest`, `created_at`,
+  `receipt_digest_algorithm=sha256`, and `receipt_digest`. It never contains
+  `source_commitment`. `output_digest` covers canonical candidate JSON bytes
+  or decoded foreign bytes; `receipt_digest` covers every preceding field.
 - Adapter request (all required unless mutually exclusive):
   `schema_version=agent-interchange-adapter/v1`, `direction`, exactly one of
   `source_json`, `source_base64`, or governed `source_locator` (locator at most
   2,048 characters), `source_media_type`, `target_media_type`, and the
   core-enumerated `source_inventory` when the source is JSON. Base64 decodes to
   at most 1 MiB. Requests contain no credentials or ambient authority.
-- Adapter response (all required): `schema_version`,
-  `status=converted|requires_runtime|unsupported|invalid`, bounded
-  candidate/output, source inventory, report, adapter identity/version/digest,
-  and optional safe terminal error code required when status is not
-  `converted`. The declarative mapping artifact is at most 128 KiB with at
-  most 512 rules. Unknown versions, malformed or incomplete inventories,
-  over-limit payloads, duplicate JSON keys, and ungoverned source locators
-  fail closed before stage or receipt persistence.
+- Adapter response (all required unless conditional):
+  `schema_version=agent-interchange-adapter/v1`,
+  `status=converted|requires_runtime|unsupported|invalid`, `adapter_ref`,
+  `adapter_version`, `adapter_digest_algorithm=sha256`, `adapter_digest`,
+  `source_inventory`, and `report`. `status=converted` requires exactly one of
+  `candidate_json` (canonical bytes at most 256 KiB and 64 components) or
+  RFC 4648 padded `output_base64` (at most 1,398,104 ASCII characters and 1 MiB
+  decoded) and forbids `error_code`. Every non-converted status forbids both
+  output fields and requires `[a-z][a-z0-9_]{0,63}` `error_code`. The complete
+  response is at most 2 MiB canonical JSON. The declarative mapping artifact
+  is at most 128 KiB with at most 512 rules. Unknown versions, malformed or
+  incomplete inventories, over-limit payloads, duplicate JSON keys,
+  non-canonical base64, and ungoverned source locators fail closed before
+  stage or receipt persistence.
 
 ## Open Questions
 

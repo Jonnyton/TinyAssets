@@ -11,7 +11,7 @@
 ## 2. Staging and interchange core
 
 - [ ] 2.1 Implement additive SQLite stage/receipt storage plus purpose-keyed private source commitments, 24-hour expiry, bounded canonical/report/receipt validators, actor-private reads, and sanitized-content receipts; make tasks 1.2-1.3 green without persisting raw sources or unkeyed raw hashes.
-- [ ] 2.2 Implement the exact bounded `agent-interchange-adapter/v1` wire schemas, trusted JSON Pointer inventory enumeration, canonical native adapter, and closed non-executable declarative JSON mapping runner/fixture; require exact inventory coverage, preserve safe namespaced extensions, mark unverifiable opaque formats non-exhaustive, and return `requires_runtime` for every adapter outside the grammar until Engine OS admission exists.
+- [ ] 2.2 Implement the exact bounded `agent-interchange-adapter/v1` request/response/receipt schemas, including named algorithm/digest fields, status-dependent exactly-one output rules, encoded/decoded/whole-envelope limits, trusted JSON Pointer inventory enumeration, the canonical native adapter, and the closed non-executable declarative JSON mapping runner/fixture; require exact inventory coverage, preserve safe namespaced extensions, mark unverifiable opaque formats non-exhaustive, and return `requires_runtime` for every adapter outside the grammar until Engine OS admission exists.
 - [ ] 2.3 Refactor immutable definition publication onto a caller-supplied SQLite transaction, preserve portable fingerprint lineage separately from local verified projections, and commit stage status, definition, lineage, and receipt linkage atomically; make task 1.1 green without changing existing publish/remix/bind results.
 
 ## 3. Public surface and safety proof
