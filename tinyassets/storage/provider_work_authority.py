@@ -5,19 +5,36 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
 
 from tinyassets.provider_work_authority import (
+    ProviderInvocationReservation,
+    ProviderInvocationReservationRequest,
+    ProviderInvocationReservationWriteResult,
+    ProviderUniverseWorkAuthority,
+    ProviderUniverseWorkReceipt,
+    ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBinding,
     ProviderWorkBindingFence,
     ProviderWorkBindingSeed,
     ProviderWorkBindingState,
     ProviderWorkBindingWriteResult,
+    ProviderWorkExecutionClaim,
+    ProviderWorkExecutionClaimRequest,
+    ProviderWorkExecutionClaimWriteResult,
+    ProviderWorkReceiptState,
+    ProviderWorkReceiptWriteResult,
+    _claim_from_request,
     _from_seed,
+    _receipt_from_authority,
+    _reservation_from_request,
+    provider_invocation_reservation_id,
     provider_work_binding_id,
+    provider_work_claim_id,
+    provider_work_receipt_id,
 )
 from tinyassets.storage import db_path
 
@@ -34,6 +51,56 @@ CREATE TABLE IF NOT EXISTS provider_work_bindings (
 );
 CREATE INDEX IF NOT EXISTS idx_provider_work_bindings_scope
 ON provider_work_bindings(owner_user_id, universe_id, provider, state);
+
+CREATE TABLE IF NOT EXISTS provider_work_receipts (
+    receipt_id TEXT PRIMARY KEY,
+    receipt_digest TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    state TEXT NOT NULL CHECK (state IN ('active', 'revoked', 'expired', 'fenced')),
+    work_item_kind TEXT NOT NULL,
+    work_item_id TEXT NOT NULL,
+    universe_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    binding_generation INTEGER NOT NULL CHECK (binding_generation >= 1),
+    binding_digest TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    UNIQUE (universe_id, work_item_kind, work_item_id),
+    FOREIGN KEY(binding_id) REFERENCES provider_work_bindings(binding_id)
+);
+
+CREATE TABLE IF NOT EXISTS provider_work_execution_claims (
+    claim_id TEXT PRIMARY KEY,
+    claim_digest TEXT NOT NULL,
+    receipt_id TEXT NOT NULL UNIQUE,
+    generation INTEGER NOT NULL CHECK (generation >= 1),
+    state TEXT NOT NULL CHECK (state IN ('active', 'released', 'invalidated')),
+    lease_expires_at TEXT NOT NULL,
+    record_json TEXT NOT NULL,
+    FOREIGN KEY(receipt_id) REFERENCES provider_work_receipts(receipt_id)
+);
+
+CREATE TABLE IF NOT EXISTS provider_invocation_reservations (
+    reservation_id TEXT PRIMARY KEY,
+    reservation_digest TEXT NOT NULL,
+    receipt_id TEXT NOT NULL,
+    claim_id TEXT NOT NULL,
+    claim_digest TEXT NOT NULL,
+    claim_generation INTEGER NOT NULL CHECK (claim_generation >= 1),
+    invocation_key TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK (ordinal >= 1),
+    state TEXT NOT NULL CHECK (state IN (
+        'reserved', 'launch_started', 'succeeded', 'failed',
+        'cancelled_before_launch', 'indeterminate'
+    )),
+    max_tokens INTEGER NOT NULL CHECK (max_tokens >= 0),
+    max_cost_microunits INTEGER NOT NULL CHECK (max_cost_microunits >= 0),
+    record_json TEXT NOT NULL,
+    UNIQUE (receipt_id, invocation_key),
+    UNIQUE (receipt_id, ordinal),
+    FOREIGN KEY(receipt_id) REFERENCES provider_work_receipts(receipt_id),
+    FOREIGN KEY(claim_id) REFERENCES provider_work_execution_claims(claim_id)
+);
 """
 
 
@@ -84,6 +151,121 @@ def _same_creation_intent(
     return current_payload == candidate_payload
 
 
+def _json_record(record: object) -> str:
+    return json.dumps(
+        record.to_dict(),  # type: ignore[attr-defined]
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _receipt_record(row: sqlite3.Row) -> ProviderUniverseWorkReceipt:
+    try:
+        receipt = ProviderUniverseWorkReceipt.from_dict(json.loads(row["record_json"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("persisted provider receipt is invalid") from exc
+    exact = (
+        receipt.receipt_id == row["receipt_id"],
+        receipt.receipt_digest == row["receipt_digest"],
+        receipt.generation == row["generation"],
+        receipt.state.value == row["state"],
+        receipt.work_item_kind == row["work_item_kind"],
+        receipt.work_item_id == row["work_item_id"],
+        receipt.universe_id == row["universe_id"],
+        receipt.binding_id == row["binding_id"],
+        receipt.binding_generation == row["binding_generation"],
+        receipt.binding_digest == row["binding_digest"],
+        receipt.expires_at == row["expires_at"],
+        receipt.receipt_digest == receipt.expected_digest(),
+        receipt.receipt_id
+        == provider_work_receipt_id(
+            universe_id=receipt.universe_id,
+            root=ProviderUniverseWorkRoot(
+                work_item_kind=receipt.work_item_kind,
+                work_item_id=receipt.work_item_id,
+            ),
+        ),
+    )
+    if not all(exact):
+        raise ValueError("persisted provider receipt failed integrity validation")
+    return receipt
+
+
+def _claim_record(row: sqlite3.Row) -> ProviderWorkExecutionClaim:
+    try:
+        claim = ProviderWorkExecutionClaim.from_dict(json.loads(row["record_json"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("persisted provider claim is invalid") from exc
+    exact = (
+        claim.claim_id == row["claim_id"],
+        claim.claim_digest == row["claim_digest"],
+        claim.receipt_id == row["receipt_id"],
+        claim.generation == row["generation"],
+        claim.state.value == row["state"],
+        claim.lease_expires_at == row["lease_expires_at"],
+        claim.claim_digest == claim.expected_digest(),
+        claim.claim_id == provider_work_claim_id(claim.receipt_id),
+    )
+    if not all(exact):
+        raise ValueError("persisted provider claim failed integrity validation")
+    return claim
+
+
+def _reservation_record(row: sqlite3.Row) -> ProviderInvocationReservation:
+    try:
+        reservation = ProviderInvocationReservation.from_dict(json.loads(row["record_json"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("persisted provider reservation is invalid") from exc
+    exact = (
+        reservation.reservation_id == row["reservation_id"],
+        reservation.reservation_digest == row["reservation_digest"],
+        reservation.receipt_id == row["receipt_id"],
+        reservation.claim_id == row["claim_id"],
+        reservation.claim_digest == row["claim_digest"],
+        reservation.claim_generation == row["claim_generation"],
+        reservation.invocation_key == row["invocation_key"],
+        reservation.ordinal == row["ordinal"],
+        reservation.state.value == row["state"],
+        reservation.max_tokens == row["max_tokens"],
+        reservation.max_cost_microunits == row["max_cost_microunits"],
+        reservation.reservation_digest == reservation.expected_digest(),
+        reservation.reservation_id
+        == provider_invocation_reservation_id(
+            receipt_id=reservation.receipt_id,
+            invocation_key=reservation.invocation_key,
+        ),
+    )
+    if not all(exact):
+        raise ValueError("persisted provider reservation failed integrity validation")
+    return reservation
+
+
+def _same_receipt_intent(
+    current: ProviderUniverseWorkReceipt,
+    candidate: ProviderUniverseWorkReceipt,
+) -> bool:
+    left = current.to_dict()
+    right = candidate.to_dict()
+    for payload in (left, right):
+        del payload["receipt_digest"]
+        del payload["created_at"]
+    return left == right
+
+
+def _same_claim_intent(
+    current: ProviderWorkExecutionClaim,
+    candidate: ProviderWorkExecutionClaim,
+) -> bool:
+    left = current.to_dict()
+    right = candidate.to_dict()
+    for payload in (left, right):
+        del payload["claim_digest"]
+        del payload["lease_expires_at"]
+        del payload["created_at"]
+    return left == right
+
+
 class _Transaction:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
@@ -91,11 +273,15 @@ class _Transaction:
     def _insert(self, binding: ProviderWorkBinding) -> ProviderWorkBindingWriteResult:
         if not isinstance(binding, ProviderWorkBinding):
             raise ValueError("binding must be a ProviderWorkBinding")
-        if binding.binding_id != provider_work_binding_id(
-            owner_user_id=binding.owner_user_id,
-            universe_id=binding.universe_id,
-            provider=binding.provider,
-        ) or binding.binding_digest != binding.expected_digest():
+        if (
+            binding.binding_id
+            != provider_work_binding_id(
+                owner_user_id=binding.owner_user_id,
+                universe_id=binding.universe_id,
+                provider=binding.provider,
+            )
+            or binding.binding_digest != binding.expected_digest()
+        ):
             raise ValueError("provider binding identity or digest is invalid")
         row = self._conn.execute(
             "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
@@ -175,16 +361,14 @@ class _Transaction:
             "created_at",
         )
         immutable = all(
-            getattr(replacement, field) == getattr(current, field)
-            for field in immutable_fields
+            getattr(replacement, field) == getattr(current, field) for field in immutable_fields
         )
         legal_transition = (
             immutable,
             current.state is ProviderWorkBindingState.ACTIVE,
             replacement.state is ProviderWorkBindingState.REVOKED,
             replacement.generation == current.generation + 1,
-            replacement.revocation_generation
-            == current.revocation_generation + 1,
+            replacement.revocation_generation == current.revocation_generation + 1,
             replacement.binding_id
             == provider_work_binding_id(
                 owner_user_id=replacement.owner_user_id,
@@ -195,9 +379,7 @@ class _Transaction:
             replacement.updated_at >= current.updated_at,
         )
         if not all(legal_transition):
-            raise ValueError(
-                "provider binding transition must preserve immutable authority"
-            )
+            raise ValueError("provider binding transition must preserve immutable authority")
         self._conn.execute(
             """
             UPDATE provider_work_bindings
@@ -212,6 +394,343 @@ class _Transaction:
             ProviderWorkAuthorityWriteOutcome.APPLIED,
             replacement,
         )
+
+    def _issue_universe_receipt(
+        self,
+        authority: ProviderUniverseWorkAuthority,
+        candidate: ProviderUniverseWorkReceipt,
+        *,
+        now: datetime,
+    ) -> ProviderWorkReceiptWriteResult:
+        row = self._conn.execute(
+            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+            (authority.binding.binding_id,),
+        ).fetchone()
+        if row is None or _record(row) != authority.binding:
+            raise PermissionError("provider binding is not exact and current")
+        binding = authority.binding
+        binding_expires = datetime.fromisoformat(binding.expires_at.removesuffix("Z") + "+00:00")
+        receipt_expires = datetime.fromisoformat(candidate.expires_at.removesuffix("Z") + "+00:00")
+        exact = (
+            binding.state is ProviderWorkBindingState.ACTIVE,
+            binding_expires > now,
+            receipt_expires > now,
+            receipt_expires <= binding_expires,
+            authority.operation in binding.allowed_operations,
+            authority.role in binding.allowed_roles,
+            authority.executor_class == "cloud",
+            authority.max_invocations <= binding.max_invocations,
+            authority.max_tokens <= binding.max_tokens,
+            authority.max_cost_microunits <= binding.max_cost_microunits,
+            candidate.principal_id == binding.owner_user_id,
+            candidate.universe_id == binding.universe_id,
+            candidate.provider == binding.provider,
+            candidate.credential_reference_digest == binding.credential_reference_digest,
+            candidate.assignment_generation == binding.assignment_generation,
+            candidate.assignment_digest == binding.assignment_digest,
+            candidate.allowed_operations == (authority.operation,),
+            candidate.allowed_roles == (authority.role,),
+            candidate.receipt_digest == candidate.expected_digest(),
+            candidate.receipt_id
+            == provider_work_receipt_id(
+                universe_id=binding.universe_id,
+                root=authority.root,
+            ),
+        )
+        if not all(exact):
+            raise PermissionError("provider receipt authority is stale or invalid")
+        existing = self._conn.execute(
+            """
+            SELECT * FROM provider_work_receipts
+            WHERE universe_id = ? AND work_item_kind = ? AND work_item_id = ?
+            """,
+            (
+                binding.universe_id,
+                authority.root.work_item_kind,
+                authority.root.work_item_id,
+            ),
+        ).fetchone()
+        if existing is not None:
+            current = _receipt_record(existing)
+            return ProviderWorkReceiptWriteResult(
+                (
+                    ProviderWorkAuthorityWriteOutcome.REPLAYED
+                    if _same_receipt_intent(current, candidate)
+                    else ProviderWorkAuthorityWriteOutcome.CONFLICT
+                ),
+                current,
+            )
+        self._conn.execute(
+            """
+            INSERT INTO provider_work_receipts (
+                receipt_id, receipt_digest, generation, state,
+                work_item_kind, work_item_id, universe_id, binding_id,
+                binding_generation, binding_digest, expires_at, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.receipt_id,
+                candidate.receipt_digest,
+                candidate.generation,
+                candidate.state.value,
+                candidate.work_item_kind,
+                candidate.work_item_id,
+                candidate.universe_id,
+                candidate.binding_id,
+                candidate.binding_generation,
+                candidate.binding_digest,
+                candidate.expires_at,
+                _json_record(candidate),
+            ),
+        )
+        return ProviderWorkReceiptWriteResult(
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            candidate,
+        )
+
+    def claim_receipt(
+        self,
+        request: ProviderWorkExecutionClaimRequest,
+        candidate: ProviderWorkExecutionClaim,
+        *,
+        now: datetime,
+    ) -> ProviderWorkExecutionClaimWriteResult:
+        receipt_row = self._conn.execute(
+            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+            (request.receipt_id,),
+        ).fetchone()
+        if receipt_row is None:
+            return ProviderWorkExecutionClaimWriteResult(
+                ProviderWorkAuthorityWriteOutcome.MISSING,
+                None,
+            )
+        receipt = _receipt_record(receipt_row)
+        if (
+            receipt.receipt_digest != request.receipt_digest
+            or receipt.state is not ProviderWorkReceiptState.ACTIVE
+            or datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00") <= now
+        ):
+            return ProviderWorkExecutionClaimWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        binding_row = self._conn.execute(
+            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+            (receipt.binding_id,),
+        ).fetchone()
+        if binding_row is None:
+            return ProviderWorkExecutionClaimWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        binding = _record(binding_row)
+        binding_current = (
+            binding.state is ProviderWorkBindingState.ACTIVE,
+            binding.generation == receipt.binding_generation,
+            binding.binding_digest == receipt.binding_digest,
+            binding.revocation_generation == receipt.binding_revocation_generation,
+        )
+        if not all(binding_current):
+            return ProviderWorkExecutionClaimWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        existing = self._conn.execute(
+            "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
+            (receipt.receipt_id,),
+        ).fetchone()
+        if existing is not None:
+            current = _claim_record(existing)
+            if datetime.fromisoformat(current.lease_expires_at.removesuffix("Z") + "+00:00") <= now:
+                return ProviderWorkExecutionClaimWriteResult(
+                    ProviderWorkAuthorityWriteOutcome.STALE,
+                    current,
+                )
+            return ProviderWorkExecutionClaimWriteResult(
+                (
+                    ProviderWorkAuthorityWriteOutcome.REPLAYED
+                    if _same_claim_intent(current, candidate)
+                    else ProviderWorkAuthorityWriteOutcome.CONFLICT
+                ),
+                current,
+            )
+        self._conn.execute(
+            """
+            INSERT INTO provider_work_execution_claims (
+                claim_id, claim_digest, receipt_id, generation, state,
+                lease_expires_at, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.claim_id,
+                candidate.claim_digest,
+                candidate.receipt_id,
+                candidate.generation,
+                candidate.state.value,
+                candidate.lease_expires_at,
+                _json_record(candidate),
+            ),
+        )
+        return ProviderWorkExecutionClaimWriteResult(
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            candidate,
+        )
+
+    def reserve_invocation(
+        self,
+        request: ProviderInvocationReservationRequest,
+        *,
+        now: datetime,
+        created_at: str,
+    ) -> ProviderInvocationReservationWriteResult:
+        receipt_row = self._conn.execute(
+            "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+            (request.receipt_id,),
+        ).fetchone()
+        if receipt_row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.MISSING,
+                None,
+            )
+        receipt = _receipt_record(receipt_row)
+        claim_row = self._conn.execute(
+            "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
+            (request.claim_id,),
+        ).fetchone()
+        if claim_row is None:
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        claim = _claim_record(claim_row)
+        binding_row = self._conn.execute(
+            "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+            (receipt.binding_id,),
+        ).fetchone()
+        binding = _record(binding_row) if binding_row is not None else None
+        current = (
+            receipt.receipt_digest == request.receipt_digest,
+            receipt.state is ProviderWorkReceiptState.ACTIVE,
+            datetime.fromisoformat(receipt.expires_at.removesuffix("Z") + "+00:00") > now,
+            claim.receipt_id == receipt.receipt_id,
+            claim.receipt_digest == receipt.receipt_digest,
+            claim.claim_id == request.claim_id,
+            claim.claim_digest == request.claim_digest,
+            claim.generation == request.claim_generation,
+            claim.state.value == "active",
+            datetime.fromisoformat(claim.lease_expires_at.removesuffix("Z") + "+00:00") > now,
+            binding is not None,
+            binding is not None and binding.state is ProviderWorkBindingState.ACTIVE,
+            binding is not None and binding.generation == receipt.binding_generation,
+            binding is not None and binding.binding_digest == receipt.binding_digest,
+        )
+        if not all(current):
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        existing = self._conn.execute(
+            """
+            SELECT * FROM provider_invocation_reservations
+            WHERE receipt_id = ? AND invocation_key = ?
+            """,
+            (receipt.receipt_id, request.invocation_key),
+        ).fetchone()
+        if existing is not None:
+            reservation = _reservation_record(existing)
+            same = (
+                reservation.receipt_digest == request.receipt_digest,
+                reservation.claim_id == request.claim_id,
+                reservation.claim_digest == request.claim_digest,
+                reservation.claim_generation == request.claim_generation,
+                reservation.operation == request.operation,
+                reservation.role == request.role,
+                reservation.max_tokens == request.max_tokens,
+                reservation.max_cost_microunits == request.max_cost_microunits,
+            )
+            return ProviderInvocationReservationWriteResult(
+                (
+                    ProviderWorkAuthorityWriteOutcome.REPLAYED
+                    if all(same)
+                    else ProviderWorkAuthorityWriteOutcome.CONFLICT
+                ),
+                reservation,
+            )
+        if (
+            request.operation not in receipt.allowed_operations
+            or request.role not in receipt.allowed_roles
+        ):
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.STALE,
+                None,
+            )
+        rows = self._conn.execute(
+            """
+            SELECT * FROM provider_invocation_reservations
+            WHERE receipt_id = ? ORDER BY ordinal ASC
+            """,
+            (receipt.receipt_id,),
+        ).fetchall()
+        reservations = tuple(_reservation_record(row) for row in rows)
+        exhausted = (
+            len(reservations) >= receipt.max_invocations,
+            sum(item.max_tokens for item in reservations) + request.max_tokens > receipt.max_tokens,
+            sum(item.max_cost_microunits for item in reservations) + request.max_cost_microunits
+            > receipt.max_cost_microunits,
+        )
+        if any(exhausted):
+            return ProviderInvocationReservationWriteResult(
+                ProviderWorkAuthorityWriteOutcome.EXHAUSTED,
+                None,
+            )
+        candidate = _reservation_from_request(
+            request,
+            ordinal=len(reservations) + 1,
+            created_at=created_at,
+        )
+        self._conn.execute(
+            """
+            INSERT INTO provider_invocation_reservations (
+                reservation_id, reservation_digest, receipt_id, claim_id,
+                claim_digest, claim_generation, invocation_key, ordinal, state,
+                max_tokens, max_cost_microunits, record_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                candidate.reservation_id,
+                candidate.reservation_digest,
+                candidate.receipt_id,
+                candidate.claim_id,
+                candidate.claim_digest,
+                candidate.claim_generation,
+                candidate.invocation_key,
+                candidate.ordinal,
+                candidate.state.value,
+                candidate.max_tokens,
+                candidate.max_cost_microunits,
+                _json_record(candidate),
+            ),
+        )
+        return ProviderInvocationReservationWriteResult(
+            ProviderWorkAuthorityWriteOutcome.APPLIED,
+            candidate,
+        )
+
+
+class _BindingTransaction:
+    """Expose only the binding CAS surface to production service callers."""
+
+    __slots__ = ("__transaction",)
+
+    def __init__(self, transaction: _Transaction) -> None:
+        self.__transaction = transaction
+
+    def compare_and_swap(
+        self,
+        expected: ProviderWorkBindingFence,
+        replacement: ProviderWorkBinding,
+    ) -> ProviderWorkBindingWriteResult:
+        return self.__transaction.compare_and_swap(expected, replacement)
 
 
 class SQLiteProviderWorkAuthorityStore:
@@ -230,13 +749,18 @@ class SQLiteProviderWorkAuthorityStore:
         if self._busy_timeout_ms < 0:
             raise ValueError("busy_timeout_ms must be non-negative")
 
-    def timestamp(self) -> str:
+    def _now(self) -> datetime:
         value = self._clock()
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("clock must return a timezone-aware datetime")
-        return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
-            "+00:00", "Z"
-        )
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _timestamp(value: datetime) -> str:
+        return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+    def timestamp(self) -> str:
+        return self._timestamp(self._now())
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
@@ -250,6 +774,7 @@ class SQLiteProviderWorkAuthorityStore:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
+            conn.execute("PRAGMA foreign_keys = ON")
             try:
                 conn.execute("PRAGMA journal_mode = WAL")
             except sqlite3.OperationalError as exc:
@@ -261,7 +786,7 @@ class SQLiteProviderWorkAuthorityStore:
             conn.close()
 
     @contextmanager
-    def transaction(self) -> Iterator[_Transaction]:
+    def _ledger_transaction(self) -> Iterator[_Transaction]:
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -271,6 +796,11 @@ class SQLiteProviderWorkAuthorityStore:
                 conn.rollback()
                 raise
 
+    @contextmanager
+    def transaction(self) -> Iterator[_BindingTransaction]:
+        with self._ledger_transaction() as transaction:
+            yield _BindingTransaction(transaction)
+
     def get(self, binding_id: str) -> ProviderWorkBinding | None:
         with self.connection() as conn:
             row = conn.execute(
@@ -278,6 +808,78 @@ class SQLiteProviderWorkAuthorityStore:
                 (binding_id,),
             ).fetchone()
         return _record(row) if row is not None else None
+
+    def get_receipt(
+        self,
+        receipt_id: str,
+    ) -> ProviderUniverseWorkReceipt | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
+                (receipt_id,),
+            ).fetchone()
+        return _receipt_record(row) if row is not None else None
+
+    def _issue_universe_receipt(
+        self,
+        authority: ProviderUniverseWorkAuthority,
+    ) -> ProviderWorkReceiptWriteResult:
+        if not isinstance(authority, ProviderUniverseWorkAuthority):
+            raise ValueError("authority must be a ProviderUniverseWorkAuthority")
+        now = self._now()
+        candidate = _receipt_from_authority(
+            authority,
+            created_at=self._timestamp(now),
+        )
+        with self._ledger_transaction() as transaction:
+            return transaction._issue_universe_receipt(
+                authority,
+                candidate,
+                now=now,
+            )
+
+    def claim(
+        self,
+        request: ProviderWorkExecutionClaimRequest,
+    ) -> ProviderWorkExecutionClaimWriteResult:
+        if not isinstance(request, ProviderWorkExecutionClaimRequest):
+            raise ValueError("request must be a ProviderWorkExecutionClaimRequest")
+        now = self._now()
+        candidate = _claim_from_request(
+            request,
+            created_at=self._timestamp(now),
+            lease_expires_at=self._timestamp(now + timedelta(seconds=request.lease_seconds)),
+        )
+        with self._ledger_transaction() as transaction:
+            return transaction.claim_receipt(request, candidate, now=now)
+
+    def reserve(
+        self,
+        request: ProviderInvocationReservationRequest,
+    ) -> ProviderInvocationReservationWriteResult:
+        if not isinstance(request, ProviderInvocationReservationRequest):
+            raise ValueError("request must be a ProviderInvocationReservationRequest")
+        now = self._now()
+        with self._ledger_transaction() as transaction:
+            return transaction.reserve_invocation(
+                request,
+                now=now,
+                created_at=self._timestamp(now),
+            )
+
+    def list_reservations(
+        self,
+        receipt_id: str,
+    ) -> tuple[ProviderInvocationReservation, ...]:
+        with self.connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM provider_invocation_reservations
+                WHERE receipt_id = ? ORDER BY ordinal ASC
+                """,
+                (receipt_id,),
+            ).fetchall()
+        return tuple(_reservation_record(row) for row in rows)
 
     def install_test_binding(
         self,
@@ -290,7 +892,7 @@ class SQLiteProviderWorkAuthorityStore:
         if not isinstance(seed, ProviderWorkBindingSeed):
             raise ValueError("seed must be a ProviderWorkBindingSeed")
         binding = _from_seed(seed, created_at=self.timestamp())
-        with self.transaction() as transaction:
+        with self._ledger_transaction() as transaction:
             return transaction._insert(binding)
 
     def validate_in_transaction(
@@ -316,9 +918,7 @@ class SQLiteProviderWorkAuthorityStore:
             if row is None:
                 return False
             binding = _record(row)
-            expires_at = datetime.fromisoformat(
-                binding.expires_at.removesuffix("Z") + "+00:00"
-            )
+            expires_at = datetime.fromisoformat(binding.expires_at.removesuffix("Z") + "+00:00")
             now = self._clock().astimezone(timezone.utc)
         except (TypeError, ValueError, sqlite3.Error):
             return False
