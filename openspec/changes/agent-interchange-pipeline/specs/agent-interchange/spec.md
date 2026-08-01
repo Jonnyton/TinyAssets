@@ -92,6 +92,13 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **THEN** no public receipt or report contains an unkeyed digest of the raw source or secret value
 - **AND** the private raw-input commitment is unavailable after the stage retention deadline
 
+#### Scenario: Production deploy installs the private commitment key safely
+- **WHEN** a deployment can expose agent staging on a public connector
+- **THEN** it requires a dedicated agent-interchange HMAC secret of at least 32 bytes before any deployment mutation
+- **AND** it transfers the secret through standard input into the atomic protected environment installer without printing the value
+- **AND** a self-host template declares the required empty secret placeholder without embedding a default or shared key
+- **AND** missing or short key material fails the deployment before the new image is activated
+
 ### Requirement: Foreign adapters are versioned untrusted commons artifacts
 The platform SHALL accept foreign conversion only from an immutable adapter conforming to `agent-interchange-adapter/v1`, SHALL validate its output independently, SHALL permit in-process interpretation only for bounded non-executable declarative JSON mappings, and SHALL execute adapter code only through governed Engine OS admission without ambient credentials, universe authority, network entitlement, provider access, or an in-process code fallback.
 

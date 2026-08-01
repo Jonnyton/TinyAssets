@@ -63,6 +63,17 @@ TINYASSETS_MCP_CANARY_URL=https://tinyassets.io/mcp
 
 
 # ---------------------------------------------------------------------
+# Agent interchange private commitments
+# ---------------------------------------------------------------------
+
+# Unique secret for purpose-keyed commitments to raw staged import input.
+# Generate at least 32 random bytes per installation. Never reuse a public,
+# example, or source-controlled value; production deploys install this from the
+# TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY repository secret.
+TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=
+
+
+# ---------------------------------------------------------------------
 # Subscription-backed LLM auth
 # ---------------------------------------------------------------------
 

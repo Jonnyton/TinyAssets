@@ -1422,6 +1422,44 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
     assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value
 
 
+def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
+    wf = _load()
+    deploy_job = wf["jobs"]["deploy"]
+    job_env = deploy_job.get("env") or {}
+    flag = str(job_env.get("HAS_AGENT_INTERCHANGE_HMAC_KEY", ""))
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in flag
+    assert "!= ''" in flag
+
+    deploy_step = next(step for step in _steps(wf) if step.get("id") == "deploy")
+    step_env = deploy_step.get("env") or {}
+    secret = str(step_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", ""))
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret
+
+    script = deploy_step.get("run", "") or ""
+    missing_check = script.index('${HAS_AGENT_INTERCHANGE_HMAC_KEY}')
+    length_check = script.index('${#TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}')
+    mutation = script.index('echo "image_mutation_started=true"')
+    assert missing_check < mutation
+    assert length_check < mutation
+    assert re.search(
+        r'printf \'%s\' "\$\{TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY\}" '
+        r'\|\s*\\?\s*ssh',
+        script,
+    )
+    install = script.index(
+        "install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+    )
+    assert mutation < install
+    assert 'echo "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}"' not in script
+    assert "set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY '" not in script
+
+
+def test_self_host_template_declares_empty_agent_interchange_hmac_key():
+    template = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=" in template
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=change" not in template
+
+
 def test_deploy_step_syncs_github_pr_capabilities_when_set():
     """When ``HAS_GITHUB_PR_CAPABILITY=true``, the Deploy step must
     pipe the secret into install-tinyassets-env.sh via the same atomic
