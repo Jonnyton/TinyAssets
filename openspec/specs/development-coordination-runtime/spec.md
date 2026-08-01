@@ -1153,4 +1153,3 @@ The development coordination runtime SHALL recover a failed local drain watchdog
 #### Scenario: Supervisor is healthy but idle
 - **WHEN** self-healing restores fresh watchdog health for a live idle supervisor
 - **THEN** the tray reports waiting rather than false running progress
-
