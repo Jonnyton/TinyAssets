@@ -860,9 +860,9 @@ branch predates the current recovery and custom-agent stack, so its stale image
 must not be deployed directly; task 2.3 resumes only from a reviewed
 current-`main` descendant carrying the same diagnostics-only behavior.
 
-Land only after independent exact-head fail-closed/security review. Build an
-immutable image, then run one normal deploy from the currently finalized
-recovery generation. Acceptance requires canonical exact-five proof, restored
-fence state, and a fresh public MCP canary. On failure, use only the existing
+Next, resume task 2.3 only from an independently reviewed current-`main`
+descendant carrying PR #1935's diagnostics-only behavior. After that deployment
+is durably recorded, sync the deltas, archive the change, and retire its live
+coordination row. If production fails before then, use only the existing
 provenance-bound unsafe recovery workflow with the prior admitted stop-writer
 image; do not delete containers directly or bypass the fence.
