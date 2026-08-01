@@ -614,6 +614,28 @@ def refinery_result_rejection(
     return None
 
 
+def refinery_continuation_rejection(
+    assigned: CandidateHint,
+    snapshot: CandidateSnapshot,
+) -> str | None:
+    """Reject coordination that did not expose claimable work in its boundary."""
+    claimable = (
+        hint for hint in snapshot.hints if hint.classification == "CLAIMABLE"
+    )
+    if any(
+        left in right or right in left
+        for hint in claimable
+        for left in assigned.files
+        for right in hint.files
+    ):
+        return None
+    boundary = assigned.files[0] if assigned.files else assigned.task_label
+    return (
+        "merged refinery coordination did not expose claimable work in "
+        f"{boundary}"
+    )
+
+
 def duplicate_merge_rejection(
     result: DrainResult,
     state: dict[str, Any],
@@ -1050,6 +1072,18 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    Land exactly one reviewed coordination PR that adds or corrects the exact
    `{refinery_hint.task_label}` pending or blocked STATUS row. Its Files cell
    names the later implementation/foldback artifacts and omits STATUS itself.
+   Model the exact next slice, not completion of the whole legacy change.
+   `Depends` contains only unresolved prerequisites that must land before that
+   slice can begin. Downstream test, review, deployment, rendered, or
+   organic-use proof stays in OpenSpec tasks or the row's acceptance text and
+   MUST NOT make earlier implementation non-claimable. Inspect unchecked tasks
+   for one <=12-task slice, preferably fewer. If that direct slice is blocked,
+   promote the shortest concrete autonomous prerequisite-removal slice that is
+   non-overlapping and needs no host-only authority. A blocked umbrella row is
+   forbidden while either kind of executable slice exists. Return BLOCKED only
+   after proving no bounded unchecked-task slice and no autonomous
+   prerequisite-removal slice can start under the current claim, host, policy,
+   and review gates.
    Return PARTIAL after a safe pending row merges; return BLOCKED only after a
    durable blocker row merges and current main classifies this exact target
    blocked. If the target disappeared or became live-owned/host-owned, return
@@ -2512,6 +2546,41 @@ def _run(args: argparse.Namespace) -> int:
                 if result.status in {"MERGED", "PARTIAL"}
                 else False
             )
+            if (
+                assigned_refinery is not None
+                and result.status == "PARTIAL"
+                and verified
+            ):
+                try:
+                    continuation_snapshot = inspect_current_main_snapshot(
+                        repo=args.repo,
+                        provider=state["identity"],
+                        max_hints=100,
+                    )
+                    continuation_rejection = refinery_continuation_rejection(
+                        assigned_refinery,
+                        continuation_snapshot,
+                    )
+                except RuntimeError as exc:
+                    continuation_rejection = str(exc)
+                if continuation_rejection:
+                    state["consecutive_transients"] = 0
+                    state["consecutive_failures"] += 1
+                    state["last_result"] = {
+                        "status": "INVALID_REFINERY_CONTINUATION",
+                        "error": continuation_rejection,
+                    }
+                    state["status"] = "invalid-refinery-continuation"
+                    state["last_consumed_attempt"] = attempt
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        "reject attempt="
+                        f"{attempt} refinery continuation {continuation_rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
             apply_result(state, result, merge_verified=verified)
             state["last_consumed_attempt"] = attempt
             if result.status == "BLOCKED" or (

@@ -198,14 +198,60 @@ def test_worker_prompt_refines_exact_existing_change_before_product_claim() -> N
     )
 
     normalized = " ".join(prompt.split())
+    normalized_lower = normalized.casefold()
     assert "[REFINERY] Refine OpenSpec stranded-change" in prompt
     assert "coordination reconciliation only" in normalized
     assert "MUST NOT edit product files" in prompt
     assert "pending or blocked STATUS row" in normalized
+    assert "exact next slice" in normalized
+    assert "must land before that slice can begin" in normalized
+    assert (
+        "downstream test, review, deployment, rendered, or organic-use"
+        in normalized_lower
+    )
+    assert "shortest concrete autonomous prerequisite-removal slice" in normalized
+    assert (
+        "no bounded unchecked-task slice and no autonomous prerequisite-removal"
+        in normalized
+    )
     assert prompt.rstrip().endswith(
         "DRAIN_RESULT: <PARTIAL|BLOCKED|FAILED> "
         "refine-openspec-stranded-change <PR-url-or-dash>"
     )
+
+
+def test_refinery_continuation_requires_claimable_overlap() -> None:
+    assigned = drain.CandidateHint(
+        classification="REFINERY",
+        task_label="Refine OpenSpec stranded-change",
+        files=("openspec/changes/stranded-change/",),
+    )
+    unrelated = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(1, 0, 0),
+        hints=(
+            drain.CandidateHint(
+                classification="CLAIMABLE",
+                task_label="Unrelated delivery",
+                files=("tinyassets/unrelated.py",),
+            ),
+        ),
+    )
+    matching = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(1, 0, 0),
+        hints=(
+            drain.CandidateHint(
+                classification="CLAIMABLE",
+                task_label="Implement stranded change slice 1",
+                files=("openspec/changes/stranded-change/**", "tinyassets/slice.py"),
+            ),
+        ),
+    )
+
+    assert drain.refinery_continuation_rejection(assigned, unrelated) == (
+        "merged refinery coordination did not expose claimable work in "
+        "openspec/changes/stranded-change/"
+    )
+    assert drain.refinery_continuation_rejection(assigned, matching) is None
 
 
 def test_refinery_partial_resumes_as_normal_delivery_not_foldback(
