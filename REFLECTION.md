@@ -1325,3 +1325,17 @@ fresh-host rollback edges found later.
 - Live follow-up: require the controller log to prove the exact blocked result,
   alternative decision, and next dispatch timestamps before retiring a
   scheduler hotfix; repeated ordinary dispatch is useful but not equivalent.
+## 2026-08-01 — governed custom-agent plan compilation
+
+- **What surprised me:** preserving arbitrary agent topology did not require a
+  universal graph model. A plan adapter can declare its own structural fields,
+  entry cardinality, compatibility envelope, coverage field, and topology
+  label while the platform enforces only canonicality, confinement, and exact
+  executable-component coverage.
+- **Pattern worth capturing:** run exhaustive component compilation first,
+  resolve one explicit governed plan adapter second, and construct the
+  immutable manifest only after every diagnostic is clear. Unknown
+  descriptive data remains pinned but never enters execution coverage.
+- **What I would do differently:** include malformed nested coverage values and
+  post-registration descriptor mutation in the initial red matrix; both are
+  recurring trust-boundary probes for public frozen dataclasses.
