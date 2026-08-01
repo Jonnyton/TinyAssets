@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 17:27 - current-main OAuth diagnostic restack
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/oauth-diagnostic-current-main`
+- Lane state: Active recovery task 2.3 successor after green normal deploy
+- Worktree: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack`
+- STATUS/Issue/PR: recovery row broadened; draft PR #1935 is the reviewed source; current-main PR pending
+- Purpose: transplant diagnostics-only WorkOS rejection categories without changing token acceptance, then build/deploy a current-main image
+- Review gate: auth TDD/regression, Ruff, strict OpenSpec, mirror parity, independent exact-head security review, immutable normal deploy
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack/_PURPOSE.md`
+- Ship/abandon: never deploy PR #1935's stale image; supersede it only with a reviewed current-main descendant
+
 ## 2026-07-31 17:17 - recovery live foldback
 
 - Provider: `codex-gpt5-desktop`
