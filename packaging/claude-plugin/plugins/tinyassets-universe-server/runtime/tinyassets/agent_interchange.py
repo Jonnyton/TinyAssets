@@ -247,7 +247,10 @@ def _validated_inventory(value: Any) -> list[str]:
     for path in value:
         if not isinstance(path, str):
             raise InterchangeValidationError("source inventory paths must be strings")
-        _pointer_parts(path)
+        if any(_looks_sensitive_value(part) for part in _pointer_parts(path)):
+            raise InterchangeValidationError(
+                "source inventory contains a credential-shaped path segment"
+            )
         inventory.append(path)
     if len(set(inventory)) != len(inventory):
         raise InterchangeValidationError("source inventory paths must be unique")
@@ -327,7 +330,10 @@ def _validate_conversion_report(
         if target_path is not None:
             if not isinstance(target_path, str):
                 raise InterchangeValidationError("conversion report target_path must be a string")
-            _pointer_parts(target_path)
+            if any(_looks_sensitive_value(part) for part in _pointer_parts(target_path)):
+                raise InterchangeValidationError(
+                    "conversion report contains a credential-shaped target path"
+                )
         if item.get("classification") not in _CLASSIFICATIONS:
             raise InterchangeValidationError("conversion report classification is invalid")
         reason_code = item.get("reason_code")
@@ -339,6 +345,10 @@ def _validate_conversion_report(
         ):
             raise InterchangeValidationError(
                 f"conversion report detail exceeds {MAX_DETAIL_CHARS} characters"
+            )
+        if _looks_sensitive_value(detail):
+            raise InterchangeValidationError(
+                "conversion report detail contains secret/credential content"
             )
     if len(set(paths)) != len(paths) or sorted(paths) != sorted(source_inventory):
         raise InterchangeValidationError(
@@ -563,6 +573,7 @@ def validate_adapter_response(
         raise InterchangeValidationError(
             "adapter response fields do not match the canonical schema"
         )
+    _ensure_no_sensitive_content(document, label="adapter response")
     return document
 
 
@@ -987,7 +998,6 @@ def _convert_declarative_export(
             or classification not in {
                 "omitted_secret",
                 "requires_private_binding",
-                "unsupported",
             }
         ):
             raise InterchangeValidationError(f"secret inventory path {path} must be omitted")
@@ -1181,6 +1191,7 @@ def verify_conversion_receipt(receipt: dict[str, Any]) -> bool:
         required.add("content_fingerprint")
     if set(document) != required:
         raise InterchangeValidationError("receipt fields do not match the canonical schema")
+    _ensure_no_sensitive_content(document, label="conversion receipt")
     if document.get("schema_version") != 1 or document.get("direction") not in {
         "import",
         "export",

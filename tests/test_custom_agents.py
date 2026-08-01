@@ -156,6 +156,29 @@ def test_invalid_definition_is_rejected_without_a_partial_write(
     assert list_definitions(tmp_path) == []
 
 
+def test_native_definition_rejects_credential_shaped_key_without_echoing_it(
+    tmp_path,
+) -> None:
+    from tinyassets.custom_agents import AgentValidationError, publish_definition
+
+    credential_key = "ghp_abcdefghijklmnop"
+    payload = _definition(
+        "Credential-shaped object key",
+        components={
+            "identity": _component(
+                "soul",
+                **{credential_key: "safe-looking-value"},
+            )
+        },
+    )
+
+    with pytest.raises(AgentValidationError) as exc_info:
+        publish_definition(tmp_path, author_id="alice", payload=payload)
+
+    assert "credential-shaped-key" in str(exc_info.value)
+    assert credential_key not in str(exc_info.value)
+
+
 def test_component_remix_records_verified_multi_parent_lineage_atomically(
     tmp_path,
 ) -> None:

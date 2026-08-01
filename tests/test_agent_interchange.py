@@ -212,6 +212,19 @@ def test_token_shaped_value_under_benign_key_is_omitted() -> None:
         convert_declarative_json(source, _adapter())
 
 
+def test_credential_shaped_object_key_cannot_enter_import_inventory() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    source = _source()
+    source["extra"] = {"ghp_abcdefghijklmnop": "safe-looking-value"}
+
+    with pytest.raises(InterchangeValidationError, match="credential-shaped.*path"):
+        convert_declarative_json(source, _adapter())
+
+
 def test_adapter_constant_cannot_inject_credential_shaped_value() -> None:
     from tinyassets.agent_interchange import (
         InterchangeValidationError,
@@ -255,6 +268,50 @@ def test_foreign_export_requires_credential_paths_to_be_omitted() -> None:
         "external_origins": [],
     }
     adapter = _export_adapter(source)
+
+    with pytest.raises(InterchangeValidationError, match="secret inventory path"):
+        _convert_declarative_export(source, adapter)
+
+
+def test_foreign_export_secret_omission_cannot_be_called_unsupported() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        _convert_declarative_export,
+    )
+
+    source = {
+        "schema_version": 1,
+        "name": "Legacy unsafe definition",
+        "description": "",
+        "tags": [],
+        "components": {
+            "identity": {
+                "kind": "soul",
+                "config": {"token": "ghp_sensitive_value_1234567890"},
+            }
+        },
+        "lineage": {},
+        "external_origins": [],
+    }
+    adapter = _export_adapter(source)
+    adapter["rules"] = [
+        rule
+        for rule in adapter["rules"]  # type: ignore[index]
+        if rule.get("source_path") != "/components"  # type: ignore[union-attr]
+    ] + [
+        {
+            "op": "copy",
+            "source_path": "/components/identity/kind",
+            "target_path": "/agent/components/identity/kind",
+            "classification": "preserved",
+        },
+        {
+            "op": "omit",
+            "source_path": "/components/identity/config/token",
+            "classification": "unsupported",
+            "reason_code": "unsupported",
+        },
+    ]
 
     with pytest.raises(InterchangeValidationError, match="secret inventory path"):
         _convert_declarative_export(source, adapter)
@@ -358,6 +415,57 @@ def test_opaque_adapter_response_stays_unverified_and_cannot_smuggle_output() ->
     report_extra["report"]["runtime_state"] = {"conversation": "private"}  # type: ignore[index]
     with pytest.raises(InterchangeValidationError, match="report fields"):
         validate_adapter_response(report_extra, direction="import")
+
+
+def test_adapter_response_cannot_echo_credentials_in_report_paths_or_details() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_response,
+    )
+
+    path_leak = _opaque_terminal_response()
+    path_leak["source_inventory"] = ["/ghp_abcdefghijklmnop"]
+    path_leak["report"] = {
+        "schema_version": 1,
+        "direction": "import",
+        "inventory_verification": "core_json",
+        "exhaustive": True,
+        "lossless": False,
+        "items": [
+            {
+                "source_path": "/ghp_abcdefghijklmnop",
+                "classification": "unsupported",
+                "reason_code": "unsupported",
+            }
+        ],
+    }
+    with pytest.raises(InterchangeValidationError, match="credential-shaped.*path"):
+        validate_adapter_response(path_leak, direction="import")
+
+    detail_leak = _opaque_terminal_response()
+    detail_leak["source_inventory"] = ["/x"]
+    detail_leak["report"] = {
+        "schema_version": 1,
+        "direction": "import",
+        "inventory_verification": "core_json",
+        "exhaustive": True,
+        "lossless": False,
+        "items": [
+            {
+                "source_path": "/x",
+                "classification": "unsupported",
+                "reason_code": "unsupported",
+                "detail": "credential ghp_abcdefghijklmnop",
+            }
+        ],
+    }
+    with pytest.raises(InterchangeValidationError, match="detail.*secret|credential"):
+        validate_adapter_response(detail_leak, direction="import")
+
+    metadata_leak = _opaque_terminal_response()
+    metadata_leak["adapter_ref"] = "ghp_abcdefghijklmnop"
+    with pytest.raises(InterchangeValidationError, match="secret|credential"):
+        validate_adapter_response(metadata_leak, direction="import")
 
 
 def test_adapter_response_rejects_duplicate_inventory_and_overlong_paths() -> None:
@@ -739,6 +847,7 @@ def test_stage_idempotency_binds_actor_operation_source_and_adapter(
 def test_receipt_binds_adapter_version_and_detects_tampering(tmp_path, monkeypatch) -> None:
     from tinyassets.agent_interchange import (
         InterchangeValidationError,
+        _sha256,
         stage_import,
         verify_conversion_receipt,
     )
@@ -785,6 +894,18 @@ def test_receipt_binds_adapter_version_and_detects_tampering(tmp_path, monkeypat
     ambiguous["source_commitment"] = "must-not-be-durable"
     with pytest.raises(InterchangeValidationError, match="fields"):
         verify_conversion_receipt(ambiguous)
+
+    credential_metadata = copy.deepcopy(first["receipt"])
+    credential_metadata["adapter_ref"] = "ghp_abcdefghijklmnop"
+    credential_metadata["receipt_digest"] = _sha256(
+        {
+            key: value
+            for key, value in credential_metadata.items()
+            if key != "receipt_digest"
+        }
+    )
+    with pytest.raises(InterchangeValidationError, match="secret|credential"):
+        verify_conversion_receipt(credential_metadata)
 
 
 def test_publish_stage_is_atomic_and_retry_safe(tmp_path, monkeypatch) -> None:

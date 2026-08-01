@@ -223,11 +223,13 @@ def _check_size(value: Any) -> None:
 
 
 def _is_sensitive_field_name(raw_key: Any) -> bool:
-    key = str(raw_key).strip().casefold().replace("-", "_")
+    raw_text = str(raw_key)
+    key = raw_text.strip().casefold().replace("-", "_")
     return (
         key in _SECRET_FIELD_NAMES
         or key in _PRIVATE_DEFINITION_FIELDS
         or key.endswith(_SENSITIVE_FIELD_SUFFIXES)
+        or bool(_CREDENTIAL_VALUE.search(raw_text))
     )
 
 
@@ -239,7 +241,8 @@ def _check_secret_fields(value: Any, path: str = "") -> None:
     if isinstance(value, dict):
         for raw_key, child in value.items():
             key = str(raw_key)
-            child_path = f"{path}.{key}" if path else key
+            safe_key = "[credential-shaped-key]" if _looks_sensitive_value(key) else key
+            child_path = f"{path}.{safe_key}" if path else safe_key
             if _is_sensitive_field_name(key):
                 raise AgentValidationError(
                     f"{child_path} contains forbidden credential/private runtime content"
