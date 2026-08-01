@@ -203,7 +203,7 @@ def test_worker_prompt_refines_exact_existing_change_before_product_claim() -> N
     assert "MUST NOT edit product files" in prompt
     assert "pending or blocked STATUS row" in normalized
     assert prompt.rstrip().endswith(
-        "DRAIN_RESULT: <MERGED|PARTIAL|BLOCKED|FAILED> "
+        "DRAIN_RESULT: <PARTIAL|BLOCKED|FAILED> "
         "refine-openspec-stranded-change <PR-url-or-dash>"
     )
 
@@ -237,6 +237,27 @@ def test_refinery_partial_resumes_as_normal_delivery_not_foldback(
     assert state["last_result"]["continuation_kind"] == "refinery"
     assert "The implementation PR is already merged" not in prompt
     assert "then build this target" in prompt
+
+
+def test_refinery_partial_without_admission_rechecks_current_snapshot() -> None:
+    state = _state(attempt_kind="refinery")
+    drain.apply_result(
+        state,
+        drain.DrainResult(
+            "PARTIAL",
+            "refine-openspec-stranded-change",
+            "https://github.com/org/repo/pull/1",
+        ),
+        merge_verified=True,
+    )
+
+    prompt = drain.build_worker_prompt(
+        state,
+        objective="Drain current OpenSpec delivery debt.",
+    )
+
+    assert "coordination receipt only" in prompt
+    assert "STATUS may contain" not in prompt
 
 
 def test_candidate_snapshot_preserves_order_and_bounds_hints(
@@ -732,6 +753,12 @@ def test_current_main_snapshot_supplies_bounded_refinery_hints(
                             "name": "finished-change",
                             "classification": "complete-but-unarchived",
                             "remaining_tasks": 0,
+                        },
+                        {
+                            "name": "owned-finished-change",
+                            "classification": "complete-but-unarchived",
+                            "remaining_tasks": 0,
+                            "owners": ["claimed:other-provider"],
                         },
                         {
                             "name": "small-untracked",
@@ -1468,6 +1495,25 @@ def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
     )
 
 
+def test_blocked_refinery_candidate_does_not_skip_idle() -> None:
+    snapshot = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(0, 0, 0, 1),
+        hints=(
+            drain.CandidateHint(
+                "REFINERY",
+                "Refine OpenSpec another-target",
+                ("openspec/changes/another-target/",),
+            ),
+        ),
+    )
+
+    assert not drain.has_alternative_candidate(
+        snapshot,
+        recent_blocked=["refine-openspec-first-target"],
+        current_target="refine-openspec-first-target",
+    )
+
+
 def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     admission = drain.Admission(
         target="assigned-target",
@@ -1482,6 +1528,48 @@ def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     )
 
     assert rejection == "assigned=assigned-target reported=different-target"
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            drain.DrainResult(
+                "PARTIAL",
+                "refine-openspec-target",
+                "https://github.com/o/r/pull/1",
+            ),
+            None,
+        ),
+        (
+            drain.DrainResult("BLOCKED", "different-target", "-"),
+            "assigned=refine-openspec-target reported=different-target",
+        ),
+        (
+            drain.DrainResult(
+                "MERGED",
+                "refine-openspec-target",
+                "https://github.com/o/r/pull/1",
+            ),
+            "refinery cannot report MERGED",
+        ),
+        (
+            drain.DrainResult("NO_CANDIDATE", "-", "-"),
+            "refinery cannot report NO_CANDIDATE",
+        ),
+    ],
+)
+def test_refinery_rejects_wrong_target_or_terminal_status(
+    result: drain.DrainResult,
+    expected: str | None,
+) -> None:
+    hint = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec target",
+        ("openspec/changes/target/",),
+    )
+
+    assert drain.refinery_result_rejection(result, hint) == expected
 
 
 @pytest.mark.parametrize(
@@ -3067,6 +3155,71 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
     assert exit_code == 0
     assert state["completed_slices"] == 1
     assert state["status"] == "merged"
+
+
+def test_run_rejects_result_outside_exact_refinery_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec exact-target",
+        ("openspec/changes/exact-target/",),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        result_path.write_text(
+            "DRAIN_RESULT: PARTIAL different-target "
+            "https://github.com/o/r/pull/12\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0, 1),
+            hints=(hint,),
+        ),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert state["attempt_kind"] == "refinery"
+    assert state["status"] == "invalid-result"
+    assert state["last_result"] == {
+        "status": "INVALID_REFINERY_RESULT",
+        "error": (
+            "assigned=refine-openspec-exact-target "
+            "reported=different-target"
+        ),
+    }
 
 
 def test_run_rejects_already_consumed_merged_pr_without_counting_slice(

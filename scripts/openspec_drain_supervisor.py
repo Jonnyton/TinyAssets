@@ -582,7 +582,7 @@ def has_alternative_candidate(
         recent_consumed_targets=list(recent_consumed_targets),
     )
     return any(
-        hint.classification in {"OWNED", "CLAIMABLE", "STALE", "REFINERY"}
+        hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
         and _slugify(hint.task_label) != current_target
         for hint in hints
     )
@@ -596,6 +596,21 @@ def admission_result_rejection(
         return f"admitted={admission.target}"
     if result.target != admission.target:
         return f"assigned={admission.target} reported={result.target}"
+    return None
+
+
+def refinery_result_rejection(
+    result: DrainResult,
+    hint: CandidateHint,
+) -> str | None:
+    """Reject a coordination-only result outside its exact assignment."""
+    target = _slugify(hint.task_label)
+    if result.status == "MERGED":
+        return "refinery cannot report MERGED"
+    if result.status == "NO_CANDIDATE":
+        return "refinery cannot report NO_CANDIDATE"
+    if result.target != target:
+        return f"assigned={target} reported={result.target}"
     return None
 
 
@@ -763,6 +778,13 @@ def inspect_refinery_hints(
         for change in changes:
             classification = change.get("classification")
             if classification not in order:
+                continue
+            owners = change.get("owners", [])
+            if not isinstance(owners, list) or not all(
+                isinstance(owner, str) for owner in owners
+            ):
+                raise TypeError("refinery owners must be a string list")
+            if owners:
                 continue
             name = change.get("name")
             remaining = change.get("remaining_tasks")
@@ -967,17 +989,26 @@ Do not select a different lane. Verify the exact claim, then build this target.
 Your terminal marker MUST use `{admission.target}`, never the human task label.
 {foldback_text}"""
     else:
-        resume_text = (
-            (
+        refinery_continuation = (
+            isinstance(state.get("last_result"), dict)
+            and state["last_result"].get("continuation_kind") == "refinery"
+        )
+        if refinery_continuation:
+            resume_text = (
+                "The prior refinery PR is a coordination receipt only. Recheck the "
+                "current controller snapshot and follow its normal admission; do not "
+                "treat the refinery pseudo-target as an implementation claim."
+            )
+        elif resume:
+            resume_text = (
                 f"STATUS may contain `{identity}` on `{resume}`. You MUST resume and "
                 "finish/fold back that target before selecting any different work."
             )
-            if resume
-            else (
+        else:
+            resume_text = (
                 f"Before selection, search STATUS for an existing `{identity}` claim. "
                 "If one exists, you MUST resume it first."
             )
-        )
     blocked_text = ", ".join(blocked) if blocked else "(none)"
     consumed_text = ", ".join(consumed) if consumed else "(none)"
     candidate_text = (
@@ -1031,11 +1062,12 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    broad research pass before you commit that claim."""
         )
     )
-    result_statuses = (
-        "<MERGED|PARTIAL|BLOCKED|FAILED>"
-        if admission is not None or refinery_mode
-        else "<MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED>"
-    )
+    if refinery_mode:
+        result_statuses = "<PARTIAL|BLOCKED|FAILED>"
+    elif admission is not None:
+        result_statuses = "<MERGED|PARTIAL|BLOCKED|FAILED>"
+    else:
+        result_statuses = "<MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED>"
     result_target = (
         admission.target
         if admission is not None
@@ -2275,14 +2307,20 @@ def _run(args: argparse.Namespace) -> int:
                     f"admitted attempt={attempt} target={admission.target} "
                     f"worktree={admission.worktree}",
                 )
-            state["attempt_kind"] = (
-                "refinery"
-                if admission is None
-                and any(
-                    hint.classification == "REFINERY"
-                    for hint in candidate_hints
+            assigned_refinery = (
+                next(
+                    (
+                        hint
+                        for hint in candidate_hints
+                        if hint.classification == "REFINERY"
+                    ),
+                    None,
                 )
-                else "delivery"
+                if admission is None
+                else None
+            )
+            state["attempt_kind"] = (
+                "refinery" if assigned_refinery is not None else "delivery"
             )
             prompt_path.write_text(
                 build_worker_prompt(
@@ -2371,6 +2409,28 @@ def _run(args: argparse.Namespace) -> int:
                     _log(
                         run_dir,
                         f"reject attempt={attempt} result {admission_rejection}",
+                    )
+                    if args.once:
+                        break
+                    continue
+
+            if assigned_refinery is not None:
+                refinery_rejection = refinery_result_rejection(
+                    result,
+                    assigned_refinery,
+                )
+                if refinery_rejection:
+                    state["consecutive_transients"] = 0
+                    state["consecutive_failures"] += 1
+                    state["last_result"] = {
+                        "status": "INVALID_REFINERY_RESULT",
+                        "error": refinery_rejection,
+                    }
+                    state["status"] = "invalid-result"
+                    atomic_write_json(state_path, state)
+                    _log(
+                        run_dir,
+                        f"reject attempt={attempt} refinery {refinery_rejection}",
                     )
                     if args.once:
                         break
