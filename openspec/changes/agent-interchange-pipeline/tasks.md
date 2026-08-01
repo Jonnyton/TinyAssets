@@ -1,6 +1,6 @@
 ## 0. Review and admission
 
-- [ ] 0.1 Independently review the current-main proposal, design, capability delta, and task plan across correctness, architecture, security, performance, and scope; fold every blocking finding before implementation.
+- [x] 0.1 Independently review the current-main proposal, design, capability delta, and task plan across correctness, architecture, security, performance, and scope; fold every blocking finding before implementation. Reviewed through exact head `e7b965c1` after resolving portable-lineage, idempotency, transaction, adapter-proof, secret-commitment, load, inventory-coverage, and wire-schema findings; strict validation passed and the reviewer returned `Ready to implement: Yes`.
 
 ## 1. Test-first domain contract
 
