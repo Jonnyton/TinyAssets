@@ -27,11 +27,18 @@ from tinyassets.background_branch_authority_service import (
     BackgroundBranchAttemptIssuanceService,
     BackgroundBranchBindingTransitionService,
 )
-from tinyassets.branch_tasks_v2 import Epoch2BranchTaskAdapter, WorkerClaimDescriptor
+from tinyassets.branch_tasks_v2 import (
+    EPOCH2_QUEUE_CONSUMER_READY,
+    Epoch2BranchTaskAdapter,
+    WorkerClaimDescriptor,
+)
 from tinyassets.cloud_automation_continuation import (
+    CloudContinuationActivationError,
+    CloudContinuationActivationRequest,
     CloudContinuationPreparationError,
     CloudContinuationState,
     CloudContinuationWriteOutcome,
+    PreparedCloudContinuationActivationService,
     PreparedCloudContinuationAttemptResolver,
     PreparedCloudContinuationClaimResolver,
     PreparedCloudContinuationProviderResolver,
@@ -373,12 +380,16 @@ class _AudienceResolver:
     def __init__(
         self,
         audience: BackgroundBranchExecutorAudience | None = None,
+        *,
+        expected_branch_task_id: str | None = BRANCH_TASK_ID,
     ) -> None:
         self.audience = audience or _audience()
+        self.expected_branch_task_id = expected_branch_task_id
 
     def resolve(self, *, continuation, branch_task_id):
         assert continuation.automation_id == "automation_spec_drain"
-        assert branch_task_id == BRANCH_TASK_ID
+        if self.expected_branch_task_id is not None:
+            assert branch_task_id == self.expected_branch_task_id
         return self.audience
 
 
@@ -768,6 +779,216 @@ def test_cloud_attempt_claim_fails_closed_when_task_custody_changes(
             claimed_at=_background_timestamp(task.claimed_at),
             lease_expires_at=lease_expires_at,
         )
+
+
+def _activation_compositor_fixture(
+    tmp_path: Path,
+    *,
+    create_directed_daemon: bool = True,
+):
+    daemon_id = "daemon_missing"
+    if create_directed_daemon:
+        daemon = create_daemon(
+            tmp_path,
+            display_name="Cloud activation compositor daemon",
+            created_by="acct_alice",
+            soul_mode="soul",
+            soul_text="Converge one prepared cloud continuation.",
+        )
+        daemon_id = str(daemon["daemon_id"])
+    audience = _audience(daemon_id)
+    fixture = _fixture(
+        tmp_path,
+        background_binding=_background_binding(daemon_id=audience.daemon_id),
+    )
+    continuation = _prepare(fixture).record
+    assert continuation is not None
+
+    def service(*, fault_injector=None):
+        return PreparedCloudContinuationActivationService(
+            fixture[0],
+            continuation=continuation,
+            activation_store=fixture[2],
+            background_store=fixture[3],
+            provider_store=fixture[4],
+            connection_ledger=fixture[5],
+            continuation_store=fixture[6],
+            request_admission_store=RequestAdmissionStore(tmp_path),
+            audience_resolver=_AudienceResolver(
+                audience,
+                expected_branch_task_id=None,
+            ),
+            clock=lambda: NOW,
+            fault_injector=fault_injector,
+        )
+
+    return fixture, continuation, audience, service
+
+
+def test_activation_compositor_converges_to_one_epoch2_admission_and_attempt(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(tmp_path)
+    request = CloudContinuationActivationRequest(lease_id="lease_cloud_1")
+
+    first = service().activate(request)
+    replay = service().activate(request)
+
+    assert first.activation.state is AutomationActivationState.ACTIVE
+    assert first.activation.executor_class is AutomationActivationExecutor.CLOUD
+    assert first.activation.epoch == 1
+    assert first.activation.lease_id == request.lease_id
+    assert first.request_id == REQUEST_ID
+    assert first.admission_replayed is False
+    assert replay.admission_replayed is True
+    assert replay.request_id == first.request_id
+    assert replay.admission_id == first.admission_id
+    assert replay.branch_task_id == first.branch_task_id
+    assert first.attempt is not None
+    assert replay.attempt == first.attempt
+    assert first.attempt_outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+    assert replay.attempt_outcome is BackgroundBranchAuthorityWriteOutcome.REPLAYED
+    assert first.attempt.lifecycle.value == "reserved"
+    task = RequestAdmissionStore(tmp_path).get_v2_task(first.branch_task_id)
+    assert task is not None
+    assert task["status"] == "pending"
+    assert task["automation_id"] == first.activation.automation_id
+    assert task["automation_activation_epoch"] == first.activation.epoch
+    assert task["automation_lease_id"] == first.activation.lease_id
+    assert EPOCH2_QUEUE_CONSUMER_READY is False
+    assert (
+        len(
+            fixture[3]
+            .list_attempts(
+                binding_id=first.attempt.binding_id,
+                after=None,
+                limit=10,
+            )
+            .items
+        )
+        == 1
+    )
+
+
+def test_concurrent_activation_compositors_have_one_admission_and_attempt_winner(
+    tmp_path: Path,
+) -> None:
+    _fixture_value, _continuation, _audience_value, service = _activation_compositor_fixture(
+        tmp_path
+    )
+    request = CloudContinuationActivationRequest(lease_id="lease_cloud_1")
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        results = list(pool.map(lambda _index: service().activate(request), range(8)))
+
+    assert len({result.activation for result in results}) == 1
+    assert len({result.request_id for result in results}) == 1
+    assert len({result.admission_id for result in results}) == 1
+    assert len({result.branch_task_id for result in results}) == 1
+    assert len({result.attempt for result in results}) == 1
+    assert sum(not result.admission_replayed for result in results) == 1
+    assert (
+        sum(
+            result.attempt_outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+            for result in results
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize("crash_phase", ("activation_committed", "admission_committed"))
+def test_activation_compositor_restart_converges_after_partial_commit(
+    tmp_path: Path,
+    crash_phase: str,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(tmp_path)
+    request = CloudContinuationActivationRequest(lease_id="lease_cloud_1")
+
+    def crash(phase: str) -> None:
+        if phase == crash_phase:
+            raise RuntimeError(f"crash:{phase}")
+
+    with pytest.raises(RuntimeError, match=f"crash:{crash_phase}"):
+        service(fault_injector=crash).activate(request)
+
+    recovered = service().activate(request)
+    assert recovered.activation.state is AutomationActivationState.ACTIVE
+    assert recovered.attempt is not None
+    assert recovered.attempt.lifecycle.value == "reserved"
+    assert (
+        len(
+            fixture[3]
+            .list_attempts(
+                binding_id=recovered.attempt.binding_id,
+                after=None,
+                limit=10,
+            )
+            .items
+        )
+        == 1
+    )
+
+
+def test_activation_compositor_rejects_competing_lease_after_activation(
+    tmp_path: Path,
+) -> None:
+    _fixture_value, _continuation, _audience_value, service = _activation_compositor_fixture(
+        tmp_path
+    )
+    service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    with pytest.raises(CloudContinuationActivationError, match="activation_conflict"):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_2"))
+
+
+@pytest.mark.parametrize(
+    ("fault", "error"),
+    (
+        ("provider_revoked", "provider_binding_unavailable"),
+        ("destination_revoked", "destination_grant_unavailable"),
+    ),
+)
+def test_activation_compositor_fails_closed_when_user_authority_is_revoked(
+    tmp_path: Path,
+    fault: str,
+    error: str,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(tmp_path)
+    if fault == "provider_revoked":
+        binding = fixture[4].get(fixture[0].provider_binding_id)
+        assert binding is not None
+        ProviderWorkBindingService(fixture[4]).revoke(ProviderWorkBindingFence(binding))
+    else:
+        assert fixture[5].revoke_grant(fixture[0].destination_grant_id)
+
+    with pytest.raises(CloudContinuationActivationError, match=error):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    activation = fixture[2].get(
+        fixture[0].universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None
+    assert activation.state is AutomationActivationState.STOPPED
+
+
+def test_activation_compositor_does_not_activate_for_missing_directed_daemon(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(
+        tmp_path,
+        create_directed_daemon=False,
+    )
+
+    with pytest.raises(CloudContinuationActivationError, match="directed_daemon_unavailable"):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    activation = fixture[2].get(
+        fixture[0].universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None
+    assert activation.state is AutomationActivationState.STOPPED
 
 
 def test_active_epoch2_task_issues_one_restart_safe_background_attempt(
