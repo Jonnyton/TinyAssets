@@ -26,6 +26,7 @@ from tinyassets.branch_tasks_v2 import (
 )
 from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import initialize_author_server
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
@@ -36,6 +37,14 @@ from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
     migrate_request_admission_schema,
 )
+
+
+def _activation_subject(ref: str) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=ref,
+        digest=f"sha256:{hashlib.sha256(ref.encode()).hexdigest()}",
+    )
 
 
 class _MutableClock:
@@ -454,7 +463,7 @@ def test_activation_bound_claim_rechecks_current_epoch_and_executor(
     active = activations.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-version-a",
+        subject=_activation_subject("branch-version-a"),
         lease_id="activation-lease-a",
     )
     assert active is not None
@@ -465,7 +474,7 @@ def test_activation_bound_claim_rechecks_current_epoch_and_executor(
     )
     rebound = activations.rebind(
         expected=active,
-        immutable_branch_version="branch-version-b",
+        subject=_activation_subject("branch-version-b"),
         lease_id="activation-lease-b",
     )
     assert rebound is not None
@@ -518,7 +527,7 @@ def test_stopped_or_tampered_activation_cannot_claim(
     active = activations.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-version-a",
+        subject=_activation_subject("branch-version-a"),
         lease_id="activation-lease-a",
     )
     assert active is not None
@@ -546,7 +555,7 @@ def test_stopped_or_tampered_activation_cannot_claim(
     reactivated = activations.activate(
         expected=stopped_again,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-version-b",
+        subject=_activation_subject("branch-version-b"),
         lease_id="activation-lease-b",
     )
     assert reactivated is not None
@@ -572,6 +581,31 @@ def test_stopped_or_tampered_activation_cannot_claim(
         descriptor_reader=lambda _conn, _worker_id: cloud,
     ) is None
 
+    subject_tampered_task = _commit(
+        tmp_path,
+        key="activation-subject-tampered",
+        created_at="2026-07-24T08:00:01.500000+00:00",
+        automation_activation=reactivated,
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE branch_tasks_v2
+            SET automation_subject_digest = ?
+            WHERE branch_task_id = ?
+            """,
+            (
+                f"sha256:{'f' * 64}",
+                subject_tampered_task["branch_task_id"],
+            ),
+        )
+
+    assert adapter.claim(
+        subject_tampered_task["branch_task_id"],
+        descriptor=cloud,
+        descriptor_reader=lambda _conn, _worker_id: cloud,
+    ) is None
+
     erased_task = _commit(
         tmp_path,
         key="activation-erased",
@@ -585,6 +619,9 @@ def test_stopped_or_tampered_activation_cannot_claim(
             SET automation_id = NULL,
                 automation_activation_epoch = NULL,
                 automation_executor_class = NULL,
+                automation_subject_kind = NULL,
+                automation_subject_ref = NULL,
+                automation_subject_digest = NULL,
                 automation_branch_version = NULL,
                 automation_lease_id = NULL
             WHERE branch_task_id = ?

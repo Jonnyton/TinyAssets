@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from tinyassets.branch_tasks import BranchTask
+from tinyassets.execution_subject import ExecutionSubject
 from tinyassets.storage.automation_activations import (
     AutomationActivationExecutor,
     AutomationActivationStore,
@@ -283,6 +284,9 @@ class Epoch2BranchTaskAdapter:
                 task.get("automation_id"),
                 task.get("automation_activation_epoch"),
                 task.get("automation_executor_class"),
+                task.get("automation_subject_kind"),
+                task.get("automation_subject_ref"),
+                task.get("automation_subject_digest"),
                 task.get("automation_branch_version"),
                 task.get("automation_lease_id"),
             )
@@ -300,9 +304,11 @@ class Epoch2BranchTaskAdapter:
                 automation_id=str(task["automation_id"]),
                 epoch=int(task["automation_activation_epoch"]),
                 executor_class=trusted.executor_class,
-                immutable_branch_version=str(
-                    task["automation_branch_version"]
-                ),
+                subject=ExecutionSubject.from_dict({
+                    "kind": task["automation_subject_kind"],
+                    "ref": task["automation_subject_ref"],
+                    "digest": task["automation_subject_digest"],
+                }),
                 lease_id=str(task["automation_lease_id"]),
             )
 
@@ -743,6 +749,9 @@ def _classify_epoch2_row(
         row.get("automation_id"),
         row.get("automation_activation_epoch"),
         row.get("automation_executor_class"),
+        row.get("automation_subject_kind"),
+        row.get("automation_subject_ref"),
+        row.get("automation_subject_digest"),
         row.get("automation_branch_version"),
         row.get("automation_lease_id"),
     )
@@ -760,8 +769,14 @@ def _classify_epoch2_row(
             or type(row["automation_activation_epoch"]) is not int
             or row["automation_activation_epoch"] < 0
             or row["automation_executor_class"] not in {"tray", "cloud"}
+            or row["automation_subject_kind"] != "branch_version"
+            or not isinstance(row["automation_subject_ref"], str)
+            or not row["automation_subject_ref"].strip()
+            or not isinstance(row["automation_subject_digest"], str)
+            or not _BODY_DIGEST_RE.fullmatch(row["automation_subject_digest"])
             or not isinstance(row["automation_branch_version"], str)
             or not row["automation_branch_version"].strip()
+            or row["automation_branch_version"] != row["automation_subject_ref"]
             or not isinstance(row["automation_lease_id"], str)
             or not row["automation_lease_id"].strip()
         ):
@@ -882,9 +897,11 @@ def _classify_epoch2_row(
             "automation_id": row["automation_id"],
             "epoch": row["automation_activation_epoch"],
             "executor_class": row["automation_executor_class"],
-            "immutable_branch_version": row[
-                "automation_branch_version"
-            ],
+            "subject": {
+                "kind": row["automation_subject_kind"],
+                "ref": row["automation_subject_ref"],
+                "digest": row["automation_subject_digest"],
+            },
             "lease_id": row["automation_lease_id"],
         }
     ):

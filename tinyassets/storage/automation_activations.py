@@ -9,6 +9,7 @@ fenced and every independent authority owner is ready.
 from __future__ import annotations
 
 import sqlite3
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -16,6 +17,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Callable, Iterator
 
+from tinyassets.execution_subject import (
+    ExecutionSubject,
+    ExecutionSubjectKind,
+    agent_binding_automation_id,
+)
 from tinyassets.storage import db_path
 
 
@@ -55,7 +61,7 @@ class AutomationActivation:
     automation_id: str
     epoch: int
     executor_class: AutomationActivationExecutor | None
-    immutable_branch_version: str | None
+    subject: ExecutionSubject | None
     lease_id: str | None
     state: AutomationActivationState
     updated_at: str
@@ -69,7 +75,7 @@ class AutomationActivation:
         _required(self.updated_at, "updated_at")
         active_fields = (
             self.executor_class,
-            self.immutable_branch_version,
+            self.subject,
             self.lease_id,
         )
         if self.state is AutomationActivationState.STOPPED:
@@ -81,20 +87,33 @@ class AutomationActivation:
             AutomationActivationExecutor,
         ):
             raise ValueError("executor_class must be typed")
-        _required(
-            self.immutable_branch_version,
-            "immutable_branch_version",
-        )
+        if not isinstance(self.subject, ExecutionSubject):
+            raise ValueError("subject must be typed")
         _required(self.lease_id, "lease_id")
 
+    @property
+    def immutable_branch_version(self) -> str | None:
+        """Compatibility projection; the typed subject is the sole authority."""
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS automation_activations (
+        if (
+            self.subject is not None
+            and self.subject.kind is ExecutionSubjectKind.BRANCH_VERSION
+        ):
+            return self.subject.ref
+        return None
+
+
+_CREATE_TABLE = """
+CREATE TABLE automation_activations (
     universe_id TEXT NOT NULL,
     automation_id TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK (epoch >= 0),
     executor_class TEXT
         CHECK (executor_class IN ('tray', 'cloud')),
+    subject_kind TEXT
+        CHECK (subject_kind IN ('branch_version', 'agent_runtime_manifest')),
+    subject_ref TEXT,
+    subject_digest TEXT,
     immutable_branch_version TEXT,
     lease_id TEXT,
     state TEXT NOT NULL CHECK (state IN ('stopped', 'active')),
@@ -104,6 +123,9 @@ CREATE TABLE IF NOT EXISTS automation_activations (
         (
             state = 'stopped'
             AND executor_class IS NULL
+            AND subject_kind IS NULL
+            AND subject_ref IS NULL
+            AND subject_digest IS NULL
             AND immutable_branch_version IS NULL
             AND lease_id IS NULL
         )
@@ -111,12 +133,80 @@ CREATE TABLE IF NOT EXISTS automation_activations (
         (
             state = 'active'
             AND executor_class IS NOT NULL
-            AND immutable_branch_version IS NOT NULL
+            AND subject_kind IS NOT NULL
+            AND subject_ref IS NOT NULL
+            AND subject_digest IS NOT NULL
             AND lease_id IS NOT NULL
+            AND (
+                (
+                    subject_kind = 'branch_version'
+                    AND immutable_branch_version = subject_ref
+                )
+                OR (
+                    subject_kind = 'agent_runtime_manifest'
+                    AND immutable_branch_version IS NULL
+                )
+            )
         )
     )
-);
+)
 """
+
+
+def _ensure_schema(conn: sqlite3.Connection) -> None:
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("automation_activations",),
+    ).fetchone()
+    if exists is None:
+        conn.execute(_CREATE_TABLE)
+        return
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(automation_activations)")
+    }
+    if {"subject_kind", "subject_ref", "subject_digest"} <= columns:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {
+            str(row[1])
+            for row in conn.execute("PRAGMA table_info(automation_activations)")
+        }
+        if {"subject_kind", "subject_ref", "subject_digest"} <= columns:
+            conn.commit()
+            return
+        active_count = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM automation_activations WHERE state = 'active'"
+            ).fetchone()[0]
+        )
+        if active_count:
+            raise RuntimeError(
+                "legacy active automation activation must be stopped before typed-subject migration"
+            )
+        conn.execute(
+            "ALTER TABLE automation_activations RENAME TO automation_activations_legacy"
+        )
+        conn.execute(_CREATE_TABLE)
+        conn.execute(
+            """
+            INSERT INTO automation_activations (
+                universe_id, automation_id, epoch, executor_class,
+                subject_kind, subject_ref, subject_digest,
+                immutable_branch_version, lease_id, state, updated_at
+            )
+            SELECT
+                universe_id, automation_id, epoch, NULL,
+                NULL, NULL, NULL, NULL, NULL, state, updated_at
+            FROM automation_activations_legacy
+            """
+        )
+        conn.execute("DROP TABLE automation_activations_legacy")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 class AutomationActivationStore:
@@ -149,8 +239,15 @@ class AutomationActivationStore:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.executescript(_SCHEMA)
+            for attempt in range(10):
+                try:
+                    conn.execute("PRAGMA journal_mode = WAL")
+                    break
+                except sqlite3.OperationalError as exc:
+                    if "locked" not in str(exc).lower() or attempt == 9:
+                        raise
+                    time.sleep(0.01 * (attempt + 1))
+            _ensure_schema(conn)
             yield conn
         finally:
             conn.close()
@@ -173,8 +270,9 @@ class AutomationActivationStore:
                     """
                     INSERT OR IGNORE INTO automation_activations (
                         universe_id, automation_id, epoch, executor_class,
+                        subject_kind, subject_ref, subject_digest,
                         immutable_branch_version, lease_id, state, updated_at
-                    ) VALUES (?, ?, 0, NULL, NULL, NULL, 'stopped', ?)
+                    ) VALUES (?, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, 'stopped', ?)
                     """,
                     (clean_universe_id, clean_automation_id, at),
                 )
@@ -189,6 +287,19 @@ class AutomationActivationStore:
                 raise
         assert row is not None
         return _record(row)
+
+    def create_stopped_for_agent_binding(
+        self,
+        *,
+        universe_id: str,
+        agent_binding_id: str,
+    ) -> AutomationActivation:
+        """Create the sole activation row for one universe-owned agent binding."""
+
+        return self.create_stopped(
+            universe_id=universe_id,
+            automation_id=agent_binding_automation_id(agent_binding_id),
+        )
 
     def get(
         self,
@@ -210,7 +321,7 @@ class AutomationActivationStore:
         *,
         expected: AutomationActivation,
         executor_class: AutomationActivationExecutor,
-        immutable_branch_version: str,
+        subject: ExecutionSubject,
         lease_id: str,
     ) -> AutomationActivation | None:
         """Activate only from an exact stopped record."""
@@ -221,13 +332,12 @@ class AutomationActivationStore:
             return None
         if not isinstance(executor_class, AutomationActivationExecutor):
             raise ValueError("executor_class must be typed")
+        if not isinstance(subject, ExecutionSubject):
+            raise ValueError("subject must be typed")
         return self._transition(
             expected=expected,
             executor_class=executor_class,
-            immutable_branch_version=_required(
-                immutable_branch_version,
-                "immutable_branch_version",
-            ),
+            subject=subject,
             lease_id=_required(lease_id, "lease_id"),
             state=AutomationActivationState.ACTIVE,
         )
@@ -246,7 +356,7 @@ class AutomationActivationStore:
         return self._transition(
             expected=expected,
             executor_class=None,
-            immutable_branch_version=None,
+            subject=None,
             lease_id=None,
             state=AutomationActivationState.STOPPED,
         )
@@ -255,7 +365,7 @@ class AutomationActivationStore:
         self,
         *,
         expected: AutomationActivation,
-        immutable_branch_version: str,
+        subject: ExecutionSubject,
         lease_id: str,
     ) -> AutomationActivation | None:
         """Advance an active epoch while retaining its executor class."""
@@ -264,13 +374,12 @@ class AutomationActivationStore:
             raise ValueError("expected must be an AutomationActivation")
         if expected.state is not AutomationActivationState.ACTIVE:
             return None
+        if not isinstance(subject, ExecutionSubject):
+            raise ValueError("subject must be typed")
         return self._transition(
             expected=expected,
             executor_class=expected.executor_class,
-            immutable_branch_version=_required(
-                immutable_branch_version,
-                "immutable_branch_version",
-            ),
+            subject=subject,
             lease_id=_required(lease_id, "lease_id"),
             state=AutomationActivationState.ACTIVE,
         )
@@ -282,7 +391,7 @@ class AutomationActivationStore:
         automation_id: str,
         epoch: int,
         executor_class: AutomationActivationExecutor | None,
-        immutable_branch_version: str | None,
+        subject: ExecutionSubject | None,
         lease_id: str | None,
     ) -> bool:
         """Fail closed unless every current active identity component matches."""
@@ -299,10 +408,8 @@ class AutomationActivationStore:
                 AutomationActivationExecutor,
             ):
                 return False
-            clean_version = _required(
-                immutable_branch_version,
-                "immutable_branch_version",
-            )
+            if not isinstance(subject, ExecutionSubject):
+                return False
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False
@@ -313,7 +420,7 @@ class AutomationActivationStore:
                 automation_id=clean_automation_id,
                 epoch=clean_epoch,
                 executor_class=executor_class,
-                immutable_branch_version=clean_version,
+                subject=subject,
                 lease_id=clean_lease_id,
             )
 
@@ -325,7 +432,7 @@ class AutomationActivationStore:
         automation_id: str,
         epoch: int,
         executor_class: AutomationActivationExecutor | None,
-        immutable_branch_version: str | None,
+        subject: ExecutionSubject | None,
         lease_id: str | None,
     ) -> bool:
         """Validate an activation on the caller's existing transaction."""
@@ -342,10 +449,8 @@ class AutomationActivationStore:
                 AutomationActivationExecutor,
             ):
                 return False
-            clean_version = _required(
-                immutable_branch_version,
-                "immutable_branch_version",
-            )
+            if not isinstance(subject, ExecutionSubject):
+                return False
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False
@@ -358,7 +463,9 @@ class AutomationActivationStore:
                   AND automation_id = ?
                   AND epoch = ?
                   AND executor_class = ?
-                  AND immutable_branch_version = ?
+                  AND subject_kind = ?
+                  AND subject_ref = ?
+                  AND subject_digest = ?
                   AND lease_id = ?
                   AND state = 'active'
                 LIMIT 1
@@ -368,7 +475,9 @@ class AutomationActivationStore:
                     clean_automation_id,
                     clean_epoch,
                     executor_class.value,
-                    clean_version,
+                    subject.kind.value,
+                    subject.ref,
+                    subject.digest,
                     clean_lease_id,
                 ),
             ).fetchone()
@@ -381,11 +490,17 @@ class AutomationActivationStore:
         *,
         expected: AutomationActivation,
         executor_class: AutomationActivationExecutor | None,
-        immutable_branch_version: str | None,
+        subject: ExecutionSubject | None,
         lease_id: str | None,
         state: AutomationActivationState,
     ) -> AutomationActivation | None:
         at = _timestamp(self._clock())
+        compatibility_branch_version = (
+            subject.ref
+            if subject is not None
+            and subject.kind is ExecutionSubjectKind.BRANCH_VERSION
+            else None
+        )
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
@@ -394,6 +509,9 @@ class AutomationActivationStore:
                     UPDATE automation_activations
                     SET epoch = epoch + 1,
                         executor_class = ?,
+                        subject_kind = ?,
+                        subject_ref = ?,
+                        subject_digest = ?,
                         immutable_branch_version = ?,
                         lease_id = ?,
                         state = ?,
@@ -402,6 +520,9 @@ class AutomationActivationStore:
                       AND automation_id = ?
                       AND epoch = ?
                       AND executor_class IS ?
+                      AND subject_kind IS ?
+                      AND subject_ref IS ?
+                      AND subject_digest IS ?
                       AND immutable_branch_version IS ?
                       AND lease_id IS ?
                       AND state = ?
@@ -413,7 +534,10 @@ class AutomationActivationStore:
                             if executor_class is not None
                             else None
                         ),
-                        immutable_branch_version,
+                        subject.kind.value if subject is not None else None,
+                        subject.ref if subject is not None else None,
+                        subject.digest if subject is not None else None,
+                        compatibility_branch_version,
                         lease_id,
                         state.value,
                         at,
@@ -425,6 +549,9 @@ class AutomationActivationStore:
                             if expected.executor_class is not None
                             else None
                         ),
+                        expected.subject.kind.value if expected.subject is not None else None,
+                        expected.subject.ref if expected.subject is not None else None,
+                        expected.subject.digest if expected.subject is not None else None,
                         expected.immutable_branch_version,
                         expected.lease_id,
                         expected.state.value,
@@ -464,6 +591,16 @@ class AutomationActivationStore:
 
 def _record(row: sqlite3.Row) -> AutomationActivation:
     executor = row["executor_class"]
+    subject_kind = row["subject_kind"]
+    subject = (
+        ExecutionSubject(
+            kind=ExecutionSubjectKind(str(subject_kind)),
+            ref=str(row["subject_ref"]),
+            digest=str(row["subject_digest"]),
+        )
+        if subject_kind is not None
+        else None
+    )
     return AutomationActivation(
         universe_id=str(row["universe_id"]),
         automation_id=str(row["automation_id"]),
@@ -473,7 +610,7 @@ def _record(row: sqlite3.Row) -> AutomationActivation:
             if executor is not None
             else None
         ),
-        immutable_branch_version=row["immutable_branch_version"],
+        subject=subject,
         lease_id=row["lease_id"],
         state=AutomationActivationState(str(row["state"])),
         updated_at=str(row["updated_at"]),
@@ -485,4 +622,6 @@ __all__ = [
     "AutomationActivationExecutor",
     "AutomationActivationState",
     "AutomationActivationStore",
+    "ExecutionSubject",
+    "ExecutionSubjectKind",
 ]

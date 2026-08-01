@@ -43,6 +43,7 @@ from tinyassets.background_branch_authority_service import (
     BackgroundBranchAttemptIssuanceService,
     BackgroundBranchAttemptPredecessorState,
 )
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkAuthority,
     ProviderUniverseWorkRoot,
@@ -89,6 +90,16 @@ def _canonical_json(value: object) -> str:
 def _content_digest(value: object) -> str:
     payload = _canonical_json(value).encode("utf-8")
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _branch_execution_subject(
+    definition: RepositorySpecWorkDefinition,
+) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=definition.branch_version_id,
+        digest=definition.branch_content_digest,
+    )
 
 
 def _timestamp(value: datetime) -> str:
@@ -725,7 +736,7 @@ class PreparedCloudContinuationAttemptResolver:
             activation.state is AutomationActivationState.ACTIVE,
             activation.executor_class is AutomationActivationExecutor.CLOUD,
             activation.epoch == continuation.activation_epoch + 1,
-            activation.immutable_branch_version == definition.branch_version_id,
+            activation.subject == _branch_execution_subject(definition),
             task["tenant_id"] == definition.principal_id,
             task["actor_id"] == definition.principal_id,
             task["universe_id"] == definition.universe_id,
@@ -1135,7 +1146,7 @@ class PreparedCloudContinuationActivationService:
             activated = self._activation_store.activate(
                 expected=current,
                 executor_class=AutomationActivationExecutor.CLOUD,
-                immutable_branch_version=self._definition.branch_version_id,
+                subject=_branch_execution_subject(self._definition),
                 lease_id=request.lease_id,
             )
             current = activated or self._activation_store.get(
@@ -1148,7 +1159,7 @@ class PreparedCloudContinuationActivationService:
             current is not None and current.executor_class is AutomationActivationExecutor.CLOUD,
             current is not None and current.epoch == continuation.activation_epoch + 1,
             current is not None
-            and current.immutable_branch_version == self._definition.branch_version_id,
+            and current.subject == _branch_execution_subject(self._definition),
             current is not None and current.lease_id == request.lease_id,
         )
         if not all(exact):
@@ -1292,7 +1303,7 @@ class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptRes
             activation.state is AutomationActivationState.ACTIVE,
             activation.executor_class is AutomationActivationExecutor.CLOUD,
             activation.epoch == continuation.activation_epoch + 1,
-            activation.immutable_branch_version == definition.branch_version_id,
+            activation.subject == _branch_execution_subject(definition),
             task["tenant_id"] == definition.principal_id,
             task["actor_id"] == definition.principal_id,
             task["universe_id"] == definition.universe_id,
@@ -1478,7 +1489,7 @@ class PreparedCloudContinuationProviderResolver:
             activation.state is AutomationActivationState.ACTIVE,
             activation.executor_class is AutomationActivationExecutor.CLOUD,
             activation.epoch == continuation.activation_epoch + 1,
-            activation.immutable_branch_version == definition.branch_version_id,
+            activation.subject == _branch_execution_subject(definition),
             background.status is BackgroundBranchBindingStatus.ACTIVE,
             background.binding_id == continuation.background_binding_id,
             background.generation == continuation.background_binding_generation,

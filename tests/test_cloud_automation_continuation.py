@@ -47,6 +47,7 @@ from tinyassets.cloud_automation_continuation import (
 )
 from tinyassets.daemon_registry import create_daemon
 from tinyassets.daemon_server import initialize_author_server
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkRoot,
     ProviderWorkBindingFence,
@@ -104,6 +105,14 @@ def _definition(provider_binding_id: str) -> RepositorySpecWorkDefinition:
             "max_tokens": 100_000,
             "max_cost_microunits": 5_000_000,
         }
+    )
+
+
+def _definition_subject(definition: RepositorySpecWorkDefinition) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=definition.branch_version_id,
+        digest=definition.branch_content_digest,
     )
 
 
@@ -359,7 +368,7 @@ def _activate_cloud(fixture: tuple[object, ...]):
     active = activation_store.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version=definition.branch_version_id,
+        subject=_definition_subject(definition),
         lease_id="lease_cloud_1",
     )
     assert active is not None
@@ -1448,7 +1457,7 @@ def test_prepare_fails_closed_on_missing_or_stale_owner(
         active = fixture[2].activate(
             expected=stopped,
             executor_class=AutomationActivationExecutor.CLOUD,
-            immutable_branch_version=fixture[0].branch_version_id,
+            subject=_definition_subject(fixture[0]),
             lease_id="lease_cloud_1",
         )
         assert active is not None

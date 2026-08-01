@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from tinyassets.daemon_server import initialize_author_server
+from tinyassets.execution_subject import ExecutionSubject, ExecutionSubjectKind
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivationExecutor,
@@ -20,6 +21,17 @@ from tinyassets.storage.request_admissions import (
     RequestAdmissionStore,
     migrate_request_admission_schema,
 )
+
+
+def _activation_subject(
+    ref: str,
+    digest: str = f"sha256:{'a' * 64}",
+) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=ref,
+        digest=digest,
+    )
 
 
 def _commit_kwargs(**overrides):
@@ -227,7 +239,7 @@ def test_commit_persists_only_the_exact_current_automation_activation(
     active = activations.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-version-a",
+        subject=_activation_subject("branch-version-a"),
         lease_id="activation-lease-a",
     )
     assert active is not None
@@ -242,7 +254,9 @@ def test_commit_persists_only_the_exact_current_automation_activation(
         row = conn.execute(
             """
             SELECT automation_id, automation_activation_epoch,
-                   automation_executor_class, automation_branch_version,
+                   automation_executor_class, automation_subject_kind,
+                   automation_subject_ref, automation_subject_digest,
+                   automation_branch_version,
                    automation_lease_id
             FROM branch_tasks_v2
             WHERE branch_task_id = ?
@@ -254,13 +268,19 @@ def test_commit_persists_only_the_exact_current_automation_activation(
         "automation_id": "automation-a",
         "automation_activation_epoch": 1,
         "automation_executor_class": "cloud",
+        "automation_subject_kind": "branch_version",
+        "automation_subject_ref": "branch-version-a",
+        "automation_subject_digest": f"sha256:{'a' * 64}",
         "automation_branch_version": "branch-version-a",
         "automation_lease_id": "activation-lease-a",
     }
 
     rebound = activations.rebind(
         expected=active,
-        immutable_branch_version="branch-version-b",
+        subject=_activation_subject(
+            "branch-version-b",
+            f"sha256:{'b' * 64}",
+        ),
         lease_id="activation-lease-b",
     )
     assert rebound is not None

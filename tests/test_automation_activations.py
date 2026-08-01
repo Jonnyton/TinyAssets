@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from tinyassets.execution_subject import (
+    ExecutionSubject,
+    ExecutionSubjectKind,
+    agent_binding_automation_id,
+)
+from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
     AutomationActivationExecutor,
@@ -14,6 +21,28 @@ from tinyassets.storage.automation_activations import (
 )
 
 NOW = datetime(2026, 7, 30, 20, 0, tzinfo=timezone.utc)
+
+
+def _branch_subject(
+    ref: str = "branch-spec-drain@abc12345",
+    digest: str = f"sha256:{'a' * 64}",
+) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.BRANCH_VERSION,
+        ref=ref,
+        digest=digest,
+    )
+
+
+def _agent_subject(
+    ref: str = "agent_manifest_alice_v1",
+    digest: str = f"sha256:{'b' * 64}",
+) -> ExecutionSubject:
+    return ExecutionSubject(
+        kind=ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST,
+        ref=ref,
+        digest=digest,
+    )
 
 
 def _store(base_path: Path) -> AutomationActivationStore:
@@ -30,7 +59,7 @@ def _cloud_activation(
     activated = store.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-spec-drain@abc12345",
+        subject=_branch_subject(),
         lease_id="activation-lease-cloud-1",
     )
     assert activated is not None
@@ -57,7 +86,7 @@ def test_create_stopped_is_idempotent_and_server_authoritative(
         automation_id="automation-spec-drain",
         epoch=0,
         executor_class=None,
-        immutable_branch_version=None,
+        subject=None,
         lease_id=None,
         state=AutomationActivationState.STOPPED,
         updated_at="2026-07-30T20:00:00.000000Z",
@@ -78,7 +107,7 @@ def test_active_record_requires_exact_executor_version_and_lease(
         automation_id=active.automation_id,
         epoch=active.epoch,
         executor_class=active.executor_class,
-        immutable_branch_version=active.immutable_branch_version,
+        subject=active.subject,
         lease_id=active.lease_id,
     )
     for changed in (
@@ -86,7 +115,7 @@ def test_active_record_requires_exact_executor_version_and_lease(
         {"automation_id": "automation-other"},
         {"epoch": active.epoch + 1},
         {"executor_class": AutomationActivationExecutor.TRAY},
-        {"immutable_branch_version": "branch-spec-drain@def67890"},
+        {"subject": _branch_subject(ref="branch-spec-drain@def67890")},
         {"lease_id": "activation-lease-other"},
     ):
         claim = {
@@ -94,7 +123,7 @@ def test_active_record_requires_exact_executor_version_and_lease(
             "automation_id": active.automation_id,
             "epoch": active.epoch,
             "executor_class": active.executor_class,
-            "immutable_branch_version": active.immutable_branch_version,
+            "subject": active.subject,
             "lease_id": active.lease_id,
         }
         claim.update(changed)
@@ -112,7 +141,7 @@ def test_cloud_cannot_activate_while_tray_activation_is_current(
     tray = store.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.TRAY,
-        immutable_branch_version="branch-spec-drain@abc12345",
+        subject=_branch_subject(),
         lease_id="activation-lease-tray-1",
     )
     assert tray is not None
@@ -120,7 +149,7 @@ def test_cloud_cannot_activate_while_tray_activation_is_current(
     cloud = store.activate(
         expected=tray,
         executor_class=AutomationActivationExecutor.CLOUD,
-        immutable_branch_version="branch-spec-drain@def67890",
+        subject=_branch_subject(ref="branch-spec-drain@def67890"),
         lease_id="activation-lease-cloud-1",
     )
 
@@ -137,7 +166,7 @@ def test_tray_rollback_requires_cloud_to_be_durably_stopped(
     assert store.activate(
         expected=cloud,
         executor_class=AutomationActivationExecutor.TRAY,
-        immutable_branch_version="branch-spec-drain@abc12345",
+        subject=_branch_subject(),
         lease_id="activation-lease-tray-1",
     ) is None
 
@@ -146,7 +175,7 @@ def test_tray_rollback_requires_cloud_to_be_durably_stopped(
     tray = store.activate(
         expected=stopped,
         executor_class=AutomationActivationExecutor.TRAY,
-        immutable_branch_version="branch-spec-drain@abc12345",
+        subject=_branch_subject(),
         lease_id="activation-lease-tray-1",
     )
 
@@ -167,14 +196,14 @@ def test_stop_fences_cached_claim_and_clears_active_identity(
     assert stopped.epoch == active.epoch + 1
     assert stopped.state is AutomationActivationState.STOPPED
     assert stopped.executor_class is None
-    assert stopped.immutable_branch_version is None
+    assert stopped.subject is None
     assert stopped.lease_id is None
     assert not store.validate_claim(
         universe_id=active.universe_id,
         automation_id=active.automation_id,
         epoch=active.epoch,
         executor_class=active.executor_class,
-        immutable_branch_version=active.immutable_branch_version,
+        subject=active.subject,
         lease_id=active.lease_id,
     )
 
@@ -187,7 +216,7 @@ def test_rebind_advances_epoch_and_fences_old_version(
 
     rebound = store.rebind(
         expected=active,
-        immutable_branch_version="branch-spec-drain@def67890",
+        subject=_branch_subject(ref="branch-spec-drain@def67890"),
         lease_id="activation-lease-cloud-2",
     )
 
@@ -199,7 +228,7 @@ def test_rebind_advances_epoch_and_fences_old_version(
         automation_id=active.automation_id,
         epoch=active.epoch,
         executor_class=active.executor_class,
-        immutable_branch_version=active.immutable_branch_version,
+        subject=active.subject,
         lease_id=active.lease_id,
     )
 
@@ -217,7 +246,7 @@ def test_competing_cloud_versions_have_one_cas_winner(
         return store.activate(
             expected=stopped,
             executor_class=AutomationActivationExecutor.CLOUD,
-            immutable_branch_version=version,
+            subject=_branch_subject(ref=version),
             lease_id=f"lease-{version}",
         )
 
@@ -244,7 +273,7 @@ def test_stale_expected_record_cannot_stop_or_rebind(
     active = _cloud_activation(store)
     rebound = store.rebind(
         expected=active,
-        immutable_branch_version="branch-spec-drain@def67890",
+        subject=_branch_subject(ref="branch-spec-drain@def67890"),
         lease_id="activation-lease-cloud-2",
     )
     assert rebound is not None
@@ -252,7 +281,7 @@ def test_stale_expected_record_cannot_stop_or_rebind(
     assert store.stop(expected=active) is None
     assert store.rebind(
         expected=active,
-        immutable_branch_version="branch-spec-drain@fedcba98",
+        subject=_branch_subject(ref="branch-spec-drain@fedcba98"),
         lease_id="activation-lease-cloud-3",
     ) is None
     assert store.get(active.universe_id, active.automation_id) == rebound
@@ -260,7 +289,7 @@ def test_stale_expected_record_cannot_stop_or_rebind(
 
 @pytest.mark.parametrize(
     "field",
-    ("immutable_branch_version", "lease_id"),
+    ("subject", "lease_id"),
 )
 def test_activate_rejects_blank_active_identity(
     tmp_path: Path,
@@ -276,11 +305,7 @@ def test_activate_rejects_blank_active_identity(
         store.activate(
             expected=stopped,
             executor_class=AutomationActivationExecutor.CLOUD,
-            immutable_branch_version=(
-                ""
-                if field == "immutable_branch_version"
-                else "branch-spec-drain@abc12345"
-            ),
+            subject=("" if field == "subject" else _branch_subject()),  # type: ignore[arg-type]
             lease_id=(
                 "" if field == "lease_id" else "activation-lease-cloud-1"
             ),
@@ -294,3 +319,182 @@ def test_create_rejects_blank_keys(tmp_path: Path) -> None:
         store.create_stopped(universe_id="", automation_id="automation")
     with pytest.raises(ValueError, match="automation_id"):
         store.create_stopped(universe_id="universe", automation_id="")
+
+
+def test_agent_binding_creation_derives_one_reserved_activation_key(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        records = tuple(
+            pool.map(
+                lambda _index: store.create_stopped_for_agent_binding(
+                    universe_id="universe-main",
+                    agent_binding_id="agent_binding_alice",
+                ),
+                range(8),
+            )
+        )
+
+    assert len(set(records)) == 1
+    assert records[0].automation_id == agent_binding_automation_id("agent_binding_alice")
+    assert records[0].subject is None
+
+
+def test_agent_manifest_activation_and_claim_are_exactly_subject_fenced(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    stopped = store.create_stopped_for_agent_binding(
+        universe_id="universe-main",
+        agent_binding_id="agent_binding_alice",
+    )
+    subject = _agent_subject()
+    active = store.activate(
+        expected=stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=subject,
+        lease_id="activation-lease-cloud-1",
+    )
+    assert active is not None
+    assert active.subject == subject
+    assert store.validate_claim(
+        universe_id=active.universe_id,
+        automation_id=active.automation_id,
+        epoch=active.epoch,
+        executor_class=active.executor_class,
+        subject=subject,
+        lease_id=active.lease_id,
+    )
+    for changed in (
+        _branch_subject(ref=subject.ref, digest=subject.digest),
+        _agent_subject(ref="agent_manifest_alice_v2", digest=subject.digest),
+        _agent_subject(ref=subject.ref, digest=f"sha256:{'c' * 64}"),
+    ):
+        assert not store.validate_claim(
+            universe_id=active.universe_id,
+            automation_id=active.automation_id,
+            epoch=active.epoch,
+            executor_class=active.executor_class,
+            subject=changed,
+            lease_id=active.lease_id,
+        )
+
+
+def test_competing_agent_manifests_for_one_binding_have_one_cas_winner(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    stopped = store.create_stopped_for_agent_binding(
+        universe_id="universe-main",
+        agent_binding_id="agent_binding_alice",
+    )
+    subjects = (
+        _agent_subject(),
+        _agent_subject(
+            ref="agent_manifest_alice_v2",
+            digest=f"sha256:{'c' * 64}",
+        ),
+    )
+
+    def activate(subject: ExecutionSubject) -> AutomationActivation | None:
+        return store.activate(
+            expected=stopped,
+            executor_class=AutomationActivationExecutor.CLOUD,
+            subject=subject,
+            lease_id=f"lease-{subject.ref}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = tuple(pool.map(activate, subjects))
+
+    winners = tuple(result for result in results if result is not None)
+    assert len(winners) == 1
+    assert store.get(stopped.universe_id, stopped.automation_id) == winners[0]
+
+
+def test_legacy_active_activation_migration_fails_without_rewriting_row(
+    tmp_path: Path,
+) -> None:
+    path = db_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE automation_activations (
+                universe_id TEXT NOT NULL,
+                automation_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL,
+                executor_class TEXT,
+                immutable_branch_version TEXT,
+                lease_id TEXT,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (universe_id, automation_id)
+            );
+            INSERT INTO automation_activations VALUES (
+                'universe-main', 'automation-spec-drain', 7, 'cloud',
+                'branch-spec-drain@legacy', 'lease-legacy', 'active',
+                '2026-07-30T20:00:00.000000Z'
+            );
+            """
+        )
+
+    with pytest.raises(RuntimeError, match="legacy active automation activation"):
+        _store(tmp_path).get("universe-main", "automation-spec-drain")
+
+    with sqlite3.connect(path) as connection:
+        row = connection.execute(
+            "SELECT epoch, state, immutable_branch_version FROM automation_activations"
+        ).fetchone()
+        columns = {
+            str(item[1])
+            for item in connection.execute("PRAGMA table_info(automation_activations)")
+        }
+    assert row == (7, "active", "branch-spec-drain@legacy")
+    assert "subject_kind" not in columns
+
+
+def test_legacy_stopped_activation_migrates_without_changing_epoch(
+    tmp_path: Path,
+) -> None:
+    path = db_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE automation_activations (
+                universe_id TEXT NOT NULL,
+                automation_id TEXT NOT NULL,
+                epoch INTEGER NOT NULL,
+                executor_class TEXT,
+                immutable_branch_version TEXT,
+                lease_id TEXT,
+                state TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (universe_id, automation_id)
+            );
+            INSERT INTO automation_activations VALUES (
+                'universe-main', 'automation-spec-drain', 8, NULL,
+                NULL, NULL, 'stopped', '2026-07-30T20:00:00.000000Z'
+            );
+            """
+        )
+
+    store = _store(tmp_path)
+    migrated = store.get("universe-main", "automation-spec-drain")
+
+    assert migrated is not None
+    assert migrated.epoch == 8
+    assert migrated.state is AutomationActivationState.STOPPED
+    assert migrated.subject is None
+    active = store.activate(
+        expected=migrated,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_branch_subject(),
+        lease_id="activation-lease-cloud-9",
+    )
+    assert active is not None
+    assert active.epoch == 9
+    assert active.subject == _branch_subject()
