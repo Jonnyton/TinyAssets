@@ -1,3 +1,17 @@
+## 2026-08-01 — immutable custom-agent runtime manifest
+
+- **What surprised me:** the shared test environment did not contain the
+  declared RFC-canonicalization package, while the packaged runtime must remain
+  independently importable; the manifest did not need that dependency to get a
+  deterministic, bounded content digest.
+- **Pattern worth capturing:** freeze arbitrary agent designs at a narrow trust
+  boundary: validate and canonicalize compiler output, pin its exact public and
+  private sources, then keep activation, authority, conversations, outputs, and
+  effects in separately owned ledgers.
+- **What I would do differently:** include packaged-runtime importability in the
+  initial red test matrix, alongside idempotency, privacy, tamper, and race
+  cases, before choosing any canonicalization implementation.
+
 ## 2026-07-31 — local drain observer self-heal
 
 - **What surprised me:** the actual watchdog failure was a one-second Windows
