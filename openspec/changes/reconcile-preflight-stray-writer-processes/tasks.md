@@ -1,8 +1,9 @@
 ## 0. Evidence And Contract
 
-- [ ] 0.1 Record run `30676899240`'s pre-mutation failure, bounded artifact,
+- [x] 0.1 Record run `30676899240`'s pre-mutation failure, bounded artifact,
   exact current-code race, and independently approve the proposal, design,
-  daemon-runtime delta, and tasks before implementation.
+  daemon-runtime delta, and tasks before implementation. Approved at exact
+  planning head `5f1c0af9` after four fail-closed adaptations.
 
 ## 1. Test-Driven Repair
 
