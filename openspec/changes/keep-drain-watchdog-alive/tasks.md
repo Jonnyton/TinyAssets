@@ -2,12 +2,14 @@
 
 - [x] 1.1 Add focused tests proving exhausted Windows health-file replacement does not escape the watchdog and leaves a diagnostic.
 - [x] 1.2 Add focused checks for bounded tray relaunch and a periodic hidden current-user scheduled-task trigger.
+- [x] 1.3 Add loop-level publication recovery and real Windows registration proof for separate logon/guard tasks.
 
 ## 2. Self-Heal Implementation
 
 - [x] 2.1 Make health publication failure non-fatal while preserving the last complete atomic health document.
 - [x] 2.2 Add stale-health watchdog relaunch to the tray with a recovery cooldown.
-- [x] 2.3 Add an idempotent one-minute periodic recovery trigger to the existing current-user task.
+- [x] 2.3 Add an idempotent one-minute periodic recovery trigger to a separate current-user guard task.
+- [x] 2.4 Preserve explicit session stop across self-heal and require versioned single-process activation during reinstall.
 
 ## 3. Verification And Activation
 

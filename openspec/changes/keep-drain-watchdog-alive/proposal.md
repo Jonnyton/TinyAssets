@@ -6,7 +6,8 @@ The local OpenSpec drain watchdog has twice exited while its supervisor remained
 
 - Make transient health-publication contention non-fatal to the watchdog while preserving atomic, truthful health state.
 - Have the tray detect stale or unavailable watchdog health and relaunch the watchdog with a bounded cooldown.
-- Add a periodic current-user Task Scheduler trigger so a dead tray is relaunched without a terminal or daily prompt.
+- Add a separate periodic current-user guard task so a dead tray is relaunched without a terminal or daily prompt while an intentional session stop remains stopped.
+- Version and verify live observer activation so reinstalling cannot silently leave the old tray/watchdog instance running.
 - Preserve single-watchdog and single-supervisor fencing and never display running while health is stale, idle, or blocked.
 
 ## Capabilities

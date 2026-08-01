@@ -159,6 +159,7 @@ def test_health_mapping_is_honest(
 
     assert health["health"] == expected
     assert health["controller_alive"] is controller_alive
+    assert health["watchdog_version"] == 2
 
 
 def test_settled_unconsumed_result_is_waiting_not_green(tmp_path: Path) -> None:
@@ -385,11 +386,18 @@ def test_health_publication_failure_is_nonfatal_and_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     health_path = tmp_path / "health.json"
+    health_path.write_text('{"health": "previous"}\n', encoding="utf-8")
+    real_atomic_write = watchdog.atomic_write_json
+    attempts = 0
 
-    def fail_write(_path: Path, _payload: dict[str, object]) -> None:
-        raise PermissionError("sharing violation")
+    def fail_then_recover(path: Path, payload: dict[str, object]) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("sharing violation")
+        real_atomic_write(path, payload)
 
-    monkeypatch.setattr(watchdog, "atomic_write_json", fail_write)
+    monkeypatch.setattr(watchdog, "atomic_write_json", fail_then_recover)
 
     published = watchdog._write_health(
         health_path,
@@ -402,9 +410,12 @@ def test_health_publication_failure_is_nonfatal_and_diagnostic(
     )
 
     assert published is False
+    assert json.loads(health_path.read_text(encoding="utf-8")) == {
+        "health": "previous"
+    }
     diagnostic = tmp_path / "health-write-errors.log"
     assert "sharing violation" in diagnostic.read_text(encoding="utf-8")
-    watchdog._write_health(
+    assert not watchdog._write_health(
         health_path,
         state={"status": "running", "identity": "drain-test"},
         alive=True,
@@ -414,6 +425,63 @@ def test_health_publication_failure_is_nonfatal_and_diagnostic(
         message="supervisor is live",
     )
     assert len(diagnostic.read_text(encoding="utf-8").splitlines()) == 1
+    assert watchdog._write_health(
+        health_path,
+        state={"status": "running", "identity": "drain-test"},
+        alive=True,
+        mode="attach",
+        run_dir=tmp_path / "run",
+        pid=42,
+        message="supervisor is live",
+    )
+    assert json.loads(health_path.read_text(encoding="utf-8"))["health"] == (
+        "running"
+    )
+
+
+def test_watch_loop_continues_after_health_publication_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True)
+    output = repo / "output"
+    _run(output, "openspec-drain-live", pid=42)
+    real_atomic_write = watchdog.atomic_write_json
+    publications = 0
+    sleeps = 0
+
+    class StopLoop(Exception):
+        pass
+
+    def fail_once(path: Path, payload: dict[str, object]) -> None:
+        nonlocal publications
+        publications += 1
+        if publications == 1:
+            raise PermissionError("sharing violation")
+        real_atomic_write(path, payload)
+
+    def advance_loop(_seconds: float) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise StopLoop
+
+    monkeypatch.setattr(watchdog, "atomic_write_json", fail_once)
+    monkeypatch.setattr(watchdog, "_pid_is_alive", lambda pid: pid == 42)
+    monkeypatch.setattr(watchdog.time, "sleep", advance_loop)
+
+    with pytest.raises(StopLoop):
+        watchdog.main(["run", "--repo", str(repo)])
+
+    health = json.loads(
+        (
+            output / "openspec-drain-watchdog" / "health.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert publications >= 2
+    assert health["controller_pid"] == 42
+    assert health["watchdog_version"] == 2
 
 
 def test_dead_fast_launch_is_a_sticky_failure() -> None:
@@ -502,6 +570,8 @@ def test_tray_relaunches_stale_watchdog_with_bounded_cadence() -> None:
     assert "$watchdogRecoveryCooldownSeconds = 60" in tray
     assert '"watchdog health is stale"' in tray
     assert "Request-WatchdogRecovery" in tray
+    assert "Test-Path -LiteralPath $stopPath" in tray
+    assert "[switch]$PreserveStop" in tray
 
 
 def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
@@ -513,4 +583,84 @@ def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
     assert "MSFT_TaskRepetitionPattern" in installer
     assert 'Interval = "PT1M"' in installer
     assert 'Duration = "P1D"' in installer
-    assert "-Trigger @($logonTrigger, $recoveryTrigger)" in installer
+    assert "Register-ScheduledTask" in installer
+    assert "$GuardTaskName" in installer
+    assert "--preserve-stop" in installer
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler integration")
+def test_installer_registers_logon_and_periodic_guard_tasks() -> None:
+    installer = SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    task_name = f"TinyAssets Drain Integration {uuid.uuid4().hex}"
+    guard_name = f"{task_name} Guard"
+    install = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer),
+            "-Repo",
+            str(SCRIPT.parents[1]),
+            "-TaskName",
+            task_name,
+            "-GuardTaskName",
+            guard_name,
+            "-NoStart",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    try:
+        assert install.returncode == 0, install.stderr
+        inspect = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-Command",
+                (
+                    "$primary=Get-ScheduledTask -TaskName '"
+                    + task_name
+                    + "';$guard=Get-ScheduledTask -TaskName '"
+                    + guard_name
+                    + "';[pscustomobject]@{PrimaryTriggers=$primary.Triggers.Count;"
+                    "GuardTriggers=$guard.Triggers.Count;Interval=$guard.Triggers[0].Repetition.Interval;"
+                    "GuardArgs=$guard.Actions[0].Arguments;PrimaryArgs=$primary.Actions[0].Arguments}"
+                    "|ConvertTo-Json -Compress"
+                ),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        assert inspect.returncode == 0, inspect.stderr
+        registered = json.loads(inspect.stdout)
+        assert registered["PrimaryTriggers"] == 1
+        assert registered["GuardTriggers"] == 1
+        assert registered["Interval"] == "PT1M"
+        assert "--preserve-stop" in registered["GuardArgs"]
+        assert "--preserve-stop" not in registered["PrimaryArgs"]
+    finally:
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+                "-Uninstall",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )

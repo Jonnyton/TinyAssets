@@ -25,6 +25,7 @@ from openspec_drain_supervisor import (  # noqa: E402
 )
 
 WATCHDOG_DIR_NAME = "openspec-drain-watchdog"
+WATCHDOG_VERSION = 2
 FAILURE_STATUSES = {
     "failure-budget",
     "fatal-peer-error",
@@ -166,6 +167,7 @@ def build_health(
     else:
         health = "running"
     return {
+        "watchdog_version": WATCHDOG_VERSION,
         "health": health,
         "mode": mode,
         "message": message,

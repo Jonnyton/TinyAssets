@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$Repo,
     [ValidateSet("codex", "claude")]
-    [string]$Provider = "codex"
+    [string]$Provider = "codex",
+    [switch]$PreserveStop
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,6 +101,10 @@ function Read-DrainHealth {
 
 function Request-WatchdogRecovery {
     param($Health)
+
+    if (Test-Path -LiteralPath $stopPath) {
+        return
+    }
 
     $needsRecovery = ($null -eq $Health) -or (
         [string]$Health.message -eq "watchdog health is stale"
@@ -250,9 +255,11 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 5000
 $timer.Add_Tick({ Set-DrainTrayState })
 $timer.Start()
-$watchdogStarted = Start-DrainWatchdog
-if ($watchdogStarted) {
-    $script:lastWatchdogRecoveryAt = [DateTimeOffset]::Now
+if ((-not $PreserveStop) -or (-not (Test-Path -LiteralPath $stopPath))) {
+    $watchdogStarted = Start-DrainWatchdog
+    if ($watchdogStarted) {
+        $script:lastWatchdogRecoveryAt = [DateTimeOffset]::Now
+    }
 }
 Set-DrainTrayState
 

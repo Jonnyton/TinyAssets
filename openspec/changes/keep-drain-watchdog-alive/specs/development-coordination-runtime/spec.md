@@ -14,10 +14,20 @@ The development coordination runtime SHALL recover a failed local drain watchdog
 - **AND** watchdog and supervisor locks prevent a duplicate monitor, supervisor, or worker
 - **AND** the tray remains down until fresh health proves recovery
 
+#### Scenario: Host intentionally stops the drain for the session
+- **WHEN** `stop.request` records the tray's explicit stop-until-next-sign-in action
+- **THEN** neither stale-health recovery nor the periodic guard clears the marker or relaunches the watchdog during that session
+- **AND** the next sign-in startup may clear the prior-session marker and resume the drain
+
 #### Scenario: Tray host dies after sign-in
 - **WHEN** the current-user scheduled tray action is no longer running during the configured interactive session
-- **THEN** a periodic hidden current-user trigger relaunches the tray without waiting for another sign-in
-- **AND** the task's single-instance policy prevents a second tray while the original remains alive
+- **THEN** a separate periodic hidden current-user guard task relaunches the tray without waiting for another sign-in
+- **AND** the named tray mutex and task single-instance policies prevent a second tray while the original remains alive
+
+#### Scenario: Live observer integration is reinstalled
+- **WHEN** the installer replaces an older running tray/watchdog integration
+- **THEN** it recycles only exact-path tray and watchdog observer processes while preserving the live supervisor
+- **AND** it returns success only after fresh versioned health and exactly one tray, watchdog, and supervisor prove the new runtime is active
 
 #### Scenario: Supervisor is healthy but idle
 - **WHEN** self-healing restores fresh watchdog health for a live idle supervisor
