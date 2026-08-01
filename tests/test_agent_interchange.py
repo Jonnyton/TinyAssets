@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 from concurrent.futures import ThreadPoolExecutor
 
@@ -67,6 +69,24 @@ def _source(name: str = "Imported operator") -> dict[str, object]:
     }
 
 
+def _export_adapter(portable: dict[str, object]) -> dict[str, object]:
+    return {
+        "schema_version": "agent-interchange-adapter/v1",
+        "adapter_ref": "commons:foreign-agent-export",
+        "adapter_version": "1.0.0",
+        "target_media_type": "application/vnd.example.agent+json",
+        "rules": [
+            {
+                "op": "copy",
+                "source_path": f"/{key}",
+                "target_path": f"/agent/{key}",
+                "classification": "preserved",
+            }
+            for key in sorted(portable)
+        ],
+    }
+
+
 def test_declarative_adapter_requires_complete_core_json_inventory() -> None:
     from tinyassets.agent_interchange import (
         InterchangeValidationError,
@@ -82,6 +102,138 @@ def test_declarative_adapter_requires_complete_core_json_inventory() -> None:
 
     with pytest.raises(InterchangeValidationError, match="inventory.*extra"):
         convert_declarative_json(_source(), adapter)
+
+
+def test_public_payload_parser_rejects_duplicate_object_keys() -> None:
+    from tinyassets.api.custom_agents import _payload
+    from tinyassets.custom_agents import AgentValidationError
+
+    with pytest.raises(AgentValidationError, match="duplicate object key.*source_json"):
+        _payload('{"source_json":{},"source_json":{},"adapter":{}}')
+
+
+def _opaque_terminal_response() -> dict[str, object]:
+    return {
+        "schema_version": "agent-interchange-adapter/v1",
+        "status": "requires_runtime",
+        "adapter_ref": "commons:opaque-agent-adapter",
+        "adapter_version": "1.0.0",
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": "a" * 64,
+        "source_inventory": [],
+        "report": {
+            "schema_version": 1,
+            "direction": "import",
+            "inventory_verification": "unverified",
+            "exhaustive": False,
+            "lossless": False,
+            "items": [],
+        },
+        "error_code": "requires_engine_os",
+    }
+
+
+def test_opaque_adapter_response_stays_unverified_and_cannot_smuggle_output() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_response,
+    )
+
+    response = _opaque_terminal_response()
+    assert validate_adapter_response(response, direction="import")["status"] == (
+        "requires_runtime"
+    )
+
+    smuggled = copy.deepcopy(response)
+    smuggled["output_base64"] = "e30="
+    with pytest.raises(InterchangeValidationError, match="forbids.*output"):
+        validate_adapter_response(smuggled, direction="import")
+
+
+def test_adapter_response_rejects_duplicate_inventory_and_overlong_paths() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_response,
+    )
+
+    duplicate = _opaque_terminal_response()
+    duplicate["source_inventory"] = ["/x", "/x"]
+    duplicate["report"]["items"] = [  # type: ignore[index]
+        {
+            "source_path": "/x",
+            "classification": "requires_runtime",
+            "reason_code": "requires_runtime",
+        }
+    ]
+    with pytest.raises(InterchangeValidationError, match="inventory.*unique"):
+        validate_adapter_response(duplicate, direction="import")
+
+    overlong = _opaque_terminal_response()
+    overlong["source_inventory"] = ["/" + ("x" * 512)]
+    with pytest.raises(InterchangeValidationError, match="512"):
+        validate_adapter_response(overlong, direction="import")
+
+
+def test_interchange_size_depth_rule_and_base64_bounds_fail_closed() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+        validate_adapter_response,
+    )
+
+    deep: dict[str, object] = {}
+    cursor = deep
+    for _ in range(33):
+        nested: dict[str, object] = {}
+        cursor["nested"] = nested
+        cursor = nested
+    with pytest.raises(InterchangeValidationError, match="nesting"):
+        convert_declarative_json(deep, _adapter())
+
+    oversized = _source()
+    oversized["extra"] = {"blob": "x" * (1024 * 1024)}
+    with pytest.raises(InterchangeValidationError, match="source exceeds"):
+        convert_declarative_json(oversized, _adapter())
+
+    too_many_rules = _adapter()
+    too_many_rules["rules"] = [
+        {"op": "constant", "target_path": f"/x/{index}", "value": index}
+        for index in range(513)
+    ]
+    with pytest.raises(InterchangeValidationError, match="at most 512"):
+        convert_declarative_json(_source(), too_many_rules)
+
+    converted = _opaque_terminal_response()
+    converted["status"] = "converted"
+    converted.pop("error_code")
+    converted["output_base64"] = "e30"
+    with pytest.raises(InterchangeValidationError, match="base64"):
+        validate_adapter_response(converted, direction="import")
+
+
+def test_adapter_output_cannot_bypass_canonical_agent_validation() -> None:
+    from tinyassets.agent_interchange import InterchangeValidationError, convert_declarative_json
+
+    adapter = _adapter()
+    adapter["rules"] = [
+        {"op": "omit", "source_path": "", "classification": "unsupported"},
+        {"op": "constant", "target_path": "/schema_version", "value": 1},
+        {"op": "constant", "target_path": "/name", "value": "Unsafe"},
+        {"op": "constant", "target_path": "/description", "value": "Unsafe"},
+        {"op": "constant", "target_path": "/tags", "value": []},
+        {
+            "op": "constant",
+            "target_path": "/components",
+            "value": {
+                "provider": {
+                    "kind": "provider",
+                    "config": {"api_key": "must-never-publish"},
+                }
+            },
+        },
+    ]
+    with pytest.raises(InterchangeValidationError, match="secret-bearing"):
+        convert_declarative_json({}, adapter)
 
 
 def test_private_stage_scrubs_secrets_preserves_unknowns_and_expires(
@@ -103,8 +255,15 @@ def test_private_stage_scrubs_secrets_preserves_unknowns_and_expires(
         now=100.0,
     )
     encoded = json.dumps(stage, sort_keys=True)
+    raw_digest = hashlib.sha256(
+        json.dumps(_source(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    persisted = b"".join(path.read_bytes() for path in tmp_path.glob(".tinyassets.db*"))
 
     assert "guess-me" not in encoded
+    assert b"guess-me" not in persisted
+    assert raw_digest not in encoded
+    assert raw_digest.encode("ascii") not in persisted
     assert stage["source_commitment_algorithm"] == "hmac-sha256"
     assert stage["sanitized_source_digest_algorithm"] == "sha256"
     assert stage["candidate"]["components"]["imported_extension"]["config"] == {
@@ -280,3 +439,137 @@ def test_concurrent_identical_stage_import_creates_one_stage(tmp_path, monkeypat
     with ThreadPoolExecutor(max_workers=8) as pool:
         stage_ids = list(pool.map(stage_once, range(16)))
     assert len(set(stage_ids)) == 1
+
+
+def test_agent_api_authenticates_staging_hides_it_from_other_users_and_publishes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    from tinyassets.api import permissions
+    from tinyassets.api.custom_agents import custom_agents
+
+    monkeypatch.setenv("TINYASSETS_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: False)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: "anonymous")
+
+    anonymous = custom_agents(
+        action="stage_import",
+        payload={"source_json": _source(), "adapter": _adapter()},
+        idempotency_key="api-stage-one",
+    )
+    assert anonymous == {
+        "error": "authentication_required",
+        "resource": "agent_import_stage",
+    }
+
+    actor = {"id": "alice"}
+    monkeypatch.setattr(permissions, "is_authenticated_request", lambda: True)
+    monkeypatch.setattr(permissions, "current_actor_id", lambda: actor["id"])
+    opaque = custom_agents(
+        action="stage_import",
+        payload={
+            "source_base64": base64.b64encode(b"opaque agent package").decode("ascii"),
+            "adapter": {
+                "schema_version": "agent-interchange-adapter/v1",
+                "adapter_ref": "commons:engine-os-agent-package",
+                "adapter_version": "1.0.0",
+            },
+        },
+        idempotency_key="opaque-stage-one",
+    )
+    assert opaque["status"] == "requires_runtime"
+    assert opaque["report"]["inventory_verification"] == "unverified"
+    assert opaque["report"]["exhaustive"] is False
+    assert opaque["report"]["lossless"] is False
+
+    staged = custom_agents(
+        action="stage_import",
+        payload={"source_json": _source(), "adapter": _adapter()},
+        idempotency_key="api-stage-one",
+    )
+    stage_id = staged["stage"]["stage_id"]
+    assert staged["status"] == "staged"
+
+    actor["id"] = "bob"
+    hidden = custom_agents(action="get_import_stage", stage_id=stage_id)
+    assert hidden == {"error": "not_found", "resource": "agent_import_stage"}
+
+    actor["id"] = "alice"
+    missing_stage = custom_agents(
+        action="publish_stage",
+        stage_id="agent_stage_missing",
+        idempotency_key="missing-stage",
+    )
+    assert missing_stage == {
+        "error": "not_found",
+        "resource": "agent_import_stage",
+    }
+    visible = custom_agents(action="get_import_stage", stage_id=stage_id)
+    assert visible["stage"]["stage_id"] == stage_id
+    published = custom_agents(
+        action="publish_stage",
+        stage_id=stage_id,
+        idempotency_key="api-publish-one",
+    )
+    assert published["status"] == "published"
+    assert published["agent"]["name"] == "Imported operator"
+    exported = custom_agents(
+        action="convert_export",
+        definition_id=published["agent"]["agent_definition_id"],
+        payload={
+            "adapter": _export_adapter(published["agent"]["portable_definition"]),
+        },
+        idempotency_key="api-export-one",
+    )
+    assert exported["status"] == "converted"
+
+
+def test_foreign_export_is_adapter_driven_bounded_and_receipted(tmp_path) -> None:
+    from tinyassets.agent_interchange import convert_export
+    from tinyassets.custom_agents import publish_definition
+
+    definition = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload={
+            "schema_version": 1,
+            "name": "Portable coding agent",
+            "description": "No format-specific platform preset.",
+            "tags": ["coding"],
+            "components": {
+                "identity": {
+                    "kind": "soul",
+                    "config": {"instructions": "Review before changing code."},
+                }
+            },
+        },
+    )
+    portable = definition["portable_definition"]
+
+    exported = convert_export(
+        tmp_path,
+        actor_id="bob",
+        definition_id=definition["agent_definition_id"],
+        adapter=_export_adapter(portable),
+        idempotency_key="foreign-export-one",
+    )
+    retry = convert_export(
+        tmp_path,
+        actor_id="bob",
+        definition_id=definition["agent_definition_id"],
+        adapter=_export_adapter(portable),
+        idempotency_key="foreign-export-one",
+    )
+    decoded = json.loads(base64.b64decode(exported["output_base64"], validate=True))
+
+    assert exported["status"] == "converted"
+    assert exported["direction"] == "export"
+    assert decoded == {"agent": portable}
+    assert exported["report"]["exhaustive"] is True
+    assert exported["report"]["lossless"] is False
+    assert exported["receipt"]["output_kind"] == "foreign_bytes"
+    assert retry["receipt"]["receipt_digest"] == exported["receipt"]["receipt_digest"]

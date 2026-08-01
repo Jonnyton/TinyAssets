@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
@@ -32,12 +33,19 @@ from tinyassets.ids import new_ulid
 
 ADAPTER_SCHEMA = "agent-interchange-adapter/v1"
 MAX_SOURCE_BYTES = 1024 * 1024
+MAX_CANDIDATE_BYTES = 256 * 1024
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+MAX_BASE64_CHARS = 1_398_104
+MAX_POINTER_CHARS = 512
+MAX_DETAIL_CHARS = 256
 MAX_MAPPING_BYTES = 128 * 1024
 MAX_MAPPING_RULES = 512
 MAX_REPORT_ITEMS = 4096
 MAX_DEPTH = 32
 STAGE_TTL_SECONDS = 24 * 60 * 60
 _HMAC_ENV = "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+_MASTER_HMAC_ENV = "TINYASSETS_REQUEST_IDEMPOTENCY_HMAC_KEY"
+_HMAC_PURPOSE = b"tinyassets-agent-interchange-source-v1"
 _REASON_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _SECRET_FIELDS = frozenset(
     {
@@ -127,6 +135,10 @@ def _sha256(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
 
 
+def _sha256_bytes(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
 def _json_clone(value: Any) -> Any:
     return json.loads(_canonical_json(value))
 
@@ -151,6 +163,24 @@ def _bounded_json(value: Any, *, limit: int, label: str) -> Any:
     return cloned
 
 
+def _json_without_duplicate_keys(raw: str, *, label: str, limit: int) -> Any:
+    if len(raw.encode("utf-8")) > limit:
+        raise InterchangeValidationError(f"{label} exceeds {limit} bytes")
+
+    def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        document: dict[str, Any] = {}
+        for key, nested in pairs:
+            if key in document:
+                raise InterchangeValidationError(f"{label} has duplicate object key: {key}")
+            document[key] = nested
+        return document
+
+    try:
+        return json.loads(raw, object_pairs_hook=unique_object)
+    except json.JSONDecodeError as exc:
+        raise InterchangeValidationError(f"{label} is invalid JSON: {exc}") from exc
+
+
 def _pointer_segment(value: str) -> str:
     return value.replace("~", "~0").replace("/", "~1")
 
@@ -158,8 +188,14 @@ def _pointer_segment(value: str) -> str:
 def _pointer_parts(pointer: str) -> list[str]:
     if pointer == "":
         return []
-    if not isinstance(pointer, str) or not pointer.startswith("/") or len(pointer) > 512:
-        raise InterchangeValidationError("JSON Pointer is invalid or exceeds 512 characters")
+    if (
+        not isinstance(pointer, str)
+        or not pointer.startswith("/")
+        or len(pointer) > MAX_POINTER_CHARS
+    ):
+        raise InterchangeValidationError(
+            f"JSON Pointer is invalid or exceeds {MAX_POINTER_CHARS} characters"
+        )
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
 
 
@@ -182,6 +218,268 @@ def enumerate_json_inventory(value: Any, pointer: str = "") -> list[str]:
             paths.extend(enumerate_json_inventory(item, f"{pointer}/{index}"))
         return paths
     return [pointer]
+
+
+def _validated_inventory(value: Any) -> list[str]:
+    if not isinstance(value, list) or len(value) > MAX_REPORT_ITEMS:
+        raise InterchangeValidationError(
+            f"source inventory must contain at most {MAX_REPORT_ITEMS} paths"
+        )
+    inventory: list[str] = []
+    for path in value:
+        if not isinstance(path, str):
+            raise InterchangeValidationError("source inventory paths must be strings")
+        _pointer_parts(path)
+        inventory.append(path)
+    if len(set(inventory)) != len(inventory):
+        raise InterchangeValidationError("source inventory paths must be unique")
+    return inventory
+
+
+def _validate_conversion_report(
+    value: Any,
+    *,
+    direction: str,
+    source_inventory: list[str],
+) -> dict[str, Any]:
+    report = _bounded_json(value, limit=MAX_RESPONSE_BYTES, label="conversion report")
+    if not isinstance(report, dict) or report.get("schema_version") != 1:
+        raise InterchangeValidationError("conversion report schema_version must equal 1")
+    if report.get("direction") != direction:
+        raise InterchangeValidationError("conversion report direction does not match request")
+    verification = report.get("inventory_verification")
+    if verification not in {"core_json", "format_verifier", "unverified"}:
+        raise InterchangeValidationError("conversion report inventory verification is invalid")
+    exhaustive = report.get("exhaustive")
+    lossless = report.get("lossless")
+    if not isinstance(exhaustive, bool) or not isinstance(lossless, bool):
+        raise InterchangeValidationError("conversion report flags must be booleans")
+    if verification == "unverified" and (exhaustive or lossless):
+        raise InterchangeValidationError(
+            "unverified inventory must be non-exhaustive and non-lossless"
+        )
+    if verification == "format_verifier":
+        verifier_id = report.get("verifier_id")
+        if not isinstance(verifier_id, str) or not verifier_id or len(verifier_id) > 256:
+            raise InterchangeValidationError("format_verifier requires a bounded verifier_id")
+    elif "verifier_id" in report:
+        raise InterchangeValidationError("verifier_id is only valid for format_verifier")
+    items = report.get("items")
+    if not isinstance(items, list) or len(items) > MAX_REPORT_ITEMS:
+        raise InterchangeValidationError(
+            f"conversion report must contain at most {MAX_REPORT_ITEMS} items"
+        )
+    paths: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise InterchangeValidationError("conversion report items must be objects")
+        source_path = item.get("source_path")
+        if not isinstance(source_path, str):
+            raise InterchangeValidationError("conversion report source_path is required")
+        _pointer_parts(source_path)
+        paths.append(source_path)
+        target_path = item.get("target_path")
+        if target_path is not None:
+            if not isinstance(target_path, str):
+                raise InterchangeValidationError("conversion report target_path must be a string")
+            _pointer_parts(target_path)
+        if item.get("classification") not in _CLASSIFICATIONS:
+            raise InterchangeValidationError("conversion report classification is invalid")
+        reason_code = item.get("reason_code")
+        if not isinstance(reason_code, str) or not _REASON_CODE.fullmatch(reason_code):
+            raise InterchangeValidationError("conversion report reason_code is invalid")
+        detail = item.get("detail")
+        if detail is not None and (
+            not isinstance(detail, str) or len(detail) > MAX_DETAIL_CHARS
+        ):
+            raise InterchangeValidationError(
+                f"conversion report detail exceeds {MAX_DETAIL_CHARS} characters"
+            )
+    if len(set(paths)) != len(paths) or sorted(paths) != sorted(source_inventory):
+        raise InterchangeValidationError(
+            "conversion report must cover every inventory path exactly once"
+        )
+    if lossless:
+        raise InterchangeValidationError(
+            "lossless requires independent normalized source/output equality proof"
+        )
+    return report
+
+
+def validate_adapter_response(
+    response: str | dict[str, Any],
+    *,
+    direction: str,
+) -> dict[str, Any]:
+    """Validate an untrusted Engine OS adapter response before any persistence."""
+
+    if direction not in {"import", "export"}:
+        raise InterchangeValidationError("adapter direction must be import or export")
+    raw = (
+        _json_without_duplicate_keys(
+            response,
+            label="adapter response",
+            limit=MAX_RESPONSE_BYTES,
+        )
+        if isinstance(response, str)
+        else response
+    )
+    document = _bounded_json(raw, limit=MAX_RESPONSE_BYTES, label="adapter response")
+    if not isinstance(document, dict) or document.get("schema_version") != ADAPTER_SCHEMA:
+        raise InterchangeValidationError(
+            f"adapter response schema_version must equal {ADAPTER_SCHEMA}"
+        )
+    status = document.get("status")
+    if status not in {"converted", "requires_runtime", "unsupported", "invalid"}:
+        raise InterchangeValidationError("adapter response status is invalid")
+    for field, limit in (("adapter_ref", 256), ("adapter_version", 64)):
+        value = document.get(field)
+        if not isinstance(value, str) or not value or len(value) > limit:
+            raise InterchangeValidationError(f"adapter response {field} is invalid")
+    if document.get("adapter_digest_algorithm") != "sha256" or not re.fullmatch(
+        r"[0-9a-f]{64}", str(document.get("adapter_digest") or "")
+    ):
+        raise InterchangeValidationError("adapter response digest is invalid")
+    inventory = _validated_inventory(document.get("source_inventory"))
+    document["report"] = _validate_conversion_report(
+        document.get("report"),
+        direction=direction,
+        source_inventory=inventory,
+    )
+    output_fields = [
+        field for field in ("candidate_json", "output_base64") if field in document
+    ]
+    if status == "converted":
+        if len(output_fields) != 1 or "error_code" in document:
+            raise InterchangeValidationError(
+                "converted response requires exactly one output and forbids error_code"
+            )
+        if "candidate_json" in document:
+            candidate = _bounded_json(
+                document["candidate_json"],
+                limit=MAX_CANDIDATE_BYTES,
+                label="canonical candidate",
+            )
+            try:
+                document["candidate_json"] = _normalize_definition_payload(candidate)
+            except AgentValidationError as exc:
+                raise InterchangeValidationError(str(exc)) from exc
+        else:
+            encoded = document["output_base64"]
+            if not isinstance(encoded, str) or len(encoded) > MAX_BASE64_CHARS:
+                raise InterchangeValidationError("output_base64 exceeds its encoded bound")
+            try:
+                decoded = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise InterchangeValidationError("output_base64 is not canonical base64") from exc
+            if (
+                len(decoded) > MAX_SOURCE_BYTES
+                or base64.b64encode(decoded).decode("ascii") != encoded
+            ):
+                raise InterchangeValidationError(
+                    "output_base64 violates decoded or canonical bounds"
+                )
+    else:
+        if output_fields:
+            raise InterchangeValidationError("non-converted response forbids adapter output")
+        error_code = document.get("error_code")
+        if not isinstance(error_code, str) or not _REASON_CODE.fullmatch(error_code):
+            raise InterchangeValidationError("non-converted response requires error_code")
+    return document
+
+
+def requires_runtime_response(
+    adapter: dict[str, Any],
+    *,
+    direction: str,
+    source_json: dict[str, Any] | None = None,
+    source_base64: str | None = None,
+    source_locator: str | None = None,
+) -> dict[str, Any]:
+    """Return a bounded terminal response without executing an unadmitted adapter."""
+
+    sources = [source_json is not None, source_base64 is not None, source_locator is not None]
+    if sum(sources) != 1:
+        raise InterchangeValidationError(
+            "adapter request requires exactly one source_json, source_base64, or source_locator"
+        )
+    mapping = _bounded_json(adapter, limit=MAX_MAPPING_BYTES, label="adapter mapping")
+    if mapping.get("schema_version") != ADAPTER_SCHEMA:
+        raise InterchangeValidationError(f"adapter schema_version must equal {ADAPTER_SCHEMA}")
+    if _sanitize(mapping) != mapping:
+        raise InterchangeValidationError("adapter mapping contains a secret-bearing field")
+    adapter_ref = mapping.get("adapter_ref")
+    adapter_version = mapping.get("adapter_version")
+    if not isinstance(adapter_ref, str) or not adapter_ref or len(adapter_ref) > 256:
+        raise InterchangeValidationError("adapter_ref is required and bounded to 256 characters")
+    if (
+        not isinstance(adapter_version, str)
+        or not adapter_version
+        or len(adapter_version) > 64
+    ):
+        raise InterchangeValidationError("adapter_version is required and bounded to 64 characters")
+
+    if source_json is not None:
+        source = _bounded_json(source_json, limit=MAX_SOURCE_BYTES, label="source")
+        inventory = enumerate_json_inventory(source)
+        if len(inventory) > MAX_REPORT_ITEMS:
+            raise InterchangeValidationError(
+                f"source inventory exceeds {MAX_REPORT_ITEMS} items"
+            )
+        verification = "core_json"
+        exhaustive = True
+        items = [
+            {
+                "source_path": path,
+                "classification": "requires_runtime",
+                "reason_code": "requires_runtime",
+            }
+            for path in inventory
+        ]
+    else:
+        inventory = []
+        verification = "unverified"
+        exhaustive = False
+        items = []
+        if source_base64 is not None:
+            if len(source_base64) > MAX_BASE64_CHARS:
+                raise InterchangeValidationError("source_base64 exceeds its encoded bound")
+            try:
+                decoded = base64.b64decode(source_base64, validate=True)
+            except (ValueError, TypeError) as exc:
+                raise InterchangeValidationError("source_base64 is not canonical base64") from exc
+            if (
+                len(decoded) > MAX_SOURCE_BYTES
+                or base64.b64encode(decoded).decode("ascii") != source_base64
+            ):
+                raise InterchangeValidationError(
+                    "source_base64 violates decoded or canonical bounds"
+                )
+        elif (
+            not isinstance(source_locator, str)
+            or not source_locator
+            or len(source_locator) > 2048
+        ):
+            raise InterchangeValidationError("source_locator is required and bounded to 2048")
+    response = {
+        "schema_version": ADAPTER_SCHEMA,
+        "status": "requires_runtime",
+        "adapter_ref": adapter_ref,
+        "adapter_version": adapter_version,
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": _sha256(mapping),
+        "source_inventory": inventory,
+        "report": {
+            "schema_version": 1,
+            "direction": direction,
+            "inventory_verification": verification,
+            "exhaustive": exhaustive,
+            "lossless": False,
+            "items": items,
+        },
+        "error_code": "requires_engine_os",
+    }
+    return validate_adapter_response(response, direction=direction)
 
 
 def _pointer_get(value: Any, pointer: str) -> Any:
@@ -257,6 +555,9 @@ def _adapter_metadata(adapter: dict[str, Any]) -> tuple[dict[str, Any], str]:
         raise InterchangeValidationError("adapter_ref is required and bounded to 256 characters")
     if not adapter_version or len(adapter_version) > 64:
         raise InterchangeValidationError("adapter_version is required and bounded to 64 characters")
+    target_media_type = str(document.get("target_media_type") or "application/json")
+    if not target_media_type or len(target_media_type) > 127:
+        raise InterchangeValidationError("target_media_type is bounded to 127 characters")
     rules = document.get("rules")
     if not isinstance(rules, list) or len(rules) > MAX_MAPPING_RULES:
         raise InterchangeValidationError(
@@ -325,15 +626,25 @@ def convert_declarative_json(
                 rule.get("value"),
             )
 
-    normalized = _normalize_definition_payload(candidate)
+    try:
+        normalized = _normalize_definition_payload(candidate)
+    except AgentValidationError as exc:
+        raise InterchangeValidationError(str(exc)) from exc
     report = {
         "schema_version": 1,
         "direction": "import",
         "inventory_verification": "core_json",
         "exhaustive": True,
-        "lossless": all(item["classification"] == "preserved" for item in items),
+        # A declarative foreign mapping proves exhaustive accounting, not
+        # semantic equivalence between two independently defined formats.
+        "lossless": False,
         "items": items,
     }
+    report = _validate_conversion_report(
+        report,
+        direction="import",
+        source_inventory=inventory,
+    )
     return {
         "candidate": normalized,
         "report": report,
@@ -341,6 +652,82 @@ def convert_declarative_json(
         "adapter_ref": mapping["adapter_ref"],
         "adapter_version": mapping["adapter_version"],
         "adapter_digest": adapter_digest,
+    }
+
+
+def _convert_declarative_export(
+    source_json: dict[str, Any],
+    adapter: dict[str, Any],
+) -> dict[str, Any]:
+    source = _bounded_json(source_json, limit=MAX_CANDIDATE_BYTES, label="definition")
+    mapping, adapter_digest = _adapter_metadata(adapter)
+    rules: list[dict[str, Any]] = mapping["rules"]
+    inventory = enumerate_json_inventory(source)
+    if len(inventory) > MAX_REPORT_ITEMS:
+        raise InterchangeValidationError(f"source inventory exceeds {MAX_REPORT_ITEMS} items")
+
+    items: list[dict[str, Any]] = []
+    for path in inventory:
+        rule = _matching_rule(path, rules)
+        op = str(rule.get("op") or "")
+        if op not in {"copy", "namespace_preserve", "omit"}:
+            raise InterchangeValidationError(
+                "export inventory rules must copy, namespace-preserve, or omit"
+            )
+        classification = str(rule.get("classification") or "")
+        if classification not in _CLASSIFICATIONS:
+            raise InterchangeValidationError(f"inventory path {path} has invalid classification")
+        reason_code = str(rule.get("reason_code") or classification)
+        if not _REASON_CODE.fullmatch(reason_code):
+            raise InterchangeValidationError(f"inventory path {path} has invalid reason_code")
+        source_path = str(rule.get("source_path") or "")
+        target_path = str(rule.get("target_path") or "")
+        item = {
+            "source_path": path,
+            "classification": classification,
+            "reason_code": reason_code,
+        }
+        if target_path:
+            _pointer_parts(target_path)
+            item["target_path"] = f"{target_path}{path[len(source_path):]}"
+        items.append(item)
+
+    output: dict[str, Any] = {}
+    for rule in rules:
+        op = str(rule.get("op") or "")
+        if op in {"copy", "namespace_preserve"}:
+            _pointer_set(
+                output,
+                str(rule.get("target_path") or ""),
+                _pointer_get(source, str(rule.get("source_path") or "")),
+            )
+        elif op == "constant":
+            _pointer_set(output, str(rule.get("target_path") or ""), rule.get("value"))
+        elif op != "omit":
+            raise InterchangeValidationError("adapter rule uses unsupported operation")
+
+    output = _bounded_json(output, limit=MAX_SOURCE_BYTES, label="foreign output")
+    report = {
+        "schema_version": 1,
+        "direction": "export",
+        "inventory_verification": "core_json",
+        "exhaustive": True,
+        "lossless": False,
+        "items": items,
+    }
+    report = _validate_conversion_report(
+        report,
+        direction="export",
+        source_inventory=inventory,
+    )
+    return {
+        "output": output,
+        "source_inventory": inventory,
+        "report": report,
+        "adapter_ref": mapping["adapter_ref"],
+        "adapter_version": mapping["adapter_version"],
+        "adapter_digest": adapter_digest,
+        "target_media_type": str(mapping.get("target_media_type") or "application/json"),
     }
 
 
@@ -384,9 +771,14 @@ def _interchange_connect(base_path: str | Path) -> Iterator[sqlite3.Connection]:
 
 
 def _source_commitment(source: Any) -> str:
-    key = os.environ.get(_HMAC_ENV, "").encode("utf-8")
-    if len(key) < 32:
-        raise InterchangeValidationError(f"{_HMAC_ENV} must contain at least 32 bytes")
+    dedicated = os.environ.get(_HMAC_ENV, "").encode("utf-8")
+    master = os.environ.get(_MASTER_HMAC_ENV, "").encode("utf-8")
+    material = dedicated or master
+    if len(material) < 32:
+        raise InterchangeValidationError(
+            f"{_HMAC_ENV} or {_MASTER_HMAC_ENV} must contain at least 32 bytes"
+        )
+    key = hmac.new(material, _HMAC_PURPOSE, hashlib.sha256).digest()
     return hmac.new(key, _canonical_json(source).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -420,6 +812,34 @@ def _receipt(
     return receipt
 
 
+def _export_receipt(
+    *,
+    conversion: dict[str, Any],
+    source: dict[str, Any],
+    output_bytes: bytes,
+    created_at: float,
+) -> dict[str, Any]:
+    receipt = {
+        "schema_version": 1,
+        "direction": "export",
+        "sanitized_source_digest_algorithm": "sha256",
+        "sanitized_source_digest": _sha256(source),
+        "adapter_ref": conversion["adapter_ref"],
+        "adapter_version": conversion["adapter_version"],
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": conversion["adapter_digest"],
+        "output_kind": "foreign_bytes",
+        "output_digest_algorithm": "sha256",
+        "output_digest": _sha256_bytes(output_bytes),
+        "report_digest_algorithm": "sha256",
+        "report_digest": _sha256(conversion["report"]),
+        "created_at": created_at,
+        "receipt_digest_algorithm": "sha256",
+    }
+    receipt["receipt_digest"] = _sha256(receipt)
+    return receipt
+
+
 def verify_conversion_receipt(receipt: dict[str, Any]) -> bool:
     document = _bounded_json(receipt, limit=MAX_SOURCE_BYTES, label="receipt")
     supplied = str(document.pop("receipt_digest", ""))
@@ -428,6 +848,105 @@ def verify_conversion_receipt(receipt: dict[str, Any]) -> bool:
     if not re.fullmatch(r"[0-9a-f]{64}", supplied) or supplied != _sha256(document):
         raise InterchangeValidationError("receipt digest does not match")
     return True
+
+
+def convert_export(
+    base_path: str | Path,
+    *,
+    actor_id: str,
+    definition_id: str,
+    adapter: dict[str, Any],
+    idempotency_key: str = "",
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Convert one public canonical definition through a bounded mapping artifact."""
+
+    actor, key = _author_and_key(actor_id, idempotency_key)
+    created_at = time.time() if now is None else float(now)
+    if not math.isfinite(created_at):
+        raise InterchangeValidationError("now must be finite")
+    with _interchange_connect(base_path) as conn:
+        row = _read_definition_row(conn, (definition_id or "").strip())
+        if row is None:
+            raise InterchangeNotFoundError("agent definition is unavailable")
+        definition = _definition_from_row(conn, row)
+        source = definition["portable_definition"]
+        conversion = _convert_declarative_export(source, adapter)
+        output_bytes = _canonical_json(conversion["output"]).encode("utf-8")
+        output_base64 = base64.b64encode(output_bytes).decode("ascii")
+        request_digest = _sha256(
+            {
+                "direction": "export",
+                "definition_fingerprint": definition["content_fingerprint"],
+                "adapter_digest": conversion["adapter_digest"],
+            }
+        )
+        existing_receipt_id = _idempotent_resource(
+            conn,
+            actor=actor,
+            operation="convert_export",
+            key=key,
+            request_digest=request_digest,
+        )
+        if existing_receipt_id:
+            receipt_row = conn.execute(
+                "SELECT receipt_json FROM agent_conversion_receipts WHERE receipt_digest = ?",
+                (existing_receipt_id,),
+            ).fetchone()
+            if receipt_row is None:
+                raise InterchangeNotFoundError("conversion receipt is unavailable")
+            receipt = json.loads(str(receipt_row["receipt_json"]))
+        else:
+            receipt = _export_receipt(
+                conversion=conversion,
+                source=source,
+                output_bytes=output_bytes,
+                created_at=created_at,
+            )
+            conn.execute(
+                """
+                INSERT INTO agent_conversion_receipts (
+                    receipt_digest, actor_id, stage_id, receipt_json, created_at
+                ) VALUES (?, ?, NULL, ?, ?)
+                """,
+                (
+                    receipt["receipt_digest"],
+                    actor,
+                    _canonical_json(receipt),
+                    created_at,
+                ),
+            )
+            if key:
+                conn.execute(
+                    """
+                    INSERT INTO agent_interchange_idempotency (
+                        actor_id, operation, idempotency_key,
+                        request_digest, resource_id, created_at
+                    ) VALUES (?, 'convert_export', ?, ?, ?, ?)
+                    """,
+                    (
+                        actor,
+                        key,
+                        request_digest,
+                        receipt["receipt_digest"],
+                        created_at,
+                    ),
+                )
+        response = {
+            "schema_version": ADAPTER_SCHEMA,
+            "status": "converted",
+            "direction": "export",
+            "adapter_ref": conversion["adapter_ref"],
+            "adapter_version": conversion["adapter_version"],
+            "adapter_digest_algorithm": "sha256",
+            "adapter_digest": conversion["adapter_digest"],
+            "source_inventory": conversion["source_inventory"],
+            "target_media_type": conversion["target_media_type"],
+            "output_base64": output_base64,
+            "report": conversion["report"],
+            "receipt": receipt,
+        }
+        return validate_adapter_response(response, direction="export")
 
 
 def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
@@ -688,9 +1207,12 @@ __all__ = [
     "InterchangeNotFoundError",
     "InterchangeValidationError",
     "convert_declarative_json",
+    "convert_export",
     "enumerate_json_inventory",
     "get_import_stage",
     "publish_import_stage",
+    "requires_runtime_response",
     "stage_import",
+    "validate_adapter_response",
     "verify_conversion_receipt",
 ]

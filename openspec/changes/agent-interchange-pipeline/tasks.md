@@ -16,7 +16,7 @@
 
 ## 3. Public surface and safety proof
 
-- [ ] 3.1 Add only the new bounded `stage_import`, `get_import_stage`, `publish_stage`, and `convert_export` operations to existing graph agent targets; reuse existing publish/remix/bind/get-agent contracts and prove private authorization, OAuth mutation gating, terminal errors, payload descriptions, and the exact seven-handle manifest.
+- [x] 3.1 Add only the new bounded `stage_import`, `get_import_stage`, `publish_stage`, and `convert_export` operations to existing graph agent targets; reuse existing publish/remix/bind/get-agent contracts and prove private authorization, OAuth mutation gating, terminal errors, payload descriptions, and the exact seven-handle manifest. Verified 2026-07-31 on Windows/Python 3.14: the focused canonical/API/server suite passed 43 tests, changed-file Ruff was clean, private stages were hidden from other actors, mutations required authentication, unavailable stages returned a stage-scoped terminal error, and `tools/list` remained exactly seven handles.
 - [ ] 3.2 Run focused tests, Ruff, secret/log scans, canonical-handle drift checks, and a deployment-shaped §14 proof: 200 concurrent actors across eight processes, 1,000 mixed requests in five minutes, maximum 256-KiB/64-component payloads, p95 <2s, p99 <3s, throughput ≥3.33/s, zero unhandled busy errors/partial writes/duplicates/leaks, and <1% unexpected errors; record dated environment, commands, revision, topology, distributions, timing, conflicts, and results.
 
 ## 4. Release and foldback
