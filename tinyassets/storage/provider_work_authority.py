@@ -881,6 +881,18 @@ class SQLiteProviderWorkAuthorityStore:
             ).fetchall()
         return tuple(_reservation_record(row) for row in rows)
 
+    def _issue_binding(
+        self,
+        seed: ProviderWorkBindingSeed,
+    ) -> ProviderWorkBindingWriteResult:
+        """Persist only a seed already resolved by the binding service."""
+
+        if not isinstance(seed, ProviderWorkBindingSeed):
+            raise ValueError("seed must be a ProviderWorkBindingSeed")
+        binding = _from_seed(seed, created_at=self.timestamp())
+        with self._ledger_transaction() as transaction:
+            return transaction._insert(binding)
+
     def install_test_binding(
         self,
         seed: ProviderWorkBindingSeed,

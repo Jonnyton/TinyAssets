@@ -1196,6 +1196,37 @@ def test_callers_and_workflow_have_one_pinned_installer_owner():
     assert "systemctl enable --now daemon-watchdog.timer" not in restart_text
 
 
+def test_clean_host_bootstrap_provisions_agent_interchange_env():
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    service = (REPO / "deploy" / "tinyassets-daemon.service").read_text(
+        encoding="utf-8"
+    )
+    docs = (REPO / "deploy" / "DEPLOY.md").read_text(encoding="utf-8")
+
+    assert "deploy/agent-interchange-env.template" in bootstrap
+    assert '"${ENV_DIR}/agent-interchange.env"' in bootstrap
+    existing_branch = bootstrap.index(
+        '${ENV_DIR}/agent-interchange.env already present; leaving contents alone'
+    )
+    conditional_end = bootstrap.index("\nfi", existing_branch)
+    chown = bootstrap.index(
+        'chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"'
+    )
+    chmod = bootstrap.index('chmod 640 "${ENV_DIR}/agent-interchange.env"')
+    assert conditional_end < chown < chmod
+    assert (
+        'chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"'
+        in bootstrap
+    )
+    assert 'chmod 640 "${ENV_DIR}/agent-interchange.env"' in bootstrap
+    assert "test -r /etc/tinyassets/agent-interchange.env" in service
+    assert "AGENT-INTERCHANGE-ENV-UNREADABLE" in service
+    assert "root:tinyassets 640" in service
+    assert "openssl rand -base64 48" in docs
+    assert "/etc/tinyassets/agent-interchange.env" in docs
+    assert "Generate the daemon-only agent interchange key" in bootstrap
+
+
 def test_restart_workflow_serializes_production_host_mutations():
     workflow = yaml.safe_load(RESTART_WORKFLOW.read_text(encoding="utf-8"))
 

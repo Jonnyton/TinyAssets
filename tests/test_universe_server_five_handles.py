@@ -74,6 +74,34 @@ def test_handle_annotations_match_contract() -> None:
             assert getattr(ann, key) == value, f"{name}.{key}"
 
 
+def test_write_graph_advertises_declarative_import_envelope() -> None:
+    tool = next(tool for tool in _advertised_tools() if tool.name == "write_graph")
+    description = tool.parameters["properties"]["payload_json"]["description"]
+
+    assert "source_json and adapter are sibling top-level keys" in description
+    assert "never nest source_json inside adapter" in description
+    assert "agent-interchange-adapter/v1" in description
+    assert "adapter_ref" in description
+    assert "adapter_version" in description
+    assert "rules" in description
+    assert "copy, constant, namespace_preserve, or omit" in description
+    assert "source_path" in description
+    assert "target_path" in description
+    assert "classification" in description
+    assert "preserved or normalized" in description
+    assert (
+        "unsupported, omitted_secret, requires_private_binding, or requires_runtime"
+        in description
+    )
+    assert "target_path writes must be unique and non-overlapping" in description
+    assert (
+        "credential or private source paths must use omit with "
+        "omitted_secret or requires_private_binding"
+        in description
+    )
+    assert "every source scalar or empty-container path exactly once" in description
+
+
 def test_read_graph_status_returns_operator_status() -> None:
     payload = json.loads(read_graph(target="status"))
     assert "schema_version" in payload

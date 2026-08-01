@@ -92,6 +92,17 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **THEN** no public receipt or report contains an unkeyed digest of the raw source or secret value
 - **AND** the private raw-input commitment is unavailable after the stage retention deadline
 
+#### Scenario: Production deploy installs the private commitment key safely
+- **WHEN** a deployment can expose agent staging on a public connector
+- **THEN** it requires a dedicated, canonical single-line base64 secret decoding to at least 32 random bytes before any deployment mutation
+- **AND** malformed, multiline, non-canonical, missing, or short key material fails before the first remote mutation
+- **AND** it transfers the secret through standard input into an atomic protected daemon-only environment file without printing the value
+- **AND** tunnel, logging, and worker processes do not receive the dedicated secret
+- **AND** a self-host template declares the required empty secret placeholder without embedding a default or shared key
+- **AND** clean-host bootstrap installs that protected placeholder, repairs its owner/mode on rerun, and the service refuses startup unless it is readable as `root:tinyassets` mode `0640`
+- **AND** rotation replaces the repository secret and deploys forward without resurrecting a rotated-away key during image rollback
+- **AND** deleting the repository secret blocks deployment but is not represented as runtime revocation
+
 ### Requirement: Foreign adapters are versioned untrusted commons artifacts
 The platform SHALL accept foreign conversion only from an immutable adapter conforming to `agent-interchange-adapter/v1`, SHALL validate its output independently, SHALL permit in-process interpretation only for bounded non-executable declarative JSON mappings, and SHALL execute adapter code only through governed Engine OS admission without ambient credentials, universe authority, network entitlement, provider access, or an in-process code fallback.
 
@@ -152,3 +163,9 @@ The platform SHALL expose agent staging, inspection, remix, publication, binding
 - **WHEN** a connector user imports a foreign source, inspects its report, blends components from other users' public agents, explicitly publishes, binds privately, and exports the result
 - **THEN** the flow completes through `read_graph` and `write_graph` agent targets with authorization enforced at every private boundary
 - **AND** the advertised tool set remains `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`
+
+#### Scenario: A rendered client can construct a declarative import from the tool contract
+- **WHEN** a connector client receives an arbitrary JSON agent manifest and selects `write_graph` with `target=agent` and `operation=stage_import`
+- **THEN** the advertised `payload_json` description identifies `source_json` and `adapter` as sibling top-level keys and never instructs the client to nest the source inside the adapter
+- **AND** it identifies the `agent-interchange-adapter/v1` version, adapter identity fields, the closed rule operations, their required path/classification fields, and exact source-inventory coverage
+- **AND** a client can construct the private staging request without relying on a maintained catalog of agent-specific configurations or hidden documentation
