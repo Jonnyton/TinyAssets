@@ -1071,6 +1071,13 @@ def _ensure_interchange_schema(base_path: str | Path) -> Path:
             conn.execute("PRAGMA journal_mode = WAL")
             with conn:
                 conn.executescript(_SCHEMA)
+                conn.execute(
+                    """
+                    UPDATE agent_import_stages
+                    SET source_commitment = ''
+                    WHERE status = 'published' AND source_commitment != ''
+                    """
+                )
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
@@ -1355,7 +1362,7 @@ def convert_export(
 
 
 def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    stage = {
         "schema_version": 1,
         "stage_id": str(row["stage_id"]),
         "actor_id": str(row["actor_id"]),
@@ -1364,8 +1371,6 @@ def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "source_media_type": str(row["source_media_type"]),
         "sanitized_source_digest_algorithm": "sha256",
         "sanitized_source_digest": str(row["sanitized_source_digest"]),
-        "source_commitment_algorithm": "hmac-sha256",
-        "source_commitment": str(row["source_commitment"]),
         "adapter_ref": str(row["adapter_ref"]),
         "adapter_version": str(row["adapter_version"]),
         "adapter_digest_algorithm": "sha256",
@@ -1377,6 +1382,11 @@ def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "expires_at": float(row["expires_at"]),
         "published_definition_id": row["published_definition_id"],
     }
+    source_commitment = str(row["source_commitment"] or "")
+    if source_commitment:
+        stage["source_commitment_algorithm"] = "hmac-sha256"
+        stage["source_commitment"] = source_commitment
+    return stage
 
 
 def _idempotent_resource(
@@ -1439,6 +1449,32 @@ def _prune_expired_stages(
     return expired
 
 
+def _attach_public_import_origin(
+    conversion: dict[str, Any],
+    *,
+    sanitized_source_digest: str,
+) -> None:
+    origin = {
+        "kind": "agent_interchange_import",
+        "source_media_type": "application/json",
+        "sanitized_source_digest_algorithm": "sha256",
+        "sanitized_source_digest": sanitized_source_digest,
+        "adapter_ref": conversion["adapter_ref"],
+        "adapter_version": conversion["adapter_version"],
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": conversion["adapter_digest"],
+    }
+    candidate = json.loads(_canonical_json(conversion["candidate"]))
+    origins = list(candidate.get("external_origins", []))
+    if origin not in origins:
+        origins.append(origin)
+    candidate["external_origins"] = origins
+    try:
+        conversion["candidate"] = _normalize_definition_payload(candidate)
+    except AgentValidationError as exc:
+        raise InterchangeValidationError(str(exc)) from exc
+
+
 def stage_import(
     base_path: str | Path,
     *,
@@ -1456,6 +1492,10 @@ def stage_import(
     commitment = _source_commitment(source)
     conversion = convert_declarative_json(source, adapter)
     sanitized_digest = _sha256(conversion["sanitized_source"])
+    _attach_public_import_origin(
+        conversion,
+        sanitized_source_digest=sanitized_digest,
+    )
     receipt = _receipt(
         conversion=conversion,
         sanitized_source_digest=sanitized_digest,
@@ -1586,6 +1626,71 @@ def publish_import_stage(
         if row is None:
             raise InterchangeNotFoundError("import stage is unavailable")
         candidate = json.loads(str(row["candidate_json"]))
+        if row["status"] == "published":
+            request_digest = _sha256(
+                {
+                    "stage_id": normalized_stage_id,
+                    "candidate_fingerprint": _fingerprint(candidate),
+                }
+            )
+            existing_id = _idempotent_resource(
+                conn,
+                actor=actor,
+                operation="publish_stage",
+                key=key,
+                request_digest=request_digest,
+            )
+            definition_id = existing_id or str(row["published_definition_id"])
+            existing = _read_definition_row(conn, definition_id)
+            if existing is None:
+                raise InterchangeNotFoundError("published definition is unavailable")
+            return _definition_from_row(conn, existing)
+        report = json.loads(str(row["report_json"]))
+        receipt = json.loads(str(row["receipt_json"]))
+        verify_conversion_receipt(receipt)
+        receipt_matches_stage = (
+            receipt["sanitized_source_digest"] == row["sanitized_source_digest"]
+            and receipt["adapter_ref"] == row["adapter_ref"]
+            and receipt["adapter_version"] == row["adapter_version"]
+            and receipt["adapter_digest"] == row["adapter_digest"]
+            and receipt["content_fingerprint"] == _fingerprint(candidate)
+            and receipt["report_digest"] == _sha256(report)
+        )
+        if not receipt_matches_stage:
+            raise InterchangeValidationError(
+                "import stage receipt does not match staged content"
+            )
+        conversion = {
+            "candidate": candidate,
+            "report": report,
+            "adapter_ref": str(row["adapter_ref"]),
+            "adapter_version": str(row["adapter_version"]),
+            "adapter_digest": str(row["adapter_digest"]),
+        }
+        had_import_origin = any(
+            isinstance(origin, dict)
+            and origin.get("kind") == "agent_interchange_import"
+            for origin in candidate.get("external_origins", [])
+        )
+        try:
+            _attach_public_import_origin(
+                conversion,
+                sanitized_source_digest=str(row["sanitized_source_digest"]),
+            )
+        except InterchangeValidationError as exc:
+            if not had_import_origin:
+                raise InterchangeValidationError(
+                    "restage_required: staged candidate cannot fit required "
+                    "import provenance"
+                ) from exc
+            raise
+        if conversion["candidate"] != candidate:
+            receipt = _receipt(
+                conversion=conversion,
+                sanitized_source_digest=str(row["sanitized_source_digest"]),
+                created_at=float(receipt["created_at"]),
+            )
+        candidate = conversion["candidate"]
         normalized = _normalize_definition_payload(candidate)
         request_digest = _sha256(
             {
@@ -1605,11 +1710,6 @@ def publish_import_stage(
             if existing is None:
                 raise InterchangeNotFoundError("published definition is unavailable")
             return _definition_from_row(conn, existing)
-        if row["status"] == "published":
-            existing = _read_definition_row(conn, str(row["published_definition_id"]))
-            if existing is None:
-                raise InterchangeNotFoundError("published definition is unavailable")
-            return _definition_from_row(conn, existing)
         published = _publish_normalized(
             conn,
             actor=actor,
@@ -1617,7 +1717,6 @@ def publish_import_stage(
             key="",
             imported=True,
         )
-        receipt = json.loads(str(row["receipt_json"]))
         conn.execute(
             """
             INSERT OR IGNORE INTO agent_conversion_receipts (
@@ -1647,10 +1746,16 @@ def publish_import_stage(
         conn.execute(
             """
             UPDATE agent_import_stages
-            SET status = 'published', published_definition_id = ?
+            SET status = 'published', published_definition_id = ?,
+                source_commitment = '', candidate_json = ?, receipt_json = ?
             WHERE stage_id = ?
             """,
-            (published["agent_definition_id"], normalized_stage_id),
+            (
+                published["agent_definition_id"],
+                _canonical_json(candidate),
+                _canonical_json(receipt),
+                normalized_stage_id,
+            ),
         )
         if key:
             conn.execute(

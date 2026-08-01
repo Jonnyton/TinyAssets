@@ -58,6 +58,16 @@ existing custom-agent domain; native import revalidates it and reproduces that
 content and fingerprint. Server-local IDs, timestamps, bindings, credentials,
 conversations, effect payloads, and runtime state are excluded.
 
+A foreign JSON conversion adds one public `agent_interchange_import` origin to
+the canonical candidate before its receipt and content fingerprint are
+calculated. The origin repeats only the receipt's publish-safe
+sanitized-source digest and adapter ref/version/digest fields. It never carries
+the purpose-keyed raw-source commitment or source bytes. This makes later
+native and foreign exports self-describing without creating a verified local
+lineage edge for an unresolved external source. Publishing the stage clears
+its private raw-source commitment in the same transaction; the immutable
+conversion receipt and stage-to-receipt link remain durable.
+
 Portable lineage declarations are part of that immutable content but are not
 the verified ledger itself. Each declaration carries the original source ID
 for human provenance plus stable parent-definition and parent-component
@@ -104,7 +114,19 @@ the secret-bearing bytes. An unkeyed raw-source hash was also rejected because
 small or low-entropy credentials could be guessed offline. The private
 commitment requires `TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY`, fails closed when
 the key is unavailable, is never returned by public evidence, and expires with
-the stage 24 hours after creation. Durable receipts bind only sanitized
+the stage 24 hours after creation. Production accepts this deploy secret only
+as canonical single-line base64 decoding to at least 32 random bytes, installs
+it in a protected daemon-only env file, and validates it before the first
+remote mutation. Installation follows the disk and stop-writer safety
+preflights so it participates in the existing production-mutation receipt
+boundary, while still preceding compose synchronization. Clean-host bootstrap
+creates the file and converges `root:tinyassets` mode `0640` on every rerun.
+Rotation replaces the repository secret and deploys forward;
+image rollback intentionally retains the new key so it cannot resurrect a
+rotated-away authority. Deleting the repository secret only blocks later
+deployments and is not a revocation mechanism: emergency revocation stops the
+daemon before removing the protected file, while normal revocation rotates and
+deploys. Durable receipts bind only sanitized
 content. If the stage expires unpublished, its private receipt view expires
 with it; explicit publish copies the same immutable receipt content into the
 durable receipt ledger inside the publication transaction. Explicit export
@@ -245,8 +267,16 @@ durable receipt is written only for a successful explicit publication or
 export and binds sanitized content. Published definitions and bindings are not
 deleted by stage expiry.
 
-No data migration or compatibility shim is needed. Existing canonical import
-continues as the native fast path, while foreign sources use the staged path.
+Existing canonical import needs no bulk data migration and continues as the
+native fast path. Rolling upgrades do require two bounded repairs: schema
+initialization idempotently clears private commitments left on already
+published pre-fix stages, and publication upgrades an unexpired pre-origin
+stage's candidate and receipt atomically from its stored receipt-bound safe
+metadata. An old candidate that already consumes the full 256-KiB bound cannot
+fit the required origin and receives a bounded `restage_required` result with
+no mutation. Already-published retries use their stored legacy candidate
+fingerprint before any staged-only upgrade, preserving their original
+idempotency contract. No raw source is needed for these repairs.
 
 ## Risks / Trade-offs
 
@@ -312,8 +342,9 @@ most 256 characters; semantic versions at most 64; media types at most 127.
   `schema_version=1`, `stage_id`, `actor_id`, `status`
   (`staged|published|expired`), `direction` (`import|export`),
   `source_media_type`, `sanitized_source_digest_algorithm=sha256`,
-  `sanitized_source_digest`, private
-  `source_commitment_algorithm=hmac-sha256`, `source_commitment`,
+  `sanitized_source_digest`, private `source_commitment_algorithm=hmac-sha256`
+  and `source_commitment` present only while `status=staged` and cleared on
+  publication,
   `adapter_ref`, `adapter_version`, `adapter_digest_algorithm=sha256`,
   `adapter_digest`,
   `candidate` (canonical JSON at most 256 KiB and 64 components), `report`,

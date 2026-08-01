@@ -82,6 +82,22 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **WHEN** the same source is converted by two adapter versions or immutable adapter digests
 - **THEN** the platform returns distinct conversion receipts even if their normalized outputs match
 
+#### Scenario: Published import exports its safe conversion origin
+- **WHEN** an actor publishes a staged foreign import and later exports that public definition
+- **THEN** its immutable `external_origins` includes the sanitized-source digest and algorithm plus the adapter reference, semantic version, immutable digest, and digest algorithm bound by the conversion receipt
+- **AND** the public definition and export contain neither the private raw-source commitment nor raw source content
+- **AND** publication clears the stage's private raw-source commitment in the same transaction while retaining its durable receipt linkage
+
+#### Scenario: Rolling upgrade closes pre-fix provenance and commitment gaps
+- **WHEN** an upgraded process opens storage containing a pre-fix published stage with a retained private commitment
+- **THEN** schema initialization idempotently clears that commitment without changing its immutable public definition or receipt linkage
+- **AND WHEN** an unexpired pre-fix private stage without the safe public origin is published after upgrade
+- **THEN** publication reconstructs the origin from stored receipt-bound sanitized metadata and atomically replaces the candidate and receipt before publishing
+- **AND** it rejects publication if the stored receipt does not match the staged candidate, report, sanitized-source digest, or adapter metadata
+- **AND** if adding the required origin would exceed the canonical candidate bound, publication returns bounded `restage_required` without changing the stage, receipt, definition, lineage, or commitment
+- **AND WHEN** a pre-fix already-published stage is retried with its original idempotency key
+- **THEN** the stored legacy request digest returns the existing immutable definition rather than conflicting with the new origin shape
+
 #### Scenario: Receipt tampering is detected
 - **WHEN** any receipt-bound source, adapter, output, or report field is altered
 - **THEN** receipt verification fails
@@ -91,6 +107,17 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **WHEN** a foreign source contains a low-entropy credential or consists only of secret-bearing content
 - **THEN** no public receipt or report contains an unkeyed digest of the raw source or secret value
 - **AND** the private raw-input commitment is unavailable after the stage retention deadline
+
+#### Scenario: Production deploy installs the private commitment key safely
+- **WHEN** a deployment can expose agent staging on a public connector
+- **THEN** it requires a dedicated, canonical single-line base64 secret decoding to at least 32 random bytes before any deployment mutation
+- **AND** malformed, multiline, non-canonical, missing, or short key material fails before the first remote mutation
+- **AND** it transfers the secret through standard input into an atomic protected daemon-only environment file without printing the value
+- **AND** tunnel, logging, and worker processes do not receive the dedicated secret
+- **AND** a self-host template declares the required empty secret placeholder without embedding a default or shared key
+- **AND** clean-host bootstrap installs that protected placeholder, repairs its owner/mode on rerun, and the service refuses startup unless it is readable as `root:tinyassets` mode `0640`
+- **AND** rotation replaces the repository secret and deploys forward without resurrecting a rotated-away key during image rollback
+- **AND** deleting the repository secret blocks deployment but is not represented as runtime revocation
 
 ### Requirement: Foreign adapters are versioned untrusted commons artifacts
 The platform SHALL accept foreign conversion only from an immutable adapter conforming to `agent-interchange-adapter/v1`, SHALL validate its output independently, SHALL permit in-process interpretation only for bounded non-executable declarative JSON mappings, and SHALL execute adapter code only through governed Engine OS admission without ambient credentials, universe authority, network entitlement, provider access, or an in-process code fallback.

@@ -79,6 +79,7 @@ end-state is already reached. Expected output ends with:
 
 Next steps (host action required):
   1. Fill in secrets: sudo nano /etc/tinyassets/env
+  2. Generate the daemon-only agent interchange key (Step 3 below)
   ...
 ```
 
@@ -105,11 +106,24 @@ documents each):
 
 Save + exit (`Ctrl+O`, `Enter`, `Ctrl+X` in nano).
 
+Generate a unique daemon-only agent interchange key without printing it to the
+terminal. This writes canonical single-line base64 for 48 random bytes:
+
+```bash
+sudo sh -c 'umask 027; key=$(openssl rand -base64 48 | tr -d "\n"); printf "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=%s\n" "$key" > /etc/tinyassets/agent-interchange.env; chown root:tinyassets /etc/tinyassets/agent-interchange.env; chmod 640 /etc/tinyassets/agent-interchange.env'
+```
+
+The separate file is injected only into the daemon container. Replace the key
+and restart to rotate it. Deleting a repository secret merely blocks automated
+deploys; normal revocation rotates and deploys, while emergency revocation
+stops the daemon before removing this protected file.
+
 Permissions check:
 
 ```bash
-ls -la /etc/tinyassets/env
+ls -la /etc/tinyassets/env /etc/tinyassets/agent-interchange.env
 # -rw-r----- 1 root tinyassets ... env
+# -rw-r----- 1 root tinyassets ... agent-interchange.env
 ```
 
 If ownership/mode differs, re-run the bootstrap — it resets to
