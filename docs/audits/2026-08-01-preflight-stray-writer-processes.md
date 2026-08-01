@@ -93,3 +93,20 @@ Independent exact-head re-review approved implementation head `28f36af2` for
 release after independently passing the 211-test fence file, changed-file
 Ruff, strict OpenSpec, and diff checks. The unrelated untracked
 `user_owned_cloud_automation.py` is outside this lane and remains untouched.
+
+## Production Release Evidence
+
+PR #2036 merged as current-main commit `ff2eb75404b87e929997e4aa632a461ca4bcc322`.
+Build run 30678482809 published immutable image
+`ghcr.io/jonnyton/tinyassets-daemon:ff2eb75404b8` at digest
+`sha256:081f8411dff0e2b57b8186e125eb361029057d7ac023327da66f5b5c8f9ef17a`.
+Its single automatic production run 30678500671 completed normally in 2m14s.
+
+The downloaded bounded proof artifact records preflight `safe=true`, phase
+`preflight_proved`, zero preliminary/final queue risk, and zero stray writers.
+Post-deploy, post-canary, and restored-cleanup observations each prove the
+exact five expected containers running the immutable target revision/digest,
+zero old IDs running, zero queue/process risk, and SQLite `quick_check=ok`.
+The receipt row count (1), status (`queued`), and logical digest
+`765f3164…ae47` are identical before deploy, post-deploy, and post-canary.
+Cleanup records zero remaining masks and `normal_handoff_active_established=true`.

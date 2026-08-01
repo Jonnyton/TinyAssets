@@ -1,3 +1,15 @@
+## 2026-07-31 — exact process ownership before mutation
+
+- **What surprised me:** the availability failure was caused by a conservative
+  preliminary scan, but the safe repair still needed two independent freshness
+  proofs: an exact container generation and a Linux process generation.
+- **Pattern worth capturing:** exclusion snapshots used for security decisions
+  need the same immutable identity and generation checks as confirmation
+  snapshots; silently dropping an unavailable identity is itself a failed proof.
+- **What I would do differently:** include malformed expected/extra identities
+  and the exact load boundary in the initial red matrix, not only Docker-output
+  and PID-reuse races.
+
 ## 2026-07-31 — reconcile stricter sidecar review after concurrent landings
 
 - **What surprised me:** two independently reviewed sidecar PRs landed while a
