@@ -35,7 +35,7 @@ logical attempt key used for restart replay.
 
 ## Verification
 
-- `py -m pytest -q tests/test_cloud_automation_continuation.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_request_admission_store.py tests/test_automation_activations.py`
+- `py -m pytest -q tests/test_cloud_automation_continuation.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_request_admission_store.py tests/test_automation_activations.py tests/test_provider_work_authority.py`
   - 260 passed after current-main reconciliation, including an eight-way
     single-winner/replay concurrency check for the composed assignment.
 - `py -m ruff check tinyassets/cloud_automation_continuation.py tinyassets/background_branch_authority.py tests/test_cloud_automation_continuation.py tests/test_background_branch_authority.py`
@@ -46,7 +46,8 @@ logical attempt key used for restart replay.
 ## Remaining critical path
 
 This is not live cloud execution. The next slice must compose restart-safe
-activation plus admission, claim the reserved attempt under current worker
-custody, then connect the bounded provider receipt to reconciled outbound
-effects. Actual cutover still requires the local claimant to observe the same
-server fence before epoch-2 consumption can be enabled.
+activation plus admission, then claim the reserved attempt under current
+worker custody while transactionally revalidating the activation and task at
+that execution boundary. It must then connect the bounded provider receipt to
+reconciled outbound effects. Actual cutover still requires the local claimant
+to observe the same server fence before epoch-2 consumption can be enabled.
