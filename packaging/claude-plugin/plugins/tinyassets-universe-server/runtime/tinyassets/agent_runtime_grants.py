@@ -210,19 +210,13 @@ class AccountCapabilityGrantSource:
         )
 
 
+@dataclass(frozen=True, slots=True)
 class AgentRuntimeGrantResolver:
     """Resolve all immutable-manifest references against current authority."""
 
-    def __init__(
-        self,
-        *,
-        capability_source: AgentRuntimeGrantSource | None = None,
-        resource_source: AgentRuntimeGrantSource | None = None,
-        provider_policy_source: AgentRuntimeGrantSource | None = None,
-    ) -> None:
-        self._capability_source = capability_source
-        self._resource_source = resource_source
-        self._provider_policy_source = provider_policy_source
+    capability_source: AgentRuntimeGrantSource | None = None
+    resource_source: AgentRuntimeGrantSource | None = None
+    provider_policy_source: AgentRuntimeGrantSource | None = None
 
     def resolve(
         self,
@@ -240,7 +234,7 @@ class AgentRuntimeGrantResolver:
         blockers: list[AgentRuntimeGrantBlocker] = []
 
         for reference_kind, field, source_name in _REFERENCE_SOURCES:
-            source = getattr(self, f"_{source_name}")
+            source = getattr(self, source_name)
             for reference_id in references[field]:
                 if source is None:
                     blockers.append(_blocker(reference_kind, reference_id, "source_unavailable"))
@@ -270,7 +264,7 @@ class AgentRuntimeGrantResolver:
                         _blocker(reference_kind, reference_id, "source_evidence_invalid")
                     )
                     continue
-                evidence.append(item)
+                evidence.append(_detached_evidence(item))
 
         evidence_tuple = tuple(evidence)
         return AgentRuntimeGrantResolution(
@@ -325,6 +319,21 @@ def _valid_evidence(
         )
     except AgentRuntimeGrantError:
         return False
+
+
+def _detached_evidence(
+    evidence: AgentRuntimeGrantEvidence,
+) -> AgentRuntimeGrantEvidence:
+    return AgentRuntimeGrantEvidence(
+        reference_kind=evidence.reference_kind,
+        reference_id=evidence.reference_id,
+        subject_id=evidence.subject_id,
+        universe_id=evidence.universe_id,
+        scope=evidence.scope,
+        generation=evidence.generation,
+        grant_digest=evidence.grant_digest,
+        expires_at=evidence.expires_at,
+    )
 
 
 def _blocker(

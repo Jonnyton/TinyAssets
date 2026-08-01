@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import FrozenInstanceError
 
 import pytest
 
@@ -281,3 +282,39 @@ def test_mutated_manifest_integrity_is_rejected_before_any_grant_lookup():
             manifest,
             evaluated_at=1_800_000_000.0,
         )
+
+
+def test_authoritative_sources_cannot_be_replaced_after_resolver_construction():
+    from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
+
+    resolver = AgentRuntimeGrantResolver()
+
+    with pytest.raises(FrozenInstanceError):
+        resolver.resource_source = _StaticGrantSource({})
+
+
+def test_resolved_evidence_is_detached_from_source_owned_objects():
+    from tinyassets.agent_runtime_grants import (
+        AgentRuntimeGrantEvidence,
+        AgentRuntimeGrantResolver,
+    )
+
+    source_evidence = AgentRuntimeGrantEvidence(
+        reference_kind="resource",
+        reference_id="resource_repo_alice",
+        subject_id="user::alice",
+        universe_id="universe_alice",
+        scope="universe_alice",
+        generation=1,
+        grant_digest=f"sha256:{'6' * 64}",
+        expires_at=None,
+    )
+    source = _StaticGrantSource({"resource_repo_alice": lambda *_args: source_evidence})
+    result = AgentRuntimeGrantResolver(resource_source=source).resolve(
+        _manifest(resource_ids=("resource_repo_alice",)),
+        evaluated_at=1_800_000_000.0,
+    )
+
+    object.__setattr__(source_evidence, "grant_digest", "mutated-after-resolution")
+
+    assert result.evidence[0].grant_digest == f"sha256:{'6' * 64}"
