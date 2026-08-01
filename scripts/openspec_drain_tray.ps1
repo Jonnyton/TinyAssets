@@ -91,7 +91,12 @@ function Invoke-DrainControlMutation {
     )
     $acquired = $false
     try {
-        $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(60))
+        try {
+            $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(60))
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
         if (-not $acquired) {
             throw "Timed out waiting for the drain control lock."
         }

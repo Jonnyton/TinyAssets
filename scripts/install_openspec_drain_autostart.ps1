@@ -53,7 +53,12 @@ $controlMutex = New-Object System.Threading.Mutex -ArgumentList @(
 )
 $controlLockAcquired = $false
 try {
-    $controlLockAcquired = $controlMutex.WaitOne([TimeSpan]::FromSeconds(60))
+    try {
+        $controlLockAcquired = $controlMutex.WaitOne([TimeSpan]::FromSeconds(60))
+    }
+    catch [System.Threading.AbandonedMutexException] {
+        $controlLockAcquired = $true
+    }
     if (-not $controlLockAcquired) {
         throw "Timed out waiting for the drain control lock."
     }

@@ -39,6 +39,10 @@ The development coordination runtime SHALL recover a failed local drain watchdog
 - **THEN** a shared current-session control lock serializes the stop marker mutation and the installer's sample-through-verification transaction
 - **AND** the stop is either observed before activation and causes deferral or is applied after activation without being cleared
 
+#### Scenario: Control-lock owner exits unexpectedly
+- **WHEN** a tray or installer process exits while owning the control mutex
+- **THEN** the next waiter accepts the abandoned ownership transfer, continues exclusively, and releases the mutex on exit
+
 #### Scenario: Supervisor is healthy but idle
 - **WHEN** self-healing restores fresh watchdog health for a live idle supervisor
 - **THEN** the tray reports waiting rather than false running progress

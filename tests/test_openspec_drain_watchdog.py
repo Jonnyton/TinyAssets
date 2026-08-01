@@ -632,9 +632,12 @@ def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
     assert "$trayProcessPattern" in installer
     assert "$watchdogProcessPattern" in installer
     assert "Local\\TinyAssetsOpenSpecDrainControl" in installer
-    assert "Local\\TinyAssetsOpenSpecDrainControl" in (
+    tray = (
         SCRIPT.parent / "openspec_drain_tray.ps1"
     ).read_text(encoding="utf-8")
+    assert "Local\\TinyAssetsOpenSpecDrainControl" in tray
+    assert "catch [System.Threading.AbandonedMutexException]" in installer
+    assert "catch [System.Threading.AbandonedMutexException]" in tray
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler integration")
@@ -842,6 +845,81 @@ def test_installer_serializes_concurrent_session_stop_before_sampling() -> None:
             process.kill()
             process.wait(timeout=5)
         kernel32.CloseHandle(mutex)
+        stop_request.unlink(missing_ok=True)
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+                "-Uninstall",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named mutex integration")
+def test_installer_recovers_abandoned_control_mutex_ownership() -> None:
+    installer = SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    repo = SCRIPT.parents[1]
+    stop_request = repo / "output" / "openspec-drain-watchdog" / "stop.request"
+    task_name = f"TinyAssets Drain Abandoned Lock {uuid.uuid4().hex}"
+    guard_name = f"{task_name} Guard"
+    holder = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            (
+                "$m=New-Object System.Threading.Mutex -ArgumentList "
+                "@($false,'Local\\TinyAssetsOpenSpecDrainControl');"
+                "if(-not $m.WaitOne([TimeSpan]::FromSeconds(5))){exit 2};"
+                "Write-Output 'held'"
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert holder.returncode == 0, holder.stderr
+    assert "held" in holder.stdout
+    stop_request.parent.mkdir(parents=True, exist_ok=True)
+    stop_request.write_text("stop after abandoned owner\n", encoding="utf-8")
+    install = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer),
+            "-Repo",
+            str(repo),
+            "-TaskName",
+            task_name,
+            "-GuardTaskName",
+            guard_name,
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    try:
+        assert install.returncode == 0, install.stderr
+        assert "activation deferred until next sign-in" in install.stdout
+        assert stop_request.exists()
+    finally:
         stop_request.unlink(missing_ok=True)
         subprocess.run(
             [

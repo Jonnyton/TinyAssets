@@ -12,7 +12,7 @@
 - [x] 2.3 Add an idempotent one-minute periodic recovery trigger to a separate current-user guard task.
 - [x] 2.4 Preserve explicit session stop across self-heal and require versioned single-process activation during reinstall.
 - [x] 2.5 Restrict observer recycle to anchored executable/argument matches and defer activation when session stop is active.
-- [x] 2.6 Serialize tray control mutations and live installation with a named mutex, including a concurrent-stop integration regression.
+- [x] 2.6 Serialize tray control mutations and live installation with a named mutex, including concurrent-stop and killed-holder integration regressions.
 
 ## 3. Verification And Activation
 
