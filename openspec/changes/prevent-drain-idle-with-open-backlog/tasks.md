@@ -1,7 +1,7 @@
 ## 1. Exact Coordination Truth
 
-- [ ] 1.1 Add failing claim-check regressions proving exact `STATUS.md` atoms do not collide while every non-STATUS overlap still blocks.
-- [ ] 1.2 Implement row-scoped STATUS overlap semantics and update the cross-provider Files-cell rule; verify `tests/test_claim_check.py` passes.
+- [x] 1.1 Add failing claim-check regressions proving exact `STATUS.md` atoms do not collide while every non-STATUS overlap still blocks.
+- [x] 1.2 Implement row-scoped STATUS overlap semantics and update the cross-provider Files-cell rule; verify `tests/test_claim_check.py` passes.
 - [ ] 1.3 Add failing OpenSpec-flow regressions proving `--ref` reads one immutable Git snapshot, classifies host-owned rows, and fails closed on an invalid ref.
 - [ ] 1.4 Implement the stdlib-only exact-ref flow snapshot and host-owned classification; verify `tests/test_openspec_flow.py` and working-tree audit behavior pass.
 

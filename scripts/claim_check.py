@@ -44,7 +44,8 @@ The STATUS.md Work-table row schema is:
 
 - Files: comma- or semicolon-separated paths, possibly with a leading "..."
   prefix. Globs and natural-language hints ("plugin mirror") are tolerated;
-  matching falls back to substring overlap.
+  matching falls back to substring overlap. An exact `STATUS.md` atom is an
+  implicit row-lifecycle edit and is excluded from whole-file collisions.
 - Depends: comma-separated list of task IDs (e.g. "#18, #23"), the literal
   "-" (none), or task names. Resolves status of each dependency in the same
   table.
@@ -224,14 +225,21 @@ def split_cli_files(raw_parts: list[str] | None) -> list[str] | None:
     return atoms
 
 
+def _is_status_coordination_atom(value: str) -> bool:
+    normalized = value.strip().replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.casefold() == "status.md"
+
+
 def files_overlap(a: list[str], b: list[str]) -> list[str]:
-    """Return atoms from a that appear to overlap b. Substring on either side."""
+    """Return overlapping write atoms, excluding implicit STATUS row edits."""
     hits: list[str] = []
     for x in a:
-        if not x or x in {"-", "..."}:
+        if not x or x in {"-", "..."} or _is_status_coordination_atom(x):
             continue
         for y in b:
-            if not y or y in {"-", "..."}:
+            if not y or y in {"-", "..."} or _is_status_coordination_atom(y):
                 continue
             # Direct substring either direction = overlap candidate.
             if x in y or y in x:

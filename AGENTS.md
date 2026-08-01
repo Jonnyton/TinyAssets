@@ -485,7 +485,11 @@ Every row must have:
 - **Files** — specific files or directories this task will write.
   This is the collision boundary. Be concrete: `tinyassets/api/wiki.py, tinyassets/storage/__init__.py`
   not `backend`. Read-only dependencies go in Depends, not Files. Use
-  comma or semicolon between atoms.
+  comma or semicolon between atoms. Ordinary lifecycle edits to the row itself
+  (add, claim, heartbeat, foldback, retire) are implicit: do not list
+  `STATUS.md` solely for those edits. For compatibility, `claim_check.py`
+  ignores an exact `STATUS.md` atom during overlap checks; every other path
+  remains part of the write collision boundary.
 - **Depends** — which tasks must merge first. Include both task
   dependencies (`#18, #23`) and file-read dependencies. If your task
   needs to read `api.py` after another task rewrites it, that is a

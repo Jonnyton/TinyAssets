@@ -133,3 +133,30 @@ def test_stale_activity_uses_same_explicit_history_ref() -> None:
     assert commands
     assert "origin/main" in commands[0]
     assert commands[0].index("origin/main") < commands[0].index("--")
+
+
+def test_status_row_lifecycle_atom_does_not_create_global_overlap() -> None:
+    hits = claim_check.files_overlap(
+        ["STATUS.md", "tinyassets/api/runs.py"],
+        ["STATUS.md", "tinyassets/api/branches.py"],
+    )
+
+    assert hits == []
+
+
+def test_status_exemption_preserves_every_non_coordination_overlap() -> None:
+    hits = claim_check.files_overlap(
+        ["./STATUS.md", "tests/test_claim_check.py"],
+        ["STATUS.md", "tests/"],
+    )
+
+    assert hits == ["tests/test_claim_check.py"]
+
+
+def test_nested_status_named_file_remains_an_ordinary_collision() -> None:
+    hits = claim_check.files_overlap(
+        ["docs/STATUS.md"],
+        ["docs/"],
+    )
+
+    assert hits == ["docs/STATUS.md"]
