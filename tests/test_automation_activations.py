@@ -342,6 +342,74 @@ def test_agent_binding_creation_derives_one_reserved_activation_key(
     assert records[0].subject is None
 
 
+def test_generic_creation_cannot_claim_reserved_agent_namespace(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+
+    with pytest.raises(ValueError, match="reserved agent automation namespace"):
+        store.create_stopped(
+            universe_id="universe-main",
+            automation_id=agent_binding_automation_id("agent_binding_alice"),
+        )
+
+
+def test_subject_kind_must_match_automation_namespace(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    branch_stopped = store.create_stopped(
+        universe_id="universe-main",
+        automation_id="automation-spec-drain",
+    )
+    agent_stopped = store.create_stopped_for_agent_binding(
+        universe_id="universe-main",
+        agent_binding_id="agent_binding_alice",
+    )
+
+    with pytest.raises(ValueError, match="agent subject requires reserved"):
+        store.activate(
+            expected=branch_stopped,
+            executor_class=AutomationActivationExecutor.CLOUD,
+            subject=_agent_subject(),
+            lease_id="activation-lease-cloud-1",
+        )
+    with pytest.raises(ValueError, match="reserved agent automation requires"):
+        store.activate(
+            expected=agent_stopped,
+            executor_class=AutomationActivationExecutor.CLOUD,
+            subject=_branch_subject(),
+            lease_id="activation-lease-cloud-1",
+        )
+
+
+def test_rebind_cannot_cross_subject_namespaces(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    branch_active = _cloud_activation(store)
+    agent_stopped = store.create_stopped_for_agent_binding(
+        universe_id="universe-main",
+        agent_binding_id="agent_binding_alice",
+    )
+    agent_active = store.activate(
+        expected=agent_stopped,
+        executor_class=AutomationActivationExecutor.CLOUD,
+        subject=_agent_subject(),
+        lease_id="activation-lease-agent-1",
+    )
+    assert agent_active is not None
+
+    with pytest.raises(ValueError, match="agent subject requires reserved"):
+        store.rebind(
+            expected=branch_active,
+            subject=_agent_subject(),
+            lease_id="activation-lease-agent-2",
+        )
+    with pytest.raises(ValueError, match="reserved agent automation requires"):
+        store.rebind(
+            expected=agent_active,
+            subject=_branch_subject(),
+            lease_id="activation-lease-cloud-2",
+        )
+
+
 def test_agent_manifest_activation_and_claim_are_exactly_subject_fenced(
     tmp_path: Path,
 ) -> None:

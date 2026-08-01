@@ -15,7 +15,9 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
   version ID, and its canonical content digest.
 - Agent activations use `agent_runtime_manifest` and one reserved automation
   key derived from the private agent-binding ID. Callers cannot supply an
-  alternate agent automation alias.
+  alternate agent automation alias. Generic creation cannot enter the reserved
+  namespace, and activation/rebind/claim reject a subject kind that does not
+  match its automation namespace.
 - Activation CAS, rebind, stop, admission, and epoch-2 claim validation bind
   the exact subject kind/reference/digest in addition to epoch, executor, and
   lease.
@@ -30,6 +32,9 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
   migration refuses it transactionally without rewriting the row; an operator
   must stop it under the old owner before upgrade rather than accept a
   fabricated digest.
+- Fresh-table creation is idempotent under concurrent cold starts, and the
+  continuation preparation fence explicitly requires all typed subject fields
+  to remain null while activation is stopped.
 - The epoch-2 consumer remains dark. No provider invocation, GitHub mutation,
   public connector operation, or tray cutover is enabled by this slice.
 
@@ -39,14 +44,15 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
   initially failed collection because `tinyassets.execution_subject` did not
   exist.
 - `py -m pytest -q tests/test_execution_subject.py tests/test_automation_activations.py tests/test_request_admission_store.py tests/test_branch_tasks_v2.py tests/test_cloud_automation_continuation.py`
-  - 188 passed after adding explicit agent-subject Branch-admission refusal.
+  - 191 passed after adding explicit agent-subject Branch-admission refusal
+    and activation namespace coupling.
   - Covers typed validation, exact kind/ref/digest claim fencing, eight-way
     reserved-key convergence, competing agent-manifest and Branch CAS races,
     stopped-row migration, non-mutating active-row refusal, admission
     persistence, task subject tamper refusal, and the existing cloud
     continuation compositor.
 - `py -m pytest -q tests/test_execution_subject.py tests/test_branch_tasks_v2.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_provider_work_authority.py tests/test_cloud_automation_continuation.py tests/test_request_admission_store.py tests/test_automation_activations.py`
-  - 380 passed across the broader activation, admission,
+  - 383 passed across the broader activation, admission,
     background-attempt, provider-work, continuation, and migration owners.
 - `py -m ruff check <10 changed canonical/test files>`
   - passed; no repository-wide formatting rewrite retained.
@@ -63,8 +69,9 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
 
 ## Remaining gate
 
-This evidence does not complete task 2.1 until the broader authority suite and
-an independent exact-head architecture/security review pass. PR #2082 remains
-dark and draft. Provider launch/effect reconciliation, epoch-1 fencing,
+The broader authority suite is green. The first independent review correctly
+rejected because the head moved while its findings were being folded; a fresh
+exact-head architecture/security approval still gates landing. PR #2082
+remains dark and draft. Provider launch/effect reconciliation, epoch-1 fencing,
 epoch-2 enablement, phone control, and 24-hour PC-off proof remain subsequent
 cloud-drain gates.

@@ -24,6 +24,8 @@ from tinyassets.execution_subject import (
 )
 from tinyassets.storage import db_path
 
+_AGENT_AUTOMATION_PREFIX = "automation_agent_"
+
 
 class AutomationActivationExecutor(str, Enum):
     TRAY = "tray"
@@ -53,6 +55,22 @@ def _timestamp(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(
         timespec="microseconds"
     ).replace("+00:00", "Z")
+
+
+def _is_agent_automation_id(automation_id: str) -> bool:
+    return automation_id.startswith(_AGENT_AUTOMATION_PREFIX)
+
+
+def _require_subject_namespace(
+    automation_id: str,
+    subject: ExecutionSubject,
+) -> None:
+    reserved = _is_agent_automation_id(automation_id)
+    if subject.kind is ExecutionSubjectKind.AGENT_RUNTIME_MANIFEST:
+        if not reserved:
+            raise ValueError("agent subject requires reserved agent automation")
+    elif reserved:
+        raise ValueError("reserved agent automation requires an agent subject")
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,7 +122,7 @@ class AutomationActivation:
 
 
 _CREATE_TABLE = """
-CREATE TABLE automation_activations (
+CREATE TABLE IF NOT EXISTS automation_activations (
     universe_id TEXT NOT NULL,
     automation_id TEXT NOT NULL,
     epoch INTEGER NOT NULL CHECK (epoch >= 0),
@@ -260,8 +278,20 @@ class AutomationActivationStore:
     ) -> AutomationActivation:
         """Create epoch zero, or return the existing record without mutation."""
 
-        clean_universe_id = _required(universe_id, "universe_id")
         clean_automation_id = _required(automation_id, "automation_id")
+        if _is_agent_automation_id(clean_automation_id):
+            raise ValueError("reserved agent automation namespace")
+        return self._create_stopped(
+            universe_id=_required(universe_id, "universe_id"),
+            automation_id=clean_automation_id,
+        )
+
+    def _create_stopped(
+        self,
+        *,
+        universe_id: str,
+        automation_id: str,
+    ) -> AutomationActivation:
         at = _timestamp(self._clock())
         with self.connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -274,12 +304,12 @@ class AutomationActivationStore:
                         immutable_branch_version, lease_id, state, updated_at
                     ) VALUES (?, ?, 0, NULL, NULL, NULL, NULL, NULL, NULL, 'stopped', ?)
                     """,
-                    (clean_universe_id, clean_automation_id, at),
+                    (universe_id, automation_id, at),
                 )
                 row = self._select(
                     conn,
-                    clean_universe_id,
-                    clean_automation_id,
+                    universe_id,
+                    automation_id,
                 )
                 conn.commit()
             except Exception:
@@ -296,8 +326,8 @@ class AutomationActivationStore:
     ) -> AutomationActivation:
         """Create the sole activation row for one universe-owned agent binding."""
 
-        return self.create_stopped(
-            universe_id=universe_id,
+        return self._create_stopped(
+            universe_id=_required(universe_id, "universe_id"),
             automation_id=agent_binding_automation_id(agent_binding_id),
         )
 
@@ -334,6 +364,7 @@ class AutomationActivationStore:
             raise ValueError("executor_class must be typed")
         if not isinstance(subject, ExecutionSubject):
             raise ValueError("subject must be typed")
+        _require_subject_namespace(expected.automation_id, subject)
         return self._transition(
             expected=expected,
             executor_class=executor_class,
@@ -376,6 +407,7 @@ class AutomationActivationStore:
             return None
         if not isinstance(subject, ExecutionSubject):
             raise ValueError("subject must be typed")
+        _require_subject_namespace(expected.automation_id, subject)
         return self._transition(
             expected=expected,
             executor_class=expected.executor_class,
@@ -410,6 +442,7 @@ class AutomationActivationStore:
                 return False
             if not isinstance(subject, ExecutionSubject):
                 return False
+            _require_subject_namespace(clean_automation_id, subject)
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False
@@ -451,6 +484,7 @@ class AutomationActivationStore:
                 return False
             if not isinstance(subject, ExecutionSubject):
                 return False
+            _require_subject_namespace(clean_automation_id, subject)
             clean_lease_id = _required(lease_id, "lease_id")
         except ValueError:
             return False

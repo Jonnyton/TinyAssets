@@ -150,6 +150,9 @@ class SQLiteCloudAutomationContinuationStore:
                     WHERE universe_id = ? AND automation_id = ?
                       AND epoch = ? AND state = 'stopped'
                       AND executor_class IS NULL
+                      AND subject_kind IS NULL
+                      AND subject_ref IS NULL
+                      AND subject_digest IS NULL
                       AND immutable_branch_version IS NULL
                       AND lease_id IS NULL AND updated_at = ?
                     """,
