@@ -9,7 +9,7 @@
 
 ## 2. Foldback and live proof
 
-- [ ] 2.1 Run full controller/watchdog tests, lint/format, strict OpenSpec
+- [x] 2.1 Run full controller/watchdog tests, lint/format, strict OpenSpec
   validation, and an independent exact-head review.
 - [ ] 2.2 Sync the delta into the main development-coordination spec, archive
   this change, land through a reviewed PR, and restart the local watchdog on

@@ -1525,6 +1525,91 @@ def test_blocked_refinery_candidate_skips_idle_for_a_different_target() -> None:
     )
 
 
+def test_run_dispatches_next_refinery_without_idle_after_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    first_target = "refine-openspec-first-target"
+    second_target = "refine-openspec-second-target"
+    snapshot = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(0, 0, 0, 2),
+        hints=(
+            drain.CandidateHint(
+                "REFINERY",
+                "Refine OpenSpec first-target",
+                ("openspec/changes/first-target/",),
+            ),
+            drain.CandidateHint(
+                "REFINERY",
+                "Refine OpenSpec second-target",
+                ("openspec/changes/second-target/",),
+            ),
+        ),
+        blocked_targets=frozenset({first_target}),
+    )
+    prompts: list[str] = []
+
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: snapshot,
+    )
+    monkeypatch.setattr(
+        drain,
+        "wait_interruptibly",
+        lambda **_kwargs: pytest.fail("different refinery target must skip idle"),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del args
+        prompts.append(prompt_path.read_text(encoding="utf-8"))
+        marker = (
+            f"DRAIN_RESULT: BLOCKED {first_target} -\n"
+            if len(prompts) == 1
+            else f"DRAIN_RESULT: FAILED {second_target} -\n"
+        )
+        result_path.write_text(marker, encoding="utf-8")
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+            "--max-failures",
+            "1",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert len(prompts) == 2
+    assert first_target in prompts[0]
+    assert second_target in prompts[1]
+    assert state["attempts"] == 2
+    assert state["recent_blocked"] == [first_target]
+    assert "post-block alternative available attempt=1" in (
+        run_dir / "supervisor.log"
+    ).read_text(encoding="utf-8")
+
+
 def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     admission = drain.Admission(
         target="assigned-target",

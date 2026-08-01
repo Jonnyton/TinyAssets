@@ -36,8 +36,10 @@ Fresh verification on 2026-08-01 America/Los_Angeles:
 
 - focused red: one expected assertion failure;
 - focused green: 1 passed;
+- scheduler-level proof: a blocked first refinery dispatched a distinct second
+  refinery without invoking the idle wait;
 - `py -m pytest -q tests/test_openspec_drain_supervisor.py
-  tests/test_openspec_drain_watchdog.py` — 186 passed;
+  tests/test_openspec_drain_watchdog.py` — 187 passed;
 - Ruff lint — clean;
 - `git diff --check` — clean;
 - strict OpenSpec validation — valid.
@@ -49,3 +51,8 @@ bulk rewrite into this behavioral slice.
 Post-merge live proof remains required: restart the watchdog/controller from
 the merged head, then record a verified blocked refinery result followed by a
 distinct refinery dispatch without the configured idle interval.
+
+Host-approved same-provider independent review of exact implementation head
+`d0746029186f58e2633fe3bf1e14af0e792b731c` returned `APPROVE` with no blocking
+findings. Its one nonblocking request for scheduler-level proof was added and
+passes at the final pre-foldback head.
