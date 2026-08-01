@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.execution_subject import ExecutionSubjectKind
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
@@ -452,6 +453,13 @@ class RequestAdmissionStore:
                 )
             assert automation_activation.executor_class is not None
             assert automation_activation.subject is not None
+            if (
+                automation_activation.subject.kind
+                is not ExecutionSubjectKind.BRANCH_VERSION
+            ):
+                raise ValueError(
+                    "branch task admission requires a branch_version subject"
+                )
             activation_values = (
                 automation_activation.automation_id,
                 automation_activation.epoch,

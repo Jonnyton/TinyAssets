@@ -482,14 +482,23 @@ def test_legacy_stopped_activation_migrates_without_changing_epoch(
             """
         )
 
-    store = _store(tmp_path)
-    migrated = store.get("universe-main", "automation-spec-drain")
-
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        migrated_records = tuple(
+            pool.map(
+                lambda _index: _store(tmp_path).get(
+                    "universe-main",
+                    "automation-spec-drain",
+                ),
+                range(8),
+            )
+        )
+    assert len(set(migrated_records)) == 1
+    migrated = migrated_records[0]
     assert migrated is not None
     assert migrated.epoch == 8
     assert migrated.state is AutomationActivationState.STOPPED
     assert migrated.subject is None
-    active = store.activate(
+    active = _store(tmp_path).activate(
         expected=migrated,
         executor_class=AutomationActivationExecutor.CLOUD,
         subject=_branch_subject(),

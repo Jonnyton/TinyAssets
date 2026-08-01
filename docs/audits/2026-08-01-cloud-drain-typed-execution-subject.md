@@ -19,6 +19,9 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
 - Activation CAS, rebind, stop, admission, and epoch-2 claim validation bind
   the exact subject kind/reference/digest in addition to epoch, executor, and
   lease.
+- Branch-task admission explicitly refuses an `agent_runtime_manifest`
+  subject before writing request/admission/task state; agent invocation must
+  use its separately specified command owner rather than fabricating a Branch.
 - The retained `immutable_branch_version` SQL field is a derived compatibility
   projection for Branch rollback only. New authority reads and claims use the
   typed subject; agent rows leave the compatibility field null.
@@ -36,14 +39,14 @@ tuple `(kind, ref, digest)` and makes it the sole activation and claim identity.
   initially failed collection because `tinyassets.execution_subject` did not
   exist.
 - `py -m pytest -q tests/test_execution_subject.py tests/test_automation_activations.py tests/test_request_admission_store.py tests/test_branch_tasks_v2.py tests/test_cloud_automation_continuation.py`
-  - 187 passed in 17.10 seconds.
+  - 188 passed after adding explicit agent-subject Branch-admission refusal.
   - Covers typed validation, exact kind/ref/digest claim fencing, eight-way
     reserved-key convergence, competing agent-manifest and Branch CAS races,
     stopped-row migration, non-mutating active-row refusal, admission
     persistence, task subject tamper refusal, and the existing cloud
     continuation compositor.
 - `py -m pytest -q tests/test_execution_subject.py tests/test_branch_tasks_v2.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_provider_work_authority.py tests/test_cloud_automation_continuation.py tests/test_request_admission_store.py tests/test_automation_activations.py`
-  - 379 passed in 21.91 seconds across the broader activation, admission,
+  - 380 passed across the broader activation, admission,
     background-attempt, provider-work, continuation, and migration owners.
 - `py -m ruff check <10 changed canonical/test files>`
   - passed; no repository-wide formatting rewrite retained.
