@@ -258,6 +258,8 @@ def test_store_rejects_each_coherent_identity_or_scope_transfer(
         binding,
         generation=binding.generation + 1,
         binding_digest=f"sha256:{'0' * 64}",
+        state=ProviderWorkBindingState.REVOKED,
+        revocation_generation=binding.revocation_generation + 1,
         updated_at="2026-08-01T00:00:00Z",
         **{field: value},
     )

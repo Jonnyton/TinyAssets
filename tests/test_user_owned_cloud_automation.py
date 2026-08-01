@@ -634,15 +634,30 @@ def test_inactive_cloud_authority_rejects_broader_or_unusable_authority(
         )
 
 
-@pytest.mark.parametrize("fault", ["principal", "connection_revoked"])
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "principal_foreign",
+        "principal_missing",
+        "principal_verifier_error",
+        "connection_revoked",
+    ],
+)
 def test_inactive_cloud_authority_rejects_stale_request_or_connection(
     tmp_path: Path,
     fault: str,
 ) -> None:
     automation = _automation()
     definition, provider_store, ledger = _cloud_authority_fixture(tmp_path)
-    if fault == "principal":
+    if fault == "principal_foreign":
         ledger._verify_authenticated_principal = lambda: "acct_mallory"
+    elif fault == "principal_missing":
+        ledger._verify_authenticated_principal = None
+    elif fault == "principal_verifier_error":
+        def unavailable_principal() -> str:
+            raise RuntimeError("request principal unavailable")
+
+        ledger._verify_authenticated_principal = unavailable_principal
     else:
         grant = ledger.get_grant(definition.destination_grant_id)
         assert grant is not None
@@ -691,6 +706,11 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             owner_user_id="acct_other",
             universe_id="universe_alice",
             granted_at=1.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
         )
         ledger = other_ledger
     elif fault == "grant_universe":
@@ -703,6 +723,11 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             owner_user_id="acct_alice",
             universe_id="universe_other",
             granted_at=3.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
         )
         definition = replace(definition, destination_grant_id="replacement_grant")
     else:
@@ -725,6 +750,11 @@ def test_inactive_cloud_authority_rejects_nonexact_destination_grant(
             owner_user_id="acct_alice",
             universe_id="universe_alice",
             granted_at=1.0,
+            unprompted_action_cap=ActionCap(
+                "one_pull_request",
+                1,
+                "pull_requests",
+            ),
         )
         ledger = other_ledger
 

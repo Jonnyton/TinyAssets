@@ -1,15 +1,16 @@
 # Cloud-drain current-main prerequisite refresh
 
 Date: 2026-07-31 (America/Los_Angeles)
-Base revision: `a6301200b668976ccf8960104cb0c50da0f9fdd9`
+Rebased verification revision: `1c97a41bb22df0b2aa3bc09c540c3ac0b7c759b2`
 Environment: Windows development worktree `wf-cloud-drain-activation`
 
 ## Verdict
 
 The recovery-to-normal deploy chain is landed and the canonical public MCP
-canary is green. The local yellow OpenSpec drain remains the only live drain.
-The cloud drain is not live and neither queue epoch may be enabled by this
-slice.
+canary is green. The repaired local OpenSpec drain is green and remains the only
+live drain; at 2026-07-31 21:27 America/Los_Angeles it reported 48 refinable
+targets and dispatched a refinery worker. The cloud drain is not live and
+neither queue epoch may be enabled by this slice.
 
 Current main now contains the dark activation CAS, activation-bound epoch-2
 admission, dark background Branch binding/attempt stores and lifecycle
@@ -32,9 +33,12 @@ slice behind the existing provider-authority OpenSpec owner. Records are
 secret-free and bounded: owner, universe, provider, assignment and
 credential-reference digests, allowed operation/role, budgets, generation,
 expiry, and revocation. IDs and serialized records are explicitly non-bearer.
-The SQLite owner validates exact current state inside its control-plane
-transaction and fails closed on tamper, stale generation, revocation, expiry,
-scope mismatch, or restart.
+The SQLite owner validates exact provider-binding state inside its own
+control-plane transaction and fails closed on tamper, stale generation,
+revocation, expiry, scope mismatch, or restart. Cloud preflight then performs
+sequential, non-atomic provider-binding, grant, and connection reads. Execution
+must revalidate both authority owners just in time; preflight is not a
+cross-store snapshot.
 
 Production issuance is deliberately not implemented. The store's only install
 path is named `install_test_binding`, is disabled by default, and raises unless
@@ -76,7 +80,7 @@ does not claim or invent grant expiry.
 
 Verified 2026-07-31 in the Windows worktree after review adaptation:
 
-- `python -m pytest tests/test_provider_work_authority.py tests/test_user_owned_cloud_automation.py tests/test_outbound_connection_ledger.py tests/test_outbound_effect_boundary.py tests/test_github_pr_reconciliation.py tests/test_background_branch_authority.py tests/test_background_branch_authority_store.py tests/test_background_branch_authority_service.py tests/test_branch_tasks_v2.py tests/test_request_admission_store.py tests/test_workos_provider.py -q` — 485 passed, two pre-existing dependency deprecation warnings.
+- `python -m pytest tests/test_provider_work_authority.py tests/test_user_owned_cloud_automation.py tests/test_outbound_connection_ledger.py tests/test_outbound_effect_boundary.py tests/test_github_pr_reconciliation.py tests/test_background_branch_authority.py tests/test_background_branch_authority_store.py tests/test_background_branch_authority_service.py tests/test_branch_tasks_v2.py tests/test_request_admission_store.py tests/test_workos_provider.py -q` — 487 passed, two pre-existing dependency deprecation warnings.
 - Ruff on the three implementation files and two focused test files — clean.
 - strict OpenSpec validation for both owning changes — valid.
 - `git diff --check` — clean.
@@ -98,6 +102,8 @@ contention. Rereview of `274ad027` correctly found that a structural resolver
 still did not establish canonical provenance and that several regressions were
 not isolated. The resolver and all production creation APIs were removed;
 fixture installation is disabled by default, coherent owner and scope transfer
-have independent tests, wrong-owner/destination fixtures keep otherwise exact
-scopes, and missing/broad caps plus expired bindings have dedicated cases. A
-new exact-head review is still required before merge.
+tests now begin from an otherwise legal revoke transition, wrong-owner,
+wrong-universe, and wrong-destination fixtures keep exact scopes and action
+caps, and missing/foreign/raising principals, missing/broad caps, and expired
+bindings have dedicated cases. A new exact-head review is still required before
+merge.
