@@ -215,6 +215,21 @@ def test_all_matching_claimed_owners_count_toward_wip(tmp_path: Path) -> None:
     )
 
 
+def test_complete_change_exposes_bare_in_flight_activity(tmp_path: Path) -> None:
+    _change(tmp_path, "complete-active", complete=1, remaining=0)
+    _status(
+        tmp_path,
+        "| Fold back complete-active | openspec/changes/complete-active/ | - | in-flight |",
+    )
+
+    report = openspec_flow.build_report(tmp_path)
+    change = report["changes"][0]
+
+    assert change["classification"] == "complete-but-unarchived"
+    assert change["owners"] == []
+    assert change["active_status"] is True
+
+
 def test_umbrella_language_warns_but_does_not_decide_scope(tmp_path: Path) -> None:
     _change(
         tmp_path,
@@ -244,6 +259,59 @@ def test_change_without_tasks_is_reported_for_triage(tmp_path: Path) -> None:
     assert report["summary"]["invalid_changes"] == 1
     assert report["changes"][0]["classification"] == "invalid-artifacts"
     assert any("missing tasks.md" in warning for warning in report["warnings"])
+
+
+def test_host_owned_change_is_not_reported_as_untracked(tmp_path: Path) -> None:
+    _change(tmp_path, "hosted-preview", remaining=3)
+    _status(
+        tmp_path,
+        "| Activate hosted-preview | Cloudflare account | - | host-action |",
+    )
+
+    report = openspec_flow.build_report(tmp_path)
+
+    assert report["changes"][0]["classification"] == "host-owned"
+    assert report["summary"]["untracked_changes"] == 0
+    assert report["recommendations"] == []
+
+
+def test_exact_ref_audit_ignores_newer_working_tree_content(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _change(tmp_path, "committed-change", remaining=2)
+    _status(
+        tmp_path,
+        "| Queue committed-change | committed.py | - | pending |",
+    )
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "committed snapshot")
+
+    _change(tmp_path, "working-tree-only", remaining=7)
+    _status(
+        tmp_path,
+        "| Queue working-tree-only | working.py | - | pending |",
+    )
+
+    report = openspec_flow.build_report(tmp_path, git_ref="HEAD")
+
+    assert [change["name"] for change in report["changes"]] == [
+        "committed-change"
+    ]
+    assert report["summary"]["remaining_tasks"] == 2
+    assert report["recommendations"] == ["committed-change"]
+
+
+def test_exact_ref_audit_fails_closed_for_invalid_ref(tmp_path: Path) -> None:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test User")
+    _status(tmp_path)
+    _git(tmp_path, "add", "STATUS.md")
+    _git(tmp_path, "commit", "-q", "-m", "base")
+
+    with pytest.raises(RuntimeError, match="cannot inspect Git ref missing"):
+        openspec_flow.build_report(tmp_path, git_ref="missing")
 
 
 def test_git_window_counts_unique_admissions_and_archives(tmp_path: Path) -> None:

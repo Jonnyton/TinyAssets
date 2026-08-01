@@ -157,7 +157,8 @@ def test_worker_prompt_requires_proven_exhaustion_before_no_candidate() -> None:
     positions = [prompt.index(step) for step in ordered_steps]
     assert positions == sorted(positions)
     normalized = " ".join(prompt.split())
-    assert "claimable` and `stale` counts are both zero" in normalized
+    assert "claimable, stale, exact-identity-owned," in normalized
+    assert "exact-current-main refinable counts are all zero" in normalized
     assert "NO_CANDIDATE" in prompt
 
 
@@ -181,6 +182,82 @@ def test_worker_prompt_claims_preselected_candidate_before_broad_audit() -> None
     assert prompt.index("commit that claim") < prompt.index(
         "openspec_flow.py audit"
     )
+
+
+def test_worker_prompt_refines_exact_existing_change_before_product_claim() -> None:
+    prompt = drain.build_worker_prompt(
+        _state(),
+        objective="Drain current OpenSpec delivery debt.",
+        candidate_hints=(
+            drain.CandidateHint(
+                classification="REFINERY",
+                task_label="Refine OpenSpec stranded-change",
+                files=("openspec/changes/stranded-change/",),
+            ),
+        ),
+    )
+
+    normalized = " ".join(prompt.split())
+    assert "[REFINERY] Refine OpenSpec stranded-change" in prompt
+    assert "coordination reconciliation only" in normalized
+    assert "MUST NOT edit product files" in prompt
+    assert "pending or blocked STATUS row" in normalized
+    assert prompt.rstrip().endswith(
+        "DRAIN_RESULT: <PARTIAL|BLOCKED|FAILED> "
+        "refine-openspec-stranded-change <PR-url-or-dash>"
+    )
+
+
+def test_refinery_partial_resumes_as_normal_delivery_not_foldback(
+    tmp_path: Path,
+) -> None:
+    state = _state(attempt_kind="refinery")
+    drain.apply_result(
+        state,
+        drain.DrainResult(
+            "PARTIAL",
+            "refine-openspec-stranded-change",
+            "https://github.com/org/repo/pull/1",
+        ),
+        merge_verified=True,
+    )
+    admission = drain.Admission(
+        target="refine-openspec-stranded-change",
+        task_label="Refine OpenSpec stranded-change",
+        worktree=tmp_path,
+        branch="drain/refine-stranded",
+    )
+
+    prompt = drain.build_worker_prompt(
+        state,
+        objective="Drain current OpenSpec delivery debt.",
+        admission=admission,
+    )
+
+    assert state["last_result"]["continuation_kind"] == "refinery"
+    assert "The implementation PR is already merged" not in prompt
+    assert "then build this target" in prompt
+
+
+def test_refinery_partial_without_admission_rechecks_current_snapshot() -> None:
+    state = _state(attempt_kind="refinery")
+    drain.apply_result(
+        state,
+        drain.DrainResult(
+            "PARTIAL",
+            "refine-openspec-stranded-change",
+            "https://github.com/org/repo/pull/1",
+        ),
+        merge_verified=True,
+    )
+
+    prompt = drain.build_worker_prompt(
+        state,
+        objective="Drain current OpenSpec delivery debt.",
+    )
+
+    assert "coordination receipt only" in prompt
+    assert "STATUS may contain" not in prompt
 
 
 def test_candidate_snapshot_preserves_order_and_bounds_hints(
@@ -509,6 +586,13 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
         commands.append(command)
         if command[:2] == ["git", "-C"]:
             return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if any("openspec_flow.py" in part for part in command):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"changes": []}),
+                stderr="",
+            )
         return subprocess.CompletedProcess(
             command,
             1,
@@ -540,6 +624,7 @@ def test_candidate_pressure_reads_claim_check_json(tmp_path: Path) -> None:
     assert pressure.claimable == 3
     assert pressure.stale == 2
     assert pressure.owned == 1
+    assert pressure.refinable == 0
     assert commands[0] == [
         "git",
         "-C",
@@ -563,6 +648,14 @@ def test_current_main_snapshot_fetches_before_ref_classification(
         **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
         commands.append(command)
+        if any("openspec_flow.py" in part for part in command):
+            assert kwargs["encoding"] == "utf-8"
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps({"changes": []}),
+                stderr="",
+            )
         if any("claim_check.py" in part for part in command):
             assert kwargs["encoding"] == "utf-8"
             return subprocess.CompletedProcess(
@@ -605,19 +698,141 @@ def test_current_main_snapshot_fetches_before_ref_classification(
     assert commands[1][commands[1].index("--status-ref") + 1] == "origin/main"
 
 
+def test_current_main_snapshot_supplies_bounded_refinery_hints(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "controller"
+    repo.mkdir()
+    commands: list[list[str]] = []
+
+    def runner(
+        command: list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        if command[:2] == ["git", "-C"]:
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        if any("claim_check.py" in part for part in command):
+            return subprocess.CompletedProcess(
+                command,
+                0,
+                stdout=json.dumps(
+                    {
+                        "counts": {
+                            "claimable": 0,
+                            "blocked": 1,
+                            "in_flight": 0,
+                            "host_owned": 0,
+                            "stale": 0,
+                        },
+                        "claimable": [],
+                        "stale": [],
+                        "in_flight": [],
+                        "blocked": [
+                            {
+                                "row": {
+                                    "task_label": "Refresh exact blocked row",
+                                    "files": ["blocked.py"],
+                                    "line_no": 9,
+                                    "status": "pending",
+                                },
+                                "reasons": ["upstream"],
+                            }
+                        ],
+                    }
+                ),
+                stderr="",
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(
+                {
+                    "changes": [
+                        {
+                            "name": "finished-change",
+                            "classification": "complete-but-unarchived",
+                            "remaining_tasks": 0,
+                        },
+                        {
+                            "name": "owned-finished-change",
+                            "classification": "complete-but-unarchived",
+                            "remaining_tasks": 0,
+                            "owners": ["claimed:other-provider"],
+                        },
+                        {
+                            "name": "bare-active-finished-change",
+                            "classification": "complete-but-unarchived",
+                            "remaining_tasks": 0,
+                            "active_status": True,
+                        },
+                        {
+                            "name": "small-untracked",
+                            "classification": "untracked",
+                            "remaining_tasks": 2,
+                        },
+                        {
+                            "name": "large-untracked",
+                            "classification": "untracked",
+                            "remaining_tasks": 8,
+                        },
+                        {
+                            "name": "foreign-live",
+                            "classification": "in-flight",
+                            "remaining_tasks": 1,
+                        },
+                        {
+                            "name": "needs-host",
+                            "classification": "host-owned",
+                            "remaining_tasks": 1,
+                        },
+                        {
+                            "name": "broken-artifacts",
+                            "classification": "invalid-artifacts",
+                            "remaining_tasks": 0,
+                        },
+                    ]
+                }
+            ),
+            stderr="",
+        )
+
+    snapshot = drain.inspect_current_main_snapshot(
+        repo=repo,
+        provider="drain-test",
+        runner=runner,
+        max_hints=3,
+    )
+
+    assert snapshot.pressure == drain.CandidatePressure(0, 0, 0, 4)
+    assert [
+        (hint.classification, hint.task_label) for hint in snapshot.hints
+    ] == [
+        ("REFINERY", "Refine OpenSpec finished-change"),
+        ("REFINERY", "Refine OpenSpec small-untracked"),
+        ("REFINERY", "Refine OpenSpec large-untracked"),
+    ]
+    flow_command = next(
+        command for command in commands if any("openspec_flow.py" in part for part in command)
+    )
+    assert flow_command[flow_command.index("--ref") + 1] == "origin/main"
+
+
 @pytest.mark.parametrize(
-    ("claimable", "stale", "owned", "expected"),
+    ("claimable", "stale", "owned", "refinable", "expected"),
     [
-        (1, 0, 0, "claimable=1 stale=0 owned=0"),
-        (0, 2, 0, "claimable=0 stale=2 owned=0"),
-        (0, 0, 1, "claimable=0 stale=0 owned=1"),
-        (0, 0, 0, None),
+        (1, 0, 0, 0, "claimable=1 stale=0 owned=0 refinable=0"),
+        (0, 2, 0, 0, "claimable=0 stale=2 owned=0 refinable=0"),
+        (0, 0, 1, 0, "claimable=0 stale=0 owned=1 refinable=0"),
+        (0, 0, 0, 2, "claimable=0 stale=0 owned=0 refinable=2"),
+        (0, 0, 0, 0, None),
     ],
 )
 def test_no_candidate_rejection_requires_zero_pressure(
     claimable: int,
     stale: int,
     owned: int,
+    refinable: int,
     expected: str | None,
 ) -> None:
     assert hasattr(drain, "CandidatePressure")
@@ -626,6 +841,7 @@ def test_no_candidate_rejection_requires_zero_pressure(
         claimable=claimable,
         stale=stale,
         owned=owned,
+        refinable=refinable,
     )
     result = drain.DrainResult("NO_CANDIDATE", "-", "-")
 
@@ -1285,6 +1501,25 @@ def test_blocked_result_skips_idle_only_for_a_different_candidate() -> None:
     )
 
 
+def test_blocked_refinery_candidate_does_not_skip_idle() -> None:
+    snapshot = drain.CandidateSnapshot(
+        pressure=drain.CandidatePressure(0, 0, 0, 1),
+        hints=(
+            drain.CandidateHint(
+                "REFINERY",
+                "Refine OpenSpec another-target",
+                ("openspec/changes/another-target/",),
+            ),
+        ),
+    )
+
+    assert not drain.has_alternative_candidate(
+        snapshot,
+        recent_blocked=["refine-openspec-first-target"],
+        current_target="refine-openspec-first-target",
+    )
+
+
 def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     admission = drain.Admission(
         target="assigned-target",
@@ -1299,6 +1534,48 @@ def test_admission_rejects_mismatched_worker_result(tmp_path: Path) -> None:
     )
 
     assert rejection == "assigned=assigned-target reported=different-target"
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    [
+        (
+            drain.DrainResult(
+                "PARTIAL",
+                "refine-openspec-target",
+                "https://github.com/o/r/pull/1",
+            ),
+            None,
+        ),
+        (
+            drain.DrainResult("BLOCKED", "different-target", "-"),
+            "assigned=refine-openspec-target reported=different-target",
+        ),
+        (
+            drain.DrainResult(
+                "MERGED",
+                "refine-openspec-target",
+                "https://github.com/o/r/pull/1",
+            ),
+            "refinery cannot report MERGED",
+        ),
+        (
+            drain.DrainResult("NO_CANDIDATE", "-", "-"),
+            "refinery cannot report NO_CANDIDATE",
+        ),
+    ],
+)
+def test_refinery_rejects_wrong_target_or_terminal_status(
+    result: drain.DrainResult,
+    expected: str | None,
+) -> None:
+    hint = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec target",
+        ("openspec/changes/target/",),
+    )
+
+    assert drain.refinery_result_rejection(result, hint) == expected
 
 
 @pytest.mark.parametrize(
@@ -2886,6 +3163,71 @@ def test_once_mode_drives_dispatch_parse_and_merge_verification(
     assert state["status"] == "merged"
 
 
+def test_run_rejects_result_outside_exact_refinery_assignment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    run_dir = tmp_path / "run"
+    hint = drain.CandidateHint(
+        "REFINERY",
+        "Refine OpenSpec exact-target",
+        ("openspec/changes/exact-target/",),
+    )
+
+    def fake_dispatch(
+        *,
+        args: object,
+        prompt_path: Path,
+        result_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        del args, prompt_path
+        result_path.write_text(
+            "DRAIN_RESULT: PARTIAL different-target "
+            "https://github.com/o/r/pull/12\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess([], 0, stdout="", stderr="")
+
+    monkeypatch.setattr(drain, "_dispatch", fake_dispatch)
+    monkeypatch.setattr(
+        drain,
+        "inspect_current_main_snapshot",
+        lambda **_kwargs: drain.CandidateSnapshot(
+            pressure=drain.CandidatePressure(0, 0, 0, 1),
+            hints=(hint,),
+        ),
+    )
+
+    exit_code = drain.main(
+        [
+            "run",
+            "--repo",
+            str(repo),
+            "--run-dir",
+            str(run_dir),
+            "--once",
+            "--hours",
+            "1",
+            "--max-slices",
+            "1",
+        ]
+    )
+
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert exit_code == 2
+    assert state["attempt_kind"] == "refinery"
+    assert state["status"] == "invalid-result"
+    assert state["last_result"] == {
+        "status": "INVALID_REFINERY_RESULT",
+        "error": (
+            "assigned=refine-openspec-exact-target "
+            "reported=different-target"
+        ),
+    }
+
+
 def test_run_rejects_already_consumed_merged_pr_without_counting_slice(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3198,6 +3540,7 @@ def test_run_cools_down_without_dispatch_when_recent_blockers_consume_hints(
         "attempt": 1,
         "claimable": 1,
         "stale": 0,
+        "refinable": 0,
     }
     assert not list((run_dir / "prompts").glob("*.md"))
 

@@ -497,9 +497,16 @@ _Last audited: 2026-07-24_
 - *Three Living Files separate process truth, design truth, and live state.* AGENTS.md = how to work. PLAN.md = how the system works. STATUS.md = what's happening now. Each is updated immediately when its slice of truth changes.
 - *GitHub/worktree coordination spine.* Buildable work flows through: STATUS Work row + purpose-named branch + sibling `../wf-<slug>` worktree + PR / draft PR. Relevant PLAN.md modules are the project understanding each lane reviews at planning, build, review, and fold-back. `ideas/INBOX.md` is a loose idea feed; entries park at the bottom of a lane as "Idea feed refs" — not design truth or build authority.
 - *Provider-context feed.* Provider-specific memory and automation are INPUTS to the GitHub/worktree spine, not separate planning authorities. `scripts/provider_context_feed.py` scans Claude/Codex/Cursor/shared memory + ideas + research + automation + worktree handoff surfaces at claim/plan/build/review/foldback/memory-write checkpoints. Hidden provider context cannot bypass community-visible project state.
+- *Work production is part of unattended drain orchestration.* Zero immediately
+  claimable STATUS rows is not global exhaustion while exact-current-main
+  OpenSpec flow or blocked-row evidence contains a bounded coordination target.
+  A refinery attempt may only reconcile one existing change into a reviewed
+  pending/blocked row; product edits still require ordinary current-main claim
+  admission. Idle is truthful only after owned, claimable, stale, and refinable
+  pressure are all zero.
 - *Roles are architectural capabilities.* Each provider implements them through its available harness rather than one universal team mechanism. Verifier/navigator/dev/user-sim are not Claude-Code-specific.
 
-**Substrate:** `AGENTS.md`, `STATUS.md`, `PLAN.md`, `scripts/claim_check.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `scripts/check_cross_provider_drift.py`, `.agents/`, `.claude/agents/`, `.claude/hooks/`.
+**Substrate:** `AGENTS.md`, `STATUS.md`, `PLAN.md`, `scripts/claim_check.py`, `scripts/openspec_flow.py`, `scripts/openspec_drain_supervisor.py`, `scripts/worktree_status.py`, `scripts/provider_context_feed.py`, `scripts/check_cross_provider_drift.py`, `.agents/`, `.claude/agents/`, `.claude/hooks/`.
 
 **Open evolution:** Continued auto-iteration of the harness itself — see `improve-codebase-architecture` + `auto-iterate` skills.
 

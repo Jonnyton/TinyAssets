@@ -1233,3 +1233,15 @@ fresh-host rollback edges found later.
   predecessor posture.
 - What I would do differently: enumerate every authoritative stable predecessor
   state in the first terminal-state table, not only transitions.
+## 2026-07-31 — OpenSpec backlog refinery
+
+- **What surprised me:** the controller's exact STATUS calculation was correct,
+  but it answered a much narrower question than the user asked: zero immediately
+  claimable rows coexisted with 37 active changes and 832 unchecked tasks.
+- **Pattern worth capturing:** unattended orchestration needs a work-production
+  stage as well as a work-consumption stage. Reconcile one existing hidden or
+  blocked target into ordinary reviewed claim authority; never turn backlog
+  visibility itself into permission to edit product code.
+- **What I would do differently:** wire the existing OpenSpec flow inspector into
+  candidate exhaustion when the supervisor was first built, and model shared
+  coordination-row edits separately from product write-set collisions.

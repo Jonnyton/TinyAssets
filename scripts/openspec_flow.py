@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import subprocess
 import sys
+import tarfile
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
@@ -20,13 +22,14 @@ UMBRELLA_RE = re.compile(
 OWNER_RE = re.compile(r"(?:claimed|in-flight):([^\s|]+)", re.IGNORECASE)
 ACTIVE_STATUSES = ("claimed:", "in-flight")
 QUEUED_STATUSES = ("pending", "dev-ready")
+HOST_STATUSES = ("host-action", "host-decision", "host-review", "monitoring")
 TASK_CEILING = 12
 CEILING_REVIEW_DATE = "2026-08-11"
-BROAD_COLLISION_ATOMS = {"STATUS.md", "REFLECTION.md", ".agents/worktrees.md"}
+BROAD_COLLISION_ATOMS = {"REFLECTION.md", ".agents/worktrees.md"}
 
 
-def _task_counts(tasks_path: Path) -> tuple[int, int]:
-    matches = TASK_RE.findall(tasks_path.read_text(encoding="utf-8"))
+def _task_counts_text(text: str) -> tuple[int, int]:
+    matches = TASK_RE.findall(text)
     completed = sum(mark.lower() == "x" for mark in matches)
     return completed, len(matches) - completed
 
@@ -34,8 +37,12 @@ def _task_counts(tasks_path: Path) -> tuple[int, int]:
 def _status_rows(status_path: Path) -> list[dict[str, str]]:
     if not status_path.exists():
         return []
+    return _status_rows_text(status_path.read_text(encoding="utf-8"))
+
+
+def _status_rows_text(text: str) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for line in status_path.read_text(encoding="utf-8").splitlines():
+    for line in text.splitlines():
         if not line.startswith("|"):
             continue
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
@@ -85,6 +92,13 @@ def _classify(
         row["status"].lower().startswith(ACTIVE_STATUSES) for row in matching_rows
     ):
         return "in-flight"
+    if any(
+        row["status"].lower() in HOST_STATUSES
+        or "host" in row["status"].lower()
+        or "manual" in row["status"].lower()
+        for row in matching_rows
+    ):
+        return "host-owned"
     if any(row["status"].lower().startswith(QUEUED_STATUSES) for row in matching_rows):
         return "queued"
     return "untracked"
@@ -171,35 +185,137 @@ def _collision_atoms(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     ]
 
 
-def build_report(repo: Path | str, *, since: str | None = None) -> dict[str, Any]:
+def _git_ref_snapshot(
+    repo: Path,
+    git_ref: str,
+) -> tuple[list[str], dict[str, str]]:
+    """Read active change metadata and STATUS from one immutable Git tree."""
+    if not git_ref or git_ref.startswith("-"):
+        raise RuntimeError(f"cannot inspect Git ref {git_ref}: invalid ref")
+    verify = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{git_ref}^{{commit}}"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if verify.returncode != 0:
+        detail = (verify.stderr or verify.stdout).strip()
+        raise RuntimeError(f"cannot inspect Git ref {git_ref}: {detail}")
+    commit = verify.stdout.strip()
+    listing = subprocess.run(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit,
+            "--",
+            "STATUS.md",
+            "openspec/changes",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if listing.returncode != 0:
+        detail = (listing.stderr or listing.stdout).strip()
+        raise RuntimeError(f"cannot inspect Git ref {git_ref}: {detail}")
+
+    names: set[str] = set()
+    wanted: list[str] = []
+    for raw_path in listing.stdout.splitlines():
+        path = raw_path.strip().replace("\\", "/")
+        if path == "STATUS.md":
+            wanted.append(path)
+            continue
+        parts = path.split("/")
+        if len(parts) < 4 or parts[:2] != ["openspec", "changes"]:
+            continue
+        if parts[2] == "archive":
+            continue
+        names.add(parts[2])
+        if len(parts) == 4 and parts[3] in {"tasks.md", "proposal.md"}:
+            wanted.append(path)
+
+    contents: dict[str, str] = {}
+    if wanted:
+        archived = subprocess.run(
+            ["git", "archive", "--format=tar", commit, "--", *wanted],
+            cwd=repo,
+            capture_output=True,
+            check=False,
+        )
+        if archived.returncode != 0:
+            detail = archived.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"cannot inspect Git ref {git_ref}: {detail}")
+        try:
+            with tarfile.open(fileobj=io.BytesIO(archived.stdout), mode="r:") as tar:
+                for member in tar.getmembers():
+                    if not member.isfile():
+                        continue
+                    stream = tar.extractfile(member)
+                    if stream is None:
+                        continue
+                    contents[member.name.replace("\\", "/")] = stream.read().decode(
+                        "utf-8"
+                    )
+        except (tarfile.TarError, UnicodeDecodeError) as exc:
+            raise RuntimeError(
+                f"cannot inspect Git ref {git_ref}: invalid archive: {exc}"
+            ) from exc
+    return sorted(names), contents
+
+
+def build_report(
+    repo: Path | str,
+    *,
+    since: str | None = None,
+    git_ref: str | None = None,
+) -> dict[str, Any]:
     """Return a deterministic, JSON-serializable delivery-flow report."""
     root = Path(repo).resolve()
-    changes_root = root / "openspec" / "changes"
-    rows = _status_rows(root / "STATUS.md")
     changes: list[dict[str, Any]] = []
     provider_wip: defaultdict[str, list[str]] = defaultdict(list)
 
-    if changes_root.exists():
-        candidates = sorted(
-            path
-            for path in changes_root.iterdir()
-            if path.is_dir() and path.name != "archive"
-        )
-    else:
-        candidates = []
+    if git_ref is not None:
+        candidate_names, snapshot = _git_ref_snapshot(root, git_ref)
+        rows = _status_rows_text(snapshot.get("STATUS.md", ""))
 
-    for change_path in candidates:
-        tasks_path = change_path / "tasks.md"
-        tasks_exist = tasks_path.exists()
-        completed, remaining = _task_counts(tasks_path) if tasks_exist else (0, 0)
-        proposal_path = change_path / "proposal.md"
-        proposal = (
-            proposal_path.read_text(encoding="utf-8")
-            if proposal_path.exists()
-            else ""
+        def read_change_file(name: str, filename: str) -> str | None:
+            return snapshot.get(f"openspec/changes/{name}/{filename}")
+
+    else:
+        changes_root = root / "openspec" / "changes"
+        rows = _status_rows(root / "STATUS.md")
+        candidate_names = (
+            sorted(
+                path.name
+                for path in changes_root.iterdir()
+                if path.is_dir() and path.name != "archive"
+            )
+            if changes_root.exists()
+            else []
         )
-        matching_rows = [row for row in rows if _row_mentions(row, change_path.name)]
+
+        def read_change_file(name: str, filename: str) -> str | None:
+            path = changes_root / name / filename
+            return path.read_text(encoding="utf-8") if path.exists() else None
+
+    for change_name in candidate_names:
+        tasks = read_change_file(change_name, "tasks.md")
+        tasks_exist = tasks is not None
+        completed, remaining = _task_counts_text(tasks) if tasks is not None else (0, 0)
+        proposal = read_change_file(change_name, "proposal.md") or ""
+        matching_rows = [row for row in rows if _row_mentions(row, change_name)]
         owners = _active_owners(matching_rows)
+        active_status = any(
+            row["status"].lower().startswith(ACTIVE_STATUSES)
+            for row in matching_rows
+        )
         classification = _classify(
             remaining=remaining,
             matching_rows=matching_rows,
@@ -208,23 +324,24 @@ def build_report(repo: Path | str, *, since: str | None = None) -> dict[str, Any
         )
         total = completed + remaining
         record = {
-            "name": change_path.name,
+            "name": change_name,
             "completed_tasks": completed,
             "remaining_tasks": remaining,
             "total_tasks": total,
             "classification": classification,
             "owner": owners[0] if owners else None,
             "owners": owners,
+            "active_status": active_status,
             "oversized": total > TASK_CEILING,
             "umbrella_warning": bool(
-                UMBRELLA_RE.search(f"{change_path.name}\n{proposal}")
+                UMBRELLA_RE.search(f"{change_name}\n{proposal}")
             ),
             "status_rows": [row["task"] for row in matching_rows],
         }
         changes.append(record)
         if classification in {"in-flight", "invalid-artifacts"}:
             for owner in owners:
-                provider_wip[owner].append(change_path.name)
+                provider_wip[owner].append(change_name)
 
     completed_first = sorted(
         (change for change in changes if change["classification"] == "complete-but-unarchived"),
@@ -279,6 +396,7 @@ def build_report(repo: Path | str, *, since: str | None = None) -> dict[str, Any
         ],
         "warnings": warnings,
         "git_flow": _git_flow(root, since),
+        "source_ref": git_ref,
         "policy": {
             "task_ceiling": TASK_CEILING,
             "ceiling_review_date": CEILING_REVIEW_DATE,
@@ -395,6 +513,11 @@ def _parser() -> argparse.ArgumentParser:
     audit = subparsers.add_parser("audit", help="report delivery flow")
     audit.add_argument("--json", action="store_true", dest="as_json")
     audit.add_argument("--since", help="git revision for admission/archive counts")
+    audit.add_argument(
+        "--ref",
+        dest="git_ref",
+        help="inspect STATUS and active changes from one exact Git ref",
+    )
     check = subparsers.add_parser("check-change", help="check new-change admission")
     check.add_argument("change")
     check.add_argument("--provider", required=True)
@@ -405,7 +528,15 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     command = args.command or "audit"
-    report = build_report(args.repo, since=getattr(args, "since", None))
+    try:
+        report = build_report(
+            args.repo,
+            since=getattr(args, "since", None),
+            git_ref=getattr(args, "git_ref", None),
+        )
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     if command == "check-change":
         result = check_admission(
             report,
