@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1420,6 +1421,141 @@ def test_deploy_step_env_imports_github_pr_capabilities_secret():
     raw_value = str(step_env["GITHUB_PR_CAPABILITIES_SOURCE"])
     assert "secrets.WORKFLOW_GITHUB_PR_CAPABILITIES" in raw_value
     assert "secrets.TINYASSETS_GITHUB_PR_CAPABILITIES" not in raw_value
+
+
+def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
+    wf = _load()
+    steps = _steps(wf)
+    validation_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Validate agent interchange HMAC prerequisite"
+    )
+    validation_step = steps[validation_index]
+    validation_env = validation_step.get("env") or {}
+    secret_source = str(
+        validation_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in secret_source
+    assert validation_step.get("run") == "python scripts/validate_agent_interchange_hmac.py"
+
+    mutating_steps = {
+        "Install daemon-only agent interchange HMAC secret",
+        "Preflight droplet disk before image pull",
+        "Transitional task 2.1 stop-writer preflight",
+        "Scrub stale cloud env overrides",
+        "Sync runtime deploy files",
+        "Prepare codex auth persistent volume",
+        "Retire legacy Workflow service",
+        "Deploy new image",
+    }
+    mutation_indexes = [
+        index for index, step in enumerate(steps) if step.get("name") in mutating_steps
+    ]
+    assert len(mutation_indexes) == len(mutating_steps)
+    assert validation_index < min(mutation_indexes)
+
+    step_indexes = {step.get("name"): index for index, step in enumerate(steps)}
+    assert step_indexes["Preflight droplet disk before image pull"] < step_indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert step_indexes["Transitional task 2.1 stop-writer preflight"] < step_indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert step_indexes["Install daemon-only agent interchange HMAC secret"] < (
+        step_indexes["Scrub stale cloud env overrides"]
+    )
+
+    install_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Install daemon-only agent interchange HMAC secret"
+    )
+    install_step = steps[install_index]
+    install_env = install_step.get("env") or {}
+    install_secret = str(
+        install_env.get("TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY", "")
+    )
+    assert "secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" in install_secret
+
+    deploy_step = next(step for step in steps if step.get("id") == "deploy")
+    step_env = deploy_step.get("env") or {}
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in step_env
+
+    script = install_step.get("run", "") or ""
+    assert re.search(
+        r'printf \'%s\' "\$\{TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY\}" '
+        r'\|\s*\\?\s*ssh',
+        script,
+    )
+    install = script.index(
+        "install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+    )
+    assert install > 0
+    assert install_index < steps.index(deploy_step)
+    assert "TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env" in script
+    assert 'echo "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}"' not in script
+    assert "set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY '" not in script
+
+
+def test_self_host_template_declares_empty_agent_interchange_hmac_key():
+    shared = Path("deploy/tinyassets-env.template").read_text(encoding="utf-8")
+    dedicated = Path("deploy/agent-interchange-env.template").read_text(
+        encoding="utf-8"
+    )
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY" not in shared
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=" in dedicated
+    assert "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY=change" not in dedicated
+
+    compose = yaml.safe_load(Path("deploy/compose.yml").read_text(encoding="utf-8"))
+    services = compose["services"]
+    dedicated_path = "/etc/tinyassets/agent-interchange.env"
+    assert dedicated_path in services["daemon"]["env_file"]
+    for name, service in services.items():
+        if name != "daemon":
+            assert dedicated_path not in (service.get("env_file") or []), name
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        base64.b64encode(b"x" * 31).decode("ascii"),
+        base64.b64encode(b"x" * 32).decode("ascii") + "\nINJECTED_SETTING=1",
+        "not-base64!",
+        base64.b64encode(b"x" * 32).decode("ascii").rstrip("="),
+    ],
+)
+def test_agent_interchange_hmac_validator_rejects_unsafe_values(value: str):
+    from scripts.validate_agent_interchange_hmac import validate_secret
+
+    with pytest.raises(ValueError):
+        validate_secret(value)
+
+
+def test_agent_interchange_hmac_validator_accepts_32_random_bytes():
+    from scripts.validate_agent_interchange_hmac import validate_secret
+
+    raw = bytes(range(32))
+    encoded = base64.b64encode(raw).decode("ascii")
+    assert validate_secret(encoded) == raw
+
+
+def test_agent_interchange_hmac_validator_never_echoes_rejected_secret():
+    secret = base64.b64encode(b"x" * 32).decode("ascii") + "\nINJECTED_SETTING=1"
+    env = {**os.environ, "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY": secret}
+    result = subprocess.run(
+        [sys.executable, "scripts/validate_agent_interchange_hmac.py"],
+        cwd=_REPO,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert secret not in result.stdout
+    assert "INJECTED_SETTING" not in result.stdout
+    assert secret not in result.stderr
 
 
 def test_deploy_step_syncs_github_pr_capabilities_when_set():

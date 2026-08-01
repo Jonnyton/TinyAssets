@@ -340,6 +340,11 @@ jobs:
             exit 1
           fi
 
+      - name: Validate agent interchange HMAC prerequisite
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: python scripts/validate_agent_interchange_hmac.py
+
       - name: Install SSH key
         env:
           SSH_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -586,6 +591,19 @@ jobs:
               )
           PY
           exit "$preflight_status"
+
+      - name: Install daemon-only agent interchange HMAC secret
+        env:
+          TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY: ${{ secrets.TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY }}
+        run: |
+          scp -i ~/.ssh/do_deploy -o BatchMode=yes \
+              deploy/install-tinyassets-env.sh \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}:/tmp/install-tinyassets-env.sh"
+          printf '%s' "${TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY}" | \
+              ssh -i ~/.ssh/do_deploy -o BatchMode=yes \
+              "${DO_SSH_USER}@${DO_DROPLET_HOST}" \
+              "sudo env TINYASSETS_ENV_FILE=/etc/tinyassets/agent-interchange.env TINYASSETS_LEGACY_ENV_FILE=/etc/tinyassets/no-agent-interchange-legacy bash /tmp/install-tinyassets-env.sh set TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY"
+
       # INVARIANT — /etc/tinyassets/env must stay root:tinyassets 640.
       # All env mutations route through `deploy/install-tinyassets-env.sh`
       # which uses `install -m 640 -o root -g tinyassets` for an atomic
