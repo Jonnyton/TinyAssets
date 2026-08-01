@@ -356,15 +356,16 @@ slug rule used for admission.
 
 - **WHEN** a worker returns `BLOCKED` for its admitted target
 - **AND** the recent-block-filtered snapshot contains a different eligible
-  owned, claimable, or policy-qualified stale candidate
+  owned, claimable, policy-qualified stale, or refinery candidate
 - **THEN** the supervisor considers that candidate without the configured idle
   delay
 - **AND** it does not create or claim work itself
 
 #### Scenario: Work is globally blocked
 
-- **WHEN** a worker returns `BLOCKED` and no different eligible candidate
-  remains, or returns `NO_CANDIDATE`
+- **WHEN** a worker returns `BLOCKED` and no different eligible owned,
+  claimable, policy-qualified stale, or refinery candidate remains, or returns
+  `NO_CANDIDATE`
 - **THEN** the supervisor persists that outcome and waits the configured idle
   interval before another selection attempt
 - **AND** it does not create or claim work itself

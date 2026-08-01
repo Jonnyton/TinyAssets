@@ -582,7 +582,7 @@ def has_alternative_candidate(
         recent_consumed_targets=list(recent_consumed_targets),
     )
     return any(
-        hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
+        hint.classification in {"OWNED", "CLAIMABLE", "STALE", "REFINERY"}
         and _slugify(hint.task_label) != current_target
         for hint in hints
     )
