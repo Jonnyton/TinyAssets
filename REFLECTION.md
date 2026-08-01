@@ -1,17 +1,3 @@
-## 2026-07-31 — arbitrary agent interchange over starter catalogs
-
-- **What surprised me:** the existing custom-agent domain already had much of
-  the right portable and multi-parent substrate, while the proposed content
-  seeding lane would still have pulled product work toward maintaining a
-  permanently incomplete catalog.
-- **Pattern worth capturing:** when the possible artifacts are unbounded, the
-  platform owns the loss-aware interchange, private staging, validation, and
-  lineage pipeline; examples that become common remain ordinary user commons
-  artifacts with no privileged path.
-- **What I would do differently:** define native round-trip, foreign conversion
-  reports, secret scrubbing, and cross-user blend acceptance before naming any
-  example agents, so examples cannot accidentally become product architecture.
-
 ## 2026-07-31 — local drain observer self-heal
 
 - **What surprised me:** the actual watchdog failure was a one-second Windows
