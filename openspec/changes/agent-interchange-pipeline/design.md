@@ -287,8 +287,11 @@ most 256 characters; semantic versions at most 64; media types at most 127.
 - `AgentImportStage` (all fields required unless marked optional):
   `schema_version=1`, `stage_id`, `actor_id`, `status`
   (`staged|published|expired`), `direction` (`import|export`),
-  `source_media_type`, `sanitized_source_digest`, private
-  `source_commitment`, `adapter_ref`, `adapter_version`, `adapter_digest`,
+  `source_media_type`, `sanitized_source_digest_algorithm=sha256`,
+  `sanitized_source_digest`, private
+  `source_commitment_algorithm=hmac-sha256`, `source_commitment`,
+  `adapter_ref`, `adapter_version`, `adapter_digest_algorithm=sha256`,
+  `adapter_digest`,
   `candidate` (canonical JSON at most 256 KiB and 64 components), `report`,
   `created_at`, `expires_at`, and optional `published_definition_id` present
   only for `published`. A raw inline source is at most 1 MiB before parsing.
