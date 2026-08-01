@@ -16,13 +16,13 @@
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `chore/recovery-live-foldback`
-- Lane state: Active foldback after green normal deploy 30674978746
+- Lane state: Merged as PR #2030; recovery change synced/archived by OAuth successor
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback`
-- STATUS/Issue/PR: recovery handoff claimed; foldback PR pending; PR #1935 OAuth diagnostic is the remaining release dependency
+- STATUS/Issue/PR: PR #2030 merged; current-main OAuth diagnostic successor owns the remaining release dependency
 - Purpose: record exact live cleanup/public evidence and resume OAuth diagnostics only from a reviewed current-main descendant
 - Review gate: strict OpenSpec, clean diff, exact evidence review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback/_PURPOSE.md`
-- Ship/abandon: land evidence now; archive recovery change only after task 2.3 is durably resumed
+- Ship/abandon: landed; recovery change archived after task 2.3 resumed in the current-main OAuth lane
 
 ## 2026-07-31 17:03 - recovery daemon owner-state successor
 

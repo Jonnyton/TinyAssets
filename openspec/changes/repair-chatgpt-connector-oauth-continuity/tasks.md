@@ -1,6 +1,6 @@
 ## 0. Review and admission
 
-- [ ] 0.1 Independently review this current-main proposal, design, and both deltas before production mutation. Historical source review on 2026-07-30 returned `ADAPT`, folded all five findings, and then approved staged source diff `cecd46644c10492bcdf33134f40857f37da61568`; the current-main restack deliberately omits obsolete amendments to `activate-main-universe-spec-drain` and therefore requires a new exact-head verdict.
+- [x] 0.1 Independently review this current-main proposal, design, and both deltas before production mutation. Historical source review on 2026-07-30 returned `ADAPT`, folded all five findings, and then approved staged source diff `cecd46644c10492bcdf33134f40857f37da61568`. Current-main review returned `ADAPT` for two missing bounded-diagnostic protections, then approved exact head `48af22c6` after the finite taxonomy, rate/suppression contract, malformed-before-JWKS ordering, and truthful self-contained write boundary were restored.
 
 ## 1. Evidence before correction
 
