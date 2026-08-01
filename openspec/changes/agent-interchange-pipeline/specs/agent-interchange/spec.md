@@ -152,3 +152,9 @@ The platform SHALL expose agent staging, inspection, remix, publication, binding
 - **WHEN** a connector user imports a foreign source, inspects its report, blends components from other users' public agents, explicitly publishes, binds privately, and exports the result
 - **THEN** the flow completes through `read_graph` and `write_graph` agent targets with authorization enforced at every private boundary
 - **AND** the advertised tool set remains `{read_graph, write_graph, run_graph, read_page, write_page, converse, get_status}`
+
+#### Scenario: A rendered client can construct a declarative import from the tool contract
+- **WHEN** a connector client receives an arbitrary JSON agent manifest and selects `write_graph` with `target=agent` and `operation=stage_import`
+- **THEN** the advertised `payload_json` description identifies `source_json` and `adapter` as sibling top-level keys and never instructs the client to nest the source inside the adapter
+- **AND** it identifies the `agent-interchange-adapter/v1` version, adapter identity fields, the closed rule operations, their required path/classification fields, and exact source-inventory coverage
+- **AND** a client can construct the private staging request without relying on a maintained catalog of agent-specific configurations or hidden documentation
