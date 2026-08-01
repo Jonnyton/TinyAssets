@@ -1,3 +1,21 @@
+## 2026-08-01 — governed custom-agent component compilation
+
+- **What surprised me:** arbitrary agent extensibility does not require a
+  platform component taxonomy; deterministic safety comes from exact governed
+  descriptor pins plus exhaustive refusal, while unfamiliar descriptive data
+  can remain portable and inert.
+- **Pattern worth capturing:** compile every public component in sorted order,
+  erase all partial output when any diagnostic exists, and keep plan topology
+  in a separate adapter-owned stage so component names and object order never
+  become accidental orchestration authority.
+- **Follow-up:** frozen dataclasses are not a trust boundary by themselves;
+  validate public constructors, revalidate at registry admission, and retain a
+  detached canonical copy so post-registration caller mutation cannot alter a
+  governed descriptor. Compiler refusal must also cover malformed JSON shapes,
+  not only well-typed unhappy paths.
+- **What I would do differently:** separate component and plan compilation in
+  the first test matrix instead of treating “compiler” as one broad subsystem.
+
 ## 2026-08-01 — immutable custom-agent runtime manifest
 
 - **What surprised me:** the shared test environment did not contain the
