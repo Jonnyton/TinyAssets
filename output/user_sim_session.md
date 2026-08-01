@@ -193,3 +193,39 @@ agent components and content fingerprint
 digest and adapter metadata did not propagate into the published definition.
 This rendered client finding is now task 3.5 and must be fixed/redeployed before
 interchange acceptance can close.
+
+## [2026-08-01 13:38 PDT] USER ACTION provenance repair deployed
+
+PR #2075 merged as `97f797ee369c6e1833ec28076824a22bc0e77960` after
+independent exact-head approval. Image run `30717175465` and production run
+`30717318784` passed image publication, HMAC validation/install, daemon health,
+canonical MCP, exact-seven surface, access, fleet/receipt, forward canary, and
+terminal release-state gates.
+
+## [2026-08-01 13:39 PDT] USER ACTION rolling-upgrade cleanup and fresh stage
+
+In the same one-tab, identity-checked incognito Claude conversation, a read of
+pre-fix published stage `agent_stage_01kyzematb75t59gp29dhkp4ra` confirmed that
+`source_commitment` and `source_commitment_algorithm` were absent after upgrade,
+while the safe sanitized-source digest remained. Claude then staged a second
+disposable foreign definition as `agent_stage_01kyzgvhdtw52wdgghy63f90qw`.
+The rendered candidate already contained its `agent_interchange_import`
+external origin, and the exhaustive non-lossless report accounted for every
+source path. Nothing was published by staging.
+
+## [2026-08-01 13:40 PDT] USER ACTION post-fix publish, private bind, and export
+
+Claude published definition `agent_01kyzgwbw2gxnhqzdkqmnsg71b`, created binding
+`agent_binding_01kyzgwjgnfb98f1c7wht4kpgm`, and independently read the binding
+back as `configuration.visibility=private`. It then exported the definition.
+The export preserved content fingerprint
+`c53bd308aa26be2ba78222f9e09421f3d511fe89179d7bc9796db6b483ce6a90`
+and the safe external origin: adapter ref `user:disposable-import-2`, adapter
+version `1.0.0`, adapter digest, sanitized-source digest, and both explicit
+`sha256` algorithm fields. A separate rendered read of the public definition
+confirmed `adapter_digest_algorithm=sha256` and no `source_commitment` key.
+No workflow was created or run and no external effect was triggered.
+
+The structured live commons still contained no public definition authored by a
+different creator, so a truthful rendered cross-user blend remains unproven.
+This acceptance traffic is not independent organic-use evidence.
