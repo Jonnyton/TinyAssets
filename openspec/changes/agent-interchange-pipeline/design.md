@@ -334,8 +334,9 @@ most 256 characters; semantic versions at most 64; media types at most 127.
   `schema_version=1`, `stage_id`, `actor_id`, `status`
   (`staged|published|expired`), `direction` (`import|export`),
   `source_media_type`, `sanitized_source_digest_algorithm=sha256`,
-  `sanitized_source_digest`, private
-  `source_commitment_algorithm=hmac-sha256`, `source_commitment`,
+  `sanitized_source_digest`, private `source_commitment_algorithm=hmac-sha256`
+  and `source_commitment` present only while `status=staged` and cleared on
+  publication,
   `adapter_ref`, `adapter_version`, `adapter_digest_algorithm=sha256`,
   `adapter_digest`,
   `candidate` (canonical JSON at most 256 KiB and 64 components), `report`,

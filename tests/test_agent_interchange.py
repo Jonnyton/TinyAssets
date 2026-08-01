@@ -1003,6 +1003,7 @@ def test_published_stage_exports_safe_import_provenance(tmp_path, monkeypatch) -
     }
     assert stage["candidate"]["external_origins"] == [expected_origin]
     assert published["external_origins"] == [expected_origin]
+    assert published["content_fingerprint"] == stage["receipt"]["content_fingerprint"]
     exported = get_definition(tmp_path, published["agent_definition_id"])
     assert exported is not None
     assert exported["portable_definition"]["external_origins"] == [expected_origin]

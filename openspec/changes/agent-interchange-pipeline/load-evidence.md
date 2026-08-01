@@ -1,7 +1,7 @@
 # Agent interchange load evidence
 
 - Date: 2026-08-01 PDT
-- Runtime revision: `5d62f4fa2bfc26e6ff5a06ef48ae089bf9f39a56`
+- Runtime revision: `48949a8472d2cf614930f27b97c6b2d05482d22d`
 - Environment: Windows 11 build 26200, Python 3.14.3, Intel64 Family 6 Model 151
 - Command: `python -m pytest tests/load/test_agent_interchange_load.py -q -s`
 - Topology: 8 spawned worker processes, one shared WAL-mode SQLite database, 200 actor identities
@@ -11,10 +11,10 @@
 ## Result
 
 ```json
-{"actors":200,"expected_conflicts":8,"p95_seconds":0.09722979998332448,"p99_seconds":0.1906518000178039,"processes":8,"requests":1000,"throughput_per_second":187.44810733462913,"unexpected_errors":[],"wall_seconds":5.334809799998766}
+{"actors":200,"expected_conflicts":8,"p95_seconds":0.10368900001049042,"p99_seconds":0.2756688999943435,"processes":8,"requests":1000,"throughput_per_second":191.63044451977203,"unexpected_errors":[],"wall_seconds":5.218377500015777}
 ```
 
-- Thresholds passed: throughput 187.45/s >= 3.33/s; p95 0.097s < 2s; p99 0.191s < 3s; unexpected error rate 0% < 1%.
+- Thresholds passed: throughput 191.63/s >= 3.33/s; p95 0.104s < 2s; p99 0.276s < 3s; unexpected error rate 0% < 1%.
 - Eight changed-input idempotency conflicts were expected and counted separately.
 - Every identical retry returned its first stage ID; the idempotency uniqueness query found zero duplicate logical rows.
 - `PRAGMA integrity_check` returned `ok`; the focused injected-failure test separately proves stage publication rollback leaves no partial definition/stage mutation.
