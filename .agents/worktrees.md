@@ -2281,3 +2281,15 @@ Notes:
 - Purpose: close requester-owned provider authority and bind one inactive, exact-destination cloud continuation without enabling either queue epoch.
 - Review gate: focused TDD/concurrency/restart tests, strict OpenSpec, clean diff, exact-head independent approval, required CI.
 - Publish/cleanup: one PR to main; retain local yellow drain until the later 24-hour cloud acceptance passes.
+
+## 2026-08-01 - Custom-agent runtime grant resolver foundation
+
+- Provider: `codex-gpt5-runtime-authority`
+- Branch: `codex/agent-runtime-authority-20260801`
+- Lane state: Active; exact collision-free STATUS claim on current main.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-authority`
+- STATUS/Issue/PR: bounded partial of `activate-custom-agent-runtime-core` task 3.1; PR pending.
+- Purpose: resolve immutable-manifest references against current server-owned grant evidence without caller authority or bearer material.
+- Review gate: red/green capability revocation and exhaustive denial tests, Ruff, strict OpenSpec, mirror parity, independent exact-head security review, required CI.
+- Publish/cleanup: one additive dark-contract PR; task 3.1 remains open until principal plus concrete resource/provider integration lands.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-authority/_PURPOSE.md`
