@@ -23,19 +23,26 @@ missing or active; the background binding is inactive, expired, foreign,
 wrong-version, non-cloud, exhausted, or broader than the accepted definition;
 the provider binding is unavailable; or the repository grant is unavailable.
 
-The continuation insert and exact stopped-activation comparison occur in one
-`BEGIN IMMEDIATE` transaction in the shared TinyAssets control-plane database.
-Concurrent callers therefore create exactly one record. An identical later
-call, including one after restart at a different wall-clock time, replays the
+The continuation insert and exact stopped-activation, background-binding, and
+provider-binding comparisons occur in one `BEGIN IMMEDIATE` transaction in the
+shared TinyAssets control-plane database. A legitimate background or provider
+revocation racing between preflight and insert therefore aborts preparation.
+Concurrent callers create exactly one record. An identical later call,
+including one after restart at a different wall-clock time, replays the
 original record. A different immutable definition conflicts instead of
 silently replacing it.
 
-Provider, background, and outbound-grant owners are intentionally separate
-authority aggregates. Their preflight reads cannot form one cross-store
-snapshot. The continuation records their exact generations and digests, and a
-later activation/attempt/effect slice must revalidate every owner just in time.
-Because preparation grants no execution or effect authority, revocation after
-preparation leaves only an unusable stale snapshot; it cannot launch work.
+Activation, provider, background, and outbound-grant owners remain separate
+authority aggregates. The first three share the control-plane database and are
+fenced atomically for this insert. The outbound ledger is a separate database,
+so its preflight cannot form a cross-database transaction with that insert.
+The continuation records the exact destination grant and connection IDs, and a
+later activation/attempt/effect slice must revalidate the grant just in time.
+Because preparation grants no execution or effect authority, destination
+revocation after preflight leaves only an unusable stale snapshot; it cannot
+launch work. Holding both databases while pretending to create atomic external
+authority would violate the established sequential authority boundaries and
+still could not fence a revocation immediately after commit.
 
 ## Negative proof
 
@@ -54,11 +61,22 @@ canonical content digest. Tampered persisted JSON fails closed on restart.
 
 Verified 2026-07-31 America/Los_Angeles:
 
-- `python -m pytest tests/test_cloud_automation_continuation.py -q` — 15 passed.
+- `python -m pytest tests/test_cloud_automation_continuation.py -q` — 18 passed.
 - Related activation, epoch-2 admission, background authority, provider
-  authority, user-owned automation, and outbound-ledger suite — 445 passed;
+  authority, user-owned automation, and outbound-ledger suite — 448 passed;
   one pre-existing dependency deprecation warning.
 - Ruff on the two implementation modules and focused test — clean.
+
+## Independent review
+
+Claude Code 2.1.220 twice exited without a verdict under the documented account
+limit. The host-approved fresh-context same-provider fallback reviewed exact
+commit `b80af607` and returned `ADAPT`: exact cloud-only executor authority was
+not enforced, and same-database background/provider revocation could race the
+continuation insert. Both findings became RED regressions. The implementation
+now requires the sole executor class to be `cloud` and revalidates the exact
+background/provider serialized records inside the activation/continuation
+transaction. Exact-head rereview is required before merge.
 
 ## Remaining gate
 

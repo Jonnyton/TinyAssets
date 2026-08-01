@@ -395,8 +395,8 @@ def prepare_inactive_cloud_continuation(
         background.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
         background.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
         background.pinned_branch_version_id == definition.branch_version_id,
-        BackgroundBranchExecutorClass.CLOUD
-        in background.permitted_executor_classes,
+        background.permitted_executor_classes
+        == (BackgroundBranchExecutorClass.CLOUD,),
         background.max_attempts <= definition.max_attempts,
         0 < background.remaining_count <= definition.max_attempts,
         0
@@ -425,6 +425,19 @@ def prepare_inactive_cloud_continuation(
         )
     except AutomationAdmissionError as exc:
         raise CloudContinuationPreparationError(exc.code, str(exc)) from exc
+    provider_binding = provider_store.get(authority.provider_binding_id)
+    exact_provider_snapshot = (
+        provider_binding is not None,
+        provider_binding is not None
+        and provider_binding.generation == authority.provider_binding_generation,
+        provider_binding is not None
+        and provider_binding.binding_digest == authority.provider_binding_digest,
+    )
+    if not all(exact_provider_snapshot) or provider_binding is None:
+        raise CloudContinuationPreparationError(
+            "provider_binding_unavailable",
+            "requester-owned provider binding changed during preparation",
+        )
 
     created_at = _timestamp(now)
     record = _prepared_record(
@@ -440,11 +453,17 @@ def prepare_inactive_cloud_continuation(
         return continuation_store.prepare(
             record,
             expected_activation=activation,
+            expected_background=background,
+            expected_provider=provider_binding,
         )
     except PermissionError as exc:
+        code = {
+            "background_binding_not_current": "background_binding_mismatch",
+            "provider_binding_not_current": "provider_binding_unavailable",
+        }.get(str(exc), "activation_not_stopped")
         raise CloudContinuationPreparationError(
-            "activation_not_stopped",
-            "activation changed during continuation preparation",
+            code,
+            "control-plane authority changed during continuation preparation",
         ) from exc
 
 

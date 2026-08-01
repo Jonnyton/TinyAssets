@@ -12,6 +12,10 @@ import pytest
 from tinyassets.background_branch_authority import (
     BackgroundBranchAuthorityWriteOutcome,
     BackgroundBranchBinding,
+    BackgroundBranchBindingFence,
+)
+from tinyassets.background_branch_authority_service import (
+    BackgroundBranchBindingTransitionService,
 )
 from tinyassets.cloud_automation_continuation import (
     CloudContinuationPreparationError,
@@ -321,6 +325,7 @@ def test_different_definition_conflicts_with_prepared_lane(tmp_path: Path) -> No
         ("background_foreign", "background_binding_mismatch"),
         ("background_wrong_version", "background_binding_mismatch"),
         ("background_wrong_executor", "background_binding_mismatch"),
+        ("background_broad_executor", "background_binding_mismatch"),
         ("background_overbroad_budget", "background_binding_mismatch"),
         ("background_exhausted", "background_binding_mismatch"),
         ("provider_revoked", "provider_binding_unavailable"),
@@ -343,7 +348,11 @@ def test_prepare_fails_closed_on_missing_or_stale_owner(
             else "branch_repo_spec_loop@abc12345"
         ),
         executor_classes=(
-            ("host",) if fault == "background_wrong_executor" else ("cloud",)
+            ("host",)
+            if fault == "background_wrong_executor"
+            else ("cloud", "host")
+            if fault == "background_broad_executor"
+            else ("cloud",)
         ),
         max_attempts=3 if fault == "background_overbroad_budget" else 2,
         remaining_count=0 if fault == "background_exhausted" else 2,
@@ -406,3 +415,51 @@ def test_prepared_record_rejects_noncanonical_integrity_fields(
         replace(record, definition_digest=f"sha256:{'A' * 64}")
     with pytest.raises(ValueError, match="canonical UTC timestamp"):
         replace(record, created_at="tomorrow")
+
+
+@pytest.mark.parametrize(
+    ("owner", "expected_code"),
+    [
+        ("background", "background_binding_mismatch"),
+        ("provider", "provider_binding_unavailable"),
+    ],
+)
+def test_control_plane_owner_change_before_insert_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    owner: str,
+    expected_code: str,
+) -> None:
+    fixture = _fixture(tmp_path)
+    original_prepare = fixture[6].prepare
+
+    class _UnusedBackgroundResolver:
+        def resolve(self, _root):
+            raise AssertionError("revoke does not resolve the issuance root")
+
+    def interleaved_prepare(*args, **kwargs):
+        if owner == "background":
+            binding = fixture[3].get_binding(fixture[1].background_binding_id)
+            assert binding is not None
+            BackgroundBranchBindingTransitionService(
+                fixture[3],
+                _UnusedBackgroundResolver(),
+            ).revoke(BackgroundBranchBindingFence(binding))
+        else:
+            binding = fixture[4].get(fixture[0].provider_binding_id)
+            assert binding is not None
+            ProviderWorkBindingService(fixture[4]).revoke(
+                ProviderWorkBindingFence(binding)
+            )
+        return original_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(fixture[6], "prepare", interleaved_prepare)
+
+    with pytest.raises(CloudContinuationPreparationError) as exc_info:
+        _prepare(fixture)
+
+    assert exc_info.value.code == expected_code
+    assert fixture[6].get(
+        universe_id=fixture[0].universe_id,
+        automation_id=fixture[1].automation_id,
+    ) is None
