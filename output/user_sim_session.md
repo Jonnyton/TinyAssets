@@ -181,3 +181,9 @@ then received an opposite-provider `APPROVE`, preserved at
 reproduced the public CIMD failure and immutable-window category, ran the core
 focused tests, and adversarially verified hostile prefixes cannot populate the
 canonical diagnostic field.
+
+The review's two low checker findings were subsequently fixed test-first.
+Three boundary tests failed before implementation and now pass for canonical
+trailing-slash normalization plus non-string authorization-server and issuer
+metadata. The full lane gate is 106 passed with Ruff and strict OpenSpec clean;
+the live public result remains only `cimd_not_advertised`.

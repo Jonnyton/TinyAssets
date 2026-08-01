@@ -17,28 +17,30 @@ def _contains(values: Any, expected: str) -> bool:
     return isinstance(values, list) and expected in values
 
 
+def _normalize_url(value: Any) -> str:
+    return value.rstrip("/") if isinstance(value, str) else ""
+
+
+def _authorization_server(resource_metadata: dict[str, Any]) -> str:
+    values = resource_metadata.get("authorization_servers", [])
+    return _normalize_url(values[0]) if isinstance(values, list) and values else ""
+
+
 def check_discovery_contract(
     mcp_url: str,
     resource_metadata: dict[str, Any],
     authorization_metadata: dict[str, Any],
 ) -> dict[str, Any]:
     """Return a public, secret-free continuity report for two metadata documents."""
-    expected_resource = mcp_url.rstrip("/")
-    authorization_servers = resource_metadata.get("authorization_servers", [])
-    authorization_server = (
-        authorization_servers[0]
-        if isinstance(authorization_servers, list) and authorization_servers
-        else ""
-    )
+    expected_resource = _normalize_url(mcp_url)
+    authorization_server = _authorization_server(resource_metadata)
     issues: list[str] = []
 
-    if resource_metadata.get("resource") != expected_resource:
+    if _normalize_url(resource_metadata.get("resource")) != expected_resource:
         issues.append("resource_mismatch")
     if not authorization_server:
         issues.append("authorization_server_missing")
-    elif authorization_metadata.get("issuer", "").rstrip("/") != (
-        authorization_server.rstrip("/")
-    ):
+    elif _normalize_url(authorization_metadata.get("issuer")) != authorization_server:
         issues.append("authorization_server_issuer_mismatch")
     if not _contains(resource_metadata.get("bearer_methods_supported"), "header"):
         issues.append("bearer_header_missing")
@@ -96,10 +98,9 @@ def inspect_discovery_contract(
     """Fetch public discovery documents and evaluate their continuity contract."""
     resource_url = f"{mcp_url.rstrip('/')}/.well-known/oauth-protected-resource"
     resource_metadata = fetch_json(resource_url)
-    authorization_servers = resource_metadata.get("authorization_servers", [])
-    if not isinstance(authorization_servers, list) or not authorization_servers:
+    authorization_server = _authorization_server(resource_metadata)
+    if not authorization_server:
         return check_discovery_contract(mcp_url, resource_metadata, {})
-    authorization_server = authorization_servers[0].rstrip("/")
     authorization_metadata = fetch_json(
         f"{authorization_server}/.well-known/oauth-authorization-server"
     )

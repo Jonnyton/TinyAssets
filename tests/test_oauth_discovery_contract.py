@@ -206,3 +206,45 @@ def test_contract_does_not_accept_string_substrings_as_metadata_lists():
         "pkce_s256_missing",
         "public_client_token_auth_missing",
     ]
+
+
+def test_contract_normalizes_trailing_slashes_on_resource_and_issuer_urls():
+    from scripts.check_oauth_discovery_contract import check_discovery_contract
+
+    result = check_discovery_contract(
+        f"{MCP_URL}/",
+        _resource_metadata(resource=f"{MCP_URL}/"),
+        _authorization_metadata(issuer=f"{AUTHKIT}/"),
+    )
+
+    assert result["ok"] is True
+    assert result["resource"] == MCP_URL
+    assert result["authorization_server"] == AUTHKIT
+
+
+def test_live_check_rejects_non_string_authorization_server_without_fetching_it():
+    from scripts.check_oauth_discovery_contract import inspect_discovery_contract
+
+    calls = []
+
+    def fetch_json(url):
+        calls.append(url)
+        return _resource_metadata(authorization_servers=[{"issuer": AUTHKIT}])
+
+    result = inspect_discovery_contract(MCP_URL, fetch_json)
+
+    assert calls == [f"{MCP_URL}/.well-known/oauth-protected-resource"]
+    assert result["authorization_server"] == ""
+    assert result["issues"] == ["authorization_server_missing"]
+
+
+def test_contract_reports_non_string_issuer_as_a_safe_mismatch():
+    from scripts.check_oauth_discovery_contract import check_discovery_contract
+
+    result = check_discovery_contract(
+        MCP_URL,
+        _resource_metadata(),
+        _authorization_metadata(issuer={"value": AUTHKIT}),
+    )
+
+    assert result["issues"] == ["authorization_server_issuer_mismatch"]

@@ -230,9 +230,11 @@ Claude's opposite-provider exact-head review returned `APPROVE` for
 verified the immutable workflow result, reproduced the single live
 `cimd_not_advertised` issue, ran 95 core focused tests plus Ruff and strict
 OpenSpec validation, and adversarially confirmed arbitrary prefixes cannot
-enter the canonical category field. Two low, non-gating checker hardening nits
-remain: trailing-slash normalization and clean classification of non-string
-first-party metadata fields.
+enter the canonical category field. Its two low checker findings were then
+addressed test-first: three new tests failed on trailing-slash resource
+normalization, a non-string authorization-server entry, and a non-string
+issuer; all 12 checker tests now pass, malformed metadata produces only finite
+safe issue codes, and the live result remains only `cimd_not_advertised`.
 
 ## Next evidence gate
 

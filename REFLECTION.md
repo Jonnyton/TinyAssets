@@ -1248,3 +1248,6 @@ fresh-host rollback edges found later.
   `malformed`/`prefixed` signal, then source inspection found the deployed
   entry point's bare root-warning format. An exact Compose-prefix matcher made
   the same window pass strictly without widening to arbitrary prefixes.
+- Review follow-through: low findings are cheapest to close while their threat
+  model is fresh. A two-function boundary normalizer removed both metadata
+  tracebacks and URL-shape drift without changing the live diagnosis.

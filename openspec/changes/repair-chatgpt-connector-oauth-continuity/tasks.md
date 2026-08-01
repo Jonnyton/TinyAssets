@@ -10,7 +10,7 @@
 ## 2. Exact continuity repair
 
 - [ ] 2.1 Test-first, repair only the evidence-identified validator or WorkOS/AuthKit configuration boundary; retain negative coverage for algorithm, signature, issuer, audience, expiry, subject, missing claims, and production audience-bypass refusal.
-- [ ] 2.2 Add an automated parity/continuity check for every boundary that can be verified without secrets, and durably document any unavoidable WorkOS control-plane setting. Local test-first checker now covers resource/issuer, bearer transport, auth/token/DCR endpoints, authorization-code + refresh grants, offline scope, PKCE S256, public-client exchange, CIMD advertisement, and malformed list-shaped metadata; 9 focused tests pass. The live check fails only with `cimd_not_advertised`. Completion still requires the WorkOS control-plane correction and a green live result.
+- [ ] 2.2 Add an automated parity/continuity check for every boundary that can be verified without secrets, and durably document any unavoidable WorkOS control-plane setting. Local test-first checker now covers normalized resource/issuer URLs, malformed or non-string metadata shapes, bearer transport, auth/token/DCR endpoints, authorization-code + refresh grants, offline scope, PKCE S256, public-client exchange, and CIMD advertisement; 12 focused tests pass after three new boundary tests failed first. The live check fails only with `cimd_not_advertised`. Completion still requires the WorkOS control-plane correction and a green live result.
 
 ## 3. Live acceptance
 
