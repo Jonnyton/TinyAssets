@@ -93,3 +93,32 @@ This result means the rendered attempt did not produce an instrumented bearer
 rejection. It does not prove that a token was accepted. The next rendered test
 must explicitly reattach TinyAssets after OAuth returns and force an
 authenticated tool call before validator repair is authorized.
+
+## [2026-08-01 11:29 PDT] LEAD DIRECTION agent-interchange acceptance
+
+The user's build/deploy request authorizes one isolated live acceptance chain:
+import a disposable declarative foreign agent, inspect its loss report, remix it
+with public definitions from other creators, publish it, create a private test
+binding, and export it again. Do not activate workflows or perform external
+effects. Use ordinary user-language prompts through the visible TinyAssets
+connector and retain only non-secret IDs/fingerprints in evidence.
+
+Deployment prerequisite passed: image `4c6e020fdb72` was published by run
+`30712318544`; production run `30712443230` passed daemon health, canonical MCP
+canary, exact-seven assertion, access gate, receipt proof, and release receipt.
+
+## [2026-08-01 11:34 PDT] USER BLOCKER no host-visible chatbot route
+
+Claude and ChatGPT visible-driver preflights both failed because launched Chrome
+never exposed CDP on port 9222. The Codex in-app-browser runtime then reported no
+available browser backend (`agent.browsers.list() == []`). No prompt was sent and
+no direct MCP substitute was used. Rendered connector acceptance therefore
+remains unproven; this is a harness/browser blocker, not a connector failure.
+
+## [2026-08-01 11:36 PDT] POST-DEPLOY WATCH
+
+Scheduled production uptime canary run `30712596613` passed after deployment.
+GitHub issue searches found no `stage_import` or `convert_export` reports and no
+new deploy-failed issue for image `4c6e020fdb72`. No operation-level production
+trace or support record showed organic use of agent interchange, so clean user
+use remains unproven and the STATUS monitoring row stays open.
