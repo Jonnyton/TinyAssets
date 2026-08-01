@@ -1184,3 +1184,15 @@ fresh-host rollback edges found later.
 - What I would do differently: drive the first deploy test with transient
   systemd states and an active-but-disabled daemon, not only idealized stable
   unit fixtures.
+
+## 2026-07-31 - Recovery handoff live closure
+
+- What surprised me: two correct repairs developed concurrently—stable
+  preflight snapshots and a successful-deploy daemon postcondition—and only
+  their integrated exact-head review proved that neither weakened the other.
+- Pattern worth capturing: after a recovery deployment, accept closure only
+  when workflow success, downloaded exact-state artifacts, and a fresh public
+  probe agree.
+- What I would do differently: check draft successor branches against current
+  `main` before calling them deployable; a diagnostics-only change can still
+  regress production when its image omits newer platform capabilities.
