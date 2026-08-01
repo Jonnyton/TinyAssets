@@ -1462,15 +1462,17 @@ def preflight(
             host,
             restored_state,
         )
-    controlled_identities = tuple(
-        identity
-        for identity in (
-            *old_ids.values(),
-            *(str(extra.get("id", "")) for extra in extra_consumers.values()),
-            *(str(info.get("Id", "")) for info in sidecar_inspections.values()),
-        )
-        if identity
+    controlled_identity_values = (
+        *(info.get("Id") for info in inspections.values()),
+        *(info.get("Id") for info in extra_inspections.values()),
+        *(info.get("Id") for info in sidecar_inspections.values()),
     )
+    if any(
+        not isinstance(identity, str) or not identity.strip()
+        for identity in controlled_identity_values
+    ):
+        raise FenceError("controlled container identity is unavailable")
+    controlled_identities = tuple(controlled_identity_values)
     controlled_pids = host.container_pids(controlled_identities)
     preliminary_risk = inventory_queue_risk(volume_dir)
     preliminary_processes = _stray_writer_processes(

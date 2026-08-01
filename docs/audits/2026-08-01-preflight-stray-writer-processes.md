@@ -71,9 +71,20 @@ On Windows/Python 3.13 at exact pre-implementation head `a4613146`, the focused
 matrix produced 8 expected failures and 1 control pass. Failures covered raw
 preflight rejection, mutable-name initial ownership, numeric PID reuse,
 malformed/partial Docker output, failed Docker lookup, and candidate-101
-truncation.
+truncation. The exact 100-candidate test was also applied to detached head
+`a4613146` and failed with `AttributeError` because the fixed candidate-bound
+contract did not yet exist.
 
-After implementation, the focused security/concurrency matrix passed 10/10,
-including one fresh snapshot across exactly 100 mixed exited, same-generation
-owned, and genuine-unowned candidates plus fixed-class refusal at candidate
-101. The complete fence file passed 207/207. Changed-file Ruff was clean.
+Independent review of implementation head `7aa97b22` returned ADAPT: empty
+expected/extra IDs were filtered out of both ownership snapshots and only
+refused after durable state and restart-policy mutation. Tests-only head
+`36906a1f` then reproduced both paths as 2 expected failures while unreadable
+and malformed process-generation controls passed 2/2. The repair now rejects
+any inspected expected, extra, or admitted-sidecar identity that is not a
+nonempty string, using one fixed private refusal before either PID snapshot,
+durable state, or host mutation.
+
+After adaptation, the focused identity/generation matrix passed 4/4, including
+public generation-stripped risk for missing and malformed `/proc/<pid>/stat`.
+The complete fence file passed 211/211. The complete recovery/deploy matrix
+passed 450/450 in 15.65 seconds. Changed-file Ruff was clean.
