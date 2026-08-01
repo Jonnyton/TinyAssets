@@ -2293,3 +2293,16 @@ Notes:
 - Review gate: red/green capability revocation and exhaustive denial tests, Ruff, strict OpenSpec, mirror parity, independent exact-head security review, required CI.
 - Publish/cleanup: one additive dark-contract PR; task 3.1 remains open until principal plus concrete resource/provider integration lands.
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-authority/_PURPOSE.md`
+
+## 2026-08-01 - Custom-agent runtime grant resolver landed
+
+- Provider: `codex-gpt5-runtime-authority-foldback`
+- Branch: `chore/agent-runtime-grant-foldback-20260801`
+- Lane state: PR #2102 merged as `b963be66`; implementation claim retired before landing.
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-grant-foldback`
+- Purpose: fold the live capability-resolver foundation into current runtime-core coordination truth without closing task 3.1.
+- Verification: PR #2102 records 91 focused tests; 67 strict OpenSpec items, cross-platform package builds, staged imports, smoke, mirror parity, and exact integration-head independent review passed.
+- Remaining: PR #2082 typed ExecutionSubject/activation-key prerequisite; server-derived AgentRuntimePrincipal; authoritative resource/provider adapters; activation/invocation/resume integration; §14 and live proof.
+- Reflection: composition-root time, exact evidence scope, and detached source state are reusable authority-boundary requirements.
+- Publish/cleanup: one coordination-only PR; remove both runtime-grant worktrees after verified foldback.
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-grant-foldback/_PURPOSE.md`
