@@ -93,3 +93,97 @@ This result means the rendered attempt did not produce an instrumented bearer
 rejection. It does not prove that a token was accepted. The next rendered test
 must explicitly reattach TinyAssets after OAuth returns and force an
 authenticated tool call before validator repair is authorized.
+
+## Fresh post-return reattachment control
+
+Date: 2026-07-31 PDT / 2026-08-01 UTC
+Surface: ChatGPT Pro, Instant, rendered browser UI
+
+After the reconnect returned through `https://chatgpt.com/?link_success=true`
+and displayed `TinyAssets is now connected`, the plugin picker still showed
+TinyAssets. It was explicitly attached and the user sent:
+
+> ok, i reconnected it — use TinyAssets now and tell me which account it sees
+> and what universe i'm in
+
+The rendered request remained in progress for more than two minutes without a
+tool result or assistant text and was stopped. A brand-new Temporary Chat then
+attached TinyAssets and sent:
+
+> use my TinyAssets connector and tell me which account and universe it's
+> connected to
+
+ChatGPT immediately rendered `Reconnect TinyAssets` and stated that the
+connection had expired. The Plugins settings surface also listed
+`TinyAssets — Reconnect`. The plugin was visible; its OAuth credential was not
+usable. This is acceptance-test activity, not organic use.
+
+Bounded production correlation at exact main
+`7932b333a5b14be7d25983d85e66f82affd4164a`:
+
+- run 30680168689, 02:25:00Z–02:31:00Z: 198 lines,
+  `input_truncated=false`, `oauth_rejection_categories=[]`;
+- run 30680303470, 02:31:00Z–02:35:00Z: 54 lines,
+  `input_truncated=false`, `oauth_rejection_categories=[]`.
+
+No instrumented bearer rejection was recorded for either attempt. A later
+malformed-bearer positive control initially recorded none because the strict
+sanitizer assumed a timestamped root-log envelope that the deployed
+`tinyassets.universe_server` entry point does not install. Historical replay
+run 30681363132 at exact head
+`f4a6251f78b79a0c320345f0a3ec86a7619e84e5` recognized the same immutable
+positive-control window as `oauth_rejection_categories=["malformed"]`, with 44
+lines, `input_truncated=false`, and no raw journal text. The empty rendered-call
+windows therefore mean no rejected bearer was observed; they do not prove no
+request or accepted bearer reached the server.
+
+## Client-registration discovery
+
+ChatGPT's New Plugin → Advanced OAuth settings discovered the correct AuthKit
+authorization, token, registration, issuer, resource, OIDC, and
+`offline_access` values. It selected `Dynamic Client Registration (DCR)` and
+rendered `CIMD is unavailable because the server did not advertise CIMD
+support.` Scoped screenshot:
+`output/chatgpt_oauth_discovery_dcr_only_2026-07-31.png`.
+
+The public authorization-server metadata also omits
+`client_id_metadata_document_supported`. The new automated public discovery
+check fails with the single safe issue `cimd_not_advertised`; 9 focused tests
+pass. This justifies a bounded AuthKit CIMD enablement experiment while keeping
+DCR for compatibility, but does not yet prove that CIMD absence caused the old
+DCR registration to expire.
+
+## Diagnostic positive control and independent review
+
+At 2026-08-01T02:56:15Z and again at 02:57:37Z, a fixed non-secret malformed
+bearer (`positive-control-not-a-jwt`) was sent to production `/mcp`. Both calls
+returned the expected `401 invalid_token` with the protected-resource
+challenge. Bounded runs 30681000676 and 30681046575 were complete and
+non-truncated but still returned `oauth_rejection_categories=[]`. Diagnostic
+run 30681215115 then found the safe category `malformed` under a generic
+`prefixed` shape. After adapting the strict matcher only for the exact
+allowlisted Compose service prefix plus bare warning emitted by the deployed
+entry point, run 30681363132 replayed the same 02:57:00Z–02:58:00Z journal
+window and returned `oauth_rejection_categories=["malformed"]`, 44 lines, and
+`input_truncated=false`. The positive control is now proven without exposing
+tokens or raw journal text.
+
+Claude's opposite-provider review is preserved at
+`output/claude-oauth-cimd-review.md`. Verdict: `ADAPT`. It approves enabling
+AuthKit CIMD while retaining DCR and recreating/updating the ChatGPT
+registration to choose CIMD, after restoring detector honesty and recording
+that a successful retest would change both freshness and registration method,
+so it would not isolate which variable repaired continuity.
+
+The adapted exact head `cee3baf1d3bc0a51d999b118be71af8b118d0aad`
+then received an opposite-provider `APPROVE`, preserved at
+`output/claude-oauth-cimd-exact-head-review.md`. The reviewer independently
+reproduced the public CIMD failure and immutable-window category, ran the core
+focused tests, and adversarially verified hostile prefixes cannot populate the
+canonical diagnostic field.
+
+The review's two low checker findings were subsequently fixed test-first.
+Three boundary tests failed before implementation and now pass for canonical
+trailing-slash normalization plus non-string authorization-server and issuer
+metadata. The full lane gate is 106 passed with Ruff and strict OpenSpec clean;
+the live public result remains only `cimd_not_advertised`.

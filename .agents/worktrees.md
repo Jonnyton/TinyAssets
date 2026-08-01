@@ -1,5 +1,14 @@
 # Worktree Inventory
 
+## OAuth CIMD persistence
+
+- Branch: `fix/oauth-cimd-persistence`
+- Draft PR: `#2041`
+- Lane state: claimed; exact historical replay now proves malformed-token diagnostics, while rendered post-reconnect calls still expire and AuthKit omits CIMD.
+- Worktree: `C:/Users/Jonathan/Projects/wf-oauth-cimd-persistence`
+- Purpose: add a public OAuth discovery contract check, enable AuthKit CIMD, recreate/update the ChatGPT registration, and prove immediate plus later authenticated continuity.
+- Review gate: exact-head `cee3baf1` independently approved after focused tests and immutable-window verification; deployed revision checks, rendered ChatGPT acceptance, and organic-use evidence or a dated watch row remain.
+
 ## 2026-07-31 19:20 - OAuth return reattachment acceptance
 
 - Provider: `codex-gpt5-desktop`
