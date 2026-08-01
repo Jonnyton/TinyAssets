@@ -103,6 +103,31 @@ DEFAULT_LOCK_PATH = Path("/run/lock/tinyassets-deploy-fence.lock")
 HOST_COMMAND_TIMEOUT_SECONDS = 45
 LOCK_TIMEOUT_SECONDS = 60
 UNIT_RESTORE_TIMEOUT_SECONDS = 120
+AUTHORITATIVE_UNIT_ACTIVE_STATES = frozenset(
+    {
+        "active",
+        "reloading",
+        "inactive",
+        "failed",
+        "activating",
+        "deactivating",
+    }
+)
+AUTHORITATIVE_UNIT_ENABLED_STATES = frozenset(
+    {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "static",
+        "disabled",
+        "indirect",
+        "generated",
+        "transient",
+        "masked",
+        "masked-runtime",
+    }
+)
 RECOVERY_LEASE_SECONDS = 600
 RECOVERY_SIDECAR_START_ATTEMPTS = 2
 RECOVERY_COMPOSE_PATH = Path("/opt/tinyassets/compose.yml")
@@ -2269,39 +2294,24 @@ def quiesce_unsafe(
 
 def _validated_unit_state(host: Host, unit: str) -> dict[str, str]:
     state = host.unit_state(unit)
-    if state.get("active") not in {
-        "active",
-        "reloading",
-        "inactive",
-        "failed",
-        "activating",
-        "deactivating",
-    }:
+    if state.get("active") not in AUTHORITATIVE_UNIT_ACTIVE_STATES:
         raise FenceError(f"unit active state is not authoritative: {unit}")
-    if state.get("enabled") not in {
-        "enabled",
-        "enabled-runtime",
-        "linked",
-        "linked-runtime",
-        "static",
-        "disabled",
-        "indirect",
-        "generated",
-        "transient",
-        "masked",
-        "masked-runtime",
-    }:
+    if state.get("enabled") not in AUTHORITATIVE_UNIT_ENABLED_STATES:
         raise FenceError(f"unit enablement is not authoritative: {unit}")
     return state
 
 
 def _daemon_restore_expectation(state: Mapping[str, str]) -> dict[str, str]:
-    """Converge only systemd's startup transition to its healthy terminal state."""
+    """Require the successful normal-deploy daemon postcondition."""
 
-    expected = dict(state)
-    if expected.get("active") == "activating":
-        expected["active"] = "active"
-    return expected
+    active = state.get("active")
+    enabled = state.get("enabled")
+    if (
+        active not in AUTHORITATIVE_UNIT_ACTIVE_STATES
+        or enabled not in AUTHORITATIVE_UNIT_ENABLED_STATES
+    ):
+        raise FenceError("saved daemon unit state is invalid")
+    return {"active": "active", "enabled": enabled}
 
 
 def restore_if_safe(
@@ -2328,6 +2338,9 @@ def restore_if_safe(
         }
     state = _load_state(state_path)
     _require_state_run(state, run_id)
+    daemon_state = _daemon_restore_expectation(
+        state.get("daemon_service_state", {})
+    )
     evidence = prove(
         host,
         image_ref=image_ref,
@@ -2349,9 +2362,6 @@ def restore_if_safe(
             host.run(["systemctl", "enable", unit])
         if prior.get("active") == "active":
             host.run(["systemctl", "start", unit])
-    daemon_state = _daemon_restore_expectation(
-        state.get("daemon_service_state", {})
-    )
     if daemon_state.get("enabled") == "enabled":
         host.run(["systemctl", "enable", DAEMON_SERVICE])
     if daemon_state.get("active") == "active":

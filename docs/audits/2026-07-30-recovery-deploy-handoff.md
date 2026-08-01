@@ -800,6 +800,42 @@ OpenSpec, and diff checks; confirmed both parent lineages are ancestors; and
 found #2020's configuration, exact-ID, replay, mixed-ownership, and
 reboot-refence authority byte-preserved alongside the terminal-state repair.
 
+Normal deploy
+[30673351448](https://github.com/Jonnyton/TinyAssets/actions/runs/30673351448)
+then passed every forward gate on merged PR #2023, including exact fleet,
+unchanged receipt, canonical canary, exact-seven surface, CF Access, and
+post-canary proof. Cleanup still failed because the finalized recovery
+predecessor had authoritatively saved the daemon as `failed/disabled`, while
+the successful normal target was correctly `active/disabled`. The workflow
+safely re-fenced all writers and published a non-contradictory
+`failed_without_rollback` receipt; a fresh canary observed HTTP 502.
+Source-bound recovery
+[30673590461](https://github.com/Jonnyton/TinyAssets/actions/runs/30673590461)
+restored and finalized the exact target, after which a fresh Windows-host
+exact-seven canary exited 0. This evidence replaces the narrower transitional
+state assumption with the postcondition that every successful normal deploy
+requires daemon `active` while preserving exact saved enablement.
+
+Independent exact-head review approved commit `0ec4efe0` on 2026-07-31. The
+reviewer reproduced 386/386 focused passing tests, changed-file Ruff, strict
+OpenSpec validation, and diff checks. It specifically confirmed the exact
+production predecessor regression (`failed/disabled` to `active/disabled`)
+and the proof-order regression that injects normal-deploy proof failure and
+observes no disable, stop, mask, unmask, enable, or start mutation. No
+release-blocking findings remained.
+
+Current `main` then advanced through PR #2026's stable-unit snapshot repair.
+The active-daemon postcondition was restacked without weakening that repair:
+fresh preflight still refuses to write intent or mutate while any unit remains
+transient, while cleanup maps a validated authoritative predecessor daemon
+state to the successful normal-deploy `active` postcondition and retains exact
+saved enablement. Independent exact-head review approved integrated commit
+`d3a1b2fe` on 2026-07-31. The reviewer reproduced 431/431 focused tests,
+changed-file Ruff, strict OpenSpec validation, the `ALLOWED` OpenSpec flow gate,
+and clean diff/worktree checks; confirmed `origin/main` as an ancestor; and
+found PR #2026's stable-snapshot path plus PR #2020's sidecar, exact-ID, replay,
+and reboot authority intact. No release-blocking findings remained.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored

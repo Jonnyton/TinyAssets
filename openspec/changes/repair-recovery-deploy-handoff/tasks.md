@@ -26,9 +26,9 @@
 
 ## 2. Verification And Release
 
-- [ ] 2.1 Pass the combined focused suite, Ruff, strict OpenSpec validation,
+- [x] 2.1 Pass the combined focused suite, Ruff, strict OpenSpec validation,
   clean diff, and independent exact-head fail-closed/security review for the
-  integrated stable-unit successor.
+  integrated stable-snapshot plus active-daemon postcondition successor.
 - [ ] 2.2 Land the repair, deploy one immutable image through the normal fence,
   and record exact-five canonical fleet plus public MCP canary evidence.
 - [ ] 2.3 Resume the OAuth diagnostic deployment only after the repaired normal

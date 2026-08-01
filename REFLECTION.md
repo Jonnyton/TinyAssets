@@ -1149,6 +1149,19 @@ fresh-host rollback edges found later.
   round-trip fixture through the real validator.
 # 2026-07-31 — deploy terminal-state recovery
 
+## Follow-up: predecessor state is not the postcondition
+
+- What surprised me: an emergency recovery can serve the exact production
+  fleet while `tinyassets-daemon.service` is authoritatively `failed` or
+  `inactive`; preserving that active state after a successful normal deploy is
+  therefore wrong even though preserving its enablement is correct.
+- Pattern worth capturing: separate predecessor policy from target health.
+  Save and restore enablement exactly, but define the successful target's
+  active state as a postcondition.
+- What I would do differently: enumerate every authoritative state class in
+  the first production-shaped test instead of repairing only the first
+  observed transition (`activating`).
+
 - What surprised me: every forward deployment proof was green, yet preserving
   a transient systemd `activating` snapshot made exact cleanup convergence
   impossible and turned a healthy target into a safe but public outage.
