@@ -16,6 +16,7 @@ $watchdogDir = Join-Path $repoPath "output\openspec-drain-watchdog"
 $healthPath = Join-Path $watchdogDir "health.json"
 $stopPath = Join-Path $watchdogDir "stop.request"
 $restartPath = Join-Path $watchdogDir "restart.request"
+$controlMutexName = "Local\TinyAssetsOpenSpecDrainControl"
 New-Item -ItemType Directory -Path $watchdogDir -Force | Out-Null
 
 $createdNew = $false
@@ -78,6 +79,29 @@ function Start-DrainWatchdog {
         $script:notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::Error
         $script:notify.ShowBalloonTip(5000)
         return $false
+    }
+}
+
+function Invoke-DrainControlMutation {
+    param([scriptblock]$Action)
+
+    $mutex = New-Object System.Threading.Mutex -ArgumentList @(
+        $false,
+        $controlMutexName
+    )
+    $acquired = $false
+    try {
+        $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(60))
+        if (-not $acquired) {
+            throw "Timed out waiting for the drain control lock."
+        }
+        & $Action
+    }
+    finally {
+        if ($acquired) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
     }
 }
 
@@ -226,9 +250,22 @@ while (`$true) {
 })
 
 $restartItem.Add_Click({
-    Start-DrainWatchdog | Out-Null
-    Start-Sleep -Milliseconds 1000
-    Set-Content -LiteralPath $restartPath -Value "restart requested $(Get-Date -Format o)"
+    try {
+        Invoke-DrainControlMutation {
+            Start-DrainWatchdog | Out-Null
+            Start-Sleep -Milliseconds 1000
+            Set-Content -LiteralPath $restartPath -Value "restart requested $(Get-Date -Format o)"
+        }
+    }
+    catch {
+        $script:notify.ShowBalloonTip(
+            5000,
+            "OpenSpec drain control failed",
+            $_.Exception.Message,
+            [System.Windows.Forms.ToolTipIcon]::Error
+        )
+        return
+    }
     $script:notify.ShowBalloonTip(
         3000,
         "OpenSpec drain",
@@ -238,7 +275,20 @@ $restartItem.Add_Click({
 })
 
 $stopItem.Add_Click({
-    Set-Content -LiteralPath $stopPath -Value "stop requested $(Get-Date -Format o)"
+    try {
+        Invoke-DrainControlMutation {
+            Set-Content -LiteralPath $stopPath -Value "stop requested $(Get-Date -Format o)"
+        }
+    }
+    catch {
+        $script:notify.ShowBalloonTip(
+            5000,
+            "OpenSpec drain control failed",
+            $_.Exception.Message,
+            [System.Windows.Forms.ToolTipIcon]::Error
+        )
+        return
+    }
     $script:notify.ShowBalloonTip(
         3000,
         "OpenSpec drain",

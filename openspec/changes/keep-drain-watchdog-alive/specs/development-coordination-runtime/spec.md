@@ -34,6 +34,11 @@ The development coordination runtime SHALL recover a failed local drain watchdog
 - **THEN** the installer updates both task definitions without recycling or starting observers
 - **AND** it reports that version activation is deferred until the next real sign-in
 
+#### Scenario: Stop action races live reinstall
+- **WHEN** a tray stop action and live reinstall overlap
+- **THEN** a shared current-session control lock serializes the stop marker mutation and the installer's sample-through-verification transaction
+- **AND** the stop is either observed before activation and causes deferral or is applied after activation without being cleared
+
 #### Scenario: Supervisor is healthy but idle
 - **WHEN** self-healing restores fresh watchdog health for a live idle supervisor
 - **THEN** the tray reports waiting rather than false running progress

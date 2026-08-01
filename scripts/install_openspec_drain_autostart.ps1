@@ -41,12 +41,23 @@ $launcherScript = Join-Path $repoPath "scripts\launch_openspec_drain_tray.vbs"
 $watchdogScript = Join-Path $repoPath "scripts\openspec_drain_watchdog.py"
 $supervisorScript = Join-Path $repoPath "scripts\openspec_drain_supervisor.py"
 $stopPath = Join-Path $repoPath "output\openspec-drain-watchdog\stop.request"
-$stopRequested = Test-Path -LiteralPath $stopPath
 foreach ($required in @($trayScript, $launcherScript, $watchdogScript, $supervisorScript)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required drain file is missing: $required"
     }
 }
+
+$controlMutex = New-Object System.Threading.Mutex -ArgumentList @(
+    $false,
+    "Local\TinyAssetsOpenSpecDrainControl"
+)
+$controlLockAcquired = $false
+try {
+    $controlLockAcquired = $controlMutex.WaitOne([TimeSpan]::FromSeconds(60))
+    if (-not $controlLockAcquired) {
+        throw "Timed out waiting for the drain control lock."
+    }
+    $stopRequested = Test-Path -LiteralPath $stopPath
 
 $primaryArguments = "//B //Nologo `"$launcherScript`" `"$repoPath`""
 $guardArguments = "$primaryArguments --preserve-stop"
@@ -144,14 +155,9 @@ Register-ScheduledTask `
     -Description "Relaunches the hidden OpenSpec drain tray after failure without clearing an intentional session stop." `
     -Force | Out-Null
 
-if (-not $NoStart -and $stopRequested) {
-    Write-Output "Installed scheduled tasks: $TaskName; $GuardTaskName"
-    Write-Output "Observer activation deferred until next sign-in because stop.request is active."
-    Write-Output "Controller repo: $repoPath"
-    exit 0
-}
+$activationDeferred = (-not $NoStart -and $stopRequested)
 
-if (-not $NoStart) {
+if (-not $NoStart -and -not $activationDeferred) {
     Start-ScheduledTask -TaskName $TaskName
 
     $healthPath = Join-Path $repoPath "output\openspec-drain-watchdog\health.json"
@@ -197,5 +203,15 @@ if (-not $NoStart) {
 
 $task = Get-ScheduledTask -TaskName $TaskName
 Write-Output "Installed scheduled tasks: $TaskName; $GuardTaskName"
+if ($activationDeferred) {
+    Write-Output "Observer activation deferred until next sign-in because stop.request is active."
+}
 Write-Output "State: $($task.State)"
 Write-Output "Controller repo: $repoPath"
+}
+finally {
+    if ($controlLockAcquired) {
+        $controlMutex.ReleaseMutex()
+    }
+    $controlMutex.Dispose()
+}

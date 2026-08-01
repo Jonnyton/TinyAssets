@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -630,6 +631,10 @@ def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
     assert "activation deferred until next sign-in" in installer
     assert "$trayProcessPattern" in installer
     assert "$watchdogProcessPattern" in installer
+    assert "Local\\TinyAssetsOpenSpecDrainControl" in installer
+    assert "Local\\TinyAssetsOpenSpecDrainControl" in (
+        SCRIPT.parent / "openspec_drain_tray.ps1"
+    ).read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows Task Scheduler integration")
@@ -765,6 +770,78 @@ def test_installer_defers_activation_when_session_stop_is_active() -> None:
         assert inspect.returncode == 0, inspect.stderr
         assert set(json.loads(inspect.stdout)) == {3}  # Ready
     finally:
+        stop_request.unlink(missing_ok=True)
+        subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+                "-Uninstall",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named mutex integration")
+def test_installer_serializes_concurrent_session_stop_before_sampling() -> None:
+    installer = SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    repo = SCRIPT.parents[1]
+    stop_request = repo / "output" / "openspec-drain-watchdog" / "stop.request"
+    task_name = f"TinyAssets Drain Stop Race {uuid.uuid4().hex}"
+    guard_name = f"{task_name} Guard"
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(
+        None,
+        True,
+        "Local\\TinyAssetsOpenSpecDrainControl",
+    )
+    assert mutex
+    process: subprocess.Popen[str] | None = None
+    try:
+        stop_request.unlink(missing_ok=True)
+        process = subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(installer),
+                "-Repo",
+                str(repo),
+                "-TaskName",
+                task_name,
+                "-GuardTaskName",
+                guard_name,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        with pytest.raises(subprocess.TimeoutExpired):
+            process.wait(timeout=1)
+        stop_request.parent.mkdir(parents=True, exist_ok=True)
+        stop_request.write_text("concurrent stop\n", encoding="utf-8")
+        assert kernel32.ReleaseMutex(mutex)
+        stdout, stderr = process.communicate(timeout=30)
+        assert process.returncode == 0, stderr
+        assert "activation deferred until next sign-in" in stdout
+        assert stop_request.exists()
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        kernel32.CloseHandle(mutex)
         stop_request.unlink(missing_ok=True)
         subprocess.run(
             [

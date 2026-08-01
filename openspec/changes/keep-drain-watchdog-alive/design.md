@@ -28,7 +28,7 @@ The tray is the user-visible observer, the Python watchdog owns supervisor attac
 
 4. **Keep color semantics truthful.** A live working supervisor is running/green, idle or recovering is waiting/yellow, and stale health remains down/red while recovery is attempted. The hooks repair state; they do not rewrite state labels.
 
-5. **Version and prove activation.** Health includes `watchdog_version=2`. With no active session stop, a live reinstall matches observer processes by anchored executable-and-argument grammar, stops only that exact tray/watchdog pair, never the supervisor, registers both task definitions, starts the sign-in task, then requires fresh version-2 health and exactly one tray, watchdog, and supervisor before returning success. If `stop.request` is active, the installer updates definitions without recycling or starting observers and explicitly defers version activation until the next real sign-in.
+5. **Version and prove activation under one control mutex.** Health includes `watchdog_version=2`. Tray stop/restart mutations and the installer's sample/recycle/register/start/verify transaction serialize through `Local\TinyAssetsOpenSpecDrainControl`. With no active session stop, a live reinstall matches observer processes by anchored executable-and-argument grammar, stops only that exact tray/watchdog pair, never the supervisor, registers both task definitions, starts the sign-in task, then requires fresh version-2 health and exactly one tray, watchdog, and supervisor before returning success. If `stop.request` is active when the installer acquires the mutex, it updates definitions without recycling or starting observers and explicitly defers version activation until the next real sign-in. A stop arriving after install acquisition waits, then applies after activation and therefore cannot be cleared by that activation.
 
 ## Risks / Trade-offs
 
@@ -36,6 +36,7 @@ The tray is the user-visible observer, the Python watchdog owns supervisor attac
 - **[Two relaunch paths race]** → named tray mutex, watchdog `RunLock`, supervisor run lock, and task-level `MultipleInstances IgnoreNew` make all launches idempotent.
 - **[Periodic guard invokes while healthy]** → the attempted tray immediately exits on the named mutex; the one-minute bridge is retired after cloud host-off acceptance.
 - **[Diagnostic command mentions an observer path]** → recycle matching is anchored at the executable and requires the complete ordered `-File ... -Repo ...` or `script.py run --repo ...` argument prefix; substring references never authorize termination.
+- **[Stop click races install sampling]** → both paths acquire the same named interactive-session mutex; the stop is observed before activation or applies only after activation has finished.
 - **[Intentional tray exit is later reversed]** → the menu remains explicit that the drain continues; during the temporary local-until-cloud period, observability automatically returns.
 
 ## Migration Plan
