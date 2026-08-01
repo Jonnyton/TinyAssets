@@ -1339,3 +1339,15 @@ fresh-host rollback edges found later.
 - **What I would do differently:** include malformed nested coverage values and
   post-registration descriptor mutation in the initial red matrix; both are
   recurring trust-boundary probes for public frozen dataclasses.
+
+## 2026-08-01 — delivery-oriented OpenSpec refinery
+
+- **What surprised me:** the scheduler and claim checker were behaving exactly
+  as specified; throughput collapsed because coordination rows described final
+  project completion while the checker interpreted them as next-slice gates.
+- **Pattern worth capturing:** backlog production and backlog consumption need
+  a machine-checked handoff. Accept a refinery continuation only when its merged
+  row becomes claimable inside the assigned change boundary.
+- **What I would do differently:** define `Depends` from the first slice's
+  start condition, then keep downstream proof in acceptance tasks; never derive
+  admission from an umbrella change's entire completion checklist.
