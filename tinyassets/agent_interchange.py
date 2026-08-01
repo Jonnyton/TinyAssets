@@ -263,6 +263,8 @@ def _pointer_parts(pointer: str) -> list[str]:
         raise InterchangeValidationError(
             f"JSON Pointer is invalid or exceeds {MAX_POINTER_CHARS} characters"
         )
+    if re.search(r"~(?![01])", pointer):
+        raise InterchangeValidationError("JSON Pointer contains an invalid RFC 6901 escape")
     return [part.replace("~1", "/").replace("~0", "~") for part in pointer[1:].split("/")]
 
 
@@ -503,6 +505,7 @@ def validate_adapter_response(
     response: str | dict[str, Any],
     *,
     direction: str,
+    trusted_preservation: bool = False,
 ) -> dict[str, Any]:
     """Validate an untrusted Engine OS adapter response before any persistence."""
 
@@ -539,6 +542,13 @@ def validate_adapter_response(
         direction=direction,
         source_inventory=inventory,
     )
+    if not trusted_preservation and any(
+        item["classification"] in {"preserved", "normalized"}
+        for item in document["report"]["items"]
+    ):
+        raise InterchangeValidationError(
+            "preserved or normalized claims require an independent preservation proof"
+        )
     output_fields = [
         field for field in ("candidate_json", "output_base64") if field in document
     ]
@@ -1339,7 +1349,11 @@ def convert_export(
             "output_base64": output_base64,
             "report": conversion["report"],
         }
-        validated = validate_adapter_response(adapter_response, direction="export")
+        validated = validate_adapter_response(
+            adapter_response,
+            direction="export",
+            trusted_preservation=True,
+        )
         validated.update(
             {
                 "direction": "export",

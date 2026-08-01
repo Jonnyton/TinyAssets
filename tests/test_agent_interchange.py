@@ -316,6 +316,47 @@ def test_adapter_response_rejects_duplicate_inventory_and_overlong_paths() -> No
     with pytest.raises(InterchangeValidationError, match="512"):
         validate_adapter_response(overlong, direction="import")
 
+    invalid_escape = _opaque_terminal_response()
+    invalid_escape["source_inventory"] = ["/bad~2escape"]
+    with pytest.raises(InterchangeValidationError, match="RFC 6901"):
+        validate_adapter_response(invalid_escape, direction="import")
+
+
+def test_untrusted_adapter_cannot_self_attest_preservation() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_response,
+    )
+
+    response = _opaque_terminal_response()
+    response["status"] = "converted"
+    response.pop("error_code")
+    response["output_base64"] = "e30="
+    response["source_inventory"] = ["/identity"]
+    response["report"] = {
+        "schema_version": 1,
+        "direction": "import",
+        "inventory_verification": "core_json",
+        "exhaustive": True,
+        "lossless": False,
+        "items": [
+            {
+                "source_path": "/identity",
+                "target_path": "/components/identity",
+                "classification": "preserved",
+                "reason_code": "preserved",
+            }
+        ],
+    }
+
+    with pytest.raises(InterchangeValidationError, match="preservation proof"):
+        validate_adapter_response(response, direction="import")
+    assert validate_adapter_response(
+        response,
+        direction="import",
+        trusted_preservation=True,
+    )["status"] == "converted"
+
 
 def test_interchange_size_depth_rule_and_base64_bounds_fail_closed() -> None:
     from tinyassets.agent_interchange import (
