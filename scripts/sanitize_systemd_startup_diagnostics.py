@@ -51,18 +51,32 @@ _OAUTH_REJECTION_CATEGORIES = (
     "signature",
     "signing_key",
 )
-_OAUTH_REJECTION_PATTERN = re.compile(
-    r"(?:(?:daemon(?:-1)?|tinyassets-daemon)[ \t]+\|[ \t]+)?"
+_OAUTH_REJECTION_CATEGORY_PATTERN = "|".join(
+    map(re.escape, _OAUTH_REJECTION_CATEGORIES)
+)
+_OAUTH_REJECTION_COMPOSE_PREFIX_PATTERN = (
+    r"(?:daemon(?:-1)?|tinyassets-daemon(?:-1)?)[ \t]+\|[ \t]+"
+)
+_OAUTH_REJECTION_LOG_PREFIX_PATTERN = (
     r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
     r" - universe_server\.auth\.workos - WARNING - "
+)
+_OAUTH_REJECTION_MESSAGE_PATTERN = (
     r"WorkOS bearer token rejected category=("
-    + "|".join(map(re.escape, _OAUTH_REJECTION_CATEGORIES))
+    + _OAUTH_REJECTION_CATEGORY_PATTERN
     + r") suppressed=[0-9]+"
 )
+_OAUTH_REJECTION_PATTERN = re.compile(
+    r"(?:"
+    r"(?:" + _OAUTH_REJECTION_COMPOSE_PREFIX_PATTERN + r")?"
+    + _OAUTH_REJECTION_LOG_PREFIX_PATTERN
+    + r"|"
+    + _OAUTH_REJECTION_COMPOSE_PREFIX_PATTERN
+    + r")"
+    + _OAUTH_REJECTION_MESSAGE_PATTERN
+)
 _OAUTH_REJECTION_SIGNAL_PATTERN = re.compile(
-    r"(?:.*[ \t])?WorkOS bearer token rejected category=("
-    + "|".join(map(re.escape, _OAUTH_REJECTION_CATEGORIES))
-    + r") suppressed=[0-9]+"
+    r"(?:.*[ \t])?" + _OAUTH_REJECTION_MESSAGE_PATTERN
 )
 
 _FAILURE_MARKERS = (

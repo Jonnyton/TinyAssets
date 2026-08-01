@@ -97,6 +97,23 @@ def test_journal_sanitizer_emits_only_allowlisted_oauth_rejection_categories():
     assert "private-claim" not in rendered
 
 
+def test_journal_sanitizer_accepts_exact_compose_prefixed_bare_oauth_diagnostic():
+    result = sanitize_journal(
+        b"daemon  | WorkOS bearer token rejected category=malformed suppressed=0\n"
+        b"tinyassets-daemon  | WorkOS bearer token rejected "
+        b"category=issuer suppressed=2\n"
+        b"tinyassets-daemon-1  | WorkOS bearer token rejected "
+        b"category=signature suppressed=4\n"
+        b"worker  | WorkOS bearer token rejected category=expired suppressed=0\n"
+    )
+
+    assert result["oauth_rejection_categories"] == [
+        "malformed",
+        "issuer",
+        "signature",
+    ]
+
+
 def test_journal_sanitizer_requires_exact_oauth_diagnostic_shape():
     result = sanitize_journal(
         b"WorkOS bearer token rejected category=issuer suppressed=not-a-count\n"
