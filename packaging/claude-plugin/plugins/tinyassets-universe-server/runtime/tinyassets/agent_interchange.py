@@ -1071,6 +1071,13 @@ def _ensure_interchange_schema(base_path: str | Path) -> Path:
             conn.execute("PRAGMA journal_mode = WAL")
             with conn:
                 conn.executescript(_SCHEMA)
+                conn.execute(
+                    """
+                    UPDATE agent_import_stages
+                    SET source_commitment = ''
+                    WHERE status = 'published' AND source_commitment != ''
+                    """
+                )
         finally:
             conn.close()
         _SCHEMA_INITIALIZED.add(key)
@@ -1619,6 +1626,39 @@ def publish_import_stage(
         if row is None:
             raise InterchangeNotFoundError("import stage is unavailable")
         candidate = json.loads(str(row["candidate_json"]))
+        report = json.loads(str(row["report_json"]))
+        receipt = json.loads(str(row["receipt_json"]))
+        verify_conversion_receipt(receipt)
+        receipt_matches_stage = (
+            receipt["sanitized_source_digest"] == row["sanitized_source_digest"]
+            and receipt["adapter_ref"] == row["adapter_ref"]
+            and receipt["adapter_version"] == row["adapter_version"]
+            and receipt["adapter_digest"] == row["adapter_digest"]
+            and receipt["content_fingerprint"] == _fingerprint(candidate)
+            and receipt["report_digest"] == _sha256(report)
+        )
+        if not receipt_matches_stage:
+            raise InterchangeValidationError(
+                "import stage receipt does not match staged content"
+            )
+        conversion = {
+            "candidate": candidate,
+            "report": report,
+            "adapter_ref": str(row["adapter_ref"]),
+            "adapter_version": str(row["adapter_version"]),
+            "adapter_digest": str(row["adapter_digest"]),
+        }
+        _attach_public_import_origin(
+            conversion,
+            sanitized_source_digest=str(row["sanitized_source_digest"]),
+        )
+        if conversion["candidate"] != candidate:
+            receipt = _receipt(
+                conversion=conversion,
+                sanitized_source_digest=str(row["sanitized_source_digest"]),
+                created_at=float(receipt["created_at"]),
+            )
+        candidate = conversion["candidate"]
         normalized = _normalize_definition_payload(candidate)
         request_digest = _sha256(
             {
@@ -1650,7 +1690,6 @@ def publish_import_stage(
             key="",
             imported=True,
         )
-        receipt = json.loads(str(row["receipt_json"]))
         conn.execute(
             """
             INSERT OR IGNORE INTO agent_conversion_receipts (
@@ -1681,10 +1720,15 @@ def publish_import_stage(
             """
             UPDATE agent_import_stages
             SET status = 'published', published_definition_id = ?,
-                source_commitment = ''
+                source_commitment = '', candidate_json = ?, receipt_json = ?
             WHERE stage_id = ?
             """,
-            (published["agent_definition_id"], normalized_stage_id),
+            (
+                published["agent_definition_id"],
+                _canonical_json(candidate),
+                _canonical_json(receipt),
+                normalized_stage_id,
+            ),
         )
         if key:
             conn.execute(

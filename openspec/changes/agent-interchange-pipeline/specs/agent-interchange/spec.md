@@ -88,6 +88,13 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **AND** the public definition and export contain neither the private raw-source commitment nor raw source content
 - **AND** publication clears the stage's private raw-source commitment in the same transaction while retaining its durable receipt linkage
 
+#### Scenario: Rolling upgrade closes pre-fix provenance and commitment gaps
+- **WHEN** an upgraded process opens storage containing a pre-fix published stage with a retained private commitment
+- **THEN** schema initialization idempotently clears that commitment without changing its immutable public definition or receipt linkage
+- **AND WHEN** an unexpired pre-fix private stage without the safe public origin is published after upgrade
+- **THEN** publication reconstructs the origin from stored receipt-bound sanitized metadata and atomically replaces the candidate and receipt before publishing
+- **AND** it rejects publication if the stored receipt does not match the staged candidate, report, sanitized-source digest, or adapter metadata
+
 #### Scenario: Receipt tampering is detected
 - **WHEN** any receipt-bound source, adapter, output, or report field is altered
 - **THEN** receipt verification fails

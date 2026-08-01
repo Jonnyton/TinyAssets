@@ -1019,6 +1019,192 @@ def test_published_stage_exports_safe_import_provenance(tmp_path, monkeypatch) -
     assert "source_commitment_algorithm" not in published_stage
 
 
+def test_publish_upgrades_pre_origin_stage_from_receipt_bound_metadata(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sqlite3
+
+    from tinyassets.agent_interchange import (
+        _receipt,
+        get_import_stage,
+        publish_import_stage,
+        stage_import,
+    )
+    from tinyassets.custom_agents import _canonical_json
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="pre-origin-stage",
+        now=600.0,
+    )
+    legacy_candidate = copy.deepcopy(stage["candidate"])
+    legacy_candidate["external_origins"] = []
+    legacy_receipt = _receipt(
+        conversion={
+            "candidate": legacy_candidate,
+            "report": stage["report"],
+            "adapter_ref": stage["adapter_ref"],
+            "adapter_version": stage["adapter_version"],
+            "adapter_digest": stage["adapter_digest"],
+        },
+        sanitized_source_digest=stage["sanitized_source_digest"],
+        created_at=stage["created_at"],
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE agent_import_stages
+            SET candidate_json = ?, receipt_json = ?
+            WHERE stage_id = ?
+            """,
+            (
+                _canonical_json(legacy_candidate),
+                _canonical_json(legacy_receipt),
+                stage["stage_id"],
+            ),
+        )
+
+    published = publish_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        idempotency_key="publish-pre-origin-stage",
+        now=601.0,
+    )
+    upgraded_stage = get_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        now=601.0,
+    )
+
+    assert upgraded_stage is not None
+    assert upgraded_stage["candidate"]["external_origins"]
+    assert upgraded_stage["receipt"]["receipt_digest"] != legacy_receipt[
+        "receipt_digest"
+    ]
+    assert upgraded_stage["receipt"]["content_fingerprint"] == published[
+        "content_fingerprint"
+    ]
+    assert "source_commitment" not in upgraded_stage
+
+
+def test_schema_upgrade_clears_pre_fix_published_commitments(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    import tinyassets.agent_interchange as interchange
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = interchange.stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="published-before-upgrade",
+        now=700.0,
+    )
+    interchange.publish_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        idempotency_key="publish-before-upgrade",
+        now=701.0,
+    )
+    database = db_path(tmp_path)
+    with sqlite3.connect(database) as conn:
+        conn.execute(
+            """
+            UPDATE agent_import_stages
+            SET source_commitment = ?
+            WHERE stage_id = ?
+            """,
+            ("legacy-private-commitment", stage["stage_id"]),
+        )
+    interchange._SCHEMA_INITIALIZED.discard(str(database))
+
+    upgraded_stage = interchange.get_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        now=701.0,
+    )
+
+    assert upgraded_stage is not None
+    assert "source_commitment" not in upgraded_stage
+    with sqlite3.connect(database) as conn:
+        stored_commitment = conn.execute(
+            """
+            SELECT source_commitment
+            FROM agent_import_stages
+            WHERE stage_id = ?
+            """,
+            (stage["stage_id"],),
+        ).fetchone()[0]
+    assert stored_commitment == ""
+
+
+def test_publish_rejects_stage_content_not_bound_by_stored_receipt(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sqlite3
+
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        publish_import_stage,
+        stage_import,
+    )
+    from tinyassets.custom_agents import _canonical_json, list_definitions
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="tampered-stage",
+        now=800.0,
+    )
+    tampered_candidate = copy.deepcopy(stage["candidate"])
+    tampered_candidate["name"] = "Receipt bypass"
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        conn.execute(
+            """
+            UPDATE agent_import_stages
+            SET candidate_json = ?
+            WHERE stage_id = ?
+            """,
+            (_canonical_json(tampered_candidate), stage["stage_id"]),
+        )
+
+    with pytest.raises(InterchangeValidationError, match="receipt.*staged content"):
+        publish_import_stage(
+            tmp_path,
+            actor_id="alice",
+            stage_id=stage["stage_id"],
+            idempotency_key="publish-tampered-stage",
+            now=801.0,
+        )
+    assert list_definitions(tmp_path) == []
+
+
 def test_identical_receipt_digest_links_every_published_stage(tmp_path, monkeypatch) -> None:
     import sqlite3
 

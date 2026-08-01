@@ -267,8 +267,12 @@ durable receipt is written only for a successful explicit publication or
 export and binds sanitized content. Published definitions and bindings are not
 deleted by stage expiry.
 
-No data migration or compatibility shim is needed. Existing canonical import
-continues as the native fast path, while foreign sources use the staged path.
+Existing canonical import needs no bulk data migration and continues as the
+native fast path. Rolling upgrades do require two bounded repairs: schema
+initialization idempotently clears private commitments left on already
+published pre-fix stages, and publication upgrades an unexpired pre-origin
+stage's candidate and receipt atomically from its stored receipt-bound safe
+metadata. No raw source is needed for either repair.
 
 ## Risks / Trade-offs
 
