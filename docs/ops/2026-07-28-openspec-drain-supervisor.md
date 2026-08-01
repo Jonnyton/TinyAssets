@@ -43,22 +43,27 @@ Runtime/slice budget completion can start another finite run during the same
 computer session; fatal/failure-budget outcomes remain down.
 
 Yellow `idle` is valid only after proved exhaustion. A worker must process
-claimable rows, policy-qualified stale claims, current blocker evidence, and
-safe cross-cutting recovery in that order. After a `NO_CANDIDATE` marker, the
-controller independently runs `claim_check.py --json`; any nonzero claimable,
-stale, or exact-drain-owned count rejects the result and consumes a bounded
-failure strike. Two ignored rejections therefore become visibly down instead
-of burning subscription in an endless false-idle loop.
+claimable rows, policy-qualified stale claims, exact-current-main OpenSpec flow,
+current blocker evidence, and safe cross-cutting recovery in that order. After
+a `NO_CANDIDATE` marker, the controller independently recomputes owned,
+claimable, stale, and refinable pressure; any nonzero count rejects the result
+and consumes a bounded failure strike. Two ignored rejections therefore become
+visibly down instead of silently treating a non-empty backlog as exhausted.
 
 Immediately before dispatch, the controller fetches origin and injects at most
-five ordered candidate hints classified from the exact
-`origin/main:STATUS.md` through
-`claim_check.py --status-ref origin/main --json`. It does not move the live
-detached checkout and does not fall back to that checkout's stale STATUS when
-fetch/ref inspection fails. Admission then fetches again, creates a worktree
-from current main, writes the local claim, and rechecks that worktree so the
-owned claim is visible. This second check closes the merge race while avoiding
-an unbounded startup scan.
+five ordered candidate hints classified from one exact `origin/main` snapshot:
+STATUS through `claim_check.py --status-ref origin/main --json`, and, when no
+ordinary row is eligible, OpenSpec flow through `openspec_flow.py audit --ref
+origin/main --json`. It does not move the live detached checkout or mix stale
+working-tree artifacts into that snapshot. Invalid ref/archive evidence fails
+closed.
+
+Owned, claimable, and stale hints retain deterministic mechanical admission.
+A `REFINERY` hint is coordination-only: the worker may land one exact reviewed
+pending/blocked STATUS row for the named existing change, but cannot implement,
+sync, or archive it. A PARTIAL promotion is normally admitted by the next fresh
+worker. Exact STATUS row lifecycle edits are implicit and do not globally lock
+the file; all product/artifact Files atoms retain ordinary collision checks.
 
 Codex drain workers are launched at `medium` reasoning effort even when the
 host's interactive Codex default is `high`. The drain's narrow preselected
@@ -268,10 +273,10 @@ closed instead of guessing.
   consumes a failure strike and waits before trying again.
 - `BLOCKED`: a durable task, host, dependency, review, or policy gate prevents
   progress; the target is preserved in the recent-block list. The controller
-  immediately considers a different eligible owned, claimable, or stale
+  immediately considers a different eligible owned, claimable, stale, or refinery
   candidate and idles only when none remains.
-- `NO_CANDIDATE`: nothing is safely deliverable; controller idles rather than
-  inventing work.
+- `NO_CANDIDATE`: owned, claimable, stale, and refinable pressure are all zero;
+  the controller idles rather than inventing work.
 - `FAILED`: worker or delivery-infrastructure failure; consumes the
   consecutive-failure budget while preserving the admitted worktree for a
   fresh worker to resume. Verified work that cannot be staged, committed,
