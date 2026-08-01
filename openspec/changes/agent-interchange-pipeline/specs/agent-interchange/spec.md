@@ -23,7 +23,7 @@ The platform SHALL process a bounded foreign source into an authenticated actor-
 - **AND** no published definition or binding is deleted
 
 ### Requirement: Conversion reports account for preservation and loss
-The platform SHALL return a bounded structured `ConversionReport` that assigns every item in the adapter's declared source or target inventory exactly one terminal classification from `preserved`, `normalized`, `unsupported`, `omitted_secret`, `requires_private_binding`, or `requires_runtime` and SHALL never claim losslessness unless an independent format verifier proves equality.
+The platform SHALL independently enumerate every scalar leaf and empty container of a JSON source or canonical JSON target as canonical RFC 6901 paths, SHALL require the adapter report to cover that inventory exactly once with one terminal classification from `preserved`, `normalized`, `unsupported`, `omitted_secret`, `requires_private_binding`, or `requires_runtime`, and SHALL mark opaque-format inventories without an independent verifier as `unverified`, non-exhaustive, and never lossless.
 
 #### Scenario: Less-capable export reports every loss
 - **WHEN** an actor exports a canonical definition through a target adapter that cannot represent one component and requires private setup for another
@@ -33,6 +33,24 @@ The platform SHALL return a bounded structured `ConversionReport` that assigns e
 #### Scenario: Adapter claim cannot manufacture lossless status
 - **WHEN** an adapter reports `lossless=true` but normalized source and output fingerprints do not prove equality
 - **THEN** the platform rejects the adapter output and writes no successful conversion receipt
+
+#### Scenario: Adapter omits one JSON source item
+- **WHEN** the trusted runner enumerates a JSON source path that is absent from the adapter inventory or report
+- **THEN** the platform rejects the conversion as incomplete
+- **AND** no stage, receipt, definition, binding, or lineage projection is written
+
+#### Scenario: Opaque inventory is visibly unverified
+- **WHEN** an opaque source has no independent admitted inventory verifier
+- **THEN** its report sets `inventory_verification=unverified`, `exhaustive=false`, and `lossless=false`
+- **AND** the response does not claim that unknown source content was preserved
+
+### Requirement: Interchange documents have one bounded canonical wire shape
+The platform SHALL enforce UTF-8 canonical JSON with sorted keys, compact separators, finite numbers, no duplicate object keys, nesting depth at most 32, raw source size at most 1 MiB, canonical candidate size at most 256 KiB and 64 components, report size at most 4,096 unique inventory items, JSON Pointer paths at most 512 characters, safe details at most 256 characters, declarative mappings at most 128 KiB and 512 rules, and lowercase 64-hex SHA-256 or HMAC digests with explicit algorithms.
+
+#### Scenario: Over-limit or ambiguous document fails before persistence
+- **WHEN** a request, adapter mapping, candidate, inventory, report, path, detail, digest, number, nesting level, or duplicate-key object violates the canonical bounds
+- **THEN** validation fails before adapter execution or persistence
+- **AND** the response returns a bounded safe terminal error without reflecting secret-bearing input
 
 ### Requirement: Unknown content is preserved safely and secret material is omitted
 The platform SHALL preserve safe unknown agent data in bounded namespaced extensions and SHALL omit suspected credentials, authority-bearing values, conversations, effect payloads, and runtime state from canonical candidates, public definitions, foreign exports, reports, receipts, errors, and logs.

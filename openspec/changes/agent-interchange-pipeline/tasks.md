@@ -5,13 +5,13 @@
 ## 1. Test-first domain contract
 
 - [ ] 1.1 Add red cross-installation tests proving a multi-parent child exported into an empty commons retains exact canonical content/fingerprint and immutable parent/component fingerprint declarations without manufacturing verified credit; also prove a child can blend at least three public definitions authored by other actors.
-- [ ] 1.2 Add red adversarial tests proving raw foreign input and unkeyed raw hashes are never stored or logged, low-entropy credentials cannot be guessed from evidence, private source commitments expire after 24 hours, unknown safe content is namespaced, reports classify the declared inventory, false lossless claims fail, and adapter output cannot bypass canonical validation.
+- [ ] 1.2 Add red adversarial tests proving raw foreign input and unkeyed raw hashes are never stored or logged, low-entropy credentials cannot be guessed from evidence, private source commitments expire after 24 hours, core-enumerated JSON inventory cannot omit/duplicate a path, opaque inventory stays unverified/non-lossless, every byte/count/depth/path/detail bound fails closed, unknown safe content is namespaced, and adapter output cannot bypass canonical validation.
 - [ ] 1.3 Add red receipt, idempotency, and concurrency tests proving exact source/adapter/output/report binding, distinct adapter-version provenance, one logical stage per identical retry, conflict on changed inputs, and atomic failure with no partial stage/definition/lineage.
 
 ## 2. Staging and interchange core
 
 - [ ] 2.1 Implement additive SQLite stage/receipt storage plus purpose-keyed private source commitments, 24-hour expiry, bounded canonical/report/receipt validators, actor-private reads, and sanitized-content receipts; make tasks 1.2-1.3 green without persisting raw sources or unkeyed raw hashes.
-- [ ] 2.2 Implement `agent-interchange-adapter/v1`, the canonical native adapter, and the closed non-executable declarative JSON mapping runner/fixture; validate inventories and outputs independently, preserve safe namespaced extensions, and return `requires_runtime` for every adapter outside the grammar until Engine OS admission exists.
+- [ ] 2.2 Implement the exact bounded `agent-interchange-adapter/v1` wire schemas, trusted JSON Pointer inventory enumeration, canonical native adapter, and closed non-executable declarative JSON mapping runner/fixture; require exact inventory coverage, preserve safe namespaced extensions, mark unverifiable opaque formats non-exhaustive, and return `requires_runtime` for every adapter outside the grammar until Engine OS admission exists.
 - [ ] 2.3 Refactor immutable definition publication onto a caller-supplied SQLite transaction, preserve portable fingerprint lineage separately from local verified projections, and commit stage status, definition, lineage, and receipt linkage atomically; make task 1.1 green without changing existing publish/remix/bind results.
 
 ## 3. Public surface and safety proof

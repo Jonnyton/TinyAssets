@@ -112,8 +112,11 @@ writes its durable sanitized receipt immediately.
 
 ### 3. Reports are exhaustive and machine-readable
 
-Each item recognized by the adapter's declared source inventory receives one
-terminal classification:
+For JSON import and canonical JSON export, the trusted protocol runner
+enumerates every scalar leaf and empty container as a canonical RFC 6901 JSON
+Pointer before invoking the adapter. The adapter's inventory must cover that
+core inventory exactly once; missing, duplicate, or extra paths fail the
+conversion. Each covered item receives one terminal classification:
 `preserved`, `normalized`, `unsupported`, `omitted_secret`,
 `requires_private_binding`, or `requires_runtime`. Entries carry a stable
 source path, optional canonical target path, safe reason code, and bounded
@@ -121,6 +124,13 @@ non-secret detail. The report also declares whether the conversion is
 lossless; that flag is true only when every item is `preserved` and an
 independent format verifier proves equality. Foreign adapter claims alone
 cannot establish completeness or losslessness.
+
+For opaque formats the report uses `inventory_verification=unverified` unless
+an independently admitted format verifier supplies the source inventory. An
+unverified inventory is explicitly non-exhaustive and can never claim
+losslessness, even if every adapter-declared item is preserved. This makes the
+unknown-loss boundary visible rather than pretending the core can understand
+arbitrary bytes.
 
 Safe unknown objects are retained under bounded namespaced extension keys.
 Silently discarding an unknown field or collapsing it into prose was rejected
@@ -267,24 +277,47 @@ published definitions or private bindings.
 
 ## Interface Schemas
 
-- `AgentImportStage`: `schema_version`, `stage_id`, `actor_id`, `status`
-  (`staged|published|expired`), `direction`, `source_media_type`,
-  `sanitized_source_digest`, private `source_commitment`, `adapter_ref`,
-  `adapter_version`, `adapter_digest`, `candidate`, `report`, `created_at`,
-  `expires_at`, and optional `published_definition_id`.
-- `ConversionReport`: `schema_version`, `direction`, bounded `items[]` with
-  `source_path`, optional `target_path`, terminal `classification`, safe
-  `reason_code`, optional bounded `detail`, plus `lossless` and verifier ID.
-- `ConversionReceipt`: `schema_version`, `direction`,
+Every interface document uses UTF-8 canonical JSON (sorted object keys,
+compact separators, finite numbers only), rejects duplicate object keys before
+canonicalization, and has maximum nesting depth 32. SHA-256/HMAC digests are
+lowercase 64-hex values with their algorithm carried separately. Timestamps
+are required finite Unix seconds. IDs/refs are non-empty UTF-8 strings of at
+most 256 characters; semantic versions at most 64; media types at most 127.
+
+- `AgentImportStage` (all fields required unless marked optional):
+  `schema_version=1`, `stage_id`, `actor_id`, `status`
+  (`staged|published|expired`), `direction` (`import|export`),
+  `source_media_type`, `sanitized_source_digest`, private
+  `source_commitment`, `adapter_ref`, `adapter_version`, `adapter_digest`,
+  `candidate` (canonical JSON at most 256 KiB and 64 components), `report`,
+  `created_at`, `expires_at`, and optional `published_definition_id` present
+  only for `published`. A raw inline source is at most 1 MiB before parsing.
+- `ConversionReport` (all required): `schema_version=1`, `direction`,
+  `inventory_verification` (`core_json|format_verifier|unverified`),
+  `exhaustive`, `lossless`, optional `verifier_id` required only for
+  `format_verifier`, and at most 4,096 `items`. Each item requires a unique
+  RFC 6901 `source_path` of at most 512 UTF-8 characters, optional
+  `target_path` with the same bound, one terminal classification, a
+  `[a-z][a-z0-9_]{0,63}` reason code, and optional non-secret `detail` of at
+  most 256 characters. `lossless` requires `exhaustive=true`, verified
+  inventory, and all items `preserved`.
+- `ConversionReceipt` (all required): `schema_version=1`, `direction`,
   `sanitized_source_digest`, adapter identity/version/digest, output
-  fingerprint/digest, report digest, creation time, and receipt digest.
-- Adapter request: `schema_version=agent-interchange-adapter/v1`, `direction`,
-  bounded inline JSON source or governed source locator, source media type,
-  desired target media type, and no credentials or ambient authority.
-- Adapter response: `status=converted|requires_runtime|unsupported|invalid`,
-  bounded candidate/output, declared source inventory, report, adapter
-  identity/version/digest, and safe terminal error code. Unknown versions,
-  malformed inventories, over-limit payloads, and ungoverned source locators
+  fingerprint/digest, report digest, `created_at`, and receipt digest. It never
+  contains `source_commitment`.
+- Adapter request (all required unless mutually exclusive):
+  `schema_version=agent-interchange-adapter/v1`, `direction`, exactly one of
+  `source_json`, `source_base64`, or governed `source_locator` (locator at most
+  2,048 characters), `source_media_type`, `target_media_type`, and the
+  core-enumerated `source_inventory` when the source is JSON. Base64 decodes to
+  at most 1 MiB. Requests contain no credentials or ambient authority.
+- Adapter response (all required): `schema_version`,
+  `status=converted|requires_runtime|unsupported|invalid`, bounded
+  candidate/output, source inventory, report, adapter identity/version/digest,
+  and optional safe terminal error code required when status is not
+  `converted`. The declarative mapping artifact is at most 128 KiB with at
+  most 512 rules. Unknown versions, malformed or incomplete inventories,
+  over-limit payloads, duplicate JSON keys, and ungoverned source locators
   fail closed before stage or receipt persistence.
 
 ## Open Questions
