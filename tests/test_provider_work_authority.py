@@ -13,6 +13,7 @@ from tinyassets.provider_work_authority import (
     ProviderUniverseWorkRoot,
     ProviderWorkAuthorityWriteOutcome,
     ProviderWorkBindingFence,
+    ProviderWorkBindingRoot,
     ProviderWorkBindingSeed,
     ProviderWorkBindingService,
     ProviderWorkBindingState,
@@ -251,6 +252,83 @@ def test_production_store_has_no_binding_installation_path(tmp_path) -> None:
         assert not hasattr(transaction, "issue_universe_receipt")
         assert not hasattr(transaction, "claim_receipt")
         assert not hasattr(transaction, "reserve_invocation")
+
+
+class _BindingResolver:
+    def __init__(self, seed: ProviderWorkBindingSeed | None) -> None:
+        self.seed = seed
+        self.roots: list[ProviderWorkBindingRoot] = []
+
+    def resolve(
+        self,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingSeed | None:
+        self.roots.append(root)
+        return self.seed
+
+
+def test_production_binding_issuance_uses_only_trusted_resolved_assignment(
+    tmp_path,
+) -> None:
+    root = ProviderWorkBindingRoot(
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        provider="codex",
+    )
+    resolver = _BindingResolver(_seed())
+    store = SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW)
+
+    created = ProviderWorkBindingService(store, resolver).issue(root)
+    replayed = ProviderWorkBindingService(
+        SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW),
+        resolver,
+    ).issue(root)
+
+    assert created.outcome is ProviderWorkAuthorityWriteOutcome.APPLIED
+    assert replayed.outcome is ProviderWorkAuthorityWriteOutcome.REPLAYED
+    assert created.record == replayed.record
+    assert resolver.roots == [root, root]
+    assert store.get(created.record.binding_id) == created.record
+    assert not hasattr(store, "issue_binding")
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        None,
+        _seed(owner_user_id="acct_mallory"),
+        _seed(universe_id="universe_other"),
+        _seed(provider="claude-code"),
+    ],
+)
+def test_production_binding_issuance_rejects_missing_or_cross_root_resolution(
+    tmp_path,
+    seed: ProviderWorkBindingSeed | None,
+) -> None:
+    root = ProviderWorkBindingRoot(
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        provider="codex",
+    )
+
+    with pytest.raises(PermissionError, match="provider assignment"):
+        ProviderWorkBindingService(
+            SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW),
+            _BindingResolver(seed),
+        ).issue(root)
+
+
+def test_production_binding_issuance_requires_a_resolver(tmp_path) -> None:
+    root = ProviderWorkBindingRoot(
+        owner_user_id="acct_alice",
+        universe_id="universe_alice",
+        provider="codex",
+    )
+
+    with pytest.raises(PermissionError, match="provider assignment"):
+        ProviderWorkBindingService(
+            SQLiteProviderWorkAuthorityStore(tmp_path, clock=lambda: NOW),
+        ).issue(root)
 
 
 @pytest.mark.parametrize(

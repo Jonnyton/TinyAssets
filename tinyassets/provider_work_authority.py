@@ -99,6 +99,19 @@ class ProviderWorkAuthorityWriteOutcome(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderWorkBindingRoot:
+    """Non-authorizing lookup key for a server-owned provider assignment."""
+
+    owner_user_id: str
+    universe_id: str
+    provider: str
+
+    def __post_init__(self) -> None:
+        for name in ("owner_user_id", "universe_id", "provider"):
+            _reference(getattr(self, name), name)
+
+
+@dataclass(frozen=True, slots=True)
 class ProviderWorkBindingSeed:
     """Fresh, secret-free assignment facts from a trusted server resolver."""
 
@@ -135,6 +148,16 @@ class ProviderWorkBindingSeed:
         _integer(self.max_tokens, "max_tokens", minimum=0)
         _integer(self.max_cost_microunits, "max_cost_microunits", minimum=0)
         _timestamp(self.expires_at, "expires_at")
+
+
+@runtime_checkable
+class ProviderWorkBindingResolver(Protocol):
+    """Resolve a binding seed from the canonical assignment/custody owner."""
+
+    def resolve(
+        self,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingSeed | None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -973,13 +996,45 @@ def _from_seed(seed: ProviderWorkBindingSeed, *, created_at: str) -> ProviderWor
 
 
 class ProviderWorkBindingService:
-    """Revoke persisted bindings; production issuance is deliberately absent."""
+    """Issue from a trusted assignment resolver and revoke exact bindings."""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(
+        self,
+        store: Any,
+        resolver: ProviderWorkBindingResolver | None = None,
+    ) -> None:
         required = ("transaction", "timestamp")
         if any(not callable(getattr(store, name, None)) for name in required):
             raise ValueError("store must implement provider authority persistence")
+        if resolver is not None and not isinstance(
+            resolver,
+            ProviderWorkBindingResolver,
+        ):
+            raise ValueError("resolver must implement ProviderWorkBindingResolver")
         self._store = store
+        self._resolver = resolver
+
+    def issue(
+        self,
+        root: ProviderWorkBindingRoot,
+    ) -> ProviderWorkBindingWriteResult:
+        if not isinstance(root, ProviderWorkBindingRoot):
+            raise ValueError("root must be a ProviderWorkBindingRoot")
+        if self._resolver is None:
+            raise PermissionError("server-owned provider assignment is unavailable")
+        seed = self._resolver.resolve(root)
+        exact_root = (
+            isinstance(seed, ProviderWorkBindingSeed),
+            isinstance(seed, ProviderWorkBindingSeed) and seed.owner_user_id == root.owner_user_id,
+            isinstance(seed, ProviderWorkBindingSeed) and seed.universe_id == root.universe_id,
+            isinstance(seed, ProviderWorkBindingSeed) and seed.provider == root.provider,
+        )
+        if not all(exact_root) or seed is None:
+            raise PermissionError("server-owned provider assignment is unavailable")
+        issue = getattr(self._store, "_issue_binding", None)
+        if not callable(issue):
+            raise ValueError("store must implement binding issuance persistence")
+        return issue(seed)
 
     def revoke(self, expected: ProviderWorkBindingFence) -> ProviderWorkBindingWriteResult:
         if not isinstance(expected, ProviderWorkBindingFence):
@@ -1055,6 +1110,8 @@ __all__ = [
     "ProviderWorkAuthorityWriteOutcome",
     "ProviderWorkBinding",
     "ProviderWorkBindingFence",
+    "ProviderWorkBindingResolver",
+    "ProviderWorkBindingRoot",
     "ProviderWorkBindingSeed",
     "ProviderWorkBindingService",
     "ProviderWorkBindingState",

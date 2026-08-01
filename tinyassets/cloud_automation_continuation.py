@@ -18,12 +18,19 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tinyassets.background_branch_authority import (
+    BackgroundBranchAttemptLifecycle,
     BackgroundBranchBindingStatus,
     BackgroundBranchExecutorClass,
     BackgroundBranchOperation,
     BackgroundBranchTargetMode,
 )
+from tinyassets.provider_work_authority import (
+    ProviderUniverseWorkAuthority,
+    ProviderUniverseWorkRoot,
+    ProviderWorkBindingState,
+)
 from tinyassets.storage.automation_activations import (
+    AutomationActivationExecutor,
     AutomationActivationState,
 )
 from tinyassets.user_owned_cloud_automation import (
@@ -67,9 +74,7 @@ def _content_digest(value: object) -> str:
 def _timestamp(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("clock must return a timezone-aware datetime")
-    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace(
-        "+00:00", "Z"
-    )
+    return value.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def _timestamp_text(value: object, name: str) -> str:
@@ -133,33 +138,35 @@ class PreparedCloudContinuation:
     created_at: str
     updated_at: str
 
-    _FIELDS = frozenset({
-        "schema_version",
-        "continuation_id",
-        "generation",
-        "continuation_digest",
-        "state",
-        "principal_id",
-        "universe_id",
-        "automation_id",
-        "activation_epoch",
-        "intended_executor_class",
-        "definition_digest",
-        "branch_def_id",
-        "branch_version_id",
-        "branch_content_digest",
-        "background_binding_id",
-        "background_binding_generation",
-        "background_binding_digest",
-        "provider_binding_id",
-        "provider_binding_generation",
-        "provider_binding_digest",
-        "destination_grant_id",
-        "destination_connection_id",
-        "destination",
-        "created_at",
-        "updated_at",
-    })
+    _FIELDS = frozenset(
+        {
+            "schema_version",
+            "continuation_id",
+            "generation",
+            "continuation_digest",
+            "state",
+            "principal_id",
+            "universe_id",
+            "automation_id",
+            "activation_epoch",
+            "intended_executor_class",
+            "definition_digest",
+            "branch_def_id",
+            "branch_version_id",
+            "branch_content_digest",
+            "background_binding_id",
+            "background_binding_generation",
+            "background_binding_digest",
+            "provider_binding_id",
+            "provider_binding_generation",
+            "provider_binding_digest",
+            "destination_grant_id",
+            "destination_connection_id",
+            "destination",
+            "created_at",
+            "updated_at",
+        }
+    )
 
     def __post_init__(self) -> None:
         if self.schema_version != 1:
@@ -290,9 +297,7 @@ def _prepared_record(
     }
     provisional = PreparedCloudContinuation(
         schema_version=1,
-        continuation_id=(
-            "cloud_cont_" + _content_digest(identity).removeprefix("sha256:")[:32]
-        ),
+        continuation_id=("cloud_cont_" + _content_digest(identity).removeprefix("sha256:")[:32]),
         generation=1,
         continuation_digest=_PLACEHOLDER_DIGEST,
         state=CloudContinuationState.PREPARED,
@@ -361,9 +366,7 @@ def prepare_inactive_cloud_continuation(
         raise ValueError("cloud continuation stores must use canonical owners")
     if not isinstance(connection_ledger, ConnectionLedger):
         raise ValueError("connection_ledger must be a ConnectionLedger")
-    control_paths = {
-        Path(store.base_path).resolve() for store, _expected in stores
-    }
+    control_paths = {Path(store.base_path).resolve() for store, _expected in stores}
     if len(control_paths) != 1:
         raise CloudContinuationPreparationError(
             "control_plane_mismatch",
@@ -395,21 +398,16 @@ def prepare_inactive_cloud_continuation(
         background.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
         background.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
         background.pinned_branch_version_id == definition.branch_version_id,
-        background.permitted_executor_classes
-        == (BackgroundBranchExecutorClass.CLOUD,),
+        background.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
         background.max_attempts <= definition.max_attempts,
         0 < background.remaining_count <= definition.max_attempts,
-        0
-        < background.remaining_cost_microunits
-        <= definition.max_cost_microunits,
+        0 < background.remaining_cost_microunits <= definition.max_cost_microunits,
     )
     now = (clock or (lambda: datetime.now(timezone.utc)))()
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("clock must return a timezone-aware datetime")
     if background.expires_at is not None:
-        expires_at = datetime.fromisoformat(
-            background.expires_at.removesuffix("Z") + "+00:00"
-        )
+        expires_at = datetime.fromisoformat(background.expires_at.removesuffix("Z") + "+00:00")
         exact_background += (expires_at > now.astimezone(timezone.utc),)
     if not all(exact_background):
         raise CloudContinuationPreparationError(
@@ -467,12 +465,192 @@ def prepare_inactive_cloud_continuation(
         ) from exc
 
 
+class PreparedCloudContinuationProviderResolver:
+    """Resolve one claimed background attempt into non-bearer provider facts.
+
+    The returned authority is intentionally transient. Receipt persistence
+    revalidates the provider binding transactionally, and a later launch owner
+    must revalidate activation, attempt, assignment, and credential custody
+    again before provider access.
+    """
+
+    def __init__(
+        self,
+        definition: RepositorySpecWorkDefinition,
+        *,
+        continuation: PreparedCloudContinuation,
+        activation_store: Any,
+        background_store: Any,
+        provider_store: Any,
+        continuation_store: Any,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        from tinyassets.storage.automation_activations import (
+            AutomationActivationStore,
+        )
+        from tinyassets.storage.background_branch_authority import (
+            SQLiteBackgroundBranchAuthorityStore,
+        )
+        from tinyassets.storage.cloud_automation_continuation import (
+            SQLiteCloudAutomationContinuationStore,
+        )
+        from tinyassets.storage.provider_work_authority import (
+            SQLiteProviderWorkAuthorityStore,
+        )
+
+        if not isinstance(definition, RepositorySpecWorkDefinition):
+            raise ValueError("definition must be a RepositorySpecWorkDefinition")
+        if not isinstance(continuation, PreparedCloudContinuation):
+            raise ValueError("continuation must be a PreparedCloudContinuation")
+        stores = (
+            (activation_store, AutomationActivationStore),
+            (background_store, SQLiteBackgroundBranchAuthorityStore),
+            (provider_store, SQLiteProviderWorkAuthorityStore),
+            (continuation_store, SQLiteCloudAutomationContinuationStore),
+        )
+        if any(not isinstance(store, expected) for store, expected in stores):
+            raise ValueError("cloud provider resolver requires canonical stores")
+        if len({Path(store.base_path).resolve() for store, _expected in stores}) != 1:
+            raise ValueError("cloud provider resolver stores must share one control plane")
+        if continuation.definition_digest != definition.definition_digest:
+            raise ValueError("continuation does not match the immutable definition")
+        self._definition = definition
+        self._continuation = continuation
+        self._activation_store = activation_store
+        self._background_store = background_store
+        self._provider_store = provider_store
+        self._continuation_store = continuation_store
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def resolve(
+        self,
+        root: ProviderUniverseWorkRoot,
+    ) -> ProviderUniverseWorkAuthority | None:
+        if not isinstance(root, ProviderUniverseWorkRoot):
+            raise ValueError("root must be a ProviderUniverseWorkRoot")
+        if root.work_item_kind != "background_attempt":
+            return None
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        now = now.astimezone(timezone.utc)
+        definition = self._definition
+        continuation = self._continuation
+
+        try:
+            current_continuation = self._continuation_store.get(
+                universe_id=continuation.universe_id,
+                automation_id=continuation.automation_id,
+            )
+            activation = self._activation_store.get(
+                continuation.universe_id,
+                continuation.automation_id,
+            )
+            attempt = self._background_store.get_attempt(root.work_item_id)
+            background = self._background_store.get_binding(continuation.background_binding_id)
+            provider = self._provider_store.get(continuation.provider_binding_id)
+        except (OSError, ValueError):
+            return None
+        if any(
+            value is None
+            for value in (
+                current_continuation,
+                activation,
+                attempt,
+                background,
+                provider,
+            )
+        ):
+            return None
+        assert current_continuation is not None
+        assert activation is not None
+        assert attempt is not None
+        assert background is not None
+        assert provider is not None
+
+        lease_expires_at = attempt.lease_expires_at
+        if lease_expires_at is None:
+            return None
+        try:
+            lease_expiry = datetime.fromisoformat(lease_expires_at.removesuffix("Z") + "+00:00")
+            provider_expiry = datetime.fromisoformat(
+                provider.expires_at.removesuffix("Z") + "+00:00"
+            )
+        except ValueError:
+            return None
+        exact = (
+            current_continuation == continuation,
+            continuation.state is CloudContinuationState.PREPARED,
+            continuation.principal_id == definition.principal_id,
+            continuation.universe_id == definition.universe_id,
+            continuation.branch_def_id == definition.branch_def_id,
+            continuation.branch_version_id == definition.branch_version_id,
+            continuation.branch_content_digest == definition.branch_content_digest,
+            activation.state is AutomationActivationState.ACTIVE,
+            activation.executor_class is AutomationActivationExecutor.CLOUD,
+            activation.epoch == continuation.activation_epoch + 1,
+            activation.immutable_branch_version == definition.branch_version_id,
+            background.status is BackgroundBranchBindingStatus.ACTIVE,
+            background.binding_id == continuation.background_binding_id,
+            background.generation == continuation.background_binding_generation,
+            background.binding_digest == continuation.background_binding_digest,
+            attempt.binding_id == background.binding_id,
+            attempt.binding_generation == background.generation,
+            attempt.binding_digest == background.binding_digest,
+            attempt.authorizing_principal_id == definition.principal_id,
+            attempt.universe_id == definition.universe_id,
+            attempt.branch_def_id == definition.branch_def_id,
+            attempt.branch_version_id == definition.branch_version_id,
+            attempt.branch_content_digest == definition.branch_content_digest,
+            attempt.executor_audience.executor_class is BackgroundBranchExecutorClass.CLOUD,
+            attempt.lifecycle
+            in {
+                BackgroundBranchAttemptLifecycle.CLAIMED,
+                BackgroundBranchAttemptLifecycle.RUNNING,
+            },
+            lease_expiry > now,
+            attempt.remaining_count > 0,
+            attempt.remaining_cost_microunits >= definition.max_cost_microunits,
+            provider.state is ProviderWorkBindingState.ACTIVE,
+            provider.binding_id == continuation.provider_binding_id,
+            provider.generation == continuation.provider_binding_generation,
+            provider.binding_digest == continuation.provider_binding_digest,
+            provider.owner_user_id == definition.principal_id,
+            provider.universe_id == definition.universe_id,
+            provider.allowed_operations == ("repository_spec_delivery",),
+            provider.allowed_roles == ("writer",),
+            provider.max_invocations == definition.max_attempts,
+            provider.max_tokens == definition.max_tokens,
+            provider.max_cost_microunits == definition.max_cost_microunits,
+            provider_expiry > now,
+        )
+        if not all(exact):
+            return None
+        actor_id = attempt.executor_audience.daemon_id or attempt.executor_audience.worker_id
+        expires_at = lease_expires_at if lease_expiry <= provider_expiry else provider.expires_at
+        return ProviderUniverseWorkAuthority(
+            root=root,
+            binding=provider,
+            actor_id=actor_id,
+            branch_def_id=definition.branch_def_id,
+            branch_version_id=definition.branch_version_id,
+            operation="repository_spec_delivery",
+            role="writer",
+            executor_class="cloud",
+            max_invocations=definition.max_attempts,
+            max_tokens=definition.max_tokens,
+            max_cost_microunits=definition.max_cost_microunits,
+            expires_at=expires_at,
+        )
+
+
 __all__ = [
     "CloudContinuationPreparationError",
     "CloudContinuationState",
     "CloudContinuationWriteOutcome",
     "CloudContinuationWriteResult",
     "PreparedCloudContinuation",
+    "PreparedCloudContinuationProviderResolver",
     "PreparedCloudContinuationRequest",
     "prepare_inactive_cloud_continuation",
 ]
