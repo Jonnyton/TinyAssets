@@ -925,9 +925,13 @@ branch predates the current recovery and custom-agent stack, so its stale image
 must not be deployed directly; task 2.3 resumes only from a reviewed
 current-`main` descendant carrying the same diagnostics-only behavior.
 
-Next, resume task 2.3 only from an independently reviewed current-`main`
-descendant carrying PR #1935's diagnostics-only behavior. After that deployment
-is durably recorded, sync the deltas, archive the change, and retire its live
-coordination row. If production fails before then, use only the existing
+Task 2.3 resumed only after that green handoff through current-main branch
+`fix/oauth-diagnostic-current-main`. It preserves PR #1935's diagnostics-only
+intent while omitting the stale branch's superseded cloud-drain and PLAN edits;
+independent security review approved exact OpenSpec head `48af22c6` before
+runtime implementation. This satisfies the recovery change's resume boundary,
+so its delta is synced, archived, and retired from the live recovery row in the
+same foldback. The OAuth diagnostic remains a separate active change and has
+not yet been deployed. If production fails, use only the existing
 provenance-bound unsafe recovery workflow with the prior admitted stop-writer
 image; do not delete containers directly or bypass the fence.
