@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$Repo,
     [ValidateSet("codex", "claude")]
-    [string]$Provider = "codex"
+    [string]$Provider = "codex",
+    [switch]$PreserveStop
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,7 @@ $watchdogDir = Join-Path $repoPath "output\openspec-drain-watchdog"
 $healthPath = Join-Path $watchdogDir "health.json"
 $stopPath = Join-Path $watchdogDir "stop.request"
 $restartPath = Join-Path $watchdogDir "restart.request"
+$controlMutexName = "Local\TinyAssetsOpenSpecDrainControl"
 New-Item -ItemType Directory -Path $watchdogDir -Force | Out-Null
 
 $createdNew = $false
@@ -41,6 +43,8 @@ $watchdogArgs = @(
 $script:lastHealth = ""
 $script:lastState = ""
 $script:watchdogLaunchError = ""
+$script:lastWatchdogRecoveryAt = [DateTimeOffset]::MinValue
+$watchdogRecoveryCooldownSeconds = 60
 $script:notify = New-Object System.Windows.Forms.NotifyIcon
 $script:notify.Icon = [System.Drawing.SystemIcons]::Application
 $script:notify.Text = "TinyAssets OpenSpec drain: starting"
@@ -78,6 +82,34 @@ function Start-DrainWatchdog {
     }
 }
 
+function Invoke-DrainControlMutation {
+    param([scriptblock]$Action)
+
+    $mutex = New-Object System.Threading.Mutex -ArgumentList @(
+        $false,
+        $controlMutexName
+    )
+    $acquired = $false
+    try {
+        try {
+            $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds(60))
+        }
+        catch [System.Threading.AbandonedMutexException] {
+            $acquired = $true
+        }
+        if (-not $acquired) {
+            throw "Timed out waiting for the drain control lock."
+        }
+        & $Action
+    }
+    finally {
+        if ($acquired) {
+            $mutex.ReleaseMutex()
+        }
+        $mutex.Dispose()
+    }
+}
+
 function Read-DrainHealth {
     if (-not (Test-Path -LiteralPath $healthPath)) {
         return $null
@@ -96,8 +128,33 @@ function Read-DrainHealth {
     }
 }
 
+function Request-WatchdogRecovery {
+    param($Health)
+
+    if (Test-Path -LiteralPath $stopPath) {
+        return
+    }
+
+    $needsRecovery = ($null -eq $Health) -or (
+        [string]$Health.message -eq "watchdog health is stale"
+    )
+    if (-not $needsRecovery) {
+        return
+    }
+
+    $now = [DateTimeOffset]::Now
+    $elapsed = ($now - $script:lastWatchdogRecoveryAt).TotalSeconds
+    if ($elapsed -lt $watchdogRecoveryCooldownSeconds) {
+        return
+    }
+
+    $script:lastWatchdogRecoveryAt = $now
+    Start-DrainWatchdog | Out-Null
+}
+
 function Set-DrainTrayState {
     $health = Read-DrainHealth
+    Request-WatchdogRecovery -Health $health
     if ($null -eq $health) {
         $state = "down"
         $message = if ($script:watchdogLaunchError) {
@@ -198,9 +255,22 @@ while (`$true) {
 })
 
 $restartItem.Add_Click({
-    Start-DrainWatchdog | Out-Null
-    Start-Sleep -Milliseconds 1000
-    Set-Content -LiteralPath $restartPath -Value "restart requested $(Get-Date -Format o)"
+    try {
+        Invoke-DrainControlMutation {
+            Start-DrainWatchdog | Out-Null
+            Start-Sleep -Milliseconds 1000
+            Set-Content -LiteralPath $restartPath -Value "restart requested $(Get-Date -Format o)"
+        }
+    }
+    catch {
+        $script:notify.ShowBalloonTip(
+            5000,
+            "OpenSpec drain control failed",
+            $_.Exception.Message,
+            [System.Windows.Forms.ToolTipIcon]::Error
+        )
+        return
+    }
     $script:notify.ShowBalloonTip(
         3000,
         "OpenSpec drain",
@@ -210,7 +280,20 @@ $restartItem.Add_Click({
 })
 
 $stopItem.Add_Click({
-    Set-Content -LiteralPath $stopPath -Value "stop requested $(Get-Date -Format o)"
+    try {
+        Invoke-DrainControlMutation {
+            Set-Content -LiteralPath $stopPath -Value "stop requested $(Get-Date -Format o)"
+        }
+    }
+    catch {
+        $script:notify.ShowBalloonTip(
+            5000,
+            "OpenSpec drain control failed",
+            $_.Exception.Message,
+            [System.Windows.Forms.ToolTipIcon]::Error
+        )
+        return
+    }
     $script:notify.ShowBalloonTip(
         3000,
         "OpenSpec drain",
@@ -227,7 +310,12 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 5000
 $timer.Add_Tick({ Set-DrainTrayState })
 $timer.Start()
-Start-DrainWatchdog | Out-Null
+if ((-not $PreserveStop) -or (-not (Test-Path -LiteralPath $stopPath))) {
+    $watchdogStarted = Start-DrainWatchdog
+    if ($watchdogStarted) {
+        $script:lastWatchdogRecoveryAt = [DateTimeOffset]::Now
+    }
+}
 Set-DrainTrayState
 
 try {

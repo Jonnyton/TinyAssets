@@ -25,6 +25,7 @@ from openspec_drain_supervisor import (  # noqa: E402
 )
 
 WATCHDOG_DIR_NAME = "openspec-drain-watchdog"
+WATCHDOG_VERSION = 2
 FAILURE_STATUSES = {
     "failure-budget",
     "fatal-peer-error",
@@ -166,6 +167,7 @@ def build_health(
     else:
         health = "running"
     return {
+        "watchdog_version": WATCHDOG_VERSION,
         "health": health,
         "mode": mode,
         "message": message,
@@ -378,20 +380,31 @@ def _write_health(
     run_dir: Path | None,
     pid: int | None,
     message: str,
-) -> None:
+) -> bool:
     waiting = result_handoff_waiting(state=state, run_dir=run_dir)
-    atomic_write_json(
-        health_path,
-        build_health(
-            state=state,
-            controller_alive=alive,
-            mode=mode,
-            active_run=run_dir,
-            controller_pid=pid,
-            message=message,
-            result_waiting=waiting,
-        ),
-    )
+    try:
+        atomic_write_json(
+            health_path,
+            build_health(
+                state=state,
+                controller_alive=alive,
+                mode=mode,
+                active_run=run_dir,
+                controller_pid=pid,
+                message=message,
+                result_waiting=waiting,
+            ),
+        )
+    except OSError as exc:
+        try:
+            (health_path.parent / "health-write-errors.log").write_text(
+                f"{_now_iso()} {type(exc).__name__}: {exc}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def _watch(args: argparse.Namespace) -> int:
@@ -467,7 +480,6 @@ def _watch(args: argparse.Namespace) -> int:
 
             if sticky_failure and not wants_restart:
                 if wants_stop:
-                    stop_request.unlink(missing_ok=True)
                     _write_health(
                         health_path,
                         state=state,

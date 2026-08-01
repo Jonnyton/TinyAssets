@@ -1,3 +1,14 @@
+## 2026-07-31 — local drain observer self-heal
+
+- **What surprised me:** the actual watchdog failure was a one-second Windows
+  health-file replacement limit, but safe recovery required preserving explicit
+  session stop across tray, scheduler, installer, and abandoned-mutex races.
+- **Pattern worth capturing:** a liveness repair needs two independent layers
+  and truthful versioned activation proof; restarting a process is not proof
+  that the reviewed process is running or that user stop authority survived.
+- **What I would do differently:** design the stop/install serialization and
+  real Windows fault-injection matrix before the first implementation review.
+
 ## 2026-07-31 — exact process ownership before mutation
 
 - **What surprised me:** the availability failure was caused by a conservative
