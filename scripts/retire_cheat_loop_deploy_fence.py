@@ -1456,9 +1456,7 @@ def preflight(
         "restart_racer_state": {
             unit: stable_unit_states[unit] for unit in present_racers
         },
-        "daemon_service_state": _daemon_restore_expectation(
-            stable_unit_states[DAEMON_SERVICE]
-        ),
+        "daemon_service_state": stable_unit_states[DAEMON_SERVICE],
         "old_restart_policies": {
             name: str(info.get("HostConfig", {}).get("RestartPolicy", {}).get("Name", ""))
             for name, info in inspections.items()
@@ -1904,6 +1902,8 @@ def prove(
     if observation["receipt_snapshot"] != state.get("receipt_snapshot"):
         raise FenceError("post-deploy receipt snapshot mismatch")
     if state.get("phase") not in {
+        "post_canary_proved",
+        "restored",
         "recovery_pending_canary",
         "canary_accepted",
         "finalizing",
@@ -2301,8 +2301,12 @@ def _validated_unit_state(host: Host, unit: str) -> dict[str, str]:
     return state
 
 
-def _daemon_restore_expectation(state: Mapping[str, str]) -> dict[str, str]:
-    """Require the successful normal-deploy daemon postcondition."""
+def _daemon_restore_expectation(
+    state: Mapping[str, str],
+    *,
+    establish_active: bool,
+) -> dict[str, str]:
+    """Derive daemon intent without changing failed-forward rollback posture."""
 
     active = state.get("active")
     enabled = state.get("enabled")
@@ -2311,7 +2315,12 @@ def _daemon_restore_expectation(state: Mapping[str, str]) -> dict[str, str]:
         or enabled not in AUTHORITATIVE_UNIT_ENABLED_STATES
     ):
         raise FenceError("saved daemon unit state is invalid")
-    return {"active": "active", "enabled": enabled}
+    expected = {"active": active, "enabled": enabled}
+    if active == "activating" or (
+        establish_active and active in {"active", "inactive", "failed"}
+    ):
+        expected["active"] = "active"
+    return expected
 
 
 def restore_if_safe(
@@ -2338,8 +2347,14 @@ def restore_if_safe(
         }
     state = _load_state(state_path)
     _require_state_run(state, run_id)
+    successful_normal_handoff = (
+        state.get("phase") == "post_canary_proved"
+        and image_ref == state.get("target_image_ref")
+        and revision == state.get("target_revision")
+    )
     daemon_state = _daemon_restore_expectation(
-        state.get("daemon_service_state", {})
+        state.get("daemon_service_state", {}),
+        establish_active=successful_normal_handoff,
     )
     evidence = prove(
         host,
@@ -2375,6 +2390,7 @@ def restore_if_safe(
             "unit restoration proof failed: "
             f"masked={masks_after}"
         )
+    state["daemon_service_state"] = daemon_state
     state["phase"] = "restored"
     _atomic_json(state_path, state)
     evidence.update(
@@ -2384,6 +2400,7 @@ def restore_if_safe(
             "masked_units_after": masks_after,
             "expected_restored_unit_states": expected_states,
             "restored_unit_states": actual_states,
+            "normal_handoff_active_established": successful_normal_handoff,
         }
     )
     return evidence

@@ -1196,3 +1196,17 @@ fresh-host rollback edges found later.
 - What I would do differently: check draft successor branches against current
   `main` before calling them deployable; a diagnostics-only change can still
   regress production when its image omits newer platform capabilities.
+
+## 2026-07-31 - Predecessor state is not terminal intent
+
+- What surprised me: waiting for a stable snapshot revealed a truthful but
+  still wrong contract—the recovered fleet was healthy while its systemd unit
+  was stably failed, so preserving that predecessor state could never describe
+  a successful normal handoff.
+- Pattern worth capturing: distinguish observed predecessor state from the
+  post-operation invariant, and do not commit that invariant until success is
+  durable. Preserve exact enablement and auxiliary units; only a proved normal
+  target may explicitly own an active daemon, while rollback retains the
+  predecessor posture.
+- What I would do differently: enumerate every authoritative stable predecessor
+  state in the first terminal-state table, not only transitions.

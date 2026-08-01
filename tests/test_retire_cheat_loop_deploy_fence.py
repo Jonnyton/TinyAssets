@@ -922,6 +922,13 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
     assert fence_status(host, run_id=RUN_ID, state_path=state_path)["state_phase"] == (
         "post_canary_proved"
     )
+    assert prove(
+        host,
+        image_ref=host.target_image_ref,
+        revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )["phase"] == "post_canary_proved"
     restored = restore_if_safe(
         host,
         image_ref=host.target_image_ref,
@@ -971,7 +978,7 @@ def test_full_lifecycle_executes_every_command_and_restores_exact_state(
         "failed",
     ],
 )
-def test_preflight_requires_active_daemon_after_successful_normal_deploy(
+def test_preflight_preserves_stable_daemon_predecessor_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     observed: str,
@@ -991,7 +998,7 @@ def test_preflight_requires_active_daemon_after_successful_normal_deploy(
 
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["daemon_service_state"] == {
-        "active": "active",
+        "active": observed,
         "enabled": "enabled",
     }
     assert state["restart_racer_state"]["daemon-watchdog.service"][
@@ -5554,8 +5561,9 @@ def test_preflight_refuses_nonsettling_transient_unit_before_mutation(
     )
 
 
-def test_restore_converges_failed_disabled_recovery_predecessor_to_active(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("saved_active", ["active", "activating", "inactive", "failed"])
+def test_successful_normal_handoff_converges_daemon_to_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, saved_active: str
 ):
     host = LifecycleHost(tmp_path)
     state_path = tmp_path / "state.json"
@@ -5563,13 +5571,78 @@ def test_restore_converges_failed_disabled_recovery_predecessor_to_active(
         "schema_version": 1,
         "owner": "retire-cheat-loop task 2.1",
         "run_id": RUN_ID,
-        "phase": "safe_fleet",
+        "phase": "post_canary_proved",
+        "target_image_ref": host.target_image_ref,
+        "target_revision": host.target_revision,
+        "previous_image_ref": host.old_image_ref,
+        "previous_revision": host.old_revision,
         "old_container_ids": {},
         "restart_racer_state": {
             unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
         },
         "daemon_service_state": {
-            "active": "failed",
+            "active": saved_active,
+            "enabled": "disabled",
+        },
+    }
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    for unit in (*RESTART_RACER_UNITS, DAEMON_SERVICE):
+        host.units[unit]["enabled"] = "masked-runtime"
+        host.units[unit]["load"] = "masked"
+    original_run = host.run
+
+    def preserve_disabled_daemon(args: Any, **kwargs: Any) -> str:
+        result = original_run(args, **kwargs)
+        if tuple(args)[:3] == ("systemctl", "unmask", "--runtime"):
+            host.units[DAEMON_SERVICE]["enabled"] = "disabled"
+        return result
+
+    monkeypatch.setattr(host, "run", preserve_disabled_daemon)
+    monkeypatch.setattr(
+        fence,
+        "prove",
+        lambda *_args, **_kwargs: {"safe": True, "phase": "safe_fleet"},
+    )
+
+    evidence = restore_if_safe(
+        host,
+        image_ref=host.target_image_ref,
+        revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=state_path,
+    )
+
+    expected_daemon = {"active": "active", "enabled": "disabled"}
+    assert evidence["expected_restored_unit_states"][DAEMON_SERVICE] == (
+        expected_daemon
+    )
+    assert evidence["restored_unit_states"][DAEMON_SERVICE] == expected_daemon
+
+
+@pytest.mark.parametrize("saved_active", ["inactive", "failed"])
+def test_failed_forward_rollback_preserves_daemon_predecessor_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, saved_active: str
+):
+    host = LifecycleHost(tmp_path)
+    host.units[DAEMON_SERVICE].update(
+        {"active": saved_active, "enabled": "disabled"}
+    )
+    state_path = tmp_path / "state.json"
+    state = {
+        "schema_version": 1,
+        "owner": "retire-cheat-loop task 2.1",
+        "run_id": RUN_ID,
+        "phase": "safe_fleet",
+        "target_image_ref": host.target_image_ref,
+        "target_revision": host.target_revision,
+        "previous_image_ref": host.old_image_ref,
+        "previous_revision": host.old_revision,
+        "old_container_ids": {},
+        "restart_racer_state": {
+            unit: host.unit_state(unit) for unit in RESTART_RACER_UNITS
+        },
+        "daemon_service_state": {
+            "active": saved_active,
             "enabled": "disabled",
         },
     }
@@ -5600,11 +5673,12 @@ def test_restore_converges_failed_disabled_recovery_predecessor_to_active(
         state_path=state_path,
     )
 
-    expected_daemon = {"active": "active", "enabled": "disabled"}
+    expected_daemon = {"active": saved_active, "enabled": "disabled"}
     assert evidence["expected_restored_unit_states"][DAEMON_SERVICE] == (
         expected_daemon
     )
     assert evidence["restored_unit_states"][DAEMON_SERVICE] == expected_daemon
+    assert ("systemctl", "start", DAEMON_SERVICE) not in host.calls
 
 
 def test_restore_proof_failure_precedes_all_unit_mutation(

@@ -189,11 +189,17 @@ Preflight therefore waits before any mutation until every present restart
 racer and the daemon reports a stable `active`, `inactive`, or `failed` state.
 It writes only that stable snapshot into the restoration contract. A unit that
 does not settle within the bounded window fails preflight before the fence
-state or host is mutated. Restoration retains exact saved state and enablement
-for watchdog services, timers, and the daemon; the already-reviewed daemon
-startup rule still maps a legacy saved `activating` observation only to its
-healthy terminal `active` expectation. Exact mask absence and exact restored
-unit-state proof remain terminal workflow requirements.
+state or host is mutated. Restoration retains exact saved state for watchdog
+services/timers and the exact daemon predecessor. Only durable target
+post-canary proof makes a normal handoff own the daemon's terminal active
+state; then an authoritative stable `active`, `inactive`, or `failed`
+predecessor—and a legacy saved `activating` observation—maps to an `active`
+expectation without changing enablement. A failed forward whose admitted
+previous image is restored retains the exact predecessor daemon posture. Run
+`30674102573` proved the success case: recovery containers were healthy while
+their systemd unit was stably `failed`, and the new normal service correctly
+became `active`. Exact mask absence and exact restored unit-state proof remain
+terminal workflow requirements.
 
 ## Risks / Trade-offs
 
@@ -224,8 +230,8 @@ unit-state proof remain terminal workflow requirements.
 
 - [A transient systemd observation is mistaken for durable intent] -> wait for
   a stable active state before write-ahead fencing; timeout fails pre-mutation.
-- [Recovery leaves the daemon with nonstandard enablement] -> preserve and
-  prove the exact authoritative enablement rather than broadening mutation.
+- [Recovery leaves the daemon inactive or failed] -> normal handoff establishes
+  active daemon ownership while preserving and proving exact enablement.
 
 ## Migration Plan
 
@@ -275,18 +281,21 @@ cleanup correctly observed the settled service as `active`. Exact comparison
 could never converge, so cleanup safely re-fenced the proved target. The #2023
 compatibility repair normalized an already-persisted legacy daemon
 `activating` observation to an `active` restore expectation, and the
-stable-snapshot successor above prevents fresh preflight from persisting any
-transient state. A later production run proved the broader domain rule:
-an emergency-recovery predecessor may legitimately leave the systemd daemon
-`failed` or `inactive` while its recovery Compose generation serves traffic,
-but a successful normal deploy must end with that service `active`. The fence
-therefore normalizes every authoritative predecessor daemon active state to
-the post-deploy `active` requirement, preserves exact enablement, and rejects
-invalid persisted values before restore mutation. The receipt repair also
-keeps forward, rollback, and cleanup as separate facts: a successful
-forward/not-needed rollback followed by a proved cleanup fence becomes
-`failed_without_rollback`, never a synthesized contradictory rollback tuple.
-Stopped containers are not eligible as the running terminal identity.
+stable-snapshot successor prevents fresh preflight from persisting transient
+state. Run `30674102573` proved the broader domain rule: an emergency-recovery
+predecessor may legitimately leave the systemd daemon `failed` or `inactive`
+while its recovery Compose generation serves traffic, but a successful normal
+deploy must end with that service `active`. PR #2029 and run `30674978746`
+proved that successful postcondition live. Independent successor review then
+found that normalizing the persisted predecessor before success could make a
+failed-forward previous-image rollback start a service that had been inactive
+or failed. The fence therefore persists the exact stable predecessor, rejects
+invalid persisted values before proof or mutation, and commits canonical
+`active` only for the exact target identity after durable post-canary proof.
+The receipt repair also keeps forward, rollback, and cleanup as separate facts:
+a successful forward/not-needed rollback followed by a proved cleanup fence
+becomes `failed_without_rollback`, never a synthesized contradictory rollback
+tuple. Stopped containers are not eligible as the running terminal identity.
 
 Rollback uses the existing provenance-bound unsafe recovery workflow with the
 previous admitted stop-writer image. No direct host deletion or fence bypass is
