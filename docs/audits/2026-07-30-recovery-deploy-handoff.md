@@ -824,6 +824,18 @@ and the proof-order regression that injects normal-deploy proof failure and
 observes no disable, stop, mask, unmask, enable, or start mutation. No
 release-blocking findings remained.
 
+Current `main` then advanced through PR #2026's stable-unit snapshot repair.
+The active-daemon postcondition was restacked without weakening that repair:
+fresh preflight still refuses to write intent or mutate while any unit remains
+transient, while cleanup maps a validated authoritative predecessor daemon
+state to the successful normal-deploy `active` postcondition and retains exact
+saved enablement. Independent exact-head review approved integrated commit
+`d3a1b2fe` on 2026-07-31. The reviewer reproduced 431/431 focused tests,
+changed-file Ruff, strict OpenSpec validation, the `ALLOWED` OpenSpec flow gate,
+and clean diff/worktree checks; confirmed `origin/main` as an ancestor; and
+found PR #2026's stable-snapshot path plus PR #2020's sidecar, exact-ID, replay,
+and reboot authority intact. No release-blocking findings remained.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored
