@@ -11,18 +11,27 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sqlite3
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
 from tinyassets.background_branch_authority import (
     BackgroundBranchAttemptLifecycle,
     BackgroundBranchBindingStatus,
+    BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
     BackgroundBranchOperation,
+    BackgroundBranchReceiptRefs,
+    BackgroundBranchSourceKind,
     BackgroundBranchTargetMode,
+    build_request_task_attempt_key,
+)
+from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAttemptIssuanceRequest,
+    BackgroundBranchAttemptIssuanceResolution,
 )
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkAuthority,
@@ -279,6 +288,19 @@ class CloudContinuationPreparationError(ValueError):
         super().__init__(f"{code}: {detail}")
 
 
+@runtime_checkable
+class CloudContinuationAttemptAudienceResolver(Protocol):
+    """Trusted server adapter for the worker assigned to one epoch-2 task."""
+
+    def resolve(
+        self,
+        *,
+        continuation: PreparedCloudContinuation,
+        branch_task_id: str,
+    ) -> BackgroundBranchExecutorAudience | None:
+        """Return the current server-owned audience, or no assignment."""
+
+
 def _prepared_record(
     definition: RepositorySpecWorkDefinition,
     *,
@@ -465,6 +487,251 @@ def prepare_inactive_cloud_continuation(
         ) from exc
 
 
+class PreparedCloudContinuationAttemptResolver:
+    """Bind one current epoch-2 task to one background-attempt reservation.
+
+    The caller supplies only non-authorizing task and attempt references. This
+    adapter rereads the prepared continuation, active cloud epoch, exact queue
+    task, background binding, and server-selected worker before the background
+    authority owner may reserve an attempt.
+    """
+
+    def __init__(
+        self,
+        definition: RepositorySpecWorkDefinition,
+        *,
+        continuation: PreparedCloudContinuation,
+        admission: Mapping[str, object],
+        activation_store: Any,
+        background_store: Any,
+        continuation_store: Any,
+        request_admission_store: Any,
+        audience_resolver: CloudContinuationAttemptAudienceResolver,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        from tinyassets.storage.automation_activations import (
+            AutomationActivationStore,
+        )
+        from tinyassets.storage.background_branch_authority import (
+            SQLiteBackgroundBranchAuthorityStore,
+        )
+        from tinyassets.storage.cloud_automation_continuation import (
+            SQLiteCloudAutomationContinuationStore,
+        )
+        from tinyassets.storage.request_admissions import RequestAdmissionStore
+
+        if not isinstance(definition, RepositorySpecWorkDefinition):
+            raise ValueError("definition must be a RepositorySpecWorkDefinition")
+        if not isinstance(continuation, PreparedCloudContinuation):
+            raise ValueError("continuation must be a PreparedCloudContinuation")
+        if not isinstance(admission, Mapping):
+            raise ValueError("admission must be a mapping")
+        stores = (
+            (activation_store, AutomationActivationStore),
+            (background_store, SQLiteBackgroundBranchAuthorityStore),
+            (continuation_store, SQLiteCloudAutomationContinuationStore),
+            (request_admission_store, RequestAdmissionStore),
+        )
+        if any(not isinstance(store, expected) for store, expected in stores):
+            raise ValueError("cloud attempt resolver requires canonical stores")
+        if len({Path(store.base_path).resolve() for store, _expected in stores}) != 1:
+            raise ValueError("cloud attempt resolver stores must share one control plane")
+        if not isinstance(
+            audience_resolver,
+            CloudContinuationAttemptAudienceResolver,
+        ):
+            raise ValueError(
+                "audience_resolver must implement CloudContinuationAttemptAudienceResolver"
+            )
+        if continuation.definition_digest != definition.definition_digest:
+            raise ValueError("continuation does not match the immutable definition")
+        self._definition = definition
+        self._continuation = continuation
+        self._admission_id = _text(admission.get("admission_id"), "admission_id")
+        self._request_id = _text(admission.get("request_id"), "request_id")
+        self._branch_task_id = _text(
+            admission.get("branch_task_id"),
+            "branch_task_id",
+        )
+        self._activation_store = activation_store
+        self._background_store = background_store
+        self._continuation_store = continuation_store
+        self._request_admission_store = request_admission_store
+        self._audience_resolver = audience_resolver
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def resolve(
+        self,
+        request: BackgroundBranchAttemptIssuanceRequest,
+    ) -> BackgroundBranchAttemptIssuanceResolution | None:
+        if not isinstance(request, BackgroundBranchAttemptIssuanceRequest):
+            raise ValueError("request must be a BackgroundBranchAttemptIssuanceRequest")
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        resolved_at = (
+            now.astimezone(timezone.utc)
+            .isoformat()
+            .replace(
+                "+00:00",
+                "Z",
+            )
+        )
+        continuation = self._continuation
+        definition = self._definition
+        try:
+            current_continuation = self._continuation_store.get(
+                universe_id=continuation.universe_id,
+                automation_id=continuation.automation_id,
+            )
+            activation = self._activation_store.get(
+                continuation.universe_id,
+                continuation.automation_id,
+            )
+            binding = self._background_store.get_binding(continuation.background_binding_id)
+            with self._request_admission_store.connection() as conn:
+                task = conn.execute(
+                    """
+                    SELECT
+                        a.tenant_id, a.actor_id, a.universe_id,
+                        a.body_digest, a.grant_generation,
+                        t.branch_task_id, t.admission_id, t.request_id,
+                        t.branch_def_id, t.directed_daemon_id,
+                        t.automation_id, t.automation_activation_epoch,
+                        t.automation_executor_class,
+                        t.automation_branch_version,
+                        t.automation_lease_id, t.status,
+                        t.queue_epoch, t.protocol_version
+                    FROM request_admissions AS a
+                    JOIN branch_tasks_v2 AS t
+                      ON t.admission_id = a.admission_id
+                     AND t.request_id = a.request_id
+                     AND t.branch_task_id = a.branch_task_id
+                    WHERE a.admission_id = ?
+                      AND a.request_id = ?
+                      AND a.branch_task_id = ?
+                    LIMIT 1
+                    """,
+                    (
+                        self._admission_id,
+                        self._request_id,
+                        self._branch_task_id,
+                    ),
+                ).fetchone()
+            audience = self._audience_resolver.resolve(
+                continuation=continuation,
+                branch_task_id=self._branch_task_id,
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+        if any(
+            value is None
+            for value in (
+                current_continuation,
+                activation,
+                binding,
+                task,
+                audience,
+            )
+        ):
+            return None
+        assert current_continuation is not None
+        assert activation is not None
+        assert binding is not None
+        assert task is not None
+        assert isinstance(audience, BackgroundBranchExecutorAudience)
+        try:
+            expected_logical_key = build_request_task_attempt_key(
+                tenant_id=str(task["tenant_id"]),
+                request_id=str(task["request_id"]),
+                admission_id=str(task["admission_id"]),
+                task_id=str(task["branch_task_id"]),
+                body_digest=str(task["body_digest"]),
+                admission_generation=int(task["grant_generation"]),
+            )
+            source_generation = int(binding.source_revision)
+            binding_expiry = (
+                datetime.fromisoformat(binding.expires_at.removesuffix("Z") + "+00:00")
+                if binding.expires_at is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            return None
+        exact = (
+            current_continuation == continuation,
+            continuation.state is CloudContinuationState.PREPARED,
+            continuation.principal_id == definition.principal_id,
+            continuation.universe_id == definition.universe_id,
+            continuation.branch_def_id == definition.branch_def_id,
+            continuation.branch_version_id == definition.branch_version_id,
+            continuation.branch_content_digest == definition.branch_content_digest,
+            activation.state is AutomationActivationState.ACTIVE,
+            activation.executor_class is AutomationActivationExecutor.CLOUD,
+            activation.epoch == continuation.activation_epoch + 1,
+            activation.immutable_branch_version == definition.branch_version_id,
+            task["tenant_id"] == definition.principal_id,
+            task["actor_id"] == definition.principal_id,
+            task["universe_id"] == definition.universe_id,
+            task["branch_def_id"] == definition.branch_def_id,
+            task["directed_daemon_id"] == audience.daemon_id,
+            task["automation_id"] == continuation.automation_id,
+            task["automation_activation_epoch"] == activation.epoch,
+            task["automation_executor_class"] == "cloud",
+            task["automation_branch_version"] == definition.branch_version_id,
+            task["automation_lease_id"] == activation.lease_id,
+            task["status"] == "pending",
+            task["queue_epoch"] == 2,
+            task["protocol_version"] == 2,
+            binding.status is BackgroundBranchBindingStatus.ACTIVE,
+            binding.binding_id == continuation.background_binding_id,
+            binding.generation == continuation.background_binding_generation,
+            binding.binding_digest == continuation.background_binding_digest,
+            binding.authorizing_principal_id == definition.principal_id,
+            binding.universe_id == definition.universe_id,
+            binding.branch_def_id == definition.branch_def_id,
+            binding.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
+            binding.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION,
+            binding.source_id == self._request_id,
+            binding.source_revision == str(task["grant_generation"]),
+            binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
+            binding.pinned_branch_version_id == definition.branch_version_id,
+            binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
+            binding.max_attempts <= definition.max_attempts,
+            0 < binding.remaining_count <= definition.max_attempts,
+            binding.remaining_cost_microunits >= definition.max_cost_microunits,
+            binding_expiry is None or binding_expiry > now.astimezone(timezone.utc),
+            request.binding_id == binding.binding_id,
+            request.binding_generation == binding.generation,
+            request.binding_digest == binding.binding_digest,
+            request.logical_attempt_key == expected_logical_key,
+            request.physical_universe_id == definition.universe_id,
+            request.executor_audience == audience,
+        )
+        if not all(exact):
+            return None
+        return BackgroundBranchAttemptIssuanceResolution(
+            binding=binding,
+            branch_version_id=definition.branch_version_id,
+            branch_content_digest=definition.branch_content_digest,
+            source_generation=source_generation,
+            executor_audience=audience,
+            resolved_at=resolved_at,
+            parent_attempt_id=None,
+            origin_attempt_id=None,
+            audit_correlation_ids=(
+                f"audit:continuation:{continuation.continuation_id}",
+                f"task:{self._branch_task_id}",
+            ),
+            receipt_refs=BackgroundBranchReceiptRefs(
+                b2_execution_grant_id=None,
+                provider_work_receipt_id=None,
+                provider_attempt_receipt_id=None,
+                payment_receipt_id=None,
+                effect_receipt_id=None,
+            ),
+        )
+
+
 class PreparedCloudContinuationProviderResolver:
     """Resolve one claimed background attempt into non-bearer provider facts.
 
@@ -645,11 +912,13 @@ class PreparedCloudContinuationProviderResolver:
 
 
 __all__ = [
+    "CloudContinuationAttemptAudienceResolver",
     "CloudContinuationPreparationError",
     "CloudContinuationState",
     "CloudContinuationWriteOutcome",
     "CloudContinuationWriteResult",
     "PreparedCloudContinuation",
+    "PreparedCloudContinuationAttemptResolver",
     "PreparedCloudContinuationProviderResolver",
     "PreparedCloudContinuationRequest",
     "prepare_inactive_cloud_continuation",

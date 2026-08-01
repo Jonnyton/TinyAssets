@@ -1,5 +1,6 @@
 param(
-    [Parameter(Mandatory = $true)][string]$Installer
+    [Parameter(Mandatory = $true)][string]$Installer,
+    [ValidateRange(1, 900)][int]$PhaseTimeoutSeconds = 180
 )
 
 $ErrorActionPreference = "Stop"
@@ -12,19 +13,57 @@ $startup = Join-Path $env:APPDATA `
     "Microsoft\Windows\Start Menu\Programs\Startup\TinyAssets.lnk"
 $marker = Join-Path $dataRoot "clean-machine-content-marker.txt"
 
+function Invoke-BoundedProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+        [Parameter(Mandatory = $true)][string]$Phase
+    )
+
+    $process = Start-Process -FilePath $FilePath `
+        -ArgumentList $ArgumentList -PassThru
+    try {
+        if (-not $process.WaitForExit($PhaseTimeoutSeconds * 1000)) {
+            $diagnostics = Get-Process -ErrorAction SilentlyContinue |
+                Where-Object {
+                    $_.Id -eq $process.Id -or
+                    $_.ProcessName -match "TinyAssets|unins"
+                } |
+                Select-Object Id, ProcessName, StartTime |
+                Format-Table -AutoSize |
+                Out-String
+            Write-Host "::error title=Windows lifecycle timeout::$Phase timed out; root PID $($process.Id)"
+            Write-Host $diagnostics
+            try {
+                $process.Kill($true)
+            }
+            catch {
+                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+            $process.WaitForExit(10000) | Out-Null
+            throw "$Phase timed out after $PhaseTimeoutSeconds seconds"
+        }
+        if ($process.ExitCode -ne 0) {
+            throw "$Phase failed with exit code $($process.ExitCode)"
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
 function Invoke-Installer {
-    $process = Start-Process -FilePath $installerPath -ArgumentList @(
+    param([Parameter(Mandatory = $true)][string]$Phase)
+
+    Invoke-BoundedProcess -FilePath $installerPath -ArgumentList @(
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
         "/TASKS=autostart"
-    ) -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        throw "installer failed with exit code $($process.ExitCode)"
-    }
+    ) -Phase $Phase
 }
 
-Invoke-Installer
+Invoke-Installer -Phase "initial install"
 if (-not (Test-Path -LiteralPath $tray -PathType Leaf)) {
     throw "installed tray executable is missing"
 }
@@ -35,28 +74,23 @@ if (-not (Test-Path -LiteralPath $startup -PathType Leaf)) {
 New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null
 Set-Content -LiteralPath $marker -Value "preserve me"
 $env:TINYASSETS_DATA_DIR = $dataRoot
-$probe = Start-Process -FilePath $tray `
-    -ArgumentList @("--packaged-role", "health-probe") -Wait -PassThru
-if ($probe.ExitCode -ne 0) {
-    throw "packaged health probe failed with exit code $($probe.ExitCode)"
-}
+Invoke-BoundedProcess -FilePath $tray `
+    -ArgumentList @("--packaged-role", "health-probe") `
+    -Phase "packaged health probe"
 
 # Same-version repair must converge without a duplicate startup entry.
-Invoke-Installer
+Invoke-Installer -Phase "same-version repair"
 $startupEntries = @(Get-ChildItem -LiteralPath (Split-Path $startup) `
     -Filter "TinyAssets.lnk")
 if ($startupEntries.Count -ne 1) {
     throw "repair produced $($startupEntries.Count) autostart entries"
 }
 
-$uninstall = Start-Process -FilePath $uninstaller -ArgumentList @(
+Invoke-BoundedProcess -FilePath $uninstaller -ArgumentList @(
     "/VERYSILENT",
     "/SUPPRESSMSGBOXES",
     "/NORESTART"
-) -Wait -PassThru
-if ($uninstall.ExitCode -ne 0) {
-    throw "uninstaller failed with exit code $($uninstall.ExitCode)"
-}
+) -Phase "uninstall"
 if (Test-Path -LiteralPath $tray) {
     throw "uninstaller left the tray executable behind"
 }
