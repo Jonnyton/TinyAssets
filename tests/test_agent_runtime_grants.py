@@ -109,18 +109,10 @@ def test_resolver_derives_and_resolves_every_reference_from_the_immutable_manife
     )
     resolver = AgentRuntimeGrantResolver(
         capability_source=_StaticGrantSource(
-            {
-                "provider.invoke": _evidence_factory(
-                    "capability", "provider.invoke", "1"
-                )
-            }
+            {"provider.invoke": _evidence_factory("capability", "provider.invoke", "1")}
         ),
         resource_source=_StaticGrantSource(
-            {
-                "resource_repo_alice": _evidence_factory(
-                    "resource", "resource_repo_alice", "2"
-                )
-            }
+            {"resource_repo_alice": _evidence_factory("resource", "resource_repo_alice", "2")}
         ),
         provider_policy_source=_StaticGrantSource(
             {
@@ -135,9 +127,7 @@ def test_resolver_derives_and_resolves_every_reference_from_the_immutable_manife
 
     assert result.ready is True
     assert result.blockers == ()
-    assert [
-        (item.reference_kind, item.reference_id) for item in result.evidence
-    ] == [
+    assert [(item.reference_kind, item.reference_id) for item in result.evidence] == [
         ("capability", "provider.invoke"),
         ("resource", "resource_repo_alice"),
         ("provider_policy", "provider_policy_alice"),
@@ -157,11 +147,7 @@ def test_missing_sources_and_grants_are_exhaustive_and_never_partially_ready():
     )
     resolver = AgentRuntimeGrantResolver(
         capability_source=_StaticGrantSource(
-            {
-                "cap.present": _evidence_factory(
-                    "capability", "cap.present", "4"
-                )
-            }
+            {"cap.present": _evidence_factory("capability", "cap.present", "4")}
         )
     )
 
@@ -171,10 +157,7 @@ def test_missing_sources_and_grants_are_exhaustive_and_never_partially_ready():
     assert [(item.reference_kind, item.reference_id) for item in result.evidence] == [
         ("capability", "cap.present")
     ]
-    assert [
-        (item.reference_kind, item.reference_id, item.code)
-        for item in result.blockers
-    ] == [
+    assert [(item.reference_kind, item.reference_id, item.code) for item in result.blockers] == [
         ("capability", "cap.missing", "grant_not_current"),
         ("resource", "resource_missing", "source_unavailable"),
         ("provider_policy", "policy_missing", "source_unavailable"),
@@ -210,9 +193,7 @@ def test_account_capability_source_prefers_current_universe_grant_and_rechecks_r
         owner_user_id=account["user_id"],
         capability_ids=("provider.invoke",),
     )
-    resolver = AgentRuntimeGrantResolver(
-        capability_source=AccountCapabilityGrantSource(tmp_path)
-    )
+    resolver = AgentRuntimeGrantResolver(capability_source=AccountCapabilityGrantSource(tmp_path))
 
     before_revoke = resolver.resolve(manifest, evaluated_at=issued_at + 1)
     with _connect(tmp_path) as conn:
@@ -263,18 +244,14 @@ def test_invalid_or_failed_authoritative_sources_fail_closed(failure: str):
             return AgentRuntimeGrantEvidence(
                 reference_kind="resource",
                 reference_id=(
-                    "different_resource"
-                    if failure == "wrong_reference"
-                    else kwargs["reference_id"]
+                    "different_resource" if failure == "wrong_reference" else kwargs["reference_id"]
                 ),
                 subject_id=kwargs["subject_id"],
                 universe_id=kwargs["universe_id"],
                 scope=kwargs["universe_id"],
                 generation=1,
                 grant_digest=f"sha256:{'5' * 64}",
-                expires_at=(
-                    kwargs["evaluated_at"] - 1 if failure == "expired" else None
-                ),
+                expires_at=(kwargs["evaluated_at"] - 1 if failure == "expired" else None),
             )
 
     result = AgentRuntimeGrantResolver(resource_source=BrokenSource()).resolve(

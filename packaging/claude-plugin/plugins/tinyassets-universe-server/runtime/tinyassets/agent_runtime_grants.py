@@ -206,9 +206,7 @@ class AccountCapabilityGrantSource:
             scope=str(row["scope"]),
             generation=int(row["generation"]),
             grant_digest=grant_digest,
-            expires_at=(
-                None if row["expires_at"] is None else float(row["expires_at"])
-            ),
+            expires_at=(None if row["expires_at"] is None else float(row["expires_at"])),
         )
 
 
@@ -245,9 +243,7 @@ class AgentRuntimeGrantResolver:
             source = getattr(self, f"_{source_name}")
             for reference_id in references[field]:
                 if source is None:
-                    blockers.append(
-                        _blocker(reference_kind, reference_id, "source_unavailable")
-                    )
+                    blockers.append(_blocker(reference_kind, reference_id, "source_unavailable"))
                     continue
                 try:
                     item = source.resolve_current(
@@ -260,9 +256,7 @@ class AgentRuntimeGrantResolver:
                     blockers.append(_blocker(reference_kind, reference_id, "source_error"))
                     continue
                 if item is None:
-                    blockers.append(
-                        _blocker(reference_kind, reference_id, "grant_not_current")
-                    )
+                    blockers.append(_blocker(reference_kind, reference_id, "grant_not_current"))
                     continue
                 if not _valid_evidence(
                     item,
@@ -298,9 +292,7 @@ def _validated_manifest(manifest: AgentRuntimeManifest) -> AgentRuntimeManifest:
     try:
         if not isinstance(manifest, AgentRuntimeManifest):
             raise TypeError
-        manifest_input = AgentRuntimeManifestInput.from_dict(
-            manifest.manifest_input.to_dict()
-        )
+        manifest_input = AgentRuntimeManifestInput.from_dict(manifest.manifest_input.to_dict())
         return AgentRuntimeManifest(
             manifest_id=manifest.manifest_id,
             manifest_digest=manifest.manifest_digest,
