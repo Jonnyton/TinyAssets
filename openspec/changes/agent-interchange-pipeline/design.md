@@ -107,7 +107,11 @@ the key is unavailable, is never returned by public evidence, and expires with
 the stage 24 hours after creation. Production accepts this deploy secret only
 as canonical single-line base64 decoding to at least 32 random bytes, installs
 it in a protected daemon-only env file, and validates it before the first
-remote mutation. Rotation replaces the repository secret and deploys forward;
+remote mutation. Installation follows the disk and stop-writer safety
+preflights so it participates in the existing production-mutation receipt
+boundary, while still preceding compose synchronization. Clean-host bootstrap
+creates the file and converges `root:tinyassets` mode `0640` on every rerun.
+Rotation replaces the repository secret and deploys forward;
 image rollback intentionally retains the new key so it cannot resurrect a
 rotated-away authority. Deleting the repository secret only blocks later
 deployments and is not a revocation mechanism: emergency revocation stops the

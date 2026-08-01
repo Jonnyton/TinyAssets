@@ -223,12 +223,12 @@ if [[ ! -f "${ENV_DIR}/agent-interchange.env" ]]; then
     log "creating ${ENV_DIR}/agent-interchange.env from daemon-only template..."
     cp "${TINYASSETS_HOME}/deploy/agent-interchange-env.template" \
         "${ENV_DIR}/agent-interchange.env"
-    chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"
-    chmod 640 "${ENV_DIR}/agent-interchange.env"
     log "  → fill ${ENV_DIR}/agent-interchange.env with a unique canonical-base64 key before starting the service"
 else
     log "${ENV_DIR}/agent-interchange.env already present; leaving contents alone"
 fi
+chown "root:${TINYASSETS_USER}" "${ENV_DIR}/agent-interchange.env"
+chmod 640 "${ENV_DIR}/agent-interchange.env"
 
 # ----- 6. systemd unit install --------------------------------------------
 
@@ -302,12 +302,15 @@ Next steps (host action required):
 
   1. Fill in secrets:
        sudo nano ${ENV_DIR}/env
-     (See deploy/HETZNER-DEPLOY.md for which values go where.)
+     (See deploy/DEPLOY.md for which values go where.)
 
-  2. Start the service:
+  2. Generate the daemon-only agent interchange key:
+       follow Step 3 in deploy/DEPLOY.md for ${ENV_DIR}/agent-interchange.env
+
+  3. Start the service:
        sudo systemctl start tinyassets-daemon
 
-  3. Tail logs:
+  4. Tail logs:
        sudo journalctl -u tinyassets-daemon -f
 
   4. Verify canary green:

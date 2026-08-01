@@ -1455,6 +1455,17 @@ def test_deploy_requires_and_installs_agent_interchange_hmac_secret():
     assert len(mutation_indexes) == len(mutating_steps)
     assert validation_index < min(mutation_indexes)
 
+    step_indexes = {step.get("name"): index for index, step in enumerate(steps)}
+    assert step_indexes["Preflight droplet disk before image pull"] < step_indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert step_indexes["Transitional task 2.1 stop-writer preflight"] < step_indexes[
+        "Install daemon-only agent interchange HMAC secret"
+    ]
+    assert step_indexes["Install daemon-only agent interchange HMAC secret"] < (
+        step_indexes["Scrub stale cloud env overrides"]
+    )
+
     install_index = next(
         index
         for index, step in enumerate(steps)
