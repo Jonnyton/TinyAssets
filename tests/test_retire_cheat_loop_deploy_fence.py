@@ -1006,6 +1006,157 @@ def test_preflight_preserves_stable_daemon_predecessor_state(
     ] == "inactive"
 
 
+def test_preflight_confirms_new_exact_container_child_before_refusal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    candidate = {
+        "pid": 999,
+        "exe": "python",
+        "_process_start_time_ticks": 77,
+    }
+    scans = iter(([candidate], []))
+    monkeypatch.setattr(
+        fence,
+        "_stray_writer_processes",
+        lambda *_args: next(scans),
+    )
+    captured_ids = tuple(
+        str(host.containers[name]["Id"]) for name in EXPECTED_CONTAINERS
+    )
+    confirmations: list[tuple[dict[str, Any], ...]] = []
+
+    def confirm(
+        _host: Any,
+        candidates: Any,
+        identities: Any,
+    ) -> list[dict[str, Any]]:
+        assert tuple(identities) == captured_ids
+        confirmations.append(tuple(candidates))
+        return []
+
+    monkeypatch.setattr(fence, "_confirm_stray_writer_processes", confirm)
+
+    result = preflight(
+        host,
+        image_ref=host.target_image_ref,
+        target_revision=host.target_revision,
+        run_id=RUN_ID,
+        state_path=tmp_path / "fence-state.json",
+    )
+
+    assert result["phase"] == "preflight_proved"
+    assert confirmations == [(candidate,)]
+
+
+def test_preflight_initial_snapshot_does_not_trust_same_name_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    host = LifecycleHost(tmp_path)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    replacement_pid = 999
+    captured_ids = {
+        str(host.containers[name]["Id"]) for name in EXPECTED_CONTAINERS
+    }
+    snapshot_inputs: list[tuple[str, ...]] = []
+
+    def container_pids(identities: Any) -> set[int]:
+        identities = tuple(identities)
+        snapshot_inputs.append(identities)
+        if any(identity in EXPECTED_CONTAINERS for identity in identities):
+            return {replacement_pid}
+        assert set(identities) == captured_ids
+        return {
+            int(info["State"]["Pid"])
+            for info in host.containers.values()
+        }
+
+    host.container_pids = container_pids  # type: ignore[method-assign]
+
+    def scan(_receipt: Path, excluded: set[int], _volume: Path) -> list[dict[str, Any]]:
+        if replacement_pid in excluded:
+            return []
+        return [
+            {
+                "pid": replacement_pid,
+                "exe": "python",
+                "_process_start_time_ticks": 77,
+            }
+        ]
+
+    monkeypatch.setattr(fence, "_stray_writer_processes", scan)
+    monkeypatch.setattr(
+        fence,
+        "_confirm_stray_writer_processes",
+        lambda _host, candidates, _identities: list(candidates),
+    )
+
+    with pytest.raises(FenceError, match="stray writer process risk"):
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=tmp_path / "fence-state.json",
+        )
+
+    assert snapshot_inputs
+    assert set(snapshot_inputs[0]) == captured_ids
+
+
+@pytest.mark.parametrize("missing_kind", ["expected", "extra"])
+def test_preflight_refuses_missing_controlled_identity_before_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_kind: str,
+):
+    host = LifecycleHost(tmp_path)
+    private_name = "tinyassets-daemon"
+    private_identity = str(host.containers[private_name]["Id"])
+    if missing_kind == "extra":
+        private_name = "private-forgotten-writer"
+        extra = host._containers("extra", "sha256:old", running=False)[
+            "tinyassets-daemon"
+        ]
+        private_identity = "private-extra-identity"
+        extra["Id"] = private_identity
+        host.containers[private_name] = extra
+    host.missing_container_info_identity.add(private_name)
+    _patch_lifecycle_runtime(monkeypatch, [host.old_image_ref])
+    state_path = tmp_path / "fence-state.json"
+
+    with pytest.raises(
+        FenceError,
+        match="controlled container identity is unavailable",
+    ) as failure:
+        preflight(
+            host,
+            image_ref=host.target_image_ref,
+            target_revision=host.target_revision,
+            run_id=RUN_ID,
+            state_path=state_path,
+        )
+
+    assert private_name not in str(failure.value)
+    assert private_identity not in str(failure.value)
+    assert not state_path.exists()
+    assert not any(
+        (
+            call[:2] in {("docker", "update"), ("docker", "stop"), ("docker", "rm")}
+            or (
+                call[:1] == ("systemctl",)
+                and len(call) > 1
+                and call[1]
+                in {"disable", "stop", "mask", "unmask", "enable", "start"}
+            )
+        )
+        for call in host.calls
+    )
+
+
 def test_finalized_recovery_generation_is_removed_before_canonical_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2738,12 +2889,24 @@ def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
             assert tuple(names) == ("captured-a", "captured-b")
             return {123}
 
-    (tmp_path / "123").mkdir()
-    (tmp_path / "456").mkdir()
+    _write_process_stat(tmp_path, 123, 100)
+    _write_process_stat(tmp_path, 456, 200)
     candidates = [
-        {"pid": 123, "exe": "codex"},
-        {"pid": 456, "exe": "python"},
-        {"pid": 789, "exe": "exited"},
+        {
+            "pid": 123,
+            "exe": "codex",
+            "_process_start_time_ticks": 100,
+        },
+        {
+            "pid": 456,
+            "exe": "python",
+            "_process_start_time_ticks": 200,
+        },
+        {
+            "pid": 789,
+            "exe": "exited",
+            "_process_start_time_ticks": 300,
+        },
     ]
 
     assert fence._confirm_stray_writer_processes(
@@ -2752,6 +2915,211 @@ def test_stray_confirmation_filters_new_owned_children_and_exited_processes(
         ("captured-a", "captured-b"),
         proc_root=tmp_path,
     ) == [{"pid": 456, "exe": "python"}]
+
+
+def _write_process_stat(proc_root: Path, pid: int, start_time_ticks: int) -> None:
+    proc = proc_root / str(pid)
+    proc.mkdir(parents=True, exist_ok=True)
+    fields_after_comm = ["S", *(["0"] * 18), str(start_time_ticks)]
+    (proc / "stat").write_text(
+        f"{pid} (writer process) {' '.join(fields_after_comm)}\n",
+        encoding="utf-8",
+    )
+
+
+def test_stray_confirmation_rejects_numeric_pid_reuse(
+    tmp_path: Path,
+):
+    class RefreshHost:
+        def container_pids(self, names: Any) -> set[int]:
+            assert tuple(names) == ("captured-a",)
+            return {123}
+
+    _write_process_stat(tmp_path, 123, 101)
+    candidate = {
+        "pid": 123,
+        "exe": "python",
+        "_process_start_time_ticks": 100,
+    }
+
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        [candidate],
+        ("captured-a",),
+        proc_root=tmp_path,
+    ) == [{"pid": 123, "exe": "python"}]
+
+
+@pytest.mark.parametrize("stat_contents", [None, "123 malformed\n"])
+def test_stray_confirmation_keeps_owned_pid_when_generation_is_unreadable(
+    tmp_path: Path,
+    stat_contents: str | None,
+):
+    class RefreshHost:
+        def container_pids(self, names: Any) -> set[int]:
+            assert tuple(names) == ("captured-a",)
+            return {123}
+
+    proc = tmp_path / "123"
+    proc.mkdir()
+    if stat_contents is not None:
+        (proc / "stat").write_text(stat_contents, encoding="utf-8")
+    candidate = {
+        "pid": 123,
+        "exe": "private-exe",
+        "_process_start_time_ticks": 100,
+    }
+
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        [candidate],
+        ("captured-a",),
+        proc_root=tmp_path,
+    ) == [{"pid": 123, "exe": "private-exe"}]
+
+
+def test_stray_confirmation_mixed_100_candidate_load_uses_one_snapshot(
+    tmp_path: Path,
+):
+    owned_pids = set(range(1000, 1050))
+    exited_pids = set(range(1050, 1099))
+    unowned_pid = 1099
+    snapshot_calls: list[tuple[str, ...]] = []
+
+    class RefreshHost:
+        def container_pids(self, identities: Any) -> set[int]:
+            identities = tuple(identities)
+            snapshot_calls.append(identities)
+            assert identities == ("captured-a", "captured-b")
+            return owned_pids
+
+    candidates = []
+    for pid in sorted((*owned_pids, *exited_pids, unowned_pid)):
+        start_time = 10_000 + pid
+        candidates.append(
+            {
+                "pid": pid,
+                "exe": "python",
+                "_process_start_time_ticks": start_time,
+            }
+        )
+        if pid not in exited_pids:
+            _write_process_stat(tmp_path, pid, start_time)
+
+    assert len(candidates) == fence.MAX_STRAY_WRITER_PROCESS_CANDIDATES
+    assert fence._confirm_stray_writer_processes(
+        RefreshHost(),
+        candidates,
+        ("captured-a", "captured-b"),
+        proc_root=tmp_path,
+    ) == [{"pid": unowned_pid, "exe": "python"}]
+    assert snapshot_calls == [("captured-a", "captured-b")]
+
+
+@pytest.mark.parametrize(
+    "docker_output",
+    [
+        "WRONG\n123",
+        "PID\n123\ntruncated",
+        "PID\n123 extra",
+    ],
+)
+def test_container_pid_ownership_rejects_malformed_or_partial_output(
+    docker_output: str,
+):
+    class OutputHost(fence.Host):
+        def run(
+            self,
+            args: Any,
+            *,
+            check: bool = True,
+            input_text: str | None = None,
+        ) -> str:
+            del args, check, input_text
+            return docker_output
+
+    assert OutputHost().container_pids(("captured-a",)) == set()
+
+
+def test_container_pid_ownership_treats_lookup_failure_as_zero_trust():
+    class FailingHost(fence.Host):
+        def run(
+            self,
+            args: Any,
+            *,
+            check: bool = True,
+            input_text: str | None = None,
+        ) -> str:
+            del args, check, input_text
+            raise FenceError("private docker failure detail")
+
+    assert FailingHost().container_pids(("captured-a",)) == set()
+
+
+def test_container_pid_ownership_accepts_complete_well_formed_output():
+    class OutputHost(fence.Host):
+        def run(
+            self,
+            args: Any,
+            *,
+            check: bool = True,
+            input_text: str | None = None,
+        ) -> str:
+            del args, check, input_text
+            return "PID\n123\n456"
+
+    assert OutputHost().container_pids(("captured-a",)) == {123, 456}
+
+
+def test_process_risk_inventory_refuses_candidate_101(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    proc_root = tmp_path / "proc"
+    processes = []
+    for pid in range(100, 201):
+        proc = proc_root / str(pid)
+        (proc / "fd").mkdir(parents=True)
+        (proc / "ns").mkdir()
+        (proc / "cmdline").write_bytes(b"python\0tinyassets.daemon_server")
+        (proc / "environ").write_bytes(b"")
+        (proc / "mountinfo").write_text("", encoding="utf-8")
+        _write_process_stat(proc_root, pid, 1000 + pid)
+        processes.append(proc)
+
+    monkeypatch.setattr(fence.os, "getpid", lambda: 999999)
+
+    def readlink(path: Any) -> str:
+        value = str(path).replace("\\", "/")
+        if value.endswith("/exe"):
+            return "/usr/bin/python"
+        return "mnt:[1]"
+
+    monkeypatch.setattr(fence.os, "readlink", readlink)
+    monkeypatch.setattr(
+        fence.Path,
+        "glob",
+        lambda _self, _pattern: processes[:100],
+    )
+    assert len(
+        fence._stray_writer_processes(
+            tmp_path / "receipt.db",
+            set(),
+            tmp_path,
+        )
+    ) == 100
+
+    monkeypatch.setattr(
+        fence.Path,
+        "glob",
+        lambda _self, _pattern: processes,
+    )
+    with pytest.raises(FenceError, match="candidate limit exceeded"):
+        fence._stray_writer_processes(
+            tmp_path / "receipt.db",
+            set(),
+            tmp_path,
+        )
 
 
 def test_stray_confirmation_does_not_trust_same_name_replacement(

@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 18:04 - preflight stray-writer reconciliation
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/preflight-stray-writer-reconciliation`
+- Lane state: Active OAuth release blocker after pre-mutation deploy failure 30676899240
+- Worktree: `C:/Users/Jonathan/Projects/wf-preflight-stray-writer-reconcile`
+- STATUS/Issue/PR: OAuth row broadened; issue #2034 records the safe pre-host-write failure; PR pending
+- Purpose: reconcile preliminary process candidates against a fresh Docker PID snapshot while retaining fail-closed rejection of genuine host writers
+- Review gate: OpenSpec approval, red/green race and genuine-stray tests, full recovery suite, Ruff, strict specs, independent exact-head review, immutable normal deploy
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-preflight-stray-writer-reconcile/_PURPOSE.md`
+- Ship/abandon: no retry until the reviewed current-main fix lands and a new exact image is built
+
 ## 2026-07-31 17:27 - current-main OAuth diagnostic restack
 
 - Provider: `codex-gpt5-desktop`

@@ -156,6 +156,8 @@ WRITER_PROCESS_MARKERS = (
     "claude-plugin",
     "mcpb",
 )
+MAX_STRAY_WRITER_PROCESS_CANDIDATES = 100
+_PROCESS_START_TIME_KEY = "_process_start_time_ticks"
 RECEIPT_COLUMNS = (
     "trigger_attempt_id",
     "request_id",
@@ -572,15 +574,17 @@ class Host:
     def container_pids(self, names: Iterable[str]) -> set[int]:
         pids: set[int] = set()
         for name in names:
-            raw = self.run(
-                ["docker", "top", name, "-eo", "pid"],
-                check=False,
-            )
-            for line in raw.splitlines()[1:]:
-                try:
-                    pids.add(int(line.strip().split()[0]))
-                except (IndexError, ValueError):
-                    continue
+            try:
+                raw = self.run(["docker", "top", name, "-eo", "pid"])
+            except FenceError:
+                continue
+            lines = raw.splitlines()
+            if not lines or lines[0].strip() != "PID":
+                continue
+            pid_rows = [line.strip() for line in lines[1:]]
+            if any(not re.fullmatch(r"[1-9][0-9]*", row) for row in pid_rows):
+                continue
+            pids.update(int(row) for row in pid_rows)
         return pids
 
     def container_restart_policy(self, identity: str) -> str:
@@ -940,6 +944,25 @@ def _looks_like_writer_command(cmdline: str) -> bool:
     return any(marker in cmdline.lower() for marker in WRITER_PROCESS_MARKERS)
 
 
+def _process_start_time_ticks(proc: Path) -> int:
+    stat = (proc / "stat").read_text(encoding="utf-8", errors="strict")
+    _prefix, separator, fields_text = stat.rpartition(")")
+    if not separator:
+        raise ValueError("process stat has no command terminator")
+    fields = fields_text.split()
+    if len(fields) <= 19 or not fields[19].isdigit():
+        raise ValueError("process stat has no valid start time")
+    return int(fields[19])
+
+
+def _public_process_risk(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in candidate.items()
+        if key != _PROCESS_START_TIME_KEY
+    }
+
+
 def _stray_writer_processes(
     receipt_path: Path,
     excluded_pids: set[int],
@@ -1024,6 +1047,12 @@ def _stray_writer_processes(
                 or controlled_path_env_keys
                 or controlled_mount_namespace
             ):
+                try:
+                    process_start_time = _process_start_time_ticks(proc)
+                except (OSError, UnicodeError, ValueError):
+                    process_start_time = None
+                if len(risks) >= MAX_STRAY_WRITER_PROCESS_CANDIDATES:
+                    raise FenceError("writer process candidate limit exceeded")
                 risks.append(
                     {
                         "pid": pid,
@@ -1036,13 +1065,14 @@ def _stray_writer_processes(
                         "controlled_mount_namespace": controlled_mount_namespace,
                         "same_host_mount_namespace": same_host_mount_namespace,
                         "mount_namespace": mount_namespace,
+                        _PROCESS_START_TIME_KEY: process_start_time,
                     }
                 )
         except PermissionError as exc:
             raise FenceError(f"process scan permission denied: pid={pid}") from exc
         except (FileNotFoundError, ProcessLookupError):
             continue
-    return risks[:100]
+    return risks
 
 
 def _confirm_stray_writer_processes(
@@ -1058,11 +1088,27 @@ def _confirm_stray_writer_processes(
     confirmed: list[dict[str, Any]] = []
     for candidate in candidates:
         pid = int(candidate.get("pid") or 0)
-        if pid <= 0 or pid in owned_pids:
+        if pid <= 0:
             continue
-        if not (proc_root / str(pid)).is_dir():
+        proc = proc_root / str(pid)
+        if not proc.is_dir():
             continue
-        confirmed.append(dict(candidate))
+        try:
+            current_start_time = _process_start_time_ticks(proc)
+        except FileNotFoundError:
+            if not proc.is_dir():
+                continue
+            current_start_time = None
+        except (OSError, UnicodeError, ValueError):
+            current_start_time = None
+        scanned_start_time = candidate.get(_PROCESS_START_TIME_KEY)
+        if (
+            pid in owned_pids
+            and scanned_start_time is not None
+            and current_start_time == scanned_start_time
+        ):
+            continue
+        confirmed.append(_public_process_risk(candidate))
     return confirmed
 
 
@@ -1416,14 +1462,28 @@ def preflight(
             host,
             restored_state,
         )
-    controlled_pids = host.container_pids(
-        (*EXPECTED_CONTAINERS, *extra_names, *sidecar_inspections)
+    controlled_identity_values = (
+        *(info.get("Id") for info in inspections.values()),
+        *(info.get("Id") for info in extra_inspections.values()),
+        *(info.get("Id") for info in sidecar_inspections.values()),
     )
+    if any(
+        not isinstance(identity, str) or not identity.strip()
+        for identity in controlled_identity_values
+    ):
+        raise FenceError("controlled container identity is unavailable")
+    controlled_identities = tuple(controlled_identity_values)
+    controlled_pids = host.container_pids(controlled_identities)
     preliminary_risk = inventory_queue_risk(volume_dir)
     preliminary_processes = _stray_writer_processes(
         receipt.host_path,
         controlled_pids,
         volume_dir,
+    )
+    preliminary_processes = _confirm_stray_writer_processes(
+        host,
+        preliminary_processes,
+        controlled_identities,
     )
     preliminary_snapshot = receipt_snapshot(receipt.host_path)
     if preliminary_risk:
