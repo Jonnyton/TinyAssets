@@ -1,16 +1,28 @@
 # Worktree Inventory
 
+## 2026-07-31 17:27 - current-main OAuth diagnostic restack
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `fix/oauth-diagnostic-current-main`
+- Lane state: OAuth diagnostic on current main after green normal deploy and recovery archive reconciliation
+- Worktree: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack`
+- STATUS/Issue/PR: OAuth row claimed; draft PR #1935 is source-only; current-main PR pending
+- Purpose: transplant diagnostics-only WorkOS rejection categories without changing token acceptance, then build/deploy a current-main image
+- Review gate: auth TDD/regression, Ruff, strict OpenSpec, mirror parity, independent exact-head security review, immutable normal deploy
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-diagnostic-restack/_PURPOSE.md`
+- Ship/abandon: never deploy PR #1935's stale image; supersede it only with a reviewed current-main descendant
+
 ## 2026-07-31 17:17 - recovery live foldback
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `chore/recovery-live-foldback`
-- Lane state: Active foldback after green normal deploy 30674978746
+- Lane state: Merged as PR #2030; recovery change synced/archived by OAuth successor
 - Worktree: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback`
-- STATUS/Issue/PR: recovery handoff claimed; foldback PR pending; PR #1935 OAuth diagnostic is the remaining release dependency
+- STATUS/Issue/PR: PR #2030 merged; current-main OAuth diagnostic successor owns the remaining release dependency
 - Purpose: record exact live cleanup/public evidence and resume OAuth diagnostics only from a reviewed current-main descendant
 - Review gate: strict OpenSpec, clean diff, exact evidence review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback/_PURPOSE.md`
-- Ship/abandon: land evidence now; archive recovery change only after task 2.3 is durably resumed
+- Ship/abandon: landed; recovery change archived after task 2.3 resumed in the current-main OAuth lane
 
 ## 2026-07-31 17:03 - recovery daemon owner-state successor
 
