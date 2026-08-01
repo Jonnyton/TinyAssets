@@ -52,6 +52,9 @@ _OAUTH_REJECTION_CATEGORIES = (
     "signing_key",
 )
 _OAUTH_REJECTION_PATTERN = re.compile(
+    r"(?:(?:daemon(?:-1)?|tinyassets-daemon)[ \t]+\|[ \t]+)?"
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
+    r" - universe_server\.auth\.workos - WARNING - "
     r"WorkOS bearer token rejected category=("
     + "|".join(map(re.escape, _OAUTH_REJECTION_CATEGORIES))
     + r") suppressed=[0-9]+"
