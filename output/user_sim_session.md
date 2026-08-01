@@ -174,3 +174,10 @@ AuthKit CIMD while retaining DCR and recreating/updating the ChatGPT
 registration to choose CIMD, after restoring detector honesty and recording
 that a successful retest would change both freshness and registration method,
 so it would not isolate which variable repaired continuity.
+
+The adapted exact head `cee3baf1d3bc0a51d999b118be71af8b118d0aad`
+then received an opposite-provider `APPROVE`, preserved at
+`output/claude-oauth-cimd-exact-head-review.md`. The reviewer independently
+reproduced the public CIMD failure and immutable-window category, ran the core
+focused tests, and adversarially verified hostile prefixes cannot populate the
+canonical diagnostic field.

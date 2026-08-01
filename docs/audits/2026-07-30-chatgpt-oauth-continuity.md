@@ -224,6 +224,16 @@ and no raw journal text. The detector is now live-sensitive; the earlier empty
 rendered-attempt windows prove only that they produced no rejected bearer, not
 that no request or accepted bearer reached the resource server.
 
+Claude's opposite-provider exact-head review returned `APPROVE` for
+`cee3baf1d3bc0a51d999b118be71af8b118d0aad` and is preserved in
+`output/claude-oauth-cimd-exact-head-review.md`. The reviewer independently
+verified the immutable workflow result, reproduced the single live
+`cimd_not_advertised` issue, ran 95 core focused tests plus Ruff and strict
+OpenSpec validation, and adversarially confirmed arbitrary prefixes cannot
+enter the canonical category field. Two low, non-gating checker hardening nits
+remain: trailing-slash normalization and clean classification of non-string
+first-party metadata fields.
+
 ## Next evidence gate
 
 After opposite-provider review, enable AuthKit CIMD while retaining DCR,

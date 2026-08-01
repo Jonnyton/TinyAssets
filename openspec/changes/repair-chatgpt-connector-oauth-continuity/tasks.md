@@ -1,6 +1,6 @@
 ## 0. Review and admission
 
-- [x] 0.1 Independently review this current-main proposal, design, and both deltas before production mutation. Historical source review on 2026-07-30 returned `ADAPT`, folded all five findings, and then approved staged source diff `cecd46644c10492bcdf33134f40857f37da61568`. Current-main review returned `ADAPT` for two missing bounded-diagnostic protections, then approved exact head `48af22c6` after the finite taxonomy, rate/suppression contract, malformed-before-JWKS ordering, and truthful self-contained write boundary were restored.
+- [x] 0.1 Independently review this current-main proposal, design, and both deltas before production mutation. Historical source review on 2026-07-30 returned `ADAPT`, folded all five findings, and then approved staged source diff `cecd46644c10492bcdf33134f40857f37da61568`. Current-main review returned `ADAPT` for two missing bounded-diagnostic protections, then approved exact head `48af22c6` after the finite taxonomy, rate/suppression contract, malformed-before-JWKS ordering, and truthful self-contained write boundary were restored. After the live positive-control envelope adaptation, Claude independently approved exact head `cee3baf1`, reproduced run 30681363132 and the live `cimd_not_advertised` result, ran 95 core focused tests plus Ruff/strict OpenSpec, and adversarially verified canonical-prefix isolation.
 
 ## 1. Evidence before correction
 
