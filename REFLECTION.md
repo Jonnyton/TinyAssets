@@ -1,3 +1,21 @@
+## 2026-08-01 — governed custom-agent component compilation
+
+- **What surprised me:** arbitrary agent extensibility does not require a
+  platform component taxonomy; deterministic safety comes from exact governed
+  descriptor pins plus exhaustive refusal, while unfamiliar descriptive data
+  can remain portable and inert.
+- **Pattern worth capturing:** compile every public component in sorted order,
+  erase all partial output when any diagnostic exists, and keep plan topology
+  in a separate adapter-owned stage so component names and object order never
+  become accidental orchestration authority.
+- **Follow-up:** frozen dataclasses are not a trust boundary by themselves;
+  validate public constructors, revalidate at registry admission, and retain a
+  detached canonical copy so post-registration caller mutation cannot alter a
+  governed descriptor. Compiler refusal must also cover malformed JSON shapes,
+  not only well-typed unhappy paths.
+- **What I would do differently:** separate component and plan compilation in
+  the first test matrix instead of treating “compiler” as one broad subsystem.
+
 ## 2026-08-01 — immutable custom-agent runtime manifest
 
 - **What surprised me:** the shared test environment did not contain the
@@ -1307,3 +1325,29 @@ fresh-host rollback edges found later.
 - Live follow-up: require the controller log to prove the exact blocked result,
   alternative decision, and next dispatch timestamps before retiring a
   scheduler hotfix; repeated ordinary dispatch is useful but not equivalent.
+## 2026-08-01 — governed custom-agent plan compilation
+
+- **What surprised me:** preserving arbitrary agent topology did not require a
+  universal graph model. A plan adapter can declare its own structural fields,
+  entry cardinality, compatibility envelope, coverage field, and topology
+  label while the platform enforces only canonicality, confinement, and exact
+  executable-component coverage.
+- **Pattern worth capturing:** run exhaustive component compilation first,
+  resolve one explicit governed plan adapter second, and construct the
+  immutable manifest only after every diagnostic is clear. Unknown
+  descriptive data remains pinned but never enters execution coverage.
+- **What I would do differently:** include malformed nested coverage values and
+  post-registration descriptor mutation in the initial red matrix; both are
+  recurring trust-boundary probes for public frozen dataclasses.
+
+## 2026-08-01 — delivery-oriented OpenSpec refinery
+
+- **What surprised me:** the scheduler and claim checker were behaving exactly
+  as specified; throughput collapsed because coordination rows described final
+  project completion while the checker interpreted them as next-slice gates.
+- **Pattern worth capturing:** backlog production and backlog consumption need
+  a machine-checked handoff. Accept a refinery continuation only when its merged
+  row becomes claimable inside the assigned change boundary.
+- **What I would do differently:** define `Depends` from the first slice's
+  start condition, then keep downstream proof in acceptance tasks; never derive
+  admission from an umbrella change's entire completion checklist.

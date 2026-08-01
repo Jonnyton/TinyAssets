@@ -261,6 +261,17 @@ Host directive 2026-07-19: this project is spec-driven from here on.
 - A legacy oversized change may be drained only through one concrete recovery
   slice of at most 12 unchecked tasks per worker, preferably fewer. Work within
   the existing change; do not mechanically create child changes.
+- **A refinery row describes the exact next slice, not whole-change completion.**
+  Its `Depends` cell contains only unresolved prerequisites that must land
+  before that slice can begin. Later tests, review, deployment, rendered
+  acceptance, organic-use proof, and other completion gates stay in OpenSpec
+  tasks or concise acceptance text; they do not block admission to earlier
+  work. Before returning `BLOCKED`, inspect unchecked tasks for a bounded
+  executable slice, then promote the shortest concrete autonomous
+  prerequisite-removal slice if the direct slice is blocked. A merged refinery
+  `PARTIAL` is invalid unless fresh current main exposes claimable work in the
+  assigned change boundary. This is enforced by
+  `openspec_drain_supervisor.py`, not left to prompt discipline alone.
 - Controller-launched drain workers may cap the global `worktree_status.py`
   diagnostic at 90 seconds. On timeout they may proceed only from a clean
   current-main worktree with `_PURPOSE.md`; exact STATUS collision/admission and
