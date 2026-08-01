@@ -836,6 +836,30 @@ and clean diff/worktree checks; confirmed `origin/main` as an ancestor; and
 found PR #2026's stable-snapshot path plus PR #2020's sidecar, exact-ID, replay,
 and reboot authority intact. No release-blocking findings remained.
 
+PR #2029 merged as `b34b502f`. Normal production deploy
+[30674978746](https://github.com/Jonnyton/TinyAssets/actions/runs/30674978746)
+then completed successfully on 2026-07-31 using immutable image tag
+`85d40171331f`, digest
+`sha256:513efdf67cae52498c462bc3aa856adc47f31469ca0a1fb94a601f3fcd7fb753`,
+and revision `85d40171331fa67ef649632012b505ddfde0f6c4`. It passed daemon health,
+cloud-worker health, exact-five canonical fleet, unchanged logical receipt,
+canonical public canary, exact-seven surface, CF Access, post-canary proof,
+cleanup, and terminal receipt publication. Downloaded artifact
+`retire-cheat-loop-task-2-1-30674978746-1` records cleanup phase `restored`,
+`safe=true`, no masked units, no old running writers, no stray processes, and
+five running canonical containers on the exact digest and revision. Its full
+expected and restored unit maps are identical: both watchdog timers are
+`active/enabled`, both watchdog services are `inactive/static`, and
+`tinyassets-daemon.service` is `active/disabled`. A fresh Windows-host command,
+`python scripts/mcp_public_canary.py --url https://tinyassets.io/mcp --timeout
+15 --assert-handles --assert-handles-retries 2 --verbose`, exited 0 with the
+canonical handle set, uptime fields, and identity evidence available.
+
+This completes live normal-deploy acceptance. PR #1935's OAuth diagnostic
+branch predates the current recovery and custom-agent stack, so its stale image
+must not be deployed directly; task 2.3 resumes only from a reviewed
+current-`main` descendant carrying the same diagnostics-only behavior.
+
 Land only after independent exact-head fail-closed/security review. Build an
 immutable image, then run one normal deploy from the currently finalized
 recovery generation. Acceptance requires canonical exact-five proof, restored

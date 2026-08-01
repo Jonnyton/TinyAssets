@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-07-31 17:17 - recovery live foldback
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `chore/recovery-live-foldback`
+- Lane state: Active foldback after green normal deploy 30674978746
+- Worktree: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback`
+- STATUS/Issue/PR: recovery handoff claimed; foldback PR pending; PR #1935 OAuth diagnostic is the remaining release dependency
+- Purpose: record exact live cleanup/public evidence and resume OAuth diagnostics only from a reviewed current-main descendant
+- Review gate: strict OpenSpec, clean diff, exact evidence review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-recovery-live-foldback/_PURPOSE.md`
+- Ship/abandon: land evidence now; archive recovery change only after task 2.3 is durably resumed
+
 ## 2026-07-31 16:29 - recovery transient unit-state proof
 
 - Provider: `codex-gpt5-desktop`
