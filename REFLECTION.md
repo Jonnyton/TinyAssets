@@ -1263,3 +1263,16 @@ fresh-host rollback edges found later.
 - **What I would do differently:** make the first restart test advance the
   clock as well as reconstruct the store, and audit budget comparisons for
   authority widening before treating equality-shaped fixtures as proof.
+
+## 2026-07-31 — dark provider-work ledger core
+
+- **What surprised me:** a binding and a prepared continuation still leave a
+  crucial gap: without a receipt, live worker claim, and conserved invocation
+  reservation, “use this provider” has no crash-safe bounded meaning.
+- **Pattern worth capturing:** separate immutable authority ceilings from
+  mutable consumption. Keep the receipt content-addressed and derive remaining
+  budget from atomic reservation rows instead of rewriting the receipt on every
+  launch.
+- **What I would do differently:** identify the missing production assignment
+  owner before naming the next slice “provider issuance”; the safe buildable
+  dependency was the dark ledger, not a synthetic production root.
