@@ -207,15 +207,24 @@ operation and the canonical live surface must remain exactly seven handles.
 
 ### 8. Storage is additive and retry-safe
 
-Add SQLite tables for import stages and immutable conversion receipts beside
-the existing custom-agent tables. `(actor_id, operation, idempotency_key)` is
+Add SQLite tables for import stages, immutable content-addressed conversion
+receipts, and stage-to-receipt links beside the existing custom-agent tables.
+The separate stage-link and export-owner tables are required because two
+independently published stages or two actors' exports may legitimately produce
+the same receipt digest. Receipt rows are content-addressed evidence rather
+than ownership records; content deduplication must not erase any stage linkage
+or actor ownership. `(actor_id, operation,
+idempotency_key)` is
 unique for every non-empty key and the row stores one canonical bound-request
 digest covering direction, private source commitment, adapter digest, and
 candidate fingerprint. Repeating an identical request returns the original
 stage/receipt; reuse with different content fails. Publish-stage uses the
 shared publication transaction described above.
 
-Unpublished stages expire after 24 hours. Expiry deletes the sanitized
+Unpublished stages expire after 24 hours. Reads, publication attempts, and
+subsequent staging writes deterministically prune expired rows and their
+idempotency identities, so cleanup does not depend on the expired stage being
+read successfully. Expiry deletes the sanitized
 candidate, private raw-source HMAC, and actor-private inspection report; a
 durable receipt is written only for a successful explicit publication or
 export and binds sanitized content. Published definitions and bindings are not

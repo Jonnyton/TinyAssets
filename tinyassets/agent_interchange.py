@@ -52,13 +52,54 @@ _SECRET_FIELDS = frozenset(
         "access_token",
         "api_key",
         "apikey",
+        "auth",
+        "authorization",
+        "bearer",
+        "bot_token",
+        "channel_secret",
         "client_secret",
+        "cookie",
+        "cookies",
         "credential",
+        "credentials",
         "password",
         "private_key",
         "refresh_token",
         "secret",
+        "secrets",
+        "session_token",
+        "signing_secret",
+        "token",
+        "webhook_secret",
     }
+)
+_PRIVATE_FIELDS = frozenset(
+    {
+        "chat_history",
+        "conversation",
+        "conversations",
+        "effect_payload",
+        "effect_payloads",
+        "execution_history",
+        "messages",
+        "run_history",
+        "runtime_state",
+    }
+)
+_SENSITIVE_SUFFIXES = (
+    "_api_key",
+    "_authorization",
+    "_credential",
+    "_credentials",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_token",
+)
+_SECRET_VALUE = re.compile(
+    r"(?i)^(?:bearer\s+\S+|gh[pousr]_[a-z0-9_=-]{12,}|"
+    r"xox[baprs]-[a-z0-9-]{12,}|sk-[a-z0-9_-]{16,}|"
+    r"eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})$"
 )
 _CLASSIFICATIONS = frozenset(
     {
@@ -115,6 +156,29 @@ CREATE TABLE IF NOT EXISTS agent_conversion_receipts (
     receipt_json TEXT NOT NULL,
     created_at REAL NOT NULL,
     FOREIGN KEY(stage_id) REFERENCES agent_import_stages(stage_id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_conversion_receipt_links (
+    stage_id TEXT PRIMARY KEY,
+    receipt_digest TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    FOREIGN KEY(stage_id) REFERENCES agent_import_stages(stage_id) ON DELETE CASCADE,
+    FOREIGN KEY(receipt_digest)
+        REFERENCES agent_conversion_receipts(receipt_digest) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_receipt_link_digest
+    ON agent_conversion_receipt_links(receipt_digest, created_at);
+
+CREATE TABLE IF NOT EXISTS agent_conversion_receipt_owners (
+    actor_id TEXT NOT NULL,
+    receipt_digest TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('convert_export')),
+    created_at REAL NOT NULL,
+    PRIMARY KEY(actor_id, receipt_digest, operation),
+    FOREIGN KEY(receipt_digest)
+        REFERENCES agent_conversion_receipts(receipt_digest) ON DELETE RESTRICT
 );
 """
 
@@ -667,7 +731,19 @@ def _pointer_set(root: dict[str, Any], pointer: str, value: Any) -> None:
 
 
 def _is_secret_path(pointer: str) -> bool:
-    return any(part.casefold() in _SECRET_FIELDS for part in _pointer_parts(pointer))
+    for raw_part in _pointer_parts(pointer):
+        part = raw_part.casefold().replace("-", "_")
+        if (
+            part in _SECRET_FIELDS
+            or part in _PRIVATE_FIELDS
+            or part.endswith(_SENSITIVE_SUFFIXES)
+        ):
+            return True
+    return False
+
+
+def _looks_secret_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(_SECRET_VALUE.fullmatch(value.strip()))
 
 
 def _sanitize(value: Any, pointer: str = "") -> Any:
@@ -683,6 +759,8 @@ def _sanitize(value: Any, pointer: str = "") -> Any:
         return sanitized
     if isinstance(value, list):
         return [_sanitize(item, f"{pointer}/{index}") for index, item in enumerate(value)]
+    if _looks_secret_value(value):
+        return "[omitted_secret]"
     return _json_clone(value)
 
 
@@ -826,7 +904,9 @@ def convert_declarative_json(
         classification = str(rule.get("classification") or "")
         if classification not in _CLASSIFICATIONS:
             raise InterchangeValidationError(f"inventory path {path} has invalid classification")
-        secret_path = _is_secret_path(path)
+        secret_path = _is_secret_path(path) or _looks_secret_value(
+            _pointer_get(source, path)
+        )
         if secret_path and (
             op != "omit" or classification not in {"omitted_secret", "requires_private_binding"}
         ):
@@ -1213,16 +1293,24 @@ def convert_export(
             )
             conn.execute(
                 """
-                INSERT INTO agent_conversion_receipts (
+                INSERT OR IGNORE INTO agent_conversion_receipts (
                     receipt_digest, actor_id, stage_id, receipt_json, created_at
                 ) VALUES (?, ?, NULL, ?, ?)
                 """,
                 (
                     receipt["receipt_digest"],
-                    actor,
+                    "content-addressed",
                     _canonical_json(receipt),
                     created_at,
                 ),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO agent_conversion_receipt_owners (
+                    actor_id, receipt_digest, operation, created_at
+                ) VALUES (?, ?, 'convert_export', ?)
+                """,
+                (actor, receipt["receipt_digest"], created_at),
             )
             if key:
                 conn.execute(
@@ -1312,6 +1400,41 @@ def _idempotent_resource(
     return str(row["resource_id"])
 
 
+def _prune_expired_stages(
+    conn: sqlite3.Connection,
+    *,
+    current: float,
+    actor: str = "",
+    stage_id: str = "",
+) -> set[str]:
+    clauses = ["status = 'staged'", "expires_at <= ?"]
+    params: list[Any] = [current]
+    if actor:
+        clauses.append("actor_id = ?")
+        params.append(actor)
+    if stage_id:
+        clauses.append("stage_id = ?")
+        params.append(stage_id)
+    rows = conn.execute(
+        f"SELECT stage_id FROM agent_import_stages WHERE {' AND '.join(clauses)}",
+        params,
+    ).fetchall()
+    expired = {str(row["stage_id"]) for row in rows}
+    if not expired:
+        return expired
+    placeholders = ",".join("?" for _ in expired)
+    ordered = sorted(expired)
+    conn.execute(
+        f"DELETE FROM agent_interchange_idempotency WHERE resource_id IN ({placeholders})",
+        ordered,
+    )
+    conn.execute(
+        f"DELETE FROM agent_import_stages WHERE stage_id IN ({placeholders})",
+        ordered,
+    )
+    return expired
+
+
 def stage_import(
     base_path: str | Path,
     *,
@@ -1342,6 +1465,7 @@ def stage_import(
         }
     )
     with _interchange_connect(base_path) as conn:
+        _prune_expired_stages(conn, current=created_at)
         existing_id = _idempotent_resource(
             conn,
             actor=actor,
@@ -1410,19 +1534,20 @@ def get_import_stage(
 ) -> dict[str, Any] | None:
     actor = (actor_id or "").strip()
     current = time.time() if now is None else float(now)
+    if not math.isfinite(current):
+        raise InterchangeValidationError("now must be finite")
     with _interchange_connect(base_path) as conn:
+        _prune_expired_stages(
+            conn,
+            current=current,
+            actor=actor,
+            stage_id=(stage_id or "").strip(),
+        )
         row = conn.execute(
             "SELECT * FROM agent_import_stages WHERE stage_id = ? AND actor_id = ?",
             ((stage_id or "").strip(), actor),
         ).fetchone()
         if row is None:
-            return None
-        if row["status"] == "staged" and float(row["expires_at"]) <= current:
-            conn.execute(
-                "DELETE FROM agent_interchange_idempotency WHERE resource_id = ?",
-                (stage_id,),
-            )
-            conn.execute("DELETE FROM agent_import_stages WHERE stage_id = ?", (stage_id,))
             return None
         return _stage_from_row(row)
 
@@ -1437,17 +1562,32 @@ def publish_import_stage(
 ) -> dict[str, Any]:
     actor, key = _author_and_key(actor_id, idempotency_key)
     current = time.time() if now is None else float(now)
+    if not math.isfinite(current):
+        raise InterchangeValidationError("now must be finite")
+    normalized_stage_id = (stage_id or "").strip()
+    with _interchange_connect(base_path) as conn:
+        expired = _prune_expired_stages(
+            conn,
+            current=current,
+            actor=actor,
+            stage_id=normalized_stage_id,
+        )
+    if normalized_stage_id in expired:
+        raise InterchangeNotFoundError("import stage is unavailable")
     with _interchange_connect(base_path) as conn:
         row = conn.execute(
             "SELECT * FROM agent_import_stages WHERE stage_id = ? AND actor_id = ?",
-            ((stage_id or "").strip(), actor),
+            (normalized_stage_id, actor),
         ).fetchone()
-        if row is None or (row["status"] == "staged" and float(row["expires_at"]) <= current):
+        if row is None:
             raise InterchangeNotFoundError("import stage is unavailable")
         candidate = json.loads(str(row["candidate_json"]))
         normalized = _normalize_definition_payload(candidate)
         request_digest = _sha256(
-            {"stage_id": stage_id, "candidate_fingerprint": _fingerprint(normalized)}
+            {
+                "stage_id": normalized_stage_id,
+                "candidate_fingerprint": _fingerprint(normalized),
+            }
         )
         existing_id = _idempotent_resource(
             conn,
@@ -1478,13 +1618,25 @@ def publish_import_stage(
             """
             INSERT OR IGNORE INTO agent_conversion_receipts (
                 receipt_digest, actor_id, stage_id, receipt_json, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+            ) VALUES (?, ?, NULL, ?, ?)
             """,
             (
                 receipt["receipt_digest"],
-                actor,
-                stage_id,
+                "content-addressed",
                 _canonical_json(receipt),
+                current,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO agent_conversion_receipt_links (
+                stage_id, receipt_digest, actor_id, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (
+                normalized_stage_id,
+                receipt["receipt_digest"],
+                actor,
                 current,
             ),
         )
@@ -1494,7 +1646,7 @@ def publish_import_stage(
             SET status = 'published', published_definition_id = ?
             WHERE stage_id = ?
             """,
-            (published["agent_definition_id"], stage_id),
+            (published["agent_definition_id"], normalized_stage_id),
         )
         if key:
             conn.execute(

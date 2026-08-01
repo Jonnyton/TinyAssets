@@ -145,6 +145,54 @@ def test_declarative_rule_operation_cannot_lie_about_loss(
         convert_declarative_json(_source(), adapter)
 
 
+@pytest.mark.parametrize(
+    "credentials",
+    [
+        {"token": "ghp_sensitive_value_1234567890"},
+        {"channel_secret": "low-entropy-secret"},
+        {"innocent_label": "Bearer authority-value"},
+    ],
+)
+def test_credential_paths_and_values_cannot_be_namespace_preserved(
+    credentials: dict[str, str],
+) -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    source = _source()
+    source["credentials"] = credentials
+    adapter = _adapter()
+    adapter["rules"] = [
+        {
+            "op": "namespace_preserve",
+            "source_path": "/credentials",
+            "target_path": "/components/imported_extension/config/credentials",
+            "classification": "preserved",
+        }
+        if rule.get("source_path") == "/credentials/api_key"
+        else rule
+        for rule in adapter["rules"]  # type: ignore[index]
+    ]
+
+    with pytest.raises(InterchangeValidationError, match="secret inventory path"):
+        convert_declarative_json(source, adapter)
+
+
+def test_token_shaped_value_under_benign_key_is_omitted() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    source = _source()
+    source["extra"] = {"future_flag": "Bearer authority-value"}
+
+    with pytest.raises(InterchangeValidationError, match="secret inventory path"):
+        convert_declarative_json(source, _adapter())
+
+
 def test_public_payload_parser_rejects_duplicate_object_keys() -> None:
     from tinyassets.api.custom_agents import _payload
     from tinyassets.custom_agents import AgentValidationError
@@ -476,6 +524,74 @@ def test_private_stage_scrubs_secrets_preserves_unknowns_and_expires(
     ) is None
 
 
+def test_expired_publish_and_later_writes_prune_stage_and_idempotency(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import sqlite3
+
+    from tinyassets.agent_interchange import (
+        InterchangeNotFoundError,
+        publish_import_stage,
+        stage_import,
+    )
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    expired = stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source("Will expire"),
+        adapter=_adapter(),
+        idempotency_key="expired-stage",
+        now=100.0,
+    )
+
+    with pytest.raises(InterchangeNotFoundError, match="unavailable"):
+        publish_import_stage(
+            tmp_path,
+            actor_id="alice",
+            stage_id=expired["stage_id"],
+            idempotency_key="expired-publish",
+            now=100.0 + 86_401,
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM agent_import_stages WHERE stage_id = ?",
+            (expired["stage_id"],),
+        ).fetchone()[0] == 0
+        assert conn.execute(
+            "SELECT COUNT(*) FROM agent_interchange_idempotency WHERE resource_id = ?",
+            (expired["stage_id"],),
+        ).fetchone()[0] == 0
+
+    stale = stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source("Never read"),
+        adapter=_adapter(),
+        idempotency_key="stale-stage",
+        now=200.0,
+    )
+    stage_import(
+        tmp_path,
+        actor_id="bob",
+        source_json=_source("Later write"),
+        adapter=_adapter(),
+        idempotency_key="later-stage",
+        now=200.0 + 86_401,
+    )
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM agent_import_stages WHERE stage_id = ?",
+            (stale["stage_id"],),
+        ).fetchone()[0] == 0
+
+
 def test_stage_idempotency_binds_actor_operation_source_and_adapter(
     tmp_path,
     monkeypatch,
@@ -613,6 +729,51 @@ def test_publish_stage_is_atomic_and_retry_safe(tmp_path, monkeypatch) -> None:
     )
     assert retry["agent_definition_id"] == published["agent_definition_id"]
     assert len(list_definitions(tmp_path)) == 1
+
+
+def test_identical_receipt_digest_links_every_published_stage(tmp_path, monkeypatch) -> None:
+    import sqlite3
+
+    from tinyassets.agent_interchange import publish_import_stage, stage_import
+    from tinyassets.storage import db_path
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stages = [
+        stage_import(
+            tmp_path,
+            actor_id="alice",
+            source_json=_source(),
+            adapter=_adapter(),
+            idempotency_key=f"collision-stage-{index}",
+            now=500.0,
+        )
+        for index in range(2)
+    ]
+    assert stages[0]["receipt"]["receipt_digest"] == stages[1]["receipt"][
+        "receipt_digest"
+    ]
+    for index, stage in enumerate(stages):
+        publish_import_stage(
+            tmp_path,
+            actor_id="alice",
+            stage_id=stage["stage_id"],
+            idempotency_key=f"collision-publish-{index}",
+            now=501.0,
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        links = conn.execute(
+            """
+            SELECT stage_id, receipt_digest
+            FROM agent_conversion_receipt_links
+            ORDER BY stage_id
+            """
+        ).fetchall()
+    assert {row[0] for row in links} == {stage["stage_id"] for stage in stages}
+    assert len({row[1] for row in links}) == 1
 
 
 def test_concurrent_identical_stage_import_creates_one_stage(tmp_path, monkeypatch) -> None:
@@ -769,3 +930,50 @@ def test_foreign_export_is_adapter_driven_bounded_and_receipted(tmp_path) -> Non
     assert exported["report"]["lossless"] is False
     assert exported["receipt"]["output_kind"] == "foreign_bytes"
     assert retry["receipt"]["receipt_digest"] == exported["receipt"]["receipt_digest"]
+
+
+def test_identical_export_receipt_digest_links_every_actor(tmp_path) -> None:
+    import sqlite3
+
+    from tinyassets.agent_interchange import convert_export
+    from tinyassets.custom_agents import publish_definition
+    from tinyassets.storage import db_path
+
+    definition = publish_definition(
+        tmp_path,
+        author_id="author",
+        payload={
+            "schema_version": 1,
+            "name": "Shared export source",
+            "description": "",
+            "tags": [],
+            "components": {"identity": {"kind": "soul", "config": {}}},
+        },
+    )
+    adapter = _export_adapter(definition["portable_definition"])
+    exports = [
+        convert_export(
+            tmp_path,
+            actor_id=actor,
+            definition_id=definition["agent_definition_id"],
+            adapter=adapter,
+            idempotency_key=f"export-{actor}",
+            now=700.0,
+        )
+        for actor in ("alice", "bob")
+    ]
+    assert exports[0]["receipt"]["receipt_digest"] == exports[1]["receipt"][
+        "receipt_digest"
+    ]
+
+    with sqlite3.connect(db_path(tmp_path)) as conn:
+        owners = conn.execute(
+            """
+            SELECT actor_id
+            FROM agent_conversion_receipt_owners
+            WHERE receipt_digest = ? AND operation = 'convert_export'
+            ORDER BY actor_id
+            """,
+            (exports[0]["receipt"]["receipt_digest"],),
+        ).fetchall()
+    assert owners == [("alice",), ("bob",)]
