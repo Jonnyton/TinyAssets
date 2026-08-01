@@ -963,8 +963,6 @@ class PreparedCloudContinuationActivationService:
                 "server-selected daemon does not belong to the automation principal",
             )
 
-        activation = self._converge_activation(request)
-        self._inject("activation_committed")
         body = {
             "branch_id": definition.branch_def_id,
             "directed_daemon_id": binding.daemon_id,
@@ -977,6 +975,14 @@ class PreparedCloudContinuationActivationService:
             "universe_id": definition.universe_id,
         }
         body_digest = f"sha256:{hashlib.sha256(rfc8785.dumps(body)).hexdigest()}"
+        if binding.source_digest != body_digest:
+            self._fail(
+                "binding_source_digest_mismatch",
+                "background binding does not authorize the canonical admission body",
+            )
+
+        activation = self._converge_activation(request)
+        self._inject("activation_committed")
         identifier_seed = {
             "schema_version": 1,
             "continuation_id": continuation.continuation_id,

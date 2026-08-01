@@ -20,7 +20,8 @@ definition and prepared continuation into:
 Every restart revalidates the current prepared continuation, background
 binding, requester-owned provider binding, exact GitHub destination grant, and
 server-owned daemon identity. Competing leases, revoked provider/destination
-authority, missing daemons, or changed snapshots fail closed. IDs after the
+authority, missing daemons, a mismatched canonical admission-body digest, or
+changed snapshots fail closed. IDs after the
 pre-bound request ID are domain-separated hashes of the continuation and exact
 activation identity; concurrent callers therefore converge through the
 existing SQLite/CAS and logical-attempt replay owners.
@@ -34,11 +35,11 @@ mutate GitHub, activate the queue consumer, or cut over from the tray.
 - RED: the focused module initially failed collection because the new
   compositor contract did not exist.
 - `py -m pytest -q tests/test_cloud_automation_continuation.py`
-  - 40 passed, including eight concurrent activators, crash-after-activation,
+  - 41 passed, including eight concurrent activators, crash-after-activation,
     crash-after-admission, exact replay, competing lease, revoked provider,
     revoked destination, and missing-daemon cases.
 - `py -m pytest -q tests/test_branch_tasks_v2.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_provider_work_authority.py tests/test_cloud_automation_continuation.py tests/test_request_admission_store.py tests/test_automation_activations.py`
-  - 365 passed in 20.96 seconds.
+  - 366 passed in 21.11 seconds.
 - `py -m ruff check tinyassets/cloud_automation_continuation.py tests/test_cloud_automation_continuation.py`
   - passed.
 - `py -m ruff format --check tinyassets/cloud_automation_continuation.py tests/test_cloud_automation_continuation.py`
@@ -55,4 +56,3 @@ admitted task, launch through the bounded provider receipt/reservation owner,
 and reconcile the exact outbound PR effect. Task 4.1 must then fence epoch 1
 before enabling epoch 2; phone control and the 24-hour PC-off proof remain
 release gates.
-

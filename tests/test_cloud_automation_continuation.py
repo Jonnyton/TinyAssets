@@ -117,6 +117,7 @@ def _background_binding(
     remaining_count: int = 2,
     remaining_cost_microunits: int = 5_000_000,
     daemon_id: str = "daemon_spec_drain",
+    source_digest: str = f"sha256:{'6' * 64}",
 ) -> BackgroundBranchBinding:
     return BackgroundBranchBinding.from_dict(
         {
@@ -132,7 +133,7 @@ def _background_binding(
             "source_kind": "request_admission",
             "source_id": REQUEST_ID,
             "source_revision": "4",
-            "source_digest": f"sha256:{'6' * 64}",
+            "source_digest": source_digest,
             "revocation_generation": 0 if status == "active" else 1,
             "target_mode": "pinned_version",
             "pinned_branch_version_id": branch_version_id,
@@ -785,6 +786,7 @@ def _activation_compositor_fixture(
     tmp_path: Path,
     *,
     create_directed_daemon: bool = True,
+    source_digest_override: str | None = None,
 ):
     daemon_id = "daemon_missing"
     if create_directed_daemon:
@@ -797,9 +799,30 @@ def _activation_compositor_fixture(
         )
         daemon_id = str(daemon["daemon_id"])
     audience = _audience(daemon_id)
+    body_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            rfc8785.dumps(
+                {
+                    "branch_id": "branch_repo_spec_loop",
+                    "directed_daemon_id": daemon_id,
+                    "directed_daemon_instruction": "",
+                    "pickup_incentive": "",
+                    "priority_weight": 100,
+                    "request_type": "run_branch",
+                    "schema_version": "request-admission-v2",
+                    "text": "Continue the accepted repository specification.",
+                    "universe_id": "universe_alice",
+                }
+            )
+        ).hexdigest()
+    )
     fixture = _fixture(
         tmp_path,
-        background_binding=_background_binding(daemon_id=audience.daemon_id),
+        background_binding=_background_binding(
+            daemon_id=audience.daemon_id,
+            source_digest=source_digest_override or body_digest,
+        ),
     )
     continuation = _prepare(fixture).record
     assert continuation is not None
@@ -981,6 +1004,25 @@ def test_activation_compositor_does_not_activate_for_missing_directed_daemon(
     )
 
     with pytest.raises(CloudContinuationActivationError, match="directed_daemon_unavailable"):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    activation = fixture[2].get(
+        fixture[0].universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None
+    assert activation.state is AutomationActivationState.STOPPED
+
+
+def test_activation_compositor_rejects_mismatched_admission_body_digest(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(
+        tmp_path,
+        source_digest_override=f"sha256:{'f' * 64}",
+    )
+
+    with pytest.raises(CloudContinuationActivationError, match="binding_source_digest_mismatch"):
         service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
 
     activation = fixture[2].get(
