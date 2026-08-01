@@ -40,7 +40,17 @@ $action = New-ScheduledTaskAction `
     -Execute "wscript.exe" `
     -Argument $arguments `
     -WorkingDirectory $repoPath
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$logonTrigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+$recoveryTrigger = New-ScheduledTaskTrigger -Daily -At ([DateTime]::Today)
+$recoveryTrigger.Repetition = New-CimInstance `
+    -ClassName MSFT_TaskRepetitionPattern `
+    -Namespace Root/Microsoft/Windows/TaskScheduler `
+    -ClientOnly `
+    -Property @{
+        Interval = "PT1M"
+        Duration = "P1D"
+        StopAtDurationEnd = $false
+    }
 $principal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive `
@@ -57,10 +67,10 @@ $settings = New-ScheduledTaskSettingsSet `
 Register-ScheduledTask `
     -TaskName $TaskName `
     -Action $action `
-    -Trigger $trigger `
+    -Trigger @($logonTrigger, $recoveryTrigger) `
     -Principal $principal `
     -Settings $settings `
-    -Description "Starts and visibly monitors one bounded TinyAssets OpenSpec drain at Windows sign-in." `
+    -Description "Starts one bounded TinyAssets OpenSpec drain at sign-in and relaunches its hidden tray host after failure." `
     -Force | Out-Null
 
 if (-not $NoStart) {

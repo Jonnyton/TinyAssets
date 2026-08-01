@@ -380,6 +380,42 @@ def test_atomic_health_write_retries_windows_sharing_violation(
     assert json.loads(path.read_text(encoding="utf-8"))["health"] == "running"
 
 
+def test_health_publication_failure_is_nonfatal_and_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    health_path = tmp_path / "health.json"
+
+    def fail_write(_path: Path, _payload: dict[str, object]) -> None:
+        raise PermissionError("sharing violation")
+
+    monkeypatch.setattr(watchdog, "atomic_write_json", fail_write)
+
+    published = watchdog._write_health(
+        health_path,
+        state={"status": "running", "identity": "drain-test"},
+        alive=True,
+        mode="attach",
+        run_dir=tmp_path / "run",
+        pid=42,
+        message="supervisor is live",
+    )
+
+    assert published is False
+    diagnostic = tmp_path / "health-write-errors.log"
+    assert "sharing violation" in diagnostic.read_text(encoding="utf-8")
+    watchdog._write_health(
+        health_path,
+        state={"status": "running", "identity": "drain-test"},
+        alive=True,
+        mode="attach",
+        run_dir=tmp_path / "run",
+        pid=42,
+        message="supervisor is live",
+    )
+    assert len(diagnostic.read_text(encoding="utf-8").splitlines()) == 1
+
+
 def test_dead_fast_launch_is_a_sticky_failure() -> None:
     assert (
         watchdog.dead_launch_message(
@@ -455,3 +491,26 @@ def test_autostart_uses_a_windowless_script_host() -> None:
     assert "launch_openspec_drain_tray.vbs" in installer
     assert "shell.Run(command, 0, True)" in launcher
     assert "openspec_drain_tray.ps1" in launcher
+
+
+def test_tray_relaunches_stale_watchdog_with_bounded_cadence() -> None:
+    tray = (SCRIPT.parent / "openspec_drain_tray.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function Request-WatchdogRecovery" in tray
+    assert "$watchdogRecoveryCooldownSeconds = 60" in tray
+    assert '"watchdog health is stale"' in tray
+    assert "Request-WatchdogRecovery" in tray
+
+
+def test_autostart_has_periodic_current_user_recovery_trigger() -> None:
+    installer = (
+        SCRIPT.parent / "install_openspec_drain_autostart.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert "$recoveryTrigger = New-ScheduledTaskTrigger -Daily" in installer
+    assert "MSFT_TaskRepetitionPattern" in installer
+    assert 'Interval = "PT1M"' in installer
+    assert 'Duration = "P1D"' in installer
+    assert "-Trigger @($logonTrigger, $recoveryTrigger)" in installer

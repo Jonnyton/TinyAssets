@@ -378,20 +378,31 @@ def _write_health(
     run_dir: Path | None,
     pid: int | None,
     message: str,
-) -> None:
+) -> bool:
     waiting = result_handoff_waiting(state=state, run_dir=run_dir)
-    atomic_write_json(
-        health_path,
-        build_health(
-            state=state,
-            controller_alive=alive,
-            mode=mode,
-            active_run=run_dir,
-            controller_pid=pid,
-            message=message,
-            result_waiting=waiting,
-        ),
-    )
+    try:
+        atomic_write_json(
+            health_path,
+            build_health(
+                state=state,
+                controller_alive=alive,
+                mode=mode,
+                active_run=run_dir,
+                controller_pid=pid,
+                message=message,
+                result_waiting=waiting,
+            ),
+        )
+    except OSError as exc:
+        try:
+            (health_path.parent / "health-write-errors.log").write_text(
+                f"{_now_iso()} {type(exc).__name__}: {exc}\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return False
+    return True
 
 
 def _watch(args: argparse.Namespace) -> int:

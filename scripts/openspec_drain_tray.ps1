@@ -41,6 +41,8 @@ $watchdogArgs = @(
 $script:lastHealth = ""
 $script:lastState = ""
 $script:watchdogLaunchError = ""
+$script:lastWatchdogRecoveryAt = [DateTimeOffset]::MinValue
+$watchdogRecoveryCooldownSeconds = 60
 $script:notify = New-Object System.Windows.Forms.NotifyIcon
 $script:notify.Icon = [System.Drawing.SystemIcons]::Application
 $script:notify.Text = "TinyAssets OpenSpec drain: starting"
@@ -96,8 +98,29 @@ function Read-DrainHealth {
     }
 }
 
+function Request-WatchdogRecovery {
+    param($Health)
+
+    $needsRecovery = ($null -eq $Health) -or (
+        [string]$Health.message -eq "watchdog health is stale"
+    )
+    if (-not $needsRecovery) {
+        return
+    }
+
+    $now = [DateTimeOffset]::Now
+    $elapsed = ($now - $script:lastWatchdogRecoveryAt).TotalSeconds
+    if ($elapsed -lt $watchdogRecoveryCooldownSeconds) {
+        return
+    }
+
+    $script:lastWatchdogRecoveryAt = $now
+    Start-DrainWatchdog | Out-Null
+}
+
 function Set-DrainTrayState {
     $health = Read-DrainHealth
+    Request-WatchdogRecovery -Health $health
     if ($null -eq $health) {
         $state = "down"
         $message = if ($script:watchdogLaunchError) {
@@ -227,7 +250,10 @@ $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 5000
 $timer.Add_Tick({ Set-DrainTrayState })
 $timer.Start()
-Start-DrainWatchdog | Out-Null
+$watchdogStarted = Start-DrainWatchdog
+if ($watchdogStarted) {
+    $script:lastWatchdogRecoveryAt = [DateTimeOffset]::Now
+}
 Set-DrainTrayState
 
 try {
