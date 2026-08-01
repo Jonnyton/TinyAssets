@@ -66,9 +66,13 @@ Verified 2026-07-31 America/Los_Angeles:
 
 - `python -m pytest tests/test_provider_work_authority.py -q` — 34 passed.
 - Related cloud continuation, user-owned automation, background authority,
-  activation, and epoch-2 admission regression suite — 448 passed.
+  activation, and epoch-2 admission regression suite — 483 passed.
 - Ruff and format checks on the domain, storage, and focused test — clean.
 - `git diff --check` — clean.
+- Strict validation of `harden-background-provider-execution-authority` and
+  `activate-main-universe-spec-drain` — valid.
 
-Independent exact-head review and the related authority regression suite are
-required before merge.
+The host-approved same-provider fallback independently reviewed exact head
+`064c5f81fd7701dc756cddf4edacdabff37096f3` after two ADAPT rounds closed the
+public transaction issuance/claim/reservation bypasses. Final verdict:
+`APPROVE`, with no blocking or nonblocking findings.
