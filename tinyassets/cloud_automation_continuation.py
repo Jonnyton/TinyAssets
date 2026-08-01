@@ -899,6 +899,11 @@ class PreparedCloudContinuationActivationService:
             )
         except AutomationAdmissionError as exc:
             self._fail(exc.code, str(exc))
+        binding_expiry = (
+            datetime.fromisoformat(binding.expires_at.removesuffix("Z") + "+00:00")
+            if binding.expires_at is not None
+            else None
+        )
         exact_authority = (
             authority.provider_binding_id == continuation.provider_binding_id,
             authority.provider_binding_generation == continuation.provider_binding_generation,
@@ -921,6 +926,10 @@ class PreparedCloudContinuationActivationService:
             binding.pinned_branch_version_id == definition.branch_version_id,
             binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
             binding.daemon_id is not None,
+            binding.max_attempts <= definition.max_attempts,
+            0 < binding.remaining_count <= definition.max_attempts,
+            binding.remaining_cost_microunits >= definition.max_cost_microunits,
+            binding_expiry is None or binding_expiry > now.astimezone(timezone.utc),
         )
         if not all((*exact_authority, *exact_binding)):
             self._fail(

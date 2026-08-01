@@ -787,6 +787,7 @@ def _activation_compositor_fixture(
     *,
     create_directed_daemon: bool = True,
     source_digest_override: str | None = None,
+    activation_time: datetime = NOW,
 ):
     daemon_id = "daemon_missing"
     if create_directed_daemon:
@@ -841,7 +842,7 @@ def _activation_compositor_fixture(
                 audience,
                 expected_branch_task_id=None,
             ),
-            clock=lambda: NOW,
+            clock=lambda: activation_time,
             fault_injector=fault_injector,
         )
 
@@ -1023,6 +1024,58 @@ def test_activation_compositor_rejects_mismatched_admission_body_digest(
     )
 
     with pytest.raises(CloudContinuationActivationError, match="binding_source_digest_mismatch"):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    activation = fixture[2].get(
+        fixture[0].universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None
+    assert activation.state is AutomationActivationState.STOPPED
+
+
+def test_activation_compositor_rejects_binding_that_expired_after_preparation(
+    tmp_path: Path,
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(
+        tmp_path,
+        activation_time=datetime(2026, 8, 30, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(CloudContinuationActivationError, match="continuation_authority_changed"):
+        service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
+
+    activation = fixture[2].get(
+        fixture[0].universe_id,
+        "automation_spec_drain",
+    )
+    assert activation is not None
+    assert activation.state is AutomationActivationState.STOPPED
+
+
+@pytest.mark.parametrize(
+    "budget_change",
+    (
+        {"remaining_count": 0},
+        {"remaining_cost_microunits": 4_999_999},
+    ),
+)
+def test_activation_compositor_revalidates_live_binding_budget_before_activation(
+    tmp_path: Path,
+    budget_change: dict[str, int],
+) -> None:
+    fixture, _continuation, _audience_value, service = _activation_compositor_fixture(tmp_path)
+    binding = fixture[3].get_binding(fixture[1].background_binding_id)
+    assert binding is not None
+    with fixture[3].transaction() as transaction:
+        result = transaction.compare_and_swap_binding(
+            binding_id=binding.binding_id,
+            expected=BackgroundBranchBindingFence(binding),
+            replacement=replace(binding, **budget_change),
+        )
+    assert result.outcome is BackgroundBranchAuthorityWriteOutcome.APPLIED
+
+    with pytest.raises(CloudContinuationActivationError, match="continuation_authority_changed"):
         service().activate(CloudContinuationActivationRequest(lease_id="lease_cloud_1"))
 
     activation = fixture[2].get(
