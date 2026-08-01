@@ -155,7 +155,10 @@ def _check_depth(value: Any, *, depth: int = 0) -> None:
 
 
 def _bounded_json(value: Any, *, limit: int, label: str) -> Any:
-    cloned = _json_clone(value)
+    try:
+        cloned = _json_clone(value)
+    except AgentValidationError as exc:
+        raise InterchangeValidationError(str(exc)) from exc
     _check_depth(cloned)
     size = len(_canonical_json(cloned).encode("utf-8"))
     if size > limit:
@@ -304,6 +307,92 @@ def _validate_conversion_report(
             "lossless requires independent normalized source/output equality proof"
         )
     return report
+
+
+def validate_adapter_request(
+    request: str | dict[str, Any],
+    *,
+    admitted_source_locator: bool = False,
+) -> dict[str, Any]:
+    """Validate the authority-free request passed to an admitted adapter runtime."""
+
+    raw = (
+        _json_without_duplicate_keys(
+            request,
+            label="adapter request",
+            limit=MAX_RESPONSE_BYTES,
+        )
+        if isinstance(request, str)
+        else request
+    )
+    document = _bounded_json(raw, limit=MAX_RESPONSE_BYTES, label="adapter request")
+    if not isinstance(document, dict) or document.get("schema_version") != ADAPTER_SCHEMA:
+        raise InterchangeValidationError(
+            f"adapter request schema_version must equal {ADAPTER_SCHEMA}"
+        )
+    if document.get("direction") not in {"import", "export"}:
+        raise InterchangeValidationError("adapter request direction is invalid")
+    for field in ("source_media_type", "target_media_type"):
+        value = document.get(field)
+        if not isinstance(value, str) or not value or len(value) > 127:
+            raise InterchangeValidationError(f"adapter request {field} is invalid")
+    source_fields = [
+        field
+        for field in ("source_json", "source_base64", "source_locator")
+        if field in document
+    ]
+    if len(source_fields) != 1:
+        raise InterchangeValidationError(
+            "adapter request requires exactly one source_json, source_base64, or source_locator"
+        )
+    source_field = source_fields[0]
+    if source_field == "source_json":
+        source = document["source_json"]
+        if not isinstance(source, dict):
+            raise InterchangeValidationError("adapter request source_json must be an object")
+        document["source_json"] = _bounded_json(
+            source,
+            limit=MAX_SOURCE_BYTES,
+            label="source",
+        )
+        supplied_inventory = _validated_inventory(document.get("source_inventory"))
+        enumerated_inventory = enumerate_json_inventory(document["source_json"])
+        if supplied_inventory != enumerated_inventory:
+            raise InterchangeValidationError(
+                "source_inventory must equal the independently enumerated JSON inventory"
+            )
+    elif source_field == "source_base64":
+        if "source_inventory" in document:
+            raise InterchangeValidationError(
+                "opaque adapter request must not claim a JSON source_inventory"
+            )
+        encoded = document["source_base64"]
+        if not isinstance(encoded, str) or len(encoded) > MAX_BASE64_CHARS:
+            raise InterchangeValidationError("source_base64 exceeds its encoded bound")
+        try:
+            decoded = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise InterchangeValidationError("source_base64 is not canonical base64") from exc
+        if (
+            len(decoded) > MAX_SOURCE_BYTES
+            or base64.b64encode(decoded).decode("ascii") != encoded
+        ):
+            raise InterchangeValidationError(
+                "source_base64 violates decoded or canonical bounds"
+            )
+    else:
+        if "source_inventory" in document:
+            raise InterchangeValidationError(
+                "locator adapter request must not claim a JSON source_inventory"
+            )
+        locator = document["source_locator"]
+        if not isinstance(locator, str) or not locator or len(locator) > 2048:
+            raise InterchangeValidationError("source_locator is required and bounded to 2048")
+        if not admitted_source_locator:
+            raise InterchangeValidationError(
+                "source_locator requires a governed runtime entitlement"
+            )
+    return document
 
 
 def validate_adapter_response(
@@ -578,6 +667,16 @@ def convert_declarative_json(
     inventory = enumerate_json_inventory(source)
     if len(inventory) > MAX_REPORT_ITEMS:
         raise InterchangeValidationError(f"source inventory exceeds {MAX_REPORT_ITEMS} items")
+    validate_adapter_request(
+        {
+            "schema_version": ADAPTER_SCHEMA,
+            "direction": "import",
+            "source_json": source,
+            "source_media_type": "application/json",
+            "target_media_type": "application/vnd.tinyassets.agent+json",
+            "source_inventory": inventory,
+        }
+    )
     sanitized = _sanitize(source)
     candidate: dict[str, Any] = {}
     for rule in rules:
@@ -665,6 +764,18 @@ def _convert_declarative_export(
     inventory = enumerate_json_inventory(source)
     if len(inventory) > MAX_REPORT_ITEMS:
         raise InterchangeValidationError(f"source inventory exceeds {MAX_REPORT_ITEMS} items")
+    validate_adapter_request(
+        {
+            "schema_version": ADAPTER_SCHEMA,
+            "direction": "export",
+            "source_json": source,
+            "source_media_type": "application/vnd.tinyassets.agent+json",
+            "target_media_type": str(
+                mapping.get("target_media_type") or "application/json"
+            ),
+            "source_inventory": inventory,
+        }
+    )
 
     items: list[dict[str, Any]] = []
     for path in inventory:
@@ -809,6 +920,7 @@ def _receipt(
         "receipt_digest_algorithm": "sha256",
     }
     receipt["receipt_digest"] = _sha256(receipt)
+    verify_conversion_receipt(receipt)
     return receipt
 
 
@@ -837,14 +949,75 @@ def _export_receipt(
         "receipt_digest_algorithm": "sha256",
     }
     receipt["receipt_digest"] = _sha256(receipt)
+    verify_conversion_receipt(receipt)
     return receipt
 
 
 def verify_conversion_receipt(receipt: dict[str, Any]) -> bool:
     document = _bounded_json(receipt, limit=MAX_SOURCE_BYTES, label="receipt")
-    supplied = str(document.pop("receipt_digest", ""))
-    if document.get("receipt_digest_algorithm") != "sha256":
-        raise InterchangeValidationError("receipt digest algorithm must equal sha256")
+    required = {
+        "schema_version",
+        "direction",
+        "sanitized_source_digest_algorithm",
+        "sanitized_source_digest",
+        "adapter_ref",
+        "adapter_version",
+        "adapter_digest_algorithm",
+        "adapter_digest",
+        "output_kind",
+        "output_digest_algorithm",
+        "output_digest",
+        "report_digest_algorithm",
+        "report_digest",
+        "created_at",
+        "receipt_digest_algorithm",
+        "receipt_digest",
+    }
+    if document.get("output_kind") == "canonical_definition":
+        required.add("content_fingerprint")
+    if set(document) != required:
+        raise InterchangeValidationError("receipt fields do not match the canonical schema")
+    if document.get("schema_version") != 1 or document.get("direction") not in {
+        "import",
+        "export",
+    }:
+        raise InterchangeValidationError("receipt schema or direction is invalid")
+    for field in (
+        "sanitized_source_digest_algorithm",
+        "adapter_digest_algorithm",
+        "output_digest_algorithm",
+        "report_digest_algorithm",
+        "receipt_digest_algorithm",
+    ):
+        if document.get(field) != "sha256":
+            raise InterchangeValidationError(f"receipt {field} algorithm must equal sha256")
+    for field in (
+        "sanitized_source_digest",
+        "adapter_digest",
+        "output_digest",
+        "report_digest",
+        "receipt_digest",
+    ):
+        if not re.fullmatch(r"[0-9a-f]{64}", str(document.get(field) or "")):
+            raise InterchangeValidationError(f"receipt {field} must be lowercase SHA-256")
+    for field, limit in (("adapter_ref", 256), ("adapter_version", 64)):
+        value = document.get(field)
+        if not isinstance(value, str) or not value or len(value) > limit:
+            raise InterchangeValidationError(f"receipt {field} is invalid")
+    if document.get("output_kind") not in {"canonical_definition", "foreign_bytes"}:
+        raise InterchangeValidationError("receipt output_kind is invalid")
+    if document.get("output_kind") == "canonical_definition" and (
+        document.get("content_fingerprint") != document.get("output_digest")
+    ):
+        raise InterchangeValidationError(
+            "canonical receipt content_fingerprint must equal output_digest"
+        )
+    created_at = document.get("created_at")
+    if isinstance(created_at, bool) or not isinstance(created_at, (int, float)):
+        raise InterchangeValidationError("receipt created_at must be finite")
+    if not math.isfinite(float(created_at)):
+        raise InterchangeValidationError("receipt created_at must be finite")
+    supplied = str(document.pop("receipt_digest"))
     if not re.fullmatch(r"[0-9a-f]{64}", supplied) or supplied != _sha256(document):
         raise InterchangeValidationError("receipt digest does not match")
     return True
@@ -1213,6 +1386,7 @@ __all__ = [
     "publish_import_stage",
     "requires_runtime_response",
     "stage_import",
+    "validate_adapter_request",
     "validate_adapter_response",
     "verify_conversion_receipt",
 ]

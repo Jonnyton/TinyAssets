@@ -133,6 +133,45 @@ def _opaque_terminal_response() -> dict[str, object]:
     }
 
 
+def test_adapter_request_has_one_exact_bounded_source_shape() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_request,
+    )
+
+    request = {
+        "schema_version": "agent-interchange-adapter/v1",
+        "direction": "import",
+        "source_json": {"nested": {"value": 1}},
+        "source_media_type": "application/json",
+        "target_media_type": "application/vnd.tinyassets.agent+json",
+        "source_inventory": ["/nested/value"],
+    }
+    assert validate_adapter_request(request)["source_inventory"] == ["/nested/value"]
+
+    duplicate = json.dumps(request, separators=(",", ":")).replace(
+        '"direction":"import"',
+        '"direction":"import","direction":"export"',
+    )
+    with pytest.raises(InterchangeValidationError, match="duplicate object key"):
+        validate_adapter_request(duplicate)
+
+    incomplete = copy.deepcopy(request)
+    incomplete["source_inventory"] = []
+    with pytest.raises(InterchangeValidationError, match="independently enumerated"):
+        validate_adapter_request(incomplete)
+
+    locator = {
+        "schema_version": "agent-interchange-adapter/v1",
+        "direction": "import",
+        "source_locator": "https://example.invalid/agent",
+        "source_media_type": "application/octet-stream",
+        "target_media_type": "application/vnd.tinyassets.agent+json",
+    }
+    with pytest.raises(InterchangeValidationError, match="governed runtime"):
+        validate_adapter_request(locator)
+
+
 def test_opaque_adapter_response_stays_unverified_and_cannot_smuggle_output() -> None:
     from tinyassets.agent_interchange import (
         InterchangeValidationError,
@@ -195,6 +234,16 @@ def test_interchange_size_depth_rule_and_base64_bounds_fail_closed() -> None:
     with pytest.raises(InterchangeValidationError, match="source exceeds"):
         convert_declarative_json(oversized, _adapter())
 
+    non_finite = _source()
+    non_finite["extra"] = {"score": float("nan")}
+    with pytest.raises(InterchangeValidationError, match="JSON-compatible"):
+        convert_declarative_json(non_finite, _adapter())
+
+    oversized_mapping = _adapter()
+    oversized_mapping["padding"] = "x" * (128 * 1024)
+    with pytest.raises(InterchangeValidationError, match="adapter mapping exceeds"):
+        convert_declarative_json(_source(), oversized_mapping)
+
     too_many_rules = _adapter()
     too_many_rules["rules"] = [
         {"op": "constant", "target_path": f"/x/{index}", "value": index}
@@ -209,6 +258,83 @@ def test_interchange_size_depth_rule_and_base64_bounds_fail_closed() -> None:
     converted["output_base64"] = "e30"
     with pytest.raises(InterchangeValidationError, match="base64"):
         validate_adapter_response(converted, direction="import")
+
+    converted["output_base64"] = "A" * 1_398_105
+    with pytest.raises(InterchangeValidationError, match="encoded bound"):
+        validate_adapter_response(converted, direction="import")
+
+
+def test_response_candidate_report_detail_digest_and_envelope_bounds_fail_closed() -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        validate_adapter_response,
+    )
+
+    candidate = _opaque_terminal_response()
+    candidate["status"] = "converted"
+    candidate.pop("error_code")
+    candidate["candidate_json"] = {
+        "schema_version": 1,
+        "name": "Too many components",
+        "description": "",
+        "tags": [],
+        "components": {
+            f"component_{index}": {"kind": "test", "config": {}}
+            for index in range(65)
+        },
+    }
+    with pytest.raises(InterchangeValidationError, match="at most 64"):
+        validate_adapter_response(candidate, direction="import")
+
+    candidate["candidate_json"] = {
+        "schema_version": 1,
+        "name": "Oversized candidate",
+        "description": "",
+        "tags": [],
+        "components": {
+            "identity": {
+                "kind": "test",
+                "config": {"extension": "x" * (256 * 1024)},
+            }
+        },
+    }
+    with pytest.raises(InterchangeValidationError, match="canonical candidate exceeds"):
+        validate_adapter_response(candidate, direction="import")
+
+    detail = _opaque_terminal_response()
+    detail["source_inventory"] = ["/x"]
+    detail["report"] = {
+        "schema_version": 1,
+        "direction": "import",
+        "inventory_verification": "core_json",
+        "exhaustive": True,
+        "lossless": False,
+        "items": [
+            {
+                "source_path": "/x",
+                "classification": "requires_runtime",
+                "reason_code": "requires_runtime",
+                "detail": "x" * 257,
+            }
+        ],
+    }
+    with pytest.raises(InterchangeValidationError, match="detail exceeds 256"):
+        validate_adapter_response(detail, direction="import")
+
+    too_many = _opaque_terminal_response()
+    too_many["source_inventory"] = [f"/x{index}" for index in range(4097)]
+    with pytest.raises(InterchangeValidationError, match="at most 4096"):
+        validate_adapter_response(too_many, direction="import")
+
+    digest = _opaque_terminal_response()
+    digest["adapter_digest"] = "A" * 64
+    with pytest.raises(InterchangeValidationError, match="digest"):
+        validate_adapter_response(digest, direction="import")
+
+    envelope = _opaque_terminal_response()
+    envelope["unexpected_padding"] = "x" * (2 * 1024 * 1024)
+    with pytest.raises(InterchangeValidationError, match="adapter response exceeds"):
+        validate_adapter_response(envelope, direction="import")
 
 
 def test_adapter_output_cannot_bypass_canonical_agent_validation() -> None:
@@ -239,6 +365,7 @@ def test_adapter_output_cannot_bypass_canonical_agent_validation() -> None:
 def test_private_stage_scrubs_secrets_preserves_unknowns_and_expires(
     tmp_path,
     monkeypatch,
+    caplog,
 ) -> None:
     from tinyassets.agent_interchange import get_import_stage, stage_import
 
@@ -264,6 +391,8 @@ def test_private_stage_scrubs_secrets_preserves_unknowns_and_expires(
     assert b"guess-me" not in persisted
     assert raw_digest not in encoded
     assert raw_digest.encode("ascii") not in persisted
+    assert "guess-me" not in caplog.text
+    assert raw_digest not in caplog.text
     assert stage["source_commitment_algorithm"] == "hmac-sha256"
     assert stage["sanitized_source_digest_algorithm"] == "sha256"
     assert stage["candidate"]["components"]["imported_extension"]["config"] == {
@@ -365,6 +494,17 @@ def test_receipt_binds_adapter_version_and_detects_tampering(tmp_path, monkeypat
     tampered["report_digest"] = "0" * 64
     with pytest.raises(InterchangeValidationError, match="receipt digest"):
         verify_conversion_receipt(tampered)
+
+    malformed = copy.deepcopy(first["receipt"])
+    malformed["adapter_digest_algorithm"] = "sha1"
+    malformed["receipt_digest"] = "0" * 64
+    with pytest.raises(InterchangeValidationError, match="algorithm"):
+        verify_conversion_receipt(malformed)
+
+    ambiguous = copy.deepcopy(first["receipt"])
+    ambiguous["source_commitment"] = "must-not-be-durable"
+    with pytest.raises(InterchangeValidationError, match="fields"):
+        verify_conversion_receipt(ambiguous)
 
 
 def test_publish_stage_is_atomic_and_retry_safe(tmp_path, monkeypatch) -> None:
