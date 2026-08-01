@@ -10,6 +10,7 @@
 ## 2. Verification And Release
 
 - [x] 2.1 Run the focused supervisor/watchdog tests, Ruff, and strict OpenSpec.
-- [ ] 2.2 Obtain independent exact-head review.
-- [ ] 2.3 Merge, refresh the detached local controller, restart it, and prove a
-  genuine exhausted result idles without a failure strike.
+- [x] 2.2 Obtain independent exact-head review for PR #2009 at
+  `b97fc80efe82b2076232f2a680af242587e7aa11`.
+- [x] 2.3 Merge PR #2009, refresh the detached controller to merged main, and
+  prove 12 accepted exhausted results leave `consecutive_failures=0`.
