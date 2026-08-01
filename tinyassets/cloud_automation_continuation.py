@@ -30,8 +30,13 @@ from tinyassets.background_branch_authority import (
     build_request_task_attempt_key,
 )
 from tinyassets.background_branch_authority_service import (
+    BackgroundBranchAttemptBoundaryState,
+    BackgroundBranchAttemptClaimAction,
+    BackgroundBranchAttemptClaimRequest,
+    BackgroundBranchAttemptClaimResolution,
     BackgroundBranchAttemptIssuanceRequest,
     BackgroundBranchAttemptIssuanceResolution,
+    BackgroundBranchAttemptPredecessorState,
 )
 from tinyassets.provider_work_authority import (
     ProviderUniverseWorkAuthority,
@@ -732,6 +737,187 @@ class PreparedCloudContinuationAttemptResolver:
         )
 
 
+class PreparedCloudContinuationClaimResolver(PreparedCloudContinuationAttemptResolver):
+    """Bind one reserved attempt to its exact claimed epoch-2 task custody."""
+
+    def resolve(
+        self,
+        request: BackgroundBranchAttemptClaimRequest,
+    ) -> BackgroundBranchAttemptClaimResolution | None:
+        if not isinstance(request, BackgroundBranchAttemptClaimRequest):
+            raise ValueError("request must be a BackgroundBranchAttemptClaimRequest")
+        if request.action is not BackgroundBranchAttemptClaimAction.CLAIM:
+            return None
+        requested_lease = request.requested_lease_expires_at
+        if requested_lease is None:
+            return None
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        now = now.astimezone(timezone.utc)
+        continuation = self._continuation
+        definition = self._definition
+        attempt = request.attempt
+        try:
+            current_continuation = self._continuation_store.get(
+                universe_id=continuation.universe_id,
+                automation_id=continuation.automation_id,
+            )
+            activation = self._activation_store.get(
+                continuation.universe_id,
+                continuation.automation_id,
+            )
+            binding = self._background_store.get_binding(continuation.background_binding_id)
+            with self._request_admission_store.connection() as conn:
+                task = conn.execute(
+                    """
+                    SELECT
+                        a.tenant_id, a.actor_id, a.universe_id,
+                        a.body_digest, a.grant_generation,
+                        t.branch_task_id, t.admission_id, t.request_id,
+                        t.branch_def_id, t.directed_daemon_id,
+                        t.automation_id, t.automation_activation_epoch,
+                        t.automation_executor_class,
+                        t.automation_branch_version,
+                        t.automation_lease_id, t.status,
+                        t.queue_epoch, t.protocol_version,
+                        t.claimed_by, t.claimed_at, t.heartbeat_at,
+                        t.lease_expires_at, t.disabled
+                    FROM request_admissions AS a
+                    JOIN branch_tasks_v2 AS t
+                      ON t.admission_id = a.admission_id
+                     AND t.request_id = a.request_id
+                     AND t.branch_task_id = a.branch_task_id
+                    WHERE a.admission_id = ?
+                      AND a.request_id = ?
+                      AND a.branch_task_id = ?
+                    LIMIT 1
+                    """,
+                    (
+                        self._admission_id,
+                        self._request_id,
+                        self._branch_task_id,
+                    ),
+                ).fetchone()
+            audience = self._audience_resolver.resolve(
+                continuation=continuation,
+                branch_task_id=self._branch_task_id,
+            )
+        except (OSError, sqlite3.Error, ValueError):
+            return None
+        if any(
+            value is None
+            for value in (
+                current_continuation,
+                activation,
+                binding,
+                task,
+                audience,
+            )
+        ):
+            return None
+        assert current_continuation is not None
+        assert activation is not None
+        assert binding is not None
+        assert task is not None
+        assert isinstance(audience, BackgroundBranchExecutorAudience)
+        try:
+            claimed_at = datetime.fromisoformat(str(task["claimed_at"]))
+            heartbeat_at = datetime.fromisoformat(str(task["heartbeat_at"]))
+            task_lease = datetime.fromisoformat(str(task["lease_expires_at"]))
+            transitioned_at = datetime.fromisoformat(
+                request.transitioned_at.removesuffix("Z") + "+00:00"
+            )
+            requested_lease_at = datetime.fromisoformat(
+                requested_lease.removesuffix("Z") + "+00:00"
+            )
+            expected_logical_key = build_request_task_attempt_key(
+                tenant_id=str(task["tenant_id"]),
+                request_id=str(task["request_id"]),
+                admission_id=str(task["admission_id"]),
+                task_id=str(task["branch_task_id"]),
+                body_digest=str(task["body_digest"]),
+                admission_generation=int(task["grant_generation"]),
+            )
+            source_generation = int(binding.source_revision)
+        except (TypeError, ValueError):
+            return None
+        claimed_at = claimed_at.astimezone(timezone.utc)
+        heartbeat_at = heartbeat_at.astimezone(timezone.utc)
+        task_lease = task_lease.astimezone(timezone.utc)
+        exact = (
+            current_continuation == continuation,
+            continuation.state is CloudContinuationState.PREPARED,
+            continuation.principal_id == definition.principal_id,
+            continuation.universe_id == definition.universe_id,
+            continuation.branch_def_id == definition.branch_def_id,
+            continuation.branch_version_id == definition.branch_version_id,
+            continuation.branch_content_digest == definition.branch_content_digest,
+            activation.state is AutomationActivationState.ACTIVE,
+            activation.executor_class is AutomationActivationExecutor.CLOUD,
+            activation.epoch == continuation.activation_epoch + 1,
+            activation.immutable_branch_version == definition.branch_version_id,
+            task["tenant_id"] == definition.principal_id,
+            task["actor_id"] == definition.principal_id,
+            task["universe_id"] == definition.universe_id,
+            task["branch_def_id"] == definition.branch_def_id,
+            task["directed_daemon_id"] == audience.daemon_id,
+            task["automation_id"] == continuation.automation_id,
+            task["automation_activation_epoch"] == activation.epoch,
+            task["automation_executor_class"] == "cloud",
+            task["automation_branch_version"] == definition.branch_version_id,
+            task["automation_lease_id"] == activation.lease_id,
+            task["status"] == "running",
+            task["queue_epoch"] == 2,
+            task["protocol_version"] == 2,
+            task["disabled"] == 0,
+            task["claimed_by"] == audience.worker_id,
+            claimed_at == transitioned_at,
+            heartbeat_at == claimed_at,
+            task_lease == requested_lease_at,
+            task_lease > now,
+            binding.status is BackgroundBranchBindingStatus.ACTIVE,
+            binding.binding_id == continuation.background_binding_id,
+            binding.generation == continuation.background_binding_generation,
+            binding.binding_digest == continuation.background_binding_digest,
+            binding.authorizing_principal_id == definition.principal_id,
+            binding.universe_id == definition.universe_id,
+            binding.branch_def_id == definition.branch_def_id,
+            binding.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
+            binding.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION,
+            binding.source_id == self._request_id,
+            binding.source_revision == str(task["grant_generation"]),
+            binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION,
+            binding.pinned_branch_version_id == definition.branch_version_id,
+            binding.permitted_executor_classes == (BackgroundBranchExecutorClass.CLOUD,),
+            attempt.lifecycle is BackgroundBranchAttemptLifecycle.RESERVED,
+            attempt.binding_id == binding.binding_id,
+            attempt.binding_generation == binding.generation,
+            attempt.binding_digest == binding.binding_digest,
+            attempt.logical_attempt_key == expected_logical_key,
+            attempt.authorizing_principal_id == definition.principal_id,
+            attempt.universe_id == definition.universe_id,
+            attempt.branch_def_id == definition.branch_def_id,
+            attempt.branch_version_id == definition.branch_version_id,
+            attempt.branch_content_digest == definition.branch_content_digest,
+            attempt.operation is BackgroundBranchOperation.INVOKE_BRANCH_VERSION,
+            attempt.source_kind is BackgroundBranchSourceKind.REQUEST_ADMISSION,
+            attempt.source_id == self._request_id,
+            attempt.source_generation == source_generation,
+            attempt.executor_audience == audience,
+            request.requested_audience == audience,
+        )
+        if not all(exact):
+            return None
+        return BackgroundBranchAttemptClaimResolution(
+            binding=binding,
+            executor_audience=audience,
+            predecessor=BackgroundBranchAttemptPredecessorState.UNKNOWN,
+            boundary=BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+            resolved_at=request.transitioned_at,
+        )
+
+
 class PreparedCloudContinuationProviderResolver:
     """Resolve one claimed background attempt into non-bearer provider facts.
 
@@ -919,6 +1105,7 @@ __all__ = [
     "CloudContinuationWriteResult",
     "PreparedCloudContinuation",
     "PreparedCloudContinuationAttemptResolver",
+    "PreparedCloudContinuationClaimResolver",
     "PreparedCloudContinuationProviderResolver",
     "PreparedCloudContinuationRequest",
     "prepare_inactive_cloud_continuation",

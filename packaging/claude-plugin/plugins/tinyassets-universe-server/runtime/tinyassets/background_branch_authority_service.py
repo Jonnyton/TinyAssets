@@ -37,18 +37,20 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchTargetMode,
 )
 
-_BINDING_ROOTS = frozenset({
-    BackgroundBranchSourceKind.SCHEDULE,
-    BackgroundBranchSourceKind.SUBSCRIPTION,
-    BackgroundBranchSourceKind.PINNED_SOUL,
-    BackgroundBranchSourceKind.ROOT_RUN,
-    BackgroundBranchSourceKind.REQUEST_ADMISSION,
-    BackgroundBranchSourceKind.PRODUCER_SUBSCRIPTION,
-    BackgroundBranchSourceKind.ACCEPTED_MARKET_CONTRACT,
-    BackgroundBranchSourceKind.RESUMED_RUN,
-    BackgroundBranchSourceKind.DIRECT_CHILD,
-    BackgroundBranchSourceKind.PARENT_ATTEMPT,
-})
+_BINDING_ROOTS = frozenset(
+    {
+        BackgroundBranchSourceKind.SCHEDULE,
+        BackgroundBranchSourceKind.SUBSCRIPTION,
+        BackgroundBranchSourceKind.PINNED_SOUL,
+        BackgroundBranchSourceKind.ROOT_RUN,
+        BackgroundBranchSourceKind.REQUEST_ADMISSION,
+        BackgroundBranchSourceKind.PRODUCER_SUBSCRIPTION,
+        BackgroundBranchSourceKind.ACCEPTED_MARKET_CONTRACT,
+        BackgroundBranchSourceKind.RESUMED_RUN,
+        BackgroundBranchSourceKind.DIRECT_CHILD,
+        BackgroundBranchSourceKind.PARENT_ATTEMPT,
+    }
+)
 _PLACEHOLDER_DIGEST = f"sha256:{'0' * 64}"
 _SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -286,6 +288,7 @@ class BackgroundBranchAttemptClaimRequest:
     action: BackgroundBranchAttemptClaimAction
     requested_audience: BackgroundBranchExecutorAudience
     transitioned_at: str
+    requested_lease_expires_at: str | None
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt, BackgroundBranchAttempt):
@@ -297,7 +300,26 @@ class BackgroundBranchAttemptClaimRequest:
             BackgroundBranchExecutorAudience,
         ):
             raise ValueError("requested_audience must be typed")
-        _utc_timestamp(self.transitioned_at, "transitioned_at")
+        transitioned_at = _utc_timestamp(
+            self.transitioned_at,
+            "transitioned_at",
+        )
+        lease_expires_at = (
+            _utc_timestamp(
+                self.requested_lease_expires_at,
+                "requested_lease_expires_at",
+            )
+            if self.requested_lease_expires_at is not None
+            else None
+        )
+        leased_action = self.action in {
+            BackgroundBranchAttemptClaimAction.CLAIM,
+            BackgroundBranchAttemptClaimAction.RENEW,
+        }
+        if leased_action != (lease_expires_at is not None):
+            raise ValueError("claim and renew require a requested lease expiry")
+        if lease_expires_at is not None and lease_expires_at <= transitioned_at:
+            raise ValueError("requested lease expiry must follow transition")
 
 
 @dataclass(frozen=True, slots=True)
@@ -425,9 +447,7 @@ class BackgroundBranchBindingTransitionService:
         if not isinstance(store, BackgroundBranchAuthorityStore):
             raise ValueError("store must implement BackgroundBranchAuthorityStore")
         if not isinstance(resolver, BackgroundBranchBindingResolver):
-            raise ValueError(
-                "resolver must implement BackgroundBranchBindingResolver"
-            )
+            raise ValueError("resolver must implement BackgroundBranchBindingResolver")
         self._store = store
         self._resolver = resolver
 
@@ -480,8 +500,7 @@ class BackgroundBranchBindingTransitionService:
         )
         seed = self._resolve(root)
         immutable_identity_matches = (
-            seed.authorizing_principal_id
-            == current.authorizing_principal_id,
+            seed.authorizing_principal_id == current.authorizing_principal_id,
             seed.universe_id == current.universe_id,
             seed.source_kind is current.source_kind,
             seed.source_id == current.source_id,
@@ -518,12 +537,14 @@ class BackgroundBranchBindingTransitionService:
         return self._status_transition(
             expected,
             target=BackgroundBranchBindingStatus.REVOKED,
-            allowed=frozenset({
-                BackgroundBranchBindingStatus.ACTIVE,
-                BackgroundBranchBindingStatus.PAUSED,
-                BackgroundBranchBindingStatus.EXHAUSTED,
-                BackgroundBranchBindingStatus.EXPIRED,
-            }),
+            allowed=frozenset(
+                {
+                    BackgroundBranchBindingStatus.ACTIVE,
+                    BackgroundBranchBindingStatus.PAUSED,
+                    BackgroundBranchBindingStatus.EXHAUSTED,
+                    BackgroundBranchBindingStatus.EXPIRED,
+                }
+            ),
             advance_revocation=True,
         )
 
@@ -534,10 +555,12 @@ class BackgroundBranchBindingTransitionService:
         return self._status_transition(
             expected,
             target=BackgroundBranchBindingStatus.EXHAUSTED,
-            allowed=frozenset({
-                BackgroundBranchBindingStatus.ACTIVE,
-                BackgroundBranchBindingStatus.PAUSED,
-            }),
+            allowed=frozenset(
+                {
+                    BackgroundBranchBindingStatus.ACTIVE,
+                    BackgroundBranchBindingStatus.PAUSED,
+                }
+            ),
         )
 
     @staticmethod
@@ -641,9 +664,7 @@ class BackgroundBranchAttemptIssuanceService:
         if not isinstance(store, BackgroundBranchAuthorityStore):
             raise ValueError("store must implement BackgroundBranchAuthorityStore")
         if not isinstance(resolver, BackgroundBranchAttemptResolver):
-            raise ValueError(
-                "resolver must implement BackgroundBranchAttemptResolver"
-            )
+            raise ValueError("resolver must implement BackgroundBranchAttemptResolver")
         self._store = store
         self._resolver = resolver
 
@@ -652,13 +673,9 @@ class BackgroundBranchAttemptIssuanceService:
         request: BackgroundBranchAttemptIssuanceRequest,
     ) -> BackgroundBranchAttemptWriteResult:
         if not isinstance(request, BackgroundBranchAttemptIssuanceRequest):
-            raise ValueError(
-                "request must be a BackgroundBranchAttemptIssuanceRequest"
-            )
+            raise ValueError("request must be a BackgroundBranchAttemptIssuanceRequest")
         with self._store.transaction() as transaction:
-            prior = transaction.get_attempt_by_logical_key(
-                request.logical_attempt_key
-            )
+            prior = transaction.get_attempt_by_logical_key(request.logical_attempt_key)
             if prior is not None:
                 self._validate_replay(request, prior)
                 return BackgroundBranchAttemptWriteResult(
@@ -692,9 +709,7 @@ class BackgroundBranchAttemptIssuanceService:
                 BackgroundBranchAttemptIssuanceResolution,
             )
             self._validate_resolution(request, binding, resolution)
-            if transaction.count_attempts(binding_id=binding.binding_id) >= (
-                binding.max_attempts
-            ):
+            if transaction.count_attempts(binding_id=binding.binding_id) >= (binding.max_attempts):
                 self._fail(
                     "binding_attempt_limit",
                     "binding has reached its maximum attempt count",
@@ -713,9 +728,7 @@ class BackgroundBranchAttemptIssuanceService:
                     "lineage_mismatch",
                     "canonical lineage does not match the binding source",
                 )
-            origin_attempt_id = (
-                resolution.origin_attempt_id if child_source else attempt_id
-            )
+            origin_attempt_id = resolution.origin_attempt_id if child_source else attempt_id
             attempt = BackgroundBranchAttempt(
                 schema_version=1,
                 attempt_id=attempt_id,
@@ -799,14 +812,11 @@ class BackgroundBranchAttemptIssuanceService:
                 "fresh canonical state does not match the stored binding",
             )
         resolved_at = _utc_timestamp(resolution.resolved_at, "resolved_at")
-        if (
-            binding.expires_at is not None
-            and resolved_at >= _utc_timestamp(binding.expires_at, "expires_at")
+        if binding.expires_at is not None and resolved_at >= _utc_timestamp(
+            binding.expires_at, "expires_at"
         ):
             self._fail("binding_expired", "binding has expired")
-        if (
-            request.physical_universe_id != binding.universe_id
-        ):
+        if request.physical_universe_id != binding.universe_id:
             self._fail(
                 "physical_universe_mismatch",
                 "physical universe does not match the binding",
@@ -827,10 +837,7 @@ class BackgroundBranchAttemptIssuanceService:
                 "executor_mismatch",
                 "daemon does not match the binding",
             )
-        if (
-            binding.runtime_id is not None
-            and audience.runtime_id != binding.runtime_id
-        ):
+        if binding.runtime_id is not None and audience.runtime_id != binding.runtime_id:
             self._fail(
                 "executor_mismatch",
                 "runtime does not match the binding",
@@ -842,8 +849,7 @@ class BackgroundBranchAttemptIssuanceService:
             )
         if (
             binding.target_mode is BackgroundBranchTargetMode.PINNED_VERSION
-            and resolution.branch_version_id
-            != binding.pinned_branch_version_id
+            and resolution.branch_version_id != binding.pinned_branch_version_id
         ):
             self._fail(
                 "pinned_target_mismatch",
@@ -879,9 +885,7 @@ class BackgroundBranchAttemptClaimService:
         if not isinstance(store, BackgroundBranchAuthorityStore):
             raise ValueError("store must implement BackgroundBranchAuthorityStore")
         if not isinstance(resolver, BackgroundBranchAttemptClaimResolver):
-            raise ValueError(
-                "resolver must implement BackgroundBranchAttemptClaimResolver"
-            )
+            raise ValueError("resolver must implement BackgroundBranchAttemptClaimResolver")
         self._store = store
         self._resolver = resolver
 
@@ -903,12 +907,6 @@ class BackgroundBranchAttemptClaimService:
                 "executor_mismatch",
                 "ordinary claim cannot rotate its reserved audience",
             )
-        resolution = self._resolve(
-            current,
-            BackgroundBranchAttemptClaimAction.CLAIM,
-            executor_audience,
-            claimed_at,
-        )
         replacement = self._replacement(
             current,
             executor_audience=executor_audience,
@@ -918,7 +916,14 @@ class BackgroundBranchAttemptClaimService:
             lifecycle=BackgroundBranchAttemptLifecycle.CLAIMED,
             updated_at=claimed_at,
         )
-        return self._compare_and_swap(expected, replacement, resolution)
+        return self._compare_and_swap(
+            expected,
+            replacement,
+            action=BackgroundBranchAttemptClaimAction.CLAIM,
+            requested_audience=executor_audience,
+            transitioned_at=claimed_at,
+            requested_lease_expires_at=lease_expires_at,
+        )
 
     def renew(
         self,
@@ -939,19 +944,20 @@ class BackgroundBranchAttemptClaimService:
                 "executor_mismatch",
                 "only the current claimed executor may renew",
             )
-        resolution = self._resolve(
-            current,
-            BackgroundBranchAttemptClaimAction.RENEW,
-            executor_audience,
-            renewed_at,
-        )
         replacement = replace(
             current,
             lease_generation=current.lease_generation + 1,
             lease_expires_at=lease_expires_at,
             updated_at=renewed_at,
         )
-        return self._compare_and_swap(expected, replacement, resolution)
+        return self._compare_and_swap(
+            expected,
+            replacement,
+            action=BackgroundBranchAttemptClaimAction.RENEW,
+            requested_audience=executor_audience,
+            transitioned_at=renewed_at,
+            requested_lease_expires_at=lease_expires_at,
+        )
 
     def release(
         self,
@@ -971,12 +977,6 @@ class BackgroundBranchAttemptClaimService:
                 "executor_mismatch",
                 "only the current claimed executor may release",
             )
-        resolution = self._resolve(
-            current,
-            BackgroundBranchAttemptClaimAction.RELEASE,
-            executor_audience,
-            released_at,
-        )
         replacement = replace(
             current,
             claim_generation=current.claim_generation + 1,
@@ -985,7 +985,14 @@ class BackgroundBranchAttemptClaimService:
             lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
             updated_at=released_at,
         )
-        return self._compare_and_swap(expected, replacement, resolution)
+        return self._compare_and_swap(
+            expected,
+            replacement,
+            action=BackgroundBranchAttemptClaimAction.RELEASE,
+            requested_audience=executor_audience,
+            transitioned_at=released_at,
+            requested_lease_expires_at=None,
+        )
 
     def reclaim(
         self,
@@ -1023,28 +1030,6 @@ class BackgroundBranchAttemptClaimService:
                 "executor_domain_mismatch",
                 "recovery may rotate only the worker inside the reserved executor domain",
             )
-        resolution = self._resolve(
-            current,
-            BackgroundBranchAttemptClaimAction.RECLAIM,
-            replacement_audience,
-            reclaimed_at,
-        )
-        if (
-            resolution.predecessor
-            not in {
-                BackgroundBranchAttemptPredecessorState.DEAD,
-                BackgroundBranchAttemptPredecessorState.INVALIDATED,
-            }
-            or resolution.boundary
-            not in {
-                BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
-                BackgroundBranchAttemptBoundaryState.CLOSED,
-            }
-        ):
-            self._fail(
-                "recovery_not_conclusive",
-                "reclaim requires conclusive predecessor and boundary proof",
-            )
         replacement = self._replacement(
             current,
             executor_audience=replacement_audience,
@@ -1054,7 +1039,15 @@ class BackgroundBranchAttemptClaimService:
             lifecycle=BackgroundBranchAttemptLifecycle.RESERVED,
             updated_at=reclaimed_at,
         )
-        return self._compare_and_swap(expected, replacement, resolution)
+        return self._compare_and_swap(
+            expected,
+            replacement,
+            action=BackgroundBranchAttemptClaimAction.RECLAIM,
+            requested_audience=replacement_audience,
+            transitioned_at=reclaimed_at,
+            requested_lease_expires_at=None,
+            require_conclusive_recovery=True,
+        )
 
     @staticmethod
     def _expected(
@@ -1097,17 +1090,43 @@ class BackgroundBranchAttemptClaimService:
         self,
         expected: BackgroundBranchAttemptFence,
         replacement: BackgroundBranchAttempt,
-        resolution: BackgroundBranchAttemptClaimResolution,
+        *,
+        action: BackgroundBranchAttemptClaimAction,
+        requested_audience: BackgroundBranchExecutorAudience,
+        transitioned_at: str,
+        requested_lease_expires_at: str | None,
+        require_conclusive_recovery: bool = False,
     ) -> BackgroundBranchAttemptWriteResult:
         with self._store.transaction() as transaction:
-            binding = transaction.get_binding(
-                expected.expected_record.binding_id
+            resolution = self._resolve(
+                expected.expected_record,
+                action,
+                requested_audience,
+                transitioned_at,
+                requested_lease_expires_at,
             )
+            binding = transaction.get_binding(expected.expected_record.binding_id)
             self._validate_binding(
                 expected.expected_record,
                 binding,
                 resolution,
             )
+            if require_conclusive_recovery and (
+                resolution.predecessor
+                not in {
+                    BackgroundBranchAttemptPredecessorState.DEAD,
+                    BackgroundBranchAttemptPredecessorState.INVALIDATED,
+                }
+                or resolution.boundary
+                not in {
+                    BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+                    BackgroundBranchAttemptBoundaryState.CLOSED,
+                }
+            ):
+                self._fail(
+                    "recovery_not_conclusive",
+                    "reclaim requires conclusive predecessor and boundary proof",
+                )
             return transaction.compare_and_swap_attempt(
                 attempt_id=expected.expected_record.attempt_id,
                 expected=expected,
@@ -1120,6 +1139,7 @@ class BackgroundBranchAttemptClaimService:
         action: BackgroundBranchAttemptClaimAction,
         requested_audience: BackgroundBranchExecutorAudience,
         transitioned_at: str,
+        requested_lease_expires_at: str | None,
     ) -> BackgroundBranchAttemptClaimResolution:
         if not isinstance(
             requested_audience,
@@ -1132,6 +1152,7 @@ class BackgroundBranchAttemptClaimService:
                 action=action,
                 requested_audience=requested_audience,
                 transitioned_at=transitioned_at,
+                requested_lease_expires_at=requested_lease_expires_at,
             )
         )
         if resolution is None:
@@ -1190,9 +1211,8 @@ class BackgroundBranchAttemptClaimService:
                 "attempt authority differs from its current binding",
             )
         resolved_at = _utc_timestamp(resolution.resolved_at, "resolved_at")
-        if (
-            binding.expires_at is not None
-            and resolved_at >= _utc_timestamp(binding.expires_at, "expires_at")
+        if binding.expires_at is not None and resolved_at >= _utc_timestamp(
+            binding.expires_at, "expires_at"
         ):
             self._fail("binding_expired", "attempt binding has expired")
         audience = resolution.executor_audience
