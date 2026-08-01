@@ -248,6 +248,20 @@ def _validate_conversion_report(
     report = _bounded_json(value, limit=MAX_RESPONSE_BYTES, label="conversion report")
     if not isinstance(report, dict) or report.get("schema_version") != 1:
         raise InterchangeValidationError("conversion report schema_version must equal 1")
+    expected_report_fields = {
+        "schema_version",
+        "direction",
+        "inventory_verification",
+        "exhaustive",
+        "lossless",
+        "items",
+    }
+    if report.get("inventory_verification") == "format_verifier":
+        expected_report_fields.add("verifier_id")
+    if set(report) != expected_report_fields:
+        raise InterchangeValidationError(
+            "conversion report fields do not match the canonical schema"
+        )
     if report.get("direction") != direction:
         raise InterchangeValidationError("conversion report direction does not match request")
     verification = report.get("inventory_verification")
@@ -276,6 +290,19 @@ def _validate_conversion_report(
     for item in items:
         if not isinstance(item, dict):
             raise InterchangeValidationError("conversion report items must be objects")
+        expected_item_fields = {
+            "source_path",
+            "classification",
+            "reason_code",
+        }
+        if "target_path" in item:
+            expected_item_fields.add("target_path")
+        if "detail" in item:
+            expected_item_fields.add("detail")
+        if set(item) != expected_item_fields:
+            raise InterchangeValidationError(
+                "conversion report item fields do not match the canonical schema"
+            )
         source_path = item.get("source_path")
         if not isinstance(source_path, str):
             raise InterchangeValidationError("conversion report source_path is required")
@@ -346,6 +373,19 @@ def validate_adapter_request(
             "adapter request requires exactly one source_json, source_base64, or source_locator"
         )
     source_field = source_fields[0]
+    expected_request_fields = {
+        "schema_version",
+        "direction",
+        "source_media_type",
+        "target_media_type",
+        source_field,
+    }
+    if source_field == "source_json":
+        expected_request_fields.add("source_inventory")
+    if set(document) != expected_request_fields:
+        raise InterchangeValidationError(
+            "adapter request fields do not match the canonical schema"
+        )
     if source_field == "source_json":
         source = document["source_json"]
         if not isinstance(source, dict):
@@ -468,12 +508,38 @@ def validate_adapter_response(
                 raise InterchangeValidationError(
                     "output_base64 violates decoded or canonical bounds"
                 )
+        expected_response_fields = {
+            "schema_version",
+            "status",
+            "adapter_ref",
+            "adapter_version",
+            "adapter_digest_algorithm",
+            "adapter_digest",
+            "source_inventory",
+            "report",
+            output_fields[0],
+        }
     else:
         if output_fields:
             raise InterchangeValidationError("non-converted response forbids adapter output")
         error_code = document.get("error_code")
         if not isinstance(error_code, str) or not _REASON_CODE.fullmatch(error_code):
             raise InterchangeValidationError("non-converted response requires error_code")
+        expected_response_fields = {
+            "schema_version",
+            "status",
+            "adapter_ref",
+            "adapter_version",
+            "adapter_digest_algorithm",
+            "adapter_digest",
+            "source_inventory",
+            "report",
+            "error_code",
+        }
+    if set(document) != expected_response_fields:
+        raise InterchangeValidationError(
+            "adapter response fields do not match the canonical schema"
+        )
     return document
 
 
@@ -634,6 +700,62 @@ def _matching_rule(path: str, rules: list[dict[str, Any]]) -> dict[str, Any]:
     return matches[0]
 
 
+def _validate_declarative_rule(rule: Any) -> dict[str, Any]:
+    if not isinstance(rule, dict):
+        raise InterchangeValidationError(
+            "adapter rule does not match the canonical grammar"
+        )
+    op = rule.get("op")
+    optional_reason = {"reason_code"} if "reason_code" in rule else set()
+    if op == "constant":
+        expected = {"op", "target_path", "value"}
+        allowed_classifications: set[str] = set()
+    elif op in {"copy", "namespace_preserve"}:
+        expected = {"op", "source_path", "target_path", "classification"}
+        expected |= optional_reason
+        allowed_classifications = {"preserved", "normalized"}
+    elif op == "omit":
+        expected = {"op", "source_path", "classification"} | optional_reason
+        allowed_classifications = {
+            "unsupported",
+            "omitted_secret",
+            "requires_private_binding",
+            "requires_runtime",
+        }
+    else:
+        raise InterchangeValidationError(
+            "adapter rule does not match the canonical grammar"
+        )
+    if set(rule) != expected:
+        raise InterchangeValidationError(
+            "adapter rule fields do not match the canonical grammar"
+        )
+    if "source_path" in rule:
+        if not isinstance(rule["source_path"], str):
+            raise InterchangeValidationError(
+                "adapter rule source_path does not match the canonical grammar"
+            )
+        _pointer_parts(rule["source_path"])
+    if "target_path" in rule:
+        if not isinstance(rule["target_path"], str):
+            raise InterchangeValidationError(
+                "adapter rule target_path does not match the canonical grammar"
+            )
+        _pointer_parts(rule["target_path"])
+    if allowed_classifications and rule.get("classification") not in allowed_classifications:
+        raise InterchangeValidationError(
+            "adapter rule classification does not match the canonical grammar"
+        )
+    reason_code = rule.get("reason_code")
+    if reason_code is not None and (
+        not isinstance(reason_code, str) or not _REASON_CODE.fullmatch(reason_code)
+    ):
+        raise InterchangeValidationError(
+            "adapter rule reason_code does not match the canonical grammar"
+        )
+    return rule
+
+
 def _adapter_metadata(adapter: dict[str, Any]) -> tuple[dict[str, Any], str]:
     document = _bounded_json(adapter, limit=MAX_MAPPING_BYTES, label="adapter mapping")
     if document.get("schema_version") != ADAPTER_SCHEMA:
@@ -652,6 +774,19 @@ def _adapter_metadata(adapter: dict[str, Any]) -> tuple[dict[str, Any], str]:
         raise InterchangeValidationError(
             f"adapter rules must be a list of at most {MAX_MAPPING_RULES}"
         )
+    expected_mapping_fields = {
+        "schema_version",
+        "adapter_ref",
+        "adapter_version",
+        "rules",
+    }
+    if "target_media_type" in document:
+        expected_mapping_fields.add("target_media_type")
+    if set(document) != expected_mapping_fields:
+        raise InterchangeValidationError(
+            "adapter mapping fields do not match the canonical grammar"
+        )
+    document["rules"] = [_validate_declarative_rule(rule) for rule in rules]
     return document, _sha256(document)
 
 
@@ -1105,21 +1240,26 @@ def convert_export(
                         created_at,
                     ),
                 )
-        response = {
+        adapter_response = {
             "schema_version": ADAPTER_SCHEMA,
             "status": "converted",
-            "direction": "export",
             "adapter_ref": conversion["adapter_ref"],
             "adapter_version": conversion["adapter_version"],
             "adapter_digest_algorithm": "sha256",
             "adapter_digest": conversion["adapter_digest"],
             "source_inventory": conversion["source_inventory"],
-            "target_media_type": conversion["target_media_type"],
             "output_base64": output_base64,
             "report": conversion["report"],
-            "receipt": receipt,
         }
-        return validate_adapter_response(response, direction="export")
+        validated = validate_adapter_response(adapter_response, direction="export")
+        validated.update(
+            {
+                "direction": "export",
+                "target_media_type": conversion["target_media_type"],
+                "receipt": receipt,
+            }
+        )
+        return _bounded_json(validated, limit=MAX_RESPONSE_BYTES, label="export response")
 
 
 def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:

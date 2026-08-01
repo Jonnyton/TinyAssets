@@ -408,6 +408,37 @@ def test_portable_lineage_resolves_unique_fingerprint_matched_parents(tmp_path) 
     )
 
 
+def test_imported_lineage_id_without_fingerprints_stays_informational(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    parent = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload=_definition("Local parent"),
+    )
+    portable_child = _definition(
+        "Unverified imported child",
+        lineage={
+            "identity": [
+                {
+                    "definition_id": parent["agent_definition_id"],
+                    "component_key": "identity",
+                    "credit_share": 1.0,
+                }
+            ]
+        },
+    )
+
+    imported = import_definition(
+        tmp_path,
+        author_id="mallory",
+        portable_definition=portable_child,
+    )
+
+    assert imported["portable_definition"]["lineage"] == portable_child["lineage"]
+    assert imported["lineage"] == []
+
+
 def _binding(name: str = "My coding agent") -> dict[str, object]:
     return {
         "schema_version": 1,

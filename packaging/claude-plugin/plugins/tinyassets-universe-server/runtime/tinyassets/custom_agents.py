@@ -618,27 +618,6 @@ def _verified_import_lineage(
             parent_key = source["component_key"]
             definition_fingerprint = source.get("definition_fingerprint")
             component_fingerprint = source.get("component_fingerprint")
-            direct = _read_definition_row(conn, source["definition_id"])
-            if direct is not None:
-                component = _parent_component(direct, parent_key)
-                if component is None:
-                    raise AgentValidationError(
-                        f"parent component {source['definition_id']}.{parent_key} does not exist"
-                    )
-                if definition_fingerprint and (
-                    str(direct["content_fingerprint"]) != definition_fingerprint
-                    or _fingerprint(component) != component_fingerprint
-                ):
-                    raise AgentValidationError("portable lineage fingerprint does not match")
-                verified.append(
-                    _lineage_edge(
-                        conn,
-                        child_key=child_key,
-                        source=source,
-                        parent_id=str(direct["agent_definition_id"]),
-                    )
-                )
-                continue
             if not definition_fingerprint or not component_fingerprint:
                 continue
             rows = conn.execute(

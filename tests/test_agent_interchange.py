@@ -104,6 +104,47 @@ def test_declarative_adapter_requires_complete_core_json_inventory() -> None:
         convert_declarative_json(_source(), adapter)
 
 
+@pytest.mark.parametrize(
+    "dishonest_rule",
+    [
+        {
+            "op": "omit",
+            "source_path": "/extra",
+            "classification": "preserved",
+        },
+        {
+            "op": "copy",
+            "source_path": "/extra",
+            "target_path": "/components/extension/config/source",
+            "classification": "unsupported",
+        },
+        {
+            "op": "constant",
+            "source_path": "/extra",
+            "target_path": "/description",
+            "value": "pretend this covered the source",
+            "classification": "preserved",
+        },
+    ],
+)
+def test_declarative_rule_operation_cannot_lie_about_loss(
+    dishonest_rule: dict[str, object],
+) -> None:
+    from tinyassets.agent_interchange import (
+        InterchangeValidationError,
+        convert_declarative_json,
+    )
+
+    adapter = _adapter()
+    adapter["rules"] = [
+        dishonest_rule if rule.get("source_path") == "/extra" else rule
+        for rule in adapter["rules"]  # type: ignore[index]
+    ]
+
+    with pytest.raises(InterchangeValidationError, match="rule.*canonical grammar"):
+        convert_declarative_json(_source(), adapter)
+
+
 def test_public_payload_parser_rejects_duplicate_object_keys() -> None:
     from tinyassets.api.custom_agents import _payload
     from tinyassets.custom_agents import AgentValidationError
@@ -171,6 +212,11 @@ def test_adapter_request_has_one_exact_bounded_source_shape() -> None:
     with pytest.raises(InterchangeValidationError, match="governed runtime"):
         validate_adapter_request(locator)
 
+    request_with_authority = copy.deepcopy(request)
+    request_with_authority["api_key"] = "must-not-reach-an-adapter"
+    with pytest.raises(InterchangeValidationError, match="request fields"):
+        validate_adapter_request(request_with_authority)
+
 
 def test_opaque_adapter_response_stays_unverified_and_cannot_smuggle_output() -> None:
     from tinyassets.agent_interchange import (
@@ -187,6 +233,16 @@ def test_opaque_adapter_response_stays_unverified_and_cannot_smuggle_output() ->
     smuggled["output_base64"] = "e30="
     with pytest.raises(InterchangeValidationError, match="forbids.*output"):
         validate_adapter_response(smuggled, direction="import")
+
+    response_extra = copy.deepcopy(response)
+    response_extra["credentials"] = {"token": "must-not-persist"}
+    with pytest.raises(InterchangeValidationError, match="response fields"):
+        validate_adapter_response(response_extra, direction="import")
+
+    report_extra = copy.deepcopy(response)
+    report_extra["report"]["runtime_state"] = {"conversation": "private"}  # type: ignore[index]
+    with pytest.raises(InterchangeValidationError, match="report fields"):
+        validate_adapter_response(report_extra, direction="import")
 
 
 def test_adapter_response_rejects_duplicate_inventory_and_overlong_paths() -> None:
