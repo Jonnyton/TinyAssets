@@ -48,11 +48,15 @@ Normal preflight omitted that confirmation.
 
 ## Required Repair
 
-Reuse the existing exact-identity confirmation in preflight. Do not loosen
-writer markers, receipt/environment/mount checks, or the fixed external refusal
-class. A same-name replacement, failed Docker ownership lookup, or live host
-writer remains unowned and must fail before mutation. A full bounded
-100-candidate mixed-churn test supplies the uptime §14 concurrency/load proof.
+Use captured nonempty exact IDs in both the initial exclusion and confirmation
+snapshots. Trust only successful complete per-identity Docker PID output, bind
+each candidate to its `/proc` process-generation token to reject numeric PID
+reuse, and refuse candidate 101 instead of truncating the risk inventory. Do
+not loosen writer markers, receipt/environment/mount checks, or fixed private
+refusal classes. Same-name replacement, failed/partial Docker lookup, changed
+generation, overflow, and every live host writer remain fail-closed before
+mutation. Exact 100/101 boundary tests supply the uptime §14 concurrency/load
+proof.
 
 ## Release Gate
 

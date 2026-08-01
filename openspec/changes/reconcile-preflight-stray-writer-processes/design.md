@@ -18,14 +18,19 @@ candidate disappear.
 
 **Goals:**
 
-- Confirm preliminary candidates against one fresh PID inventory from the
-  exact container identities already inspected by preflight.
-- Ignore a candidate only when it exited or the fresh exact-container snapshot
-  owns its PID.
+- Use captured nonempty exact IDs for expected containers, extra volume
+  consumers, and recovery sidecars in both ownership snapshots.
+- Confirm preliminary candidates against one fresh, complete PID inventory
+  from those exact identities and re-prove the same Linux process generation.
+- Ignore a candidate only when it exited or the fresh snapshot owns its PID
+  and the current process generation still equals the scanned generation.
 - Preserve pre-mutation refusal for every still-live unowned candidate and for
   any container identity whose ownership cannot be proved.
-- Exercise container PID churn and genuine unowned writers deterministically,
-  including the uptime §14 concurrency/load proof.
+- Treat failed, timed-out, malformed, or partial per-identity Docker PID output
+  as zero trusted ownership without exposing the raw failure.
+- Exercise PID churn, PID reuse, malformed ownership output, genuine unowned
+  writers, and 100/101 candidate boundaries deterministically for the uptime
+  §14 concurrency/load proof.
 
 **Non-Goals:**
 
@@ -37,13 +42,13 @@ candidate disappear.
 
 ## Decisions
 
-### Reuse the existing exact-identity confirmation primitive
+### Use captured exact identities in both ownership snapshots
 
-Preflight will pass its preliminary candidates and the exact inspected
-container IDs to `_confirm_stray_writer_processes`. That helper takes one fresh
-Docker PID snapshot, keeps live candidates not owned by those IDs, and drops
-only exited or newly proved container-owned PIDs. Using IDs rather than names
-keeps same-name substitution fail-closed.
+Preflight will assemble nonempty captured IDs from the expected fleet, extra
+volume consumers, and admitted recovery sidecars. The initial exclusion
+snapshot and `_confirm_stray_writer_processes` will both query only those IDs.
+This closes the existing initial-snapshot gap where a same-name replacement
+could otherwise be excluded before becoming a candidate.
 
 Alternatives rejected:
 
@@ -52,31 +57,53 @@ Alternatives rejected:
 - Parsing cgroups or Docker internals independently duplicates an existing,
   reviewed ownership primitive and creates another identity interpretation.
 
+### Trust only complete per-identity Docker PID output
+
+`Host.container_pids` will add ownership for an exact identity only after the
+`docker top <id> -eo pid` call succeeds and the complete output has one exact
+header plus only valid PID rows. A nonzero exit, timeout, missing header,
+malformed row, or partial result contributes no PIDs for that identity. The
+raw command failure remains private. Zero trusted ownership is conservative:
+container processes found by `/proc` remain candidates and block preflight.
+
+### Bind PID ownership to the scanned process generation
+
+Each preliminary risk records Linux `/proc/<pid>/stat` start time. After the
+fresh Docker snapshot, confirmation re-reads that token before excusing a PID.
+Only equal start time plus fresh exact-container ownership proves the same
+process is owned. A changed or unreadable generation remains a confirmed risk,
+even if Docker reported the numeric PID, closing exit-and-PID-reuse TOCTOU.
+
 ### Preserve the fixed external refusal class
 
 If any confirmed candidate remains, preflight raises the existing constant
 error and publishes no PID, executable, command line, environment value, mount
 namespace, or process exception. Structural candidate fields remain internal
-to tests and the already-bounded observation path.
+to tests and the already-bounded observation path. A 101st candidate raises a
+separate fixed overflow class before mutation rather than truncating evidence.
 
 ### Prove snapshot churn without timing-dependent tests
 
-Tests will supply a preliminary candidate whose PID is absent from the first
-Docker snapshot but present in the fresh exact-identity snapshot. A second test
-keeps a live candidate outside the fresh ownership set. The load proof will
-confirm a full bounded batch of candidates with mixed new container ownership,
-exits, and one genuine unowned survivor in one snapshot operation.
+Tests will supply a preliminary same-generation candidate absent from the first
+snapshot but present in the fresh exact-identity snapshot. Separate tests cover
+same-name replacement before the initial snapshot, failed/partial Docker
+output, a changed process generation reusing an owned numeric PID, and a live
+unowned candidate. The load proof covers exactly 100 mixed candidates and
+proves candidate 101 fails closed rather than disappearing.
 
 ## Risks / Trade-offs
 
 - [A host writer exits before confirmation] -> It is no longer a live writer
   risk; later queue, process, and post-quiesce proofs remain mandatory.
 - [A genuine writer starts after confirmation] -> Existing quiesce and final
-  process scans still fail closed; this change does not remove them.
+  process scans still fail closed; this change does not remove them. Numeric
+  PID reuse during confirmation is independently blocked by start-time binding.
 - [A container name is replaced between snapshots] -> Confirmation uses the
   captured immutable container IDs, so replacement PIDs are not trusted.
-- [Docker PID lookup fails] -> No candidate is excused; it remains confirmed
-  and preflight refuses before mutation.
+- [Docker PID lookup fails or is partial] -> That identity contributes zero
+  ownership; raw errors remain private and candidates fail before mutation.
+- [Candidate inventory exceeds the bounded evidence shape] -> Candidate 101
+  raises a fixed overflow refusal before mutation; no tail is silently omitted.
 
 ## Migration Plan
 

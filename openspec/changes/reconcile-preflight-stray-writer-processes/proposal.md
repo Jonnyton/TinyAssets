@@ -9,8 +9,15 @@ block safe immutable releases.
 
 ## What Changes
 
-- Reconcile every preliminary preflight process candidate against a fresh
-  Docker PID snapshot for the exact inspected container identities.
+- Use captured nonempty exact container IDs for both the initial exclusion
+  snapshot and fresh confirmation snapshot; never trust mutable names.
+- Bind each preliminary candidate to its Linux process generation and excuse it
+  only when a complete Docker lookup and a same-generation recheck prove exact
+  container ownership.
+- Treat failed, timed-out, malformed, or partial Docker PID output as zero
+  trusted ownership without publishing raw errors.
+- Refuse a 101st risk candidate instead of silently truncating the bounded
+  100-candidate inventory.
 - Continue to reject any candidate that still exists and is not owned by those
   exact containers; no command-line, environment value, or process detail is
   published on refusal.

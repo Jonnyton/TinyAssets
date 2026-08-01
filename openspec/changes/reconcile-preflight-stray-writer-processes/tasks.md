@@ -6,14 +6,15 @@
 
 ## 1. Test-Driven Repair
 
-- [ ] 1.1 Add red tests proving a newly spawned exact-container PID is not a
-  stray, while a still-live unowned PID and an unproved/substituted container
-  remain fail-closed before mutation.
-- [ ] 1.2 Reuse exact-identity fresh Docker PID confirmation in normal
-  preflight without changing the fixed external error or later process proofs.
-- [ ] 1.3 Add the uptime §14 bounded concurrency/load proof across the full
-  100-candidate cap with mixed exited, newly owned, and genuine unowned PIDs;
-  prove one Docker snapshot and only genuine survivors.
+- [ ] 1.1 Add red tests for a newly spawned same-generation exact-container
+  PID, same-name substitution before the initial snapshot, nonzero/timeout/
+  malformed/partial Docker PID output, PID reuse, and a genuine unowned PID.
+- [ ] 1.2 Use captured nonempty exact IDs in both snapshots, accept ownership
+  only from complete per-identity Docker output, bind candidates to `/proc`
+  process generation, and preserve fixed private refusal plus later proofs.
+- [ ] 1.3 Add the uptime §14 concurrency/load proof at exactly 100 mixed
+  candidates and the fail-closed 101st-candidate overflow boundary; prove one
+  fresh snapshot and only same-generation exact ownership is excused.
 
 ## 2. Verification And Release
 
