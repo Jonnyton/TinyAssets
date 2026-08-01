@@ -631,8 +631,25 @@ def write_graph(
             definition selected by a binding update.
         agent_binding_id: Existing private binding for operation=update.
         agent_stage_id: Private import stage for operation=publish_stage.
-        payload_json: Agent definition, portable import, interchange adapter,
-            or private binding configuration as a JSON object.
+        payload_json: Agent definition, portable import, or private binding JSON.
+            For target=agent operation=stage_import, source_json and adapter are
+            sibling top-level keys; never nest source_json inside adapter. Use
+            {"source_json": {...}, "adapter": {"schema_version":
+            "agent-interchange-adapter/v1", "adapter_ref": "user:<stable-id>",
+            "adapter_version": "1.0.0", "rules": [...]}}. Each rule op is
+            copy, constant, namespace_preserve, or omit. copy and
+            namespace_preserve require source_path, target_path, and
+            classification=preserved or normalized; constant requires
+            target_path and value; omit requires source_path and
+            classification=unsupported, omitted_secret,
+            requires_private_binding, or requires_runtime. JSON Pointer paths
+            are used. target_path writes must be unique and non-overlapping,
+            including ancestors and descendants. For security, credential or private source
+            paths must use omit with omitted_secret or requires_private_binding.
+            Cover every source scalar or empty-container path exactly once with
+            a source_path rule; a parent source_path covers its descendants
+            and constants do not cover source inventory. The mapped definition
+            needs schema_version=1, name, description, tags, and components.
         expected_revision: Current binding revision required by update.
     """
     rejection = write_gate_rejection("write_graph")
