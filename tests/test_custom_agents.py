@@ -301,6 +301,113 @@ def test_portable_interchange_verifies_fingerprint_and_excludes_private_state(
         )
 
 
+def test_multi_user_blend_round_trips_through_an_empty_commons(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    source = tmp_path / "source"
+    parents = []
+    parent_specs = [
+        ("alice", "identity", _component("soul", voice="direct")),
+        ("bob", "workflow", _component("branch_set", refs=["branch-a"])),
+        ("carol", "memory", _component("memory_policy", retention="durable")),
+    ]
+    for author, key, component in parent_specs:
+        parents.append(
+            publish_definition(
+                source,
+                author_id=author,
+                payload=_definition(
+                    f"{key.title()} parent",
+                    components={key: component},
+                ),
+            )
+        )
+
+    child = publish_definition(
+        source,
+        author_id="dave",
+        payload=_definition(
+            "Three-creator blend",
+            components={
+                key: copy.deepcopy(component) for _, key, component in parent_specs
+            }
+            | {"evaluation": _component("rubric", ref="commons:quality")},
+            lineage={
+                key: [
+                    {
+                        "definition_id": parent["agent_definition_id"],
+                        "component_key": key,
+                        "credit_share": 1.0,
+                    }
+                ]
+                for parent, (_, key, _) in zip(parents, parent_specs, strict=True)
+            },
+        ),
+    )
+    portable = child["portable_definition"]
+    for sources in portable["lineage"].values():
+        assert len(sources[0]["definition_fingerprint"]) == 64
+        assert len(sources[0]["component_fingerprint"]) == 64
+
+    imported = import_definition(
+        tmp_path / "empty-destination",
+        author_id="erin",
+        portable_definition=portable,
+    )
+
+    assert imported["content_fingerprint"] == child["content_fingerprint"]
+    assert imported["portable_definition"] == portable
+    assert imported["lineage"] == []
+
+
+def test_portable_lineage_resolves_unique_fingerprint_matched_parents(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    source = tmp_path / "source"
+    parent = publish_definition(
+        source,
+        author_id="alice",
+        payload=_definition(
+            "Portable parent",
+            components={"identity": _component("soul", voice="clear")},
+        ),
+    )
+    child = publish_definition(
+        source,
+        author_id="bob",
+        payload=_definition(
+            "Portable child",
+            lineage={
+                "identity": [
+                    {
+                        "definition_id": parent["agent_definition_id"],
+                        "component_key": "identity",
+                        "credit_share": 1.0,
+                    }
+                ]
+            },
+        ),
+    )
+
+    destination = tmp_path / "destination"
+    local_parent = import_definition(
+        destination,
+        author_id="carol",
+        portable_definition=parent["portable_definition"],
+    )
+    local_child = import_definition(
+        destination,
+        author_id="dana",
+        portable_definition=child["portable_definition"],
+    )
+
+    assert local_child["portable_definition"] == child["portable_definition"]
+    assert len(local_child["lineage"]) == 1
+    assert local_child["lineage"][0]["parent_definition_id"] == (
+        local_parent["agent_definition_id"]
+    )
+
+
 def _binding(name: str = "My coding agent") -> dict[str, object]:
     return {
         "schema_version": 1,

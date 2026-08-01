@@ -4,7 +4,7 @@
 
 ## 1. Test-first domain contract
 
-- [ ] 1.1 Add red cross-installation tests proving a multi-parent child exported into an empty commons retains exact canonical content/fingerprint and immutable parent/component fingerprint declarations without manufacturing verified credit; also prove a child can blend at least three public definitions authored by other actors.
+- [x] 1.1 Add red cross-installation tests proving a multi-parent child exported into an empty commons retains exact canonical content/fingerprint and immutable parent/component fingerprint declarations without manufacturing verified credit; also prove a child can blend at least three public definitions authored by other actors. Red on 2026-07-31 with missing fingerprints and rewritten origins; green on Windows/Python 3.14 with `19 passed` in `tests/test_custom_agents.py` and changed-file Ruff clean.
 - [ ] 1.2 Add red adversarial tests proving raw foreign input and unkeyed raw hashes are never stored or logged, low-entropy credentials cannot be guessed from evidence, private source commitments expire after 24 hours, core-enumerated JSON inventory cannot omit/duplicate a path, opaque inventory stays unverified/non-lossless, every byte/count/depth/path/detail bound fails closed, unknown safe content is namespaced, and adapter output cannot bypass canonical validation.
 - [ ] 1.3 Add red receipt, idempotency, and concurrency tests proving exact source/adapter/output/report binding, distinct adapter-version provenance, one logical stage per identical retry, conflict on changed inputs, and atomic failure with no partial stage/definition/lineage.
 
