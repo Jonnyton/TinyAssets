@@ -215,6 +215,21 @@ def test_all_matching_claimed_owners_count_toward_wip(tmp_path: Path) -> None:
     )
 
 
+def test_complete_change_exposes_bare_in_flight_activity(tmp_path: Path) -> None:
+    _change(tmp_path, "complete-active", complete=1, remaining=0)
+    _status(
+        tmp_path,
+        "| Fold back complete-active | openspec/changes/complete-active/ | - | in-flight |",
+    )
+
+    report = openspec_flow.build_report(tmp_path)
+    change = report["changes"][0]
+
+    assert change["classification"] == "complete-but-unarchived"
+    assert change["owners"] == []
+    assert change["active_status"] is True
+
+
 def test_umbrella_language_warns_but_does_not_decide_scope(tmp_path: Path) -> None:
     _change(
         tmp_path,

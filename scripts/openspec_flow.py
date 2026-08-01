@@ -312,6 +312,10 @@ def build_report(
         proposal = read_change_file(change_name, "proposal.md") or ""
         matching_rows = [row for row in rows if _row_mentions(row, change_name)]
         owners = _active_owners(matching_rows)
+        active_status = any(
+            row["status"].lower().startswith(ACTIVE_STATUSES)
+            for row in matching_rows
+        )
         classification = _classify(
             remaining=remaining,
             matching_rows=matching_rows,
@@ -327,6 +331,7 @@ def build_report(
             "classification": classification,
             "owner": owners[0] if owners else None,
             "owners": owners,
+            "active_status": active_status,
             "oversized": total > TASK_CEILING,
             "umbrella_warning": bool(
                 UMBRELLA_RE.search(f"{change_name}\n{proposal}")

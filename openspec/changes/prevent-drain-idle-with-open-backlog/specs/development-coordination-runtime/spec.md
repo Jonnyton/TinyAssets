@@ -32,6 +32,10 @@ When owned, claimable, and policy-qualified stale STATUS candidates are absent, 
 - **THEN** the next worker brief names that change as a refinery target
 - **AND** `NO_CANDIDATE` is rejected while that target remains refinable
 
+#### Scenario: Active status omits a provider identity
+- **WHEN** an otherwise refinery-eligible change has a matching bare `in-flight` STATUS row
+- **THEN** the supervisor excludes that change from refinery admission even though no named owner can be extracted
+
 #### Scenario: Refinery promotes bounded implementation work
 - **WHEN** the refinery worker proves one existing change has a safe bounded acceptance contract
 - **THEN** it lands one exact pending STATUS row through normal review and returns a continuation result

@@ -784,7 +784,10 @@ def inspect_refinery_hints(
                 isinstance(owner, str) for owner in owners
             ):
                 raise TypeError("refinery owners must be a string list")
-            if owners:
+            active_status = change.get("active_status", False)
+            if not isinstance(active_status, bool):
+                raise TypeError("refinery active_status must be boolean")
+            if owners or active_status:
                 continue
             name = change.get("name")
             remaining = change.get("remaining_tasks")

@@ -273,8 +273,8 @@ closed instead of guessing.
   consumes a failure strike and waits before trying again.
 - `BLOCKED`: a durable task, host, dependency, review, or policy gate prevents
   progress; the target is preserved in the recent-block list. The controller
-  immediately considers a different eligible owned, claimable, stale, or refinery
-  candidate and idles only when none remains.
+  immediately considers a different eligible owned, claimable, or stale candidate
+  and idles when none remains. Refinery targets take the ordinary idle backoff.
 - `NO_CANDIDATE`: owned, claimable, stale, and refinable pressure are all zero;
   the controller idles rather than inventing work.
 - `FAILED`: worker or delivery-infrastructure failure; consumes the

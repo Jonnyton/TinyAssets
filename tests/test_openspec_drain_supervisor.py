@@ -761,6 +761,12 @@ def test_current_main_snapshot_supplies_bounded_refinery_hints(
                             "owners": ["claimed:other-provider"],
                         },
                         {
+                            "name": "bare-active-finished-change",
+                            "classification": "complete-but-unarchived",
+                            "remaining_tasks": 0,
+                            "active_status": True,
+                        },
+                        {
                             "name": "small-untracked",
                             "classification": "untracked",
                             "remaining_tasks": 2,
