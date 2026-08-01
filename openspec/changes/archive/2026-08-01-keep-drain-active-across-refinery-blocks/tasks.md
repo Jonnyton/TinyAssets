@@ -11,9 +11,9 @@
 
 - [x] 2.1 Run full controller/watchdog tests, lint/format, strict OpenSpec
   validation, and an independent exact-head review.
-- [ ] 2.2 Sync the delta into the main development-coordination spec, archive
+- [x] 2.2 Sync the delta into the main development-coordination spec, archive
   this change, land through a reviewed PR, and restart the local watchdog on
   the merged controller.
-- [ ] 2.3 Record runtime evidence that a verified blocked refinery target is
+- [x] 2.3 Record runtime evidence that a verified blocked refinery target is
   quarantined and a distinct refinery worker dispatches without the configured
   idle interval.
