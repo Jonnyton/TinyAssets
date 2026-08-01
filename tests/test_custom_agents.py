@@ -98,6 +98,40 @@ def test_publish_is_immutable_extensible_and_idempotent(tmp_path) -> None:
         ),
         (
             _definition(
+                "Token agent",
+                components={
+                    "identity": _component(
+                        "soul",
+                        token="ghp_sensitive_value_1234567890",
+                    )
+                },
+            ),
+            "components.identity.config.token",
+        ),
+        (
+            _definition(
+                "Runtime-state agent",
+                components={
+                    "identity": _component(
+                        "soul",
+                        runtime_state={"messages": ["private"]},
+                    )
+                },
+            ),
+            "components.identity.config.runtime_state",
+        ),
+        (
+            {
+                **_definition("Credential-shaped description"),
+                "description": (
+                    "prefix ghp_sensitive_value_1234567890 suffix; "
+                    "Authorization: Bearer abc"
+                ),
+            },
+            "description",
+        ),
+        (
+            _definition(
                 "Bad component",
                 components={"identity": "not-an-object"},  # type: ignore[dict-item]
             ),
@@ -120,6 +154,29 @@ def test_invalid_definition_is_rejected_without_a_partial_write(
         publish_definition(tmp_path, author_id="alice", payload=payload)
 
     assert list_definitions(tmp_path) == []
+
+
+def test_native_definition_rejects_credential_shaped_key_without_echoing_it(
+    tmp_path,
+) -> None:
+    from tinyassets.custom_agents import AgentValidationError, publish_definition
+
+    credential_key = "ghp_abcdefghijklmnop"
+    payload = _definition(
+        "Credential-shaped object key",
+        components={
+            "identity": _component(
+                "soul",
+                **{credential_key: "safe-looking-value"},
+            )
+        },
+    )
+
+    with pytest.raises(AgentValidationError) as exc_info:
+        publish_definition(tmp_path, author_id="alice", payload=payload)
+
+    assert "credential-shaped-key" in str(exc_info.value)
+    assert credential_key not in str(exc_info.value)
 
 
 def test_component_remix_records_verified_multi_parent_lineage_atomically(
@@ -299,6 +356,144 @@ def test_portable_interchange_verifies_fingerprint_and_excludes_private_state(
             author_id="mallory",
             portable_definition=tampered,
         )
+
+
+def test_multi_user_blend_round_trips_through_an_empty_commons(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    source = tmp_path / "source"
+    parents = []
+    parent_specs = [
+        ("alice", "identity", _component("soul", voice="direct")),
+        ("bob", "workflow", _component("branch_set", refs=["branch-a"])),
+        ("carol", "memory", _component("memory_policy", retention="durable")),
+    ]
+    for author, key, component in parent_specs:
+        parents.append(
+            publish_definition(
+                source,
+                author_id=author,
+                payload=_definition(
+                    f"{key.title()} parent",
+                    components={key: component},
+                ),
+            )
+        )
+
+    child = publish_definition(
+        source,
+        author_id="dave",
+        payload=_definition(
+            "Three-creator blend",
+            components={
+                key: copy.deepcopy(component) for _, key, component in parent_specs
+            }
+            | {"evaluation": _component("rubric", ref="commons:quality")},
+            lineage={
+                key: [
+                    {
+                        "definition_id": parent["agent_definition_id"],
+                        "component_key": key,
+                        "credit_share": 1.0,
+                    }
+                ]
+                for parent, (_, key, _) in zip(parents, parent_specs, strict=True)
+            },
+        ),
+    )
+    portable = child["portable_definition"]
+    for sources in portable["lineage"].values():
+        assert len(sources[0]["definition_fingerprint"]) == 64
+        assert len(sources[0]["component_fingerprint"]) == 64
+
+    imported = import_definition(
+        tmp_path / "empty-destination",
+        author_id="erin",
+        portable_definition=portable,
+    )
+
+    assert imported["content_fingerprint"] == child["content_fingerprint"]
+    assert imported["portable_definition"] == portable
+    assert imported["lineage"] == []
+
+
+def test_portable_lineage_resolves_unique_fingerprint_matched_parents(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    source = tmp_path / "source"
+    parent = publish_definition(
+        source,
+        author_id="alice",
+        payload=_definition(
+            "Portable parent",
+            components={"identity": _component("soul", voice="clear")},
+        ),
+    )
+    child = publish_definition(
+        source,
+        author_id="bob",
+        payload=_definition(
+            "Portable child",
+            lineage={
+                "identity": [
+                    {
+                        "definition_id": parent["agent_definition_id"],
+                        "component_key": "identity",
+                        "credit_share": 1.0,
+                    }
+                ]
+            },
+        ),
+    )
+
+    destination = tmp_path / "destination"
+    local_parent = import_definition(
+        destination,
+        author_id="carol",
+        portable_definition=parent["portable_definition"],
+    )
+    local_child = import_definition(
+        destination,
+        author_id="dana",
+        portable_definition=child["portable_definition"],
+    )
+
+    assert local_child["portable_definition"] == child["portable_definition"]
+    assert len(local_child["lineage"]) == 1
+    assert local_child["lineage"][0]["parent_definition_id"] == (
+        local_parent["agent_definition_id"]
+    )
+
+
+def test_imported_lineage_id_without_fingerprints_stays_informational(tmp_path) -> None:
+    from tinyassets.custom_agents import import_definition, publish_definition
+
+    parent = publish_definition(
+        tmp_path,
+        author_id="alice",
+        payload=_definition("Local parent"),
+    )
+    portable_child = _definition(
+        "Unverified imported child",
+        lineage={
+            "identity": [
+                {
+                    "definition_id": parent["agent_definition_id"],
+                    "component_key": "identity",
+                    "credit_share": 1.0,
+                }
+            ]
+        },
+    )
+
+    imported = import_definition(
+        tmp_path,
+        author_id="mallory",
+        portable_definition=portable_child,
+    )
+
+    assert imported["portable_definition"]["lineage"] == portable_child["lineage"]
+    assert imported["lineage"] == []
 
 
 def _binding(name: str = "My coding agent") -> dict[str, object]:

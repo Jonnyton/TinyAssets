@@ -40,16 +40,24 @@ Depth: lead memory `project_minimal_primitives_principle.md`.
 
 **Task-automation corollary (host-confirmed 2026-07-26; cloud placement clarified 2026-07-29):** Recurring task loops, schedulers, and similar automations are user-authored designs composed from platform primitives, published to the commons when their authors choose, and copied, remixed, or combined like any other workflow. A recurring automation that is expected to continue while the user's devices are off belongs in the user's cloud universe and runs through ordinary cloud execution using that user's explicitly bound compute/provider authority. A tray or other user device may bridge the period before cloud activation or run an explicitly host-only workflow, but migration uses a single-active cutover: the host executor is stopped before cloud acceptance and is not retained as a simultaneous fallback. TinyAssets does not ship a privileged product-specific automation loop. The historical cheat/community-patch loop is retired and must be absent from runtime, packaging, configuration, and shipped fallback paths; retained uptime canaries and deploy observability are infrastructure checks, not a user-task automation product.
 
-**Custom-agent corollary (host-confirmed 2026-07-30):** Users compose
+**Custom-agent corollary (host-confirmed 2026-07-30; interchange shape
+confirmed 2026-07-31):** Users compose
 agents—not merely fixed workflow templates—from the same public commons.
 An agent definition is a public, immutable composition whose user-named
 components are all replaceable or extensible; an agent binding privately
 connects that definition to one universe's goals, authority, governed
 resources, provider policy, channels, and runtime configuration; a daemon is
 the running instance of that binding. OpenClaw-like operators, Hermes-like
-assistants, coding agents, common presets, and blends of several users' agents
-are examples built on this substrate, not platform-owned archetypes or enum
-values. Agents may create, run, evaluate, and iterate user-authored
+assistants, coding agents, configurations that become common, and blends of
+several users' agents are examples the community can build on this substrate,
+not a finite platform-maintained starter catalog, privileged archetypes, or
+enum values. TinyAssets builds the pipeline for arbitrary agents: lossless
+canonical import/export, private staged and secret-scrubbed foreign import,
+versioned loss-aware conversion adapters and receipts, and direct remix from
+any public definition made by any user. A remix may select components from any
+number of creators, replace or remove them, add new components, and publish one
+child with verified component-level lineage where the referenced sources
+resolve. Agents may create, run, evaluate, and iterate user-authored
 automations only through the same permissioned Branch, Evaluator, provider,
 and effect primitives available to every other actor. TinyAssets must keep the
 composition envelope open enough that power users do not hit a product ceiling:
@@ -292,10 +300,18 @@ _Last audited: 2026-05-19_
   conversations, and effect payloads; it does not settle private-content
   custody for other use cases.
 - *No power-user ceiling in the composition contract.* Component names and
-  kinds are user-defined, so a common preset and a deeply customized agent use
-  the same artifact shape. Runtime support is capability-gated: the platform
-  preserves unfamiliar components for export/remix but executes only kinds
-  backed by installed, governed adapters.
+  kinds are user-defined, so a popular community configuration and a deeply
+  customized agent use the same artifact shape. Runtime support is
+  capability-gated: the platform preserves unfamiliar components for
+  export/remix but executes only kinds backed by installed, governed adapters.
+- *Interchange is infrastructure; configurations are commons content.* The
+  platform maintains a versioned canonical definition format, exact native
+  round-tripping, private import staging, secret scrubbing, structured loss
+  reports, conversion receipts, and a governed adapter contract. It does not
+  maintain a finite starter catalog. Foreign adapters are replaceable,
+  remixable, evaluable commons artifacts composed from ordinary workflow and
+  Engine OS primitives where possible; their untrusted output must pass the
+  canonical validator and cannot carry ambient credentials or authority.
 - *Daemon-driven.* Let the daemon make creative and structural decisions whenever the model can reliably do so. Hardcoded thresholds and stage gates are scaffolding — test each by removing it. When the daemon decides badly, improve goals/context/tools/evals rather than layering recipes.
 - *Always ready for the next user and daemon fleet.* Multi-tenant from the first build. Storage, authorization, queues, budgets, audits, daemon bindings, and runtime activations carry tenant/owner boundaries.
 - *Zero daemons required for authoring.* Node/branch/goal creation, editing, forking, and collaboration work with no daemon running anywhere. Daemon hosting is opt-in for execution work. Load-bearing requirement — any architecture where authoring depends on a running daemon violates it.
@@ -311,7 +327,7 @@ _Last audited: 2026-05-19_
 
 **Open evolution:** Cross-host node-execution hopping is not supported (cross-host software donation IS, see Distribution). N-of-M multi-actor approval as a generic primitive (founder vote, treasury multisig, scientific publication co-signature) is unscoped.
 
-_Last audited: 2026-07-30_
+_Last audited: 2026-07-31_
 
 ---
 
