@@ -255,7 +255,12 @@ class GovernedPlanRegistry:
         self._by_ref = by_ref
 
     def resolve(self, adapter_ref: str) -> GovernedPlanDescriptor | None:
-        return self._by_ref.get(adapter_ref)
+        descriptor = self._by_ref.get(adapter_ref)
+        return (
+            GovernedPlanDescriptor.from_dict(descriptor.to_dict())
+            if descriptor is not None
+            else None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +320,7 @@ def builtin_single_provider_turn_plan_descriptor() -> GovernedPlanDescriptor:
 
 
 def _canonical_object(value: object) -> dict[str, object] | None:
-    if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
+    if not _is_canonical_json_shape(value, set()):
         return None
     try:
         encoded = json.dumps(
@@ -329,6 +334,28 @@ def _canonical_object(value: object) -> dict[str, object] | None:
     except (RecursionError, TypeError, ValueError):
         return None
     return decoded if isinstance(decoded, dict) else None
+
+
+def _is_canonical_json_shape(value: object, ancestors: set[int]) -> bool:
+    if value is None or isinstance(value, (bool, int, str)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if not isinstance(value, (dict, list)):
+        return False
+    identity = id(value)
+    if identity in ancestors:
+        return False
+    ancestors.add(identity)
+    try:
+        if isinstance(value, dict):
+            return all(
+                isinstance(key, str) and _is_canonical_json_shape(child, ancestors)
+                for key, child in value.items()
+            )
+        return all(_is_canonical_json_shape(child, ancestors) for child in value)
+    finally:
+        ancestors.remove(identity)
 
 
 def _value_matches(value: object, field_type: str, execute_keys: set[str]) -> bool:

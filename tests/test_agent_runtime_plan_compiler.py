@@ -23,6 +23,7 @@ def _compile(
     plan_configuration=None,
     component_descriptors=None,
     plan_descriptors=None,
+    plan_registry=None,
     plan_adapter_ref="builtin:single-provider-turn",
     available_confinement_classes=None,
 ):
@@ -46,7 +47,8 @@ def _compile(
         plan_adapter_ref=plan_adapter_ref,
         plan_configuration=plan_configuration
         or {"entry_component": "identity", "component_order": ["identity"]},
-        plan_registry=GovernedPlanRegistry(
+        plan_registry=plan_registry
+        or GovernedPlanRegistry(
             plan_descriptors or (builtin_single_provider_turn_plan_descriptor(),)
         ),
         available_confinement_classes=available_confinement_classes or {"provider_turn"},
@@ -325,3 +327,65 @@ def test_plan_descriptor_trust_boundary_validates_and_detaches_canonical_facts()
 
     assert isinstance(resolved, GovernedPlanDescriptor)
     assert resolved.pin.adapter_digest == f"sha256:{'b' * 64}"
+
+    object.__setattr__(resolved, "topology_class", "forged-topology")
+    object.__setattr__(resolved, "coverage_field", [])
+    result = _compile(plan_registry=registry)
+
+    assert result.diagnostics == ()
+    assert result.manifest_input.to_dict()["execution_plan"]["topology_class"] == (
+        "single_entry_sequence"
+    )
+
+
+def test_non_json_plan_shapes_are_refused_instead_of_normalized():
+    tuple_plan = _compile(
+        plan_configuration={
+            "entry_component": "identity",
+            "component_order": ("identity",),
+        }
+    )
+
+    assert tuple_plan.manifest_input is None
+    assert [(item.path, item.code) for item in tuple_plan.diagnostics] == [
+        ("$plan_configuration", "plan_configuration_invalid")
+    ]
+
+
+def test_nested_non_string_plan_keys_are_refused_instead_of_rewritten():
+    from tinyassets.agent_runtime_plan_compiler import GovernedPlanDescriptor
+
+    descriptor = GovernedPlanDescriptor.from_dict(
+        {
+            "adapter_ref": "test:metadata-plan",
+            "adapter_version": "1",
+            "adapter_digest": f"sha256:{'4' * 64}",
+            "plan_class": "user.metadata.v1",
+            "topology_class": "user_defined",
+            "topology_schema": {
+                "members": "component_key_list",
+                "metadata": "object",
+            },
+            "entry_schema": {"entry": "component_key"},
+            "coverage_field": "members",
+            "coverage_rule": "all_execute_exactly_once",
+            "compatible_component_inputs": ["text"],
+            "compatible_component_outputs": ["text"],
+            "confinement_class": "provider_turn",
+            "canonical_compiler": "schema-plan/v1",
+        }
+    )
+    result = _compile(
+        plan_adapter_ref="test:metadata-plan",
+        plan_descriptors=(descriptor,),
+        plan_configuration={
+            "entry": "identity",
+            "members": ["identity"],
+            "metadata": {1: "identity"},
+        },
+    )
+
+    assert result.manifest_input is None
+    assert [(item.path, item.code) for item in result.diagnostics] == [
+        ("$plan_configuration", "plan_configuration_invalid")
+    ]
