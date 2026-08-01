@@ -122,9 +122,10 @@ def test_resolver_derives_and_resolves_every_reference_from_the_immutable_manife
                 )
             }
         ),
+        clock=lambda: 1_800_000_000.0,
     )
 
-    result = resolver.resolve(manifest, evaluated_at=1_800_000_000.0)
+    result = resolver.resolve(manifest)
 
     assert result.ready is True
     assert result.blockers == ()
@@ -149,10 +150,11 @@ def test_missing_sources_and_grants_are_exhaustive_and_never_partially_ready():
     resolver = AgentRuntimeGrantResolver(
         capability_source=_StaticGrantSource(
             {"cap.present": _evidence_factory("capability", "cap.present", "4")}
-        )
+        ),
+        clock=lambda: 1_800_000_000.0,
     )
 
-    result = resolver.resolve(manifest, evaluated_at=1_800_000_000.0)
+    result = resolver.resolve(manifest)
 
     assert result.ready is False
     assert [(item.reference_kind, item.reference_id) for item in result.evidence] == [
@@ -194,9 +196,13 @@ def test_account_capability_source_prefers_current_universe_grant_and_rechecks_r
         owner_user_id=account["user_id"],
         capability_ids=("provider.invoke",),
     )
-    resolver = AgentRuntimeGrantResolver(capability_source=AccountCapabilityGrantSource(tmp_path))
+    clock_now = [issued_at + 1]
+    resolver = AgentRuntimeGrantResolver(
+        capability_source=AccountCapabilityGrantSource(tmp_path),
+        clock=lambda: clock_now[0],
+    )
 
-    before_revoke = resolver.resolve(manifest, evaluated_at=issued_at + 1)
+    before_revoke = resolver.resolve(manifest)
     with _connect(tmp_path) as conn:
         conn.execute(
             """
@@ -211,7 +217,8 @@ def test_account_capability_source_prefers_current_universe_grant_and_rechecks_r
                 "universe_alice",
             ),
         )
-    after_exact_revoke = resolver.resolve(manifest, evaluated_at=issued_at + 3)
+    clock_now[0] = issued_at + 3
+    after_exact_revoke = resolver.resolve(manifest)
     with _connect(tmp_path) as conn:
         conn.execute(
             """
@@ -221,7 +228,8 @@ def test_account_capability_source_prefers_current_universe_grant_and_rechecks_r
             """,
             (issued_at + 4, account["user_id"], "provider.invoke"),
         )
-    after_all_revoke = resolver.resolve(manifest, evaluated_at=issued_at + 5)
+    clock_now[0] = issued_at + 5
+    after_all_revoke = resolver.resolve(manifest)
 
     assert before_revoke.ready is True
     assert before_revoke.evidence[0].scope == "universe_alice"
@@ -231,7 +239,7 @@ def test_account_capability_source_prefers_current_universe_grant_and_rechecks_r
     assert after_all_revoke.blockers[0].code == "grant_not_current"
 
 
-@pytest.mark.parametrize("failure", ["wrong_reference", "expired", "exception"])
+@pytest.mark.parametrize("failure", ["wrong_reference", "wrong_scope", "expired", "exception"])
 def test_invalid_or_failed_authoritative_sources_fail_closed(failure: str):
     from tinyassets.agent_runtime_grants import (
         AgentRuntimeGrantEvidence,
@@ -249,16 +257,16 @@ def test_invalid_or_failed_authoritative_sources_fail_closed(failure: str):
                 ),
                 subject_id=kwargs["subject_id"],
                 universe_id=kwargs["universe_id"],
-                scope=kwargs["universe_id"],
+                scope=("universe_bob" if failure == "wrong_scope" else kwargs["universe_id"]),
                 generation=1,
                 grant_digest=f"sha256:{'5' * 64}",
                 expires_at=(kwargs["evaluated_at"] - 1 if failure == "expired" else None),
             )
 
-    result = AgentRuntimeGrantResolver(resource_source=BrokenSource()).resolve(
-        _manifest(resource_ids=("resource_repo_alice",)),
-        evaluated_at=1_800_000_000.0,
-    )
+    result = AgentRuntimeGrantResolver(
+        resource_source=BrokenSource(),
+        clock=lambda: 1_800_000_000.0,
+    ).resolve(_manifest(resource_ids=("resource_repo_alice",)))
 
     assert result.ready is False
     assert result.evidence == ()
@@ -266,6 +274,38 @@ def test_invalid_or_failed_authoritative_sources_fail_closed(failure: str):
         "source_error" if failure == "exception" else "source_evidence_invalid"
     )
     assert "sensitive backend detail" not in result.blockers[0].message
+
+
+def test_evidence_subclasses_cannot_bypass_validation_or_escape_as_exceptions():
+    from tinyassets.agent_runtime_grants import (
+        AgentRuntimeGrantEvidence,
+        AgentRuntimeGrantResolver,
+    )
+
+    class ForgedEvidence(AgentRuntimeGrantEvidence):
+        def _validate(self) -> None:
+            pass
+
+    forged = ForgedEvidence(
+        reference_kind="resource",
+        reference_id="resource_repo_alice",
+        subject_id="user::alice",
+        universe_id="universe_alice",
+        scope="universe_alice",
+        generation=0,
+        grant_digest="not-a-digest",
+        expires_at=None,
+    )
+    source = _StaticGrantSource({"resource_repo_alice": lambda *_args: forged})
+
+    result = AgentRuntimeGrantResolver(
+        resource_source=source,
+        clock=lambda: 1_800_000_000.0,
+    ).resolve(_manifest(resource_ids=("resource_repo_alice",)))
+
+    assert result.ready is False
+    assert result.evidence == ()
+    assert result.blockers[0].code == "source_evidence_invalid"
 
 
 def test_mutated_manifest_integrity_is_rejected_before_any_grant_lookup():
@@ -277,11 +317,8 @@ def test_mutated_manifest_integrity_is_rejected_before_any_grant_lookup():
     manifest = _manifest(capability_ids=("provider.invoke",))
     object.__setattr__(manifest, "manifest_digest", f"sha256:{'f' * 64}")
 
-    with pytest.raises(AgentRuntimeGrantError, match="manifest integrity"):
-        AgentRuntimeGrantResolver().resolve(
-            manifest,
-            evaluated_at=1_800_000_000.0,
-        )
+    with pytest.raises(AgentRuntimeGrantError, match="manifest self-consistency"):
+        AgentRuntimeGrantResolver(clock=lambda: 1_800_000_000.0).resolve(manifest)
 
 
 def test_authoritative_sources_cannot_be_replaced_after_resolver_construction():
@@ -291,6 +328,18 @@ def test_authoritative_sources_cannot_be_replaced_after_resolver_construction():
 
     with pytest.raises(FrozenInstanceError):
         resolver.resource_source = _StaticGrantSource({})
+
+
+def test_resolution_time_is_fixed_at_server_composition_not_supplied_per_call():
+    from tinyassets.agent_runtime_grants import AgentRuntimeGrantResolver
+
+    resolver = AgentRuntimeGrantResolver(clock=lambda: 1_800_000_000.0)
+
+    result = resolver.resolve(_manifest())
+
+    assert result.evaluated_at == 1_800_000_000.0
+    with pytest.raises(TypeError):
+        resolver.resolve(_manifest(), evaluated_at=1_700_000_000.0)
 
 
 def test_resolved_evidence_is_detached_from_source_owned_objects():
@@ -310,10 +359,10 @@ def test_resolved_evidence_is_detached_from_source_owned_objects():
         expires_at=None,
     )
     source = _StaticGrantSource({"resource_repo_alice": lambda *_args: source_evidence})
-    result = AgentRuntimeGrantResolver(resource_source=source).resolve(
-        _manifest(resource_ids=("resource_repo_alice",)),
-        evaluated_at=1_800_000_000.0,
-    )
+    result = AgentRuntimeGrantResolver(
+        resource_source=source,
+        clock=lambda: 1_800_000_000.0,
+    ).resolve(_manifest(resource_ids=("resource_repo_alice",)))
 
     object.__setattr__(source_evidence, "grant_digest", "mutated-after-resolution")
 

@@ -12,6 +12,8 @@ import hashlib
 import json
 import math
 import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -136,6 +138,8 @@ class AgentRuntimeGrantBlocker:
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeGrantResolution:
+    """Non-bearer diagnostic snapshot; trusted sinks must resolve locally."""
+
     manifest_id: str
     manifest_digest: str
     evaluated_at: float
@@ -212,20 +216,26 @@ class AccountCapabilityGrantSource:
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeGrantResolver:
-    """Resolve all immutable-manifest references against current authority."""
+    """Resolve all immutable-manifest references against current authority.
+
+    The trusted composition root retains this instance. A caller-created
+    resolver or resolution is not authorization evidence for another sink.
+    """
 
     capability_source: AgentRuntimeGrantSource | None = None
     resource_source: AgentRuntimeGrantSource | None = None
     provider_policy_source: AgentRuntimeGrantSource | None = None
+    clock: Callable[[], float] = time.time
 
     def resolve(
         self,
         manifest: AgentRuntimeManifest,
-        *,
-        evaluated_at: float,
     ) -> AgentRuntimeGrantResolution:
         current_manifest = _validated_manifest(manifest)
-        now = _finite_timestamp(evaluated_at, "evaluated_at")
+        try:
+            now = _finite_timestamp(self.clock(), "server_time")
+        except Exception:
+            raise AgentRuntimeGrantError("server clock is unavailable") from None
         payload = current_manifest.to_dict()
         references = payload["requested_references"]
         subject_id = payload["owner_user_id"]
@@ -252,19 +262,20 @@ class AgentRuntimeGrantResolver:
                 if item is None:
                     blockers.append(_blocker(reference_kind, reference_id, "grant_not_current"))
                     continue
-                if not _valid_evidence(
+                detached = _validated_detached_evidence(
                     item,
                     reference_kind=reference_kind,
                     reference_id=reference_id,
                     subject_id=subject_id,
                     universe_id=universe_id,
                     evaluated_at=now,
-                ):
+                )
+                if detached is None:
                     blockers.append(
                         _blocker(reference_kind, reference_id, "source_evidence_invalid")
                     )
                     continue
-                evidence.append(_detached_evidence(item))
+                evidence.append(detached)
 
         evidence_tuple = tuple(evidence)
         return AgentRuntimeGrantResolution(
@@ -294,10 +305,10 @@ def _validated_manifest(manifest: AgentRuntimeManifest) -> AgentRuntimeManifest:
             created_at=manifest.created_at,
         )
     except Exception:
-        raise AgentRuntimeGrantError("manifest integrity validation failed") from None
+        raise AgentRuntimeGrantError("manifest self-consistency validation failed") from None
 
 
-def _valid_evidence(
+def _validated_detached_evidence(
     evidence: object,
     *,
     reference_kind: str,
@@ -305,35 +316,32 @@ def _valid_evidence(
     subject_id: str,
     universe_id: str,
     evaluated_at: float,
-) -> bool:
+) -> AgentRuntimeGrantEvidence | None:
     try:
-        if not isinstance(evidence, AgentRuntimeGrantEvidence):
-            return False
-        evidence._validate()
-        return (
-            evidence.reference_kind == reference_kind
-            and evidence.reference_id == reference_id
-            and evidence.subject_id == subject_id
-            and evidence.universe_id == universe_id
-            and (evidence.expires_at is None or evaluated_at < evidence.expires_at)
+        if type(evidence) is not AgentRuntimeGrantEvidence:
+            return None
+        detached = AgentRuntimeGrantEvidence(
+            reference_kind=evidence.reference_kind,
+            reference_id=evidence.reference_id,
+            subject_id=evidence.subject_id,
+            universe_id=evidence.universe_id,
+            scope=evidence.scope,
+            generation=evidence.generation,
+            grant_digest=evidence.grant_digest,
+            expires_at=evidence.expires_at,
         )
-    except AgentRuntimeGrantError:
-        return False
-
-
-def _detached_evidence(
-    evidence: AgentRuntimeGrantEvidence,
-) -> AgentRuntimeGrantEvidence:
-    return AgentRuntimeGrantEvidence(
-        reference_kind=evidence.reference_kind,
-        reference_id=evidence.reference_id,
-        subject_id=evidence.subject_id,
-        universe_id=evidence.universe_id,
-        scope=evidence.scope,
-        generation=evidence.generation,
-        grant_digest=evidence.grant_digest,
-        expires_at=evidence.expires_at,
-    )
+        if (
+            detached.reference_kind != reference_kind
+            or detached.reference_id != reference_id
+            or detached.subject_id != subject_id
+            or detached.universe_id != universe_id
+            or detached.scope not in {universe_id, "*"}
+            or (detached.expires_at is not None and evaluated_at >= detached.expires_at)
+        ):
+            return None
+        return detached
+    except (AgentRuntimeGrantError, AttributeError):
+        return None
 
 
 def _blocker(
