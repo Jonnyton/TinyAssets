@@ -1,6 +1,6 @@
 # Cloud drain epoch-2 assignment audit
 
-Date: 2026-08-01  
+Date: 2026-08-01
 Environment: Windows 11, Python 3.14, branch `codex/cloud-drain-activation-composition-20260801`
 
 ## Outcome
@@ -36,7 +36,8 @@ logical attempt key used for restart replay.
 ## Verification
 
 - `py -m pytest -q tests/test_cloud_automation_continuation.py tests/test_background_branch_authority.py tests/test_background_branch_authority_service.py tests/test_request_admission_store.py tests/test_automation_activations.py`
-  - 220 passed before documentation foldback.
+  - 260 passed after current-main reconciliation, including an eight-way
+    single-winner/replay concurrency check for the composed assignment.
 - `py -m ruff check tinyassets/cloud_automation_continuation.py tinyassets/background_branch_authority.py tests/test_cloud_automation_continuation.py tests/test_background_branch_authority.py`
   - passed before documentation foldback.
 - `git diff --check`
