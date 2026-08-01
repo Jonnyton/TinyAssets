@@ -1,16 +1,28 @@
 # Worktree Inventory
 
+## 2026-07-31 18:48 - OAuth and custom-agent live acceptance
+
+- Provider: `codex-gpt5-desktop`
+- Branch: `chore/oauth-custom-agent-live-acceptance`
+- Lane state: claimed after exact current-main deploy 30678500671 passed the complete normal fence
+- Worktree: `C:/Users/Jonathan/Projects/wf-oauth-custom-agent-live-acceptance`
+- STATUS/Issue/PR: OAuth row claimed; custom-agent acceptance remains pending and may share the rendered connector session
+- Purpose: fold back immutable deploy evidence, then prove rendered reconnect diagnostics and live custom-agent conversation behavior
+- Review gate: ui-test rendered conversation, bounded OAuth evidence, organic-use check, strict specs, and exact-head independent review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-oauth-custom-agent-live-acceptance/_PURPOSE.md`
+- Ship/abandon: no new runtime behavior or manual production mutation in this coordination lane
+
 ## 2026-07-31 18:04 - preflight stray-writer reconciliation
 
 - Provider: `codex-gpt5-desktop`
 - Branch: `fix/preflight-stray-writer-reconciliation`
-- Lane state: Active OAuth release blocker after pre-mutation deploy failure 30676899240
+- Lane state: PR #2036 merged; exact image deployed successfully by normal run 30678500671
 - Worktree: `C:/Users/Jonathan/Projects/wf-preflight-stray-writer-reconcile`
-- STATUS/Issue/PR: OAuth row broadened; issue #2034 records the safe pre-host-write failure; PR pending
+- STATUS/Issue/PR: repair row retired; issue #2034 records the safe pre-host-write failure; PR #2036 merged
 - Purpose: reconcile preliminary process candidates against a fresh Docker PID snapshot while retaining fail-closed rejection of genuine host writers
 - Review gate: OpenSpec approval, red/green race and genuine-stray tests, full recovery suite, Ruff, strict specs, independent exact-head review, immutable normal deploy
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-preflight-stray-writer-reconcile/_PURPOSE.md`
-- Ship/abandon: no retry until the reviewed current-main fix lands and a new exact image is built
+- Ship/abandon: landed; successor acceptance lane owns OAuth/custom-agent rendered proof
 
 ## 2026-07-31 17:27 - current-main OAuth diagnostic restack
 

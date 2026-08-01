@@ -16,6 +16,13 @@ The exact JWT validation boundary is not yet known. No audience, issuer,
 expiry, key, or claim repair is authorized until token-safe production
 telemetry identifies it.
 
+A second rendered attempt on 2026-08-01 reached ChatGPT's
+`link_success=true` return but did not retain TinyAssets in the returned
+conversation's plugin picker. A complete, non-truncated production journal
+window for that attempt contained no sanitized token-rejection category. This
+attempt therefore failed before the instrumented bearer validator; it is not
+evidence for relaxing or changing JWT validation.
+
 ## Rendered reproduction
 
 In a one-tab ChatGPT Temporary Chat, the user completed `Reconnect TinyAssets`
@@ -37,6 +44,17 @@ had expired. Correlated production requests were:
 
 No token, JWT material, claim value, or user-identifying value was captured.
 Rendered evidence is also preserved locally in
+`output/user_sim_session.md`.
+
+The 2026-08-01 follow-up used ChatGPT Pro, Temporary Chat, the Instant model,
+and the visibly attached TinyAssets plugin. An anonymous live read succeeded
+and reported no bearer credential. The next custom-agent read rendered
+`Reconnect TinyAssets`; reconnect and Connect returned through
+`link_success=true`, but the original call did not retry. Returning to the
+observed conversation target left TinyAssets absent from the attachment
+picker, and an explicit post-return identity prompt produced neither a tool
+call nor an assistant response. The custom-agent read therefore did not run.
+Exact prompts, rendered results, and main-pane screenshots are in
 `output/user_sim_session.md`.
 
 ## Public and deployed configuration parity
@@ -99,6 +117,26 @@ were fixed test-first. The reviewer then returned `APPROVE` for staged diff
 `f885f69a42f01bb1d9940a58a25bdb3418325c4f` at base `b9ce7d59`, with fresh
 53-test, Ruff, and diff-check evidence.
 
+The production journal sanitizer was then extended test-first to return only
+the already-allowlisted rejection categories from the exact
+`universe_server.auth.workos` warning envelope. It accepts only the known
+optional daemon Compose prefixes, and rejects bare, arbitrary-prefix,
+wrong-logger, wrong-service, malformed-count, trailing, and unknown-category
+lines. The first exact-head review correctly found that a bare-message matcher
+would miss every formatted production warning. The adapted exact head
+`7a8e1f2fbfc39e38055723e1da23ea34ad9ed612` passed 84 focused sanitizer,
+workflow, and auth tests, changed-file Ruff, strict OpenSpec validation, and
+diff hygiene; independent review returned `APPROVE`.
+
+Manual read-only workflow run
+`https://github.com/Jonnyton/TinyAssets/actions/runs/30679614519` inspected
+2026-08-01T01:52:00Z through 02:02:00Z at that exact head. The sanitizer
+reported `input_truncated=false`, 812 source lines, and
+`oauth_rejection_categories=[]`; raw journal text was neither printed nor
+published. The empty category is evidence that this rendered attempt did not
+reach a logged bearer rejection, not evidence that the validator accepted a
+token.
+
 ## Production rollout and rollback
 
 The diagnostic does not change token acceptance or the caller's standard `401
@@ -123,9 +161,12 @@ There is no data migration and no persistent-state rollback.
 
 ## Next evidence gate
 
-After the diagnostic reaches production, perform exactly one fresh rendered
-reconnect/authenticated call and read the bounded category at the correlated
-timestamp. Only then implement the smallest evidence-backed correction.
+After the diagnostic lands, start a fresh rendered conversation, explicitly
+attach TinyAssets after the OAuth return, perform one authenticated call, and
+read the bounded category at the correlated timestamp if the server rejects
+it. If ChatGPT still cannot attach TinyAssets and the bounded category remains
+empty, treat the connector-return/attachment seam—not JWT validation—as the
+next repair boundary. Only implement the smallest evidence-backed correction.
 
 Final acceptance requires both an immediate authenticated call and a later
 continued/refreshed call to the same owner/universe from a rendered chatbot,

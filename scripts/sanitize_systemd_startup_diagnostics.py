@@ -39,6 +39,26 @@ _CANONICAL_CONTAINER_NAMES = (
 _CONFLICT_NAME_PATTERN = re.compile(
     r'The container name "([^"\r\n]+)" is already in use by container'
 )
+_OAUTH_REJECTION_CATEGORIES = (
+    "algorithm",
+    "audience",
+    "expired",
+    "invalid_subject",
+    "invalid_token",
+    "issuer",
+    "malformed",
+    "required_claim",
+    "signature",
+    "signing_key",
+)
+_OAUTH_REJECTION_PATTERN = re.compile(
+    r"(?:(?:daemon(?:-1)?|tinyassets-daemon)[ \t]+\|[ \t]+)?"
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2},[0-9]{3}"
+    r" - universe_server\.auth\.workos - WARNING - "
+    r"WorkOS bearer token rejected category=("
+    + "|".join(map(re.escape, _OAUTH_REJECTION_CATEGORIES))
+    + r") suppressed=[0-9]+"
+)
 
 _FAILURE_MARKERS = (
     (
@@ -164,6 +184,13 @@ def sanitize_journal(
         for name in _CANONICAL_CONTAINER_NAMES
         if name in exact_conflict_names
     ]
+    oauth_rejection_categories = list(
+        dict.fromkeys(
+            match.group(1)
+            for line in source_lines
+            if (match := _OAUTH_REJECTION_PATTERN.fullmatch(line))
+        )
+    )
 
     stages = [name for name, marker in _STAGE_MARKERS if marker in normalized]
     failure_classes = [
@@ -206,6 +233,7 @@ def sanitize_journal(
         "stages": stages,
         "failure_classes": failure_classes,
         "conflict_containers": conflict_containers,
+        "oauth_rejection_categories": oauth_rejection_categories,
     }
 
 

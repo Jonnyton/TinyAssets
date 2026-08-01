@@ -73,6 +73,46 @@ def test_journal_sanitizer_never_echoes_hostile_shell_or_json_text():
     assert token not in json.dumps(result)
 
 
+def test_journal_sanitizer_emits_only_allowlisted_oauth_rejection_categories():
+    token = "eyJ-private-token-material"
+    result = sanitize_journal(
+        (
+            "2026-08-01 01:55:00,123 - universe_server.auth.workos - WARNING - "
+            "WorkOS bearer token rejected category=audience suppressed=0\n"
+            "tinyassets-daemon  | 2026-08-01 01:55:01,456 - "
+            "universe_server.auth.workos - WARNING - WorkOS bearer token "
+            "rejected category=expired suppressed=2\n"
+            "daemon-1  | 2026-08-01 01:55:02,789 - "
+            "universe_server.auth.workos - WARNING - WorkOS bearer token "
+            "rejected category=audience suppressed=4\n"
+            "2026-08-01 01:55:03,012 - universe_server.auth.workos - WARNING - "
+            "WorkOS bearer token rejected category=private-claim suppressed=0\n"
+            f"unrelated detail {token}\n"
+        ).encode()
+    )
+
+    assert result["oauth_rejection_categories"] == ["audience", "expired"]
+    rendered = json.dumps(result)
+    assert token not in rendered
+    assert "private-claim" not in rendered
+
+
+def test_journal_sanitizer_requires_exact_oauth_diagnostic_shape():
+    result = sanitize_journal(
+        b"WorkOS bearer token rejected category=issuer suppressed=not-a-count\n"
+        b"WorkOS bearer token rejected category=signature suppressed=1 trailing\n"
+        b"prefix WorkOS bearer token rejected category=malformed suppressed=0\n"
+        b"2026-08-01 01:55:04,345 - other.logger - WARNING - WorkOS bearer "
+        b"token rejected category=issuer suppressed=0\n"
+        b"worker  | 2026-08-01 01:55:05,678 - universe_server.auth.workos - "
+        b"WARNING - WorkOS bearer token rejected category=expired suppressed=0\n"
+        b"daemon  | 2026-08-01 01:55:06,901 - universe_server.auth.workos - "
+        b"WARNING - WorkOS bearer token rejected category=signing_key suppressed=12\n"
+    )
+
+    assert result["oauth_rejection_categories"] == ["signing_key"]
+
+
 def test_journal_sanitizer_uses_only_the_terminal_compose_attempt():
     result = sanitize_journal(
         b"Container tinyassets-daemon Creating\n"
