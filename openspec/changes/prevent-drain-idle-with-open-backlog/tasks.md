@@ -7,9 +7,9 @@
 
 ## 2. Deterministic Backlog Refinery
 
-- [ ] 2.1 Add failing supervisor regressions proving zero claim pressure yields bounded `REFINERY` hints from exact-current-main flow and excludes in-flight, host-owned, and invalid changes.
-- [ ] 2.2 Add failing lifecycle regressions proving a refinery hint rejects `NO_CANDIDATE`, appears in the worker brief, and remains subject to recent-block suppression.
-- [ ] 2.3 Implement combined claim/flow snapshots, the coordination-only refinery brief, and four-part exhaustion validation; verify the focused supervisor suite passes.
+- [x] 2.1 Add failing supervisor regressions proving zero claim pressure yields bounded `REFINERY` hints from exact-current-main flow and excludes in-flight, host-owned, and invalid changes.
+- [x] 2.2 Add failing lifecycle regressions proving a refinery hint rejects `NO_CANDIDATE`, appears in the worker brief, and remains subject to recent-block suppression.
+- [x] 2.3 Implement combined claim/flow snapshots, the coordination-only refinery brief, and four-part exhaustion validation; verify the focused supervisor suite passes.
 
 ## 3. Verification And Live Repair
 

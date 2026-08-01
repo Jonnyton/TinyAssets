@@ -19,6 +19,7 @@ from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PEER_AGENT = REPO_ROOT / "scripts" / "peer_agent.py"
+OPENSPEC_FLOW = REPO_ROOT / "scripts" / "openspec_flow.py"
 STATUSES = {"MERGED", "PARTIAL", "BLOCKED", "NO_CANDIDATE", "FAILED"}
 RESULT_PREFIX = "DRAIN_RESULT:"
 RESULT_TARGET_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,239}$")
@@ -56,6 +57,7 @@ class CandidatePressure:
     claimable: int
     stale: int
     owned: int
+    refinable: int = 0
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,7 @@ class CandidateSnapshot:
     pressure: CandidatePressure
     hints: tuple[CandidateHint, ...]
     blocked_targets: frozenset[str] = frozenset()
+    blocked_hints: tuple[CandidateHint, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -539,14 +542,23 @@ def should_cooldown_without_worker(
     consumed_only = (
         bool(recent_consumed_targets)
         and not candidate_hints
-        and (pressure.owned > 0 or pressure.claimable > 0 or pressure.stale > 0)
+        and (
+            pressure.owned > 0
+            or pressure.claimable > 0
+            or pressure.stale > 0
+            or pressure.refinable > 0
+        )
     )
     blocked_only = (
         not has_admission
         and bool(recent_blocked)
         and not candidate_hints
         and pressure.owned == 0
-        and (pressure.claimable > 0 or pressure.stale > 0)
+        and (
+            pressure.claimable > 0
+            or pressure.stale > 0
+            or pressure.refinable > 0
+        )
     )
     return not has_admission and (consumed_only or blocked_only)
 
@@ -570,7 +582,7 @@ def has_alternative_candidate(
         recent_consumed_targets=list(recent_consumed_targets),
     )
     return any(
-        hint.classification in {"OWNED", "CLAIMABLE", "STALE"}
+        hint.classification in {"OWNED", "CLAIMABLE", "STALE", "REFINERY"}
         and _slugify(hint.task_label) != current_target
         for hint in hints
     )
@@ -686,6 +698,9 @@ def inspect_candidate_snapshot(
             _slugify(_candidate_hint(row, "BLOCKED").task_label)
             for row in unwrapped_blocked_rows
         )
+        blocked_hints = tuple(
+            _candidate_hint(row, "REFINERY") for row in unwrapped_blocked_rows
+        )
     except (
         KeyError,
         OSError,
@@ -703,7 +718,80 @@ def inspect_candidate_snapshot(
         ),
         hints=hints,
         blocked_targets=blocked_targets,
+        blocked_hints=blocked_hints,
     )
+
+
+def inspect_refinery_hints(
+    *,
+    repo: Path,
+    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    status_ref: str,
+) -> tuple[CandidateHint, ...]:
+    """Return safe coordination-only targets from one exact OpenSpec snapshot."""
+    command = [
+        sys.executable,
+        str(OPENSPEC_FLOW),
+        "--repo",
+        str(repo),
+        "audit",
+        "--json",
+        "--ref",
+        status_ref,
+    ]
+    try:
+        completed = runner(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise RuntimeError(detail or f"exit {completed.returncode}")
+        payload = json.loads(completed.stdout)
+        changes = payload["changes"]
+        if not isinstance(changes, list) or not all(
+            isinstance(change, dict) for change in changes
+        ):
+            raise TypeError("OpenSpec flow changes must be an object list")
+        eligible: list[tuple[int, int, str, dict[str, Any]]] = []
+        order = {"complete-but-unarchived": 0, "untracked": 1}
+        for change in changes:
+            classification = change.get("classification")
+            if classification not in order:
+                continue
+            name = change.get("name")
+            remaining = change.get("remaining_tasks")
+            if not isinstance(name, str) or not name.strip():
+                raise TypeError("refinery change name must be non-empty")
+            if not isinstance(remaining, int) or remaining < 0:
+                raise TypeError("refinery remaining_tasks must be non-negative")
+            eligible.append(
+                (order[classification], remaining, name, change)
+            )
+        eligible.sort(key=lambda item: item[:3])
+        return tuple(
+            CandidateHint(
+                classification="REFINERY",
+                task_label=f"Refine OpenSpec {name}",
+                files=(f"openspec/changes/{name}/",),
+                status=str(change["classification"]),
+            )
+            for _order, _remaining, name, change in eligible
+        )
+    except (
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+        subprocess.SubprocessError,
+    ) as exc:
+        raise RuntimeError(f"OpenSpec refinery inspection failed: {exc}") from exc
 
 
 def inspect_current_main_snapshot(
@@ -719,12 +807,40 @@ def inspect_current_main_snapshot(
         cwd=repo,
         runner=runner,
     )
-    return inspect_candidate_snapshot(
+    claim_snapshot = inspect_candidate_snapshot(
         repo=repo,
         provider=provider,
         runner=runner,
         max_hints=max_hints,
         status_ref="origin/main",
+    )
+    pressure = claim_snapshot.pressure
+    if pressure.claimable or pressure.stale or pressure.owned:
+        return claim_snapshot
+
+    flow_hints = inspect_refinery_hints(
+        repo=repo,
+        runner=runner,
+        status_ref="origin/main",
+    )
+    combined: list[CandidateHint] = []
+    seen_targets: set[str] = set()
+    for hint in (*flow_hints, *claim_snapshot.blocked_hints):
+        target = _slugify(hint.task_label)
+        if target in seen_targets:
+            continue
+        seen_targets.add(target)
+        combined.append(hint)
+    return CandidateSnapshot(
+        pressure=CandidatePressure(
+            claimable=0,
+            stale=0,
+            owned=0,
+            refinable=len(combined),
+        ),
+        hints=tuple(combined[:max_hints]),
+        blocked_targets=claim_snapshot.blocked_targets,
+        blocked_hints=claim_snapshot.blocked_hints,
     )
 
 
@@ -754,11 +870,12 @@ def no_candidate_rejection(
         pressure.claimable == 0
         and pressure.stale == 0
         and pressure.owned == 0
+        and pressure.refinable == 0
     ):
         return None
     return (
         f"claimable={pressure.claimable} stale={pressure.stale} "
-        f"owned={pressure.owned}"
+        f"owned={pressure.owned} refinable={pressure.refinable}"
     )
 
 
@@ -815,10 +932,20 @@ def build_worker_prompt(
     resume = state.get("resume_target")
     blocked = state.get("recent_blocked", [])
     consumed = state.get("recent_consumed_targets", [])
+    refinery_hint = next(
+        (
+            hint
+            for hint in candidate_hints
+            if hint.classification == "REFINERY"
+        ),
+        None,
+    )
+    refinery_mode = admission is None and refinery_hint is not None
     if admission is not None:
         partial_resume = (
             isinstance(state.get("last_result"), dict)
             and state["last_result"].get("status") == "PARTIAL"
+            and state["last_result"].get("continuation_kind") != "refinery"
         )
         foldback_text = (
             "\nThe implementation PR is already merged. Before foldback, fetch "
@@ -880,7 +1007,23 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    `provider_context_feed.py --provider {identity} --phase build --limit 10`.
    Do not perform candidate selection and do not create another lane."""
         if admission is not None
-        else f"""1. Before any broad audit or backlog scan, run exact
+        else (
+            f"""1. Fetch current origin/main, then run exact `claim_check.py --json`
+   with `{identity}` and
+   `provider_context_feed.py --provider {identity} --phase claim --limit 10`.
+   Revalidate `[REFINERY] {refinery_hint.task_label}` with
+   `openspec_flow.py audit --ref origin/main`. This target authorizes
+   coordination reconciliation only: create one clean purpose-named worktree,
+   but MUST NOT edit product files or implement the change in this attempt.
+   Land exactly one reviewed coordination PR that adds or corrects the exact
+   `{refinery_hint.task_label}` pending or blocked STATUS row. Its Files cell
+   names the later implementation/foldback artifacts and omits STATUS itself.
+   Return PARTIAL after a safe pending row merges; return BLOCKED only after a
+   durable blocker row merges and current main classifies this exact target
+   blocked. If the target disappeared or became live-owned/host-owned, return
+   FAILED without inventing replacement work."""
+            if refinery_mode
+            else f"""1. Before any broad audit or backlog scan, run exact
    `claim_check.py --json` with `{identity}`, then run
    `provider_context_feed.py --provider {identity} --phase claim --limit 10`.
    Resume an owned row first. Otherwise revalidate the controller snapshot in
@@ -888,14 +1031,63 @@ Your terminal marker MUST use `{admission.target}`, never the human task label.
    first row that remains policy-qualified STALE. Immediately edit STATUS with
    the exact identity and commit that claim in the clean lane. Do not spend a
    broad research pass before you commit that claim."""
+        )
     )
     result_statuses = (
         "<MERGED|PARTIAL|BLOCKED|FAILED>"
-        if admission is not None
+        if admission is not None or refinery_mode
         else "<MERGED|PARTIAL|BLOCKED|NO_CANDIDATE|FAILED>"
     )
     result_target = (
-        admission.target if admission is not None else "<target-or-dash>"
+        admission.target
+        if admission is not None
+        else (
+            _slugify(refinery_hint.task_label)
+            if refinery_mode
+            else "<target-or-dash>"
+        )
+    )
+    post_admission_contract = (
+        "2. This attempt is coordination-only. Do not run apply, sync/archive, "
+        "or product tests; the next normally admitted worker owns delivery."
+        if refinery_mode
+        else """2. Only after the durable claim, run `python scripts/openspec_flow.py audit`
+   and the scoped STATUS/PLAN/dependency and provider-context checks needed for
+   that lane."""
+    )
+    delivery_execution_contract = (
+        """5. Do not implement, sync, archive, or change task checkboxes in the
+   refinery target. This attempt ends after one exact STATUS promotion/blocker.
+6. Create that coordination PR as a draft with `gh pr create --draft`. Obtain
+   required independent review of the exact head, then add exactly one receipt
+   to the PR body before marking it ready:
+   `Drain-Review-Verdict: APPROVE`,
+   `Drain-Review-Head: <40-character lowercase head SHA>`, and
+   `Drain-Review-Artifact: <docs path or GitHub URL>`.
+   Any later commit invalidates the receipt and requires a fresh exact-head
+   review. Do not invoke `gh pr merge` directly; the trusted repository workflow
+   owns auto-merge enrollment.
+7. Verify the coordination PR is actually merged. Return PARTIAL for a pending
+   row or BLOCKED for a current-main blocked row using the exact assigned target."""
+        if refinery_mode
+        else """5. For a grandfathered oversized change, deliver one recovery slice containing
+   at most 12 unchecked tasks and prefer materially fewer within this worker.
+   Work inside the existing change; do not mechanically fan out child changes.
+6. Implement test-first and create the PR as a draft with `gh pr create --draft`.
+   Obtain required independent review of the exact head, then add exactly one
+   receipt to the PR body before marking it ready:
+   `Drain-Review-Verdict: APPROVE`,
+   `Drain-Review-Head: <40-character lowercase head SHA>`, and
+   `Drain-Review-Artifact: <docs path or GitHub URL>`.
+   Any later commit invalidates the receipt and requires a fresh exact-head
+   review. Do not invoke `gh pr merge` directly; the trusted repository workflow
+   owns auto-merge enrollment. Use shell `git` and `gh` commands from the
+   assigned worktree to stage, commit, push, create the PR, and wait for required
+   CI/auto-merge. Do not treat an unavailable provider-specific GitHub action as
+   proof that repository publication is unavailable.
+7. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
+   retire the STATUS row. If merge succeeded but foldback remains, report
+   PARTIAL so the next fresh worker resumes it."""
     )
     return f"""You are one disposable TinyAssets OpenSpec drain worker.
 
@@ -926,9 +1118,7 @@ Authority and safety:
 
 Delivery contract:
 {startup_contract}
-2. Only after the durable claim, run `python scripts/openspec_flow.py audit`
-   and the scoped STATUS/PLAN/dependency and provider-context checks needed for
-   that lane.
+{post_admission_contract}
 3. Prove candidate exhaustion in this exact order before `NO_CANDIDATE`:
    a. resume this drain identity's existing claim;
    b. select a claimable finish-first STATUS row;
@@ -937,30 +1127,12 @@ Delivery contract:
       worktrees, removing only labels disproved by current evidence;
    e. promote one safe non-overlapping cross-cutting recovery task under
       AGENTS.md "Staying unblocked".
-   `NO_CANDIDATE` is permitted only when claim_check JSON `claimable` and `stale`
-   counts are both zero, no in-flight row is claimed by this drain identity,
-   and no safe promotion exists. Never steal a live claim or invent work merely
-   to stay busy.
+   `NO_CANDIDATE` is permitted only when claimable, stale, exact-identity-owned,
+   and exact-current-main refinable counts are all zero. Never steal a live
+   claim or invent work merely to stay busy.
 4. Own one concrete acceptance contract and at most one PR per disposable
    worker attempt.
-5. For a grandfathered oversized change, deliver one recovery slice containing
-   at most 12 unchecked tasks and prefer materially fewer within this worker.
-   Work inside the existing change; do not mechanically fan out child changes.
-6. Implement test-first and create the PR as a draft with `gh pr create --draft`.
-   Obtain required independent review of the exact head, then add exactly one
-   receipt to the PR body before marking it ready:
-   `Drain-Review-Verdict: APPROVE`,
-   `Drain-Review-Head: <40-character lowercase head SHA>`, and
-   `Drain-Review-Artifact: <docs path or GitHub URL>`.
-   Any later commit invalidates the receipt and requires a fresh exact-head
-   review. Do not invoke `gh pr merge` directly; the trusted repository workflow
-   owns auto-merge enrollment. Use shell `git` and `gh` commands from the
-   assigned worktree to stage, commit, push, create the PR, and wait for required
-   CI/auto-merge. Do not treat an unavailable provider-specific GitHub action as
-   proof that repository publication is unavailable.
-7. Verify the PR is actually merged. Sync/archive OpenSpec when complete and
-   retire the STATUS row. If merge succeeded but foldback remains, report
-   PARTIAL so the next fresh worker resumes it.
+{delivery_execution_contract}
 8. Preserve blockers honestly. `BLOCKED` is reserved for a durable task, host,
    dependency, review, or policy gate. Before returning `BLOCKED`, you must
    first land a sanitized STATUS dependency or blocker through normal review
@@ -1069,6 +1241,8 @@ def apply_result(
         "target": result.target,
         "pr": result.pr,
     }
+    if result.status == "PARTIAL" and state.get("attempt_kind") == "refinery":
+        state["last_result"]["continuation_kind"] = "refinery"
     if result.status in {"MERGED", "PARTIAL"} and not merge_verified:
         state["consecutive_failures"] += 1
         state["resume_target"] = result.target
@@ -1672,6 +1846,7 @@ def _new_state(args: argparse.Namespace) -> dict[str, Any]:
         "consecutive_partial_target": None,
         "consecutive_partials": 0,
         "attempts": 0,
+        "attempt_kind": None,
         "last_consumed_attempt": 0,
         "last_result": None,
         "resume_target": None,
@@ -1873,6 +2048,7 @@ def _run(args: argparse.Namespace) -> int:
             state.setdefault("consecutive_partial_target", None)
             state.setdefault("consecutive_partials", 0)
             state.setdefault("admission", None)
+            state.setdefault("attempt_kind", None)
             state.setdefault("recent_consumed_targets", [])
             migrate_target_identities(state)
             if "merged_prs" not in state:
@@ -1982,6 +2158,7 @@ def _run(args: argparse.Namespace) -> int:
                     "candidates "
                     f"attempt={attempt} claimable={pressure.claimable} "
                     f"stale={pressure.stale} owned={pressure.owned} "
+                    f"refinable={pressure.refinable} "
                     f"hints={len(candidate_hints)}",
                 )
             except RuntimeError as exc:
@@ -2041,13 +2218,15 @@ def _run(args: argparse.Namespace) -> int:
                     "attempt": attempt,
                     "claimable": pressure.claimable,
                     "stale": pressure.stale,
+                    "refinable": pressure.refinable,
                 }
                 state["status"] = "blocked-cooldown"
                 atomic_write_json(state_path, state)
                 _log(
                     run_dir,
                     f"cooldown attempt={attempt} filtered recent blockers "
-                    f"claimable={pressure.claimable} stale={pressure.stale}",
+                    f"claimable={pressure.claimable} stale={pressure.stale} "
+                    f"refinable={pressure.refinable}",
                 )
                 if args.once:
                     break
@@ -2098,6 +2277,15 @@ def _run(args: argparse.Namespace) -> int:
                     f"admitted attempt={attempt} target={admission.target} "
                     f"worktree={admission.worktree}",
                 )
+            state["attempt_kind"] = (
+                "refinery"
+                if admission is None
+                and any(
+                    hint.classification == "REFINERY"
+                    for hint in candidate_hints
+                )
+                else "delivery"
+            )
             prompt_path.write_text(
                 build_worker_prompt(
                     state,
