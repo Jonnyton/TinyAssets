@@ -1355,7 +1355,7 @@ def convert_export(
 
 
 def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
-    return {
+    stage = {
         "schema_version": 1,
         "stage_id": str(row["stage_id"]),
         "actor_id": str(row["actor_id"]),
@@ -1364,8 +1364,6 @@ def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "source_media_type": str(row["source_media_type"]),
         "sanitized_source_digest_algorithm": "sha256",
         "sanitized_source_digest": str(row["sanitized_source_digest"]),
-        "source_commitment_algorithm": "hmac-sha256",
-        "source_commitment": str(row["source_commitment"]),
         "adapter_ref": str(row["adapter_ref"]),
         "adapter_version": str(row["adapter_version"]),
         "adapter_digest_algorithm": "sha256",
@@ -1377,6 +1375,11 @@ def _stage_from_row(row: sqlite3.Row) -> dict[str, Any]:
         "expires_at": float(row["expires_at"]),
         "published_definition_id": row["published_definition_id"],
     }
+    source_commitment = str(row["source_commitment"] or "")
+    if source_commitment:
+        stage["source_commitment_algorithm"] = "hmac-sha256"
+        stage["source_commitment"] = source_commitment
+    return stage
 
 
 def _idempotent_resource(
@@ -1439,6 +1442,32 @@ def _prune_expired_stages(
     return expired
 
 
+def _attach_public_import_origin(
+    conversion: dict[str, Any],
+    *,
+    sanitized_source_digest: str,
+) -> None:
+    origin = {
+        "kind": "agent_interchange_import",
+        "source_media_type": "application/json",
+        "sanitized_source_digest_algorithm": "sha256",
+        "sanitized_source_digest": sanitized_source_digest,
+        "adapter_ref": conversion["adapter_ref"],
+        "adapter_version": conversion["adapter_version"],
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": conversion["adapter_digest"],
+    }
+    candidate = json.loads(_canonical_json(conversion["candidate"]))
+    origins = list(candidate.get("external_origins", []))
+    if origin not in origins:
+        origins.append(origin)
+    candidate["external_origins"] = origins
+    try:
+        conversion["candidate"] = _normalize_definition_payload(candidate)
+    except AgentValidationError as exc:
+        raise InterchangeValidationError(str(exc)) from exc
+
+
 def stage_import(
     base_path: str | Path,
     *,
@@ -1456,6 +1485,10 @@ def stage_import(
     commitment = _source_commitment(source)
     conversion = convert_declarative_json(source, adapter)
     sanitized_digest = _sha256(conversion["sanitized_source"])
+    _attach_public_import_origin(
+        conversion,
+        sanitized_source_digest=sanitized_digest,
+    )
     receipt = _receipt(
         conversion=conversion,
         sanitized_source_digest=sanitized_digest,
@@ -1647,7 +1680,8 @@ def publish_import_stage(
         conn.execute(
             """
             UPDATE agent_import_stages
-            SET status = 'published', published_definition_id = ?
+            SET status = 'published', published_definition_id = ?,
+                source_commitment = ''
             WHERE stage_id = ?
             """,
             (published["agent_definition_id"], normalized_stage_id),

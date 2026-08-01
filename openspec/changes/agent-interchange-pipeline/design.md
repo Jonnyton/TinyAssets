@@ -58,6 +58,16 @@ existing custom-agent domain; native import revalidates it and reproduces that
 content and fingerprint. Server-local IDs, timestamps, bindings, credentials,
 conversations, effect payloads, and runtime state are excluded.
 
+A foreign JSON conversion adds one public `agent_interchange_import` origin to
+the canonical candidate before its receipt and content fingerprint are
+calculated. The origin repeats only the receipt's publish-safe
+sanitized-source digest and adapter ref/version/digest fields. It never carries
+the purpose-keyed raw-source commitment or source bytes. This makes later
+native and foreign exports self-describing without creating a verified local
+lineage edge for an unresolved external source. Publishing the stage clears
+its private raw-source commitment in the same transaction; the immutable
+conversion receipt and stage-to-receipt link remain durable.
+
 Portable lineage declarations are part of that immutable content but are not
 the verified ledger itself. Each declaration carries the original source ID
 for human provenance plus stable parent-definition and parent-component

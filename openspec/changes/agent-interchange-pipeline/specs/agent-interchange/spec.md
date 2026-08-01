@@ -82,6 +82,12 @@ The platform SHALL create an immutable conversion receipt whose digest binds a d
 - **WHEN** the same source is converted by two adapter versions or immutable adapter digests
 - **THEN** the platform returns distinct conversion receipts even if their normalized outputs match
 
+#### Scenario: Published import exports its safe conversion origin
+- **WHEN** an actor publishes a staged foreign import and later exports that public definition
+- **THEN** its immutable `external_origins` includes the sanitized-source digest and algorithm plus the adapter reference, semantic version, immutable digest, and digest algorithm bound by the conversion receipt
+- **AND** the public definition and export contain neither the private raw-source commitment nor raw source content
+- **AND** publication clears the stage's private raw-source commitment in the same transaction while retaining its durable receipt linkage
+
 #### Scenario: Receipt tampering is detected
 - **WHEN** any receipt-bound source, adapter, output, or report field is altered
 - **THEN** receipt verification fails

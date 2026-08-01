@@ -874,7 +874,10 @@ def test_receipt_binds_adapter_version_and_detects_tampering(tmp_path, monkeypat
         idempotency_key="receipt-v2",
     )
 
-    assert first["candidate"] == second["candidate"]
+    assert first["candidate"]["components"] == second["candidate"]["components"]
+    assert first["candidate"]["external_origins"] != second["candidate"][
+        "external_origins"
+    ]
     assert first["receipt"]["adapter_digest"] != second["receipt"]["adapter_digest"]
     assert first["receipt"]["receipt_digest"] != second["receipt"]["receipt_digest"]
     assert verify_conversion_receipt(first["receipt"])
@@ -958,6 +961,61 @@ def test_publish_stage_is_atomic_and_retry_safe(tmp_path, monkeypatch) -> None:
     )
     assert retry["agent_definition_id"] == published["agent_definition_id"]
     assert len(list_definitions(tmp_path)) == 1
+
+
+def test_published_stage_exports_safe_import_provenance(tmp_path, monkeypatch) -> None:
+    from tinyassets.agent_interchange import (
+        get_import_stage,
+        publish_import_stage,
+        stage_import,
+    )
+    from tinyassets.custom_agents import get_definition
+
+    monkeypatch.setenv(
+        "TINYASSETS_AGENT_INTERCHANGE_HMAC_KEY",
+        "test-agent-interchange-key-at-least-32-bytes",
+    )
+    stage = stage_import(
+        tmp_path,
+        actor_id="alice",
+        source_json=_source(),
+        adapter=_adapter(),
+        idempotency_key="stage-with-public-origin",
+        now=500.0,
+    )
+    published = publish_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        idempotency_key="publish-with-public-origin",
+        now=501.0,
+    )
+
+    expected_origin = {
+        "kind": "agent_interchange_import",
+        "source_media_type": "application/json",
+        "sanitized_source_digest_algorithm": "sha256",
+        "sanitized_source_digest": stage["sanitized_source_digest"],
+        "adapter_ref": "commons:agent-package-conformance",
+        "adapter_version": "1.0.0",
+        "adapter_digest_algorithm": "sha256",
+        "adapter_digest": stage["adapter_digest"],
+    }
+    assert stage["candidate"]["external_origins"] == [expected_origin]
+    assert published["external_origins"] == [expected_origin]
+    exported = get_definition(tmp_path, published["agent_definition_id"])
+    assert exported is not None
+    assert exported["portable_definition"]["external_origins"] == [expected_origin]
+    assert "source_commitment" not in json.dumps(exported, sort_keys=True)
+    published_stage = get_import_stage(
+        tmp_path,
+        actor_id="alice",
+        stage_id=stage["stage_id"],
+        now=501.0,
+    )
+    assert published_stage is not None
+    assert "source_commitment" not in published_stage
+    assert "source_commitment_algorithm" not in published_stage
 
 
 def test_identical_receipt_digest_links_every_published_stage(tmp_path, monkeypatch) -> None:
