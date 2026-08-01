@@ -446,6 +446,7 @@ def read_graph(
     branch_id: str = "",
     agent_definition_id: str = "",
     agent_binding_id: str = "",
+    agent_stage_id: str = "",
     query: str = "",
     tags: str = "",
     author: str = "",
@@ -467,6 +468,7 @@ def read_graph(
             target=agent. Falls back to graph_id.
         agent_binding_id: Private universe binding identifier for
             target=agent_binding.
+        agent_stage_id: Private import stage identifier for target=agent.
         query: Optional search text.
         tags: Optional comma-separated goal tag filter.
         author: Optional goal author filter.
@@ -520,8 +522,9 @@ def read_graph(
     if normalized == "agent":
         return json.dumps(
             _custom_agents_impl(
-                action="get_agent",
+                action=("get_import_stage" if agent_stage_id else "get_agent"),
                 definition_id=(agent_definition_id or graph_id),
+                stage_id=agent_stage_id,
             )
         )
     if normalized == "agent_bindings":
@@ -594,6 +597,7 @@ def write_graph(
     changes_json: str = "",
     agent_definition_id: str = "",
     agent_binding_id: str = "",
+    agent_stage_id: str = "",
     payload_json: str = "",
     expected_revision: int = 0,
 ) -> str:
@@ -604,8 +608,8 @@ def write_graph(
             agent_binding. The founder's home universe is auto-created on
             first contact; use target=universe to create an additional universe
             (or the home when a create-scoped sign-in declined auto-birth).
-        operation: With target=agent, publish/remix/import. With
-            target=agent_binding, bind/update.
+        operation: With target=agent, publish/remix/import/stage_import/
+            publish_stage/convert_export. With target=agent_binding, bind/update.
         name: Human-readable shared-goal name.
         description: Optional shared-goal description.
         tags: Optional comma-separated shared-goal tags.
@@ -626,8 +630,9 @@ def write_graph(
         agent_definition_id: Public definition to bind, or successor
             definition selected by a binding update.
         agent_binding_id: Existing private binding for operation=update.
-        payload_json: Agent definition, portable import, or private binding
-            configuration as a JSON object.
+        agent_stage_id: Private import stage for operation=publish_stage.
+        payload_json: Agent definition, portable import, interchange adapter,
+            or private binding configuration as a JSON object.
         expected_revision: Current binding revision required by update.
     """
     rejection = write_gate_rejection("write_graph")
@@ -722,6 +727,9 @@ def write_graph(
             "publish": "publish_agent",
             "remix": "publish_agent",
             "import": "import_agent",
+            "stage_import": "stage_import",
+            "publish_stage": "publish_stage",
+            "convert_export": "convert_export",
         }.get(agent_operation)
         if action is None:
             return json.dumps(
@@ -729,12 +737,21 @@ def write_graph(
                     "error": "unknown_agent_operation",
                     "target": "agent",
                     "operation": operation,
-                    "allowed_operations": ["publish", "remix", "import"],
+                    "allowed_operations": [
+                        "publish",
+                        "remix",
+                        "import",
+                        "stage_import",
+                        "publish_stage",
+                        "convert_export",
+                    ],
                 }
             )
         return json.dumps(
             _custom_agents_impl(
                 action=action,
+                definition_id=agent_definition_id,
+                stage_id=agent_stage_id,
                 payload=payload_json,
                 idempotency_key=idempotency_key,
             )

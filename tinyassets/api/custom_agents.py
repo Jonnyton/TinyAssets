@@ -5,6 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from tinyassets.agent_interchange import (
+    convert_export,
+    get_import_stage,
+    publish_import_stage,
+    requires_runtime_response,
+    stage_import,
+)
 from tinyassets.api.helpers import _base_path, _request_universe
 from tinyassets.custom_agents import (
     AgentConflictError,
@@ -90,8 +97,16 @@ def _payload(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return value
     if isinstance(value, str):
+        def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            document: dict[str, Any] = {}
+            for key, nested in pairs:
+                if key in document:
+                    raise AgentValidationError(f"duplicate object key: {key}")
+                document[key] = nested
+            return document
+
         try:
-            parsed = json.loads(value)
+            parsed = json.loads(value, object_pairs_hook=unique_object)
         except json.JSONDecodeError as exc:
             raise AgentValidationError(f"payload_json is invalid JSON: {exc}") from exc
         if isinstance(parsed, dict):
@@ -104,6 +119,7 @@ def custom_agents(
     action: str,
     definition_id: str = "",
     binding_id: str = "",
+    stage_id: str = "",
     universe_id: str = "",
     payload: Any = None,
     query: str = "",
@@ -131,6 +147,70 @@ def custom_agents(
         if normalized == "get_agent":
             agent = get_definition(base, definition_id)
             return {"agent": agent} if agent is not None else _not_found("agent_definition")
+
+        if normalized == "get_import_stage":
+            actor = _authenticated_actor()
+            if actor is None:
+                return _not_found("agent_import_stage")
+            stage = get_import_stage(base, actor_id=actor, stage_id=stage_id)
+            return {"stage": stage} if stage is not None else _not_found("agent_import_stage")
+
+        if normalized in {"stage_import", "publish_stage", "convert_export"}:
+            actor = _authenticated_actor()
+            if actor is None:
+                return {
+                    "error": "authentication_required",
+                    "resource": "agent_import_stage",
+                }
+            if normalized == "stage_import":
+                document = _payload(payload)
+                source_json = document.get("source_json")
+                source_base64 = document.get("source_base64")
+                source_locator = document.get("source_locator")
+                adapter = document.get("adapter")
+                if not isinstance(adapter, dict):
+                    raise AgentValidationError("stage import requires an adapter object")
+                if isinstance(source_json, dict) and isinstance(adapter.get("rules"), list):
+                    stage = stage_import(
+                        base,
+                        actor_id=actor,
+                        source_json=source_json,
+                        adapter=adapter,
+                        idempotency_key=idempotency_key,
+                    )
+                    return {"status": "staged", "stage": stage}
+                if source_json is not None and not isinstance(source_json, dict):
+                    raise AgentValidationError("source_json must be an object")
+                if source_base64 is not None and not isinstance(source_base64, str):
+                    raise AgentValidationError("source_base64 must be a string")
+                if source_locator is not None and not isinstance(source_locator, str):
+                    raise AgentValidationError("source_locator must be a string")
+                return requires_runtime_response(
+                    adapter,
+                    direction="import",
+                    source_json=source_json,
+                    source_base64=source_base64,
+                    source_locator=source_locator,
+                )
+            if normalized == "convert_export":
+                document = _payload(payload)
+                adapter = document.get("adapter")
+                if not isinstance(adapter, dict):
+                    raise AgentValidationError("convert export requires an adapter object")
+                return convert_export(
+                    base,
+                    actor_id=actor,
+                    definition_id=definition_id,
+                    adapter=adapter,
+                    idempotency_key=idempotency_key,
+                )
+            agent = publish_import_stage(
+                base,
+                actor_id=actor,
+                stage_id=stage_id,
+                idempotency_key=idempotency_key,
+            )
+            return {"status": "published", "agent": agent}
 
         if normalized in {"publish_agent", "import_agent"}:
             actor = _authenticated_actor()
@@ -216,8 +296,12 @@ def custom_agents(
             "allowed_actions": [
                 "list_agents",
                 "get_agent",
+                "get_import_stage",
                 "publish_agent",
                 "import_agent",
+                "stage_import",
+                "publish_stage",
+                "convert_export",
                 "list_bindings",
                 "get_binding",
                 "create_binding",
@@ -227,7 +311,10 @@ def custom_agents(
     except AgentConflictError as exc:
         return {"error": "agent_conflict", "detail": str(exc)}
     except AgentNotFoundError:
-        resource = "agent_binding" if "binding" in normalized else "agent_definition"
+        if normalized in {"get_import_stage", "publish_stage"}:
+            resource = "agent_import_stage"
+        else:
+            resource = "agent_binding" if "binding" in normalized else "agent_definition"
         return _not_found(resource)
     except AgentValidationError as exc:
         return {"error": "agent_validation_error", "detail": str(exc)}

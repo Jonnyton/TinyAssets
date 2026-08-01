@@ -28,18 +28,64 @@ MAX_COMPONENTS = 64
 MAX_LINEAGE_DEPTH = 50
 
 _COMPONENT_KEY = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_CONTENT_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_FIELD_NAMES = frozenset(
     {
         "access_token",
         "api_key",
         "apikey",
+        "auth",
+        "authorization",
+        "bearer",
+        "bot_token",
+        "channel_secret",
         "client_secret",
+        "cookie",
+        "cookies",
         "credential",
+        "credentials",
         "password",
         "private_key",
         "refresh_token",
         "secret",
+        "secrets",
+        "session_token",
+        "signing_secret",
+        "token",
+        "webhook_secret",
     }
+)
+_PRIVATE_DEFINITION_FIELDS = frozenset(
+    {
+        "chat_history",
+        "conversation",
+        "conversation_history",
+        "conversations",
+        "effect_payload",
+        "effect_payloads",
+        "execution_history",
+        "external_write_results",
+        "message_history",
+        "messages",
+        "run_history",
+        "run_state",
+        "runtime_state",
+    }
+)
+_SENSITIVE_FIELD_SUFFIXES = (
+    "_api_key",
+    "_authorization",
+    "_credential",
+    "_credentials",
+    "_password",
+    "_private_key",
+    "_secret",
+    "_token",
+)
+_CREDENTIAL_VALUE = re.compile(
+    r"(?i)(?:bearer\s+[a-z0-9._~+/-]{3,}|gh[pousr]_[a-z0-9_=-]{12,}|"
+    r"xox[baprs]-[a-z0-9-]{12,}|sk-[a-z0-9_-]{16,}|"
+    r"eyj[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,})"
 )
 _FORBIDDEN_BINDING_CONTENT_FIELDS = frozenset(
     {
@@ -176,19 +222,37 @@ def _check_size(value: Any) -> None:
         )
 
 
+def _is_sensitive_field_name(raw_key: Any) -> bool:
+    raw_text = str(raw_key)
+    key = raw_text.strip().casefold().replace("-", "_")
+    return (
+        key in _SECRET_FIELD_NAMES
+        or key in _PRIVATE_DEFINITION_FIELDS
+        or key.endswith(_SENSITIVE_FIELD_SUFFIXES)
+        or bool(_CREDENTIAL_VALUE.search(raw_text))
+    )
+
+
+def _looks_sensitive_value(value: Any) -> bool:
+    return isinstance(value, str) and bool(_CREDENTIAL_VALUE.search(value))
+
+
 def _check_secret_fields(value: Any, path: str = "") -> None:
     if isinstance(value, dict):
         for raw_key, child in value.items():
             key = str(raw_key)
-            child_path = f"{path}.{key}" if path else key
-            if key.strip().lower() in _SECRET_FIELD_NAMES:
+            safe_key = "[credential-shaped-key]" if _looks_sensitive_value(key) else key
+            child_path = f"{path}.{safe_key}" if path else safe_key
+            if _is_sensitive_field_name(key):
                 raise AgentValidationError(
-                    f"{child_path} contains a forbidden secret-bearing field"
+                    f"{child_path} contains forbidden credential/private runtime content"
                 )
             _check_secret_fields(child, child_path)
     elif isinstance(value, list):
         for index, child in enumerate(value):
             _check_secret_fields(child, f"{path}[{index}]")
+    elif _looks_sensitive_value(value):
+        raise AgentValidationError(f"{path} contains a credential-shaped value")
 
 
 def _check_binding_content_fields(value: Any, path: str = "") -> None:
@@ -290,13 +354,33 @@ def _normalize_lineage(
                 raise AgentValidationError(f"{source_path} duplicates a source")
             seen.add(source_key)
             total += share
-            sources.append(
-                {
-                    "definition_id": definition_id,
-                    "component_key": component_key,
-                    "credit_share": share,
-                }
-            )
+            source = {
+                "definition_id": definition_id,
+                "component_key": component_key,
+                "credit_share": share,
+            }
+            definition_fingerprint = str(
+                raw_source.get("definition_fingerprint") or ""
+            ).strip()
+            component_fingerprint = str(
+                raw_source.get("component_fingerprint") or ""
+            ).strip()
+            if bool(definition_fingerprint) != bool(component_fingerprint):
+                raise AgentValidationError(
+                    f"{source_path} must supply both lineage fingerprints"
+                )
+            if definition_fingerprint:
+                if not _CONTENT_FINGERPRINT.fullmatch(definition_fingerprint):
+                    raise AgentValidationError(
+                        f"{source_path}.definition_fingerprint is invalid"
+                    )
+                if not _CONTENT_FINGERPRINT.fullmatch(component_fingerprint):
+                    raise AgentValidationError(
+                        f"{source_path}.component_fingerprint is invalid"
+                    )
+                source["definition_fingerprint"] = definition_fingerprint
+                source["component_fingerprint"] = component_fingerprint
+            sources.append(source)
         if total > 1.0 + 1e-9:
             raise AgentValidationError(f"{path} credit shares total {total:g}, exceeding 1.0")
         lineage[child_key] = sorted(
@@ -484,7 +568,82 @@ def _read_definition_row(
     ).fetchone()
 
 
-def _verified_lineage(
+def _lineage_edge(
+    conn: sqlite3.Connection,
+    *,
+    child_key: str,
+    source: dict[str, Any],
+    parent_id: str,
+) -> dict[str, Any]:
+    parent_key = source["component_key"]
+    depth_row = conn.execute(
+        """
+        SELECT MAX(generation_depth) AS depth
+        FROM agent_component_lineage
+        WHERE child_definition_id = ?
+          AND child_component_key = ?
+        """,
+        (parent_id, parent_key),
+    ).fetchone()
+    generation_depth = int(depth_row["depth"] or 0) + 1
+    if generation_depth > MAX_LINEAGE_DEPTH:
+        raise AgentValidationError(
+            f"lineage may not exceed {MAX_LINEAGE_DEPTH} generations"
+        )
+    return {
+        "child_component_key": child_key,
+        "parent_definition_id": parent_id,
+        "parent_component_key": parent_key,
+        "credit_share": float(source["credit_share"]),
+        "generation_depth": generation_depth,
+    }
+
+
+def _parent_component(
+    parent: sqlite3.Row,
+    component_key: str,
+) -> dict[str, Any] | None:
+    components = json.loads(str(parent["components_json"]))
+    component = components.get(component_key)
+    return component if isinstance(component, dict) else None
+
+
+def _enrich_local_lineage(
+    conn: sqlite3.Connection,
+    normalized: dict[str, Any],
+) -> dict[str, Any]:
+    enriched = copy.deepcopy(normalized)
+    for sources in enriched["lineage"].values():
+        for source in sources:
+            parent_id = source["definition_id"]
+            parent_key = source["component_key"]
+            parent = _read_definition_row(conn, parent_id)
+            component = (
+                _parent_component(parent, parent_key) if parent is not None else None
+            )
+            if parent is None or component is None:
+                raise AgentValidationError(
+                    f"parent component {parent_id}.{parent_key} does not exist"
+                )
+            definition_fingerprint = str(parent["content_fingerprint"])
+            component_fingerprint = _fingerprint(component)
+            supplied_definition = source.get("definition_fingerprint")
+            supplied_component = source.get("component_fingerprint")
+            if supplied_definition and supplied_definition != definition_fingerprint:
+                raise AgentValidationError(
+                    f"parent definition fingerprint does not match {parent_id}"
+                )
+            if supplied_component and supplied_component != component_fingerprint:
+                raise AgentValidationError(
+                    f"parent component fingerprint does not match {parent_id}.{parent_key}"
+                )
+            source["definition_fingerprint"] = definition_fingerprint
+            source["component_fingerprint"] = component_fingerprint
+    _check_size(enriched)
+    return enriched
+
+
+def _verified_local_lineage(
     conn: sqlite3.Connection,
     lineage: dict[str, list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
@@ -494,39 +653,176 @@ def _verified_lineage(
             parent_id = source["definition_id"]
             parent_key = source["component_key"]
             parent = _read_definition_row(conn, parent_id)
-            if parent is None:
+            component = (
+                _parent_component(parent, parent_key) if parent is not None else None
+            )
+            if parent is None or component is None:
                 raise AgentValidationError(
                     f"parent component {parent_id}.{parent_key} does not exist"
-                )
-            parent_components = json.loads(str(parent["components_json"]))
-            if parent_key not in parent_components:
-                raise AgentValidationError(
-                    f"parent component {parent_id}.{parent_key} does not exist"
-                )
-            depth_row = conn.execute(
-                """
-                SELECT MAX(generation_depth) AS depth
-                FROM agent_component_lineage
-                WHERE child_definition_id = ?
-                  AND child_component_key = ?
-                """,
-                (parent_id, parent_key),
-            ).fetchone()
-            generation_depth = int(depth_row["depth"] or 0) + 1
-            if generation_depth > MAX_LINEAGE_DEPTH:
-                raise AgentValidationError(
-                    f"lineage may not exceed {MAX_LINEAGE_DEPTH} generations"
                 )
             verified.append(
-                {
-                    "child_component_key": child_key,
-                    "parent_definition_id": parent_id,
-                    "parent_component_key": parent_key,
-                    "credit_share": float(source["credit_share"]),
-                    "generation_depth": generation_depth,
-                }
+                _lineage_edge(
+                    conn,
+                    child_key=child_key,
+                    source=source,
+                    parent_id=parent_id,
+                )
             )
     return verified
+
+
+def _verified_import_lineage(
+    conn: sqlite3.Connection,
+    lineage: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    verified: list[dict[str, Any]] = []
+    for child_key, sources in lineage.items():
+        for source in sources:
+            parent_key = source["component_key"]
+            definition_fingerprint = source.get("definition_fingerprint")
+            component_fingerprint = source.get("component_fingerprint")
+            if not definition_fingerprint or not component_fingerprint:
+                continue
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM agent_definitions
+                WHERE content_fingerprint = ?
+                ORDER BY agent_definition_id
+                """,
+                (definition_fingerprint,),
+            ).fetchall()
+            matches = [
+                row
+                for row in rows
+                if (
+                    (component := _parent_component(row, parent_key)) is not None
+                    and _fingerprint(component) == component_fingerprint
+                )
+            ]
+            if len(matches) == 1:
+                verified.append(
+                    _lineage_edge(
+                        conn,
+                        child_key=child_key,
+                        source=source,
+                        parent_id=str(matches[0]["agent_definition_id"]),
+                    )
+                )
+    return verified
+
+
+def _author_and_key(author_id: str, idempotency_key: str) -> tuple[str, str]:
+    actor = (author_id or "").strip()
+    if not actor or actor == "anonymous":
+        raise AgentValidationError("an authenticated author_id is required")
+    key = (idempotency_key or "").strip()
+    if len(key) > 128:
+        raise AgentValidationError("idempotency_key exceeds 128 characters")
+    return actor, key
+
+
+def _publish_normalized(
+    conn: sqlite3.Connection,
+    *,
+    actor: str,
+    normalized: dict[str, Any],
+    key: str,
+    imported: bool,
+) -> dict[str, Any]:
+    stored = copy.deepcopy(normalized) if imported else _enrich_local_lineage(conn, normalized)
+    content_fingerprint = _fingerprint(stored)
+
+    if key:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM agent_definitions
+            WHERE author_id = ? AND idempotency_key = ?
+            """,
+            (actor, key),
+        ).fetchone()
+        if existing is not None:
+            if existing["content_fingerprint"] != content_fingerprint:
+                raise AgentConflictError(
+                    "idempotency_key was already used for different content"
+                )
+            return _definition_from_row(conn, existing)
+
+    verified_lineage = (
+        _verified_import_lineage(conn, stored["lineage"])
+        if imported
+        else _verified_local_lineage(conn, stored["lineage"])
+    )
+    definition_id = f"agent_{new_ulid()}"
+    created_at = time.time()
+    insert_sql = """
+        INSERT INTO agent_definitions (
+            agent_definition_id, author_id, name, description,
+            schema_version, tags_json, components_json,
+            external_origins_json, portable_json, content_fingerprint,
+            idempotency_key, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """
+    if key:
+        insert_sql += " ON CONFLICT DO NOTHING"
+    cursor = conn.execute(
+        insert_sql,
+        (
+            definition_id,
+            actor,
+            stored["name"],
+            stored["description"],
+            AGENT_SCHEMA_VERSION,
+            _canonical_json(stored["tags"]),
+            _canonical_json(stored["components"]),
+            _canonical_json(stored["external_origins"]),
+            _canonical_json(stored),
+            content_fingerprint,
+            key,
+            created_at,
+        ),
+    )
+    if cursor.rowcount == 0:
+        existing = conn.execute(
+            """
+            SELECT *
+            FROM agent_definitions
+            WHERE author_id = ? AND idempotency_key = ?
+            """,
+            (actor, key),
+        ).fetchone()
+        if existing is None:
+            raise AgentConflictError("definition write conflicted")
+        if existing["content_fingerprint"] != content_fingerprint:
+            raise AgentConflictError(
+                "idempotency_key was already used for different content"
+            )
+        return _definition_from_row(conn, existing)
+    for edge in verified_lineage:
+        conn.execute(
+            """
+            INSERT INTO agent_component_lineage (
+                child_definition_id, child_component_key,
+                parent_definition_id, parent_component_key,
+                credit_share, generation_depth, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                definition_id,
+                edge["child_component_key"],
+                edge["parent_definition_id"],
+                edge["parent_component_key"],
+                edge["credit_share"],
+                edge["generation_depth"],
+                created_at,
+            ),
+        )
+    row = _read_definition_row(conn, definition_id)
+    assert row is not None
+    return _definition_from_row(conn, row)
 
 
 def publish_definition(
@@ -538,104 +834,16 @@ def publish_definition(
 ) -> dict[str, Any]:
     """Publish one immutable public definition and verified lineage."""
 
-    actor = (author_id or "").strip()
-    if not actor or actor == "anonymous":
-        raise AgentValidationError("an authenticated author_id is required")
-    key = (idempotency_key or "").strip()
-    if len(key) > 128:
-        raise AgentValidationError("idempotency_key exceeds 128 characters")
-
+    actor, key = _author_and_key(author_id, idempotency_key)
     normalized = _normalize_definition_payload(payload)
-    content_fingerprint = _fingerprint(normalized)
-    definition_id = f"agent_{new_ulid()}"
-    created_at = time.time()
-
     with _agent_connect(base_path) as conn:
-        if key:
-            existing = conn.execute(
-                """
-                SELECT *
-                FROM agent_definitions
-                WHERE author_id = ? AND idempotency_key = ?
-                """,
-                (actor, key),
-            ).fetchone()
-            if existing is not None:
-                if existing["content_fingerprint"] != content_fingerprint:
-                    raise AgentConflictError(
-                        "idempotency_key was already used for different content"
-                    )
-                return _definition_from_row(conn, existing)
-
-        verified_lineage = _verified_lineage(conn, normalized["lineage"])
-        portable_json = _canonical_json(normalized)
-        insert_sql = """
-            INSERT INTO agent_definitions (
-                agent_definition_id, author_id, name, description,
-                schema_version, tags_json, components_json,
-                external_origins_json, portable_json, content_fingerprint,
-                idempotency_key, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """
-        if key:
-            insert_sql += " ON CONFLICT DO NOTHING"
-        cursor = conn.execute(
-            insert_sql,
-            (
-                definition_id,
-                actor,
-                normalized["name"],
-                normalized["description"],
-                AGENT_SCHEMA_VERSION,
-                _canonical_json(normalized["tags"]),
-                _canonical_json(normalized["components"]),
-                _canonical_json(normalized["external_origins"]),
-                portable_json,
-                content_fingerprint,
-                key,
-                created_at,
-            ),
+        return _publish_normalized(
+            conn,
+            actor=actor,
+            normalized=normalized,
+            key=key,
+            imported=False,
         )
-        if cursor.rowcount == 0:
-            existing = conn.execute(
-                """
-                SELECT *
-                FROM agent_definitions
-                WHERE author_id = ? AND idempotency_key = ?
-                """,
-                (actor, key),
-            ).fetchone()
-            if existing is None:
-                raise AgentConflictError("definition write conflicted")
-            if existing["content_fingerprint"] != content_fingerprint:
-                raise AgentConflictError(
-                    "idempotency_key was already used for different content"
-                )
-            return _definition_from_row(conn, existing)
-        for edge in verified_lineage:
-            conn.execute(
-                """
-                INSERT INTO agent_component_lineage (
-                    child_definition_id, child_component_key,
-                    parent_definition_id, parent_component_key,
-                    credit_share, generation_depth, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    definition_id,
-                    edge["child_component_key"],
-                    edge["parent_definition_id"],
-                    edge["parent_component_key"],
-                    edge["credit_share"],
-                    edge["generation_depth"],
-                    created_at,
-                ),
-            )
-        row = _read_definition_row(conn, definition_id)
-        assert row is not None
-        return _definition_from_row(conn, row)
 
 
 def get_definition(
@@ -685,38 +893,6 @@ def list_definitions(
         return results
 
 
-def _partition_import_lineage(
-    base_path: str | Path,
-    normalized: dict[str, Any],
-) -> dict[str, Any]:
-    imported = copy.deepcopy(normalized)
-    local_lineage: dict[str, list[dict[str, Any]]] = {}
-    external_origins = list(imported["external_origins"])
-    with _agent_connect(base_path) as conn:
-        for child_key, sources in imported["lineage"].items():
-            for source in sources:
-                parent = _read_definition_row(conn, source["definition_id"])
-                parent_components = (
-                    json.loads(str(parent["components_json"])) if parent is not None else {}
-                )
-                if source["component_key"] in parent_components:
-                    local_lineage.setdefault(child_key, []).append(source)
-                else:
-                    external_origins.append(
-                        {
-                            "child_component_key": child_key,
-                            "definition_id": source["definition_id"],
-                            "component_key": source["component_key"],
-                            "credit_share": source["credit_share"],
-                            "verified": False,
-                        }
-                    )
-    imported["lineage"] = local_lineage
-    imported["external_origins"] = external_origins
-    _check_size(imported)
-    return imported
-
-
 def import_definition(
     base_path: str | Path,
     *,
@@ -733,13 +909,15 @@ def import_definition(
     normalized = _normalize_definition_payload(supplied)
     if supplied_fingerprint and supplied_fingerprint != _fingerprint(normalized):
         raise AgentValidationError("portable definition fingerprint does not match")
-    local_payload = _partition_import_lineage(base_path, normalized)
-    return publish_definition(
-        base_path,
-        author_id=author_id,
-        payload=local_payload,
-        idempotency_key=idempotency_key,
-    )
+    actor, key = _author_and_key(author_id, idempotency_key)
+    with _agent_connect(base_path) as conn:
+        return _publish_normalized(
+            conn,
+            actor=actor,
+            normalized=normalized,
+            key=key,
+            imported=True,
+        )
 
 
 def _binding_from_row(row: sqlite3.Row) -> dict[str, Any]:
