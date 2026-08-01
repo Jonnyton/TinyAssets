@@ -127,8 +127,15 @@ Bounded production correlation at exact main
   `input_truncated=false`, `oauth_rejection_categories=[]`.
 
 No instrumented bearer rejection was recorded for either attempt. A later
-malformed-bearer positive control also recorded none, so these empty results do
-not prove the attempts stopped before the validator.
+malformed-bearer positive control initially recorded none because the strict
+sanitizer assumed a timestamped root-log envelope that the deployed
+`tinyassets.universe_server` entry point does not install. Historical replay
+run 30681363132 at exact head
+`f4a6251f78b79a0c320345f0a3ec86a7619e84e5` recognized the same immutable
+positive-control window as `oauth_rejection_categories=["malformed"]`, with 44
+lines, `input_truncated=false`, and no raw journal text. The empty rendered-call
+windows therefore mean no rejected bearer was observed; they do not prove no
+request or accepted bearer reached the server.
 
 ## Client-registration discovery
 
@@ -152,10 +159,14 @@ At 2026-08-01T02:56:15Z and again at 02:57:37Z, a fixed non-secret malformed
 bearer (`positive-control-not-a-jwt`) was sent to production `/mcp`. Both calls
 returned the expected `401 invalid_token` with the protected-resource
 challenge. Bounded runs 30681000676 and 30681046575 were complete and
-non-truncated but still returned `oauth_rejection_categories=[]`. Therefore the
-strict sanitizer's expected logging envelope has not been proven against the
-live unit journal; all earlier empty-category readings are corroboration only,
-not proof of where the connector stopped.
+non-truncated but still returned `oauth_rejection_categories=[]`. Diagnostic
+run 30681215115 then found the safe category `malformed` under a generic
+`prefixed` shape. After adapting the strict matcher only for the exact
+allowlisted Compose service prefix plus bare warning emitted by the deployed
+entry point, run 30681363132 replayed the same 02:57:00Z–02:58:00Z journal
+window and returned `oauth_rejection_categories=["malformed"]`, 44 lines, and
+`input_truncated=false`. The positive control is now proven without exposing
+tokens or raw journal text.
 
 Claude's opposite-provider review is preserved at
 `output/claude-oauth-cimd-review.md`. Verdict: `ADAPT`. It approves enabling

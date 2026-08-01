@@ -1244,3 +1244,7 @@ fresh-host rollback edges found later.
   unit-tested parsing does not prove the live logging envelope.
 - What I would do differently: run the positive control immediately after a
   diagnostic rollout, before using any empty window to localize a failure.
+- Follow-through: immutable-window replay first exposed only the safe
+  `malformed`/`prefixed` signal, then source inspection found the deployed
+  entry point's bare root-warning format. An exact Compose-prefix matcher made
+  the same window pass strictly without widening to arbitrary prefixes.

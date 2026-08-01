@@ -11,9 +11,12 @@ TinyAssets tool call. The strongest current reproduction stops before the
 resource server: ChatGPT returns through `link_success=true`, an explicitly
 reattached call never reaches TinyAssets, and a brand-new Temporary Chat
 immediately marks the connection expired. Two complete bounded production
-windows recorded no instrumented bearer rejection, but a later malformed-
-bearer positive control also recorded none, so empty categories do not prove
-the stop point. No audience, issuer, expiry, key, or claim repair is authorized.
+windows recorded no instrumented bearer rejection. A fixed malformed-bearer
+positive control later proved that the deployed logger did emit `malformed`
+and that the exact Compose-prefixed bare warning is safely detectable. The
+rendered attempts therefore produced no rejected bearer, but this alone does
+not prove whether ChatGPT sent no bearer or sent an accepted one. No audience,
+issuer, expiry, key, or claim repair is authorized.
 
 A second rendered attempt on 2026-08-01 reached ChatGPT's
 `link_success=true` return but did not retain TinyAssets in the returned
@@ -208,9 +211,18 @@ Claude's opposite-provider review returned `ADAPT` and is preserved in
 but required a live positive control for the sanitizer. Fixed non-secret
 malformed bearers sent at 02:56:15Z and 02:57:37Z each returned `401
 invalid_token`; complete runs 30681000676 and 30681046575 nevertheless returned
-`oauth_rejection_categories=[]`. The expected production logging envelope is
-therefore unproven. Earlier empty-category windows must not be described as
-proof that the validator was not reached.
+`oauth_rejection_categories=[]`. Branch run 30681215115 safely classified the
+same 02:57:00Z–02:58:00Z window as signal category `malformed` with a
+noncanonical `prefixed` envelope. Source inspection identified the exact
+deployed shape: `tinyassets.universe_server` does not install the timestamped
+root formatter assumed by the first sanitizer, while Compose adds its
+allowlisted daemon service prefix. The strict exact-envelope adaptation then
+replayed the same immutable window in run 30681363132 at head
+`f4a6251f78b79a0c320345f0a3ec86a7619e84e5` and returned
+`oauth_rejection_categories=["malformed"]`, `input_truncated=false`, 44 lines,
+and no raw journal text. The detector is now live-sensitive; the earlier empty
+rendered-attempt windows prove only that they produced no rejected bearer, not
+that no request or accepted bearer reached the resource server.
 
 ## Next evidence gate
 

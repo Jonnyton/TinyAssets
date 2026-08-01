@@ -3,7 +3,7 @@
 ## OAuth CIMD persistence
 
 - Branch: `fix/oauth-cimd-persistence`
-- Lane state: claimed from current main after two rendered post-reconnect calls stayed expired before TinyAssets token validation.
+- Lane state: claimed; exact historical replay now proves malformed-token diagnostics, while rendered post-reconnect calls still expire and AuthKit omits CIMD.
 - Worktree: `C:/Users/Jonathan/Projects/wf-oauth-cimd-persistence`
 - Purpose: add a public OAuth discovery contract check, enable AuthKit CIMD, recreate/update the ChatGPT registration, and prove immediate plus later authenticated continuity.
 - Review gate: focused tests, exact-head independent review, deployed revision checks, rendered ChatGPT acceptance, and organic-use evidence or a dated watch row.
