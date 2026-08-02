@@ -228,7 +228,7 @@ _WIRE_CONTRACTS = MappingProxyType(
         ),
         "HostInventoryPageV1": _wire("schema_version items", "next_cursor"),
         "HostPrincipalDetailV1": _wire(
-            "schema_version host_principal_id status generation policy_version "
+            "host_principal_id status generation policy_version "
             "issued_at expires_at jwk_thumbprint",
             "last_seen_bucket device_label",
         ),

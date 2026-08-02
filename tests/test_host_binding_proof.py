@@ -332,7 +332,6 @@ def test_normative_v1_wire_dto_field_sets_are_closed() -> None:
         "HostInventoryPageV1": ({"schema_version", "items"}, {"next_cursor"}),
         "HostPrincipalDetailV1": (
             {
-                "schema_version",
                 "host_principal_id",
                 "status",
                 "generation",
