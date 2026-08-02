@@ -290,7 +290,7 @@ jobs:
   test-unsigned-windows-install:
     needs: build
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -307,8 +307,9 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
-          ./tests/desktop_install/windows_lifecycle.ps1 `
-            -Installer $installer.FullName
+          ./tests/desktop_install/windows_lifecycle_supervisor.ps1 `
+            -Installer $installer.FullName `
+            -TotalTimeoutSeconds 300
 
   sign-and-verify:
     needs: [plan, build, test-unsigned-windows-install]

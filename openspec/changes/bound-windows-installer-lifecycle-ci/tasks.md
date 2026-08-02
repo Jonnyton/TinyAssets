@@ -5,9 +5,9 @@
 
 ## 2. Implementation
 
-- [ ] 2.1 Add the outer Windows lifecycle supervisor with redirected diagnostic files, an exact total deadline, bounded exact-child-tree cleanup, output replay, and truthful exit propagation.
-- [ ] 2.2 Instrument lifecycle phase start/completion/PID evidence and remove process-tree cleanup from the lifecycle child's failure authority.
-- [ ] 2.3 Invoke the supervisor from Desktop release CI with a five-minute total deadline beneath the ten-minute GitHub fallback.
+- [x] 2.1 Add the outer Windows lifecycle supervisor with redirected diagnostic files, an exact total deadline, bounded exact-child-tree cleanup, output replay, and truthful exit propagation.
+- [x] 2.2 Instrument lifecycle phase start/completion/PID evidence and remove process-tree cleanup from the lifecycle child's failure authority.
+- [x] 2.3 Invoke the supervisor from Desktop release CI with a five-minute total deadline beneath the ten-minute GitHub fallback.
 
 ## 3. Verification and foldback
 

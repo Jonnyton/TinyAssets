@@ -100,9 +100,11 @@ def test_macos_certificate_is_imported_into_temporary_keychain() -> None:
 def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> None:
     workflow = _workflow_text()
     lifecycle = Path(__file__).with_name("windows_lifecycle.ps1").read_text(encoding="utf-8")
+    supervisor = SUPERVISOR.read_text(encoding="utf-8")
 
     assert "test-unsigned-windows-install:" in workflow
-    assert "windows_lifecycle.ps1" in workflow
+    assert "windows_lifecycle_supervisor.ps1" in workflow
+    assert "windows_lifecycle.ps1" in supervisor
     assert "health-probe" in lifecycle
     assert "Invoke-Installer" in lifecycle
     assert "unins000.exe" in lifecycle
@@ -123,7 +125,8 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "-TotalTimeoutSeconds 300" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
-    assert ".Kill($true)" in lifecycle
+    assert ".Kill()" in lifecycle
+    assert ".Kill($true)" not in lifecycle
     assert "timed out after" in lifecycle
     assert "initial install" in lifecycle
     assert "packaged health probe" in lifecycle
