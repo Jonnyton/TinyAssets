@@ -1,6 +1,6 @@
 # V1 cross-user remix and private-binding evidence
 
-Date: 2026-08-01  
+Date: 2026-08-01
 Environment: production `https://tinyassets.io/mcp` through the installed TinyAssets connector in a rendered Claude.ai conversation; local repair on Windows/Python 3.14.
 
 ## Intended customer journey
