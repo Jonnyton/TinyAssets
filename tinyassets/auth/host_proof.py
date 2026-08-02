@@ -10,6 +10,7 @@ import secrets
 import time
 import unicodedata
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Callable, Literal, Mapping, NoReturn, Protocol
@@ -36,8 +37,11 @@ _HOST_POOL_PRICE_LIMIT = Decimal("1000000000000")
 _HOST_POOL_PRICE_SCALE = 6
 _IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 _PRINCIPAL_TTL_SECONDS = 90 * 24 * 60 * 60
+_RENEWAL_WINDOW_SECONDS = 30 * 24 * 60 * 60
 _IDEMPOTENCY_LOOKUP_DOMAIN = b"tinyassets.host-enrollment.idempotency-lookup.v1"
 _IDEMPOTENCY_BINDING_DOMAIN = b"tinyassets.host-enrollment.idempotency-binding.v1"
+_LIFECYCLE_LOOKUP_DOMAIN = b"tinyassets.host-lifecycle.idempotency-lookup.v1"
+_LIFECYCLE_BINDING_DOMAIN = b"tinyassets.host-lifecycle.idempotency-binding.v1"
 _INVENTORY_CURSOR_DOMAIN = b"tinyassets.host-inventory.cursor.v1"
 _INVENTORY_DEFAULT_LIMIT = 25
 _INVENTORY_MAX_LIMIT = 100
@@ -84,6 +88,18 @@ class HostEnrollmentWritersDisabled(RuntimeError):
 
 class HostInventoryRefused(HostProofRefused):
     """One non-enumerating refusal for private host inventory."""
+
+
+class HostLifecycleRefused(HostProofRefused):
+    """One non-enumerating refusal for an ineligible lifecycle mutation."""
+
+
+class HostLifecycleIdempotencyConflict(ValueError):
+    """An unexpired lifecycle scope named a different intent."""
+
+
+class HostLifecycleWritersDisabled(RuntimeError):
+    """Lifecycle writers stay dark until durable storage and rollout gates pass."""
 
 
 class HostInventoryStore(Protocol):
@@ -476,6 +492,109 @@ class HostPrincipalResultV1:
 
 
 @dataclass(frozen=True)
+class HostRecoveryResultV1:
+    revoked: HostPrincipalResultV1
+    replacement: HostPrincipalResultV1
+
+
+@dataclass(frozen=True)
+class HostLifecyclePrincipalV1:
+    """Secret-free current principal state required at a lifecycle authority boundary."""
+
+    issuer: str = dataclass_field(repr=False)
+    subject: str = dataclass_field(repr=False)
+    host_principal_id: str = dataclass_field(repr=False)
+    generation: int
+    status: str
+    issued_at: int
+    expires_at: int
+    policy_version: str
+    public_jwk: Mapping[str, object] = dataclass_field(repr=False)
+    key_thumbprint: str = dataclass_field(repr=False)
+    device_label: str | None = dataclass_field(default=None, repr=False)
+
+    def to_result(self) -> HostPrincipalResultV1:
+        return HostPrincipalResultV1(
+            schema_version=SCHEMA_VERSION,
+            host_principal_id=self.host_principal_id,
+            host_principal_generation=self.generation,
+            status=self.status,
+            expires_at=self.expires_at,
+            policy_version=self.policy_version,
+        )
+
+
+def host_principal_authority_is_current(
+    principal: HostLifecyclePrincipalV1,
+    *,
+    expected_generation: int,
+    now: int,
+) -> bool:
+    """Prospective fence for every protected-work start and commit boundary."""
+
+    return (
+        type(principal) is HostLifecyclePrincipalV1
+        and type(expected_generation) is int
+        and not isinstance(expected_generation, bool)
+        and type(now) is int
+        and not isinstance(now, bool)
+        and now >= 0
+        and principal.status == "active"
+        and principal.generation == expected_generation
+        and now < principal.expires_at
+    )
+
+
+LifecycleResult = HostPrincipalResultV1 | HostRecoveryResultV1
+
+
+@dataclass(frozen=True)
+class HostLifecycleTransactionRequest:
+    """Secret-scrubbed input to one atomic lifecycle CAS transaction."""
+
+    issuer: str = dataclass_field(repr=False)
+    subject: str = dataclass_field(repr=False)
+    operation: str
+    host_principal_id: str = dataclass_field(repr=False)
+    expected_generation: int
+    challenge_id_b64u: str = dataclass_field(repr=False)
+    idempotency_lookup_hash: str = dataclass_field(repr=False)
+    idempotency_binding_hash: str = dataclass_field(repr=False)
+    idempotency_expires_at: int
+    transaction_time: int
+    new_public_jwk: Mapping[str, object] | None = dataclass_field(default=None, repr=False)
+    new_key_thumbprint: str | None = dataclass_field(default=None, repr=False)
+    replacement_principal_id: str | None = dataclass_field(default=None, repr=False)
+    device_label: str | None = dataclass_field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class HostLifecycleTransactionOutcome:
+    status: Literal["committed", "replayed", "idempotency_conflict", "refused"]
+    result: LifecycleResult | None = None
+
+    def __post_init__(self) -> None:
+        if self.status not in {"committed", "replayed", "idempotency_conflict", "refused"}:
+            raise ValueError("invalid host lifecycle outcome")
+        if self.status == "committed":
+            if type(self.result) not in {HostPrincipalResultV1, HostRecoveryResultV1}:
+                raise ValueError("committed lifecycle outcome requires a result")
+        elif self.result is not None:
+            raise ValueError("non-committed lifecycle outcome cannot carry a result")
+
+
+class HostLifecycleTransactionStore(Protocol):
+    def load_principal(
+        self, *, issuer: str, subject: str, host_principal_id: str
+    ) -> HostLifecyclePrincipalV1 | None: ...
+
+    def commit_lifecycle(
+        self, request: HostLifecycleTransactionRequest
+    ) -> HostLifecycleTransactionOutcome:
+        """CAS challenge, idempotency, generation, terminal state, and key uniqueness."""
+
+
+@dataclass(frozen=True)
 class HostEnrollmentTransactionRequest:
     """Secret-scrubbed input to one fixed-order atomic transaction."""
 
@@ -667,6 +786,213 @@ class HostEnrollmentCoordinator:
             raise HostEnrollmentRefused
         if outcome.status != "committed" or outcome.result is None:
             raise RuntimeError("host enrollment store returned an invalid terminal outcome")
+        return outcome.result
+
+    def _keyed_hash(
+        self,
+        domain: bytes,
+        fields: Mapping[str, object],
+        raw_idempotency_key: bytes,
+    ) -> str:
+        message = domain + b"\0" + raw_idempotency_key + b"\0" + rfc8785.dumps(dict(fields))
+        digest = hmac.new(self._idempotency_hmac_key, message, hashlib.sha256).hexdigest()
+        return "hmac-sha256:" + digest
+
+
+class HostLifecycleCoordinator:
+    """Verify lifecycle proof before one atomic store-owned state transition."""
+
+    _OPERATIONS = frozenset({"revoke", "rotate", "renew", "recover"})
+
+    def __init__(
+        self,
+        *,
+        store: HostLifecycleTransactionStore,
+        idempotency_hmac_key: bytes,
+        writers_enabled: bool = False,
+        new_principal_id: Callable[[], str] = _new_principal_id,
+    ) -> None:
+        if type(idempotency_hmac_key) is not bytes or len(idempotency_hmac_key) < 32:
+            raise ValueError("idempotency_hmac_key must contain at least 32 bytes")
+        if type(writers_enabled) is not bool:
+            raise TypeError("writers_enabled must be boolean")
+        self._store = store
+        self._idempotency_hmac_key = idempotency_hmac_key
+        self._writers_enabled = writers_enabled
+        self._new_principal_id = new_principal_id
+
+    def complete_lifecycle(
+        self,
+        *,
+        submission_json: bytes | str,
+        binding: HostProofBindingV1,
+        intent: Mapping[str, object],
+        signing_input_b64u: str,
+        now: int,
+    ) -> LifecycleResult:
+        if not self._writers_enabled:
+            raise HostLifecycleWritersDisabled
+        if (
+            type(binding) is not HostProofBindingV1
+            or binding.operation not in self._OPERATIONS
+            or type(intent) is not dict
+            or type(now) is not int
+            or isinstance(now, bool)
+            or now < 0
+        ):
+            raise HostLifecycleRefused
+
+        policy = operation_policy(binding.operation)
+        if (
+            binding.schema_version != SCHEMA_VERSION
+            or binding.policy_version != POLICY_VERSION
+            or binding.permission != policy.permission
+            or binding.method != policy.method
+            or binding.path != policy.path
+            or binding.host_principal_id is None
+            or type(binding.expected_generation) is not int
+            or isinstance(binding.expected_generation, bool)
+            or binding.expected_generation < 1
+            or frozenset(binding.key_thumbprints) != policy.signature_roles
+        ):
+            raise HostLifecycleRefused
+
+        try:
+            canonical_intent = rfc8785.dumps(intent)
+            parsed_intent = parse_wire_dto(policy.intent_dto, canonical_intent)
+        except (HostProofRefused, rfc8785.CanonicalizationError, TypeError, ValueError) as exc:
+            raise HostLifecycleRefused from exc
+        if (
+            parsed_intent["host_principal_id"] != binding.host_principal_id
+            or parsed_intent["expected_generation"] != binding.expected_generation
+            or not hmac.compare_digest(
+                "sha256:" + hashlib.sha256(canonical_intent).hexdigest(),
+                binding.body_sha256,
+            )
+        ):
+            raise HostLifecycleRefused
+
+        principal = self._store.load_principal(
+            issuer=binding.issuer,
+            subject=binding.subject,
+            host_principal_id=binding.host_principal_id,
+        )
+        if type(principal) is not HostLifecyclePrincipalV1 or now >= principal.expires_at:
+            raise HostLifecycleRefused
+        retrying_terminal = (
+            binding.operation in {"revoke", "recover"}
+            and principal.status == "revoked"
+            and binding.expected_generation == principal.generation - 1
+        )
+        if not retrying_terminal and not host_principal_authority_is_current(
+            principal, expected_generation=binding.expected_generation, now=now
+        ):
+            raise HostLifecycleRefused
+        if binding.operation == "renew" and now < principal.expires_at - _RENEWAL_WINDOW_SECONDS:
+            raise HostLifecycleRefused
+
+        idempotency_key_b64u = parsed_intent.get("idempotency_key_b64u")
+        if type(idempotency_key_b64u) is not str:
+            raise HostLifecycleRefused
+        try:
+            raw_idempotency_key = canonical_b64u(idempotency_key_b64u, size=32)
+        except HostProofRefused as exc:
+            raise HostLifecycleRefused from exc
+
+        public_jwks: dict[str, Mapping[str, object]] = {}
+        new_public_jwk: Mapping[str, object] | None = None
+        new_key_thumbprint: str | None = None
+        if "current" in policy.signature_roles:
+            if not hmac.compare_digest(
+                principal.key_thumbprint, binding.key_thumbprints["current"]
+            ):
+                raise HostLifecycleRefused
+            public_jwks["current"] = principal.public_jwk
+        if "new" in policy.signature_roles:
+            candidate_jwk = parsed_intent.get("new_public_jwk")
+            if type(candidate_jwk) is not dict:
+                raise HostLifecycleRefused
+            try:
+                new_key_thumbprint = jwk_thumbprint(candidate_jwk)
+            except HostProofRefused as exc:
+                raise HostLifecycleRefused from exc
+            if not hmac.compare_digest(new_key_thumbprint, binding.key_thumbprints["new"]):
+                raise HostLifecycleRefused
+            new_public_jwk = candidate_jwk
+            public_jwks["new"] = candidate_jwk
+
+        replacement_principal_id: str | None = None
+        if binding.operation == "recover":
+            replacement_principal_id = self._new_principal_id()
+            if (
+                type(replacement_principal_id) is not str
+                or not replacement_principal_id
+                or replacement_principal_id != replacement_principal_id.strip()
+                or len(replacement_principal_id) > 128
+                or replacement_principal_id == principal.host_principal_id
+            ):
+                raise RuntimeError("new_principal_id returned an invalid replacement identifier")
+
+        lookup_fields = {
+            "issuer": binding.issuer,
+            "subject": binding.subject,
+            "policy_version": binding.policy_version,
+            "operation": binding.operation,
+            "path": binding.path,
+            "host_principal_id": binding.host_principal_id,
+            "expected_generation": binding.expected_generation,
+            "key_thumbprints": dict(binding.key_thumbprints),
+            "idempotency_key_b64u": idempotency_key_b64u,
+        }
+        request = HostLifecycleTransactionRequest(
+            issuer=binding.issuer,
+            subject=binding.subject,
+            operation=binding.operation,
+            host_principal_id=binding.host_principal_id,
+            expected_generation=binding.expected_generation,
+            challenge_id_b64u=binding.challenge_id_b64u,
+            idempotency_lookup_hash=self._keyed_hash(
+                _LIFECYCLE_LOOKUP_DOMAIN, lookup_fields, raw_idempotency_key
+            ),
+            idempotency_binding_hash=self._keyed_hash(
+                _LIFECYCLE_BINDING_DOMAIN,
+                {**lookup_fields, "body_sha256": binding.body_sha256},
+                raw_idempotency_key,
+            ),
+            idempotency_expires_at=now + _IDEMPOTENCY_TTL_SECONDS,
+            transaction_time=now,
+            new_public_jwk=new_public_jwk,
+            new_key_thumbprint=new_key_thumbprint,
+            replacement_principal_id=replacement_principal_id,
+            device_label=parsed_intent.get("device_label"),
+        )
+        outcome: HostLifecycleTransactionOutcome | None = None
+
+        def commit_verified_challenge(challenge_id_b64u: str) -> bool:
+            nonlocal outcome
+            if not hmac.compare_digest(challenge_id_b64u, request.challenge_id_b64u):
+                return False
+            outcome = self._store.commit_lifecycle(request)
+            if type(outcome) is not HostLifecycleTransactionOutcome:
+                raise RuntimeError("host lifecycle store returned an invalid outcome")
+            return outcome.status != "replayed"
+
+        verify_host_proof(
+            submission_json,
+            binding=binding,
+            public_jwks=public_jwks,
+            signing_input_b64u=signing_input_b64u,
+            now=now,
+            consume_once=commit_verified_challenge,
+        )
+        if outcome is None:
+            raise RuntimeError("verified lifecycle operation completed without a store outcome")
+        if outcome.status == "idempotency_conflict":
+            raise HostLifecycleIdempotencyConflict
+        if outcome.status == "refused":
+            raise HostLifecycleRefused
+        if outcome.status != "committed" or outcome.result is None:
+            raise RuntimeError("host lifecycle store returned an invalid terminal outcome")
         return outcome.result
 
     def _keyed_hash(
