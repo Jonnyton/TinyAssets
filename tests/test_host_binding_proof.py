@@ -16,12 +16,14 @@ from tinyassets.auth.host_proof import (
     HOST_BINDING_REFUSAL,
     MAX_SUBMISSION_BYTES,
     POST_ENROLLMENT_NONCE_LIMITS,
+    REFUSAL_FLOOR_SECONDS,
     HostProofBindingV1,
     HostProofRefused,
     canonical_b64u,
     host_proof_signing_bytes,
     jwk_thumbprint,
     operation_policy,
+    refuse_host_binding,
     verify_host_proof,
 )
 
@@ -49,7 +51,7 @@ def _binding(
     keys: dict[str, Ed25519PrivateKey] | None = None,
 ) -> HostProofBindingV1:
     policy = operation_policy(operation)
-    role_keys = keys or {"new": _key(1)}
+    role_keys = keys if keys is not None else {"new": _key(1)}
     return HostProofBindingV1(
         schema_version="host-binding-v1",
         policy_version="host-binding-v1",
@@ -94,7 +96,14 @@ def _verify(
     presented_jwks: dict[str, dict[str, str]] | None = None,
     signing_input_b64u: str | None = None,
     consume_once=lambda _nonce: True,
+    monotonic=None,
+    sleeper=None,
 ) -> None:
+    timing = {}
+    if monotonic is not None:
+        timing["monotonic"] = monotonic
+    if sleeper is not None:
+        timing["sleeper"] = sleeper
     verify_host_proof(
         submission or _submission(binding, keys),
         binding=binding,
@@ -102,6 +111,7 @@ def _verify(
         signing_input_b64u=signing_input_b64u or _b64u(host_proof_signing_bytes(binding)),
         now=NOW,
         consume_once=consume_once,
+        **timing,
     )
 
 
@@ -146,6 +156,33 @@ def test_closed_operation_route_scope_and_signature_role_matrix() -> None:
     } == expected
     with pytest.raises(HostProofRefused):
         operation_policy("owner_selected_admin")
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "enroll",
+        "read",
+        "revoke",
+        "rotate",
+        "renew",
+        "recover",
+        "session_register",
+        "session_heartbeat",
+        "session_deregister",
+    ],
+)
+def test_each_proof_requiring_operation_verifies(operation: str) -> None:
+    roles = operation_policy(operation).signature_roles
+    keys = {role: _key(index + 1) for index, role in enumerate(sorted(roles))}
+    binding = _binding(operation, keys=keys)
+
+    _verify(binding, keys)
+
+
+def test_inventory_cannot_construct_device_proof_signing_bytes() -> None:
+    with pytest.raises(HostProofRefused):
+        host_proof_signing_bytes(_binding("inventory", keys={}))
 
 
 def test_signing_bytes_are_exact_rfc8785_bytes_with_domain_separation() -> None:
@@ -336,6 +373,14 @@ def test_nonce_is_consumed_only_after_valid_proof_and_replay_is_refused() -> Non
     assert calls == []
 
 
+def test_consume_backend_failure_propagates_instead_of_becoming_proof_refusal() -> None:
+    def unavailable(_nonce: str) -> bool:
+        raise RuntimeError("database unavailable")
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        _verify(_binding(), {"new": _key(1)}, consume_once=unavailable)
+
+
 @pytest.mark.parametrize(
     "raw",
     [
@@ -397,6 +442,48 @@ def test_refusal_work_is_size_bounded_and_has_one_non_enumerating_public_shape()
         failures.append((str(raised.value), raised.value.public_error))
 
     assert failures == [("host binding refused", HOST_BINDING_REFUSAL)] * 4
+
+
+@pytest.mark.parametrize(
+    "failure_class",
+    ["authentication", "rate_limit", "absence", "mismatch", "replay"],
+)
+def test_shared_refusal_timing_class_is_reason_agnostic(failure_class: str) -> None:
+    del failure_class
+    slept: list[float] = []
+
+    with pytest.raises(HostProofRefused):
+        refuse_host_binding(
+            started_at=10.0,
+            monotonic=lambda: 10.002,
+            sleeper=slept.append,
+        )
+
+    assert slept == [pytest.approx(REFUSAL_FLOOR_SECONDS - 0.002)]
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "replay"])
+def test_verifier_uses_shared_refusal_timing_class(failure: str) -> None:
+    key = _key(1)
+    binding = _binding()
+    slept: list[float] = []
+    clocks = iter([10.0, 10.003])
+    kwargs = (
+        {"submission": _submission(replace(binding, subject="other"), {"new": key})}
+        if failure == "mismatch"
+        else {"consume_once": lambda _nonce: False}
+    )
+
+    with pytest.raises(HostProofRefused):
+        _verify(
+            binding,
+            {"new": key},
+            monotonic=lambda: next(clocks),
+            sleeper=slept.append,
+            **kwargs,
+        )
+
+    assert slept == [pytest.approx(REFUSAL_FLOOR_SECONDS - 0.003)]
 
 
 def test_valid_enrollment_proof_verifies_before_one_use_consumption() -> None:

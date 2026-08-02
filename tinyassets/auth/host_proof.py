@@ -5,9 +5,10 @@ import hashlib
 import hmac
 import json
 import re
+import time
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, NoReturn
 
 import rfc8785
 from cryptography.exceptions import InvalidSignature
@@ -18,6 +19,7 @@ POLICY_VERSION = "host-binding-v1"
 DOMAIN_SEPARATOR = b"tinyassets.host-principal-proof.v1\0"
 MAX_PROOF_TTL_SECONDS = 300
 MAX_SUBMISSION_BYTES = 4096
+REFUSAL_FLOOR_SECONDS = 0.01
 _MAX_SIGNING_INPUT_B64U = 8192
 _MAX_ISSUER_OR_AUDIENCE = 2048
 _MAX_SUBJECT = 512
@@ -170,6 +172,8 @@ def jwk_thumbprint(jwk: Mapping[str, object]) -> str:
 
 def host_proof_signing_bytes(binding: HostProofBindingV1) -> bytes:
     _validate_binding(binding, now=None)
+    if not operation_policy(binding.operation).signature_roles:
+        raise HostProofRefused
     try:
         canonical = rfc8785.dumps(_binding_payload(binding))
     except (rfc8785.CanonicalizationError, TypeError, ValueError) as exc:
@@ -185,6 +189,8 @@ def verify_host_proof(
     signing_input_b64u: str,
     now: int,
     consume_once: Callable[[str], bool],
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
 ) -> None:
     """Verify one closed HostProofV1 and atomically consume its challenge/nonce.
 
@@ -192,6 +198,7 @@ def verify_host_proof(
     return true exactly once. Signature verification happens before that seam.
     """
 
+    started_at = monotonic()
     try:
         _validate_binding(binding, now=now)
         policy = operation_policy(binding.operation)
@@ -234,14 +241,31 @@ def verify_host_proof(
             signature = canonical_b64u(signatures[role], size=64)
             public_keys[role].verify(signature, expected_input)
 
-        if consume_once(binding.challenge_id_b64u) is not True:
-            raise HostProofRefused
     except HostProofRefused:
-        raise
+        refuse_host_binding(started_at=started_at, monotonic=monotonic, sleeper=sleeper)
     except (InvalidSignature, KeyError, TypeError, ValueError, UnicodeError) as exc:
-        raise HostProofRefused from exc
-    except Exception as exc:
-        raise HostProofRefused from exc
+        try:
+            refuse_host_binding(started_at=started_at, monotonic=monotonic, sleeper=sleeper)
+        except HostProofRefused as refused:
+            raise refused from exc
+
+    if consume_once(binding.challenge_id_b64u) is not True:
+        refuse_host_binding(started_at=started_at, monotonic=monotonic, sleeper=sleeper)
+
+
+def refuse_host_binding(
+    *,
+    started_at: float,
+    monotonic: Callable[[], float] = time.monotonic,
+    sleeper: Callable[[float], None] = time.sleep,
+) -> NoReturn:
+    """Pad all public host-binding refusals into one minimum timing class."""
+
+    elapsed = max(0.0, monotonic() - started_at)
+    remaining = REFUSAL_FLOOR_SECONDS - elapsed
+    if remaining > 0:
+        sleeper(remaining)
+    raise HostProofRefused
 
 
 def _binding_payload(binding: HostProofBindingV1) -> dict[str, object]:
