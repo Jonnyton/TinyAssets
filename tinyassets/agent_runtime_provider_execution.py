@@ -95,22 +95,6 @@ def _discard_receipt_grant(grant_id: str, issuer_pid: int) -> None:
         _ACTIVE_RECEIPT_GRANTS.pop(grant_id, None)
 
 
-def _mint_receipt_store_grant(
-    authority: ProviderUniverseWorkAuthority,
-) -> _AgentProviderReceiptStoreGrant:
-    if type(authority) is not ProviderUniverseWorkAuthority:
-        raise TypeError("authority must be exact provider universe authority")
-    grant_id = secrets.token_hex(32)
-    issuer_pid = os.getpid()
-    grant = object.__new__(_AgentProviderReceiptStoreGrant)
-    object.__setattr__(grant, "_grant_id", grant_id)
-    object.__setattr__(grant, "_issuer_pid", issuer_pid)
-    with _RECEIPT_GRANT_LOCK:
-        _ACTIVE_RECEIPT_GRANTS[grant_id] = (weakref.ref(grant), authority, issuer_pid)
-    weakref.finalize(grant, _discard_receipt_grant, grant_id, issuer_pid)
-    return grant
-
-
 class AgentRuntimeProviderExecutionService:
     """Mint one replay-safe provider receipt under one SQLite authority fence."""
 
@@ -317,7 +301,26 @@ class AgentRuntimeProviderExecutionService:
             agent_invocation_command_digest=command.command_digest,
             agent_invocation_generation=invocation.generation,
         )
-        store_grant = _mint_receipt_store_grant(authority)
+        # Keep minting inline after every authority check. A module-level or
+        # store-level mint helper would let a lower-level caller launder a
+        # fabricated authority object around this sole issuance owner.
+        grant_id = secrets.token_hex(32)
+        issuer_pid = os.getpid()
+        store_grant = object.__new__(_AgentProviderReceiptStoreGrant)
+        object.__setattr__(store_grant, "_grant_id", grant_id)
+        object.__setattr__(store_grant, "_issuer_pid", issuer_pid)
+        with _RECEIPT_GRANT_LOCK:
+            _ACTIVE_RECEIPT_GRANTS[grant_id] = (
+                weakref.ref(store_grant),
+                authority,
+                issuer_pid,
+            )
+        weakref.finalize(
+            store_grant,
+            _discard_receipt_grant,
+            grant_id,
+            issuer_pid,
+        )
         return self.provider_store._issue_universe_receipt_in_transaction(
             conn,
             store_grant,

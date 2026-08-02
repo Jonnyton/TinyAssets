@@ -171,6 +171,7 @@ def test_agent_receipt_refuses_missing_or_revoked_authority(
 def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
     tmp_path, authenticate_request
 ) -> None:
+    from tinyassets import agent_runtime_provider_execution as execution_module
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionBlocked,
         AgentRuntimeProviderExecutionService,
@@ -205,6 +206,7 @@ def test_changed_provider_assignment_and_direct_store_bypass_write_nothing(
         agent_invocation_command_digest=admitted.command.command_digest,
         agent_invocation_generation=admitted.invocation.generation,
     )
+    assert not hasattr(execution_module, "_mint_receipt_store_grant")
     with service.invocation_store.connection() as connection:
         connection.execute("BEGIN IMMEDIATE")
         with pytest.raises(PermissionError, match="service-issued grant"):
