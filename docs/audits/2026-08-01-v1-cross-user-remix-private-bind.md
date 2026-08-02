@@ -42,6 +42,12 @@ The first remix mutation failed with `agent_validation_error`: `lineage.fact_che
 
 The follow-up repair adds a copy-ready nested JSON example and explicitly says never to pass a single object as a lineage value. No real credential or outbound message was used, and private identifiers are omitted from this record.
 
+### Follow-up release
+
+Independent review approved exact head `2b896649f352f31ba8818552bbe98a8e4260ec21` with no findings. PR #2152 merged as `7256335820ef2247c4d7880455a67d88f5dc5c3d`; image run `30738561630` and production deploy/canary run `30738667081` passed. The production checks included health, cloud-worker startup, canonical MCP canary, exact-seven surface, direct-URL Access fencing, writer/receipt fencing, and release-receipt publication.
+
+A new rendered Claude.ai conversation was submitted at `https://claude.ai/chat/6984f7db-b882-4856-9b72-46e67026e9de`, but the visible browser-control route reset before its final response could be read. The fallback browser route also failed to start, while the installed Chrome-extension route reported Chrome was not running. Therefore no rendered pass is claimed. This conversation was also not started in Claude.ai Incognito and cannot count as first-contact proof even if its response is later recovered.
+
 ## Local verification
 
 RED before the repair:

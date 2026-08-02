@@ -10,6 +10,6 @@
 
 ## 2. Release and acceptance
 
-- [ ] 2.1 Obtain fresh independent exact-head review, merge through the normal PR path, and verify the merged-main source.
-- [ ] 2.2 Build and publish the exact merged-main image, complete production deploy and public canary, then rerun the rendered agent remix/binding contract on its first attempt.
+- [x] 2.1 Obtain fresh independent exact-head review, merge through the normal PR path, and verify the merged-main source. Independent review approved rebased exact head `412c239b`; PR #2149 merged as `d6072f29`, and current main preserved `GH_VERSION=2.97.0`.
+- [ ] 2.2 Build and publish the exact merged-main image, complete production deploy and public canary, then rerun the rendered agent remix/binding contract on its first attempt. Image run `30737655671` and deploy/canary run `30737837143` passed for `d6072f29`. The first rendered retry exposed a separate lineage-example defect; #2152 then built as run `30738561630` and deployed/canaried as `30738667081` at `72563358`. Its clean rendered response remains unread because the visible browser route reset, so this task stays open.
 - [ ] 2.3 Record post-fix organic-use evidence if available, sync `daemon-image-build` into canonical specs, and archive this change only when release and rendered acceptance are complete.
