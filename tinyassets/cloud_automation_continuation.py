@@ -1158,8 +1158,7 @@ class PreparedCloudContinuationActivationService:
             current is not None and current.state is AutomationActivationState.ACTIVE,
             current is not None and current.executor_class is AutomationActivationExecutor.CLOUD,
             current is not None and current.epoch == continuation.activation_epoch + 1,
-            current is not None
-            and current.subject == _branch_execution_subject(self._definition),
+            current is not None and current.subject == _branch_execution_subject(self._definition),
             current is not None and current.lease_id == request.lease_id,
         )
         if not all(exact):
@@ -1531,7 +1530,9 @@ class PreparedCloudContinuationProviderResolver:
         return ProviderUniverseWorkAuthority(
             root=root,
             binding=provider,
+            principal_id=definition.principal_id,
             actor_id=actor_id,
+            execution_subject=_branch_execution_subject(definition),
             branch_def_id=definition.branch_def_id,
             branch_version_id=definition.branch_version_id,
             operation="repository_spec_delivery",

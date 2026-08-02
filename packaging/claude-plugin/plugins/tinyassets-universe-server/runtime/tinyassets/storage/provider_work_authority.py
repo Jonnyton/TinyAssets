@@ -61,9 +61,7 @@ def _reset_provider_invocation_store_mint_state_after_fork() -> None:
 
 
 if hasattr(os, "register_at_fork"):
-    os.register_at_fork(
-        after_in_child=_reset_provider_invocation_store_mint_state_after_fork
-    )
+    os.register_at_fork(after_in_child=_reset_provider_invocation_store_mint_state_after_fork)
 
 
 def _discard_provider_invocation_store_mint_proof(
@@ -103,14 +101,11 @@ class _ProviderInvocationStoreMintProof:
         if expected != (reservation_digest, current_pid):
             raise PermissionError("provider invocation mint proof is for another reservation")
         with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
-            active = _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS.get(
-                self._proof_id
-            )
+            active = _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS.get(self._proof_id)
             if active != expected:
-                raise PermissionError(
-                    "provider invocation mint proof is invalid or consumed"
-                )
+                raise PermissionError("provider invocation mint proof is invalid or consumed")
             del _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[self._proof_id]
+
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS provider_work_bindings (
@@ -496,7 +491,7 @@ class _Transaction:
             authority.max_invocations <= binding.max_invocations,
             authority.max_tokens <= binding.max_tokens,
             authority.max_cost_microunits <= binding.max_cost_microunits,
-            candidate.principal_id == binding.owner_user_id,
+            candidate.principal_id == authority.principal_id,
             candidate.universe_id == binding.universe_id,
             candidate.provider == binding.provider,
             candidate.credential_reference_digest == binding.credential_reference_digest,
@@ -1059,10 +1054,7 @@ class SQLiteProviderWorkAuthorityStore:
         now = self._now()
         with self._ledger_transaction() as transaction:
             result = transaction.arm_launch(request, now=now)
-        if (
-            result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
-            or result.record is None
-        ):
+        if result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED or result.record is None:
             return result
 
         proof_id = secrets.token_hex(32)
