@@ -30,6 +30,7 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchChildDelegation,
     BackgroundBranchExecutorAudience,
     BackgroundBranchExecutorClass,
+    BackgroundBranchHoldReason,
     BackgroundBranchOperation,
     BackgroundBranchProvenance,
     BackgroundBranchReceiptRefs,
@@ -364,6 +365,270 @@ class BackgroundBranchAttemptClaimResolver(Protocol):
 class BackgroundBranchAttemptClaimError(ValueError):
     """Stable fail-closed result for an invalid attempt claim transition."""
 
+    def __init__(self, code: str, detail: str) -> None:
+        self.code = code
+        super().__init__(f"{code}: {detail}")
+
+
+class BackgroundBranchAuthorityOwnerKind(str, Enum):
+    QUEUE_TASK = "queue_task"
+    SOURCE = "source"
+
+
+class BackgroundBranchAuthorityOwnerState(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    ACTIVE = "active"
+    TARGET_AUTHORITY_HELD = "target_authority_held"
+
+
+class BackgroundBranchAuthorityFailureKind(str, Enum):
+    MISSING = "missing"
+    STALE = "stale"
+    REVOKED = "revoked"
+    EXHAUSTED = "exhausted"
+    UNAUTHORIZED = "unauthorized"
+    SOURCE_MISMATCHED = "source_mismatched"
+    INDETERMINATE = "indeterminate"
+
+
+class BackgroundBranchAuthorityExitAction(str, Enum):
+    RECOVER = "recover"
+    REAUTHORIZE = "reauthorize"
+
+
+_FAILURE_HOLD_REASONS = {
+    BackgroundBranchAuthorityFailureKind.MISSING: (
+        BackgroundBranchHoldReason.BINDING_MISSING
+    ),
+    BackgroundBranchAuthorityFailureKind.STALE: (
+        BackgroundBranchHoldReason.BINDING_STALE
+    ),
+    BackgroundBranchAuthorityFailureKind.REVOKED: (
+        BackgroundBranchHoldReason.BINDING_REVOKED
+    ),
+    BackgroundBranchAuthorityFailureKind.EXHAUSTED: (
+        BackgroundBranchHoldReason.BINDING_EXHAUSTED
+    ),
+    BackgroundBranchAuthorityFailureKind.UNAUTHORIZED: (
+        BackgroundBranchHoldReason.TARGET_UNAUTHORIZED
+    ),
+    BackgroundBranchAuthorityFailureKind.SOURCE_MISMATCHED: (
+        BackgroundBranchHoldReason.SOURCE_GENERATION_MISMATCH
+    ),
+    BackgroundBranchAuthorityFailureKind.INDETERMINATE: (
+        BackgroundBranchHoldReason.INDETERMINATE_PRIOR_ATTEMPT
+    ),
+}
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityOwnerRecord:
+    """Dark queue/source authority state; references are non-bearer fences."""
+
+    owner_kind: BackgroundBranchAuthorityOwnerKind
+    owner_id: str
+    universe_id: str
+    authorizing_principal_id: str
+    source_generation: int
+    transition_generation: int
+    state: BackgroundBranchAuthorityOwnerState
+    binding: BackgroundBranchBindingFence | None
+    attempt: BackgroundBranchAttemptFence | None
+    hold_reason: BackgroundBranchHoldReason | None
+    updated_at: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner_kind, BackgroundBranchAuthorityOwnerKind):
+            raise ValueError("owner_kind must be typed")
+        if not isinstance(self.state, BackgroundBranchAuthorityOwnerState):
+            raise ValueError("state must be typed")
+        _required(self.owner_id, "owner_id")
+        _required(self.universe_id, "universe_id")
+        _required(self.authorizing_principal_id, "authorizing_principal_id")
+        if (
+            not isinstance(self.source_generation, int)
+            or isinstance(self.source_generation, bool)
+            or self.source_generation < 0
+        ):
+            raise ValueError("source_generation must be a non-negative integer")
+        _positive_integer(self.transition_generation, "transition_generation")
+        _utc_timestamp(self.updated_at, "updated_at")
+        if self.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
+            allowed_states = {
+                BackgroundBranchAuthorityOwnerState.PENDING,
+                BackgroundBranchAuthorityOwnerState.RUNNING,
+                BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            }
+        else:
+            allowed_states = {
+                BackgroundBranchAuthorityOwnerState.ACTIVE,
+                BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            }
+        if self.state not in allowed_states:
+            raise ValueError("state is invalid for owner_kind")
+        held = (
+            self.state
+            is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
+        )
+        if held != (self.hold_reason is not None):
+            raise ValueError("hold_reason is required only for held owners")
+        if self.hold_reason is not None and not isinstance(
+            self.hold_reason,
+            BackgroundBranchHoldReason,
+        ):
+            raise ValueError("hold_reason must be typed")
+        if self.binding is not None and not isinstance(
+            self.binding, BackgroundBranchBindingFence
+        ):
+            raise ValueError("binding must be a typed fence")
+        if self.attempt is not None and not isinstance(
+            self.attempt, BackgroundBranchAttemptFence
+        ):
+            raise ValueError("attempt must be a typed fence")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityOwnerFence:
+    expected_record: BackgroundBranchAuthorityOwnerRecord
+
+    def __post_init__(self) -> None:
+        if not isinstance(
+            self.expected_record,
+            BackgroundBranchAuthorityOwnerRecord,
+        ):
+            raise ValueError("expected_record must be typed")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityOwnerWriteResult:
+    outcome: BackgroundBranchAuthorityWriteOutcome
+    record: BackgroundBranchAuthorityOwnerRecord | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.outcome, BackgroundBranchAuthorityWriteOutcome):
+            raise ValueError("outcome must be typed")
+        if self.record is not None and not isinstance(
+            self.record,
+            BackgroundBranchAuthorityOwnerRecord,
+        ):
+            raise ValueError("record must be typed")
+
+
+@runtime_checkable
+class BackgroundBranchAuthorityOwnerStore(Protocol):
+    def compare_and_swap(
+        self,
+        *,
+        expected: BackgroundBranchAuthorityOwnerFence,
+        replacement: BackgroundBranchAuthorityOwnerRecord,
+    ) -> BackgroundBranchAuthorityOwnerWriteResult: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityExitRequest:
+    owner: BackgroundBranchAuthorityOwnerRecord
+    action: BackgroundBranchAuthorityExitAction
+    authentication_context_id: str | None
+    transitioned_at: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.owner, BackgroundBranchAuthorityOwnerRecord):
+            raise ValueError("owner must be typed")
+        if not isinstance(self.action, BackgroundBranchAuthorityExitAction):
+            raise ValueError("action must be typed")
+        if self.action is BackgroundBranchAuthorityExitAction.REAUTHORIZE:
+            _required(self.authentication_context_id, "authentication_context_id")
+        elif self.authentication_context_id is not None:
+            raise ValueError("recovery accepts no authentication context")
+        _utc_timestamp(self.transitioned_at, "transitioned_at")
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityExitResolution:
+    binding: BackgroundBranchBinding
+    attempt: BackgroundBranchAttempt | None
+    authenticated_principal_id: str | None
+    is_universe_admin: bool
+    predecessor: BackgroundBranchAttemptPredecessorState
+    boundary: BackgroundBranchAttemptBoundaryState
+    resolved_at: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.binding, BackgroundBranchBinding):
+            raise ValueError("binding must be typed")
+        if self.attempt is not None and not isinstance(
+            self.attempt,
+            BackgroundBranchAttempt,
+        ):
+            raise ValueError("attempt must be typed")
+        if self.authenticated_principal_id is not None:
+            _required(
+                self.authenticated_principal_id,
+                "authenticated_principal_id",
+            )
+        if not isinstance(self.is_universe_admin, bool):
+            raise ValueError("is_universe_admin must be boolean")
+        if not isinstance(
+            self.predecessor,
+            BackgroundBranchAttemptPredecessorState,
+        ):
+            raise ValueError("predecessor must be typed")
+        if not isinstance(self.boundary, BackgroundBranchAttemptBoundaryState):
+            raise ValueError("boundary must be typed")
+        _utc_timestamp(self.resolved_at, "resolved_at")
+
+
+@runtime_checkable
+class BackgroundBranchAuthorityExitResolver(Protocol):
+    def resolve(
+        self,
+        request: BackgroundBranchAuthorityExitRequest,
+    ) -> BackgroundBranchAuthorityExitResolution | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchAuthorityHoldProjection:
+    state: BackgroundBranchAuthorityOwnerState
+    reason: BackgroundBranchHoldReason
+    automatic_recovery_possible: bool
+    authenticated_reauthorization_required: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "state": self.state.value,
+            "reason": self.reason.value,
+            "automatic_recovery_possible": self.automatic_recovery_possible,
+            "authenticated_reauthorization_required": (
+                self.authenticated_reauthorization_required
+            ),
+        }
+
+
+def project_background_branch_authority_hold(
+    owner: BackgroundBranchAuthorityOwnerRecord,
+) -> BackgroundBranchAuthorityHoldProjection:
+    if not isinstance(owner, BackgroundBranchAuthorityOwnerRecord):
+        raise ValueError("owner must be typed")
+    if (
+        owner.state
+        is not BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
+        or owner.hold_reason is None
+    ):
+        raise ValueError("only held authority owners have a hold projection")
+    automatic = (
+        owner.hold_reason
+        is BackgroundBranchHoldReason.INDETERMINATE_PRIOR_ATTEMPT
+    )
+    return BackgroundBranchAuthorityHoldProjection(
+        state=owner.state,
+        reason=owner.hold_reason,
+        automatic_recovery_possible=automatic,
+        authenticated_reauthorization_required=not automatic,
+    )
+
+
+class BackgroundBranchAuthorityHoldError(ValueError):
     def __init__(self, code: str, detail: str) -> None:
         self.code = code
         super().__init__(f"{code}: {detail}")
@@ -1228,7 +1493,301 @@ class BackgroundBranchAttemptClaimService:
         raise BackgroundBranchAttemptClaimError(code, detail)
 
 
+class BackgroundBranchAuthorityHoldService:
+    """Generation-fenced dark holds for queue rows and source-owned work."""
+
+    def __init__(
+        self,
+        store: BackgroundBranchAuthorityOwnerStore,
+        resolver: BackgroundBranchAuthorityExitResolver,
+    ) -> None:
+        if not isinstance(store, BackgroundBranchAuthorityOwnerStore):
+            raise ValueError("store must implement BackgroundBranchAuthorityOwnerStore")
+        if not isinstance(resolver, BackgroundBranchAuthorityExitResolver):
+            raise ValueError(
+                "resolver must implement BackgroundBranchAuthorityExitResolver"
+            )
+        self._store = store
+        self._resolver = resolver
+
+    def hold(
+        self,
+        *,
+        expected: BackgroundBranchAuthorityOwnerFence,
+        failure: BackgroundBranchAuthorityFailureKind,
+        held_at: str,
+    ) -> BackgroundBranchAuthorityOwnerWriteResult:
+        current = self._expected(expected)
+        if (
+            current.state
+            is BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
+        ):
+            self._fail("already_held", "authority owner is already held")
+        if not isinstance(failure, BackgroundBranchAuthorityFailureKind):
+            raise ValueError("failure must be typed")
+        _utc_timestamp(held_at, "held_at")
+        replacement = replace(
+            current,
+            transition_generation=current.transition_generation + 1,
+            state=BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD,
+            hold_reason=_FAILURE_HOLD_REASONS[failure],
+            updated_at=held_at,
+        )
+        return self._store.compare_and_swap(
+            expected=expected,
+            replacement=replacement,
+        )
+
+    def recover(
+        self,
+        *,
+        expected: BackgroundBranchAuthorityOwnerFence,
+        recovered_at: str,
+    ) -> BackgroundBranchAuthorityOwnerWriteResult:
+        current = self._held(expected)
+        resolution = self._resolve(
+            current,
+            BackgroundBranchAuthorityExitAction.RECOVER,
+            authentication_context_id=None,
+            transitioned_at=recovered_at,
+        )
+        if (
+            resolution.predecessor
+            not in {
+                BackgroundBranchAttemptPredecessorState.DEAD,
+                BackgroundBranchAttemptPredecessorState.INVALIDATED,
+            }
+            or resolution.boundary
+            not in {
+                BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+                BackgroundBranchAttemptBoundaryState.CLOSED,
+            }
+        ):
+            self._fail(
+                "recovery_not_conclusive",
+                "recovery requires a dead/invalidated predecessor and conclusive boundary",
+            )
+        self._validate_same_authority(current, resolution)
+        assert resolution.attempt is not None
+        replacement = replace(
+            current,
+            transition_generation=current.transition_generation + 1,
+            state=self._resume_state(current.owner_kind),
+            attempt=BackgroundBranchAttemptFence(resolution.attempt),
+            hold_reason=None,
+            updated_at=recovered_at,
+        )
+        return self._store.compare_and_swap(
+            expected=expected,
+            replacement=replacement,
+        )
+
+    def reauthorize(
+        self,
+        *,
+        expected: BackgroundBranchAuthorityOwnerFence,
+        authentication_context_id: str,
+        reauthorized_at: str,
+    ) -> BackgroundBranchAuthorityOwnerWriteResult:
+        current = self._held(expected)
+        resolution = self._resolve(
+            current,
+            BackgroundBranchAuthorityExitAction.REAUTHORIZE,
+            authentication_context_id=authentication_context_id,
+            transitioned_at=reauthorized_at,
+        )
+        if (
+            resolution.authenticated_principal_id
+            != current.authorizing_principal_id
+            and not resolution.is_universe_admin
+        ):
+            self._fail(
+                "reauthorization_not_authorized",
+                "reauthorization requires the canonical principal or universe admin",
+            )
+        binding = resolution.binding
+        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+            self._fail("binding_not_active", "reauthorized binding must be active")
+        if (
+            binding.universe_id != current.universe_id
+            or binding.authorizing_principal_id != current.authorizing_principal_id
+        ):
+            self._fail(
+                "binding_authority_mismatch",
+                "reauthorized binding changed the authority owner",
+            )
+        if (
+            current.binding is not None
+            and binding.generation
+            <= current.binding.expected_record.generation
+        ):
+            self._fail(
+                "binding_not_rotated",
+                "authenticated repair must advance the binding generation",
+            )
+        attempt = resolution.attempt
+        if current.owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
+            if attempt is None:
+                self._fail(
+                    "attempt_missing",
+                    "queue reauthorization requires a fresh reserved attempt",
+                )
+            assert attempt is not None
+            if (
+                current.attempt is not None
+                and attempt.attempt_id
+                == current.attempt.expected_record.attempt_id
+            ):
+                self._fail(
+                    "stale_attempt_revived",
+                    "reauthorization cannot revive the held attempt",
+                )
+            self._validate_attempt(binding, attempt, current.universe_id)
+        elif attempt is not None:
+            self._validate_attempt(binding, attempt, current.universe_id)
+        replacement = replace(
+            current,
+            source_generation=(
+                attempt.source_generation if attempt is not None else current.source_generation
+            ),
+            transition_generation=current.transition_generation + 1,
+            state=self._resume_state(current.owner_kind),
+            binding=BackgroundBranchBindingFence(binding),
+            attempt=(
+                BackgroundBranchAttemptFence(attempt)
+                if attempt is not None
+                else None
+            ),
+            hold_reason=None,
+            updated_at=reauthorized_at,
+        )
+        return self._store.compare_and_swap(
+            expected=expected,
+            replacement=replacement,
+        )
+
+    @staticmethod
+    def _expected(
+        expected: BackgroundBranchAuthorityOwnerFence,
+    ) -> BackgroundBranchAuthorityOwnerRecord:
+        if not isinstance(expected, BackgroundBranchAuthorityOwnerFence):
+            raise ValueError("expected must be a BackgroundBranchAuthorityOwnerFence")
+        return expected.expected_record
+
+    def _held(
+        self,
+        expected: BackgroundBranchAuthorityOwnerFence,
+    ) -> BackgroundBranchAuthorityOwnerRecord:
+        current = self._expected(expected)
+        if (
+            current.state
+            is not BackgroundBranchAuthorityOwnerState.TARGET_AUTHORITY_HELD
+        ):
+            self._fail("owner_not_held", "only held authority owners may exit")
+        return current
+
+    def _resolve(
+        self,
+        current: BackgroundBranchAuthorityOwnerRecord,
+        action: BackgroundBranchAuthorityExitAction,
+        *,
+        authentication_context_id: str | None,
+        transitioned_at: str,
+    ) -> BackgroundBranchAuthorityExitResolution:
+        resolution = self._resolver.resolve(
+            BackgroundBranchAuthorityExitRequest(
+                owner=current,
+                action=action,
+                authentication_context_id=authentication_context_id,
+                transitioned_at=transitioned_at,
+            )
+        )
+        if not isinstance(resolution, BackgroundBranchAuthorityExitResolution):
+            self._fail(
+                "exit_resolution_missing",
+                "fresh canonical exit evidence is absent",
+            )
+        return resolution
+
+    def _validate_same_authority(
+        self,
+        current: BackgroundBranchAuthorityOwnerRecord,
+        resolution: BackgroundBranchAuthorityExitResolution,
+    ) -> None:
+        binding = resolution.binding
+        if (
+            current.binding is None
+            or binding != current.binding.expected_record
+        ):
+            self._fail(
+                "recovery_rotated_binding",
+                "automatic recovery cannot rotate target authority",
+            )
+        attempt = resolution.attempt
+        if (
+            current.attempt is None
+            or attempt is None
+            or attempt.attempt_id
+            != current.attempt.expected_record.attempt_id
+            or attempt.claim_generation
+            <= current.attempt.expected_record.claim_generation
+        ):
+            self._fail(
+                "recovery_rotated_attempt",
+                "automatic recovery must advance the same attempt claim",
+            )
+        self._validate_attempt(binding, attempt, current.universe_id)
+
+    @staticmethod
+    def _resume_state(
+        owner_kind: BackgroundBranchAuthorityOwnerKind,
+    ) -> BackgroundBranchAuthorityOwnerState:
+        if owner_kind is BackgroundBranchAuthorityOwnerKind.QUEUE_TASK:
+            return BackgroundBranchAuthorityOwnerState.PENDING
+        return BackgroundBranchAuthorityOwnerState.ACTIVE
+
+    @staticmethod
+    def _validate_attempt(
+        binding: BackgroundBranchBinding,
+        attempt: BackgroundBranchAttempt,
+        universe_id: str,
+    ) -> None:
+        if (
+            attempt.binding_id != binding.binding_id
+            or attempt.binding_digest != binding.binding_digest
+            or attempt.binding_generation != binding.generation
+            or attempt.universe_id != universe_id
+        ):
+            raise BackgroundBranchAuthorityHoldError(
+                "attempt_authority_mismatch",
+                "attempt does not match the resolved binding and universe",
+            )
+        if attempt.lifecycle is not BackgroundBranchAttemptLifecycle.RESERVED:
+            raise BackgroundBranchAuthorityHoldError(
+                "attempt_not_reserved",
+                "held work may resume only with a reserved attempt",
+            )
+
+    @staticmethod
+    def _fail(code: str, detail: str) -> None:
+        raise BackgroundBranchAuthorityHoldError(code, detail)
+
+
 __all__ = [
+    "BackgroundBranchAuthorityExitAction",
+    "BackgroundBranchAuthorityExitRequest",
+    "BackgroundBranchAuthorityExitResolution",
+    "BackgroundBranchAuthorityExitResolver",
+    "BackgroundBranchAuthorityFailureKind",
+    "BackgroundBranchAuthorityHoldError",
+    "BackgroundBranchAuthorityHoldProjection",
+    "BackgroundBranchAuthorityHoldService",
+    "BackgroundBranchAuthorityOwnerFence",
+    "BackgroundBranchAuthorityOwnerKind",
+    "BackgroundBranchAuthorityOwnerRecord",
+    "BackgroundBranchAuthorityOwnerState",
+    "BackgroundBranchAuthorityOwnerStore",
+    "BackgroundBranchAuthorityOwnerWriteResult",
     "BackgroundBranchAttemptBoundaryState",
     "BackgroundBranchAttemptClaimAction",
     "BackgroundBranchAttemptClaimError",
@@ -1247,4 +1806,5 @@ __all__ = [
     "BackgroundBranchBindingSeed",
     "BackgroundBranchBindingTransitionError",
     "BackgroundBranchBindingTransitionService",
+    "project_background_branch_authority_hold",
 ]

@@ -1399,3 +1399,15 @@ fresh-host rollback edges found later.
   OpenSpec change remains incomplete.
 - **What I would do differently:** separate ambient fleet counters from tracked
   source state before dispatch so a foldback worker starts with a clean tree.
+
+## 2026-08-02 — dark background target holds
+
+- **What surprised me:** task 2.6 names queue behavior, but task 5.3 still owns
+  concrete BranchTask shape and runtime wiring; the safe slice is the dark CAS
+  contract both queue generations can implement without activating either.
+- **Pattern worth capturing:** preserve exact typed binding/attempt fences in a
+  held owner record, then make automatic recovery prove the same records while
+  authenticated repair must rotate the binding and never revive the attempt.
+- **What I would do differently:** start with typed fences rather than duplicate
+  scalar IDs/digests/generations; that would have made the first green diff
+  smaller and stronger.
