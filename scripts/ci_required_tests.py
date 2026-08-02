@@ -42,10 +42,11 @@ QUARANTINE = REPO_ROOT / ".github" / "known-failing-tests.txt"
 # The gate must never pass vacuously. Without a floor, a PR that mass-skips,
 # mass-deselects, or deletes most of the suite goes green on nothing — pytest
 # exits 0, no "new failures" exist, and only literal zero-collection trips
-# exit 5 (Codex gate review 2026-08-02, finding 3). The suite runs ~9,100
-# tests today; the floor sits far below natural variance and far above any
-# vacuous run. Ratchet it upward as the suite grows.
-MIN_RAN_FLOOR = 7500
+# exit 5 (Codex gate review 2026-08-02, finding 3). The suite ran 12,747
+# tests on the 2026-08-02 baseline (run 30767266528); the floor sits far
+# below natural variance and far above any vacuous run. Ratchet it upward
+# as the suite grows.
+MIN_RAN_FLOOR = 10000
 
 
 def vacuity_failure(ran_count: int, floor: int = MIN_RAN_FLOOR) -> str | None:
