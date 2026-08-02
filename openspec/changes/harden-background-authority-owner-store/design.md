@@ -35,7 +35,7 @@ The service API remains unchanged. The concrete store inspects the current and r
 
 - hold-only transitions validate referenced canonical rows and change only the owner, except that a closed missing-authority reason proves the applicable row is absent and preserves any non-authorizing fence only for audit;
 - recovery is available only when both owner records fence the same present attempt; it requires the same binding and attempt identity, applies the existing monotonic attempt CAS, then updates the owner;
-- queue-owner reauthorization requires the current fenced rows, an already-committed newer binding, and inserts or exactly replays the fresh reserved attempt before updating the owner;
+- queue-owner reauthorization requires the current fenced rows and an already-committed newer binding; before updating the owner it re-applies transaction-local issuance admission, including deterministic attempt identity, first-generation reserved state, exact logical-key ownership, canonical target/source facts, and the binding's canonical attempt-count limit, then inserts or exactly replays the attempt;
 - source-owner reauthorization may exit without a replacement attempt only after validating the newer canonical binding and any previous attempt fence; binding rotation leaves that old attempt stale/non-runnable and the owner never revives or mutates it.
 
 Any missing/conflicting row or write outcome aborts the transaction. Resolver output is evidence to validate, never an independently authoritative record.

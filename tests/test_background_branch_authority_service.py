@@ -1356,18 +1356,26 @@ def _reauthorization_state(
         _Resolver(_seed(source_revision="5")),
     ).rotate(BackgroundBranchBindingFence(binding)).record
     assert rotated is not None
+    logical_attempt_key = "request:17:g5:body-feedface"
+    attempt_id = authority_service._attempt_id_from_identity(
+        rotated.binding_id,
+        logical_attempt_key,
+    )
     replacement_attempt = replace(
         attempt,
-        attempt_id="att_reauthorized_17",
+        attempt_id=attempt_id,
+        logical_attempt_key=logical_attempt_key,
         binding_digest=rotated.binding_digest,
         binding_generation=rotated.generation,
-        claim_generation=attempt.claim_generation + 1,
+        claim_generation=1,
+        lease_generation=1,
         source_generation=attempt.source_generation + 1,
+        created_at="2026-07-30T19:32:00Z",
         updated_at="2026-07-30T19:32:00Z",
         provenance=replace(
             attempt.provenance,
             source_id=attempt.source_id,
-            origin_attempt_id="att_reauthorized_17",
+            origin_attempt_id=attempt_id,
         ),
     )
     return attempt, store, held, rotated, replacement_attempt

@@ -239,12 +239,17 @@ def test_owner_store_recovers_attempt_and_owner_atomically(tmp_path) -> None:
     ) == recovered
 
 
-def _rotated_binding(binding: BackgroundBranchBinding) -> BackgroundBranchBinding:
+def _rotated_binding(
+    binding: BackgroundBranchBinding,
+    *,
+    max_attempts: int | None = None,
+) -> BackgroundBranchBinding:
     return replace(
         binding,
         generation=binding.generation + 1,
         binding_digest=f"sha256:{'d' * 64}",
         source_revision="5",
+        max_attempts=(binding.max_attempts if max_attempts is None else max_attempts),
     )
 
 
@@ -252,10 +257,15 @@ def _fresh_attempt(
     attempt: BackgroundBranchAttempt,
     binding: BackgroundBranchBinding,
 ) -> BackgroundBranchAttempt:
+    logical_attempt_key = "request:17:g5:body-feedface"
+    attempt_id = authority_service._attempt_id_from_identity(
+        binding.binding_id,
+        logical_attempt_key,
+    )
     return replace(
         attempt,
-        attempt_id="att_02",
-        logical_attempt_key="request:17:g5:body-feedface",
+        attempt_id=attempt_id,
+        logical_attempt_key=logical_attempt_key,
         binding_digest=binding.binding_digest,
         binding_generation=binding.generation,
         source_generation=int(binding.source_revision),
@@ -267,12 +277,12 @@ def _fresh_attempt(
         updated_at="2026-07-30T07:03:00Z",
         provenance=replace(
             attempt.provenance,
-            origin_attempt_id="att_02",
+            origin_attempt_id=attempt_id,
         ),
     )
 
 
-def _held_owner_service(tmp_path, *, owner_kind):
+def _held_owner_service(tmp_path, *, owner_kind, rotated_max_attempts=None):
     binding = _binding()
     attempt = _attempt()
     owner = _owner(attempt, binding, owner_kind=owner_kind)
@@ -289,7 +299,7 @@ def _held_owner_service(tmp_path, *, owner_kind):
         held_at="2026-07-30T07:02:00Z",
     ).record
     assert held is not None
-    rotated = _rotated_binding(binding)
+    rotated = _rotated_binding(binding, max_attempts=rotated_max_attempts)
     with store.transaction() as tx:
         result = tx.compare_and_swap_binding(
             binding_id=binding.binding_id,
@@ -329,6 +339,37 @@ def test_queue_owner_reauthorization_inserts_attempt_with_owner(tmp_path) -> Non
         owner_kind=held.owner_kind,
         owner_id=held.owner_id,
     ) == reauthorized
+
+
+def test_queue_reauthorization_at_attempt_limit_mints_nothing(tmp_path) -> None:
+    store, resolver, service, attempt, held, rotated = _held_owner_service(
+        tmp_path,
+        owner_kind=authority_service.BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+        rotated_max_attempts=1,
+    )
+    fresh = _fresh_attempt(attempt, rotated)
+    resolver.resolution = authority_service.BackgroundBranchAuthorityExitResolution(
+        binding=rotated,
+        attempt=fresh,
+        authenticated_principal_id=attempt.authorizing_principal_id,
+        is_universe_admin=False,
+        predecessor=authority_service.BackgroundBranchAttemptPredecessorState.UNKNOWN,
+        boundary=authority_service.BackgroundBranchAttemptBoundaryState.INDETERMINATE,
+        resolved_at="2026-07-30T07:03:00Z",
+    )
+
+    with pytest.raises(ValueError, match="maximum attempt count"):
+        service.reauthorize(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
+            authentication_context_id="authctx_17",
+            reauthorized_at="2026-07-30T07:03:00Z",
+        )
+
+    assert store.get_attempt(fresh.attempt_id) is None
+    assert store.get_owner(
+        owner_kind=held.owner_kind,
+        owner_id=held.owner_id,
+    ) == held
 
 
 def test_source_owner_reauthorization_fences_prior_without_new_attempt(
@@ -616,6 +657,64 @@ def test_owner_store_independently_rejects_nonreserved_reauthorization(
     )
 
     with pytest.raises(ValueError, match="freshly reserved"):
+        store.compare_and_swap(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
+            replacement=replacement,
+        )
+
+    assert store.get_attempt(unsafe.attempt_id) is None
+    assert store.get_owner(
+        owner_kind=held.owner_kind,
+        owner_id=held.owner_id,
+    ) == held
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("nondeterministic_id", "identity is not deterministic"),
+        ("advanced_claim", "not freshly reserved"),
+        ("advanced_lease", "not freshly reserved"),
+        ("nonfresh_timestamp", "not freshly reserved"),
+    ),
+)
+def test_owner_store_rejects_resolver_fabricated_issuance_facts(
+    tmp_path,
+    mutation: str,
+    message: str,
+) -> None:
+    store, _resolver, _service, attempt, held, rotated = _held_owner_service(
+        tmp_path,
+        owner_kind=authority_service.BackgroundBranchAuthorityOwnerKind.QUEUE_TASK,
+    )
+    fresh = _fresh_attempt(attempt, rotated)
+    if mutation == "nondeterministic_id":
+        unsafe = replace(
+            fresh,
+            attempt_id="att_resolver_fabricated",
+            provenance=replace(
+                fresh.provenance,
+                origin_attempt_id="att_resolver_fabricated",
+            ),
+        )
+    elif mutation == "advanced_claim":
+        unsafe = replace(fresh, claim_generation=2)
+    elif mutation == "advanced_lease":
+        unsafe = replace(fresh, lease_generation=2)
+    else:
+        unsafe = replace(fresh, created_at="2026-07-30T07:02:00Z")
+    replacement = replace(
+        held,
+        source_generation=unsafe.source_generation,
+        transition_generation=held.transition_generation + 1,
+        state=authority_service.BackgroundBranchAuthorityOwnerState.PENDING,
+        binding=BackgroundBranchBindingFence(rotated),
+        attempt=BackgroundBranchAttemptFence(unsafe),
+        hold_reason=None,
+        updated_at="2026-07-30T07:03:00Z",
+    )
+
+    with pytest.raises(ValueError, match=message):
         store.compare_and_swap(
             expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
             replacement=replacement,

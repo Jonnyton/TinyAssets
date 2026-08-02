@@ -998,13 +998,23 @@ class BackgroundBranchBindingTransitionService:
             )
 
 
-def _attempt_id(request: BackgroundBranchAttemptIssuanceRequest) -> str:
+def _attempt_id_from_identity(
+    binding_id: str,
+    logical_attempt_key: str,
+) -> str:
     identity = {
         "schema_version": 1,
-        "binding_id": request.binding_id,
-        "logical_attempt_key": request.logical_attempt_key,
+        "binding_id": binding_id,
+        "logical_attempt_key": logical_attempt_key,
     }
     return f"att_{_digest(identity).removeprefix('sha256:')[:32]}"
+
+
+def _attempt_id(request: BackgroundBranchAttemptIssuanceRequest) -> str:
+    return _attempt_id_from_identity(
+        request.binding_id,
+        request.logical_attempt_key,
+    )
 
 
 class BackgroundBranchAttemptIssuanceService:
@@ -1743,8 +1753,10 @@ class BackgroundBranchAuthorityHoldService:
                 )
             assert attempt is not None
             self._validate_attempt(binding, attempt, current.universe_id)
+            self._validate_fresh_attempt(attempt, resolution.resolved_at)
         elif attempt is not None:
             self._validate_attempt(binding, attempt, current.universe_id)
+            self._validate_fresh_attempt(attempt, resolution.resolved_at)
         replacement = replace(
             current,
             source_generation=(
@@ -2019,6 +2031,27 @@ class BackgroundBranchAuthorityHoldService:
             raise BackgroundBranchAuthorityHoldError(
                 "attempt_not_reserved",
                 "held work may resume only with a reserved attempt",
+            )
+
+    @staticmethod
+    def _validate_fresh_attempt(
+        attempt: BackgroundBranchAttempt,
+        resolved_at: str,
+    ) -> None:
+        if (
+            attempt.attempt_id
+            != _attempt_id_from_identity(
+                attempt.binding_id,
+                attempt.logical_attempt_key,
+            )
+            or attempt.claim_generation != 1
+            or attempt.lease_generation != 1
+            or attempt.created_at != resolved_at
+            or attempt.updated_at != resolved_at
+        ):
+            raise BackgroundBranchAuthorityHoldError(
+                "attempt_issuance_mismatch",
+                "reauthorization attempt was not canonically issued",
             )
 
     @staticmethod

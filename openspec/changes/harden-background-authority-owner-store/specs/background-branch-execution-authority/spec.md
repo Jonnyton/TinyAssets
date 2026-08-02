@@ -16,6 +16,12 @@ When background authority owner records share a transactional store with canonic
 - **THEN** the store validates it against the newer canonical binding and inserts it in the same transaction as the owner transition
 - **AND** an invalid or conflicting attempt prevents the owner from returning to a pickable state
 
+#### Scenario: Reauthorization cannot bypass issuance admission
+
+- **WHEN** a queue-owner resolver supplies a self-consistent fresh attempt after the canonical binding has reached `max_attempts`
+- **THEN** the same transaction refuses the attempt before insertion and leaves the owner held
+- **AND** deterministic identity, first-generation reserved state, logical-key ownership, and canonical target/source facts are validated before any resolver-supplied attempt can be inserted or replayed
+
 #### Scenario: Source reauthorization may wait for later attempt issuance
 
 - **WHEN** a source-owned hold is authenticated against a newer canonical binding without resolving a replacement attempt

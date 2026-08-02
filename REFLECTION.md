@@ -1487,7 +1487,8 @@ fresh-host rollback edges found later.
 
 - **What surprised me:** a typed owner-store protocol and passing fake-store
   tests still allowed recovery and reauthorization to publish authority that
-  had never existed in canonical storage.
+  had never existed in canonical storage; even persisting a fresh attempt was
+  unsafe until the transaction re-applied the binding's issuance limit.
 - **Pattern worth capturing:** an authority fence is meaningful only when its
   referenced binding and attempt are validated and committed in the same
   transaction. Exact absence may authorize a safe closed hold, but typed

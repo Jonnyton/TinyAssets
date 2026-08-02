@@ -37,6 +37,7 @@ from tinyassets.background_branch_authority_service import (
     BackgroundBranchAuthorityOwnerRecord,
     BackgroundBranchAuthorityOwnerState,
     BackgroundBranchAuthorityOwnerWriteResult,
+    _attempt_id_from_identity,
 )
 from tinyassets.storage import db_path
 
@@ -732,9 +733,41 @@ class _SQLiteBackgroundBranchAuthorityTransaction(
         if (
             fresh.lifecycle is not BackgroundBranchAttemptLifecycle.RESERVED
             or fresh.lease_expires_at is not None
+            or fresh.claim_generation != 1
+            or fresh.lease_generation != 1
+            or fresh.created_at != fresh.updated_at
             or replacement.source_generation != fresh.source_generation
         ):
             raise ValueError("reauthorization attempt is not freshly reserved")
+        if fresh.attempt_id != _attempt_id_from_identity(
+            fresh.binding_id,
+            fresh.logical_attempt_key,
+        ):
+            raise ValueError("reauthorization attempt identity is not deterministic")
+        if (
+            new.status is not BackgroundBranchBindingStatus.ACTIVE
+            or not _attempt_matches_binding(fresh, new)
+            or fresh.source_generation != int(new.source_revision)
+        ):
+            raise ValueError("reauthorization attempt authority is not canonical")
+        if new.expires_at is not None:
+            expires_at = datetime.fromisoformat(
+                new.expires_at.replace("Z", "+00:00")
+            )
+            if expires_at <= datetime.fromisoformat(
+                replacement.updated_at.replace("Z", "+00:00")
+            ) or expires_at <= datetime.fromisoformat(
+                fresh.updated_at.replace("Z", "+00:00")
+            ):
+                raise ValueError("reauthorization binding is expired")
+        prior = self.get_attempt_by_logical_key(fresh.logical_attempt_key)
+        if prior is not None and prior != fresh:
+            raise ValueError("reauthorization logical attempt key is already owned")
+        if (
+            prior is None
+            and self.count_attempts(binding_id=new.binding_id) >= new.max_attempts
+        ):
+            raise ValueError("binding has reached its maximum attempt count")
         attempt_result = self.insert_attempt(fresh)
         if attempt_result.outcome not in {
             BackgroundBranchAuthorityWriteOutcome.APPLIED,

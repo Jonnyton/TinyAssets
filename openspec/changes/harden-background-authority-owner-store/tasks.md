@@ -11,9 +11,9 @@
 
 ## 2. Adversarial verification
 
-- [x] 2.1 Prove stale owner/binding/attempt fences, malformed/digest/index corruption, conflicting fresh attempts, and injected failures between writes make no owner, binding, or attempt change.
+- [x] 2.1 Prove stale owner/binding/attempt fences, malformed/digest/index corruption, conflicting or non-canonically-issued fresh attempts, at-limit issuance, and injected failures between writes make no owner, binding, or attempt change. Exact-head review of `eace86c7` exposed the missing attempt-count admission; its failing at-limit regression was folded before the second review.
 - [x] 2.2 Prove same-owner concurrency has one winner, source-owner exits validate canonical bindings, canonical/plugin mirrors match, isolated packaged imports pass, and no queue/dispatcher/provider/public/runtime path imports the seam.
-- [x] 2.3 Run focused authority/store/service and dependent continuation tests, Ruff, strict OpenSpec, diff/secret checks, and record freshness-stamped evidence. On 2026-08-02 in the Windows worktree, the final focused/dependent matrix passed `389 passed in 18.08s`; Ruff, strict OpenSpec, mirror parity, isolated packaged imports, dark-seam scan, and `git diff --check` also passed.
+- [x] 2.3 Run focused authority/store/service and dependent continuation tests, Ruff, strict OpenSpec, diff/secret checks, and record freshness-stamped evidence. On 2026-08-02 against load-hardened main `0efa8733`, the post-review focused/dependent matrix passed `394 passed in 22.21s` and the invocation/provider/load authority matrix passed `287 passed in 41.65s`; Ruff, strict OpenSpec, all-325 mirror parity, isolated owner-store packaged imports, dark-seam scan, blob-equivalence, and diff/credential checks also passed.
 
 ## 3. Review and foldback
 
