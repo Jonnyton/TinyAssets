@@ -19,8 +19,8 @@ The supervisor now passes its two private binary capture writers directly to the
 ## Local evidence
 
 - RED: retained-handle integration failed at 4.56 seconds; the no-EOF-dependency contract failed on `subprocess.PIPE` and `_drain_stream`.
-- GREEN: both boundary tests passed in 0.74 seconds.
-- Full desktop-install suite: 83 passed in 4.10 seconds on Windows.
+- GREEN: the identity-safe retained-descendant test passed with supervisor return under three seconds and self-termination proof in 5.76 seconds total; captures are scoped to its pytest temp directory.
+- Full desktop-install suite: 83 passed in 8.92 seconds on Windows.
 - Ruff format/check passed for the supervisor and release-workflow tests.
 - Strict OpenSpec validation passed for `repair-windows-lifecycle-supervisor-escape`.
 - `git diff --check` passed.

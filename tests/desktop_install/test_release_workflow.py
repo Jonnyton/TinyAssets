@@ -390,17 +390,23 @@ def test_windows_lifecycle_supervisor_does_not_wait_for_descendant_pipe_eof(
     installer = tmp_path / "synthetic installer.exe"
     installer.write_bytes(b"not executed by the injected lifecycle")
     escaped_pid_path = tmp_path / "escaped-descendant.pid"
+    escaped_done_path = tmp_path / "escaped-descendant.done"
     escaped_child = tmp_path / "escaped-descendant.ps1"
     escaped_child.write_text(
-        """param([Parameter(Mandatory = $true)][string]$PidPath)
+        """param(
+    [Parameter(Mandatory = $true)][string]$PidPath,
+    [Parameter(Mandatory = $true)][string]$DonePath
+)
 Set-Content -LiteralPath $PidPath -Value $PID -NoNewline
 [Console]::Out.WriteLine("escaped descendant inherited output")
-Start-Sleep -Seconds 60
+Start-Sleep -Seconds 5
+Set-Content -LiteralPath $DonePath -Value "finished" -NoNewline
 """,
         encoding="utf-8",
     )
     quoted_child = str(escaped_child).replace("'", "''")
     quoted_pid = str(escaped_pid_path).replace("'", "''")
+    quoted_done = str(escaped_done_path).replace("'", "''")
     lifecycle = tmp_path / "parent-exits-lifecycle.ps1"
     lifecycle.write_text(
         f"""param(
@@ -410,10 +416,12 @@ Start-Sleep -Seconds 60
 $engine = (Get-Process -Id $PID).Path
 $childScript = '{quoted_child}'
 $pidPath = '{quoted_pid}'
+$donePath = '{quoted_done}'
 $childArgs = @(
     '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
     '-File', ('"' + $childScript + '"'),
-    '-PidPath', ('"' + $pidPath + '"')
+    '-PidPath', ('"' + $pidPath + '"'),
+    '-DonePath', ('"' + $donePath + '"')
 )
 $escaped = Start-Process -FilePath $engine -ArgumentList $childArgs -NoNewWindow -PassThru
 $deadline = (Get-Date).AddSeconds(5)
@@ -428,6 +436,9 @@ exit 0
 """,
         encoding="utf-8",
     )
+    env = os.environ.copy()
+    env["TEMP"] = str(tmp_path)
+    env["TMP"] = str(tmp_path)
 
     started = time.monotonic()
     try:
@@ -451,27 +462,19 @@ exit 0
             capture_output=True,
             text=True,
             timeout=12,
+            env=env,
             check=False,
         )
+        supervisor_elapsed = time.monotonic() - started
     finally:
-        deadline = time.monotonic() + 2
-        while not escaped_pid_path.exists() and time.monotonic() < deadline:
+        deadline = time.monotonic() + 8
+        while not escaped_done_path.exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        if escaped_pid_path.exists():
-            escaped_pid = int(escaped_pid_path.read_text(encoding="utf-8"))
-            subprocess.run(
-                ["taskkill.exe", "/PID", str(escaped_pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=5,
-                check=False,
-            )
+        assert escaped_done_path.read_text(encoding="utf-8") == "finished"
 
-    elapsed = time.monotonic() - started
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
-    assert elapsed < 3
+    assert supervisor_elapsed < 3
     assert "lifecycle parent exiting with escaped PID" in output
 
 
