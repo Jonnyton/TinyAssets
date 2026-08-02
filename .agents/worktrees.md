@@ -7,7 +7,7 @@
 - Lane state: claimed from current main after five post-PR-2078 installer jobs escaped the in-process timeout and reached GitHub forced cancellation
 - Worktree: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence`
 - STATUS/Issue/PR: exact Windows installer lifecycle recovery slice claimed; umbrella full-platform refinery work remains outside this slice
-- Purpose: supervise the full lifecycle from outside the tested process, retain phase diagnostics, and fail before GitHub cancellation begins
+- Purpose: replace the failed PowerShell supervision attempt with a stdlib Python parent deadline, retain byte-capped phase diagnostics, and fail before GitHub cancellation begins
 - Review gate: RED/GREEN timeout regression, focused desktop tests, strict OpenSpec, exact-head independent review, and one fresh successful Windows lifecycle CI run
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence/_PURPOSE.md`
 - Ship/abandon: normal PR; do not claim signed clean-VM acceptance or published installer readiness
