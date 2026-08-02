@@ -1333,17 +1333,25 @@ def apply_result(
         state["resume_target"] = None
         state["status"] = "merged"
     elif result.status == "PARTIAL":
-        repeated = state.get("consecutive_partial_target") == result.target
-        partials = state.get("consecutive_partials", 0) + 1 if repeated else 1
-        state["consecutive_partial_target"] = result.target
-        state["consecutive_partials"] = partials
         state["resume_target"] = result.target
-        if partials > 1:
-            state["consecutive_failures"] += 1
-            state["status"] = "partial-stalled"
-        else:
+        if state.get("attempt_kind") == "refinery":
             state["consecutive_failures"] = 0
+            state["consecutive_partial_target"] = None
+            state["consecutive_partials"] = 0
             state["status"] = "partial"
+        else:
+            repeated = state.get("consecutive_partial_target") == result.target
+            partials = (
+                state.get("consecutive_partials", 0) + 1 if repeated else 1
+            )
+            state["consecutive_partial_target"] = result.target
+            state["consecutive_partials"] = partials
+            if partials > 1:
+                state["consecutive_failures"] += 1
+                state["status"] = "partial-stalled"
+            else:
+                state["consecutive_failures"] = 0
+                state["status"] = "partial"
     elif result.status == "BLOCKED":
         blocked = [
             target

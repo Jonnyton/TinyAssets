@@ -2906,6 +2906,30 @@ def test_repeated_same_target_partial_consumes_failure_budget() -> None:
     assert state["status"] == "partial-stalled"
 
 
+def test_refinery_partial_does_not_count_as_delivery_partial_stall() -> None:
+    state = _state(attempt_kind="refinery")
+    result = drain.DrainResult(
+        "PARTIAL",
+        "target",
+        "https://github.com/o/r/pull/12",
+    )
+
+    drain.apply_result(state, result, merge_verified=True)
+
+    assert state["status"] == "partial"
+    assert state["resume_target"] == "target"
+    assert state["consecutive_partial_target"] is None
+    assert state["consecutive_partials"] == 0
+
+    state["attempt_kind"] = "delivery"
+    drain.apply_result(state, result, merge_verified=True)
+
+    assert state["status"] == "partial"
+    assert state["consecutive_failures"] == 0
+    assert state["consecutive_partial_target"] == "target"
+    assert state["consecutive_partials"] == 1
+
+
 def test_blocked_target_is_bounded_and_no_candidate_does_not_fail() -> None:
     state = _state(recent_blocked=[f"old-{index}" for index in range(20)])
 

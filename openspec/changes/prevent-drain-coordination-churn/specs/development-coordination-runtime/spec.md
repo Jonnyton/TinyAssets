@@ -35,6 +35,12 @@ When owned, claimable, and policy-qualified stale STATUS candidates are absent, 
 - **THEN** the supervisor rejects the continuation as non-delivery coordination churn
 - **AND** it does not treat the refinery pseudo-target as implementation admission
 
+#### Scenario: Refinery handoff and implementation both make bounded progress
+- **WHEN** an accepted refinery `PARTIAL` exposes a claimable target
+- **AND** the next ordinary worker merges a bounded `PARTIAL` slice for that same target
+- **THEN** the refinery handoff does not count as the first repeated implementation partial
+- **AND** the supervisor immediately resumes the preserved target without consuming a failure strike or entering the idle wait
+
 #### Scenario: Coordination is genuinely exhausted
 - **WHEN** claimable, stale, owned, and refinable counts are all zero after exact-current-main inspection
 - **THEN** the supervisor may accept `NO_CANDIDATE` and wait without consuming a failure strike

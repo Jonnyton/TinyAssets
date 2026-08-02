@@ -98,3 +98,12 @@ final state is `stop-requested`, while retaining a new finite run for an
 already-terminal fatal or failure-budget outcome. A paired regression proves
 both sides. Live restoration of the original identity remains required before
 the incident can be archived.
+
+The `partial-stalled` state had a second cause: the accepted refinery handoff
+from attempt 33 incremented the same consecutive-partial counter used for
+ordinary implementation workers. Attempt 34's first bounded delivery partial
+therefore appeared to be a second stalled implementation attempt. The corrected
+state transition resets implementation-partial accounting after an accepted
+refinery continuation; two actual consecutive normal-worker partials still
+consume the finite failure budget. This prevents a productive refinery ->
+bounded-delivery sequence from entering the 30-minute idle wait.
