@@ -13,6 +13,7 @@ import json
 import re
 import secrets
 import threading
+import weakref
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -848,7 +849,7 @@ class ProviderInvocationLaunchRequest:
 
 
 class _ProviderInvocationMintGrant:
-    __slots__ = ("_grant_id", "_reservation_digest", "_seal")
+    __slots__ = ("_grant_id", "_reservation_digest", "_seal", "__weakref__")
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         raise TypeError("provider invocation mint grants are store-issued")
@@ -863,6 +864,7 @@ class ProviderInvocationCarrier:
         "_receipt",
         "_reservation",
         "_seal",
+        "__weakref__",
     )
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -924,9 +926,18 @@ class ProviderInvocationCarrier:
 
 _PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
 _PROVIDER_INVOCATION_CARRIER_LOCK = threading.Lock()
-_MINTED_PROVIDER_INVOCATION_RESERVATIONS: set[str] = set()
 _ACTIVE_PROVIDER_INVOCATION_CARRIERS: set[str] = set()
 _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS: set[str] = set()
+
+
+def _discard_provider_invocation_mint_grant(grant_id: str) -> None:
+    with _PROVIDER_INVOCATION_CARRIER_LOCK:
+        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.discard(grant_id)
+
+
+def _discard_provider_invocation_carrier(carrier_id: str) -> None:
+    with _PROVIDER_INVOCATION_CARRIER_LOCK:
+        _ACTIVE_PROVIDER_INVOCATION_CARRIERS.discard(carrier_id)
 
 
 def _provider_invocation_mint_grant_seal(
@@ -965,6 +976,7 @@ def _issue_provider_invocation_mint_grant(
     )
     with _PROVIDER_INVOCATION_CARRIER_LOCK:
         _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.add(grant_id)
+    weakref.finalize(grant, _discard_provider_invocation_mint_grant, grant_id)
     return grant
 
 
@@ -1045,15 +1057,7 @@ def _mint_provider_invocation_carrier(
         if not valid_grant:
             raise PermissionError("provider invocation mint grant is invalid or consumed")
         _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.remove(grant._grant_id)
-        if (
-            reservation.reservation_digest
-            in _MINTED_PROVIDER_INVOCATION_RESERVATIONS
-        ):
-            raise PermissionError("provider invocation reservation already minted")
         carrier_id = secrets.token_hex(32)
-        _MINTED_PROVIDER_INVOCATION_RESERVATIONS.add(
-            reservation.reservation_digest
-        )
         _ACTIVE_PROVIDER_INVOCATION_CARRIERS.add(carrier_id)
         carrier = object.__new__(ProviderInvocationCarrier)
         object.__setattr__(carrier, "_carrier_id", carrier_id)
@@ -1064,6 +1068,11 @@ def _mint_provider_invocation_carrier(
             carrier,
             "_seal",
             _provider_invocation_carrier_seal(carrier),
+        )
+        weakref.finalize(
+            carrier,
+            _discard_provider_invocation_carrier,
+            carrier_id,
         )
     return carrier
 

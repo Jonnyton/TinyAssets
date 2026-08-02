@@ -28,10 +28,12 @@ Mint and consumption state live in a process-owned locked registry rather than
 inside the otherwise immutable Python object. After the store atomically wins
 `launch_started`, it receives a one-use process-signed grant bound to that exact
 reservation digest; recomputed public record digests cannot mint without that
-grant. The durable reservation can enter the minted set once, and an opaque
-sealed carrier identity can leave the active set once. Resetting or replacing
-an object field therefore cannot restore spent authority; concurrent mint and
-validation each have one winner.
+grant. The store issues a grant only for an `APPLIED` arm (never a replay), the
+grant leaves its bounded active set when minting wins, and the opaque sealed
+carrier identity leaves its active set when validation wins. There is no
+process-lifetime reservation tombstone. Resetting or replacing an object field
+therefore cannot restore spent authority; concurrent mint and validation each
+have one winner.
 
 ## Verification
 
@@ -42,8 +44,8 @@ validation each have one winner.
   coverage passed.
 - Exact related command on 2026-08-01:
   `$providerTests = @(Get-ChildItem -LiteralPath tests -File | Where-Object { $_.Name -eq 'test_provider_work_authority.py' -or $_.Name -eq 'test_providers.py' -or $_.Name -like 'test_provider_router*.py' } | ForEach-Object { $_.FullName }); python -m pytest @providerTests -q`
-  — 154 passed. One pre-existing mocked Claude-process unawaited-coroutine
-  warning (plus pytest's collection-time echo of it) remains unrelated.
+  — 155 passed. Pre-existing mocked-provider unawaited-coroutine warnings
+  remain unrelated and appear nondeterministically during collection.
 - Ruff, both strict OpenSpec validations, cross-provider drift, and
   `git diff --check` passed.
 

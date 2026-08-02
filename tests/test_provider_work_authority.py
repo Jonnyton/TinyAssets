@@ -927,6 +927,31 @@ def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
         )
 
 
+def test_abandoned_mint_grant_and_carrier_release_process_registry(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+    abandoned = provider_authority._issue_provider_invocation_mint_grant(armed)
+    abandoned_id = abandoned._grant_id
+    del abandoned
+    assert (
+        abandoned_id
+        not in provider_authority._ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
+    )
+
+    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
+    grant_id = grant._grant_id
+    carrier = provider_authority._mint_provider_invocation_carrier(
+        receipt, claim, armed, grant,
+    )
+    carrier_id = carrier._carrier_id
+    assert grant_id not in provider_authority._ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
+    assert carrier_id in provider_authority._ACTIVE_PROVIDER_INVOCATION_CARRIERS
+
+    del grant
+    del carrier
+
+    assert carrier_id not in provider_authority._ACTIVE_PROVIDER_INVOCATION_CARRIERS
+
+
 def test_provider_invocation_carrier_seal_rejects_record_mutation(tmp_path) -> None:
     carrier = _armed_carrier(tmp_path)
     object.__setattr__(
