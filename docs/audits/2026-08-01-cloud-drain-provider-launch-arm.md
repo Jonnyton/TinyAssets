@@ -37,3 +37,14 @@ The next increment must carry this exact armed tuple into the existing provider
 router, dereference only its bound requester-owned credential under assignment
 admission, and settle the reservation from typed provider evidence. Exact
 outbound pull-request reconciliation and epoch-2 activation remain dark.
+
+## CI recurrence discovered after review
+
+The PR's Windows lifecycle job reproduced the earlier non-terminal cleanup
+after the exact installer flow had also passed in 43 seconds on a fresh rerun.
+The outer supervisor used `subprocess.run(..., timeout=...)` for `taskkill`;
+Python's timeout path kills and then waits for that cleanup process without a
+second deadline, so a wedged Windows cleanup command could outlive the declared
+supervisor and job bounds. A RED behavioral regression test now forbids that
+path. Cleanup uses `Popen.wait(timeout)` and, on expiry, kills without another
+unbounded wait before continuing the already-bounded root cleanup.

@@ -197,6 +197,51 @@ def test_windows_lifecycle_capture_replays_a_fixed_size_snapshot(
     assert "observed at least 2055 bytes" in warning
 
 
+def test_windows_lifecycle_cleanup_never_uses_run_timeout_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    supervisor = _supervisor_module()
+
+    class TargetProcess:
+        pid = 424242
+        killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("target", timeout)
+
+    class CleanupProcess:
+        returncode = None
+        killed = False
+
+        def wait(self, timeout):
+            raise subprocess.TimeoutExpired("taskkill.exe", timeout)
+
+        def kill(self):
+            self.killed = True
+
+    cleanup = CleanupProcess()
+    monkeypatch.setattr(
+        supervisor.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail(
+            "subprocess.run timeout cleanup can wait without a second bound"
+        ),
+    )
+    monkeypatch.setattr(supervisor.subprocess, "Popen", lambda *args, **kwargs: cleanup)
+    target = TargetProcess()
+
+    supervisor._terminate_tree(target, cleanup_timeout_seconds=1)
+
+    assert cleanup.killed is True
+    assert target.killed is True
+
+
 @pytest.mark.skipif(
     sys.platform != "win32",
     reason="Windows inherited file-handle cursor contract",

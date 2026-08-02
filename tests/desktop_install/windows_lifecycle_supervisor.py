@@ -103,23 +103,28 @@ def _capture_file() -> Iterator[tuple[Path, BinaryIO]]:
 
 def _terminate_tree(process: subprocess.Popen[bytes], *, cleanup_timeout_seconds: int) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    cleanup: subprocess.Popen[bytes] | None = None
     try:
-        result = subprocess.run(
+        cleanup = subprocess.Popen(
             ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=cleanup_timeout_seconds,
-            check=False,
             creationflags=creationflags,
         )
-        if result.returncode != 0 and process.poll() is None:
+        cleanup.wait(timeout=cleanup_timeout_seconds)
+        if cleanup.returncode != 0 and process.poll() is None:
             print(
                 "::warning title=Windows lifecycle cleanup::"
-                f"taskkill exited {result.returncode} for child PID {process.pid}",
+                f"taskkill exited {cleanup.returncode} for child PID {process.pid}",
                 flush=True,
             )
     except subprocess.TimeoutExpired:
+        if cleanup is not None:
+            try:
+                cleanup.kill()
+            except OSError:
+                pass
         print(
             "::warning title=Windows lifecycle cleanup::"
             f"taskkill exceeded {cleanup_timeout_seconds} seconds for child PID "
