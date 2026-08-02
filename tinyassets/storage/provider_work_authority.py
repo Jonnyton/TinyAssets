@@ -1016,6 +1016,28 @@ class SQLiteProviderWorkAuthorityStore:
                 now=now,
             )
 
+    def _issue_universe_receipt_in_transaction(
+        self,
+        conn: sqlite3.Connection,
+        authority: ProviderUniverseWorkAuthority,
+    ) -> ProviderWorkReceiptWriteResult:
+        """Issue a receipt inside an existing trusted SQLite write fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            raise ValueError("provider receipt issuance requires an active transaction")
+        if not isinstance(authority, ProviderUniverseWorkAuthority):
+            raise ValueError("authority must be a ProviderUniverseWorkAuthority")
+        now = self._now()
+        candidate = _receipt_from_authority(
+            authority,
+            created_at=self._timestamp(now),
+        )
+        return _Transaction(conn)._issue_universe_receipt(
+            authority,
+            candidate,
+            now=now,
+        )
+
     def claim(
         self,
         request: ProviderWorkExecutionClaimRequest,
@@ -1203,6 +1225,25 @@ class SQLiteProviderWorkAuthorityStore:
                 expires_at > now,
             )
         )
+
+    @staticmethod
+    def get_binding_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        binding_id: str,
+    ) -> ProviderWorkBinding | None:
+        """Resolve one integrity-checked provider binding in the caller's fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            return None
+        try:
+            row = conn.execute(
+                "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
+                (binding_id,),
+            ).fetchone()
+            return _record(row) if row is not None else None
+        except (sqlite3.Error, ValueError):
+            return None
 
 
 __all__ = ["SQLiteProviderWorkAuthorityStore"]

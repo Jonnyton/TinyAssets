@@ -616,18 +616,31 @@ class SQLiteAgentRuntimeInvocationStore:
         invocation_id: str,
     ) -> tuple[AgentInvocationCommand, AgentInvocation] | None:
         with self.connection() as conn:
-            invocation_row = conn.execute(
-                "SELECT * FROM agent_invocations WHERE invocation_id = ?",
-                (invocation_id,),
-            ).fetchone()
-            if invocation_row is None:
-                return None
-            invocation = _invocation_record(invocation_row)
-            _require_initial_event(conn, invocation)
-            command_row = conn.execute(
-                "SELECT * FROM agent_invocation_commands WHERE command_id = ?",
-                (invocation.command_id,),
-            ).fetchone()
+            conn.execute("BEGIN")
+            return self.get_in_transaction(conn, invocation_id=invocation_id)
+
+    @staticmethod
+    def get_in_transaction(
+        conn: sqlite3.Connection,
+        *,
+        invocation_id: str,
+    ) -> tuple[AgentInvocationCommand, AgentInvocation] | None:
+        """Read and integrity-check one aggregate inside the caller's fence."""
+
+        if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
+            return None
+        invocation_row = conn.execute(
+            "SELECT * FROM agent_invocations WHERE invocation_id = ?",
+            (invocation_id,),
+        ).fetchone()
+        if invocation_row is None:
+            return None
+        invocation = _invocation_record(invocation_row)
+        _require_initial_event(conn, invocation)
+        command_row = conn.execute(
+            "SELECT * FROM agent_invocation_commands WHERE command_id = ?",
+            (invocation.command_id,),
+        ).fetchone()
         if command_row is None:
             raise ValueError("persisted agent invocation aggregate is incomplete")
         command = _command_record(command_row)

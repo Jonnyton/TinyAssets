@@ -493,6 +493,11 @@ def test_production_fence_excludes_manifest_grant_and_provider_mutations(
         granted_by="user::alice",
         universe_id="universe_alice",
     )
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        connection.execute(
+            "UPDATE capability_grants SET created_at = ? WHERE user_id = ?",
+            (NOW.timestamp() - 1, "user::alice"),
+        )
     grant_resolver = AgentRuntimeGrantResolver(
         capability_source=AccountCapabilityGrantSource(tmp_path),
         clock=lambda: NOW.timestamp(),
