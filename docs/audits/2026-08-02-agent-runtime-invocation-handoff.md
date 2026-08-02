@@ -137,10 +137,15 @@ Verification on 2026-08-02, Windows worktree:
 
 The first exact code review correctly rejected the original repeated-read
 design because authority could change after its last check but before commit.
-The candidate design instead requires the trusted external authority owner to
-hold its mutation fence across commit while activation is transactionally
-checked in SQLite. The remaining gate is concrete production ownership and
-wiring of that fence. Task 3.3 follows only after task 3.2 passes that gate:
-only the exact admitted lineage may enter canonical provider
-receipt/claim/reservation/launch, with a fresh live authority check before
+Commit `6231bd93` resolves that finding with the production
+`SQLiteAgentInvocationExternalAuthorityFenceSource`: it reuses the admission
+transaction's single SQLite connection to validate the exact immutable
+manifest, fresh transactional grant evidence, provider binding and assignment
+generation/digest/state, and activation before the linked aggregate commits.
+The three-writer manifest/grant/provider mutation proof passed ten consecutive
+runs, 259 combined authority/runtime tests passed, and exact-head
+opposite-provider security/concurrency review returned `APPROVE` on 2026-08-02.
+Task 3.2 is complete. Task 3.3 follows: only the exact admitted lineage may
+enter canonical provider receipt/claim/reservation/launch, with a fresh live
+authority check before
 spend.
