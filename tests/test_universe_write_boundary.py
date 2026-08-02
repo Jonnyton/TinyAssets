@@ -451,6 +451,100 @@ class TestPrivateCanonRelay:
             assert not hits, f"chatbot wrote into a universe brain: {hits}"
 
 
+class TestOpenCommonsContribution:
+    """Any authenticated contributor can publish and rediscover typed commons pages."""
+
+    def test_ordinary_identity_writes_and_discovers_custom_agent_contribution(
+        self, universe_base
+    ):
+        from tinyassets.universe_server import read_page, write_page
+
+        _authenticate(
+            "ordinary-contributor",
+            ["tinyassets.wiki.read", "tinyassets.wiki.write"],
+        )
+        decoy = (
+            universe_base
+            / "wiki"
+            / "drafts"
+            / "aaa-decoys"
+            / "remixable-agent-blueprint.md"
+        )
+        decoy.parent.mkdir(parents=True, exist_ok=True)
+        decoy.write_text(
+            "---\ntitle: Wrong same-slug page\ntype: note\n"
+            "audience: coordination\n---\n\nThis is not the contribution.\n",
+            encoding="utf-8",
+        )
+        content = (
+            "---\n"
+            "title: Remixable Agent Blueprint\n"
+            "type: contribution\n"
+            "audience: discovery\n"
+            "updated: 2026-08-01T00:00:00Z\n"
+            "contribution_kind: agent-definition\n"
+            "related_goals: custom-agents, remix\n"
+            "license_id: Apache-2.0\n"
+            "provenance_class: original\n"
+            "integrity_references: sha256:test-fixture\n"
+            "---\n\n"
+            "An interchange blueprint with remix ancestry for custom agents.\n"
+        )
+
+        written = json.loads(
+            write_page(
+                scope="commons",
+                category="Agent Blueprints",
+                filename="remixable-agent-blueprint",
+                content=content,
+                dry_run=False,
+            )
+        )
+        assert written["path"] == (
+            "drafts/agent-blueprints/remixable-agent-blueprint.md"
+        )
+
+        searched = json.loads(read_page(query="interchange remix ancestry"))
+        paths = {item["path"] for item in searched["results"]}
+        assert written["path"] in paths
+
+        changed = json.loads(read_page(changed_since="2026-07-31T00:00:00Z"))
+        changed_paths = {item["path"] for item in changed["results"]}
+        assert written["path"] in changed_paths
+
+        reread = json.loads(read_page(page=written["path"]))
+        assert reread["source_read_proof"]["path"] == written["path"]
+        assert "title: Remixable Agent Blueprint" in reread["content"]
+        assert "contribution_kind: agent-definition" in reread["content"]
+        assert "Wrong same-slug page" not in reread["content"]
+
+    @pytest.mark.parametrize(
+        ("requested_path", "stored_path"),
+        [
+            ("../outside.md", "outside.md"),
+            ("raw/private-source.md", "wiki/raw/private-source.md"),
+            ("drafts/../../outside.md", "outside.md"),
+            (
+                "drafts/notes/private-source.txt",
+                "wiki/drafts/notes/private-source.txt",
+            ),
+        ],
+    )
+    def test_exact_page_paths_stay_within_public_markdown_roots(
+        self, universe_base, requested_path, stored_path
+    ):
+        from tinyassets.universe_server import read_page
+
+        _authenticate("ordinary-reader", ["tinyassets.wiki.read"])
+        private_source = universe_base / stored_path
+        private_source.parent.mkdir(parents=True, exist_ok=True)
+        private_source.write_text("private source", encoding="utf-8")
+
+        result = json.loads(read_page(page=requested_path))
+
+        assert result["error"] == f"Page not found: {requested_path}"
+
+
 class TestBrainWriteDoorsClosed:
     """Relay reshape (2026-07-02, design §13/§14): the deprecated fat ``universe``
     tool is hidden from tools/list but still dispatchable — so its brain-content

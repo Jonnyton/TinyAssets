@@ -217,6 +217,24 @@ def _page_rel_path(filepath: Path) -> str:
 
 def _resolve_page(name: str) -> Path | None:
     """Find a page by name across pages/ and drafts/ subdirectories."""
+    requested_path = name.strip().replace("\\", "/")
+    if "/" in requested_path:
+        relative = Path(requested_path)
+        if relative.is_absolute() or ".." in relative.parts:
+            return None
+        if relative.suffix == "":
+            relative = relative.with_suffix(".md")
+        if relative.suffix.lower() != ".md":
+            return None
+        candidate = (_wiki_root() / relative).resolve()
+        for public_root in (_wiki_pages_dir(), _wiki_drafts_dir()):
+            try:
+                candidate.relative_to(public_root.resolve())
+            except ValueError:
+                continue
+            return candidate if candidate.is_file() else None
+        return None
+
     clean = name.removesuffix(".md")
     specials = {
         "index": _wiki_index_path(),
