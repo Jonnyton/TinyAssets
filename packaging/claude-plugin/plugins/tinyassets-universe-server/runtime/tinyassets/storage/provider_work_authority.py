@@ -595,7 +595,7 @@ class _Transaction:
         candidate: ProviderWorkExecutionClaim,
         *,
         now: datetime,
-        allow_agent_invocation: bool = False,
+        agent_store_grant: object | None = None,
     ) -> ProviderWorkExecutionClaimWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -607,10 +607,14 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
-        if receipt.work_item_kind == "agent_invocation" and not allow_agent_invocation:
-            raise PermissionError(
-                "agent claims require the canonical runtime authority fence"
+        if receipt.work_item_kind == "agent_invocation":
+            authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                agent_store_grant
             )
+            if _agent_receipt_for_authority(self._conn, authority) != receipt:
+                raise PermissionError("agent claim authority does not match receipt")
+        elif agent_store_grant is not None:
+            raise PermissionError("agent transition grant cannot authorize Branch work")
         if (
             receipt.receipt_digest != request.receipt_digest
             or receipt.state is not ProviderWorkReceiptState.ACTIVE
@@ -688,7 +692,7 @@ class _Transaction:
         *,
         now: datetime,
         created_at: str,
-        allow_agent_invocation: bool = False,
+        agent_store_grant: object | None = None,
     ) -> ProviderInvocationReservationWriteResult:
         receipt_row = self._conn.execute(
             "SELECT * FROM provider_work_receipts WHERE receipt_id = ?",
@@ -700,10 +704,14 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
-        if receipt.work_item_kind == "agent_invocation" and not allow_agent_invocation:
-            raise PermissionError(
-                "agent reservations require the canonical runtime authority fence"
+        if receipt.work_item_kind == "agent_invocation":
+            authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                agent_store_grant
             )
+            if _agent_receipt_for_authority(self._conn, authority) != receipt:
+                raise PermissionError("agent reservation authority does not match receipt")
+        elif agent_store_grant is not None:
+            raise PermissionError("agent transition grant cannot authorize Branch work")
         claim_row = self._conn.execute(
             "SELECT * FROM provider_work_execution_claims WHERE claim_id = ?",
             (request.claim_id,),
@@ -832,7 +840,7 @@ class _Transaction:
         request: ProviderInvocationLaunchRequest,
         *,
         now: datetime,
-        allow_agent_invocation: bool = False,
+        agent_store_grant: object | None = None,
     ) -> ProviderInvocationReservationWriteResult:
         reservation_row = self._conn.execute(
             "SELECT * FROM provider_invocation_reservations WHERE reservation_id = ?",
@@ -886,10 +894,14 @@ class _Transaction:
                 None,
             )
         receipt = _receipt_record(receipt_row)
-        if receipt.work_item_kind == "agent_invocation" and not allow_agent_invocation:
-            raise PermissionError(
-                "agent launch requires the canonical runtime authority fence"
+        if receipt.work_item_kind == "agent_invocation":
+            authority = SQLiteProviderWorkAuthorityStore._consume_agent_transition_grant(
+                agent_store_grant
             )
+            if _agent_receipt_for_authority(self._conn, authority) != receipt:
+                raise PermissionError("agent launch authority does not match receipt")
+        elif agent_store_grant is not None:
+            raise PermissionError("agent transition grant cannot authorize Branch work")
         claim = _claim_record(claim_row)
         binding_row = self._conn.execute(
             "SELECT * FROM provider_work_bindings WHERE binding_id = ?",
@@ -1110,6 +1122,20 @@ class SQLiteProviderWorkAuthorityStore:
             )
         return store_grant._consume()
 
+    @staticmethod
+    def _peek_agent_transition_grant(
+        store_grant: object,
+    ) -> ProviderUniverseWorkAuthority:
+        from tinyassets.agent_runtime_provider_execution import (
+            _AgentProviderReceiptStoreGrant,
+        )
+
+        if type(store_grant) is not _AgentProviderReceiptStoreGrant:
+            raise PermissionError(
+                "agent provider transition requires a service-issued grant"
+            )
+        return store_grant._peek()
+
     def _claim_agent_in_transaction(
         self,
         conn: sqlite3.Connection,
@@ -1117,7 +1143,7 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderWorkExecutionClaimWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent claim requires an active transaction")
-        authority = self._consume_agent_transition_grant(store_grant)
+        authority = self._peek_agent_transition_grant(store_grant)
         receipt = _agent_receipt_for_authority(conn, authority)
         now = self._now()
         remaining_seconds = int(
@@ -1152,7 +1178,7 @@ class SQLiteProviderWorkAuthorityStore:
             request,
             candidate,
             now=now,
-            allow_agent_invocation=True,
+            agent_store_grant=store_grant,
         )
 
     def _reserve_agent_in_transaction(
@@ -1162,7 +1188,7 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderInvocationReservationWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent reservation requires an active transaction")
-        authority = self._consume_agent_transition_grant(store_grant)
+        authority = self._peek_agent_transition_grant(store_grant)
         receipt = _agent_receipt_for_authority(conn, authority)
         claim_row = conn.execute(
             "SELECT * FROM provider_work_execution_claims WHERE receipt_id = ?",
@@ -1191,7 +1217,7 @@ class SQLiteProviderWorkAuthorityStore:
             request,
             now=now,
             created_at=self._timestamp(now),
-            allow_agent_invocation=True,
+            agent_store_grant=store_grant,
         )
 
     def _arm_agent_launch_in_transaction(
@@ -1201,7 +1227,7 @@ class SQLiteProviderWorkAuthorityStore:
     ) -> ProviderInvocationReservationWriteResult:
         if not isinstance(conn, sqlite3.Connection) or not conn.in_transaction:
             raise ValueError("agent launch requires an active transaction")
-        authority = self._consume_agent_transition_grant(store_grant)
+        authority = self._peek_agent_transition_grant(store_grant)
         receipt = _agent_receipt_for_authority(conn, authority)
         reservation_row = conn.execute(
             """
@@ -1225,7 +1251,7 @@ class SQLiteProviderWorkAuthorityStore:
         result = _Transaction(conn).arm_launch(
             request,
             now=self._now(),
-            allow_agent_invocation=True,
+            agent_store_grant=store_grant,
         )
         if (
             result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED

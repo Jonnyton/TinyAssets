@@ -56,7 +56,7 @@ class _AgentProviderReceiptStoreGrant:
     def __reduce__(self):
         raise TypeError("agent provider receipt grants are non-serializable")
 
-    def _consume(self) -> ProviderUniverseWorkAuthority:
+    def _resolve(self, *, consume: bool) -> ProviderUniverseWorkAuthority:
         if type(self) is not _AgentProviderReceiptStoreGrant:
             raise PermissionError("agent provider receipt grant is not service-issued")
         current_pid = os.getpid()
@@ -66,8 +66,15 @@ class _AgentProviderReceiptStoreGrant:
             entry = _ACTIVE_RECEIPT_GRANTS.get(self._grant_id)
             if entry is None or entry[0]() is not self or entry[2] != current_pid:
                 raise PermissionError("agent provider receipt grant is invalid or consumed")
-            del _ACTIVE_RECEIPT_GRANTS[self._grant_id]
+            if consume:
+                del _ACTIVE_RECEIPT_GRANTS[self._grant_id]
         return entry[1]
+
+    def _peek(self) -> ProviderUniverseWorkAuthority:
+        return self._resolve(consume=False)
+
+    def _consume(self) -> ProviderUniverseWorkAuthority:
+        return self._resolve(consume=True)
 
 
 _RECEIPT_GRANT_LOCK = threading.Lock()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
@@ -389,6 +390,13 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
     from tinyassets.agent_runtime_provider_execution import (
         AgentRuntimeProviderExecutionService,
     )
+    from tinyassets.storage import provider_work_authority as provider_store_module
+
+    for method_name in ("claim_receipt", "reserve_invocation", "arm_launch"):
+        parameters = inspect.signature(
+            getattr(provider_store_module._Transaction, method_name)
+        ).parameters
+        assert "allow_agent_invocation" not in parameters
 
     _manifest, grant_resolver, provider_resolver, _admission, admitted = (
         _admitted_invocation(tmp_path, authenticate_request)
@@ -402,7 +410,7 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
     invocation_id = admitted.invocation.invocation_id
     receipt = service.issue_receipt(invocation_id).record
     assert receipt is not None
-    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+    with pytest.raises(PermissionError, match="service-issued grant"):
         service.provider_store.claim(
             ProviderWorkExecutionClaimRequest(
                 receipt_id=receipt.receipt_id,
@@ -416,7 +424,7 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
 
     claim = service.claim(invocation_id).record
     assert claim is not None
-    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+    with pytest.raises(PermissionError, match="service-issued grant"):
         service.provider_store.reserve(
             ProviderInvocationReservationRequest(
                 receipt_id=receipt.receipt_id,
@@ -435,7 +443,7 @@ def test_generic_transition_helpers_cannot_advance_agent_receipt(
     reservation = service.reserve(invocation_id).record
     assert reservation is not None
     assert reservation.state is ProviderInvocationReservationState.RESERVED
-    with pytest.raises(PermissionError, match="canonical runtime authority fence"):
+    with pytest.raises(PermissionError, match="service-issued grant"):
         service.provider_store.arm_launch_carrier(
             ProviderInvocationLaunchRequest.from_reservation(reservation)
         )
