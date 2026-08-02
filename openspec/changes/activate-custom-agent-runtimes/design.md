@@ -114,6 +114,37 @@ Each successor has one sentence of intent, at most 12 session-sized tasks, an ex
 
 No successor claims `active` or `connected` before all of its prerequisites are live. Final acceptance includes security/fault tests, §14 concurrency/load proof, packaged mirror parity, deployment/canary evidence, a rendered live connector control conversation, a rendered Slack conversation with duplicate-delivery/reply proof, 24 hours of PC-off useful progress including worker recovery, a real other-creator remix activation, and post-fix organic use.
 
+### 11. The first V1 proof is one remix-to-running experience, not a starter archetype
+
+The host-approved first V1 golden path begins with a browser-only user and real
+public definitions authored by other users. The user selects components from
+at least two creators, replaces/removes/adds components through the existing
+graph surface, and produces one child with verified component-level lineage.
+The user then chooses the private cloud-universe custody mode for this
+experience and binds their own supported provider authority, goals, governed
+resources, Slack connection, budgets, and runtime policy. No private binding,
+credential, conversation, goal, or runtime field enters the public definition,
+portable lineage, or commons export.
+
+Through a rendered Slack conversation, the user asks the bound agent to create
+a recurring intelligence workflow. The agent composes an ordinary Branch,
+dry-tests without external effects, runs it within a declared budget, evaluates
+against frozen criteria, presents one evidence-backed revision, and requests
+explicit activation. After approval, a genuine scheduled run posts a cited
+result during a continuous PC-off cloud window that includes worker recovery.
+The same agent is exported and re-imported canonically; when its definition is
+published, a second account remixes it without receiving any first-account
+private state.
+
+“Intelligence agent” is deliberately fixture content rather than a component
+kind, runtime mode, enum, built-in configuration, ranking preference, or
+platform-maintained starter. It was selected because a read-heavy,
+source-verifiable workflow keeps remix, evaluation, app conversation, and
+offline execution visible without making repository-write confinement the
+center of the first demonstration. Coding agents, OpenClaw-like operators,
+Hermes-like assistants, and foreign imports remain later community
+compositions over exactly the same pipeline.
+
 ## Risks / Trade-offs
 
 - **[A broad agent can become an authority amplifier]** → Derive a narrow runtime principal and re-check live grants at every privileged transition.

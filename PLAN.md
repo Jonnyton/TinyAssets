@@ -68,6 +68,25 @@ evaluation evidence, host-independent operation, plug-and-play bindings to
 subscriptions the user already controls, and collaboration—not lock-in or a
 privileged built-in agent.
 
+**First V1 custom-agent golden path (host-approved 2026-08-01):** A
+browser-only user discovers a public agent made by another user, blends
+components from at least one additional creator, replaces/removes/adds any
+component conversationally, and privately binds the result to the user's
+chosen provider authority, Slack destination, goals, governed resources, and
+cloud runtime. In Slack the user asks the bound agent to create a recurring
+intelligence workflow; the agent drafts it through ordinary Branch primitives,
+dry-tests it without external effects, evaluates it against frozen criteria,
+shows one evidence-backed revision, and requests activation. After approval,
+the workflow produces a cited Slack result during a genuine PC-off window.
+Canonical export/re-import and a second-account remix prove portability while
+private bindings, credentials, conversations, goals, and runtime data remain
+absent from the public definition and lineage. The intelligence domain is demo
+content, not a privileged agent type or starter configuration; coding agents,
+OpenClaw-like operators, Hermes-like assistants, foreign imports, and other
+community shapes use the same pipeline. This first demo selects the user's
+private cloud-universe custody mode without settling other user-selectable
+custody modes.
+
 **Why:** TinyAssets' product soul is users + chatbots evolving the system through wiki + remix + autoresearch. Platform-shipped primitives are scarce, intentional, and expensive — they crowd out community evolution and lock users into our taste. Community-buildable features compound: every new primitive composition becomes a remixable artifact other users discover and extend. Platform-shipped features are frozen at ship date; community-evolved features iterate continuously across thousands of remixes.
 
 **How to apply:** Imagine the implementation first. Then ask: could the user's chatbot easily compose this from existing primitives (workflow nodes, evaluators, branches, gates, autoresearch, wiki content)? If yes → don't ship as platform primitive; surface the community-build path in the design note + idea triage. If no (structural gap) → identify the gap precisely, ship the smallest primitive that closes it, not the policy. Platform-build is justified only when the gap is structurally impossible to compose around, OR the platform-shipped version unblocks 10x more community evolution than it crowds out.
