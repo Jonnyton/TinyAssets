@@ -2,12 +2,12 @@
 
 - [x] 1.1 Record the current owner/code/spec map and the no-overlap boundary with merged #1736, host-pool sessions, #1784 provider authority, and draft PR #1746 custody.
 - [x] 1.2 Freeze the pre-RED protocol: exact sole `WORKOS_HOST_BINDING_RESOURCE`; interactive `auth_time` (never `iat`/refresh); `(issuer, sub)` ownership; per-operation scope/wire matrix; Ed25519/RFC 8037; RFC 8785 `HostProofV1`; separate one-use challenge/nonce limits; fresh-challenge idempotent retry; 90-day lifecycle; atomic recovery; generation fencing; privacy retention; mixed-version rollback; and reproducible numeric `docs/design-notes/2026-04-18-full-platform-architecture.md` §14 proof.
-- [ ] 1.3 Obtain the merged #1736 packaged-tray owner's acceptance to adapt its `OAuthConfig`, RFC 8707 resource handling, `OriginClient`, subject-pinned `bound` state, and onboarding protocol for challenge/signature/principal ID+generation while this lane does not claim desktop runtime files or account-token custody.
-- [ ] 1.4 Obtain identity/auth and daemon-host-pool owner acceptance for a route-local exact-audience validator, interactive-`auth_time` and personal/org scope provisioning, verified-subject ownership, stable storage, private inventory, and session-generation linkage.
-- [ ] 1.5 Obtain draft PR #1746 owner acceptance that custody separately checks host-principal and provider-assignment generations while retaining all provider-secret/reference lifecycle.
+- [x] 1.3 Obtain the merged #1736 packaged-tray owner's acceptance to adapt its `OAuthConfig`, RFC 8707 resource handling, `OriginClient`, subject-pinned `bound` state, and onboarding protocol for challenge/signature/principal ID+generation while this lane does not claim desktop runtime files or account-token custody.
+- [x] 1.4 Obtain identity/auth and daemon-host-pool owner acceptance for a route-local exact-audience validator, interactive-`auth_time` and personal/org scope provisioning, verified-subject ownership, stable storage, private inventory, and session-generation linkage.
+- [x] 1.5 Obtain draft PR #1746 owner acceptance that custody separately checks host-principal and provider-assignment generations while retaining all provider-secret/reference lifecycle.
 - [x] 1.6 Obtain Opus 5 current-main exact-artifact approval after resolving every ADAPT.
 - [x] 1.7 Obtain independent latest-Codex security/domain/diff approval of the same exact artifact.
-- [ ] 1.8 Re-run claim collision checks and claim exact runtime/migration/test files only after tasks 1.3-1.7; until then runtime, canonical sync/archive, deployment, and rollout are unauthorized.
+- [x] 1.8 Re-run claim collision checks and claim exact runtime/migration/test files only after tasks 1.3-1.7; until then runtime, canonical sync/archive, deployment, and rollout are unauthorized.
 
 ## 2. RED Contract and Security Proofs
 
