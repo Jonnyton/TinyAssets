@@ -54,6 +54,7 @@ def _install(
 ) -> tuple[SQLiteProviderWorkAuthorityStore, object]:
     store = SQLiteProviderWorkAuthorityStore(
         tmp_path,
+        clock=lambda: NOW,
         allow_test_fixtures=True,
     )
     result = store.install_test_binding(_seed() if seed is None else seed)
