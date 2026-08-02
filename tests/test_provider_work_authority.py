@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import pickle
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -9,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import tinyassets.provider_work_authority as provider_authority
+import tinyassets.storage.provider_work_authority as provider_store
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationLaunchRequest,
@@ -717,7 +719,7 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
     )
 
 
-def _armed_carrier_records(tmp_path):
+def _armed_carrier_result(tmp_path):
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
     receipt = service.issue(root).record
     assert receipt is not None
@@ -747,11 +749,17 @@ def _armed_carrier_records(tmp_path):
         )
     ).record
     assert reservation is not None
-    armed = store.arm_launch(
+    result = store.arm_launch(
         ProviderInvocationLaunchRequest.from_reservation(reservation)
-    ).record
-    assert armed is not None
-    return receipt, claim, armed
+    )
+    assert result.record is not None
+    assert result.mint_proof is not None
+    return receipt, claim, result
+
+
+def _armed_carrier_records(tmp_path):
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    return receipt, claim, result.record
 
 
 def _armed_carrier(tmp_path):
@@ -826,6 +834,11 @@ def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> 
     with pytest.raises(TypeError, match="non-serializable"):
         pickle.dumps(carrier)
 
+    _receipt, _claim, result = _armed_carrier_result(tmp_path / "proof")
+    assert not hasattr(result.mint_proof, "to_dict")
+    with pytest.raises(TypeError, match="non-serializable"):
+        pickle.dumps(result.mint_proof)
+
 
 def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> None:
     store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
@@ -865,21 +878,22 @@ def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> Non
 
 
 def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> None:
-    receipt, claim, armed = _armed_carrier_records(tmp_path)
-    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    armed = result.record
+    mint_proof = result.mint_proof
 
     provider_authority._mint_provider_invocation_carrier(
-        receipt, claim, armed, grant,
+        receipt, claim, armed, mint_proof,
     )
-    with pytest.raises(PermissionError, match="grant"):
+    with pytest.raises(PermissionError, match="proof"):
         provider_authority._mint_provider_invocation_carrier(
-            receipt, claim, armed, grant,
+            receipt, claim, armed, mint_proof,
         )
 
 
-def test_mint_grant_rejects_recomputed_reservation_identity(tmp_path) -> None:
-    receipt, claim, armed = _armed_carrier_records(tmp_path)
-    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
+def test_store_mint_proof_rejects_recomputed_reservation_identity(tmp_path) -> None:
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    armed = result.record
     forged = replace(
         armed,
         reservation_id=provider_authority.provider_invocation_reservation_id(
@@ -891,10 +905,49 @@ def test_mint_grant_rejects_recomputed_reservation_identity(tmp_path) -> None:
     )
     forged = replace(forged, reservation_digest=forged.expected_digest())
 
-    with pytest.raises(PermissionError, match="grant"):
+    with pytest.raises(PermissionError, match="another reservation"):
         provider_authority._mint_provider_invocation_carrier(
-            receipt, claim, forged, grant,
+            receipt, claim, forged, result.mint_proof,
         )
+
+
+def test_self_consistent_forged_reservation_cannot_mint_or_validate(tmp_path) -> None:
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    armed = result.record
+    forged = replace(
+        armed,
+        reservation_id=provider_authority.provider_invocation_reservation_id(
+            receipt_id=receipt.receipt_id,
+            invocation_key="forged-unaccounted-invocation",
+        ),
+        invocation_key="forged-unaccounted-invocation",
+        reservation_digest=f"sha256:{'0' * 64}",
+    )
+    forged = replace(forged, reservation_digest=forged.expected_digest())
+
+    assert not hasattr(provider_authority, "_issue_provider_invocation_mint_grant")
+    for mint_proof in (object(), result.mint_proof):
+        with pytest.raises(PermissionError):
+            provider_authority._mint_provider_invocation_carrier(
+                receipt,
+                claim,
+                forged,
+                mint_proof,
+            ).validate_for_call(
+                role="writer",
+                operation="repository_spec_delivery",
+            )
+
+    carrier = provider_authority._mint_provider_invocation_carrier(
+        receipt,
+        claim,
+        armed,
+        result.mint_proof,
+    )
+    assert carrier.validate_for_call(
+        role="writer",
+        operation="repository_spec_delivery",
+    ) == "codex"
 
 
 def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
@@ -927,29 +980,66 @@ def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
         )
 
 
-def test_abandoned_mint_grant_and_carrier_release_process_registry(tmp_path) -> None:
-    receipt, claim, armed = _armed_carrier_records(tmp_path)
-    abandoned = provider_authority._issue_provider_invocation_mint_grant(armed)
-    abandoned_id = abandoned._grant_id
+def test_abandoned_mint_proof_and_carrier_release_process_registry(tmp_path) -> None:
+    _receipt, _claim, result = _armed_carrier_result(tmp_path)
+    abandoned = result.mint_proof
+    abandoned_id = abandoned._proof_id
+    del result
     del abandoned
+    gc.collect()
     assert (
         abandoned_id
-        not in provider_authority._ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
+        not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
     )
 
-    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
-    grant_id = grant._grant_id
+    receipt, claim, result = _armed_carrier_result(tmp_path / "minted")
+    armed = result.record
+    mint_proof = result.mint_proof
+    proof_id = mint_proof._proof_id
     carrier = provider_authority._mint_provider_invocation_carrier(
-        receipt, claim, armed, grant,
+        receipt, claim, armed, mint_proof,
     )
     carrier_id = carrier._carrier_id
-    assert grant_id not in provider_authority._ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
+    assert proof_id not in provider_store._ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
     assert carrier_id in provider_authority._ACTIVE_PROVIDER_INVOCATION_CARRIERS
 
-    del grant
+    del result
+    del mint_proof
     del carrier
+    gc.collect()
 
     assert carrier_id not in provider_authority._ACTIVE_PROVIDER_INVOCATION_CARRIERS
+
+
+def test_mint_proof_and_carrier_reject_cross_process_copy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    receipt, claim, result = _armed_carrier_result(tmp_path)
+    issuer_pid = result.mint_proof._issuer_pid
+    monkeypatch.setattr(provider_store.os, "getpid", lambda: issuer_pid + 1)
+
+    with pytest.raises(PermissionError, match="another process"):
+        provider_authority._mint_provider_invocation_carrier(
+            receipt,
+            claim,
+            result.record,
+            result.mint_proof,
+        )
+
+    monkeypatch.undo()
+    carrier = provider_authority._mint_provider_invocation_carrier(
+        receipt,
+        claim,
+        result.record,
+        result.mint_proof,
+    )
+    monkeypatch.setattr(provider_authority.os, "getpid", lambda: issuer_pid + 1)
+    with pytest.raises(PermissionError, match="another process"):
+        carrier.validate_for_call(
+            role="writer",
+            operation="repository_spec_delivery",
+        )
 
 
 def test_provider_invocation_carrier_seal_rejects_record_mutation(tmp_path) -> None:
