@@ -9,6 +9,7 @@ import re
 import time
 import unicodedata
 from dataclasses import dataclass
+from decimal import Decimal
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, NoReturn
 
@@ -27,6 +28,9 @@ _MAX_ISSUER_OR_AUDIENCE = 2048
 _MAX_SUBJECT = 512
 _MAX_PRINCIPAL_ID = 256
 _I_JSON_MAX_INTEGER = 9_007_199_254_740_991
+_POSTGRES_INT_MAX = 2_147_483_647
+_HOST_POOL_PRICE_LIMIT = Decimal("1000000000000")
+_HOST_POOL_PRICE_SCALE = 6
 # No revocation reason values were approved in the frozen v1 artifacts.
 REVOCATION_REASON_CODES: frozenset[str] = frozenset()
 
@@ -413,11 +417,13 @@ def _validate_wire_semantics(dto_name: str, payload: dict[str, Any]) -> None:
             raise HostProofRefused
         if payload["visibility"] not in {"self", "network", "paid"}:
             raise HostProofRefused
+        if payload["max_concurrent"] > _POSTGRES_INT_MAX:
+            raise HostProofRefused
         price_floor = payload["price_floor"]
         if price_floor is not None and (
             type(price_floor) not in {int, float}
             or isinstance(price_floor, bool)
-            or not _finite_nonnegative(price_floor)
+            or not _exact_host_pool_price(price_floor)
         ):
             raise HostProofRefused
     elif dto_name == "HostHeartbeatResultV1" and payload["status"] != "active":
@@ -475,6 +481,22 @@ def _finite_nonnegative(value: int | float) -> bool:
     if type(value) is int:
         return 0 <= value <= _I_JSON_MAX_INTEGER
     return math.isfinite(value) and value >= 0
+
+
+def _exact_host_pool_price(value: int | float) -> bool:
+    """Accept only JCS numbers preserved exactly by PostgreSQL numeric(18,6)."""
+
+    if not _finite_nonnegative(value):
+        return False
+    try:
+        canonical_number = rfc8785.dumps(value).decode("ascii")
+        numeric = Decimal(canonical_number)
+    except (UnicodeError, ValueError, rfc8785.CanonicalizationError):
+        return False
+    return (
+        numeric < _HOST_POOL_PRICE_LIMIT
+        and numeric.as_tuple().exponent >= -_HOST_POOL_PRICE_SCALE
+    )
 
 
 def canonical_b64u(value: str, *, size: int | None = None) -> bytes:

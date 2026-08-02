@@ -435,10 +435,44 @@ def test_session_registration_closes_current_host_pool_enums_types_and_ranges() 
         ("max_concurrent", 0),
         ("always_active", 1),
         ("price_floor", -0.01),
+        ("max_concurrent", 2_147_483_648),
+        ("price_floor", 1_000_000_000_000),
+        ("price_floor", 0.0000004),
+        ("price_floor", 1.2345678),
         ("capability_id", ""),
     ):
         with pytest.raises(HostProofRefused):
             parse_wire_dto("SessionRegisterIntentV1", rfc8785.dumps({**valid, field: value}))
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("max_concurrent", 2_147_483_647),
+        ("price_floor", 0),
+        ("price_floor", 0.000001),
+        ("price_floor", 999_999_999_999.1234),
+    ],
+)
+def test_session_registration_accepts_exact_postgres_numeric_boundaries(
+    field: str,
+    value: int | float,
+) -> None:
+    valid = {
+        "host_principal_id": "hp_1",
+        "expected_generation": 1,
+        "provider": "local",
+        "capability_id": "goal_planner:model",
+        "visibility": "self",
+        "price_floor": None,
+        "max_concurrent": 1,
+        "always_active": False,
+        "idempotency_key_b64u": _b64u(b"i" * 32),
+    }
+
+    parsed = parse_wire_dto("SessionRegisterIntentV1", rfc8785.dumps({**valid, field: value}))
+
+    assert parsed[field] == value
 
 
 def test_i_json_safe_integer_domain_rejects_oversized_numbers_without_overflow() -> None:
