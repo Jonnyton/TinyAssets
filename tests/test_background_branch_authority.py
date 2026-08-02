@@ -25,6 +25,8 @@ from tinyassets.background_branch_authority import (
     BackgroundBranchBindingStatus,
     BackgroundBranchBindingWriteResult,
     BackgroundBranchExecutorClass,
+    BackgroundBranchHoldExitClass,
+    BackgroundBranchHoldProjection,
     BackgroundBranchHoldReason,
     BackgroundBranchOperation,
     BackgroundBranchProvenance,
@@ -258,6 +260,80 @@ def test_hold_lifecycle_requires_typed_reason_and_non_hold_forbids_it() -> None:
         BackgroundBranchAttempt.from_dict(held_without_reason)
     with pytest.raises(ValueError):
         BackgroundBranchAttempt.from_dict(active_with_reason)
+
+
+def test_held_attempt_projects_only_closed_non_secret_fields() -> None:
+    held = _attempt_payload()
+    held["lifecycle"] = "target_authority_held"
+    held["hold_reason"] = "principal_revoked"
+    held["lease_expires_at"] = None
+    attempt = BackgroundBranchAttempt.from_dict(held)
+
+    projection = BackgroundBranchHoldProjection.from_attempt(attempt)
+
+    assert projection.to_dict() == {
+        "schema_version": 1,
+        "attempt_id": attempt.attempt_id,
+        "lifecycle": "target_authority_held",
+        "hold_reason": "principal_revoked",
+        "binding_generation": attempt.binding_generation,
+        "claim_generation": attempt.claim_generation,
+        "lease_generation": attempt.lease_generation,
+        "exit_class": "reauthorization",
+    }
+    assert BackgroundBranchHoldProjection.from_dict(projection.to_dict()) == projection
+    serialized = repr(projection.to_dict())
+    for private_value in (
+        attempt.authorizing_principal_id,
+        attempt.universe_id,
+        attempt.branch_def_id,
+        attempt.branch_version_id,
+        attempt.branch_content_digest,
+        attempt.binding_digest,
+        attempt.source_id,
+        attempt.executor_audience.worker_id,
+        attempt.updated_at,
+    ):
+        assert private_value not in serialized
+
+
+@pytest.mark.parametrize(
+    ("reason", "exit_class"),
+    [
+        ("executor_mismatch", BackgroundBranchHoldExitClass.RECOVERY),
+        ("indeterminate_prior_attempt", BackgroundBranchHoldExitClass.RECONCILIATION),
+        ("binding_missing", BackgroundBranchHoldExitClass.REAUTHORIZATION),
+    ],
+)
+def test_hold_projection_exit_class_is_derived_from_reason(reason, exit_class) -> None:
+    held = _attempt_payload()
+    held["lifecycle"] = "target_authority_held"
+    held["hold_reason"] = reason
+    held["lease_expires_at"] = None
+
+    projection = BackgroundBranchHoldProjection.from_attempt(
+        BackgroundBranchAttempt.from_dict(held)
+    )
+
+    assert projection.exit_class is exit_class
+
+
+def test_hold_projection_rejects_non_held_or_forged_exit_class() -> None:
+    attempt = BackgroundBranchAttempt.from_dict(_attempt_payload())
+    with pytest.raises(ValueError, match="held attempt"):
+        BackgroundBranchHoldProjection.from_attempt(attempt)
+
+    held = _attempt_payload()
+    held["lifecycle"] = "target_authority_held"
+    held["hold_reason"] = "principal_revoked"
+    held["lease_expires_at"] = None
+    projection = BackgroundBranchHoldProjection.from_attempt(
+        BackgroundBranchAttempt.from_dict(held)
+    ).to_dict()
+    projection["exit_class"] = "recovery"
+
+    with pytest.raises(ValueError, match="exit_class"):
+        BackgroundBranchHoldProjection.from_dict(projection)
 
 
 def test_terminal_lifecycle_requires_reason_and_active_forbids_it() -> None:

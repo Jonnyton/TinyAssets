@@ -78,6 +78,28 @@ class BackgroundBranchHoldReason(str, Enum):
     EXECUTOR_MISMATCH = "executor_mismatch"
 
 
+class BackgroundBranchHoldExitClass(str, Enum):
+    RECOVERY = "recovery"
+    REAUTHORIZATION = "reauthorization"
+    RECONCILIATION = "reconciliation"
+
+
+_BACKGROUND_BRANCH_HOLD_EXIT_BY_REASON = {
+    reason: BackgroundBranchHoldExitClass.REAUTHORIZATION
+    for reason in BackgroundBranchHoldReason
+}
+_BACKGROUND_BRANCH_HOLD_EXIT_BY_REASON.update(
+    {
+        BackgroundBranchHoldReason.EXECUTOR_MISMATCH: (
+            BackgroundBranchHoldExitClass.RECOVERY
+        ),
+        BackgroundBranchHoldReason.INDETERMINATE_PRIOR_ATTEMPT: (
+            BackgroundBranchHoldExitClass.RECONCILIATION
+        ),
+    }
+)
+
+
 class BackgroundBranchAuthorityCoordinationStep(str, Enum):
     """Cross-domain order; steps are sequential boundaries, not nested locks."""
 
@@ -1253,6 +1275,118 @@ class BackgroundBranchAttempt:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "provenance": self.provenance.to_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundBranchHoldProjection:
+    """Non-authorizing, non-secret view of one held authority record."""
+
+    schema_version: int
+    attempt_id: str
+    lifecycle: BackgroundBranchAttemptLifecycle
+    hold_reason: BackgroundBranchHoldReason
+    binding_generation: int
+    claim_generation: int
+    lease_generation: int
+    exit_class: BackgroundBranchHoldExitClass
+
+    _FIELDS = frozenset(
+        {
+            "schema_version",
+            "attempt_id",
+            "lifecycle",
+            "hold_reason",
+            "binding_generation",
+            "claim_generation",
+            "lease_generation",
+            "exit_class",
+        }
+    )
+
+    def __post_init__(self) -> None:
+        _integer(self.schema_version, "schema_version", minimum=1)
+        if self.schema_version != 1:
+            raise ValueError("unsupported schema_version")
+        _reference(self.attempt_id, "attempt_id")
+        if self.lifecycle is not BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD:
+            raise ValueError("projection requires a held attempt lifecycle")
+        if not isinstance(self.hold_reason, BackgroundBranchHoldReason):
+            raise ValueError("hold_reason must be typed")
+        _integer(self.binding_generation, "binding_generation", minimum=1)
+        _integer(self.claim_generation, "claim_generation", minimum=1)
+        _integer(self.lease_generation, "lease_generation", minimum=1)
+        if not isinstance(self.exit_class, BackgroundBranchHoldExitClass):
+            raise ValueError("exit_class must be typed")
+        if self.exit_class is not _BACKGROUND_BRANCH_HOLD_EXIT_BY_REASON[self.hold_reason]:
+            raise ValueError("exit_class must be derived from hold_reason")
+
+    @classmethod
+    def from_attempt(
+        cls,
+        attempt: BackgroundBranchAttempt,
+    ) -> BackgroundBranchHoldProjection:
+        if not isinstance(attempt, BackgroundBranchAttempt):
+            raise ValueError("attempt must be typed")
+        if (
+            attempt.lifecycle
+            is not BackgroundBranchAttemptLifecycle.TARGET_AUTHORITY_HELD
+            or attempt.hold_reason is None
+        ):
+            raise ValueError("projection requires a held attempt")
+        return cls(
+            schema_version=1,
+            attempt_id=attempt.attempt_id,
+            lifecycle=attempt.lifecycle,
+            hold_reason=attempt.hold_reason,
+            binding_generation=attempt.binding_generation,
+            claim_generation=attempt.claim_generation,
+            lease_generation=attempt.lease_generation,
+            exit_class=_BACKGROUND_BRANCH_HOLD_EXIT_BY_REASON[attempt.hold_reason],
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> BackgroundBranchHoldProjection:
+        _strict_fields(data, cls._FIELDS, record_name=cls.__name__)
+        return cls(
+            schema_version=_integer(data["schema_version"], "schema_version", minimum=1),
+            attempt_id=_reference(data["attempt_id"], "attempt_id"),
+            lifecycle=_enum_value(
+                BackgroundBranchAttemptLifecycle,
+                data["lifecycle"],
+                "lifecycle",
+            ),
+            hold_reason=_enum_value(
+                BackgroundBranchHoldReason,
+                data["hold_reason"],
+                "hold_reason",
+            ),
+            binding_generation=_integer(
+                data["binding_generation"], "binding_generation", minimum=1
+            ),
+            claim_generation=_integer(
+                data["claim_generation"], "claim_generation", minimum=1
+            ),
+            lease_generation=_integer(
+                data["lease_generation"], "lease_generation", minimum=1
+            ),
+            exit_class=_enum_value(
+                BackgroundBranchHoldExitClass,
+                data["exit_class"],
+                "exit_class",
+            ),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "attempt_id": self.attempt_id,
+            "lifecycle": self.lifecycle.value,
+            "hold_reason": self.hold_reason.value,
+            "binding_generation": self.binding_generation,
+            "claim_generation": self.claim_generation,
+            "lease_generation": self.lease_generation,
+            "exit_class": self.exit_class.value,
         }
 
 
