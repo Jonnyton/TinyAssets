@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, replace
@@ -8,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from tinyassets.provider_work_authority import (
+    ProviderInvocationCarrier,
     ProviderInvocationLaunchRequest,
     ProviderInvocationReservationRequest,
     ProviderInvocationReservationState,
@@ -20,6 +22,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkBindingService,
     ProviderWorkBindingState,
     ProviderWorkExecutionClaimRequest,
+    ProviderWorkExecutionClaimState,
     ProviderWorkReceiptService,
     ProviderWorkReceiptState,
 )
@@ -711,6 +714,88 @@ def test_launch_arm_is_durable_restart_safe_and_single_winner(tmp_path) -> None:
         .record
         == armed
     )
+
+
+def _armed_carrier_records(tmp_path):
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_1",
+            runtime_id="runtime_cloud_1",
+            claim_nonce_digest=f"sha256:{'6' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation = store.reserve(
+        ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key="attempt-carrier",
+            operation="repository_spec_delivery",
+            role="writer",
+            max_tokens=20_000,
+            max_cost_microunits=1_000_000,
+        )
+    ).record
+    assert reservation is not None
+    armed = store.arm_launch(
+        ProviderInvocationLaunchRequest.from_reservation(reservation)
+    ).record
+    assert armed is not None
+    return receipt, claim, armed
+
+
+def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+
+    carrier = ProviderInvocationCarrier(receipt, claim, armed)
+
+    assert carrier.provider == "codex"
+    assert carrier.role == "writer"
+    assert carrier.max_tokens == 20_000
+    assert carrier.assignment_generation == receipt.assignment_generation
+    assert carrier.validate_for_call(role="writer") == "codex"
+    with pytest.raises(PermissionError, match="role"):
+        carrier.validate_for_call(role="judge")
+    assert not hasattr(carrier, "to_dict")
+    with pytest.raises(TypeError, match="non-serializable"):
+        pickle.dumps(carrier)
+
+
+@pytest.mark.parametrize("stale_part", ["receipt", "claim", "reservation"])
+def test_provider_invocation_carrier_rejects_stale_or_unarmed_tuple(
+    tmp_path,
+    stale_part: str,
+) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+    if stale_part == "receipt":
+        receipt = replace(receipt, state=ProviderWorkReceiptState.REVOKED)
+    elif stale_part == "claim":
+        claim = replace(claim, state=ProviderWorkExecutionClaimState.INVALIDATED)
+    else:
+        armed = replace(armed, state=ProviderInvocationReservationState.RESERVED)
+
+    with pytest.raises(PermissionError):
+        ProviderInvocationCarrier(receipt, claim, armed)
+
+
+def test_provider_invocation_carrier_rejects_cross_record_mismatch(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+
+    with pytest.raises(PermissionError):
+        ProviderInvocationCarrier(
+            receipt,
+            claim,
+            replace(armed, claim_generation=claim.generation + 1),
+        )
 
 
 def test_launch_arm_fails_closed_after_binding_revocation(tmp_path) -> None:

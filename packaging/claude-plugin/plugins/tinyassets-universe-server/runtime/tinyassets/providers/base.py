@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from tinyassets.config import UniverseConfig
+    from tinyassets.provider_work_authority import ProviderInvocationCarrier
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +34,7 @@ class UniverseContext:
 
     universe_dir: Path | None = None
     config: "UniverseConfig | None" = None
+    provider_invocation: "ProviderInvocationCarrier | None" = None
 
 
 @dataclass(frozen=True, slots=True)
