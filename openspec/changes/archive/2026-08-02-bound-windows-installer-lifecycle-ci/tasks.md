@@ -14,4 +14,4 @@
 ## 3. Verification and foldback
 
 - [x] 3.1 Run focused desktop tests, PowerShell/Python syntax and execution probes, Ruff, strict OpenSpec validation, and independent exact-head review.
-- [ ] 3.2 Land through a reviewed PR, observe one fresh successful exact-head Windows lifecycle CI job, sync/archive the OpenSpec change, and restore the remaining full-platform refinery row without claiming signed or clean-VM readiness.
+- [x] 3.2 Land through a reviewed PR, observe one fresh successful exact-head Windows lifecycle CI job, sync/archive the OpenSpec change, and restore the remaining full-platform refinery row without claiming signed or clean-VM readiness.
