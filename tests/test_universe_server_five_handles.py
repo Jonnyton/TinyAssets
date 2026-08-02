@@ -111,6 +111,19 @@ def test_write_graph_advertises_agent_remix_lineage_contract() -> None:
     assert "non-empty name" in description
     assert "lineage is keyed by each child component key" in description
     assert "definition_id, component_key, and credit_share" in description
+    example = (
+        '{"lineage":{"x":[{"definition_id":"agent_1",'
+        '"component_key":"x","credit_share":1}]}}'
+    )
+    assert example in description
+    assert json.loads(example)["lineage"]["x"] == [
+        {
+            "definition_id": "agent_1",
+            "component_key": "x",
+            "credit_share": 1,
+        }
+    ]
+    assert "Never pass a single object as a lineage value" in description
     assert "Credit shares for one child component must total at most 1" in description
     assert (
         "definition_fingerprint and component_fingerprint must be supplied together"

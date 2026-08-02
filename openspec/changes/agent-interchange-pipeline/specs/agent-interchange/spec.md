@@ -185,3 +185,9 @@ The platform SHALL expose agent staging, inspection, remix, publication, binding
 - **THEN** the advertised `payload_json` description identifies `source_json` and `adapter` as sibling top-level keys and never instructs the client to nest the source inside the adapter
 - **AND** it identifies the `agent-interchange-adapter/v1` version, adapter identity fields, the closed rule operations, their required path/classification fields, and exact source-inventory coverage
 - **AND** a client can construct the private staging request without relying on a maintained catalog of agent-specific configurations or hidden documentation
+
+#### Scenario: A rendered client can construct remix lineage on its first mutation
+- **WHEN** a connector client selects `write_graph` with `target=agent` and `operation=remix`
+- **THEN** the advertised `payload_json` description provides a copy-ready JSON lineage example in which each child component key maps to a non-empty list of source-reference objects
+- **AND** the example names the accepted `definition_id`, `component_key`, and `credit_share` fields and explicitly rejects a single object at the component key
+- **AND** the client can submit validator-compatible structured lineage without a corrective retry or hidden documentation

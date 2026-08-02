@@ -636,8 +636,10 @@ def write_graph(
             a non-empty name, description, tags, and components. For a remix,
             lineage is keyed by each child component key; each value is a
             non-empty list whose entries contain definition_id, component_key,
-            and credit_share. Credit shares for one child component must total
-            at most 1. Optional definition_fingerprint and
+            and credit_share. Example:
+            {"lineage":{"x":[{"definition_id":"agent_1","component_key":"x","credit_share":1}]}}
+            Never pass a single object as a lineage value. Credit shares for one child
+            component must total at most 1. Optional definition_fingerprint and
             component_fingerprint must be supplied together.
             For target=agent_binding operation=bind or update, pass
             schema_version=1 and a non-empty name plus the private role, goals,

@@ -34,6 +34,14 @@ The repair makes the advertised contract state:
 - bind/update `schema_version=1` and non-empty `name` requirements;
 - the rule that provider, resource, and channel references belong only in private binding JSON.
 
+### Post-deploy rendered regression
+
+After #2146 was included in a successful image build, production deploy, and public canary, a new Claude.ai conversation tested the contract without prior-chat context. Public discovery succeeded on its first call, but all three public definitions still had the same author, so other-creator remix remained unavailable.
+
+The first remix mutation failed with `agent_validation_error`: `lineage.fact_check must be a non-empty JSON list`. Although the deployed prose said that each lineage value is a list and named the accepted fields, the rendered client constructed a single object with invented source-field names. Per the test instruction it made no corrective retry; private binding and export were therefore not attempted. Conversation: `https://claude.ai/chat/3105eae3-a31f-4296-8de5-84b8d00f2c57`.
+
+The follow-up repair adds a copy-ready nested JSON example and explicitly says never to pass a single object as a lineage value. No real credential or outbound message was used, and private identifiers are omitted from this record.
+
 ## Local verification
 
 RED before the repair:
@@ -54,7 +62,28 @@ openspec validate agent-interchange-pipeline --strict
 Change 'agent-interchange-pipeline' is valid
 ```
 
-Canonical/package SHA-256 parity: `21ACDE5ECDA95A6A76C2F2A85C3076885A70B5FC86B3B0804F3AF103F7CB7FA1`.
+Initial #2146 canonical/package SHA-256 parity: `21ACDE5ECDA95A6A76C2F2A85C3076885A70B5FC86B3B0804F3AF103F7CB7FA1`.
+
+Follow-up RED/GREEN on Windows with Python 3.14:
+
+```text
+python -m pytest tests/test_universe_server_five_handles.py::test_write_graph_advertises_agent_remix_lineage_contract -q
+1 failed before the copy-ready example
+1 passed after the repair
+python -m pytest tests/test_universe_server_five_handles.py -q
+14 passed
+python -m pytest tests/test_agent_interchange.py tests/test_custom_agents.py tests/test_universe_server_five_handles.py -q
+77 passed
+python -m ruff check tinyassets/universe_server.py packaging/claude-plugin/plugins/tinyassets-universe-server/runtime/tinyassets/universe_server.py tests/test_universe_server_five_handles.py
+All checks passed!
+python scripts/invariants_run.py --check mirror-parity
+[OK] all 309 canonical file(s) mirror-matched
+openspec validate agent-interchange-pipeline --strict --no-interactive
+Change 'agent-interchange-pipeline' is valid
+all active changes: 40 strict validations passed
+```
+
+Follow-up canonical/package SHA-256 parity: `FC58AC023D778593B990B43294F2E656B38A0D1C8E3C52CA8BE047E2ECDFC39C`.
 
 ## Remaining proof
 
