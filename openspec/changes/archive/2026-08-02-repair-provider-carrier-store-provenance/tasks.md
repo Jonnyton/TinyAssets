@@ -14,4 +14,4 @@
 - [x] 3.1 Run the forged-path, focused authority, provider-router, concurrency, cleanup, and canonical/package parity tests.
 - [x] 3.2 Run Ruff, strict OpenSpec validation/flow audit, drift checks, and `git diff --check`.
 - [x] 3.3 Record the correction audit, sync the provider-routing delta, and archive this change without enabling activation.
-- [ ] 3.4 Obtain fresh independent security approval of the exact final head, merge the corrective PR, and verify current `origin/main` before the cloud lane resumes.
+- [x] 3.4 Obtain fresh independent security approval of the exact final head, merge the corrective PR, and verify current `origin/main` before the cloud lane resumes.

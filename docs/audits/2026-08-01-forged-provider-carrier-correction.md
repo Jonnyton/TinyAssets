@@ -55,12 +55,25 @@ durable invocation, token, and cost ledger.
   - provider model: `edbd7211ec317b55a3cb82ed3768805d2d35fe9ebb324bd9521d2c83fbda29c7`
   - provider store: `ba747ebc71e6bf37c733dfd754d73e9a530c550a37ced851e23da876f675a3ee`
 - `openspec validate repair-provider-carrier-store-provenance --strict`
-  - passed before implementation; final sync/archive validation follows.
+  - passed before implementation.
+- `openspec validate --specs --strict` after sync/archive on merged main
+  - 28/28 canonical specs passed.
+
+## Exact review and merged-main verification
+
+- Independent security review approved exact PR head
+  `da1aca89c40c9802f4df8426b1d3bc2e1da0391a` with no blocking security,
+  correctness, concurrency, parity, fork, import, test, or spec-truth finding.
+- PR #2141 squash-merged as
+  `20424140764fba887babd3a99972b138c32b8eb1` after required policy,
+  Linux/macOS/Windows build, package/import, trust-boundary, and smoke gates.
+- Freshly fetched `origin/main` at that merge has the same tree as the exact
+  reviewed head, passes the forged-reservation regression (1/1), passes the
+  full authority file (55/55), retains canonical/package hash parity, and
+  validates all 28 canonical specs strictly.
 
 ## Activation gate
 
-Provider activation and cloud cutover remain paused. The correction may merge
-only after the provider-routing delta is synced/archived and an independent
-reviewer approves the exact final head. The cloud lane may resume only after
-the merged `origin/main` head is re-fetched and the exploit regression passes
-there.
+The correction gate is complete. The cloud lane may resume its remaining
+provider-authority, rendered-chatbot, 24-hour PC-off, and cutover acceptance
+work; this correction does not itself authorize or enable activation.
