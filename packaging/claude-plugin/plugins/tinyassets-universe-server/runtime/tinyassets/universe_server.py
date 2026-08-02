@@ -632,6 +632,19 @@ def write_graph(
         agent_binding_id: Existing private binding for operation=update.
         agent_stage_id: Private import stage for operation=publish_stage.
         payload_json: Agent definition, portable import, or private binding JSON.
+            For target=agent operation=publish or remix, pass schema_version=1,
+            a non-empty name, description, tags, and components. For a remix,
+            lineage is keyed by each child component key; each value is a
+            non-empty list whose entries contain definition_id, component_key,
+            and credit_share. Credit shares for one child component must total
+            at most 1. Optional definition_fingerprint and
+            component_fingerprint must be supplied together.
+            For target=agent_binding operation=bind or update, pass
+            schema_version=1 and a non-empty name plus the private role, goals,
+            component configuration, authority, provider, resource, and channel
+            references needed in that universe. This binding JSON is private:
+            never put provider, resource, or channel references in the public
+            agent definition or export.
             For target=agent operation=stage_import, source_json and adapter are
             sibling top-level keys; never nest source_json inside adapter. Use
             {"source_json": {...}, "adapter": {"schema_version":

@@ -102,6 +102,33 @@ def test_write_graph_advertises_declarative_import_envelope() -> None:
     assert "every source scalar or empty-container path exactly once" in description
 
 
+def test_write_graph_advertises_agent_remix_lineage_contract() -> None:
+    tool = next(tool for tool in _advertised_tools() if tool.name == "write_graph")
+    description = tool.parameters["properties"]["payload_json"]["description"]
+
+    assert "target=agent operation=publish or remix" in description
+    assert "schema_version=1" in description
+    assert "non-empty name" in description
+    assert "lineage is keyed by each child component key" in description
+    assert "definition_id, component_key, and credit_share" in description
+    assert "Credit shares for one child component must total at most 1" in description
+    assert (
+        "definition_fingerprint and component_fingerprint must be supplied together"
+        in description
+    )
+
+
+def test_write_graph_advertises_private_binding_contract() -> None:
+    tool = next(tool for tool in _advertised_tools() if tool.name == "write_graph")
+    description = tool.parameters["properties"]["payload_json"]["description"]
+
+    assert "target=agent_binding operation=bind or update" in description
+    assert "schema_version=1 and a non-empty name" in description
+    assert "binding JSON is private" in description
+    assert "never put provider, resource, or channel references" in description
+    assert "public agent definition or export" in description
+
+
 def test_read_graph_status_returns_operator_status() -> None:
     payload = json.loads(read_graph(target="status"))
     assert "schema_version" in payload
