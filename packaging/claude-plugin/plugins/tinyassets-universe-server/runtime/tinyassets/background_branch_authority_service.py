@@ -1532,6 +1532,7 @@ class BackgroundBranchAuthorityHoldService:
         if not isinstance(failure, BackgroundBranchAuthorityFailureKind):
             raise ValueError("failure must be typed")
         _utc_timestamp(held_at, "held_at")
+        self._validate_hold_failure(current, failure, held_at)
         replacement = replace(
             current,
             transition_generation=current.transition_generation + 1,
@@ -1566,6 +1567,7 @@ class BackgroundBranchAuthorityHoldService:
             transitioned_at=recovered_at,
         )
         self._require_conclusive_reconciliation(resolution)
+        self._validate_active_binding(resolution.binding, resolution.resolved_at)
         self._validate_same_authority(current, resolution)
         assert resolution.attempt is not None
         replacement = replace(
@@ -1610,14 +1612,7 @@ class BackgroundBranchAuthorityHoldService:
                 "reauthorization requires the canonical principal or universe admin",
             )
         binding = resolution.binding
-        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
-            self._fail("binding_not_active", "reauthorized binding must be active")
-        if (
-            binding.expires_at is not None
-            and _utc_timestamp(binding.expires_at, "binding.expires_at")
-            <= _utc_timestamp(resolution.resolved_at, "resolution.resolved_at")
-        ):
-            self._fail("binding_expired", "reauthorized binding has expired")
+        self._validate_active_binding(binding, resolution.resolved_at)
         if (
             binding.universe_id != current.universe_id
             or binding.authorizing_principal_id != current.authorizing_principal_id
@@ -1632,10 +1627,14 @@ class BackgroundBranchAuthorityHoldService:
                 "authenticated repair requires the held binding fence",
             )
         held_binding = current.binding.expected_record
-        if binding.binding_id != held_binding.binding_id:
+        if (
+            binding.binding_id != held_binding.binding_id
+            or binding.source_kind is not held_binding.source_kind
+            or binding.source_id != held_binding.source_id
+        ):
             self._fail(
                 "binding_lineage_mismatch",
-                "authenticated repair cannot replace the binding lineage",
+                "authenticated repair cannot replace the binding source lineage",
             )
         if binding.generation <= held_binding.generation:
             self._fail(
@@ -1760,6 +1759,61 @@ class BackgroundBranchAuthorityHoldService:
         )
         self._validate_attempt(binding, attempt, current.universe_id)
 
+    def _validate_hold_failure(
+        self,
+        current: BackgroundBranchAuthorityOwnerRecord,
+        failure: BackgroundBranchAuthorityFailureKind,
+        held_at: str,
+    ) -> None:
+        binding = (
+            current.binding.expected_record
+            if current.binding is not None
+            else None
+        )
+        observed_failure = None
+        if binding is not None:
+            if binding.status is BackgroundBranchBindingStatus.REVOKED:
+                observed_failure = BackgroundBranchAuthorityFailureKind.REVOKED
+            elif (
+                binding.status is BackgroundBranchBindingStatus.EXPIRED
+                or (
+                    binding.expires_at is not None
+                    and _utc_timestamp(binding.expires_at, "binding.expires_at")
+                    <= _utc_timestamp(held_at, "held_at")
+                )
+            ):
+                observed_failure = BackgroundBranchAuthorityFailureKind.EXPIRED
+            elif binding.status is BackgroundBranchBindingStatus.EXHAUSTED:
+                observed_failure = BackgroundBranchAuthorityFailureKind.EXHAUSTED
+        binding_status_failures = {
+            BackgroundBranchAuthorityFailureKind.REVOKED,
+            BackgroundBranchAuthorityFailureKind.EXPIRED,
+            BackgroundBranchAuthorityFailureKind.EXHAUSTED,
+        }
+        if (
+            observed_failure is not None and failure is not observed_failure
+        ) or (
+            failure in binding_status_failures and failure is not observed_failure
+        ):
+            self._fail(
+                "hold_failure_mismatch",
+                "hold failure does not match the fenced binding state",
+            )
+
+    def _validate_active_binding(
+        self,
+        binding: BackgroundBranchBinding,
+        resolved_at: str,
+    ) -> None:
+        if binding.status is not BackgroundBranchBindingStatus.ACTIVE:
+            self._fail("binding_not_active", "resumed binding must be active")
+        if (
+            binding.expires_at is not None
+            and _utc_timestamp(binding.expires_at, "binding.expires_at")
+            <= _utc_timestamp(resolved_at, "resolution.resolved_at")
+        ):
+            self._fail("binding_expired", "resumed binding has expired")
+
     def _validate_recovered_attempt(
         self,
         previous: BackgroundBranchAttempt,
@@ -1852,6 +1906,7 @@ class BackgroundBranchAuthorityHoldService:
             or attempt.operation is not binding.operation
             or attempt.source_kind is not binding.source_kind
             or attempt.source_id != binding.source_id
+            or attempt.source_generation != int(binding.source_revision)
             or attempt.executor_audience.executor_class
             not in binding.permitted_executor_classes
             or (

@@ -1046,6 +1046,30 @@ def _authority_owner_record(
     )
 
 
+def _with_binding_status_failure(current, failure):
+    status_by_failure = {
+        authority_service.BackgroundBranchAuthorityFailureKind.REVOKED: (
+            BackgroundBranchBindingStatus.REVOKED
+        ),
+        authority_service.BackgroundBranchAuthorityFailureKind.EXPIRED: (
+            BackgroundBranchBindingStatus.EXPIRED
+        ),
+        authority_service.BackgroundBranchAuthorityFailureKind.EXHAUSTED: (
+            BackgroundBranchBindingStatus.EXHAUSTED
+        ),
+    }
+    status = status_by_failure.get(failure)
+    if status is None:
+        return current
+    assert current.binding is not None
+    return replace(
+        current,
+        binding=BackgroundBranchBindingFence(
+            replace(current.binding.expected_record, status=status)
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("failure", "reason", "automatic", "reauthorization"),
     [
@@ -1068,6 +1092,11 @@ def test_authority_hold_projection_is_typed_and_non_secret(
 ) -> None:
     attempt = _issued_attempt(tmp_path)
     current = _authority_owner_record(tmp_path, attempt)
+    typed_failure = getattr(
+        authority_service.BackgroundBranchAuthorityFailureKind,
+        failure,
+    )
+    current = _with_binding_status_failure(current, typed_failure)
     store = _AuthorityOwnerStore(current)
     resolver = _AuthorityOwnerResolver(None)
     service = authority_service.BackgroundBranchAuthorityHoldService(
@@ -1077,10 +1106,7 @@ def test_authority_hold_projection_is_typed_and_non_secret(
 
     result = service.hold(
         expected=authority_service.BackgroundBranchAuthorityOwnerFence(current),
-        failure=getattr(
-            authority_service.BackgroundBranchAuthorityFailureKind,
-            failure,
-        ),
+        failure=typed_failure,
         held_at="2026-07-30T19:31:00Z",
     )
 
@@ -1105,6 +1131,32 @@ def test_authority_hold_projection_is_typed_and_non_secret(
     }.intersection(projection)
 
 
+@pytest.mark.parametrize("failure", ["REVOKED", "EXPIRED", "EXHAUSTED"])
+def test_authority_hold_rejects_binding_status_failure_without_canonical_state(
+    tmp_path,
+    failure,
+) -> None:
+    attempt = _issued_attempt(tmp_path)
+    current = _authority_owner_record(tmp_path, attempt)
+    service = authority_service.BackgroundBranchAuthorityHoldService(
+        _AuthorityOwnerStore(current),
+        _AuthorityOwnerResolver(None),
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAuthorityHoldError,
+        match="hold_failure_mismatch",
+    ):
+        service.hold(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(current),
+            failure=getattr(
+                authority_service.BackgroundBranchAuthorityFailureKind,
+                failure,
+            ),
+            held_at="2026-07-30T19:31:00Z",
+        )
+
+
 @pytest.mark.parametrize(
     ("owner_kind", "state"),
     [
@@ -1123,6 +1175,10 @@ def test_authority_hold_supports_queue_and_source_owned_state(
         attempt,
         owner_kind=owner_kind,
         state=state,
+    )
+    current = _with_binding_status_failure(
+        current,
+        authority_service.BackgroundBranchAuthorityFailureKind.REVOKED,
     )
     service = authority_service.BackgroundBranchAuthorityHoldService(
         _AuthorityOwnerStore(current),
@@ -1227,6 +1283,53 @@ def test_recovery_exit_rejects_indeterminate_boundary(tmp_path) -> None:
         )
 
 
+def test_recovery_exit_rejects_binding_that_expired_while_held(tmp_path) -> None:
+    attempt = _issued_attempt(tmp_path)
+    current = _authority_owner_record(tmp_path, attempt)
+    expiring_binding = replace(
+        current.binding.expected_record,
+        expires_at="2026-07-30T19:31:30Z",
+    )
+    current = replace(
+        current,
+        binding=BackgroundBranchBindingFence(expiring_binding),
+    )
+    store = _AuthorityOwnerStore(current)
+    recovered_attempt = replace(
+        attempt,
+        claim_generation=attempt.claim_generation + 1,
+        lease_generation=attempt.lease_generation + 1,
+        updated_at="2026-07-30T19:32:00Z",
+    )
+    resolver = _AuthorityOwnerResolver(
+        authority_service.BackgroundBranchAuthorityExitResolution(
+            binding=expiring_binding,
+            attempt=recovered_attempt,
+            authenticated_principal_id=None,
+            is_universe_admin=False,
+            predecessor=authority_service.BackgroundBranchAttemptPredecessorState.DEAD,
+            boundary=authority_service.BackgroundBranchAttemptBoundaryState.NOT_CROSSED,
+            resolved_at="2026-07-30T19:32:00Z",
+        )
+    )
+    service = authority_service.BackgroundBranchAuthorityHoldService(store, resolver)
+    held = service.hold(
+        expected=authority_service.BackgroundBranchAuthorityOwnerFence(current),
+        failure=authority_service.BackgroundBranchAuthorityFailureKind.INDETERMINATE,
+        held_at="2026-07-30T19:31:00Z",
+    ).record
+    assert held is not None
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAuthorityHoldError,
+        match="binding_expired",
+    ):
+        service.recover(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
+            recovered_at="2026-07-30T19:32:00Z",
+        )
+
+
 def _reauthorization_state(
     tmp_path,
     *,
@@ -1234,6 +1337,7 @@ def _reauthorization_state(
 ):
     attempt = _issued_attempt(tmp_path)
     current = _authority_owner_record(tmp_path, attempt)
+    current = _with_binding_status_failure(current, failure)
     store = _AuthorityOwnerStore(current)
     held = authority_service.BackgroundBranchAuthorityHoldService(
         store,
@@ -1527,6 +1631,81 @@ def test_reauthorization_attempt_executor_must_match_rotated_binding(
         )
 
 
+def test_reauthorization_rejects_source_identity_transfer(tmp_path) -> None:
+    attempt, store, held, rotated, replacement_attempt = _reauthorization_state(
+        tmp_path
+    )
+    transferred_binding = replace(rotated, source_id="schedule_transferred")
+    transferred_attempt = replace(
+        replacement_attempt,
+        source_id=transferred_binding.source_id,
+        provenance=replace(
+            replacement_attempt.provenance,
+            source_id=transferred_binding.source_id,
+        ),
+    )
+    resolver = _AuthorityOwnerResolver(
+        authority_service.BackgroundBranchAuthorityExitResolution(
+            binding=transferred_binding,
+            attempt=transferred_attempt,
+            authenticated_principal_id=attempt.authorizing_principal_id,
+            is_universe_admin=False,
+            predecessor=authority_service.BackgroundBranchAttemptPredecessorState.UNKNOWN,
+            boundary=authority_service.BackgroundBranchAttemptBoundaryState.INDETERMINATE,
+            resolved_at="2026-07-30T19:32:00Z",
+        )
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAuthorityHoldError,
+        match="binding_lineage_mismatch",
+    ):
+        authority_service.BackgroundBranchAuthorityHoldService(
+            store,
+            resolver,
+        ).reauthorize(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
+            authentication_context_id="authctx_17",
+            reauthorized_at="2026-07-30T19:32:00Z",
+        )
+
+
+def test_reauthorization_attempt_source_generation_must_match_binding(
+    tmp_path,
+) -> None:
+    attempt, store, held, rotated, replacement_attempt = _reauthorization_state(
+        tmp_path
+    )
+    mismatched_attempt = replace(
+        replacement_attempt,
+        source_generation=replacement_attempt.source_generation + 1,
+    )
+    resolver = _AuthorityOwnerResolver(
+        authority_service.BackgroundBranchAuthorityExitResolution(
+            binding=rotated,
+            attempt=mismatched_attempt,
+            authenticated_principal_id=attempt.authorizing_principal_id,
+            is_universe_admin=False,
+            predecessor=authority_service.BackgroundBranchAttemptPredecessorState.UNKNOWN,
+            boundary=authority_service.BackgroundBranchAttemptBoundaryState.INDETERMINATE,
+            resolved_at="2026-07-30T19:32:00Z",
+        )
+    )
+
+    with pytest.raises(
+        authority_service.BackgroundBranchAuthorityHoldError,
+        match="attempt_authority_mismatch",
+    ):
+        authority_service.BackgroundBranchAuthorityHoldService(
+            store,
+            resolver,
+        ).reauthorize(
+            expected=authority_service.BackgroundBranchAuthorityOwnerFence(held),
+            authentication_context_id="authctx_17",
+            reauthorized_at="2026-07-30T19:32:00Z",
+        )
+
+
 def test_authority_owner_transitions_reject_stale_fence(tmp_path) -> None:
     attempt = _issued_attempt(tmp_path)
     current = _authority_owner_record(tmp_path, attempt)
@@ -1601,6 +1780,10 @@ def test_authority_owner_attempt_requires_parent_binding_fence(tmp_path) -> None
 def test_reauthorization_rejects_different_binding_lineage(tmp_path) -> None:
     attempt = _issued_attempt(tmp_path)
     current = _authority_owner_record(tmp_path, attempt)
+    current = _with_binding_status_failure(
+        current,
+        authority_service.BackgroundBranchAuthorityFailureKind.REVOKED,
+    )
     store = _AuthorityOwnerStore(current)
     held = authority_service.BackgroundBranchAuthorityHoldService(
         store,
@@ -1614,6 +1797,7 @@ def test_reauthorization_rejects_different_binding_lineage(tmp_path) -> None:
     other_binding = replace(
         held.binding.expected_record,
         binding_id="bnd_other_lineage_17",
+        status=BackgroundBranchBindingStatus.ACTIVE,
         generation=held.binding.expected_record.generation + 4,
     )
     other_attempt = replace(
@@ -1659,6 +1843,10 @@ def test_reauthorization_rejects_different_binding_lineage(tmp_path) -> None:
 def test_source_reauthorization_cannot_revive_stale_attempt(tmp_path) -> None:
     attempt = _issued_attempt(tmp_path)
     current = _authority_owner_record(tmp_path, attempt, owner_kind="SOURCE")
+    current = _with_binding_status_failure(
+        current,
+        authority_service.BackgroundBranchAuthorityFailureKind.REVOKED,
+    )
     store = _AuthorityOwnerStore(current)
     held = authority_service.BackgroundBranchAuthorityHoldService(
         store,
@@ -1671,6 +1859,7 @@ def test_source_reauthorization_cannot_revive_stale_attempt(tmp_path) -> None:
     assert held is not None
     rotated = replace(
         held.binding.expected_record,
+        status=BackgroundBranchBindingStatus.ACTIVE,
         generation=held.binding.expected_record.generation + 1,
     )
     resolver = _AuthorityOwnerResolver(
