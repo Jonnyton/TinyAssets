@@ -1,3 +1,15 @@
+## 2026-08-01 — squash-merged drain foldback
+
+- **What surprised me:** rebasing the implementation branch onto its squash
+  merge dropped the claim commit automatically but required an explicit skip
+  for the first implementation commit before Git recognized the second as
+  already upstream.
+- **Pattern worth capturing:** verify the merged PR and exact merge SHA first,
+  then restack and prove `HEAD == origin/main` before creating a coordination
+  diff. A merged implementation branch is evidence, not foldback content.
+- **What I would do differently:** inspect the PR merge strategy before the
+  first rebase so the expected duplicate-commit conflict is named up front.
+
 ## 2026-08-01 — governed custom-agent component compilation
 
 - **What surprised me:** arbitrary agent extensibility does not require a
