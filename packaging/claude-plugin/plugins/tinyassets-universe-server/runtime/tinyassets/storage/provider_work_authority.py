@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
+import secrets
 import sqlite3
+import threading
+import weakref
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator
@@ -32,7 +37,6 @@ from tinyassets.provider_work_authority import (
     ProviderWorkReceiptWriteResult,
     _claim_from_request,
     _from_seed,
-    _issue_provider_invocation_mint_grant,
     _mint_provider_invocation_carrier,
     _receipt_from_authority,
     _reservation_from_request,
@@ -43,6 +47,70 @@ from tinyassets.provider_work_authority import (
     provider_work_receipt_id,
 )
 from tinyassets.storage import db_path
+
+_PROVIDER_INVOCATION_STORE_MINT_LOCK = threading.Lock()
+_ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS: dict[str, tuple[str, int]] = {}
+
+
+def _reset_provider_invocation_store_mint_state_after_fork() -> None:
+    global _PROVIDER_INVOCATION_STORE_MINT_LOCK
+    global _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS
+
+    _PROVIDER_INVOCATION_STORE_MINT_LOCK = threading.Lock()
+    _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS = {}
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(
+        after_in_child=_reset_provider_invocation_store_mint_state_after_fork
+    )
+
+
+def _discard_provider_invocation_store_mint_proof(
+    proof_id: str,
+    issuer_pid: int,
+) -> None:
+    if issuer_pid != os.getpid():
+        return
+    with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
+        _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS.pop(proof_id, None)
+
+
+class _ProviderInvocationStoreMintProof:
+    __slots__ = (
+        "_issuer_pid",
+        "_proof_id",
+        "_reservation_digest",
+        "__weakref__",
+    )
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("provider invocation mint proofs are store-issued")
+
+    def __setattr__(self, _name: str, _value: object) -> None:
+        raise AttributeError("provider invocation mint proof is immutable")
+
+    def __reduce__(self):
+        raise TypeError("provider invocation mint proof is non-serializable")
+
+    def _consume(self, reservation_digest: str) -> None:
+        if type(self) is not _ProviderInvocationStoreMintProof:
+            raise PermissionError("provider invocation mint proof is not store-issued")
+        current_pid = os.getpid()
+        if self._issuer_pid != current_pid:
+            raise PermissionError("provider invocation mint proof belongs to another process")
+        expected = (self._reservation_digest, self._issuer_pid)
+        if expected != (reservation_digest, current_pid):
+            raise PermissionError("provider invocation mint proof is for another reservation")
+        with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
+            active = _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS.get(
+                self._proof_id
+            )
+            if active != expected:
+                raise PermissionError(
+                    "provider invocation mint proof is invalid or consumed"
+                )
+            del _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[self._proof_id]
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS provider_work_bindings (
@@ -990,7 +1058,35 @@ class SQLiteProviderWorkAuthorityStore:
             raise ValueError("request must be a ProviderInvocationLaunchRequest")
         now = self._now()
         with self._ledger_transaction() as transaction:
-            return transaction.arm_launch(request, now=now)
+            result = transaction.arm_launch(request, now=now)
+        if (
+            result.outcome is not ProviderWorkAuthorityWriteOutcome.APPLIED
+            or result.record is None
+        ):
+            return result
+
+        proof_id = secrets.token_hex(32)
+        issuer_pid = os.getpid()
+        proof = object.__new__(_ProviderInvocationStoreMintProof)
+        object.__setattr__(proof, "_proof_id", proof_id)
+        object.__setattr__(proof, "_issuer_pid", issuer_pid)
+        object.__setattr__(
+            proof,
+            "_reservation_digest",
+            result.record.reservation_digest,
+        )
+        weakref.finalize(
+            proof,
+            _discard_provider_invocation_store_mint_proof,
+            proof_id,
+            issuer_pid,
+        )
+        with _PROVIDER_INVOCATION_STORE_MINT_LOCK:
+            _ACTIVE_PROVIDER_INVOCATION_STORE_MINT_PROOFS[proof_id] = (
+                result.record.reservation_digest,
+                issuer_pid,
+            )
+        return replace(result, mint_proof=proof)
 
     def arm_launch_carrier(
         self,
@@ -1006,13 +1102,14 @@ class SQLiteProviderWorkAuthorityStore:
             or result.record is None
             or result.receipt is None
             or result.claim is None
+            or result.mint_proof is None
         ):
             raise PermissionError("provider invocation reservation could not be armed")
         return _mint_provider_invocation_carrier(
             result.receipt,
             result.claim,
             result.record,
-            _issue_provider_invocation_mint_grant(result.record),
+            result.mint_proof,
         )
 
     def list_reservations(
