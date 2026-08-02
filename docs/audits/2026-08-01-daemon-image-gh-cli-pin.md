@@ -50,4 +50,8 @@ git diff --check
 exit 0
 ```
 
-The implementation changes only `ARG GH_VERSION=2.96.0` to `ARG GH_VERSION=2.97.0`. Local Docker Desktop was not running, so no local image-build success is claimed. Exact-head review, merged-main image build, production deploy, public canary, and rendered connector acceptance remain pending.
+The implementation changes only `ARG GH_VERSION=2.96.0` to `ARG GH_VERSION=2.97.0`. Local Docker Desktop was not running, so no local image-build success is claimed.
+
+Independent review approved rebased exact head `412c239b`. PR #2149 merged as `d6072f298a1b369786788e4bd36eca10cf9a5249`; image run `30737655671` and production deploy/canary run `30737837143` passed. The deploy proved health, cloud-worker startup, canonical MCP canary, exact-seven surface, direct-URL Access fencing, writer/receipt fencing, and release-receipt publication.
+
+A rendered Claude.ai retry then found a separate public remix-lineage example gap. Its corrective PR #2152 merged as `7256335820ef2247c4d7880455a67d88f5dc5c3d`; exact image run `30738561630` and deploy/canary run `30738667081` also passed. The browser-control session reset before the clean rendered response could be read, so rendered first-attempt acceptance is not claimed and the OpenSpec change remains active.
