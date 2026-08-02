@@ -1,9 +1,10 @@
 # Current-main extraction manifest
 
-Freshness: 2026-08-02, branch base `origin/main@ce35784f`, with D0 present as
-merged PR #1701 (`aa328495718b5ebee34aa7adaa92882b7db74288`). This manifest
-records provenance for already-landed D0 behavior. It does not import a stale
-branch, activate a production route, or complete V1.
+Freshness: 2026-08-02, prepared from `origin/main@ce35784f` and revalidated
+after merging `origin/main@61da7f21`, with D0 present as merged PR #1701
+(`aa328495718b5ebee34aa7adaa92882b7db74288`). This manifest records provenance
+for already-landed D0 behavior. It does not import a stale branch, activate a
+production route, or complete V1.
 
 ## Acceptance contract
 
