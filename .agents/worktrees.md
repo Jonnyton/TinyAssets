@@ -1,5 +1,17 @@
 # Worktree Inventory
 
+## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
+
+- Provider: `codex-gpt5-desktop-installer`
+- Branch: `codex/windows-installer-bounded-recurrence-20260801`
+- Lane state: claimed from current main after three post-PR-2078 installer jobs escaped the in-process timeout and reached GitHub forced cancellation
+- Worktree: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence`
+- STATUS/Issue/PR: exact Windows installer lifecycle recovery slice claimed; umbrella full-platform refinery work remains outside this slice
+- Purpose: supervise the full lifecycle from outside the tested process, retain phase diagnostics, and fail before GitHub cancellation begins
+- Review gate: RED/GREEN timeout regression, focused desktop tests, strict OpenSpec, exact-head independent review, and one fresh successful Windows lifecycle CI run
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-windows-installer-bounded-recurrence/_PURPOSE.md`
+- Ship/abandon: normal PR; do not claim signed clean-VM acceptance or published installer readiness
+
 ## 2026-07-31 19:20 - OAuth return reattachment acceptance
 
 - Provider: `codex-gpt5-desktop`
