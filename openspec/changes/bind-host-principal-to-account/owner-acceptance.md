@@ -1,8 +1,8 @@
 # Host-principal owner acceptance and RED-slice claim
 
-**Date:** 2026-08-01  
-**Current main:** `0dc3a40c042721c5efd68dd369469d4c9cdef1ae`  
-**Provider:** `drain-20260801-113628-6deab6`  
+**Date:** 2026-08-01
+**Current main:** `0dc3a40c042721c5efd68dd369469d4c9cdef1ae`
+**Provider:** `drain-20260801-113628-6deab6`
 **Scope:** OpenSpec ownership coordination and exact next-slice claim only. No
 runtime, migration, canonical-spec, deployment, or rollout change is included.
 
