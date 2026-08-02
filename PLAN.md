@@ -40,6 +40,38 @@ Depth: lead memory `project_minimal_primitives_principle.md`.
 
 **Task-automation corollary (host-confirmed 2026-07-26; cloud placement clarified 2026-07-29):** Recurring task loops, schedulers, and similar automations are user-authored designs composed from platform primitives, published to the commons when their authors choose, and copied, remixed, or combined like any other workflow. A recurring automation that is expected to continue while the user's devices are off belongs in the user's cloud universe and runs through ordinary cloud execution using that user's explicitly bound compute/provider authority. A tray or other user device may bridge the period before cloud activation or run an explicitly host-only workflow, but migration uses a single-active cutover: the host executor is stopped before cloud acceptance and is not retained as a simultaneous fallback. TinyAssets does not ship a privileged product-specific automation loop. The historical cheat/community-patch loop is retired and must be absent from runtime, packaging, configuration, and shipped fallback paths; retained uptime canaries and deploy observability are infrastructure checks, not a user-task automation product.
 
+**User-buildable-middle MVP boundary (host-confirmed 2026-08-01):** TinyAssets
+owns the hard ends and invariants of a long-running process, not its preferred
+internal strategy. The platform accepts a `Trigger` and typed input, durably
+runs a versioned user-authored Node/Edge graph, enforces scope and provider/tool/
+effect authority at every external boundary, and persists typed output,
+artifacts, receipts, checkpoints, and lineage. Everything between those ends
+that can have multiple useful shapes—task selection, prioritization, prompts,
+evaluators, retry policy, branching, convergence, escalation, and loop shape—is
+editable composition data. Power users build and publish those compositions;
+other users discover, copy, combine, and remix them, then bind private inputs,
+credentials, goals, and provider policy in their own universe. Chatbots must be
+able to inspect and change the same definition from a phone while execution
+remains in the cloud.
+
+The reference setup journey is conversational and contains no maintainer-only
+step: a user gives their chatbot a repository plus a spec or patch request;
+the chatbot creates, imports, or remixes a suitable Branch definition; the user
+privately binds repository and compute/provider authority; and the chatbot
+validates and activates the cloud run. The same chatbot surface can inspect
+progress, pause, resume, revise, roll back, or replace that composition while
+the user's computers remain off. A rendered connector conversation is the
+final acceptance proof for this journey once all underlying boundaries exist.
+
+This is also the MVP scope test: platform code is justified only when it closes
+a generic input, durable-execution, authority, output, evidence, discovery, or
+remix gap that a user graph cannot safely compose. A first-party automation is
+an acceptance fixture and optional commons template, never a privileged runtime
+path. In particular, the OpenSpec drain proves the generic substrate by running
+as one ordinary private Branch composition; drain-specific scheduling,
+refinery, retry, evaluator, and prioritization policy do not become platform
+services merely because the first fixture needs them.
+
 **Custom-agent corollary (host-confirmed 2026-07-30; interchange shape
 confirmed 2026-07-31):** Users compose
 agents—not merely fixed workflow templates—from the same public commons.

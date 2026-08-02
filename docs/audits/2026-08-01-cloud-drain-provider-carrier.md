@@ -9,23 +9,32 @@ Branch: `codex/cloud-drain-provider-carrier-20260802`
 The already-armed provider receipt, active execution claim, and
 `launch_started` reservation now form one immutable in-process
 `ProviderInvocationCarrier`. It has no public dictionary schema, refuses
-pickling, verifies the content digests and exact cross-record generations, and
-rejects inactive, unarmed, mismatched, over-budget, or wrong-role tuples.
+pickling, is minted only after the authority store wins the one-shot arm, and
+is sealed with a process-local keyed digest. Direct construction, launch
+replay, subclasses, record mutation, and second use fail closed. It verifies
+the content digests and exact cross-record generations and rejects inactive,
+unarmed, mismatched, over-budget, wrong-role, or wrong-operation tuples.
 
 The existing explicit `UniverseContext` carrier accepts this object. The three
 existing router sinks—role fallback, policy routing, and judge ensemble—validate
 it before auth-health, quota, or provider access. A valid carrier narrows the
 route to exactly its provider, applies its finite token ceiling, never widens
 fallback, bypasses policy alternatives, and converts ensemble fan-out into one
-authorized invocation. Calls without a carrier retain shipped behavior.
+authorized invocation. The caller must supply the server-classified operation;
+the sink matches it against the reservation before consuming the carrier.
+Calls without a carrier retain shipped behavior.
 
 ## Verification
 
 - RED: carrier-focused authority and router tests failed collection because
   `ProviderInvocationCarrier` did not exist.
-- GREEN: 5 authority carrier tests and 6 router carrier tests passed.
-- Related provider suite: 163 passed. One pre-existing mocked Claude-process
-  unawaited-coroutine warning remains unrelated to this change.
+- GREEN after independent-review repair: store-mint, replay, keyed-seal,
+  one-use, role/operation, exact-type, token-ceiling, no-fallback, and no-fanout
+  coverage passed.
+- Exact related command on 2026-08-01:
+  `$providerTests = @(Get-ChildItem -LiteralPath tests -File | Where-Object { $_.Name -eq 'test_provider_work_authority.py' -or $_.Name -eq 'test_providers.py' -or $_.Name -like 'test_provider_router*.py' } | ForEach-Object { $_.FullName }); python -m pytest @providerTests -q`
+  — 151 passed. One pre-existing mocked Claude-process unawaited-coroutine
+  warning (plus pytest's collection-time echo of it) remains unrelated.
 - Ruff, both strict OpenSpec validations, cross-provider drift, and
   `git diff --check` passed.
 

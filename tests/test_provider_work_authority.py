@@ -753,21 +753,129 @@ def _armed_carrier_records(tmp_path):
     return receipt, claim, armed
 
 
+def _armed_carrier(tmp_path):
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_carrier",
+            runtime_id="runtime_cloud_carrier",
+            claim_nonce_digest=f"sha256:{'7' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation = store.reserve(
+        ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key="attempt-carrier-mint",
+            operation="repository_spec_delivery",
+            role="writer",
+            max_tokens=20_000,
+            max_cost_microunits=1_000_000,
+        )
+    ).record
+    assert reservation is not None
+    return store.arm_launch_carrier(
+        ProviderInvocationLaunchRequest.from_reservation(reservation)
+    )
+
+
 def test_provider_invocation_carrier_is_exact_and_non_serializable(tmp_path) -> None:
     receipt, claim, armed = _armed_carrier_records(tmp_path)
 
-    carrier = ProviderInvocationCarrier(receipt, claim, armed)
+    with pytest.raises(TypeError, match="store-minted"):
+        ProviderInvocationCarrier(receipt, claim, armed)
+
+    carrier = _armed_carrier(tmp_path / "minted")
 
     assert carrier.provider == "codex"
     assert carrier.role == "writer"
     assert carrier.max_tokens == 20_000
-    assert carrier.assignment_generation == receipt.assignment_generation
-    assert carrier.validate_for_call(role="writer") == "codex"
+    assert carrier.assignment_generation == 3
+    assert carrier.validate_for_call(
+        role="writer",
+        operation="repository_spec_delivery",
+    ) == "codex"
+    with pytest.raises(PermissionError, match="consumed"):
+        carrier.validate_for_call(
+            role="writer",
+            operation="repository_spec_delivery",
+        )
+    wrong_role = _armed_carrier(tmp_path / "wrong-role")
     with pytest.raises(PermissionError, match="role"):
-        carrier.validate_for_call(role="judge")
+        wrong_role.validate_for_call(
+            role="judge",
+            operation="repository_spec_delivery",
+        )
+    wrong_operation = _armed_carrier(tmp_path / "wrong-operation")
+    with pytest.raises(PermissionError, match="operation"):
+        wrong_operation.validate_for_call(
+            role="writer",
+            operation="different_operation",
+        )
     assert not hasattr(carrier, "to_dict")
     with pytest.raises(TypeError, match="non-serializable"):
         pickle.dumps(carrier)
+
+
+def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> None:
+    store, _binding, root, _authority, service = _ledger_fixture(tmp_path)
+    receipt = service.issue(root).record
+    assert receipt is not None
+    claim = store.claim(
+        ProviderWorkExecutionClaimRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            worker_id="worker_cloud_replay",
+            runtime_id="runtime_cloud_replay",
+            claim_nonce_digest=f"sha256:{'9' * 64}",
+            lease_seconds=60,
+        )
+    ).record
+    assert claim is not None
+    reservation = store.reserve(
+        ProviderInvocationReservationRequest(
+            receipt_id=receipt.receipt_id,
+            receipt_digest=receipt.receipt_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_generation=claim.generation,
+            invocation_key="attempt-carrier-replay",
+            operation="repository_spec_delivery",
+            role="writer",
+            max_tokens=20_000,
+            max_cost_microunits=1_000_000,
+        )
+    ).record
+    assert reservation is not None
+    launch = ProviderInvocationLaunchRequest.from_reservation(reservation)
+
+    store.arm_launch_carrier(launch)
+    with pytest.raises(PermissionError, match="already armed"):
+        store.arm_launch_carrier(launch)
+
+
+def test_provider_invocation_carrier_seal_rejects_record_mutation(tmp_path) -> None:
+    carrier = _armed_carrier(tmp_path)
+    object.__setattr__(
+        carrier,
+        "_reservation",
+        replace(carrier._reservation, operation="different_operation"),
+    )
+
+    with pytest.raises(PermissionError, match="seal"):
+        carrier.validate_for_call(
+            role="writer",
+            operation="different_operation",
+        )
 
 
 @pytest.mark.parametrize("stale_part", ["receipt", "claim", "reservation"])
@@ -783,14 +891,14 @@ def test_provider_invocation_carrier_rejects_stale_or_unarmed_tuple(
     else:
         armed = replace(armed, state=ProviderInvocationReservationState.RESERVED)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(TypeError, match="store-minted"):
         ProviderInvocationCarrier(receipt, claim, armed)
 
 
 def test_provider_invocation_carrier_rejects_cross_record_mismatch(tmp_path) -> None:
     receipt, claim, armed = _armed_carrier_records(tmp_path)
 
-    with pytest.raises(PermissionError):
+    with pytest.raises(TypeError, match="store-minted"):
         ProviderInvocationCarrier(
             receipt,
             claim,

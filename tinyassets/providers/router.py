@@ -52,13 +52,16 @@ def _provider_invocation_carrier(
     universe_context: UniverseContext | None,
     *,
     role: str,
+    operation: str | None,
 ) -> ProviderInvocationCarrier | None:
     carrier = universe_context.provider_invocation if universe_context else None
     if carrier is None:
         return None
-    if not isinstance(carrier, ProviderInvocationCarrier):
+    if operation is None:
+        raise PermissionError("armed provider invocation requires an operation")
+    if type(carrier) is not ProviderInvocationCarrier:
         raise PermissionError("provider invocation carrier is not server-owned")
-    carrier.validate_for_call(role=role)
+    carrier.validate_for_call(role=role, operation=operation)
     return carrier
 
 def _resolve_universe_config(
@@ -297,6 +300,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Route a single call through the fallback chain for *role*.
@@ -312,6 +316,7 @@ class ProviderRouter:
         invocation_carrier = _provider_invocation_carrier(
             universe_context,
             role=role,
+            operation=operation,
         )
         resolved_config = _resolve_universe_config(universe_context)
         universe_dir = universe_context.universe_dir if universe_context else None
@@ -336,7 +341,7 @@ class ProviderRouter:
         pin_writer = os.environ.get("TINYASSETS_PIN_WRITER", "").strip()
         is_pinned_writer = role == "writer" and bool(pin_writer)
         if invocation_carrier is not None:
-            if pin_writer and pin_writer != invocation_carrier.provider:
+            if is_pinned_writer and pin_writer != invocation_carrier.provider:
                 raise PermissionError("writer pin conflicts with armed provider")
         elif is_pinned_writer:
             chain = [pin_writer]
@@ -633,6 +638,7 @@ class ProviderRouter:
         config: ModelConfig | None = None,
         difficulty: str = "",
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Route a call honouring an explicit llm_policy dict.
@@ -656,16 +662,13 @@ class ProviderRouter:
         method extracts ``.text`` and returns (text, provider_name, meta). For
         the policy path we track the name explicitly.
         """
-        invocation_carrier = _provider_invocation_carrier(
-            universe_context,
-            role=role,
-        )
-        if invocation_carrier is not None:
+        if universe_context is not None and universe_context.provider_invocation is not None:
             resp = await self.call(
                 role,
                 prompt,
                 system,
                 config,
+                operation=operation,
                 universe_context=universe_context,
             )
             return resp.text, resp.provider, self._call_meta(resp, attempts=1)
@@ -811,6 +814,7 @@ class ProviderRouter:
         config: ModelConfig | None = None,
         difficulty: str = "",
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> tuple[str, str, dict]:
         """Synchronous wrapper for :meth:`call_with_policy`."""
@@ -826,6 +830,7 @@ class ProviderRouter:
                 return loop.run_until_complete(
                     self.call_with_policy(
                         role, prompt, system, policy, cfg, difficulty,
+                        operation=operation,
                         universe_context=universe_context,
                     )
                 )
@@ -860,6 +865,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> ProviderResponse:
         """Synchronous version of :meth:`call` for use from sync code.
@@ -884,6 +890,7 @@ class ProviderRouter:
                 return loop.run_until_complete(
                     self.call(
                         role, prompt, system, cfg,
+                        operation=operation,
                         universe_context=universe_context,
                     )
                 )
@@ -912,6 +919,7 @@ class ProviderRouter:
         system: str,
         config: ModelConfig | None = None,
         *,
+        operation: str | None = None,
         universe_context: UniverseContext | None = None,
     ) -> list[ProviderResponse]:
         """Fan out to ALL available judge providers in parallel.
@@ -920,17 +928,14 @@ class ProviderRouter:
         calls the same provider twice.  Returns 1-N responses
         depending on how many providers are healthy.
         """
-        invocation_carrier = _provider_invocation_carrier(
-            universe_context,
-            role="judge",
-        )
-        if invocation_carrier is not None:
+        if universe_context is not None and universe_context.provider_invocation is not None:
             return [
                 await self.call(
                     "judge",
                     prompt,
                     system,
                     config,
+                    operation=operation,
                     universe_context=universe_context,
                 )
             ]

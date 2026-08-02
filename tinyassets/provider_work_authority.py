@@ -8,8 +8,11 @@ credential, authorize quota, or enable provider-authority V2 by itself.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import re
+import secrets
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
@@ -795,6 +798,8 @@ class ProviderInvocationReservation:
 class ProviderInvocationReservationWriteResult:
     outcome: ProviderWorkAuthorityWriteOutcome
     record: ProviderInvocationReservation | None
+    receipt: ProviderUniverseWorkReceipt | None = None
+    claim: ProviderWorkExecutionClaim | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -845,44 +850,17 @@ class ProviderInvocationLaunchRequest:
 class ProviderInvocationCarrier:
     """In-process-only frozen authority for one already-armed provider call."""
 
-    __slots__ = ("_claim", "_receipt", "_reservation")
+    __slots__ = (
+        "_claim",
+        "_consume_lock",
+        "_consumed",
+        "_receipt",
+        "_reservation",
+        "_seal",
+    )
 
-    def __init__(
-        self,
-        receipt: ProviderUniverseWorkReceipt,
-        claim: ProviderWorkExecutionClaim,
-        reservation: ProviderInvocationReservation,
-    ) -> None:
-        if not isinstance(receipt, ProviderUniverseWorkReceipt):
-            raise TypeError("receipt must be a ProviderUniverseWorkReceipt")
-        if not isinstance(claim, ProviderWorkExecutionClaim):
-            raise TypeError("claim must be a ProviderWorkExecutionClaim")
-        if not isinstance(reservation, ProviderInvocationReservation):
-            raise TypeError("reservation must be a ProviderInvocationReservation")
-        exact = (
-            receipt.state is ProviderWorkReceiptState.ACTIVE,
-            claim.state is ProviderWorkExecutionClaimState.ACTIVE,
-            reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED,
-            receipt.receipt_digest == receipt.expected_digest(),
-            claim.claim_digest == claim.expected_digest(),
-            reservation.reservation_digest == reservation.expected_digest(),
-            claim.receipt_id == receipt.receipt_id,
-            claim.receipt_digest == receipt.receipt_digest,
-            reservation.receipt_id == receipt.receipt_id,
-            reservation.receipt_digest == receipt.receipt_digest,
-            reservation.claim_id == claim.claim_id,
-            reservation.claim_digest == claim.claim_digest,
-            reservation.claim_generation == claim.generation,
-            reservation.operation in receipt.allowed_operations,
-            reservation.role in receipt.allowed_roles,
-            reservation.max_tokens <= receipt.max_tokens,
-            reservation.max_cost_microunits <= receipt.max_cost_microunits,
-        )
-        if not all(exact):
-            raise PermissionError("provider invocation carrier is stale or inconsistent")
-        object.__setattr__(self, "_receipt", receipt)
-        object.__setattr__(self, "_claim", claim)
-        object.__setattr__(self, "_reservation", reservation)
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("ProviderInvocationCarrier must be store-minted")
 
     def __setattr__(self, _name: str, _value: object) -> None:
         raise AttributeError("ProviderInvocationCarrier is immutable")
@@ -922,10 +900,91 @@ class ProviderInvocationCarrier:
     def binding_revocation_generation(self) -> int:
         return self._receipt.binding_revocation_generation
 
-    def validate_for_call(self, *, role: str) -> str:
+    def validate_for_call(self, *, role: str, operation: str) -> str:
+        if type(self) is not ProviderInvocationCarrier:
+            raise PermissionError("provider invocation carrier is not server-owned")
+        if not hmac.compare_digest(self._seal, _provider_invocation_carrier_seal(self)):
+            raise PermissionError("provider invocation carrier seal is invalid")
         if _reference(role, "role") != self.role:
             raise PermissionError("provider invocation role does not match carrier")
+        if _reference(operation, "operation") != self.operation:
+            raise PermissionError("provider invocation operation does not match carrier")
+        with self._consume_lock:
+            if self._consumed:
+                raise PermissionError("provider invocation carrier is already consumed")
+            object.__setattr__(self, "_consumed", True)
         return self.provider
+
+
+_PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
+
+
+def _provider_invocation_carrier_payload(
+    carrier: ProviderInvocationCarrier,
+) -> bytes:
+    return json.dumps(
+        {
+            "claim": carrier._claim.to_dict(),
+            "receipt": carrier._receipt.to_dict(),
+            "reservation": carrier._reservation.to_dict(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _provider_invocation_carrier_seal(
+    carrier: ProviderInvocationCarrier,
+) -> bytes:
+    return hmac.digest(
+        _PROVIDER_INVOCATION_CARRIER_KEY,
+        _provider_invocation_carrier_payload(carrier),
+        "sha256",
+    )
+
+
+def _mint_provider_invocation_carrier(
+    receipt: ProviderUniverseWorkReceipt,
+    claim: ProviderWorkExecutionClaim,
+    reservation: ProviderInvocationReservation,
+) -> ProviderInvocationCarrier:
+    """Mint after the authority store atomically wins ``launch_started``."""
+
+    if type(receipt) is not ProviderUniverseWorkReceipt:
+        raise TypeError("receipt must be an exact ProviderUniverseWorkReceipt")
+    if type(claim) is not ProviderWorkExecutionClaim:
+        raise TypeError("claim must be an exact ProviderWorkExecutionClaim")
+    if type(reservation) is not ProviderInvocationReservation:
+        raise TypeError("reservation must be an exact ProviderInvocationReservation")
+    exact = (
+        receipt.state is ProviderWorkReceiptState.ACTIVE,
+        claim.state is ProviderWorkExecutionClaimState.ACTIVE,
+        reservation.state is ProviderInvocationReservationState.LAUNCH_STARTED,
+        receipt.receipt_digest == receipt.expected_digest(),
+        claim.claim_digest == claim.expected_digest(),
+        reservation.reservation_digest == reservation.expected_digest(),
+        claim.receipt_id == receipt.receipt_id,
+        claim.receipt_digest == receipt.receipt_digest,
+        reservation.receipt_id == receipt.receipt_id,
+        reservation.receipt_digest == receipt.receipt_digest,
+        reservation.claim_id == claim.claim_id,
+        reservation.claim_digest == claim.claim_digest,
+        reservation.claim_generation == claim.generation,
+        reservation.operation in receipt.allowed_operations,
+        reservation.role in receipt.allowed_roles,
+        reservation.max_tokens <= receipt.max_tokens,
+        reservation.max_cost_microunits <= receipt.max_cost_microunits,
+    )
+    if not all(exact):
+        raise PermissionError("provider invocation carrier is stale or inconsistent")
+    carrier = object.__new__(ProviderInvocationCarrier)
+    object.__setattr__(carrier, "_receipt", receipt)
+    object.__setattr__(carrier, "_claim", claim)
+    object.__setattr__(carrier, "_reservation", reservation)
+    object.__setattr__(carrier, "_consume_lock", threading.Lock())
+    object.__setattr__(carrier, "_consumed", False)
+    object.__setattr__(carrier, "_seal", _provider_invocation_carrier_seal(carrier))
+    return carrier
 
 
 def _reservation_with_state(
@@ -1096,6 +1155,11 @@ class ProviderWorkAuthorityStore(Protocol):
         self,
         request: ProviderInvocationLaunchRequest,
     ) -> ProviderInvocationReservationWriteResult: ...
+
+    def arm_launch_carrier(
+        self,
+        request: ProviderInvocationLaunchRequest,
+    ) -> ProviderInvocationCarrier: ...
 
 
 def provider_work_binding_id(
