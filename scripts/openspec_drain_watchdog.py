@@ -133,6 +133,13 @@ def discover_decision(
             key=lambda record: str(record[1].get("started_at", "")),
         )
         status = str(state.get("status", "unknown"))
+        if status == "stop-requested":
+            return Decision(
+                "resume",
+                run_dir,
+                None,
+                "resuming orderly stopped drain",
+            )
         if status in FAILURE_STATUSES:
             return Decision(
                 "down",
@@ -437,8 +444,6 @@ def _watch(args: argparse.Namespace) -> int:
     launched_process: subprocess.Popen[str] | None = None
     sticky_failure: str | None = None
     stop_request.unlink(missing_ok=True)
-    if args.dry_run:
-        restart_request.unlink(missing_ok=True)
 
     try:
         decision = discover_decision(output_dir)

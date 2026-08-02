@@ -3656,12 +3656,14 @@ def test_run_rejects_replayed_refinery_partial_without_resetting_failure_budget(
     )
 
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    log = (run_dir / "supervisor.log").read_text(encoding="utf-8")
     assert exit_code == 0
     assert snapshot_calls == 1
     assert state["consecutive_failures"] == 1
     assert state["last_result"]["status"] == "INVALID_DUPLICATE_MERGE"
     assert state["merged_prs"] == [pr]
     assert state["status"] == "duplicate-merge-suppressed"
+    assert "reject attempt=1 PARTIAL already-consumed=" in log
 
 
 def test_run_excludes_consumed_owned_target_on_next_iteration(

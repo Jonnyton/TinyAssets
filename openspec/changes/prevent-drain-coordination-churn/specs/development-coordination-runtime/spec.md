@@ -60,6 +60,12 @@ The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an unfi
 - **THEN** the watchdog resumes the same run directory and exact drain identity
 - **AND** the preserved admission and resume target remain available to the next worker
 
+#### Scenario: Watchdog exits after orderly stop but before relaunch
+- **WHEN** a drain is durably `stop-requested` with its terminal timestamp
+- **AND** the watchdog process exits before it can relaunch the supervisor
+- **THEN** the next watchdog discovery resumes that same run directory and identity
+- **AND** an observational dry-run does not consume pending restart intent
+
 #### Scenario: Explicit restart follows an already-terminal failure
 - **WHEN** an explicit restart targets a supervisor already ended at a fatal or failure-budget terminal outcome
 - **THEN** the watchdog preserves the authorized fresh-run decision

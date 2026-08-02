@@ -81,6 +81,26 @@ def test_discovery_resumes_dead_unfinished_run_with_same_directory(
     assert decision.run_dir == interrupted
 
 
+def test_discovery_resumes_orderly_stop_requested_run_with_same_directory(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    stopped = _run(
+        output,
+        "openspec-drain-stopped",
+        status="stop-requested",
+        ended=True,
+    )
+
+    decision = watchdog.discover_decision(
+        output,
+        pid_alive=lambda _pid: False,
+    )
+
+    assert decision.action == "resume"
+    assert decision.run_dir == stopped
+
+
 def test_discovery_includes_supervisor_default_run_directory(tmp_path: Path) -> None:
     output = tmp_path / "output"
     default_run = _run(output, "openspec-drain", pid=42)
@@ -260,7 +280,7 @@ def test_resume_command_preserves_identity_and_finite_budgets(tmp_path: Path) ->
     assert command[command.index("--max-failures") + 1] == "2"
 
 
-def test_dry_run_writes_health_without_launching(
+def test_dry_run_writes_health_without_launching_or_consuming_restart(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,7 +315,7 @@ def test_dry_run_writes_health_without_launching(
     assert exit_code == 0
     assert health["mode"] == "attach"
     assert health["active_run"].endswith("openspec-drain-live")
-    assert not (watchdog_dir / "restart.request").exists()
+    assert (watchdog_dir / "restart.request").exists()
 
 
 def test_graceful_restart_preserves_new_run_decision_after_terminal_exit(

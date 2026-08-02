@@ -127,3 +127,12 @@ supervisor process is created, preserves unfinished discovery in every restart
 branch, and consumes canonical receipts for both `MERGED` and `PARTIAL` results.
 The seven new regressions and full 201-test controller/watchdog suite passed on
 Windows on 2026-08-01. Exact-head review and live restoration remain required.
+
+Claude's exact-head review approved the hardening and identified one additional
+post-stop crash window: if the watchdog died after `stop-requested` persisted
+but before relaunch, boot discovery still treated the run as completed. The
+follow-up makes orderly stopped runs resumable directly from durable discovery;
+dry-run health observation no longer consumes restart intent, and duplicate
+logs now report the actual `MERGED` or `PARTIAL` status. Three regressions first
+failed on those exact boundaries and then passed. A new exact-head review and
+live restoration are still required.

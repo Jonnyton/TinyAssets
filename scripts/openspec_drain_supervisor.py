@@ -2518,7 +2518,8 @@ def _run(args: argparse.Namespace) -> int:
                 atomic_write_json(state_path, state)
                 _log(
                     run_dir,
-                    f"reject attempt={attempt} MERGED {duplicate_rejection}",
+                    f"reject attempt={attempt} {result.status} "
+                    f"{duplicate_rejection}",
                 )
                 if args.once:
                     break

@@ -8,6 +8,7 @@
 - [x] 1.6 Add a resume regression proving the cleared terminal timestamp is durable before result-recovery network work; observe RED. Failed with the old `ended_at` still on disk during the recovery hook.
 - [x] 1.7 Add watchdog regressions proving unfinished identity preservation across abrupt stop, pending restart discovery, and launch failure; observe RED. All three failed by selecting a fresh run or consuming the marker before launch.
 - [x] 1.8 Add receipt regressions proving verified `PARTIAL` PRs are recorded, migrated, and rejected on replay without resetting the failure budget; observe RED. All receipt/replay assertions failed before implementation.
+- [x] 1.9 Add regressions proving boot discovery resumes orderly `stop-requested`, dry-run preserves restart intent, and replay logs name the actual result status; observe RED. All three assertions failed before the follow-up hardening.
 
 ## 2. Implementation
 
@@ -20,6 +21,7 @@
 - [x] 2.7 Persist the cleared terminal timestamp before result recovery can perform external work. The resume path now atomically removes `ended_at` before legacy receipt migration or result recovery.
 - [x] 2.8 Preserve an unfinished discovered run for explicit restart and consume restart markers only after a successful supervisor launch. Abrupt-stop, pending-discovery, and failed-launch regressions pass.
 - [x] 2.9 Track every accepted verified merge-backed receipt, including `PARTIAL`, and preserve the failure budget when suppressing a replayed partial. Current and migrated receipts are canonicalized; the main-loop replay regression passes.
+- [x] 2.10 Close the post-stop watchdog-crash identity window, make dry-run observation non-consuming, and report replayed result status accurately. The three focused regressions pass.
 
 ## 3. Verification and foldback
 
