@@ -379,6 +379,139 @@ def test_wire_dto_parser_rejects_missing_extra_duplicate_and_wrong_schema() -> N
         )
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_wire_dto_parser_rejects_non_finite_i_json_numbers(constant: str) -> None:
+    document = (
+        '{"host_principal_id":"hp_1","expected_generation":1,'
+        '"provider":"local","capability_id":"cap:model","visibility":"self",'
+        f'"price_floor":{constant},"max_concurrent":1,"always_active":false,'
+        f'"idempotency_key_b64u":"{_b64u(b"i" * 32)}"}}'
+    )
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto("SessionRegisterIntentV1", document)
+
+
+def test_challenge_request_closes_operation_and_nested_intent_semantics() -> None:
+    valid_intent = {
+        "idempotency_key_b64u": _b64u(b"i" * 32),
+        "public_jwk": _jwk(_key(1)),
+        "device_label": "Laptop",
+    }
+    valid = {
+        "schema_version": "host-binding-v1",
+        "operation": "enroll",
+        "intent": valid_intent,
+    }
+    assert parse_wire_dto("HostChallengeRequestV1", rfc8785.dumps(valid)) == valid
+
+    for invalid in (
+        {**valid, "operation": "admin_override"},
+        {**valid, "intent": {**valid_intent, "idempotency_key_b64u": "short"}},
+        {**valid, "intent": {**valid_intent, "device_label": "e\u0301"}},
+        {**valid, "intent": {**valid_intent, "public_jwk": {**_jwk(_key(1)), "alg": "EdDSA"}}},
+    ):
+        with pytest.raises(HostProofRefused):
+            parse_wire_dto("HostChallengeRequestV1", rfc8785.dumps(invalid))
+
+
+def test_session_registration_closes_current_host_pool_enums_types_and_ranges() -> None:
+    valid = {
+        "host_principal_id": "hp_1",
+        "expected_generation": 1,
+        "provider": "local",
+        "capability_id": "goal_planner:model",
+        "visibility": "self",
+        "price_floor": None,
+        "max_concurrent": 1,
+        "always_active": False,
+        "idempotency_key_b64u": _b64u(b"i" * 32),
+    }
+    assert parse_wire_dto("SessionRegisterIntentV1", rfc8785.dumps(valid)) == valid
+
+    for field, value in (
+        ("provider", "unknown"),
+        ("visibility", "public"),
+        ("expected_generation", True),
+        ("max_concurrent", 0),
+        ("always_active", 1),
+        ("price_floor", -0.01),
+        ("capability_id", ""),
+    ):
+        with pytest.raises(HostProofRefused):
+            parse_wire_dto("SessionRegisterIntentV1", rfc8785.dumps({**valid, field: value}))
+
+
+def test_fixed_status_and_error_enums_fail_closed() -> None:
+    for dto_name, valid, field in (
+        (
+            "HostHeartbeatResultV1",
+            {"host_session_id": "hs_1", "accepted_generation": 1, "status": "active"},
+            "status",
+        ),
+        (
+            "HostSessionDeregisterResultV1",
+            {"host_session_id": "hs_1", "status": "deleted"},
+            "status",
+        ),
+        (
+            "HostBindingErrorV1",
+            {
+                "schema_version": "host-binding-v1",
+                "error": "host_binding_refused",
+                "retryable": False,
+            },
+            "error",
+        ),
+        (
+            "HostPrincipalResultV1",
+            {
+                "schema_version": "host-binding-v1",
+                "host_principal_id": "hp_1",
+                "host_principal_generation": 1,
+                "status": "active",
+                "expires_at": NOW + 300,
+                "policy_version": "host-binding-v1",
+            },
+            "status",
+        ),
+    ):
+        assert parse_wire_dto(dto_name, rfc8785.dumps(valid)) == valid
+        with pytest.raises(HostProofRefused):
+            parse_wire_dto(dto_name, rfc8785.dumps({**valid, field: "other"}))
+
+
+def test_policy_version_and_thumbprint_encoding_are_exact() -> None:
+    challenge = {
+        "schema_version": "host-binding-v1",
+        "challenge_id_b64u": _b64u(b"c" * 32),
+        "signing_input_b64u": _b64u(b"signing-input"),
+        "expires_at": NOW + 300,
+        "policy_version": "host-binding-v1",
+    }
+    assert parse_wire_dto("HostChallengeV1", rfc8785.dumps(challenge)) == challenge
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto(
+            "HostChallengeV1",
+            rfc8785.dumps({**challenge, "policy_version": "host-binding-v0"}),
+        )
+
+    detail = {
+        "host_principal_id": "hp_1",
+        "status": "active",
+        "generation": 1,
+        "policy_version": "host-binding-v1",
+        "issued_at": NOW,
+        "expires_at": NOW + 300,
+        "jwk_thumbprint": _b64u(b"t" * 32),
+    }
+    assert parse_wire_dto("HostPrincipalDetailV1", rfc8785.dumps(detail)) == detail
+    with pytest.raises(HostProofRefused):
+        parse_wire_dto(
+            "HostPrincipalDetailV1",
+            rfc8785.dumps({**detail, "jwk_thumbprint": "not-canonical"}),
+        )
+
+
 @pytest.mark.parametrize(
     ("operation", "field"),
     [

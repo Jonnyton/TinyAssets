@@ -4,8 +4,10 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, NoReturn
@@ -295,6 +297,7 @@ def parse_wire_dto(dto_name: str, document: bytes | str) -> dict[str, Any]:
         and payload.get("schema_version") != SCHEMA_VERSION
     ):
         raise HostProofRefused
+    _validate_wire_semantics(dto_name, payload)
     return payload
 
 
@@ -322,6 +325,145 @@ def validate_route_path_id(
         or not hmac.compare_digest(intent[field], path_id)
     ):
         raise HostProofRefused
+
+
+def _validate_wire_semantics(dto_name: str, payload: dict[str, Any]) -> None:
+    string_fields = {
+        "host_principal_id",
+        "host_session_id",
+        "provider",
+        "capability_id",
+        "visibility",
+        "status",
+        "policy_version",
+        "cursor",
+        "next_cursor",
+        "last_seen_bucket",
+        "device_label",
+        "reason_code",
+        "error",
+        "jwk_thumbprint",
+    }
+    for field in string_fields & payload.keys():
+        _require_wire_string(payload[field], maximum=2048)
+
+    for field in (
+        "expected_generation",
+        "host_principal_generation",
+        "generation",
+        "accepted_generation",
+        "max_concurrent",
+    ):
+        if field in payload and (type(payload[field]) is not int or payload[field] < 1):
+            raise HostProofRefused
+    for field in ("issued_at", "expires_at"):
+        if field in payload and (type(payload[field]) is not int or payload[field] < 0):
+            raise HostProofRefused
+    if "limit" in payload and (
+        type(payload["limit"]) is not int or not 1 <= payload["limit"] <= 100
+    ):
+        raise HostProofRefused
+    for field in ("always_active", "retryable"):
+        if field in payload and type(payload[field]) is not bool:
+            raise HostProofRefused
+
+    for field in ("challenge_id_b64u", "idempotency_key_b64u"):
+        if field in payload:
+            canonical_b64u(payload[field], size=32)
+    if "signing_input_b64u" in payload:
+        canonical_b64u(payload["signing_input_b64u"])
+    if "jwk_thumbprint" in payload:
+        canonical_b64u(payload["jwk_thumbprint"], size=32)
+    if "policy_version" in payload and payload["policy_version"] != POLICY_VERSION:
+        raise HostProofRefused
+    for field in ("public_jwk", "new_public_jwk"):
+        if field in payload:
+            _public_key_bytes(payload[field])
+    if "device_label" in payload and (
+        len(payload["device_label"]) > 64
+        or payload["device_label"] != _nfc(payload["device_label"])
+    ):
+        raise HostProofRefused
+
+    if dto_name == "HostChallengeRequestV1":
+        operation = payload.get("operation")
+        policy = operation_policy(operation)
+        if not policy.signature_roles or type(payload.get("intent")) is not dict:
+            raise HostProofRefused
+        _validate_wire_mapping(policy.intent_dto, payload["intent"])
+    elif dto_name == "HostProofSubmissionV1":
+        signatures = payload.get("signatures")
+        if type(signatures) is not dict or not signatures:
+            raise HostProofRefused
+        for role, signature in signatures.items():
+            if type(role) is not str:
+                raise HostProofRefused
+            canonical_b64u(signature, size=64)
+    elif dto_name == "SessionRegisterIntentV1":
+        if payload["provider"] not in {"local", "claude", "codex", "gemini"}:
+            raise HostProofRefused
+        if payload["visibility"] not in {"self", "network", "paid"}:
+            raise HostProofRefused
+        price_floor = payload["price_floor"]
+        if price_floor is not None and (
+            type(price_floor) not in {int, float}
+            or isinstance(price_floor, bool)
+            or not _finite_nonnegative(price_floor)
+        ):
+            raise HostProofRefused
+    elif dto_name == "HostHeartbeatResultV1" and payload["status"] != "active":
+        raise HostProofRefused
+    elif dto_name == "HostSessionDeregisterResultV1" and payload["status"] != "deleted":
+        raise HostProofRefused
+    elif dto_name == "HostBindingErrorV1" and payload["error"] != "host_binding_refused":
+        raise HostProofRefused
+    elif dto_name in {
+        "HostPrincipalResultV1",
+        "HostInventoryItemV1",
+        "HostPrincipalDetailV1",
+    } and payload["status"] not in {"pending", "active", "revoked", "expired"}:
+        raise HostProofRefused
+
+    if dto_name == "HostInventoryPageV1":
+        items = payload.get("items")
+        if type(items) is not list:
+            raise HostProofRefused
+        for item in items:
+            _validate_wire_mapping("HostInventoryItemV1", item)
+    elif dto_name == "HostRecoveryResultV1":
+        _validate_wire_mapping("HostPrincipalResultV1", payload.get("revoked"))
+        _validate_wire_mapping("HostPrincipalResultV1", payload.get("replacement"))
+
+
+def _validate_wire_mapping(dto_name: str, payload: object) -> None:
+    if type(payload) is not dict:
+        raise HostProofRefused
+    contract = wire_contract(dto_name)
+    fields = frozenset(payload)
+    if not contract.required_fields <= fields or not fields <= (
+        contract.required_fields | contract.optional_fields
+    ):
+        raise HostProofRefused
+    if (
+        "schema_version" in contract.required_fields
+        and payload.get("schema_version") != SCHEMA_VERSION
+    ):
+        raise HostProofRefused
+    _validate_wire_semantics(dto_name, payload)
+
+
+def _require_wire_string(value: object, *, maximum: int) -> None:
+    if type(value) is not str or not value or len(value) > maximum:
+        raise HostProofRefused
+    _validate_unicode(value)
+
+
+def _nfc(value: str) -> str:
+    return unicodedata.normalize("NFC", value)
+
+
+def _finite_nonnegative(value: int | float) -> bool:
+    return math.isfinite(value) and value >= 0
 
 
 def canonical_b64u(value: str, *, size: int | None = None) -> bytes:
@@ -558,7 +700,11 @@ def _parse_json_object(document: bytes | str) -> dict[str, Any]:
             text = document
         else:
             raise HostProofRefused
-        parsed = json.loads(text, object_pairs_hook=_reject_duplicate_members)
+        parsed = json.loads(
+            text,
+            object_pairs_hook=_reject_duplicate_members,
+            parse_constant=_reject_non_finite_json,
+        )
         _validate_unicode(parsed)
     except (json.JSONDecodeError, UnicodeError, TypeError, ValueError) as exc:
         raise HostProofRefused from exc
@@ -574,6 +720,10 @@ def _reject_duplicate_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
             raise ValueError("duplicate JSON member")
         result[key] = value
     return result
+
+
+def _reject_non_finite_json(_constant: str) -> NoReturn:
+    raise ValueError("non-finite JSON number")
 
 
 def _validate_unicode(value: object) -> None:
