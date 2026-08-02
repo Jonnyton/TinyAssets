@@ -149,3 +149,29 @@ Task 3.2 is complete. Task 3.3 follows: only the exact admitted lineage may
 enter canonical provider receipt/claim/reservation/launch, with a fresh live
 authority check before
 spend.
+
+## Atomic provider receipt handoff
+
+Task 3.3b is complete at exact reviewed head `2a9d6363` on 2026-08-02 in the
+Windows cloud-drain worktree. `AgentRuntimeProviderExecutionService` now owns
+the sole agent receipt path. One `BEGIN IMMEDIATE` fence integrity-checks the
+exact admitted command/root/event aggregate, manifest execution subject,
+activation epoch/executor/lease, fresh transactional grant generations,
+original derived principal, current transactional provider assignment,
+provider binding/revocation/budgets/expiry, and receipt insert or replay.
+
+The independent review rejected three earlier candidates before approval. The
+landed corrections sample grant time only after acquiring the write lock,
+re-resolve canonical provider assignment inside that transaction, require a
+registered one-shot service grant for transactional persistence, expose no
+callable authority-wrapping helper, and reject `agent_invocation` on the older
+generic receipt helper. Existing Branch issuance retains that generic route.
+
+Evidence: eight concurrent issuers converge on one identity; missing,
+revoked, expired-after-lock-wait, stale manifest, stopped activation, changed
+assignment, revoked binding, raw-store, wrapped-grant, and legacy-generic
+bypasses leave zero agent receipts. The combined 128-test authority/runtime/
+Branch/mirror suite, Ruff, strict OpenSpec, pre-commit mirror/import checks,
+and exact-head independent re-review passed. Task 3.3c is next and must freshly
+revalidate this same lineage before claim, reservation, and launch-arm; no
+provider call is authorized by 3.3b alone.
