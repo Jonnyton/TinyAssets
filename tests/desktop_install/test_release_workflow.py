@@ -132,11 +132,15 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "timeout-minutes: 10" in install_job
     assert "actions/setup-python@v5" in install_job
     assert "windows_lifecycle_supervisor.py" in install_job
+    assert "--phase-timeout-seconds 90" in install_job
     assert "--total-timeout-seconds 300" in install_job
     assert "PhaseTimeoutSeconds" in lifecycle
     assert "WaitForExit" in lifecycle
-    assert ".Kill()" in lifecycle
+    assert ".Kill()" not in lifecycle
     assert ".Kill($true)" not in lifecycle
+    assert "$process.WaitForExit(10000)" not in lifecycle
+    assert "Stop-Process -Id $process.Id -Force" in lifecycle
+    assert "Windows lifecycle phase" in lifecycle
     assert "timed out after" in lifecycle
     assert "initial install" in lifecycle
     assert "packaged health probe" in lifecycle

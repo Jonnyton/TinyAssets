@@ -313,6 +313,7 @@ jobs:
           }
           python ./tests/desktop_install/windows_lifecycle_supervisor.py `
             --installer $installer.FullName `
+            --phase-timeout-seconds 90 `
             --total-timeout-seconds 300
 
   sign-and-verify:

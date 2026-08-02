@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from tinyassets.execution_subject import ExecutionSubjectKind
 from tinyassets.storage import db_path
 from tinyassets.storage.automation_activations import (
     AutomationActivation,
@@ -206,6 +207,13 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
             automation_executor_class IS NULL
             OR automation_executor_class IN ('tray', 'cloud')
         ),
+    automation_subject_kind TEXT
+        CHECK (
+            automation_subject_kind IS NULL
+            OR automation_subject_kind IN ('branch_version', 'agent_runtime_manifest')
+        ),
+    automation_subject_ref TEXT,
+    automation_subject_digest TEXT,
     automation_branch_version TEXT,
     automation_lease_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending'
@@ -230,6 +238,9 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
             automation_id IS NULL
             AND automation_activation_epoch IS NULL
             AND automation_executor_class IS NULL
+            AND automation_subject_kind IS NULL
+            AND automation_subject_ref IS NULL
+            AND automation_subject_digest IS NULL
             AND automation_branch_version IS NULL
             AND automation_lease_id IS NULL
         )
@@ -238,6 +249,9 @@ CREATE TABLE IF NOT EXISTS branch_tasks_v2 (
             automation_id IS NOT NULL
             AND automation_activation_epoch IS NOT NULL
             AND automation_executor_class IS NOT NULL
+            AND automation_subject_kind IS NOT NULL
+            AND automation_subject_ref IS NOT NULL
+            AND automation_subject_digest IS NOT NULL
             AND automation_branch_version IS NOT NULL
             AND automation_lease_id IS NOT NULL
         )
@@ -416,6 +430,9 @@ class RequestAdmissionStore:
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         if automation_activation is not None:
             if not isinstance(
@@ -435,10 +452,21 @@ class RequestAdmissionStore:
                     "automation_activation universe does not match admission"
                 )
             assert automation_activation.executor_class is not None
+            assert automation_activation.subject is not None
+            if (
+                automation_activation.subject.kind
+                is not ExecutionSubjectKind.BRANCH_VERSION
+            ):
+                raise ValueError(
+                    "branch task admission requires a branch_version subject"
+                )
             activation_values = (
                 automation_activation.automation_id,
                 automation_activation.epoch,
                 automation_activation.executor_class.value,
+                automation_activation.subject.kind.value,
+                automation_activation.subject.ref,
+                automation_activation.subject.digest,
                 automation_activation.immutable_branch_version,
                 automation_activation.lease_id,
             )
@@ -451,9 +479,7 @@ class RequestAdmissionStore:
                 "executor_class": (
                     automation_activation.executor_class.value
                 ),
-                "immutable_branch_version": (
-                    automation_activation.immutable_branch_version
-                ),
+                "subject": automation_activation.subject.to_dict(),
                 "lease_id": automation_activation.lease_id,
             }
         stored_receipt["branch_def_id"] = clean_branch_def_id
@@ -503,10 +529,7 @@ class RequestAdmissionStore:
                             executor_class=(
                                 automation_activation.executor_class
                             ),
-                            immutable_branch_version=(
-                                automation_activation
-                                .immutable_branch_version
-                            ),
+                            subject=automation_activation.subject,
                             lease_id=automation_activation.lease_id,
                         )
                     ):
@@ -611,11 +634,14 @@ class RequestAdmissionStore:
                             directed_daemon_id, automation_id,
                             automation_activation_epoch,
                             automation_executor_class,
+                            automation_subject_kind,
+                            automation_subject_ref,
+                            automation_subject_digest,
                             automation_branch_version,
                             automation_lease_id, status, queue_epoch,
                             protocol_version, queued_at
                         ) VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             'pending', 2, 2, ?
                         )
                         """,
@@ -2194,6 +2220,13 @@ def migrate_request_admission_schema(conn: sqlite3.Connection) -> None:
             "TEXT CHECK (automation_executor_class IS NULL "
             "OR automation_executor_class IN ('tray', 'cloud'))",
         ),
+        (
+            "automation_subject_kind",
+            "TEXT CHECK (automation_subject_kind IS NULL OR "
+            "automation_subject_kind IN ('branch_version', 'agent_runtime_manifest'))",
+        ),
+        ("automation_subject_ref", "TEXT"),
+        ("automation_subject_digest", "TEXT"),
         ("automation_branch_version", "TEXT"),
         ("automation_lease_id", "TEXT"),
     ):
