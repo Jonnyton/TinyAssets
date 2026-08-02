@@ -94,12 +94,20 @@ def test_build_cmd_passes_cwd_and_out(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cmd[cmd.index("-o") + 1] == "C:/verdict.md"
 
 
-def test_build_cmd_prompt_has_preamble_and_diff(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_cmd_pipes_prompt_via_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The prompt must NEVER be an argv element: the codex.cmd shim goes through
+    # cmd.exe, which truncates argv at the first newline (silent reviewed-nothing).
     monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
-    plain = cr.build_cmd(_args())[-1]
+    cmd = cr.build_cmd(_args())
+    assert cmd[-1] == "-"
+    assert cr.ADVERSARIAL_PREAMBLE not in " ".join(cmd)
+
+
+def test_build_prompt_has_preamble_and_diff() -> None:
+    plain = cr.build_prompt("ask", None)
     assert cr.ADVERSARIAL_PREAMBLE in plain
     assert "git diff" not in plain  # no diff instruction without --diff-base
-    with_diff = cr.build_cmd(_args(diff_base="origin/main"))[-1]
+    with_diff = cr.build_prompt("ask", "origin/main")
     assert "git diff origin/main...HEAD" in with_diff
 
 
@@ -109,10 +117,13 @@ def test_build_cmd_prompt_has_preamble_and_diff(monkeypatch: pytest.MonkeyPatch)
 @pytest.mark.parametrize(
     "prompt,label",
     [
-        ("please review this finding for correctness", "review/finding"),
-        ("let's ship this to production", "risky/ship"),
-        ("which approach should we use, A or B?", "decision/recommend"),
+        ("let's ship this to production", "high-risk-ship"),
+        ("ship it", "high-risk-ship"),
+        ("ready to merge to main?", "high-risk-ship"),
+        ("run the cross-family review gate on this", "cross-family-gate"),
+        ("this is a research-derived finding", "cross-family-gate"),
         ("i'm stuck, it keeps failing with the same error", "stuck-loop"),
+        ("can you get a second opinion on this?", "second-opinion"),
     ],
 )
 def test_nudge_fires_with_label(prompt: str, label: str) -> None:
@@ -121,16 +132,45 @@ def test_nudge_fires_with_label(prompt: str, label: str) -> None:
     assert match[0] == label
 
 
-@pytest.mark.parametrize("prompt", ["hello there", "add a docstring to this function", ""])
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "hello there",
+        "add a docstring to this function",
+        "",
+        # Deliberately removed 2026-08-02 (de-bloat): routine review asks and
+        # option-picking no longer nudge — only judgment-class moments do.
+        "please review this finding for correctness",
+        "which approach should we use, A or B?",
+    ],
+)
 def test_nudge_silent_on_non_qualifying(prompt: str) -> None:
     assert nudge.classify(prompt) is None
 
 
 def test_nudge_render_steers_to_background_offload() -> None:
-    text = nudge.render("review/finding", "do the review")
-    assert "codex_review.py" in text
+    text = nudge.render("high-risk-ship", "refute it")
+    assert "codex_review.py" in text  # the fail-closed wrapper, not raw exec
+    assert "stdin" in text
     assert "BACKGROUND offload" in text
     assert "mcp__codex__codex" in text  # still names the inline gate option
+
+
+def test_run_feeds_full_prompt_via_stdin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cr, "resolve_codex", lambda: "CODEXBIN")
+    seen: dict = {}
+
+    def fake(cmd, timeout=None, **kw):
+        seen.update(kw)
+        return subprocess_completed(0)
+
+    monkeypatch.setattr(cr.subprocess, "run", fake)
+    out = tmp_path / "verdict.md"
+    cr.run(_run_args(out, prompt="line one\nline two"))
+    assert "line one\nline two" in seen.get("input", "")
+    assert cr.ADVERSARIAL_PREAMBLE in seen.get("input", "")
 
 
 # --- run(): background contract — the out file always exists ----------------
@@ -152,7 +192,7 @@ def test_run_timeout_writes_error_verdict(
 ) -> None:
     import subprocess
 
-    def boom(cmd, timeout=None):
+    def boom(cmd, timeout=None, **kw):
         raise subprocess.TimeoutExpired(cmd="codex", timeout=timeout)
 
     monkeypatch.setattr(cr.subprocess, "run", boom)
@@ -166,7 +206,7 @@ def test_run_timeout_writes_error_verdict(
 def test_run_missing_binary_writes_error_verdict(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _fixed_bin
 ) -> None:
-    def boom(cmd, timeout=None):
+    def boom(cmd, timeout=None, **kw):
         raise FileNotFoundError(cmd[0])
 
     monkeypatch.setattr(cr.subprocess, "run", boom)
@@ -182,7 +222,7 @@ def test_run_zero_exit_empty_output_writes_error_verdict(
 ) -> None:
     # codex exec "succeeds" but never writes the file: a silent poller trap.
     monkeypatch.setattr(
-        cr.subprocess, "run", lambda cmd, timeout=None: subprocess_completed(0)
+        cr.subprocess, "run", lambda cmd, timeout=None, **kw: subprocess_completed(0)
     )
     out = tmp_path / "verdict.md"
     assert cr.run(_run_args(out)) == 0
@@ -196,7 +236,7 @@ def test_run_success_leaves_codex_verdict_untouched(
 ) -> None:
     out = tmp_path / "verdict.md"
 
-    def fake(cmd, timeout=None):
+    def fake(cmd, timeout=None, **kw):
         out.write_text("findings...\nVERDICT: approve\n")
         return subprocess_completed(0)
 
@@ -210,7 +250,7 @@ def test_run_nonzero_with_partial_output_appends_warning(
 ) -> None:
     out = tmp_path / "verdict.md"
 
-    def fake(cmd, timeout=None):
+    def fake(cmd, timeout=None, **kw):
         out.write_text("partial findings\n")
         return subprocess_completed(3)
 

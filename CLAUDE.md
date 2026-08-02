@@ -53,26 +53,36 @@ behavior. Other providers may implement the same invariants differently.
 
 ### Calling Codex via MCP [Claude Code only]
 
-Codex is the second model family already available in this harness. `mcp__codex__codex`
-starts a session and `mcp__codex__codex-reply` continues it; the host need not start one.
-Dispatch is mandatory before a substantive review/completion verdict, a risky or
-surprising change, a recommendation, or after three failed iterations. Ask it to
-re-check sources/code or refute the finding, then log `approve`, `adapt`, or `reject`.
-If skipped, state why; a missing `codex_dispatch_nudge` is not permission to skip.
-Prefer an asynchronous review on Codex's quota:
+Codex is the second model family already available in this harness
+(`mcp__codex__codex` / `codex-reply`, or `codex exec` via Bash); the host need
+not start one. **Dispatch for judgment-class decisions, not routine work**
+(recalibrated 2026-08-02: cross-family review pays decisively on some defect
+classes and nothing on others — executable checks cover the rest; see
+`docs/audits/2026-08-02-process-debloat-rollback-test.md` and the research
+memory behind it). Dispatch when:
 
-```bash
-python scripts/codex_review.py --out <file> --prompt "<ask>" \
-  --diff-base origin/main
-```
-Run with `run_in_background: true`, continue other work, then read the result.
-Use inline `mcp__codex__codex` only when blocking is appropriate. Never create a
-Claude "Codex liaison" teammate.
+- a research-derived finding gates build/push/rollout (the AGENTS.md
+  opposite-provider review gate);
+- a high-risk or hard-to-reverse change is about to ship (auth, storage,
+  migration, deploy, public surface, mass deletion) — ask Codex to *refute* it;
+- you are stuck 3+ iterations on the same error;
+- a pre-deploy dual-family approval is required, or the host asks.
 
-Reviews must be substantive, normally read-only (`sandbox: read-only`, `approval-policy:
-never`), and batched. Use `workspace-write` only deliberately in a separate lane.
-Codex supplements rather than bypasses host/navigator gates, live user-sim proof,
-or `AGENTS.md` verification rules; log its result in the durable lane artifact.
+Do NOT dispatch for routine edits, lookups, doc changes, or every verdict-shaped
+sentence. Ask it to re-check sources/actual code or refute the claim; log
+`approve`/`adapt`/`reject` in the lane artifact.
+
+Mechanics: prefer background offload on Codex's quota — `python
+scripts/codex_review.py --out <lane-local-file> --prompt "<ask>"` in a
+background Bash call (fixed 2026-08-02: the wrapper now feeds Codex via stdin
+and fail-closes with `VERDICT: error` on timeout/no-output; raw
+`codex exec - < promptfile > outfile` also works). **Never pass multi-line
+prompts to codex as argv** (cmd.exe truncates at the first newline).
+Use a lane-local out path, pre-empt false premises ("if the command fails, say
+so"), demand a hard output contract, and grep for the verdict token. Reviews
+are read-only and batched; `workspace-write` only deliberately in its own
+lane. Never wrap Codex in a Claude "liaison" teammate. Codex supplements —
+never bypasses — host gates, user-sim proof, or AGENTS.md verification rules.
 
 ### Skills [Claude Code only]
 
