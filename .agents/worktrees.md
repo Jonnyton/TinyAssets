@@ -1,10 +1,22 @@
 # Worktree Inventory
 
+## 2026-08-02 - Data commons ordinary contribution recovery slice
+
+- Provider: `codex-gpt5-desktop-agent-runtime`
+- Branch: `codex/data-commons-contribution-20260802`
+- Lane state: claimed tasks 1.1-1.5 only from the legacy oversized `data-commons-contribution` change
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim`
+- STATUS/Issue/PR: canonical contribution-entry metadata and ordinary commons discovery; no second catalog, index, or MCP handle
+- Purpose: make community-published designs discoverable and remixable through existing wiki/commons primitives, including future arbitrary agent definitions
+- Review gate: test-first authority/discovery coverage, exact-seven canary, focused regressions, independent review
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim/_PURPOSE.md`
+- Ship/abandon: one bounded PR; leave all later data-commons tasks unchecked and unclaimed
+
 ## 2026-08-02 01:40 - Server-derived custom-agent runtime principal
 
 - Provider: `codex-gpt5-desktop-agent-runtime`
 - Branch: `codex/agent-runtime-principal-20260802`
-- Lane state: PR #2114 is terminal-green at `d5ca5e3b`, cleanly stacked on PR #2082's exact typed ExecutionSubject/activation prerequisite
+- Lane state: pending; PR #2114 is terminal-green at `d5ca5e3b`, cleanly stacked on PR #2082's exact typed ExecutionSubject/activation prerequisite
 - Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal`
 - STATUS/Issue/PR: https://github.com/Jonnyton/TinyAssets/pull/2114; keep open on the parent branch until #2082 lands or the stack is rebuilt exactly
 - Purpose: derive a narrow non-bearer runtime principal from authoritative manifest, activation, invocation, and live grant identities without editing cloud/provider/continuation owners
