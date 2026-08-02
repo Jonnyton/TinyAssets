@@ -239,6 +239,39 @@ def test_authority_lost_during_call_records_indeterminate_not_output(
     assert reservation.state is ProviderInvocationReservationState.INDETERMINATE
 
 
+def test_concurrent_outcome_cannot_mask_fresh_authority_denial(
+    tmp_path, authenticate_request, monkeypatch
+) -> None:
+    from tinyassets.agent_runtime_provider_execution import (
+        AgentRuntimeProviderExecutionBlocked,
+    )
+
+    service, admitted, _universe_dir, _manifest = _execution_service(tmp_path, authenticate_request)
+    invocation_id = admitted.invocation.invocation_id
+    outcome = service.execute_provider_call(
+        invocation_id,
+        typed_input=_request().typed_input,
+        router=ProviderRouter({"codex": _RecordingProvider()}),
+    )
+    service.provider_binding_resolver.revoke()
+    monkeypatch.setattr(service, "get_provider_outcome", lambda _invocation_id: None)
+
+    with pytest.raises(AgentRuntimeProviderExecutionBlocked, match="binding"):
+        service.execute_provider_call(
+            invocation_id,
+            typed_input=_request().typed_input,
+            router=ProviderRouter({"codex": _RecordingProvider()}),
+        )
+
+    with sqlite3.connect(db_path(tmp_path)) as connection:
+        assert (
+            connection.execute(
+                "SELECT outcome_digest FROM agent_invocation_provider_outcomes"
+            ).fetchone()[0]
+            == outcome.outcome_digest
+        )
+
+
 @pytest.mark.parametrize("stage", ["admitted", "reserved", "prepared"])
 def test_restart_before_launch_resumes_same_reservation_and_spends_once(
     tmp_path, authenticate_request, stage

@@ -603,12 +603,12 @@ class AgentRuntimeProviderExecutionService:
                 )
             carrier = self.arm_launch(invocation_id)
         except AgentRuntimeProviderExecutionBlocked:
-            concurrent_outcome = self.get_provider_outcome(invocation_id)
+            concurrent_outcome = self._current_provider_outcome_after_transition(invocation_id)
             if concurrent_outcome is not None:
                 return concurrent_outcome
             raise
         except PermissionError as exc:
-            concurrent_outcome = self.get_provider_outcome(invocation_id)
+            concurrent_outcome = self._current_provider_outcome_after_transition(invocation_id)
             if concurrent_outcome is not None:
                 return concurrent_outcome
             raise AgentRuntimeProviderExecutionBlocked(
@@ -706,6 +706,33 @@ class AgentRuntimeProviderExecutionService:
             blocker_code=None,
             blocker_detail=None,
         )
+
+    def _current_provider_outcome_after_transition(
+        self,
+        invocation_id: str,
+    ) -> AgentInvocationProviderOutcome | None:
+        """Replay a race winner only while its invocation authority is current."""
+
+        now = self._clock()
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise AgentRuntimeProviderExecutionBlocked("server clock is unavailable")
+        with self.invocation_store.connection() as conn:
+            conn.execute("BEGIN")
+            try:
+                self._validated_authority(
+                    conn,
+                    invocation_id=invocation_id,
+                    evaluated_at=now.astimezone(timezone.utc).timestamp(),
+                )
+                outcome = SQLiteAgentRuntimeProviderOutcomeStore.get_in_transaction(
+                    conn,
+                    invocation_id=invocation_id,
+                )
+                conn.commit()
+                return outcome
+            except Exception:
+                conn.rollback()
+                raise
 
     def _resolve_provider_call_material(
         self,
