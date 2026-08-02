@@ -53,13 +53,46 @@ with the drain off, retire the drain machinery permanently (its spec
 lane too); if they degrade materially, restore and redesign the drain
 to emit implementation lanes only.
 
+## Codex plan review (reject → adapted, 2026-08-02)
+
+The cross-family review of the execution plan returned `reject` with
+findings that were each adopted:
+
+- **`restart.request` was live** (written 23:46 PT, after the stop
+  request): the watchdog was in "stopping before restart" mode and
+  would have relaunched. Deleted at 2026-08-02T06:50Z; health now
+  reads "stopping until next sign-in".
+- **`stop.request` is not durable**: every fresh watchdog start deletes
+  it and resumes orderly-stopped drains. Fix: a `drain.off` marker in
+  the watchdog dir that both entry points honor and never auto-clear
+  (`scripts/openspec_drain_watchdog.py` + `openspec_drain_supervisor.py`,
+  covered by `tests/test_drain_off_marker.py`; also applied to the live
+  controller worktree copies and the marker created). Removing the file
+  is the only re-enable — add that to the restore steps below.
+- **STATUS Concern rows are advisory**: the supervisor parses Work
+  rows, not Concerns. Machine enforcement is the drain.off marker; the
+  Concern text remains for humans and provider sessions.
+- **Sweep losslessness had two counterexamples**: (1) gitignored
+  worktree-local artifacts are silently deleted by `git worktree
+  remove` — `wf-activity-null-results` holds a 69-byte git-credentials
+  artifact and is force-skipped + flagged to the host; the sweep now
+  skips any lane whose ignored files fall outside a known-disposable
+  set (caches, pycache, sandbox test-temp). (2) HEAD-reflog-only
+  commits lose their recovery path — the sweep now creates
+  `refs/debloat-backup/<lane>/<sha>` for any reflog sha not reachable
+  from the branch tip or origin/main before removal.
+- The in-flight worker attempt may land one final refinery PR before
+  the supervisor observes the stop; accepted rather than hard-killing
+  mid-write.
+
 ## Restore steps (if the test says restore)
 
 ```powershell
 Enable-ScheduledTask -TaskName "TinyAssets OpenSpec Drain"
 Enable-ScheduledTask -TaskName "TinyAssets OpenSpec Drain Guard"
-# then delete the stop marker or start with --clear-stop:
-Remove-Item "C:\Users\Jonathan\Projects\wf-openspec-drain-controller\output\openspec-drain-watchdog\stop.request"
+# remove BOTH markers (drain.off is the durable off switch):
+Remove-Item "C:\Users\Jonathan\Projects\wf-openspec-drain-controller\output\openspec-drain-watchdog\drain.off"
+Remove-Item "C:\Users\Jonathan\Projects\wf-openspec-drain-controller\output\openspec-drain-watchdog\stop.request" -ErrorAction SilentlyContinue
 ```
 
 ## During the test week

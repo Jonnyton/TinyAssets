@@ -742,6 +742,23 @@ def main(argv: list[str] | None = None) -> int:
         marker.write_text(f"{args.command} requested {_now_iso()}\n", encoding="utf-8")
         print(f"{args.command} requested: {marker}")
         return 0
+    off_marker = watchdog_dir / "drain.off"
+    if off_marker.exists():
+        # Durable off switch: unlike stop.request (deleted on every fresh
+        # start, after which orderly-stopped runs are resumed), this marker
+        # is never auto-cleared. Removing the file is the only re-enable.
+        watchdog_dir.mkdir(parents=True, exist_ok=True)
+        _write_health(
+            watchdog_dir / "health.json",
+            state=None,
+            alive=False,
+            mode="off",
+            run_dir=None,
+            pid=None,
+            message=f"drain disabled by durable off marker: {off_marker}",
+        )
+        print(f"drain.off present: {off_marker}; refusing to run", file=sys.stderr)
+        return 0
     if args.poll_seconds <= 0:
         print("--poll-seconds must be positive", file=sys.stderr)
         return 2

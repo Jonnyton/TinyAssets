@@ -2749,6 +2749,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"repo is not a directory: {args.repo}", file=sys.stderr)
         return 2
     args.repo = args.repo.resolve()
+    off_marker = args.repo / "output" / "openspec-drain-watchdog" / "drain.off"
+    if off_marker.exists():
+        # Durable off switch shared with the watchdog; --clear-stop must
+        # not override it. Removing the file is the only re-enable.
+        print(
+            f"drain.off present: {off_marker}; refusing to run",
+            file=sys.stderr,
+        )
+        return 2
     if args.run_dir is None:
         args.run_dir = args.repo / "output" / "openspec-drain"
     return _run(args)
