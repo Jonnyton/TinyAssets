@@ -10,11 +10,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import threading
 import weakref
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, ContextManager, Protocol, runtime_checkable
@@ -801,6 +802,7 @@ class ProviderInvocationReservationWriteResult:
     record: ProviderInvocationReservation | None
     receipt: ProviderUniverseWorkReceipt | None = None
     claim: ProviderWorkExecutionClaim | None = None
+    mint_proof: object | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,19 +850,13 @@ class ProviderInvocationLaunchRequest:
         )
 
 
-class _ProviderInvocationMintGrant:
-    __slots__ = ("_grant_id", "_reservation_digest", "_seal", "__weakref__")
-
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("provider invocation mint grants are store-issued")
-
-
 class ProviderInvocationCarrier:
     """In-process-only frozen authority for one already-armed provider call."""
 
     __slots__ = (
         "_carrier_id",
         "_claim",
+        "_issuer_pid",
         "_receipt",
         "_reservation",
         "_seal",
@@ -911,6 +907,8 @@ class ProviderInvocationCarrier:
     def validate_for_call(self, *, role: str, operation: str) -> str:
         if type(self) is not ProviderInvocationCarrier:
             raise PermissionError("provider invocation carrier is not server-owned")
+        if self._issuer_pid != os.getpid():
+            raise PermissionError("provider invocation carrier belongs to another process")
         if not hmac.compare_digest(self._seal, _provider_invocation_carrier_seal(self)):
             raise PermissionError("provider invocation carrier seal is invalid")
         if _reference(role, "role") != self.role:
@@ -927,57 +925,30 @@ class ProviderInvocationCarrier:
 _PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
 _PROVIDER_INVOCATION_CARRIER_LOCK = threading.Lock()
 _ACTIVE_PROVIDER_INVOCATION_CARRIERS: set[str] = set()
-_ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS: set[str] = set()
 
 
-def _discard_provider_invocation_mint_grant(grant_id: str) -> None:
-    with _PROVIDER_INVOCATION_CARRIER_LOCK:
-        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.discard(grant_id)
+def _reset_provider_invocation_carrier_state_after_fork() -> None:
+    global _PROVIDER_INVOCATION_CARRIER_KEY
+    global _PROVIDER_INVOCATION_CARRIER_LOCK
+    global _ACTIVE_PROVIDER_INVOCATION_CARRIERS
+
+    _PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
+    _PROVIDER_INVOCATION_CARRIER_LOCK = threading.Lock()
+    _ACTIVE_PROVIDER_INVOCATION_CARRIERS = set()
 
 
-def _discard_provider_invocation_carrier(carrier_id: str) -> None:
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_provider_invocation_carrier_state_after_fork)
+
+
+def _discard_provider_invocation_carrier(
+    carrier_id: str,
+    issuer_pid: int,
+) -> None:
+    if issuer_pid != os.getpid():
+        return
     with _PROVIDER_INVOCATION_CARRIER_LOCK:
         _ACTIVE_PROVIDER_INVOCATION_CARRIERS.discard(carrier_id)
-
-
-def _provider_invocation_mint_grant_seal(
-    grant_id: str,
-    reservation_digest: str,
-) -> bytes:
-    return hmac.digest(
-        _PROVIDER_INVOCATION_CARRIER_KEY,
-        f"{grant_id}\0{reservation_digest}".encode(),
-        "sha256",
-    )
-
-
-def _issue_provider_invocation_mint_grant(
-    reservation: ProviderInvocationReservation,
-) -> _ProviderInvocationMintGrant:
-    """Issue only for the exact record returned by the winning store arm."""
-
-    if (
-        type(reservation) is not ProviderInvocationReservation
-        or reservation.state is not ProviderInvocationReservationState.LAUNCH_STARTED
-        or reservation.reservation_digest != reservation.expected_digest()
-    ):
-        raise PermissionError("provider invocation mint grant requires an armed record")
-    grant_id = secrets.token_hex(32)
-    grant = object.__new__(_ProviderInvocationMintGrant)
-    object.__setattr__(grant, "_grant_id", grant_id)
-    object.__setattr__(grant, "_reservation_digest", reservation.reservation_digest)
-    object.__setattr__(
-        grant,
-        "_seal",
-        _provider_invocation_mint_grant_seal(
-            grant_id,
-            reservation.reservation_digest,
-        ),
-    )
-    with _PROVIDER_INVOCATION_CARRIER_LOCK:
-        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.add(grant_id)
-    weakref.finalize(grant, _discard_provider_invocation_mint_grant, grant_id)
-    return grant
 
 
 def _provider_invocation_carrier_payload(
@@ -987,6 +958,7 @@ def _provider_invocation_carrier_payload(
         {
             "carrier_id": carrier._carrier_id,
             "claim": carrier._claim.to_dict(),
+            "issuer_pid": carrier._issuer_pid,
             "receipt": carrier._receipt.to_dict(),
             "reservation": carrier._reservation.to_dict(),
         },
@@ -1009,7 +981,7 @@ def _mint_provider_invocation_carrier(
     receipt: ProviderUniverseWorkReceipt,
     claim: ProviderWorkExecutionClaim,
     reservation: ProviderInvocationReservation,
-    grant: _ProviderInvocationMintGrant,
+    mint_proof: object,
 ) -> ProviderInvocationCarrier:
     """Mint after the authority store atomically wins ``launch_started``."""
 
@@ -1019,8 +991,12 @@ def _mint_provider_invocation_carrier(
         raise TypeError("claim must be an exact ProviderWorkExecutionClaim")
     if type(reservation) is not ProviderInvocationReservation:
         raise TypeError("reservation must be an exact ProviderInvocationReservation")
-    if type(grant) is not _ProviderInvocationMintGrant:
-        raise PermissionError("provider invocation mint grant is not store-issued")
+    from tinyassets.storage.provider_work_authority import (
+        _ProviderInvocationStoreMintProof,
+    )
+
+    if type(mint_proof) is not _ProviderInvocationStoreMintProof:
+        raise PermissionError("provider invocation mint proof is not store-issued")
     exact = (
         receipt.state is ProviderWorkReceiptState.ACTIVE,
         claim.state is ProviderWorkExecutionClaimState.ACTIVE,
@@ -1042,38 +1018,27 @@ def _mint_provider_invocation_carrier(
     )
     if not all(exact):
         raise PermissionError("provider invocation carrier is stale or inconsistent")
+    mint_proof._consume(reservation.reservation_digest)
+    carrier_id = secrets.token_hex(32)
+    carrier = object.__new__(ProviderInvocationCarrier)
+    object.__setattr__(carrier, "_carrier_id", carrier_id)
+    object.__setattr__(carrier, "_issuer_pid", os.getpid())
+    object.__setattr__(carrier, "_receipt", receipt)
+    object.__setattr__(carrier, "_claim", claim)
+    object.__setattr__(carrier, "_reservation", reservation)
+    object.__setattr__(
+        carrier,
+        "_seal",
+        _provider_invocation_carrier_seal(carrier),
+    )
+    weakref.finalize(
+        carrier,
+        _discard_provider_invocation_carrier,
+        carrier_id,
+        carrier._issuer_pid,
+    )
     with _PROVIDER_INVOCATION_CARRIER_LOCK:
-        valid_grant = (
-            grant._grant_id in _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
-            and grant._reservation_digest == reservation.reservation_digest
-            and hmac.compare_digest(
-                grant._seal,
-                _provider_invocation_mint_grant_seal(
-                    grant._grant_id,
-                    grant._reservation_digest,
-                ),
-            )
-        )
-        if not valid_grant:
-            raise PermissionError("provider invocation mint grant is invalid or consumed")
-        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.remove(grant._grant_id)
-        carrier_id = secrets.token_hex(32)
         _ACTIVE_PROVIDER_INVOCATION_CARRIERS.add(carrier_id)
-        carrier = object.__new__(ProviderInvocationCarrier)
-        object.__setattr__(carrier, "_carrier_id", carrier_id)
-        object.__setattr__(carrier, "_receipt", receipt)
-        object.__setattr__(carrier, "_claim", claim)
-        object.__setattr__(carrier, "_reservation", reservation)
-        object.__setattr__(
-            carrier,
-            "_seal",
-            _provider_invocation_carrier_seal(carrier),
-        )
-        weakref.finalize(
-            carrier,
-            _discard_provider_invocation_carrier,
-            carrier_id,
-        )
     return carrier
 
 
