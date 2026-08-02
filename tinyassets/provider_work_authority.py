@@ -851,9 +851,8 @@ class ProviderInvocationCarrier:
     """In-process-only frozen authority for one already-armed provider call."""
 
     __slots__ = (
+        "_carrier_id",
         "_claim",
-        "_consume_lock",
-        "_consumed",
         "_receipt",
         "_reservation",
         "_seal",
@@ -909,14 +908,17 @@ class ProviderInvocationCarrier:
             raise PermissionError("provider invocation role does not match carrier")
         if _reference(operation, "operation") != self.operation:
             raise PermissionError("provider invocation operation does not match carrier")
-        with self._consume_lock:
-            if self._consumed:
+        with _PROVIDER_INVOCATION_CARRIER_LOCK:
+            if self._carrier_id not in _ACTIVE_PROVIDER_INVOCATION_CARRIERS:
                 raise PermissionError("provider invocation carrier is already consumed")
-            object.__setattr__(self, "_consumed", True)
+            _ACTIVE_PROVIDER_INVOCATION_CARRIERS.remove(self._carrier_id)
         return self.provider
 
 
 _PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
+_PROVIDER_INVOCATION_CARRIER_LOCK = threading.Lock()
+_MINTED_PROVIDER_INVOCATION_RESERVATIONS: set[str] = set()
+_ACTIVE_PROVIDER_INVOCATION_CARRIERS: set[str] = set()
 
 
 def _provider_invocation_carrier_payload(
@@ -924,6 +926,7 @@ def _provider_invocation_carrier_payload(
 ) -> bytes:
     return json.dumps(
         {
+            "carrier_id": carrier._carrier_id,
             "claim": carrier._claim.to_dict(),
             "receipt": carrier._receipt.to_dict(),
             "reservation": carrier._reservation.to_dict(),
@@ -977,13 +980,27 @@ def _mint_provider_invocation_carrier(
     )
     if not all(exact):
         raise PermissionError("provider invocation carrier is stale or inconsistent")
-    carrier = object.__new__(ProviderInvocationCarrier)
-    object.__setattr__(carrier, "_receipt", receipt)
-    object.__setattr__(carrier, "_claim", claim)
-    object.__setattr__(carrier, "_reservation", reservation)
-    object.__setattr__(carrier, "_consume_lock", threading.Lock())
-    object.__setattr__(carrier, "_consumed", False)
-    object.__setattr__(carrier, "_seal", _provider_invocation_carrier_seal(carrier))
+    with _PROVIDER_INVOCATION_CARRIER_LOCK:
+        if (
+            reservation.reservation_digest
+            in _MINTED_PROVIDER_INVOCATION_RESERVATIONS
+        ):
+            raise PermissionError("provider invocation reservation already minted")
+        carrier_id = secrets.token_hex(32)
+        _MINTED_PROVIDER_INVOCATION_RESERVATIONS.add(
+            reservation.reservation_digest
+        )
+        _ACTIVE_PROVIDER_INVOCATION_CARRIERS.add(carrier_id)
+        carrier = object.__new__(ProviderInvocationCarrier)
+        object.__setattr__(carrier, "_carrier_id", carrier_id)
+        object.__setattr__(carrier, "_receipt", receipt)
+        object.__setattr__(carrier, "_claim", claim)
+        object.__setattr__(carrier, "_reservation", reservation)
+        object.__setattr__(
+            carrier,
+            "_seal",
+            _provider_invocation_carrier_seal(carrier),
+        )
     return carrier
 
 

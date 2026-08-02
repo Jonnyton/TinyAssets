@@ -24,6 +24,12 @@ authorized invocation. The caller must supply the server-classified operation;
 the sink matches it against the reservation before consuming the carrier.
 Calls without a carrier retain shipped behavior.
 
+Mint and consumption state live in a process-owned locked registry rather than
+inside the otherwise immutable Python object. The durable reservation digest
+can enter that registry once, and an opaque sealed carrier identity can leave
+the active set once. Resetting or replacing an object field therefore cannot
+restore spent authority; concurrent validation has one winner.
+
 ## Verification
 
 - RED: carrier-focused authority and router tests failed collection because
@@ -33,7 +39,7 @@ Calls without a carrier retain shipped behavior.
   coverage passed.
 - Exact related command on 2026-08-01:
   `$providerTests = @(Get-ChildItem -LiteralPath tests -File | Where-Object { $_.Name -eq 'test_provider_work_authority.py' -or $_.Name -eq 'test_providers.py' -or $_.Name -like 'test_provider_router*.py' } | ForEach-Object { $_.FullName }); python -m pytest @providerTests -q`
-  — 151 passed. One pre-existing mocked Claude-process unawaited-coroutine
+  — 153 passed. One pre-existing mocked Claude-process unawaited-coroutine
   warning (plus pytest's collection-time echo of it) remains unrelated.
 - Ruff, both strict OpenSpec validations, cross-provider drift, and
   `git diff --check` passed.

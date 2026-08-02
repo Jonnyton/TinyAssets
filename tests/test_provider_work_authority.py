@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import tinyassets.provider_work_authority as provider_authority
 from tinyassets.provider_work_authority import (
     ProviderInvocationCarrier,
     ProviderInvocationLaunchRequest,
@@ -775,7 +776,7 @@ def _armed_carrier(tmp_path):
             claim_id=claim.claim_id,
             claim_digest=claim.claim_digest,
             claim_generation=claim.generation,
-            invocation_key="attempt-carrier-mint",
+            invocation_key=f"attempt-carrier-mint-{tmp_path.name}",
             operation="repository_spec_delivery",
             role="writer",
             max_tokens=20_000,
@@ -861,6 +862,44 @@ def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> Non
     store.arm_launch_carrier(launch)
     with pytest.raises(PermissionError, match="already armed"):
         store.arm_launch_carrier(launch)
+
+
+def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+
+    provider_authority._mint_provider_invocation_carrier(receipt, claim, armed)
+    with pytest.raises(PermissionError, match="already minted"):
+        provider_authority._mint_provider_invocation_carrier(receipt, claim, armed)
+
+
+def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
+    carrier = _armed_carrier(tmp_path)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(
+                carrier.validate_for_call,
+                role="writer",
+                operation="repository_spec_delivery",
+            )
+            for _ in range(2)
+        ]
+    outcomes = []
+    for future in futures:
+        try:
+            outcomes.append(future.result())
+        except PermissionError as exc:
+            outcomes.append(str(exc))
+
+    assert outcomes.count("codex") == 1
+    assert sum("consumed" in outcome for outcome in outcomes) == 1
+    with pytest.raises(AttributeError):
+        object.__setattr__(carrier, "_consumed", False)
+    with pytest.raises(PermissionError, match="consumed"):
+        carrier.validate_for_call(
+            role="writer",
+            operation="repository_spec_delivery",
+        )
 
 
 def test_provider_invocation_carrier_seal_rejects_record_mutation(tmp_path) -> None:
