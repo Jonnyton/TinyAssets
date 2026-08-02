@@ -542,11 +542,25 @@ def _watch(args: argparse.Namespace) -> int:
                 if wants_restart or restart_after_stop:
                     restart_request.unlink(missing_ok=True)
                     stop_request.unlink(missing_ok=True)
-                    launch_decision = Decision(
-                        "new",
-                        None,
-                        None,
-                        "explicit restart requested",
+                    orderly_restart = bool(
+                        restart_after_stop
+                        and state
+                        and state.get("status") == "stop-requested"
+                    )
+                    launch_decision = (
+                        Decision(
+                            "resume",
+                            active_run,
+                            None,
+                            "explicit restart resuming active drain",
+                        )
+                        if orderly_restart
+                        else Decision(
+                            "new",
+                            None,
+                            None,
+                            "explicit restart requested",
+                        )
                     )
                     restart_after_stop = False
                     sticky_failure = None

@@ -38,3 +38,17 @@ When owned, claimable, and policy-qualified stale STATUS candidates are absent, 
 #### Scenario: Coordination is genuinely exhausted
 - **WHEN** claimable, stale, owned, and refinable counts are all zero after exact-current-main inspection
 - **THEN** the supervisor may accept `NO_CANDIDATE` and wait without consuming a failure strike
+
+### Requirement: Drain Watchdog Preserves Identity Across Abrupt Shutdown
+The drain watchdog SHALL attach to a live unfinished drain, SHALL resume an unfinished drain whose recorded controller is dead using the same run directory and exact identity, and SHALL start a fresh bounded run only when no unfinished run exists or an explicit restart targets an already-terminal fatal or failure-budget run. An explicit restart of a live supervisor that exits through orderly `stop-requested` SHALL resume that same run directory and identity with stale-lock and stop-marker recovery.
+
+#### Scenario: Explicit restart gracefully stops a live supervisor
+- **WHEN** an explicit restart is requested while a supervisor is live
+- **AND** that supervisor exits through orderly `stop-requested`
+- **THEN** the watchdog resumes the same run directory and exact drain identity
+- **AND** the preserved admission and resume target remain available to the next worker
+
+#### Scenario: Explicit restart follows an already-terminal failure
+- **WHEN** an explicit restart targets a supervisor already ended at a fatal or failure-budget terminal outcome
+- **THEN** the watchdog preserves the authorized fresh-run decision
+- **AND** it starts exactly one fresh bounded supervisor run

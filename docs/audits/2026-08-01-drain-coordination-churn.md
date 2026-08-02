@@ -78,3 +78,23 @@ dispatched a normal implementation worker. Watchdog health returned `running`.
 This proves the corrected refinery-to-implementation admission path. It does
 not yet claim that attempt 34 has completed a delivery slice; completion and
 merge remain observable through the continuing drain run.
+
+## Restart identity regression
+
+**Freshness:** 2026-08-01 17:10 PDT, Windows local watchdog.
+
+Attempt 34 subsequently merged bounded owner-gate tasks as PR #2106 while
+preserving `resume_target=refine-openspec-bind-host-principal-to-account` and
+the original admission worktree. The supervisor labeled the incomplete result
+`partial-stalled`; an operator restart then ended the original run through
+`status=stop-requested` but the watchdog unconditionally selected a fresh run.
+It minted `drain-20260801-171005-f06196`, leaving the original identity's live
+STATUS claim unavailable to the replacement.
+
+The root cause was a watchdog branch that treated both an already-terminal
+explicit restart and an orderly stop of a live supervisor as `Decision("new")`.
+The corrected branch resumes the same run directory when the live supervisor's
+final state is `stop-requested`, while retaining a new finite run for an
+already-terminal fatal or failure-budget outcome. A paired regression proves
+both sides. Live restoration of the original identity remains required before
+the incident can be archived.
