@@ -32,6 +32,7 @@ from tinyassets.provider_work_authority import (
     ProviderWorkReceiptWriteResult,
     _claim_from_request,
     _from_seed,
+    _issue_provider_invocation_mint_grant,
     _mint_provider_invocation_carrier,
     _receipt_from_authority,
     _reservation_from_request,
@@ -1011,6 +1012,7 @@ class SQLiteProviderWorkAuthorityStore:
             result.receipt,
             result.claim,
             result.record,
+            _issue_provider_invocation_mint_grant(result.record),
         )
 
     def list_reservations(

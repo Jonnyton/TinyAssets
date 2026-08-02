@@ -847,6 +847,13 @@ class ProviderInvocationLaunchRequest:
         )
 
 
+class _ProviderInvocationMintGrant:
+    __slots__ = ("_grant_id", "_reservation_digest", "_seal")
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        raise TypeError("provider invocation mint grants are store-issued")
+
+
 class ProviderInvocationCarrier:
     """In-process-only frozen authority for one already-armed provider call."""
 
@@ -919,6 +926,46 @@ _PROVIDER_INVOCATION_CARRIER_KEY = secrets.token_bytes(32)
 _PROVIDER_INVOCATION_CARRIER_LOCK = threading.Lock()
 _MINTED_PROVIDER_INVOCATION_RESERVATIONS: set[str] = set()
 _ACTIVE_PROVIDER_INVOCATION_CARRIERS: set[str] = set()
+_ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS: set[str] = set()
+
+
+def _provider_invocation_mint_grant_seal(
+    grant_id: str,
+    reservation_digest: str,
+) -> bytes:
+    return hmac.digest(
+        _PROVIDER_INVOCATION_CARRIER_KEY,
+        f"{grant_id}\0{reservation_digest}".encode(),
+        "sha256",
+    )
+
+
+def _issue_provider_invocation_mint_grant(
+    reservation: ProviderInvocationReservation,
+) -> _ProviderInvocationMintGrant:
+    """Issue only for the exact record returned by the winning store arm."""
+
+    if (
+        type(reservation) is not ProviderInvocationReservation
+        or reservation.state is not ProviderInvocationReservationState.LAUNCH_STARTED
+        or reservation.reservation_digest != reservation.expected_digest()
+    ):
+        raise PermissionError("provider invocation mint grant requires an armed record")
+    grant_id = secrets.token_hex(32)
+    grant = object.__new__(_ProviderInvocationMintGrant)
+    object.__setattr__(grant, "_grant_id", grant_id)
+    object.__setattr__(grant, "_reservation_digest", reservation.reservation_digest)
+    object.__setattr__(
+        grant,
+        "_seal",
+        _provider_invocation_mint_grant_seal(
+            grant_id,
+            reservation.reservation_digest,
+        ),
+    )
+    with _PROVIDER_INVOCATION_CARRIER_LOCK:
+        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.add(grant_id)
+    return grant
 
 
 def _provider_invocation_carrier_payload(
@@ -950,6 +997,7 @@ def _mint_provider_invocation_carrier(
     receipt: ProviderUniverseWorkReceipt,
     claim: ProviderWorkExecutionClaim,
     reservation: ProviderInvocationReservation,
+    grant: _ProviderInvocationMintGrant,
 ) -> ProviderInvocationCarrier:
     """Mint after the authority store atomically wins ``launch_started``."""
 
@@ -959,6 +1007,8 @@ def _mint_provider_invocation_carrier(
         raise TypeError("claim must be an exact ProviderWorkExecutionClaim")
     if type(reservation) is not ProviderInvocationReservation:
         raise TypeError("reservation must be an exact ProviderInvocationReservation")
+    if type(grant) is not _ProviderInvocationMintGrant:
+        raise PermissionError("provider invocation mint grant is not store-issued")
     exact = (
         receipt.state is ProviderWorkReceiptState.ACTIVE,
         claim.state is ProviderWorkExecutionClaimState.ACTIVE,
@@ -981,6 +1031,20 @@ def _mint_provider_invocation_carrier(
     if not all(exact):
         raise PermissionError("provider invocation carrier is stale or inconsistent")
     with _PROVIDER_INVOCATION_CARRIER_LOCK:
+        valid_grant = (
+            grant._grant_id in _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS
+            and grant._reservation_digest == reservation.reservation_digest
+            and hmac.compare_digest(
+                grant._seal,
+                _provider_invocation_mint_grant_seal(
+                    grant._grant_id,
+                    grant._reservation_digest,
+                ),
+            )
+        )
+        if not valid_grant:
+            raise PermissionError("provider invocation mint grant is invalid or consumed")
+        _ACTIVE_PROVIDER_INVOCATION_MINT_GRANTS.remove(grant._grant_id)
         if (
             reservation.reservation_digest
             in _MINTED_PROVIDER_INVOCATION_RESERVATIONS

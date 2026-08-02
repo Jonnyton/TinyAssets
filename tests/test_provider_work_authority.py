@@ -866,10 +866,35 @@ def test_provider_invocation_carrier_mint_rejects_launch_replay(tmp_path) -> Non
 
 def test_private_carrier_mint_is_one_shot_per_durable_reservation(tmp_path) -> None:
     receipt, claim, armed = _armed_carrier_records(tmp_path)
+    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
 
-    provider_authority._mint_provider_invocation_carrier(receipt, claim, armed)
-    with pytest.raises(PermissionError, match="already minted"):
-        provider_authority._mint_provider_invocation_carrier(receipt, claim, armed)
+    provider_authority._mint_provider_invocation_carrier(
+        receipt, claim, armed, grant,
+    )
+    with pytest.raises(PermissionError, match="grant"):
+        provider_authority._mint_provider_invocation_carrier(
+            receipt, claim, armed, grant,
+        )
+
+
+def test_mint_grant_rejects_recomputed_reservation_identity(tmp_path) -> None:
+    receipt, claim, armed = _armed_carrier_records(tmp_path)
+    grant = provider_authority._issue_provider_invocation_mint_grant(armed)
+    forged = replace(
+        armed,
+        reservation_id=provider_authority.provider_invocation_reservation_id(
+            receipt_id=receipt.receipt_id,
+            invocation_key="forged-second-invocation",
+        ),
+        invocation_key="forged-second-invocation",
+        reservation_digest=f"sha256:{'0' * 64}",
+    )
+    forged = replace(forged, reservation_digest=forged.expected_digest())
+
+    with pytest.raises(PermissionError, match="grant"):
+        provider_authority._mint_provider_invocation_carrier(
+            receipt, claim, forged, grant,
+        )
 
 
 def test_carrier_consumption_is_external_and_race_safe(tmp_path) -> None:
