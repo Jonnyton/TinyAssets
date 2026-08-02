@@ -1438,6 +1438,19 @@ fresh-host rollback edges found later.
 - **What I would do differently:** design observation APIs around a pure
   authority validator first, then let mutation paths wrap that result in
   one-shot capabilities.
+## 2026-08-02 — dark background target holds
+
+- **What surprised me:** task 2.6 names queue behavior, but task 5.3 still owns
+  concrete BranchTask shape and runtime wiring; the safe slice is the dark CAS
+  contract both queue generations can implement without activating either.
+  Independent review also exposed that a correct projection is unsafe unless
+  the transition service itself enforces which hold reasons may exit automatically.
+- **Pattern worth capturing:** preserve exact typed binding/attempt fences in a
+  held owner record, then make automatic recovery prove the same records while
+  authenticated repair must rotate the binding and never revive the attempt.
+- **What I would do differently:** start with typed fences rather than duplicate
+  scalar IDs/digests/generations; that would have made the first green diff
+  smaller and stronger.
 
 ## 2026-08-02 - Windows lifecycle supervisor escape
 
