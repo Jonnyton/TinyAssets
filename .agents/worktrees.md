@@ -3,14 +3,14 @@
 ## 2026-08-02 01:40 - Server-derived custom-agent runtime principal
 
 - Provider: `codex-gpt5-desktop-agent-runtime`
-- Branch: `codex/agent-runtime-principal-claim-20260802`
-- Lane state: exact dark principal slice claimed from current main; implementation is stacked on PR #2082's typed ExecutionSubject/activation prerequisite
-- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim`
-- STATUS/Issue/PR: replaces the broad runtime-core refinery row only for the non-overlapping principal module, mirror, tests, and audit; restore the remaining row on land
+- Branch: `codex/agent-runtime-principal-20260802`
+- Lane state: PR #2114 is terminal-green at `d5ca5e3b`, cleanly stacked on PR #2082's exact typed ExecutionSubject/activation prerequisite
+- Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal`
+- STATUS/Issue/PR: https://github.com/Jonnyton/TinyAssets/pull/2114; keep open on the parent branch until #2082 lands or the stack is rebuilt exactly
 - Purpose: derive a narrow non-bearer runtime principal from authoritative manifest, activation, invocation, and live grant identities without editing cloud/provider/continuation owners
 - Review gate: RED/GREEN authority tests, current-activation and invocation-source failure probes, grant revalidation, mirror parity, strict OpenSpec, exact-head independent security review
-- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim/_PURPOSE.md`
-- Ship/abandon: stacked PR only after #2082; dark contract, no public invocation/provider launch/app/effect path
+- _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal/_PURPOSE.md`
+- Ship/abandon: retarget/fold back only after #2082 lands or is exact-restacked; dark contract, no public invocation/provider launch/app/effect path
 
 ## 2026-08-01 17:16 - Bound recurring Windows installer lifecycle CI
 
