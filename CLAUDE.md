@@ -72,10 +72,12 @@ Do NOT dispatch for routine edits, lookups, doc changes, or every verdict-shaped
 sentence. Ask it to re-check sources/actual code or refute the claim; log
 `approve`/`adapt`/`reject` in the lane artifact.
 
-Mechanics: prefer background offload on Codex's quota — pipe the prompt via
-stdin (`codex exec - < promptfile > outfile` in a background Bash call);
-**never pass multi-line prompts as argv** (cmd.exe truncates at the first
-newline — the old `codex_review.py --prompt` path silently reviewed nothing).
+Mechanics: prefer background offload on Codex's quota — `python
+scripts/codex_review.py --out <lane-local-file> --prompt "<ask>"` in a
+background Bash call (fixed 2026-08-02: the wrapper now feeds Codex via stdin
+and fail-closes with `VERDICT: error` on timeout/no-output; raw
+`codex exec - < promptfile > outfile` also works). **Never pass multi-line
+prompts to codex as argv** (cmd.exe truncates at the first newline).
 Use a lane-local out path, pre-empt false premises ("if the command fails, say
 so"), demand a hard output contract, and grep for the verdict token. Reviews
 are read-only and batched; `workspace-write` only deliberately in its own

@@ -57,7 +57,8 @@ TRIGGERS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
         re.compile(
             r"\b(deploy|production|release|roll[- ]?out|rollout|migration|"
             r"data ?loss|breaking change|irreversible|mass[- ](delete|deletion)|"
-            r"auth (change|migration))\b",
+            # merged-is-deployed repo: shipping/merging to main IS production
+            r"auth (change|migration)|ship (it|this)|(push|merge) to main)\b",
             re.I,
         ),
     ),
@@ -86,9 +87,11 @@ def render(label: str, instruction: str) -> str:
         (
             f"Codex judgment-class signal: {label}.",
             f"  → {instruction}",
-            "  Background offload on Codex's quota: pipe the prompt via stdin",
-            "  (`codex exec - < promptfile > outfile` in a background Bash call —",
-            "  never multi-line argv; cmd.exe truncates at the first newline).",
+            "  BACKGROUND offload on Codex's quota: `python scripts/codex_review.py",
+            '  --out <lane-local-file> --prompt "<ask>"` in a background Bash call',
+            "  (the wrapper feeds Codex via stdin — never multi-line argv — and",
+            "  fail-closes with `VERDICT: error` on timeout/no-output).",
+            "  Inline `mcp__codex__codex` only for a quick blocking gate.",
             'Policy: CLAUDE.md §"Calling Codex via MCP" — dispatch for',
             "judgment-class decisions, not routine work.",
         )

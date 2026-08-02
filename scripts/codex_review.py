@@ -104,7 +104,10 @@ def build_cmd(args: argparse.Namespace) -> list[str]:
         args.cwd,
         "-o",
         args.out,
-        build_prompt(args.prompt, args.diff_base),
+        # The prompt travels via stdin ("-"), never argv: the codex.cmd shim
+        # goes through cmd.exe, which truncates argv at the first newline —
+        # the silent reviewed-nothing failure (2026-07-22).
+        "-",
     ]
 
 
@@ -153,7 +156,13 @@ def run(args: argparse.Namespace) -> int:
     error: str | None = None
     rc = 0
     try:
-        proc = subprocess.run(cmd, timeout=args.timeout)
+        proc = subprocess.run(
+            cmd,
+            timeout=args.timeout,
+            input=build_prompt(args.prompt, args.diff_base),
+            text=True,
+            encoding="utf-8",
+        )
         rc = proc.returncode
         if rc != 0:
             error = f"codex exec exited {rc}"

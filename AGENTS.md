@@ -146,7 +146,8 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
   explore → propose → apply → sync-specs → archive (`openspec` skill /
   `opsx:*`).
 - **Every substantive change starts as an OpenSpec change** (behavior, MCP/API
-  surface, storage shapes, capabilities, security posture). **Skip-threshold:**
+  surface, storage shapes, capabilities, security posture), with its
+  `applyRequires` artifacts done before implementation. **Skip-threshold:**
   trivial mechanical work — typos, formatting, comment/doc edits, test-only
   fixes changing no behavior, coordination-file edits — needs NO change. Do
   not spec the act of coordinating; specs describe product behavior.
@@ -167,7 +168,8 @@ Host directive 2026-07-19; process-budget calibration 2026-08-02.
 - **One delivery change per exact session identity.** Before claiming/building
   a scaffolded change: `python scripts/openspec_flow.py check-change <name>
   --provider <session-specific-provider>`. Minting a new provider suffix to
-  evade the limit is a review violation.
+  evade the limit is a review violation. A P0/security exception must name
+  the exception and the WIP it displaces.
 - **Finish before starting.** At dispatch/triage: `python
   scripts/openspec_flow.py audit` — prefer complete-but-unarchived, then
   smallest unblocked in-flight, then smallest P0/uptime dependency-removal
@@ -243,7 +245,8 @@ converts back to draft until fresh exact-head approval.
 **Final chatbot-surface verification is a rendered chatbot conversation**
 through the live connector at `https://tinyassets.io/mcp` (`ui-test` skill)
 for any change affecting public MCP behavior, chatbot UX, connector tool
-descriptions, or `tinyassets.io`. Host-visible rendered chatbot use is the
+descriptions, user-visible node/workflow state, or `tinyassets.io`.
+Host-visible rendered chatbot use is the
 invariant; the automation transport is provider-specific. Direct MCP calls,
 scripts, and canaries are supporting evidence, not final proof. Log rendered
 prompt/result in `output/user_sim_session.md`.
