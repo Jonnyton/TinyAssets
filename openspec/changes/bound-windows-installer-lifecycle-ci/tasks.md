@@ -9,7 +9,7 @@
 - [x] 2.1 Add the outer Windows lifecycle supervisor with redirected diagnostic files, an exact total deadline, bounded exact-child-tree cleanup, output replay, and truthful exit propagation.
 - [x] 2.2 Instrument lifecycle phase start/completion/PID evidence and remove process-tree cleanup from the lifecycle child's failure authority.
 - [x] 2.3 Invoke the supervisor from Desktop release CI with a five-minute total deadline beneath the ten-minute GitHub fallback.
-- [ ] 2.4 Replace the failed PowerShell supervisor with a stdlib Python parent using timeout-bounded child wait, cleanup, byte-capped anonymous capture, and truthful exit propagation; pin Python in the job.
+- [x] 2.4 Replace the failed PowerShell supervisor with a stdlib Python parent using timeout-bounded child wait, cleanup, byte-capped anonymous capture, and truthful exit propagation; pin Python in the job.
 
 ## 3. Verification and foldback
 

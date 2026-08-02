@@ -294,6 +294,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
       - name: Download unsigned Windows installer
         uses: actions/download-artifact@v4
         with:
@@ -307,9 +311,9 @@ jobs:
           if ($installer.Count -ne 1) {
             throw "expected exactly one Windows installer"
           }
-          ./tests/desktop_install/windows_lifecycle_supervisor.ps1 `
-            -Installer $installer.FullName `
-            -TotalTimeoutSeconds 300
+          python ./tests/desktop_install/windows_lifecycle_supervisor.py `
+            --installer $installer.FullName `
+            --total-timeout-seconds 300
 
   sign-and-verify:
     needs: [plan, build, test-unsigned-windows-install]

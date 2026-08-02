@@ -137,7 +137,7 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "10_000" not in lifecycle
     assert "TemporaryFile" in supervisor
     assert "TimeoutExpired" in supervisor
-    assert "proc.wait(timeout=" in supervisor
+    assert "process.wait(timeout=" in supervisor
     assert "taskkill" in supervisor
 
 
