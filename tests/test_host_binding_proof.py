@@ -14,6 +14,7 @@ import rfc8785
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from tinyassets.auth.host_binding import HostBindingIdentity
 from tinyassets.auth.host_proof import (
     DOMAIN_SEPARATOR,
     ENROLLMENT_CHALLENGE_LIMITS,
@@ -27,6 +28,8 @@ from tinyassets.auth.host_proof import (
     HostEnrollmentTransactionOutcome,
     HostEnrollmentTransactionRequest,
     HostEnrollmentWritersDisabled,
+    HostInventoryCoordinator,
+    HostInventoryRefused,
     HostPrincipalResultV1,
     HostProofBindingV1,
     HostProofRefused,
@@ -1200,3 +1203,178 @@ def test_cross_subject_key_reuse_is_non_enumerating() -> None:
     assert refusal.value.public_error == HOST_BINDING_REFUSAL
     assert first.host_principal_id not in repr(refusal.value)
     assert "user_01HOSTOWNER" not in repr(refusal.value)
+
+
+class _InventoryContractStore:
+    def __init__(self, records: list[dict[str, object]]) -> None:
+        self.records = records
+        self.calls: list[tuple[str, str, str | None, int]] = []
+
+    def list_inventory(
+        self,
+        *,
+        issuer: str,
+        subject: str,
+        after_principal_id: str | None,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        self.calls.append((issuer, subject, after_principal_id, limit))
+        records = [
+            record
+            for record in self.records
+            if record["issuer"] == issuer and record["subject"] == subject
+        ]
+        if after_principal_id is not None:
+            start = next(
+                index + 1
+                for index, record in enumerate(records)
+                if record["host_principal_id"] == after_principal_id
+            )
+            records = records[start:]
+        return records[:limit]
+
+
+def _inventory_record(index: int, *, subject: str = "user_01HOSTOWNER") -> dict[str, object]:
+    return {
+        "issuer": ISSUER,
+        "subject": subject,
+        "host_principal_id": f"hp_{index:03d}",
+        "status": "active",
+        "generation": 1,
+        "policy_version": "host-binding-v1",
+        "issued_at": NOW - 100,
+        "expires_at": NOW + 1_000,
+        "last_seen_bucket": "recent",
+        "device_label": f"Laptop {index}",
+        # Private/control-plane fields must never survive inventory projection.
+        "jwk_thumbprint": _b64u(bytes([index % 255 + 1]) * 32),
+        "public_jwk": _jwk(_key(index % 255 + 1)),
+        "provider_reference": "provider-secret-ref",
+        "host_session_id": f"session-{index}",
+        "capabilities": ["execute"],
+        "consumer_grant": "paid-work",
+    }
+
+
+def _inventory_identity(
+    *,
+    subject: str = "user_01HOSTOWNER",
+    audience: str = AUDIENCE,
+) -> HostBindingIdentity:
+    return HostBindingIdentity(
+        issuer=ISSUER,
+        subject=subject,
+        audience=audience,
+        auth_time=NOW,
+        org_id=None,
+        permissions=frozenset({"host:manage"}),
+    )
+
+
+def _inventory(store: _InventoryContractStore) -> HostInventoryCoordinator:
+    return HostInventoryCoordinator(
+        store=store,
+        audience=AUDIENCE,
+        cursor_hmac_key=b"c" * 32,
+    )
+
+
+def test_private_inventory_defaults_to_25_and_pages_subject_only() -> None:
+    store = _InventoryContractStore(
+        [_inventory_record(index) for index in range(30)]
+        + [_inventory_record(index, subject="user_01OTHER") for index in range(30, 40)]
+    )
+    coordinator = _inventory(store)
+
+    first = coordinator.list_inventory(identity=_inventory_identity(), query={}, now=NOW)
+    decoded_cursor = base64.urlsafe_b64decode(
+        first["next_cursor"] + "=" * (-len(first["next_cursor"]) % 4)
+    )
+    assert b"user_01HOSTOWNER" not in decoded_cursor
+    second = coordinator.list_inventory(
+        identity=_inventory_identity(),
+        query={"cursor": first["next_cursor"]},
+        now=NOW,
+    )
+
+    assert len(first["items"]) == 25
+    assert [item["host_principal_id"] for item in second["items"]] == [
+        f"hp_{index:03d}" for index in range(25, 30)
+    ]
+    assert "next_cursor" not in second
+    assert store.calls == [
+        (ISSUER, "user_01HOSTOWNER", None, 26),
+        (ISSUER, "user_01HOSTOWNER", "hp_024", 26),
+    ]
+
+
+def test_private_inventory_accepts_100_maximum_and_refuses_owner_injection() -> None:
+    store = _InventoryContractStore([_inventory_record(index) for index in range(110)])
+    coordinator = _inventory(store)
+
+    page = coordinator.list_inventory(
+        identity=_inventory_identity(), query={"limit": 100}, now=NOW
+    )
+    assert len(page["items"]) == 100
+    assert store.calls[-1][-1] == 101
+
+    for query in ({"limit": 101}, {"owner": "user_01OTHER"}, {"subject": "user_01OTHER"}):
+        with pytest.raises(HostInventoryRefused):
+            coordinator.list_inventory(identity=_inventory_identity(), query=query, now=NOW)
+
+
+def test_inventory_cursor_is_subject_bound_and_mcp_audience_is_refused() -> None:
+    store = _InventoryContractStore([_inventory_record(index) for index in range(30)])
+    coordinator = _inventory(store)
+    first = coordinator.list_inventory(identity=_inventory_identity(), query={}, now=NOW)
+
+    with pytest.raises(HostInventoryRefused):
+        coordinator.list_inventory(
+            identity=_inventory_identity(subject="user_01OTHER"),
+            query={"cursor": first["next_cursor"]},
+            now=NOW,
+        )
+    with pytest.raises(HostInventoryRefused):
+        coordinator.list_inventory(
+            identity=_inventory_identity(audience="https://tinyassets.io/mcp"),
+            query={},
+            now=NOW,
+        )
+    assert len(store.calls) == 1
+
+
+def test_inventory_allows_lost_device_discovery_but_grants_no_authority() -> None:
+    store = _InventoryContractStore([_inventory_record(1)])
+    page = _inventory(store).list_inventory(
+        identity=_inventory_identity(), query={}, now=NOW
+    )
+
+    assert page == {
+        "schema_version": "host-binding-v1",
+        "items": [
+            {
+                "host_principal_id": "hp_001",
+                "status": "active",
+                "generation": 1,
+                "policy_version": "host-binding-v1",
+                "issued_at": NOW - 100,
+                "expires_at": NOW + 1_000,
+                "last_seen_bucket": "recent",
+                "device_label": "Laptop 1",
+            }
+        ],
+    }
+    assert parse_wire_dto("HostInventoryPageV1", rfc8785.dumps(page)) == page
+    forbidden = {
+        "issuer",
+        "subject",
+        "jwk_thumbprint",
+        "public_jwk",
+        "provider_reference",
+        "host_session_id",
+        "capabilities",
+        "consumer_grant",
+        "challenge_id_b64u",
+        "signatures",
+    }
+    assert forbidden.isdisjoint(page["items"][0])
