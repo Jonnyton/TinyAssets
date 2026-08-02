@@ -3,7 +3,8 @@ param(
     [string]$LifecycleScript = (Join-Path $PSScriptRoot "windows_lifecycle.ps1"),
     [ValidateRange(1, 900)][int]$PhaseTimeoutSeconds = 180,
     [ValidateRange(1, 3600)][int]$TotalTimeoutSeconds = 300,
-    [ValidateRange(1, 60)][int]$CleanupTimeoutSeconds = 10
+    [ValidateRange(1, 60)][int]$CleanupTimeoutSeconds = 10,
+    [ValidateRange(1024, 10485760)][int]$MaxCaptureBytesPerStream = 262144
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,17 +24,50 @@ $shellPath = (Get-Process -Id $PID).Path
 function Write-CapturedOutput {
     param(
         [Parameter(Mandatory = $true)][string]$StandardOutput,
-        [Parameter(Mandatory = $true)][string]$StandardError
+        [Parameter(Mandatory = $true)][string]$StandardError,
+        [Parameter(Mandatory = $true)][int]$MaxBytes
     )
 
-    if (Test-Path -LiteralPath $StandardOutput -PathType Leaf) {
-        Get-Content -LiteralPath $StandardOutput | ForEach-Object {
-            Write-Output $_
+    foreach ($capture in @(
+            @{ Path = $StandardOutput; Name = "stdout"; IsError = $false },
+            @{ Path = $StandardError; Name = "stderr"; IsError = $true }
+        )) {
+        if (-not (Test-Path -LiteralPath $capture.Path -PathType Leaf)) {
+            continue
         }
-    }
-    if (Test-Path -LiteralPath $StandardError -PathType Leaf) {
-        Get-Content -LiteralPath $StandardError | ForEach-Object {
-            [Console]::Error.WriteLine($_)
+
+        $stream = [System.IO.File]::Open(
+            $capture.Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        try {
+            $observedBytes = $stream.Length
+            $replayBytes = [int][Math]::Min($observedBytes, $MaxBytes)
+            $buffer = New-Object byte[] $replayBytes
+            $offset = 0
+            while ($offset -lt $replayBytes) {
+                $read = $stream.Read($buffer, $offset, $replayBytes - $offset)
+                if ($read -eq 0) {
+                    break
+                }
+                $offset += $read
+            }
+            $text = [System.Text.Encoding]::UTF8.GetString($buffer, 0, $offset)
+            if ($capture.IsError) {
+                [Console]::Error.Write($text)
+            }
+            else {
+                [Console]::Out.Write($text)
+            }
+            $finalObservedBytes = [Math]::Max($observedBytes, $stream.Length)
+            if ($finalObservedBytes -gt $offset) {
+                Write-Host "::warning title=Windows lifecycle capture::$($capture.Name) truncated at $MaxBytes bytes; observed at least $finalObservedBytes bytes"
+            }
+        }
+        finally {
+            $stream.Dispose()
         }
     }
 }
@@ -114,7 +148,10 @@ try {
 }
 finally {
     $process.Dispose()
-    Write-CapturedOutput -StandardOutput $stdoutPath -StandardError $stderrPath
+    Write-CapturedOutput `
+        -StandardOutput $stdoutPath `
+        -StandardError $stderrPath `
+        -MaxBytes $MaxCaptureBytesPerStream
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 }
 

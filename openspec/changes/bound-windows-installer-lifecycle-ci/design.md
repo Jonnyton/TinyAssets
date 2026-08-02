@@ -1,6 +1,6 @@
 ## Context
 
-PR #2078 wrapped each installer, health-probe, repair, and uninstall process in `Process.WaitForExit(180000)` and added a 15-minute GitHub job timeout. Most runs now finish in under 70 seconds, but runs 30722063982, 30722054273, 30723889111, and 30724201497 remained inside the lifecycle step until GitHub cancelled them about twenty minutes after job start. GitHub documents that job cancellation can retain a stuck step for a further five-minute forced-termination window. The cancelled jobs retained no downloadable log blob, so the job timeout proves eventual runner reclamation but does not provide a precise or diagnostic lifecycle gate.
+PR #2078 wrapped each installer, health-probe, repair, and uninstall process in `Process.WaitForExit(180000)` and added a 15-minute GitHub job timeout. Most runs now finish in under 70 seconds, but runs 30722063982, 30722054273, 30723889111, 30724201497, and 30724652715 remained inside the lifecycle step until GitHub cancelled them about twenty minutes after job start. GitHub documents that job cancellation can retain a stuck step for a further five-minute forced-termination window. The cancelled jobs retained no downloadable log blob, so the job timeout proves eventual runner reclamation but does not provide a precise or diagnostic lifecycle gate.
 
 The current timeout handler performs process-tree discovery and synchronous tree termination inside the same PowerShell process that executes the lifecycle. Any hang in lifecycle code or cleanup therefore prevents that process from reporting failure. The release gate needs an independent authority that can terminate and report the whole child lifecycle.
 
@@ -37,7 +37,7 @@ Alternative considered: retain four independent 180-second phases as the only bo
 
 ### 3. Capture output outside the child process
 
-The child writes stdout and stderr to unique files beneath `RUNNER_TEMP` (or the operating-system temp directory locally). The supervisor replays both streams before returning success or throwing. Redirecting away from the runner pipe also prevents an escaped descendant from retaining the workflow step's output handle.
+The child writes stdout and stderr to unique files beneath `RUNNER_TEMP` (or the operating-system temp directory locally). The supervisor snapshots and replays at most 256 KiB from each stream before returning success or throwing, and emits the observed byte count when evidence is truncated. Redirecting away from the runner pipe also prevents an escaped descendant from retaining the workflow step's output handle; the byte-capped snapshot prevents a noisy or surviving writer from extending replay past the total-deadline margin.
 
 Alternative considered: inherit the workflow console directly. Rejected because an escaped descendant can keep inherited handles open and the historical forced cancellations produced no retained log blob.
 
@@ -51,7 +51,7 @@ Alternative considered: continue synchronous `.Kill($true)` inside the lifecycle
 
 - **A descendant survives both bounded cleanup attempts** -> redirected output prevents it from holding the step open; the runner's process cleanup and job timeout remain defense in depth.
 - **The five-minute total deadline is too short on a loaded runner** -> normal evidence is under 70 seconds; the deadline is configurable and a timeout reports captured phase evidence instead of silently extending.
-- **Redirected output is delayed until child completion** -> CI loses live phase streaming but gains retained caught-failure evidence; phase names and PIDs remain explicit in the replay.
+- **Redirected output is delayed until child completion** -> CI loses live phase streaming but gains retained caught-failure evidence; phase names and PIDs remain explicit in the replay, and each stream is byte-capped with truthful truncation evidence.
 - **A forced timeout cannot identify the historical phase** -> the next caught recurrence records phase-start evidence, turning the non-reproducible incident into actionable data.
 
 ## Migration Plan

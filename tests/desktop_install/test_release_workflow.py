@@ -113,9 +113,8 @@ def test_unsigned_windows_artifact_is_installed_repaired_and_uninstalled() -> No
 
 def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     workflow = _workflow_text()
-    lifecycle = Path(__file__).with_name("windows_lifecycle.ps1").read_text(
-        encoding="utf-8"
-    )
+    lifecycle = Path(__file__).with_name("windows_lifecycle.ps1").read_text(encoding="utf-8")
+    supervisor = SUPERVISOR.read_text(encoding="utf-8")
     install_job = workflow.split("  test-unsigned-windows-install:", 1)[1].split(
         "  sign-and-verify:", 1
     )[0]
@@ -135,6 +134,9 @@ def test_unsigned_windows_lifecycle_is_bounded_and_diagnostic() -> None:
     assert "Start-Process" in lifecycle
     assert "-Wait" not in lifecycle
     assert "10_000" not in lifecycle
+    assert "MaxCaptureBytesPerStream" in supervisor
+    assert "[System.IO.File]::Open" in supervisor
+    assert "Get-Content" not in supervisor
 
 
 @pytest.mark.skipif(
@@ -156,7 +158,9 @@ def test_windows_lifecycle_supervisor_bounds_and_reports_hung_child(
     [int]$PhaseTimeoutSeconds = 180
 )
 Write-Output \"synthetic lifecycle phase began for $Installer\"
-Start-Sleep -Seconds 60
+while ($true) {
+    [Console]::Out.WriteLine("synthetic noise " + ("x" * 4096))
+}
 """,
         encoding="utf-8",
     )
@@ -184,6 +188,8 @@ Start-Sleep -Seconds 60
             "2",
             "-CleanupTimeoutSeconds",
             "2",
+            "-MaxCaptureBytesPerStream",
+            "4096",
         ],
         capture_output=True,
         text=True,
@@ -197,7 +203,9 @@ Start-Sleep -Seconds 60
     assert result.returncode != 0
     assert elapsed < 15
     assert "synthetic lifecycle phase began" in output
+    assert "stdout truncated at 4096 bytes" in output
     assert "total lifecycle timed out after 2 seconds" in output
+    assert len(output) < 20_000
 
 
 def test_release_workflow_has_no_fake_signature_fallback() -> None:

@@ -14,11 +14,12 @@ The desktop release workflow SHALL execute the exact unsigned Windows installer 
 - **AND** the workflow continues to later signing gates without weakening any artifact or identity check
 
 ### Requirement: Caught Windows lifecycle failures retain phase diagnostics
-The lifecycle child SHALL report each phase name and root process identity before waiting, and the outer supervisor SHALL capture and replay child stdout and stderr before returning its verdict. An escaped descendant MUST NOT retain the workflow step's output handles, and supervisor timeout evidence MUST name the configured total deadline.
+The lifecycle child SHALL report each phase name and root process identity before waiting, and the outer supervisor SHALL capture child stdout and stderr outside the workflow output handles and replay a fixed byte-capped snapshot before returning its verdict. The supervisor MUST report the cap and observed byte count when either stream is truncated. An escaped or continuously writing descendant MUST NOT retain the workflow step's output handles or extend replay beyond the bounded margin, and supervisor timeout evidence MUST name the configured total deadline.
 
 #### Scenario: Supervisor catches a synthetic hung child
-- **WHEN** a Windows regression child emits a phase marker and then exceeds the total deadline
+- **WHEN** a Windows regression child emits a phase marker, writes continuously, and then exceeds the total deadline
 - **THEN** the supervisor's returned output contains the child marker and the total-timeout verdict
+- **AND** the output contains truthful truncation evidence and remains below the configured replay bound
 - **AND** the regression completes within a bounded wall-clock interval
 
 #### Scenario: Child fails before the total deadline
