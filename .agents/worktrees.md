@@ -3,12 +3,12 @@
 ## 2026-08-02 - Data commons ordinary contribution recovery slice
 
 - Provider: `codex-gpt5-desktop-agent-runtime`
-- Branch: `codex/data-commons-contribution-20260802`
+- Branch: `codex/data-commons-contribution-impl-20260802`
 - Lane state: claimed tasks 1.1-1.5 only from the legacy oversized `data-commons-contribution` change
 - Worktree: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim`
 - STATUS/Issue/PR: canonical contribution-entry metadata and ordinary commons discovery; no second catalog, index, or MCP handle
 - Purpose: make community-published designs discoverable and remixable through existing wiki/commons primitives, including future arbitrary agent definitions
-- Review gate: test-first authority/discovery coverage, exact-seven canary, focused regressions, independent review
+- Review gate: test-first exact-path authority/discovery coverage, packaged mirror parity, exact-seven canary, focused regressions, independent review
 - _PURPOSE.md: `C:/Users/Jonathan/Projects/wf-agent-runtime-principal-claim/_PURPOSE.md`
 - Ship/abandon: one bounded PR; leave all later data-commons tasks unchecked and unclaimed
 
